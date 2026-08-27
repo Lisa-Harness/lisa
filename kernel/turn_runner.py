@@ -201,6 +201,7 @@ def _build_budget_briefing(
     max_tool_iterations: int,
     per_step_max_iterations: int,
     per_step_max_tool_calls: int,
+    stage_nudge_cap: int,
     tool_schemas: list[dict[str, Any]],
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
@@ -256,13 +257,28 @@ def _build_budget_briefing(
     lines: list[str] = []
     # ── Iteration budget ──
     # Uses the 1-indexed iteration counter so the model never guesses
-    # whether "47/50" means "47 remaining" or "47 used": ``iter 3/50``
-    # is unambiguously "I am on iteration 3 of a 50-iteration budget."
-    # The previous ``remaining/total`` format (``iters: 47/50``) was
-    # consistently misread as a progress bar during metaanalysis.
+    # whether "47/50" means "47 remaining" or "47 used": ``iteration: 3
+    # of 50`` is unambiguously "I am on iteration 3 of a 50-iteration
+    # budget." The previous ``remaining/total`` format (``iters: 47/50``)
+    # was consistently misread as a progress bar during metaanalysis.
     remaining_iterations = max_tool_iterations - state.iteration
     if max_tool_iterations > 0 and state.iteration > 0:
-        lines.append(f"iter {state.iteration}/{max_tool_iterations}")
+        lines.append(f"iteration: {state.iteration} of {max_tool_iterations}")
+    # ── Stage budget (the per-mode ceiling that actually fires) ────────
+    # ``stage_nudge_cap`` is the real bound on iterations in one mode
+    # before the harness pauses the turn. The global ``max_tool_iterations``
+    # (300) is never reached in practice; the stage cap (default 9) is.
+    # Without surfacing it, the model sees only ``iter 3/300`` and has no
+    # way to reconcile that with prior cap-fire messages in the thread
+    # ("stuck in explainer for 6 iterations (cap)"). The format is
+    # explicitly ``N completed with M remaining`` to prevent the
+    # completed/remaining confusion that the old ``N/M`` format caused.
+    turns_in_stage = getattr(state, "turns_in_stage", 0) or 0
+    if stage_nudge_cap > 0 and turns_in_stage > 0:
+        stage_remaining = max(0, stage_nudge_cap - turns_in_stage)
+        lines.append(
+            f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining"
+        )
     # ── Per-step sub-budget (only when a WorkflowPosition is wired) ──
     if per_step_max_iterations > 0 and state.step_iteration > 0:
         step_remaining = per_step_max_iterations - state.step_iteration
@@ -3595,6 +3611,7 @@ async def _run_turn_inner(
                 max_tool_iterations=max_tool_iterations,
                 per_step_max_iterations=per_step_max_iterations,
                 per_step_max_tool_calls=per_step_max_tool_calls,
+                stage_nudge_cap=_kernel_settings.stage_nudge_cap,
                 tool_schemas=tool_schemas,
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,

@@ -117,6 +117,24 @@ def build_runtime(
 
     _configure_logging(config, logging_configurator)
 
+    # ── Thread redaction policy ───────────────────────────────────────
+    # Wire the redaction policy into the module-level ``host.thread``
+    # factory so every ThreadStore created by the host applies the
+    # configured strikethrough transform on read. The policy is compiled
+    # once from ``HostConfig`` and shared for the lifetime of the host.
+    from host.thread import set_thread_redaction_policy as _set_thread_redaction
+    from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
+
+    if config.thread_redaction_enabled:
+        patterns: list[str] = list(DEFAULT_REDACTION_PATTERNS)
+        if config.thread_redaction_patterns:
+            # Non-empty override replaces defaults entirely (hard cutover,
+            # no merge — per the project convention).
+            patterns = list(config.thread_redaction_patterns)
+        _set_thread_redaction(ThreadRedactionPolicy.from_patterns(patterns))
+    else:
+        _set_thread_redaction(None)
+
     runtime = HostRuntime(config)
     runtime.state_snapshot = load_state_snapshot(
         explicit_path=state_snapshot_path,

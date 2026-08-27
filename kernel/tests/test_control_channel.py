@@ -73,6 +73,7 @@ def _briefing_state() -> SimpleNamespace:
         iteration=2,
         step_iteration=0,
         step_tool_calls=0,
+        turns_in_stage=0,
         call_ledger_counts={},
         sub_turn_kind=None,
         action_tool_ids=set(),
@@ -92,6 +93,7 @@ def test_budget_briefing_carries_guidance_lines() -> None:
         max_tool_iterations=10,
         per_step_max_iterations=0,
         per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
         tool_schemas=[],
         operation_catalog={},
         tool_catalog={},
@@ -115,6 +117,7 @@ def test_budget_briefing_guidance_only_still_marks_block() -> None:
         max_tool_iterations=0,  # no iteration line
         per_step_max_iterations=0,
         per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
         tool_schemas=[],
         operation_catalog={},
         tool_catalog={},
@@ -132,6 +135,7 @@ def test_budget_briefing_empty_when_no_lines_no_guidance() -> None:
         max_tool_iterations=0,
         per_step_max_iterations=0,
         per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
         tool_schemas=[],
         operation_catalog={},
         tool_catalog={},
@@ -139,6 +143,70 @@ def test_budget_briefing_empty_when_no_lines_no_guidance() -> None:
         budget_exhausted=False,
     )
     assert briefing == ""
+
+
+def test_budget_briefing_stage_budget_line() -> None:
+    """The stage-budget line surfaces the per-mode ceiling that actually fires.
+
+    Without it the model sees only ``iter 3/300`` and has no way to
+    reconcile that with prior cap-fire messages in the thread. The format
+    is ``N completed with M remaining`` to prevent the completed/remaining
+    confusion that the old ``N/M`` format caused.
+    """
+    state = SimpleNamespace(
+        iteration=3,
+        step_iteration=3,
+        step_tool_calls=0,
+        turns_in_stage=3,
+        call_ledger_counts={},
+        sub_turn_kind=None,
+        action_tool_ids=set(),
+        called_tool_names=set(),
+        effect_receipts=[],
+    )
+    briefing = _build_budget_briefing(
+        state=state,
+        max_tool_iterations=300,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
+        tool_schemas=[],
+        operation_catalog={},
+        tool_catalog={},
+        execution_policy=None,
+        budget_exhausted=False,
+    )
+    assert "## Turn Lifecycle" in briefing
+    assert "iteration: 3 of 300" in briefing
+    assert "stage budget: 3 completed with 6 remaining" in briefing
+
+
+def test_budget_briefing_stage_budget_omitted_when_zero_turns() -> None:
+    """When ``turns_in_stage`` is 0 the stage-budget line is omitted (iteration 1)."""
+    state = SimpleNamespace(
+        iteration=1,
+        step_iteration=0,
+        step_tool_calls=0,
+        turns_in_stage=0,
+        call_ledger_counts={},
+        sub_turn_kind=None,
+        action_tool_ids=set(),
+        called_tool_names=set(),
+        effect_receipts=[],
+    )
+    briefing = _build_budget_briefing(
+        state=state,
+        max_tool_iterations=300,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
+        tool_schemas=[],
+        operation_catalog={},
+        tool_catalog={},
+        execution_policy=None,
+        budget_exhausted=False,
+    )
+    assert "stage budget" not in briefing
 
 
 # ── 3. Runtime invariant across a live chain handoff ──────────────────

@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from host.host_commands import is_host_command_query as _is_host_command_query
-from sdk.thread import ThreadStore
+from sdk.thread import ThreadRedactionPolicy, ThreadStore
 
 if TYPE_CHECKING:
     import zstandard  # type-check-only; imported lazily at runtime
@@ -79,7 +79,28 @@ __all__ = [
     "load_thread_digest",
     "load_thread_range",
     "next_turn_index",
+    "set_thread_redaction_policy",
 ]
+
+# ── Thread redaction policy (module-level, set once at startup) ────────
+#
+# The redaction policy is a read-time transform applied by ``ThreadStore``
+# when rendering thread entries into model context. It is injected once
+# at host startup via ``set_thread_redaction_policy`` so the pure factory
+# ``_thread_store`` can attach it to every store it creates without every
+# call-site passing it through. ``None`` means no redaction (the default
+# before the host wires it).
+_thread_redaction: ThreadRedactionPolicy | None = None
+
+
+def set_thread_redaction_policy(policy: ThreadRedactionPolicy | None) -> None:
+    """Set the module-level thread redaction policy.
+
+    Called once at host startup from ``host.bootstrap`` (or equivalent)
+    after ``HostConfig`` is resolved. Pass ``None`` to disable redaction.
+    """
+    global _thread_redaction
+    _thread_redaction = policy
 
 # ── Defaults ───────────────────────────────────────────────────────────
 
@@ -396,10 +417,15 @@ def _maybe_rename_legacy(paths: _SegmentPaths) -> None:
 
 
 def _thread_store(thread_path: Path | None) -> ThreadStore | None:
-    """Return a ``ThreadStore`` for ``thread_path``, or ``None``."""
+    """Return a ``ThreadStore`` for ``thread_path``, or ``None``.
+
+    Attaches the module-level redaction policy (set via
+    :func:`set_thread_redaction_policy`) so every read applies the
+    configured strikethrough transform.
+    """
     if thread_path is None:
         return None
-    return ThreadStore(thread_path)
+    return ThreadStore(thread_path, redaction=_thread_redaction)
 
 
 def load_recent_thread_entries(

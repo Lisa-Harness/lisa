@@ -411,3 +411,87 @@ class TestSegmentedStore:
         thread_path = tmp_path / "thread"
         assert load_thread_digest(thread_path=thread_path) == ""
         assert load_thread_digest(thread_path=None) == ""
+
+
+# ── Thread redaction ────────────────────────────────────────────────
+
+
+class TestThreadRedaction:
+    """Tests for the read-time thread redaction facility.
+
+    Verifies that cap-fire / budget-exhaustion messages in prior thread
+    entries are strikethrough-redacted when rendered into model context
+    via ``build_recent_thread_excerpt`` and ``build_thread_manifest``,
+    and that the raw thread log is never mutated.
+    """
+
+    def test_default_policy_redacts_cap_fire_in_excerpt(self, tmp_path: Path) -> None:
+        """Prior cap-fire messages are redacted in the recent excerpt."""
+        from host.thread import set_thread_redaction_policy
+        from sdk.thread import ThreadRedactionPolicy
+
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="do the work",
+            response_text=(
+                "I've hit my iteration budget in explainer "
+                "(stuck in explainer for 6 iterations (cap)). "
+                "I've paused so you can redirect me."
+            ),
+        )
+        _write_entry(thread_path, query="next question", response_text="real answer")
+
+        set_thread_redaction_policy(ThreadRedactionPolicy.default())
+        try:
+            excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
+        finally:
+            set_thread_redaction_policy(None)
+
+        # The cap-fire text must be redacted — the strikethrough marker
+        # replaces it, not the raw prose.
+        assert "I've hit my iteration budget" not in excerpt
+        assert "stuck in explainer for 6 iterations" not in excerpt
+        # The real answer must survive.
+        assert "real answer" in excerpt
+        # The raw thread entry is never mutated.
+        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        assert "I've hit my iteration budget" in entries[0]["response_text"]
+
+    def test_no_policy_when_unset(self, tmp_path: Path) -> None:
+        """Without a wired policy, no redaction occurs."""
+        from host.thread import set_thread_redaction_policy
+
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="do the work",
+            response_text="I've hit my iteration budget in researcher.",
+        )
+        set_thread_redaction_policy(None)
+        excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
+        assert "I've hit my iteration budget" in excerpt
+
+    def test_custom_patterns_replace_defaults(self, tmp_path: Path) -> None:
+        """A non-empty custom pattern list replaces the defaults entirely."""
+        from host.thread import set_thread_redaction_policy
+        from sdk.thread import ThreadRedactionPolicy
+
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="secret query",
+            response_text="the password is hunter2 and I've hit my iteration budget",
+        )
+        # Custom pattern: only redact "hunter2" — defaults are NOT merged.
+        set_thread_redaction_policy(
+            ThreadRedactionPolicy.from_patterns([r"hunter2"])
+        )
+        try:
+            excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
+        finally:
+            set_thread_redaction_policy(None)
+
+        assert "hunter2" not in excerpt
+        # The default cap-fire pattern did NOT fire (custom replaces defaults).
+        assert "I've hit my iteration budget" in excerpt

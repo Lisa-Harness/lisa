@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
+
+from sdk.thread.redaction import ThreadRedactionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -209,9 +210,15 @@ class ThreadStore:
     MCP server and the host's context-assembly layer.
     """
 
-    def __init__(self, base_path: Path) -> None:
+    def __init__(
+        self,
+        base_path: Path,
+        *,
+        redaction: ThreadRedactionPolicy | None = None,
+    ) -> None:
         self._base = base_path
         self._paths = _segment_paths(base_path)
+        self._redaction = redaction
 
     @property
     def base_path(self) -> Path:
@@ -356,6 +363,9 @@ class ThreadStore:
                 continue
             if is_host_command is not None and is_host_command(query):
                 continue
+            if self._redaction is not None:
+                query = self._redaction.redact(query)
+                response = self._redaction.redact(response)
             body = response or query
             prov = entry.get("provenance")
             if prov:
@@ -419,6 +429,8 @@ class ThreadStore:
                 turn = f"{offset + 1}/{total}"
             mode_id = str(entry.get("mode_id") or "-")
             query = str(entry.get("query") or "").strip()
+            if self._redaction is not None:
+                query = self._redaction.redact(query)
             if len(query) > 80:
                 query = query[:77] + "…"
             # Escape pipes in query for markdown table safety.
@@ -506,8 +518,8 @@ class ThreadStore:
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [entry for _, _, entry in candidates[:capped_limit]]
 
-    @staticmethod
     def _score_entry(
+        self,
         entry: dict[str, Any],
         global_turn: int,
         tokens: set[str],
@@ -516,7 +528,9 @@ class ThreadStore:
         """Score one entry for search ranking. Returns ``(score, turn, result)`` or ``None``.
 
         ``None`` means the entry should be skipped (empty, or a host-command
-        entry when the filter is wired).
+        entry when the filter is wired). When a :class:`ThreadRedactionPolicy`
+        is wired, ``query`` and ``response_preview`` in the result are
+        redacted before return — the raw entry is never mutated.
         """
         query_text = str(entry.get("query") or "").strip()
         response_text = str(entry.get("response_text") or "").strip()
@@ -539,6 +553,9 @@ class ThreadStore:
             lexical = 1.0
 
         response_preview = response_text[:200] if response_text else ""
+        if self._redaction is not None:
+            query_text = self._redaction.redact(query_text)
+            response_preview = self._redaction.redact(response_preview)
         result = {
             "turn": global_turn,
             "mode_id": entry.get("mode_id"),

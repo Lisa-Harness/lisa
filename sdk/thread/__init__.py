@@ -21,5 +21,11 @@ backward compatibility.
 from __future__ import annotations
 
 from sdk.thread._backend import SegmentRecord, ThreadStore
+from sdk.thread.redaction import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
-__all__ = ["SegmentRecord", "ThreadStore"]
+__all__ = [
+    "DEFAULT_REDACTION_PATTERNS",
+    "SegmentRecord",
+    "ThreadRedactionPolicy",
+    "ThreadStore",
+]

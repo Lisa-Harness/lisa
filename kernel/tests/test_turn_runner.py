@@ -5195,13 +5195,13 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
     assert "## Turn Lifecycle" in captured_system_prompts[0]
     # The briefing reports iterations remaining (4/5 after iteration 1
     # incremented to 1).
-    assert "iter 1/5" in captured_system_prompts[0]
+    assert "iteration: 1 of 5" in captured_system_prompts[0]
     # Iteration 2: the briefing must still be present (replaced, not
     # accumulated — only one ``## Turn Lifecycle`` block).
     assert "## Turn Lifecycle" in captured_system_prompts[1]
     assert captured_system_prompts[1].count("## Turn Lifecycle") == 1
     # Iteration 2: iteration 2 of 5.
-    assert "iter 2/5" in captured_system_prompts[1]
+    assert "iteration: 2 of 5" in captured_system_prompts[1]
     # The base system prompt content (mode intro) is preserved — the
     # briefing is appended, not replacing the base.
     assert captured_system_prompts[0].split("## Turn Lifecycle")[0].strip() != ""

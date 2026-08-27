@@ -34,6 +34,8 @@ LISA_SLICE_EXPLICIT_ENV = "LISA_SLICE_EXPLICIT"
 LISA_SLICE_BUDGET_MS_ENV = "LISA_SLICE_BUDGET_MS"
 LISA_THREAD_MAX_ENTRIES_ENV = "LISA_THREAD_MAX_ENTRIES"
 LISA_THREAD_SEGMENT_TURNS_ENV = "LISA_THREAD_SEGMENT_TURNS"
+LISA_THREAD_REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
+LISA_THREAD_REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
 LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 
 # ── Default values ────────────────────────────────────────────────────
@@ -72,6 +74,19 @@ def _resolve_env_int(name: str, default: int, *, minimum: int = 1) -> int:
     except ValueError:
         logger.warning("invalid %s value %r; using default %d", name, raw, default)
         return default
+
+
+def _resolve_env_bool(name: str, default: bool) -> bool:
+    """Read an env var as a boolean. Accepts 1/true/yes/on (case-insensitive)."""
+    raw = _resolve_env(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("invalid %s value %r; using default %s", name, raw, default)
+    return default
 
 
 def _normalize_slice_flag(value: str) -> bool | None:
@@ -169,6 +184,17 @@ class HostConfig:
     # recent-N window injected into context). See ``host/thread.py`` and
     # ``docs/SPEC/THREAD_STORE.md``.
     thread_segment_turns: int = _DEFAULT_THREAD_SEGMENT_TURNS
+    # ── Thread redaction ─────────────────────────────────────────────
+    # When True, thread-read methods (build_recent_excerpt,
+    # build_manifest, search) apply a :class:`ThreadRedactionPolicy`
+    # that strips regex-matched substrings from ``response_text`` and
+    # ``query`` before rendering into model context. The default policy
+    # removes prior cap-fire / budget-exhaustion self-reports that
+    # contaminate subsequent turns. Override the patterns via
+    # ``LISA_THREAD_REDACTION_PATTERNS`` (newline-separated regex strings
+    # — empty means defaults only; ``none`` disables all patterns).
+    thread_redaction_enabled: bool = True
+    thread_redaction_patterns: tuple[str, ...] = ()  # empty = defaults only
     memory_max_records: int = _DEFAULT_MEMORY_MAX_RECORDS
 
     # ── Memory recall (pre-turn injection) ─────────────────────────────
@@ -355,6 +381,22 @@ class HostConfig:
         thread_segment_turns = _resolve_env_int(
             LISA_THREAD_SEGMENT_TURNS_ENV, _DEFAULT_THREAD_SEGMENT_TURNS
         )
+        # ── Thread redaction config ────────────────────────────────
+        thread_redaction_enabled = _resolve_env_bool(
+            LISA_THREAD_REDACTION_ENABLED_ENV, True
+        )
+        raw_redaction_patterns = _resolve_env(
+            LISA_THREAD_REDACTION_PATTERNS_ENV, ""
+        ).strip()
+        if raw_redaction_patterns.lower() == "none":
+            thread_redaction_patterns: tuple[str, ...] = ()
+            thread_redaction_enabled = False
+        elif raw_redaction_patterns:
+            thread_redaction_patterns = tuple(
+                p for p in raw_redaction_patterns.splitlines() if p.strip()
+            )
+        else:
+            thread_redaction_patterns = ()
         memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
 
         # ── User / session ─────────────────────────────────────────────
@@ -397,6 +439,8 @@ class HostConfig:
             ),
             thread_max_entries=thread_max,
             thread_segment_turns=thread_segment_turns,
+            thread_redaction_enabled=thread_redaction_enabled,
+            thread_redaction_patterns=thread_redaction_patterns,
             memory_max_records=memory_max,
             execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,
