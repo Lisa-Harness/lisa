@@ -645,6 +645,69 @@ def resolve_pack_session_path(
     return session_path
 
 
+# ── Pack-contributed redaction patterns ───────────────────────────────
+
+
+_PACK_REDACTION_PATTERNS_FILE = "redaction_patterns.yml"
+
+
+def discover_pack_redaction_patterns(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
+) -> list[str]:
+    """Scan active pack content roots for contributed redaction patterns.
+
+    Each pack may ship ``content/redaction_patterns.yml`` — a declarative
+    YAML file with a ``patterns`` key containing a list of raw regex
+    strings. The host merges all discovered patterns from all active
+    packs into a single list, deduplicated and order-stable (first
+    occurrence wins).
+
+    This is the pack contribution point for thread-read redaction: a
+    pack ships its best-practice redaction set alongside its content,
+    and the host picks it up automatically without any entry-point
+    registration. Disabled packs are excluded via the same
+    session/always-on filtering as every other content-root scan.
+    """
+    roots = authored_content_roots(
+        data_dir,
+        host_manifest_path=host_manifest_path,
+        always_on_packs=always_on_packs,
+        session_pack_include=session_pack_include,
+        session_pack_exclude=session_pack_exclude,
+    )
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        path = root / _PACK_REDACTION_PATTERNS_FILE
+        if not path.is_file():
+            continue
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "redaction: failed to parse %s: %s", path, exc
+            )
+            continue
+        if not isinstance(raw, dict):
+            continue
+        pack_patterns = raw.get("patterns")
+        if not isinstance(pack_patterns, list):
+            continue
+        for pattern in pack_patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            cleaned = pattern.strip()
+            if cleaned not in seen:
+                seen.add(cleaned)
+                patterns.append(cleaned)
+    return patterns
+
+
 __all__ = [
     "active_installed_pack_roots",
     "always_on_pack_names",
@@ -664,6 +727,7 @@ __all__ = [
     "sdk_content_roots",
     "sdk_mode_roots",
     "sdk_operation_roots",
+    "discover_pack_redaction_patterns",
     "seed_bundled_packs_lock",
     "unique_paths",
 ]

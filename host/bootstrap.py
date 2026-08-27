@@ -122,16 +122,41 @@ def build_runtime(
     # factory so every ThreadStore created by the host applies the
     # configured strikethrough transform on read. The policy is compiled
     # once from ``HostConfig`` and shared for the lifetime of the host.
+    #
+    # Pattern sources (in priority order):
+    # 1. ``LISA_THREAD_REDACTION_PATTERNS`` env override — when non-empty,
+    #    it replaces all other sources (hard cutover, no merge).
+    # 2. Pack-contributed patterns — packs ship
+    #    ``content/redaction_patterns.yml``; the host scans active pack
+    #    content roots and merges all discovered patterns.
+    # 3. Framework defaults — ``DEFAULT_REDACTION_PATTERNS`` in
+    #    ``sdk.thread.redaction``.
+    #
+    # When no env override is set, pack patterns are merged with the
+    # framework defaults (union, deduplicated, order-stable) so a pack's
+    # best-practice redactions augment the baseline rather than replacing
+    # it.
+    from host.content_roots import discover_pack_redaction_patterns
     from host.thread import set_thread_redaction_policy as _set_thread_redaction
     from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
     if config.thread_redaction_enabled:
-        patterns: list[str] = list(DEFAULT_REDACTION_PATTERNS)
         if config.thread_redaction_patterns:
-            # Non-empty override replaces defaults entirely (hard cutover,
-            # no merge — per the project convention).
-            patterns = list(config.thread_redaction_patterns)
-        _set_thread_redaction(ThreadRedactionPolicy.from_patterns(patterns))
+            # Env override replaces everything (hard cutover).
+            merged_patterns = list(config.thread_redaction_patterns)
+        else:
+            # Merge framework defaults + pack-contributed patterns.
+            pack_patterns = discover_pack_redaction_patterns(
+                config.data_dir,
+                always_on_packs=config.always_on_packs,
+            )
+            merged_patterns = list(DEFAULT_REDACTION_PATTERNS)
+            seen = set(merged_patterns)
+            for p in pack_patterns:
+                if p not in seen:
+                    seen.add(p)
+                    merged_patterns.append(p)
+        _set_thread_redaction(ThreadRedactionPolicy.from_patterns(merged_patterns))
     else:
         _set_thread_redaction(None)
 

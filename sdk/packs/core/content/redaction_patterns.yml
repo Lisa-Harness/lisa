@@ -1,0 +1,39 @@
+# Pack-contributed thread redaction patterns
+#
+# Packs ship this file at `content/redaction_patterns.yml` to contribute
+# recommended redaction patterns as a best-practice set. The host scans
+# all active pack content roots at startup, merges every pack's patterns
+# with the framework defaults, and compiles them into a single
+# ThreadRedactionPolicy.
+#
+# Each entry is a raw regex string applied at read-time to thread
+# `response_text` and `query` fields before they enter model context.
+# Matched substrings are replaced with a strikethrough marker; the raw
+# thread log is never mutated.
+#
+# Patterns should target harness-authored or model-self-reported text
+# that contaminates subsequent turns — e.g. cap-fire diagnostics, stale
+# budget claims, or mode-specific self-reports that the model
+# pattern-matches against the current turn's lifecycle briefing.
+#
+# Convention: patterns are anchored on the distinctive prose of the
+# message, not on variable parts like mode names or counts, so they
+# generalize across modes and turn numbers. Use `[^\n]*` to extend to
+# end-of-line rather than `.*` (which would eat across line breaks and
+# redact unrelated content).
+
+patterns:
+  # Model-authored: "I've hit my iteration budget in <mode> (...)."
+  - "I've hit my iteration budget[^\\n]*"
+
+  # Model-authored: "I've hit my iteration budget for this turn. ..."
+  - "I've hit my iteration budget for this turn[^\\n]*"
+
+  # Harness pause diagnostic: "stuck in <mode> for N iterations (cap)"
+  - "stuck in \\w+ for \\d+ iterations \\(cap\\)[^\\n]*"
+
+  # Harness yield: "iteration cap N reached"
+  - "iteration cap \\d+ reached[^\\n]*"
+
+  # Harness yield: "turn budget exhausted"
+  - "turn budget exhausted[^\\n]*"
