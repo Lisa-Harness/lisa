@@ -121,6 +121,8 @@ servers:
     default_available_tools:
       - read_file
       - list_files
+      - write_file
+      - append_file
 
   # ── Thread-access server (cold — lazily connected on first use) ──
   # The thread server exposes ``thread_read_range`` and
