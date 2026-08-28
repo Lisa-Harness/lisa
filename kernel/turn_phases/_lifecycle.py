@@ -307,6 +307,12 @@ class _TurnStateView:
     # been recorded this turn. The resolver uses this to decide whether
     # the write-rescue transition is needed.
     has_write_receipt: bool = False
+    # True when at least one read/execute ``EffectReceipt`` has been
+    # recorded this turn. A read-only turn is honest work: the write
+    # contract does not apply, so the write-rescue transition must not
+    # fire (the 2026-08-27 cloudservers incident — a read-only VM listing
+    # in a write-capable mode was rescued into a write mode).
+    has_read_receipt: bool = False
 
 
 def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
@@ -615,6 +621,7 @@ def resolve_lifecycle_action(
         settings.write_rescue_mode
         and state.action_tool_ids
         and not state.has_write_receipt
+        and not state.has_read_receipt
         and state.turns_in_stage >= settings.stage_nudge_cap
     ):
         _rescue_target = _planned_writer_mode_id(workflow_position)

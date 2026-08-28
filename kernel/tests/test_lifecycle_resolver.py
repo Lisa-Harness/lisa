@@ -49,6 +49,7 @@ class _State:
     # Write-rescue inputs (forced-transition-before-cap).
     action_tool_ids: frozenset[str] = frozenset()
     has_write_receipt: bool = False
+    has_read_receipt: bool = False
 
 
 @dataclass

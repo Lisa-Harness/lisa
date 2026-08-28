@@ -529,29 +529,36 @@ async def test_parent_turn_dense_content_with_readonly_work_accepted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parent_turn_dense_content_action_mode_still_blocked() -> None:
-    """An ``action``-kind mode keeps the strict block (no pack-specific softening).
+async def test_parent_turn_failed_write_attempt_action_mode_still_blocked() -> None:
+    """A failed write attempt keeps the strict block for any mode kind.
 
-    Regression for the 2026-08-14 pack-leak removal: the kernel must not
-    infer "this mode's writes land in the thread" from tool-name prefixes.
-    Only ``mode_kind`` is consulted. An ``action``-kind mode whose model
-    did read-only work and produced dense content without a write receipt
-    is still blocked as ``no_tools`` — action modes' writes land outside
-    the thread and the receipt is the only honest signal.
+    Regression for the 2026-08-14 pack-leak removal, updated by the
+    2026-08-27 read-receipt fix: the kernel must not infer "this mode's
+    writes land in the thread" from tool-name prefixes — only
+    ``mode_kind`` is consulted for softening, and a write ATTEMPT is
+    never softened (the model may claim success on the failed write).
+    An ``action``-kind mode whose model attempted ``write_file`` (the
+    dispatch failed, no receipt) after read-only work is still blocked
+    as ``no_tools`` — reads do not rescue a failed write.
     """
     from kernel.tools.mcp_client import MCPToolResult
 
-    class _ReadOnlyPool:
+    class _FailingWritePool:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
             return []
 
         async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
-            return MCPToolResult(tool_id=tool_id, output_text="read result")
+            # ``write_file`` fails; the read tool is not called.
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text="provider unavailable",
+                is_error=True,
+            )
 
         def tool_spec(self, tool_id: str) -> Any:
-            return SimpleNamespace(read_only_hint=True)
+            return None
 
-        async def __aenter__(self) -> _ReadOnlyPool:
+        async def __aenter__(self) -> _FailingWritePool:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -575,8 +582,8 @@ async def test_parent_turn_dense_content_action_mode_still_blocked() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "lisa-storage.read_file",
-                            "arguments": '{"path": "a.md"}',
+                            "name": "lisa-storage.write_file",
+                            "arguments": '{"path": "a.md", "content": "x"}',
                         },
                     }
                 ],
@@ -589,9 +596,11 @@ async def test_parent_turn_dense_content_action_mode_still_blocked() -> None:
             )
         )
 
-    hooks = TurnHooks(complete=model, mcp_tool_pool=_ReadOnlyPool())
-    # Same shape as the accepted case, but ``mode_kind="action"``: the
-    # strict block applies regardless of content density or read-only work.
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_FailingWritePool())
+    # Same read-tool surface as the accepted case, but the model
+    # ATTEMPTED the write (``write_file``) and the dispatch failed: the
+    # strict block applies regardless of mode kind, content density, or
+    # the read receipts on the ledger.
     catalog = {
         "runner": WorkflowModeConfig(
             mode_id="runner",
@@ -604,8 +613,6 @@ async def test_parent_turn_dense_content_action_mode_still_blocked() -> None:
             allowed_tool_ids=["lisa-storage.read_file"],
         ),
     }
-    # Lower the threshold here too so the test proves the block is driven
-    # by ``mode_kind == "action"``, not by the content being too short.
     from kernel import config
 
     mp = pytest.MonkeyPatch()
@@ -886,11 +893,18 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     ):
         result = await run_turn(mode_id="writer", query="read the file", hooks=hooks)
 
-    # The read-only MCP tool produced no write receipt, and because it is
-    # excluded from the (now empty) write contract, the turn is NOT blocked.
+    # The read-only MCP tool emits a READ receipt (never a write one —
+    # the 2026-08-07 over-count fix), and because it is excluded from the
+    # (now empty) write contract, the turn is NOT blocked.
     assert result.blocked is False
     assert result.block_origin == ""
-    assert not any(r.capability_id == "lisa-storage.read_file" for r in result.effect_receipts)
+    read_receipts = [
+        r
+        for r in result.effect_receipts
+        if r.capability_id == "lisa-storage.read_file"
+    ]
+    assert read_receipts, "read-only MCP tool produced no receipt"
+    assert all(r.effect == "read" for r in read_receipts)
 
 
 # ── Parent-turn pre-cap write-nudge (2026-08-11) ──────────────────────

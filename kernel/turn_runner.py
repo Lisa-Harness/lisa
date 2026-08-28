@@ -670,11 +670,12 @@ class TurnResult:
     fork-child validator to confirm an action mode's child invoked at
     least one of its authored action tools, not just read-only fetches."""
     effect_receipts: list[EffectReceipt] = field(default_factory=list)
-    """``EffectReceipt`` for every write/external_write capability that
-    executed this turn. The child-turn completion contract checks these
-    receipts (not tool-name heuristics) so a child that called a
-    ``mode_allowlist``-admitted write operation is correctly counted.
-    Empty for read-only turns. See ``kernel.models.EffectReceipt``."""
+    """``EffectReceipt`` for every successfully-dispatched capability this
+    turn. Write/external_write receipts satisfy a mode's write contract;
+    read/execute receipts prove real read-only work. The child-turn
+    completion contract checks these receipts (not tool-name heuristics) so
+    a child that called a ``mode_allowlist``-admitted write operation is
+    correctly counted. See ``kernel.models.EffectReceipt``."""
     iteration_count: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -3433,6 +3434,10 @@ async def _run_turn_inner(
                 r.capability_id in _state.action_tool_ids
                 or bare_tool_name(r.capability_id) in _state.action_tool_ids
                 for r in _state.effect_receipts
+                if r.effect in ("write", "external_write")
+            ),
+            has_read_receipt=any(
+                r.effect in ("read", "execute") for r in _state.effect_receipts
             ),
         )
         _active_position_for_resolver: Any = None
@@ -3592,7 +3597,17 @@ async def _run_turn_inner(
             _state.action_tool_ids
             and not _state.write_nudge_fired
             and not (_state.called_tool_names & _state.action_tool_ids)
-            and not any(r.capability_id in _state.action_tool_ids for r in _state.effect_receipts)
+            and not any(
+                r.capability_id in _state.action_tool_ids
+                for r in _state.effect_receipts
+                if r.effect in ("write", "external_write")
+            )
+            # A turn with read/execute receipts did real read-only work;
+            # a read-only turn in a write-capable mode does not need a
+            # "commit or yield" nudge (the 2026-08-27 read-receipt fix —
+            # the cloudservers read query was nudged toward the destructive
+            # write tools it had no reason to call).
+            and not any(r.effect in ("read", "execute") for r in _state.effect_receipts)
             and (
                 _parent_write_deadline
                 or (
@@ -4118,11 +4133,16 @@ async def _run_turn_inner(
                     r.capability_id in _state.action_tool_ids
                     or bare_tool_name(r.capability_id) in _state.action_tool_ids
                     for r in _state.effect_receipts
+                    if r.effect in ("write", "external_write")
+                )
+                _has_read_receipt = any(
+                    r.effect in ("read", "execute") for r in _state.effect_receipts
                 )
                 if (
                     mode_config is not None
                     and _state.action_tool_ids
                     and not _has_write_receipt
+                    and not _has_read_receipt
                     and _state.total_tool_calls == 0
                     and not _state.forced_work_tool
                     and not _budget_forces_final()
@@ -5789,12 +5809,15 @@ async def _run_turn_inner(
                 _state.called_tool_names.add(tool_name)
                 ledger.record(tool_name)
                 # ── Effect receipt capture ──────────────────────────────
-                # Collect an ``EffectReceipt`` for write/external_write
-                # capabilities so the child-turn completion contract checks
-                # observed effects, not tool-name heuristics. A child that
-                # called a ``mode_allowlist``-admitted write operation
-                # (invisible to the old ``authored_allowed_*``-only detector)
-                # is correctly counted as having completed its work.
+                # Collect an ``EffectReceipt`` for every successfully-
+                # dispatched capability. Write/external_write receipts
+                # satisfy a mode's write contract; read/execute receipts
+                # prove real read-only work so the completion contract can
+                # distinguish an honest read-only turn from a hallucinated
+                # success (the 2026-08-27 cloudservers warning: a read-only
+                # "what VMs are running?" query in a write-capable mode
+                # produced a "no verified write" warning because read
+                # capabilities left no ledger entry at all).
                 _dispatched_effect = "read"
                 _dispatched_succeeded = False
                 _dispatched_artifact_id = ""
@@ -5887,46 +5910,70 @@ async def _run_turn_inner(
                                 artifact_id=_dispatched_artifact_id,
                             )
                         )
-                elif _dispatched_effect == "read":
-                    # Opaque MCP write tool: not in the in-process operation
-                    # or tool catalog (so ``_dispatched_effect`` defaulted to
-                    # "read"). MCP failures are returned as
-                    # ``MCPToolResult(is_error=True)`` rather than raised, so
-                    # check success before emitting a receipt — a failed MCP
-                    # write must not satisfy the completion contract (the
-                    # 2026-08-04 audit finding).
+                elif _dispatched_effect in ("read", "execute"):
+                    # A read/execute-effect capability. Two sub-cases share
+                    # this branch:
                     #
-                    # A server-declared ``read_only_hint`` is authoritative:
-                    # a read-only MCP tool must NEVER emit a write receipt
-                    # (the 2026-08-07 over-count fix — an undeclared-effect
-                    # read tool was being counted as a verified write).
+                    # (a) Catalog-known capability (``_dispatched_effect``
+                    #     was set from the operation/tool definition above).
+                    #     Emit a receipt on success so the completion
+                    #     contract can see the turn did real non-write work —
+                    #     the honest read-only signal that stops a write-capable
+                    #     mode from warning/blocking a read-only query.
                     #
-                    # The receipt is captured for ANY successful non-read-only
-                    # MCP write, not just those in the current mode's action
-                    # set. The completion contract is enforced later by the
-                    # intersection of the ledger with the FINAL mode's action
-                    # set (Phase 3), so a write performed in an entry mode
-                    # (e.g. ``default``) before a handoff to a write-contract
-                    # mode (e.g. ``remember``) is still counted — otherwise the
-                    # handoff target's contract would falsely block a turn that
-                    # genuinely wrote (the 2026-08-07 Bug-1 follow-on).
+                    # (b) Opaque MCP tool (``_dispatched_effect`` defaulted to
+                    #     "read" because the name is in neither catalog). MCP
+                    #     failures are returned as
+                    #     ``MCPToolResult(is_error=True)`` rather than raised,
+                    #     so check success before emitting. A server-declared
+                    #     ``read_only_hint`` is authoritative: a read-only MCP
+                    #     tool must NEVER emit a *write* receipt (the
+                    #     2026-08-07 over-count fix — an undeclared-effect read
+                    #     tool was being counted as a verified write); it now
+                    #     emits a *read* receipt instead. An unknown-effect
+                    #     opaque MCP write still emits a ``write`` receipt on
+                    #     success, for ANY tool name — not just those in the
+                    #     current mode's action set. The completion contract is
+                    #     enforced later by the intersection of the ledger with
+                    #     the FINAL mode's action set (Phase 3), so a write
+                    #     performed in an entry mode (e.g. ``default``) before
+                    #     a handoff to a write-contract mode (e.g. ``remember``)
+                    #     is still counted — otherwise the handoff target's
+                    #     contract would falsely block a turn that genuinely
+                    #     wrote (the 2026-08-07 Bug-1 follow-on).
                     _mcp_read_only = False
                     # ``tool_spec`` is a pool accessor; guard with getattr so
                     # test stub pools (and any pool without the accessor)
                     # degrade to "unknown ⇒ potentially side-effecting" rather
                     # than raising. The real MCPToolPool always provides it.
+                    _known_read = tool_name in operation_catalog or tool_name in tool_catalog
                     _mcp_spec_fn = getattr(pool, "tool_spec", None)
-                    if _mcp_spec_fn is not None:
+                    if _mcp_spec_fn is not None and not _known_read:
                         _mcp_spec = _mcp_spec_fn(tool_name)
                         if _mcp_spec is not None:
                             _mcp_read_only = bool(getattr(_mcp_spec, "read_only_hint", False))
-                    if not _mcp_read_only:
-                        _mcp_succeeded = True
-                        # ``mcp_result`` is bound on both MCP dispatch branches
-                        # above; the in-process branches do not set it.
-                        if "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
-                            _mcp_succeeded = not getattr(mcp_result, "is_error", False)
-                        if _mcp_succeeded:
+                    _mcp_succeeded = True
+                    # ``mcp_result`` is bound on both MCP dispatch branches
+                    # above; the in-process branches do not set it.
+                    if "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
+                        _mcp_succeeded = not getattr(mcp_result, "is_error", False)
+                    if _mcp_succeeded:
+                        if _known_read or _mcp_read_only:
+                            # (a)/(b) non-write work: record it. For a known
+                            # capability ``_dispatched_effect`` is guaranteed
+                            # "read"/"execute" by the branch guard; an opaque
+                            # read-only MCP tool is "read".
+                            _state.effect_receipts.append(
+                                EffectReceipt(
+                                    effect=cast(EffectKind, _dispatched_effect),
+                                    capability_id=tool_name,
+                                    artifact_id=_dispatched_artifact_id,
+                                )
+                            )
+                        else:
+                            # (b) opaque MCP write: success on an unknown-
+                            # effect tool is a potential external write; keep
+                            # the conservative ``write`` receipt.
                             _state.effect_receipts.append(
                                 EffectReceipt(
                                     effect="write",
@@ -6343,6 +6390,18 @@ async def _run_turn_inner(
         # slip through unblocked (the 2026-08-07 review finding). This
         # matches the fork-child classifier contract exactly.
         #
+        # Three-way check (the 2026-08-27 read-receipt fix):
+        #   1. A write/external_write receipt matching the action set →
+        #      the contract is satisfied.
+        #   2. Read/execute receipts (real read-only work) with NO write
+        #      attempt → the turn was read-only; the write contract does
+        #      not apply. No block, no warning — a read-only query in a
+        #      write-capable mode is honest work, not a hallucination.
+        #   3. Otherwise (zero receipts, or a write attempted that
+        #      failed) → hallucinated success. A failed write attempt is
+        #      never rescued by reads: the model may claim success on the
+        #      failed write.
+        #
         # Match the receipt against the action set using BOTH the raw
         # capability id and its bare form. ``bare_tool_name`` strips a
         # ``server_id.`` namespace prefix (``lisa-storage.write_file`` →
@@ -6352,10 +6411,26 @@ async def _run_turn_inner(
         # wrongly fail to match the authored ``memory.add``. Including the
         # raw id covers the synthetic case; including the bare form covers
         # the namespaced-MCP case.
-        _receipt_ids = {
-            bare_tool_name(r.capability_id) for r in _state.effect_receipts
-        } | {r.capability_id for r in _state.effect_receipts}
-        _parent_no_tools = not (_receipt_ids & _state.action_tool_ids)
+        _write_receipt_ids = {
+            bare_tool_name(r.capability_id)
+            for r in _state.effect_receipts
+            if r.effect in ("write", "external_write")
+        } | {
+            r.capability_id
+            for r in _state.effect_receipts
+            if r.effect in ("write", "external_write")
+        }
+        _write_landed = bool(_write_receipt_ids & _state.action_tool_ids)
+        _read_work = any(
+            r.effect in ("read", "execute") for r in _state.effect_receipts
+        )
+        _called_bare = {
+            bare_tool_name(n) for n in _state.called_tool_names
+        } | set(_state.called_tool_names)
+        _write_attempted = bool(_called_bare & _state.action_tool_ids)
+        _parent_no_tools = not (
+            _write_landed or (_read_work and not _write_attempted)
+        )
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
@@ -6384,14 +6459,13 @@ async def _run_turn_inner(
         # ── Chat-mode content softening (work-gated) ────────────────────
         # A mode with a side-effecting completion contract (``action_tool_ids``
         # non-empty) that ends the turn with no write receipt is normally
-        # blocked as ``no_tools`` (hallucinated success). One honest case
-        # exists: the model did real read-only work (search, read, fetch)
-        # and produced a substantive answer in the response text, but never
-        # landed the write. For ``chat``-kind modes the response IS a
-        # legitimate artifact; the write receipt is not the only completion
-        # signal.
+        # blocked as ``no_tools`` (hallucinated success). Honest cases the
+        # three-way gate above already accepted: a landed write receipt, and
+        # pure read-only work (read/execute receipts, no write attempt —
+        # the 2026-08-27 read-receipt fix, which removed the warning
+        # footnote for read-only queries in write-capable modes).
         #
-        # The softening is gated on TWO conditions so it cannot mask a
+        # The softening here is gated on TWO conditions so it cannot mask a
         # hallucination:
         #   1. ``mode_kind == "chat"`` — the mode's output is conversational
         #      content, not a durable side effect on external state. Action
@@ -6412,7 +6486,9 @@ async def _run_turn_inner(
         has_dense_content = (
             len(content.strip()) >= _kernel_settings.chat_mode_dense_content_min_chars
         )
-        _called_bare = {bare_tool_name(n) for n in _state.called_tool_names}
+        _called_bare = {
+            bare_tool_name(n) for n in _state.called_tool_names
+        } | set(_state.called_tool_names)
         _write_attempted = bool(_called_bare & _state.action_tool_ids)
         if _is_chat_mode and has_dense_content and _did_work:
             _log.info(

@@ -189,12 +189,15 @@ def classify_child_turn(
 
     # A mode with a completion contract must produce an ``EffectReceipt``
     # proving a side-effecting action tool actually landed its write.
-    # Receipts are collected at dispatch time only on *successful* writes
-    # — a failed write (``ToolResult.error`` non-empty or MCP ``is_error``)
-    # emits no receipt, so a read-only or failed call never satisfies the
-    # contract. Opaque MCP write tools (not in the in-process catalog) also
-    # emit a receipt on success via the ``action_tool_ids`` membership check
-    # at dispatch time, so the receipt is the single source of truth.
+    # Receipts are collected at dispatch time on *successful* dispatches —
+    # a failed write (``ToolResult.error`` non-empty or MCP ``is_error``)
+    # emits no receipt, so a failed call never satisfies the contract.
+    # Read/execute receipts prove real read-only work (the 2026-08-27
+    # read-receipt fix): a child that only read did honest non-write work,
+    # and a read-only turn never trips the write contract.
+    # Opaque MCP write tools (not in the in-process catalog) also emit a
+    # receipt on success via the ``action_tool_ids`` membership check at
+    # dispatch time, so the receipt is the single source of truth.
     #
     # A bare ``called_tool_names`` match is NOT sufficient: it records the
     # attempted name before success is known, so a failed MCP write would
@@ -211,10 +214,16 @@ def classify_child_turn(
     # the authored ``memory.add``. Including the raw id covers the
     # synthetic case; including the bare form covers the namespaced-MCP
     # case. Mirrors the parent-turn receipt check in ``turn_runner.py``.
-    receipt_ids = {
-        bare_tool_name(r.capability_id) for r in child_result.effect_receipts
-    } | {r.capability_id for r in child_result.effect_receipts}
-    has_write_effect = bool(receipt_ids & action_tool_ids)
+    write_receipt_ids = {
+        bare_tool_name(r.capability_id)
+        for r in child_result.effect_receipts
+        if r.effect in ("write", "external_write")
+    } | {
+        r.capability_id
+        for r in child_result.effect_receipts
+        if r.effect in ("write", "external_write")
+    }
+    has_write_effect = bool(write_receipt_ids & action_tool_ids)
 
     if has_write_effect:
         _clog.debug(
@@ -231,8 +240,37 @@ def classify_child_turn(
             **_usage_kwargs,
         )
 
+    # No write-effect receipt. Check for honest read-only work before
+    # classifying: a child with read/execute receipts did real non-write
+    # work and never attempted a write — the write contract does not apply
+    # to a read-only turn. Only a write ATTEMPT (name dispatched, receipt
+    # absent because the dispatch failed) keeps the strict path: the model
+    # may claim success on the failed write.
+    read_work = any(
+        r.effect in ("read", "execute") for r in child_result.effect_receipts
+    )
+    called_bare = {
+        bare_tool_name(n) for n in child_result.called_tool_names
+    } | set(child_result.called_tool_names)
+    write_attempted = bool(called_bare & action_tool_ids)
+    if read_work and not write_attempted:
+        _clog.debug(
+            "child turn mode=%s complete (read-only work verified via "
+            "read/execute receipts; write contract not applicable)",
+            mode_id,
+        )
+        return ChildTurnOutcome(
+            status="complete",
+            output_text=child_result.response_text,
+            duration_ms=elapsed_ms,
+            tool_call_count=child_result.tool_call_count,
+            called_tool_names=tuple(sorted(child_result.called_tool_names)),
+            effect_receipts=tuple(child_result.effect_receipts),
+            **_usage_kwargs,
+        )
+
     # No write-effect receipt and the mode requires one. Distinguish
-    # zero-call hallucination from read-only gather for honest messaging.
+    # zero-call hallucination from failed-work for honest messaging.
     has_dense_content = len(child_result.response_text.strip()) > 150
     if has_dense_content:
         _clog.info(

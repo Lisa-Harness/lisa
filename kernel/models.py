@@ -1742,13 +1742,17 @@ class DelegationResult(BaseModel):
 
 
 class EffectReceipt(BaseModel):
-    """Evidence that one side-effecting capability actually executed.
+    """Evidence that one capability actually executed at dispatch time.
 
-    A write/external_write operation or tool produces a receipt at dispatch
-    time. Read capabilities produce none. The child-turn completion contract
-    checks receipts, not tool-name heuristics or response prose, so a child
-    that called a write tool admitted via its ``mode_allowlist`` (invisible
-    to the old ``authored_allowed_*``-only detector) is correctly counted.
+    Every successfully-dispatched capability produces a receipt carrying its
+    declared ``effect`` (``read``/``execute`` included — read receipts were
+    previously dropped, leaving the completion contract unable to tell an
+    honest read-only turn from a hallucinated success). Write/external_write
+    receipts satisfy a mode's write contract; read/execute receipts prove
+    real read-only work was done. The child-turn completion contract checks
+    receipts, not tool-name heuristics or response prose, so a child that
+    called a write tool admitted via its ``mode_allowlist`` (invisible to the
+    old ``authored_allowed_*``-only detector) is correctly counted.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)

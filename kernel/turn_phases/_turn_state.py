@@ -284,12 +284,15 @@ class _TurnState:
     hallucinated its success (the 2026-07-27 follow-on incident)."""
     effect_receipts: list[Any] = field(default_factory=list)
     """``EffectReceipt`` instances collected at dispatch time for every
-    write/external_write capability that executed this turn. The child-turn
-    completion contract checks these receipts (not tool-name heuristics)
-    so a child that called a ``mode_allowlist``-admitted write operation
-    invisible to the old ``authored_allowed_*``-only detector is correctly
-    counted as having completed. Empty for read-only turns. See
-    ``kernel.models.EffectReceipt``."""
+    successfully-dispatched capability. Write/external_write receipts prove
+    a mode's write contract was satisfied; read/execute receipts prove real
+    read-only work — the completion contract distinguishes an honest
+    read-only turn from a hallucinated success by filtering the ledger on
+    ``effect`` (not on emptiness). The child-turn completion contract checks
+    these receipts (not tool-name heuristics) so a child that called a
+    ``mode_allowlist``-admitted write operation invisible to the old
+    ``authored_allowed_*``-only detector is correctly counted as having
+    completed. See ``kernel.models.EffectReceipt``."""
     forced_work_tool: str = ""
     """A single action-tool id the kernel will synthesize when the model
     returns an empty completion on a plan-self-handoff iteration (the
