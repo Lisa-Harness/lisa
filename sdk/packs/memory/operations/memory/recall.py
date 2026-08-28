@@ -155,7 +155,14 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         lines.append("")
         lines.append("Relevant memories:")
         for evidence in recall.evidence[:3]:
-            lines.append(f"- {evidence.created_at[:10]} — {evidence.content}")
+            # Render the thread-turn pointer when present so the model can
+            # verify the claim against ground truth via thread_read_range.
+            turn_part = (
+                f" (learned around turn {evidence.source_turn})"
+                if evidence.source_turn is not None
+                else ""
+            )
+            lines.append(f"- {evidence.created_at[:10]}{turn_part} — {evidence.content}")
 
     return OperationResult(
         output_text="\n".join(lines),

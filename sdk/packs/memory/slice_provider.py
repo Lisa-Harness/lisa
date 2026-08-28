@@ -1,28 +1,33 @@
-"""Episodic-pressure-triggered, slice-driven memory consolidation slice.
+"""Episodic-pressure-triggered, slice-driven memory consolidation + thread mining.
 
 The host wires the returned slice provider into ``TurnHooks.post_turn_slice``
 (or ``pre_turn_slice`` / ``explicit_slice`` per
 ``MemoryConsolidationTuning.trigger``) via the
 ``lisa.extensions.slice_providers`` entry-point group. Each turn, after the
-user has seen the answer, the provider:
+user has seen the answer, the provider performs two jobs:
 
-1. Counts active episodic records for the scoped user via
-   ``execute_tool("memory.list", {memory_kind="episodic", limit=1})`` —
-   the list call returns recent records; for a precise count the slice
-   uses a lightweight ``count_memories``-style signal when available, else
-   falls back to the list length.
-2. Computes episodic pressure: ``count / max_records``.
-3. Applies the decision matrix from ``MemoryConsolidationTuning``:
+**Job 1 — Thread mining (new sealed segments).** The slice checks the
+thread store's segment index for sealed segments not yet mined (tracked by
+a pack-local ``mine.marker`` sidecar). Each newly sealed segment is
+distilled via the ``mine_thread_segment`` operation into durable semantic
+records carrying ``thread_turn_lo/hi`` provenance. Mining is idempotent
+per segment and bounded (``_MAX_SEGMENTS_PER_SLICE`` per slice).
+
+**Job 2 — Episodic consolidation (pressure relief).** When episodic
+pressure (active episodic count / ``max_records``) crosses a threshold:
+
+1. Counts active episodic records via ``memory.count`` (fallback:
+   ``memory.list`` bounded by ``max_records``).
+2. Applies the decision matrix from ``MemoryConsolidationTuning``:
    - below ``pressure_threshold`` → no-op (most turns)
    - between thresholds → fire only when the slice's pressure-derived
      ``budget_ms`` is at least ``_MIN_SLICE_BUDGET_MS``
    - at or above ``hard_threshold`` → fire regardless of slice budget
-4. Honors ``min_interval_turns`` unless the hard threshold overrides.
-5. Loads a batch of episodic records via ``execute_tool("memory.list")``,
-   fires the configured ``consolidate_operation`` (default:
-   ``consolidate_semantic``) via ``turn_hooks.execute_operation``, which
-   distills the batch into one semantic record and retires the sources.
-6. Updates a pack-local sidecar (``last_consolidation.json`` beside the
+3. Honors ``min_interval_turns`` unless the hard threshold overrides.
+4. Loads a batch of episodic records, fires ``consolidate_semantic``
+   via ``turn_hooks.execute_operation``, which distills the batch into one
+   semantic record and retires the sources.
+5. Updates a pack-local sidecar (``last_consolidation.json`` beside the
    memory DB) holding the turn counter and timestamp of the last fire.
 
 All failures are caught and logged; they never break the turn. Every
@@ -57,6 +62,19 @@ _MIN_SLICE_BUDGET_MS = 150
 #: Sidecar filename (beside the memory DB) holding the last-fire counter
 #: and timestamp, mirroring the slice-provider sidecar pattern.
 _LAST_CONSOLIDATION_FILE_NAME = "last_consolidation.json"
+
+#: Sidecar filename holding the last-mined thread segment id. Mining is
+#: idempotent per segment: a sealed segment is mined exactly once.
+_LAST_MINED_SEGMENT_FILE_NAME = "mine.marker"
+
+#: Default location of the thread store base path, relative to the memory
+#: data dir. The thread store lives at ``<data_dir>/threads/<user_slug>``;
+#: its segment index at ``<base>.index.jsonl``.
+_THREADS_SUBDIR = "threads"
+
+#: Max sealed segments mined per slice (budget-bounded, mirrors the old
+#: digest batching).
+_MAX_SEGMENTS_PER_SLICE = 2
 
 
 @dataclass(slots=True)
@@ -109,6 +127,7 @@ class MemoryConsolidationSlice:
     ) -> None:
         self._config = config
         self._hooks = turn_hooks
+        self._mine_enabled = True  # default on; overridden by the factory
         self._state = _LastConsolidationState()
         self._load_state()
 
@@ -275,22 +294,200 @@ class MemoryConsolidationSlice:
             return False
         return (time.monotonic() - started) * 1000.0 >= float(policy.budget_ms)
 
+    # ── Thread mining (sealed segments) ──────────────────────────────
+
+    def _mine_marker_path(self) -> Path | None:
+        """Path of the ``mine.marker`` sidecar, or ``None`` when unlocatable."""
+        data_dir = self._config.memory_data_dir
+        if data_dir is None:
+            return None
+        return Path(data_dir) / _LAST_MINED_SEGMENT_FILE_NAME
+
+    def _thread_base(self) -> Path | None:
+        """Thread store base path derived from the memory data dir + user slug."""
+        data_dir = self._config.memory_data_dir
+        if data_dir is None or not self._config.user_slug:
+            return None
+        return Path(data_dir) / _THREADS_SUBDIR / self._config.user_slug
+
+    def _load_last_mined_seg_id(self) -> str:
+        path = self._mine_marker_path()
+        if path is None or not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("memory_consolidation: failed to read mine.marker: %s", exc)
+            return ""
+
+    def _persist_mine_marker(self, seg_id: str) -> None:
+        path = self._mine_marker_path()
+        if path is None or not seg_id:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(seg_id, encoding="utf-8")
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("memory_consolidation: failed to persist mine.marker: %s", exc)
+
+    def _sealed_segments_to_mine(self) -> list[tuple[str, int, int]]:
+        """List unmined sealed segments as ``(seg_id, turn_lo, turn_hi)``.
+
+        Reads the thread store's sparse index directly (one small file) —
+        no decompression. Returns segments after the last-mined seg_id,
+        bounded by ``_MAX_SEGMENTS_PER_SLICE``.
+        """
+        base = self._thread_base()
+        if base is None:
+            return []
+        index_path = Path(f"{base}.index.jsonl")
+        if not index_path.exists():
+            return []
+        last_mined = self._load_last_mined_seg_id()
+        try:
+            raw_lines = index_path.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("memory_consolidation: failed to read segment index: %s", exc)
+            return []
+        records: list[tuple[str, int, int]] = []
+        seen_last = not last_mined  # no marker → mine from the start
+        for raw_line in raw_lines:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            seg_id = str(decoded.get("seg_id", ""))
+            if not seg_id:
+                continue
+            if not seen_last:
+                if seg_id == last_mined:
+                    seen_last = True
+                continue
+            records.append(
+                (
+                    seg_id,
+                    int(decoded.get("turn_lo", 0)),
+                    int(decoded.get("turn_hi", 0)),
+                )
+            )
+        return records[:_MAX_SEGMENTS_PER_SLICE]
+
+    def _load_segment_turns(
+        self, base: Path, seg_id: str, turn_lo: int, turn_hi: int
+    ) -> list[dict[str, Any]]:
+        """Load one sealed segment's turns by its global turn range.
+
+        Uses the thread store's ``load_range`` with the segment's exact
+        turn span from the index — only that segment is decompressed.
+        """
+        from host.thread import load_thread_range  # noqa: PLC0415  lazy: breaks cycle
+
+        try:
+            return load_thread_range(
+                thread_path=base,
+                start_turn=turn_lo,
+                end_turn=turn_hi,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "memory_consolidation: failed to load segment %s: %s", seg_id, exc
+            )
+            return []
+
+    async def _mine_new_segments(
+        self, policy: SlicePolicy, started: float
+    ) -> tuple[int, str, str]:
+        """Mine newly sealed thread segments into semantic memories.
+
+        Returns ``(work_items, last_item, note)``.
+        """
+        exec_op = getattr(self._hooks, "execute_operation", None)
+        if not callable(exec_op):
+            return 0, "", ""
+        segments = self._sealed_segments_to_mine()
+        if not segments:
+            return 0, "", ""
+        base = self._thread_base()
+        if base is None:
+            return 0, "", ""
+
+        work_items = 0
+        last_item = ""
+        for seg_id, turn_lo, turn_hi in segments:
+            if self._slice_budget_expired(policy, started):
+                break
+            turns = self._load_segment_turns(base, seg_id, turn_lo, turn_hi)
+            if not turns:
+                # Segment unreadable — advance the marker so it is not retried.
+                self._persist_mine_marker(seg_id)
+                continue
+            params: dict[str, Any] = {
+                "turns": turns,
+                "user_slug": self._config.user_slug,
+                "workspace_id": self._config.workspace_id,
+                "memory_scope": self._config.memory_scope,
+                "surface_id": self._config.surface_id,
+            }
+            try:
+                result = await exec_op("mine_thread_segment", params)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("memory_consolidation: mine_thread_segment failed: %s", exc)
+                continue
+            extra = getattr(result, "extra", {}) or {}
+            stored_ids = extra.get("memory_ids") or []
+            self._persist_mine_marker(seg_id)
+            work_items += 1
+            last_item = f"mined:{seg_id}({turn_lo}-{turn_hi})->{len(stored_ids)}"
+        return work_items, last_item, (
+            f"mined {work_items} sealed segment(s)" if work_items else ""
+        )
+
     # ── Slice entrypoint ─────────────────────────────────────────────
 
     async def slice(self, ctx: Any, policy: SlicePolicy) -> SliceOutcome:
-        """Fire consolidation if episodic pressure warrants it.
+        """Mine new sealed segments, then fire consolidation if pressure warrants.
 
         ``ctx`` is unused (matches the ``StateProvider.slice`` contract);
-        all state is read from ``self._hooks`` and the sidecar.
+        all state is read from ``self._hooks`` and the sidecars.
         """
         del ctx  # explicit: the slice is stateless w.r.t. ctx
         started = time.monotonic()
+        notes: list[str] = []
+        total_work = 0
+        last_items: list[str] = []
 
+        # ── Job 1: mine newly sealed thread segments ────────────────
+        if self._mine_enabled:
+            try:
+                mined, mined_last, mine_note = await self._mine_new_segments(
+                    policy, started
+                )
+                if mined > 0:
+                    total_work += mined
+                    if mined_last:
+                        last_items.append(mined_last)
+                    if mine_note:
+                        notes.append(mine_note)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("memory_consolidation: mining pass failed: %s", exc)
+
+        # ── Job 2: episodic-pressure consolidation ──────────────────
         episodic_count = await self._episodic_count()
         if episodic_count is None:
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            if total_work > 0:
+                return SliceOutcome(
+                    work_items_completed=total_work,
+                    elapsed_ms=elapsed_ms,
+                    last_item=last_items[-1] if last_items else "",
+                    notes=tuple(notes) or ("mined_only_no_episodic_count",),
+                )
             return SliceOutcome(
                 work_items_completed=0,
-                elapsed_ms=0.0,
+                elapsed_ms=elapsed_ms,
                 last_item="",
                 notes=("no_episodic_count_seam",),
             )
@@ -302,9 +499,17 @@ class MemoryConsolidationSlice:
             slice_budget_ms=int(getattr(policy, "budget_ms", 0) or 0),
         )
         if not fire:
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            if total_work > 0:
+                return SliceOutcome(
+                    work_items_completed=total_work,
+                    elapsed_ms=elapsed_ms,
+                    last_item=last_items[-1] if last_items else "",
+                    notes=(*notes, reason) if notes else (reason,),
+                )
             return SliceOutcome(
                 work_items_completed=0,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
+                elapsed_ms=elapsed_ms,
                 last_item="",
                 notes=(reason,),
             )
@@ -312,27 +517,30 @@ class MemoryConsolidationSlice:
         # Fire: load the episodic batch, invoke the consolidation operation.
         batch = await self._load_episodic_batch()
         if not batch:
+            elapsed_ms = (time.monotonic() - started) * 1000.0
             return SliceOutcome(
-                work_items_completed=0,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item="",
-                notes=(f"{reason};no_episodic_batch",),
+                work_items_completed=total_work,
+                elapsed_ms=elapsed_ms,
+                last_item=last_items[-1] if last_items else "",
+                notes=(*notes, f"{reason};no_episodic_batch"),
             )
         if self._slice_budget_expired(policy, started):
+            elapsed_ms = (time.monotonic() - started) * 1000.0
             return SliceOutcome(
-                work_items_completed=0,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item="",
-                notes=(f"{reason};budget_expired_before_operation",),
+                work_items_completed=total_work,
+                elapsed_ms=elapsed_ms,
+                last_item=last_items[-1] if last_items else "",
+                notes=(*notes, f"{reason};budget_expired_before_operation"),
             )
 
         exec_op = getattr(self._hooks, "execute_operation", None)
         if not callable(exec_op):
+            elapsed_ms = (time.monotonic() - started) * 1000.0
             return SliceOutcome(
-                work_items_completed=0,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item="",
-                notes=(f"{reason};no_execute_operation",),
+                work_items_completed=total_work,
+                elapsed_ms=elapsed_ms,
+                last_item=last_items[-1] if last_items else "",
+                notes=(*notes, f"{reason};no_execute_operation"),
             )
 
         op_id = self._config.consolidate_operation
@@ -348,10 +556,10 @@ class MemoryConsolidationSlice:
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("memory_consolidation: %s failed: %s", op_id, exc)
             return SliceOutcome(
-                work_items_completed=0,
+                work_items_completed=total_work,
                 elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item="",
-                notes=(f"{reason};operation_error:{type(exc).__name__}",),
+                last_item=last_items[-1] if last_items else "",
+                notes=(*notes, f"{reason};operation_error:{type(exc).__name__}"),
             )
 
         extra = getattr(result, "extra", {}) or {}
@@ -363,10 +571,14 @@ class MemoryConsolidationSlice:
         self._persist_state()
 
         return SliceOutcome(
-            work_items_completed=1 if consolidated else 0,
+            work_items_completed=total_work + (1 if consolidated else 0),
             elapsed_ms=(time.monotonic() - started) * 1000.0,
-            last_item=f"consolidated:{len(batch)}->1,retired:{retired}",
-            notes=(reason,),
+            last_item=(
+                f"consolidated:{len(batch)}->1,retired:{retired}"
+                if not last_items
+                else last_items[-1]
+            ),
+            notes=(*notes, reason),
         )
 
 
@@ -410,6 +622,8 @@ def get_slice_provider_factory() -> SliceProviderFactory:
             preferred_model_id=str(tuning.preferred_model_id),
             consolidate_operation=str(tuning.consolidate_operation),
         )
-        return MemoryConsolidationSlice(config=config, turn_hooks=turn_hooks)
+        slc = MemoryConsolidationSlice(config=config, turn_hooks=turn_hooks)
+        slc._mine_enabled = bool(getattr(tuning, "mine_on_segment_seal", True))
+        return slc
 
     return factory

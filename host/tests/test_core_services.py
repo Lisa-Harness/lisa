@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +44,6 @@ from host.config_resolver import resolve_log_level, resolve_stream_enabled, reso
 from host.handle_message import handle_message
 from host.model_runtime import StubModelDefinition, resolve_model
 from host.runtime import HostRuntime
-from host.state_provider import FileBackedStateProvider
 from host.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 
 # ``host.__init__`` re-exports ``handle_message`` as the *function*,
@@ -509,7 +507,6 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "",
     )
 
@@ -702,62 +699,6 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
         call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "")
         == "research"
     )
-
-
-def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
-    """Thread compaction bounds digest growth and prepends a lossy summary.
-
-    The new segmented store digests sealed segments (not a flat file).
-    Pre-seal a segment by appending entries with a small segment_turns,
-    then run the slice and verify the digest is generated from the sealed
-    segment.
-    """
-
-    from host.thread import _sealed_segment_path, _segment_paths
-
-    thread_path = tmp_path / "session"
-    paths = _segment_paths(thread_path)
-    digest_path = paths.digest
-
-    # Append 4 entries with segment_turns=3 to force one seal (3 entries)
-    # and leave 1 in the active segment.
-    from host.thread import append_thread_entry
-
-    for i in range(4):
-        append_thread_entry(
-            thread_path=thread_path,
-            user_slug="session",
-            mode_id="default",
-            query=f"q{i}",
-            response_text=f"response {i}",
-            segment_turns=3,
-        )
-
-    # Seed the digest with 6 lines.
-    digest_path.parent.mkdir(parents=True, exist_ok=True)
-    digest_path.write_text(
-        "\n".join(f"- seed {i}" for i in range(6)),
-        encoding="utf-8",
-    )
-
-    provider = FileBackedStateProvider(
-        thread_path=thread_path,
-        max_thread_entries=3,
-        digest_max_lines=5,
-        digest_summary_max_chars=120,
-    )
-
-    class _Policy:
-        budget_ms = 1000
-
-    compacted, last_item, note = provider._compact_thread(_Policy(), time.monotonic())
-    assert compacted > 0
-    assert last_item.startswith("thread:")
-    assert "digested" in note
-
-    digest_lines = digest_path.read_text(encoding="utf-8").splitlines()
-    assert len([line for line in digest_lines if line.strip()]) <= 5
-    assert digest_lines[0].startswith("- [lossy_summary]")
 
 
 # ── Token accounting ──────────────────────────────────────────────────

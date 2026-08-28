@@ -392,7 +392,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "- /settings — effective profile/timezone/debug/log-level runtime settings.",
             "- /tokens — session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self — local diagnostics.",
-            "- /consolidate (or /slice) — explicit thread/memory compaction slice.",
+            "- /consolidate (or /slice) — explicit memory-consolidation slice.",
             "- /intake — one intake tick (collect signals, process, write state) in-process.",
             "- /quit — exit the interactive console loop.",
         ]
@@ -590,12 +590,13 @@ def _host_shortcut_help_text(topic: str) -> str:
         ),
         "consolidate": (
             "## /consolidate (or /slice)\n\n"
-            "Run the explicit thread/memory compaction slice in-process and persist "
-            "the result."
+            "Run the explicit slice in-process: the memory pack's consolidation "
+            "slice distills episodic records and mines sealed thread segments "
+            "into durable memory. History is never compacted — the thread is lossless."
         ),
         "slice": (
             "## /slice (or /consolidate)\n\n"
-            "Alias for /consolidate: run the explicit thread/memory compaction slice."
+            "Alias for /consolidate: run the explicit memory-consolidation slice."
         ),
         "intake": (
             "## /intake\n\n"

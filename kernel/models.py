@@ -1053,6 +1053,12 @@ class MemoryRecallEvidence(BaseModel):
     semantic_score: float = 0.0
     lexical_score: float = 0.0
     recency_score: float = 0.0
+    # Global thread-turn index the learning was distilled from (memory →
+    # thread provenance). ``None`` for records minted before cross-linking
+    # or from surfaces without a thread store. Lets recall output render a
+    # "learned around turn N" pointer the model can verify via
+    # ``thread_read_range``.
+    source_turn: int | None = None
     match_reasons: list[str] = Field(default_factory=list)
 
 
@@ -1940,7 +1946,6 @@ class ThreadState(BaseModel):
         if len(self.recent_handoffs) > _MAX_RECENT_HANDOFFS:
             self.recent_handoffs = self.recent_handoffs[-_MAX_RECENT_HANDOFFS:]
         return self
-
 
 # ---------------------------------------------------------------------------
 # Reflection / thinking memory

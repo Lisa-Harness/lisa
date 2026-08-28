@@ -37,7 +37,7 @@ from host.context_assembly import (
 from host.introspect import gather_introspection
 from host.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from host.state_provider import FileBackedStateProvider, build_unified_state
-from host.thread import build_recent_thread_excerpt, load_thread_digest
+from host.thread import build_recent_thread_excerpt
 from sdk.context.extension_item_builder import (
     EntryPointExtensionItemBuilder,
 )
@@ -164,16 +164,12 @@ def build_turn_hooks(
     slice_config = runtime.config.slice_config
     slice_tuning = SliceTuning.from_mapping(slice_config.to_tuning_dict())
 
-    history_plan = runtime.session_plan.manifest.context.history
-    digest_max_lines = history_plan.digest_max_lines
-    digest_summary_max_chars = history_plan.digest_summary_max_chars
-
     # ── State provider (FileBackedStateProvider) ──────────────────
+    # Post-realignment this provider is a no-op slot: history is never
+    # compacted (the thread is lossless; sealing is storage management) and
+    # distillation is owned by the memory pack's consolidation slice.
     file_state_provider = FileBackedStateProvider(
         thread_path=runtime.thread_path,
-        max_thread_entries=runtime.config.thread_max_entries,
-        digest_max_lines=digest_max_lines,
-        digest_summary_max_chars=digest_summary_max_chars,
     )
 
     # ── Model resolution ──────────────────────────────────────────
@@ -394,9 +390,6 @@ def build_turn_hooks(
             # a budgeted dynamic-user-context section.
             return ""
 
-        def _thread_digest_loader() -> str:
-            return load_thread_digest(thread_path=runtime.thread_path)
-
         def _recent_thread_excerpt_builder(limit: int) -> str:
             return build_recent_thread_excerpt(
                 thread_path=runtime.thread_path,
@@ -434,7 +427,6 @@ def build_turn_hooks(
             timezone=runtime.config.timezone,
             state=state,
             session_context_loader=_session_context_loader,
-            thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
             thread_manifest_builder=_thread_manifest_builder,
             capability_manifest=capability_manifest,
@@ -505,6 +497,16 @@ def build_turn_hooks(
         should_auto_capture as _should_auto_capture,
     )
 
+    # ── Auto-capture provider gateways ────────────────────────────
+    # Resolve the provider gateways ONCE at hook-build time (same place the
+    # ContextSeams below resolves them) and reuse the instance in the
+    # post-turn auto-capture path. Re-discovering per capture is wasteful
+    # and — worse — can return a different (possibly empty) result after
+    # the turn ends, producing the "no provider gateway wired" distillation
+    # failure observed 2026-08-25. The turn's own gateways are the correct
+    # completion path for a learning distilled from that turn.
+    _auto_capture_provider_gateways = _discover_active_provider_gateways()
+
     async def _on_turn_complete(
         mode_id: str,
         query: str,
@@ -558,7 +560,7 @@ def build_turn_hooks(
                         query=query,
                         response=response_text,
                         host=build_callable_host(
-                            gateway_provider_fn=_discover_active_provider_gateways,
+                            gateway_provider_fn=_auto_capture_provider_gateways,
                             resolve_model_fn=_resolve_model,
                             read_authored_text_fn=getattr(
                                 content_registry() if content_registry else None,
@@ -574,7 +576,24 @@ def build_turn_hooks(
                             "memory_tier": memory_tier,
                         },
                     )
-                    await _execute_operation("synthesize_and_store_learning", capture_ctx)
+                    # Stamp the global turn index into the capture context so
+                    # the distilled memory record carries a thread-turn
+                    # provenance pointer (memory → thread linkage).
+                    raw_turn_index = ctx_dict.get("turn_index")
+                    if isinstance(raw_turn_index, int):
+                        capture_ctx.extra["thread_turn"] = raw_turn_index
+                    capture_result = await _execute_operation(
+                        "synthesize_and_store_learning", capture_ctx
+                    )
+                    # Thread → memory linkage: record the minted memory id(s)
+                    # on the turn context so ``append_thread_entry`` stamps
+                    # them into the thread entry. The operation reports the
+                    # distilled text; the storage id arrives via
+                    # ``memory_ids`` when the memory backend echoes it.
+                    minted = getattr(capture_result, "extra", {}).get("memory_ids") or []
+                    if minted:
+                        existing_ids = ctx_dict.get("memory_ids") or []
+                        ctx_dict["memory_ids"] = [*existing_ids, *minted]
                     logger.debug(
                         "auto-capture stored learning salience=%.2f tier=%s mode=%s",
                         trigger_salience,

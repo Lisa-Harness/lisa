@@ -26,12 +26,10 @@ available; the cost is one function call returning a frozen dataclass.
 Hosts that need real work items should ship their own provider. The
 reference implementations are:
 
-- ``host/state_provider.py`` → :class:`FileBackedStateProvider`: file-only
-  thread-JSONL digest compaction inside the slice budget.
-- ``sdk/packs/compaction/slice_provider.py`` → utilization-aware
-  context-window compaction slice provider.
-- ``sdk/packs/memory/slice_provider.py`` → memory-store eviction and
-  reindex slice provider.
+- ``host/state_provider.py`` → :class:`FileBackedStateProvider`: no-op
+  state-provider slot (history is never compacted; the thread is lossless).
+- ``sdk/packs/memory/slice_provider.py`` → memory-consolidation slice
+  provider (episodic-pressure + sealed-segment mining).
 """
 
 from __future__ import annotations

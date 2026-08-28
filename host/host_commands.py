@@ -4,8 +4,7 @@ This module provides a dynamic registry of slash-command prefixes that are
 host control directives (operator UI gestures), not conversational content.
 Entries whose ``query`` field matches a registered prefix are stripped from
 the conversation transcript fed back to the model (see
-:func:`host.thread.build_recent_thread_excerpt` and
-:func:`host.state_provider.FileBackedStateProvider._compact_thread`).
+:func:`host.thread.build_recent_thread_excerpt`).
 
 The model already observes the *effect* of these commands via the live
 capability manifest / pack lock injected at context-assembly time;

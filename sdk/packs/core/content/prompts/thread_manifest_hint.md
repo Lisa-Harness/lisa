@@ -20,3 +20,13 @@ Pull prior turns when:
 
 - Do not pull old turns just to summarize what went wrong before — answer the current query from the current row and live tool results.
 - Do not re-raise, re-narrate, or continue resolved issues from earlier rows.
+
+## Cross-checking memory
+
+Memories surfaced by `memory.search` are distilled claims, not observations.
+They summarize what past turns proved, but they can be stale, imprecise, or
+superseded. When a recalled memory conflicts with live tool output or with a
+thread turn you can read via `thread_read_range`, **the thread and the tool
+win** — cite the turn you verified against. Use the memory's `source_turn`
+pointer (rendered as "learned around turn N") to pull the originating turn
+before acting on a recalled claim that matters.

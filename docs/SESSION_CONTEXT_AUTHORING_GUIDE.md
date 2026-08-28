@@ -132,9 +132,6 @@ context:
     output_reserve_tokens: 1024
     safety_margin_tokens: 512
     max_materialized_candidates: 32
-  history:
-    digest_max_lines: 200
-    digest_summary_max_chars: 240
 ---
 Primary goals this week:
 - Ship migration with rollback checkpoints.
@@ -375,12 +372,12 @@ Model-aware budget limits applied after fixed per-turn reservations.
 
 #### `context.history`
 
-Conversation history compaction constraints. This replaces the legacy `replay.*` controls.
+Conversation history settings for context assembly.
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `digest_max_lines` | `int >= 1` | `200` | Max lines retained in the digest during compaction. |
-| `digest_summary_max_chars` | `int >= 60` | `240` | Max chars for the lossy summary line during digest rollover. |
+The lossy digest knobs (`include_digest`, `digest_max_lines`,
+`digest_summary_max_chars`) were removed in the memory &times; thread
+realignment: the thread manifest (always emitted when a thread store
+exists) replaced the digest, and history is never compacted.
 
 #### `context.memory`
 

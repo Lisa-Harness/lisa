@@ -73,6 +73,10 @@ def build_memory_recall_answer(
     evidence: list[MemoryRecallEvidence] = []
     for score, record in top:
         reasons = ["lexical overlap"] if score > (record.salience * 0.2) else ["salience match"]
+        # Memory → thread provenance: surface the turn index the learning
+        # was distilled from (when the record carries one) so recall output
+        # renders a verifiable pointer instead of an unanchored claim.
+        source_turn = record.content_json.get("thread_turn")
         evidence.append(
             MemoryRecallEvidence(
                 memory_id=record.id,
@@ -87,6 +91,7 @@ def build_memory_recall_answer(
                 combined_score=round(score, 3),
                 lexical_score=round(score, 3),
                 recency_score=1.0,
+                source_turn=source_turn if isinstance(source_turn, int) else None,
                 match_reasons=reasons,
             )
         )
@@ -99,6 +104,12 @@ def build_memory_recall_answer(
             found=False,
             answer=f"No memory matches found for: {query}",
         )
+
+    # Render the answer as a pointer when the top hit carries a thread-turn
+    # provenance: "learned around turn N" is verifiable via thread_read_range.
+    lead_turn = evidence[0].source_turn
+    if lead_turn is not None:
+        summary = f"{summary} (learned around turn {lead_turn})"
 
     return MemoryRecallAnswer(
         query=query,

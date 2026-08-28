@@ -240,20 +240,23 @@ class ReplayControls:
 
     Transitional: the v2 ``ContextHistoryPlan`` in
     ``SessionPlan.manifest.context.history`` is the authoritative source
-    for history/digest settings. This dataclass remains as the type
+    for history settings. This dataclass remains as the type
     annotation in ``assemble_dynamic_user_context`` until that function
     is refactored to accept ``ContextHistoryPlan`` directly.
+
+    The lossy digest knobs (``include_prior_conversation_digest``,
+    ``digest_max_lines``, ``digest_summary_max_chars``) were removed in the
+    memory × thread realignment — the thread manifest is the only
+    prior-history representation.
     """
 
     trigger_mode: str | None = None
-    include_prior_conversation_digest: bool | None = None
+    include_thread_manifest: bool | None = None
     include_recent_conversation: bool | None = None
     include_diagnostic_reflection: bool | None = None
     history_max_tokens: int | None = None
     reflection_max_tokens: int | None = None
     min_query_chars: int | None = None
-    digest_max_lines: int | None = None
-    digest_summary_max_chars: int | None = None
 
 
 # ── Helpers used by the v2 resolution path ──────────────────────────

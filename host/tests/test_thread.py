@@ -35,7 +35,6 @@ from host.thread import (
     build_thread_manifest,
     load_recent_thread_entries,
     load_thread_range,
-    load_thread_digest,
     next_turn_index,
 )
 
@@ -405,12 +404,6 @@ class TestSegmentedStore:
         queries = [e["query"] for e in entries]
         assert "old" in queries
         assert "new" in queries
-
-    def test_load_thread_digest_returns_empty_when_absent(self, tmp_path: Path) -> None:
-        """Digest sidecar returns empty when absent."""
-        thread_path = tmp_path / "thread"
-        assert load_thread_digest(thread_path=thread_path) == ""
-        assert load_thread_digest(thread_path=None) == ""
 
 
 # ── Thread redaction ────────────────────────────────────────────────

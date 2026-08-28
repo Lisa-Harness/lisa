@@ -28,12 +28,16 @@ file extension). All derived file paths are computed from this base.
 | `<base>.current.jsonl` | Active segment — plain JSONL, append-only |
 | `<base>.<seg_id>.jsonl.zst` | Sealed segment — zstd-compressed JSONL |
 | `<base>.index.jsonl` | Sparse segment index — one JSON line per sealed segment |
-| `<base>.digest.md` | Lossy digest sidecar (per-user) |
-| `<base>.digest.marker` | Last-digested `seg_id` (plain text) |
 | `<base>.dict.zstd` | Trained zstd dictionary (optional) |
 
 Where `<base> = <thread_dir>/<user_slug>` and `<seg_id>` is a zero-padded
 4-digit counter (`0001`, `0002`, ...).
+
+The legacy lossy digest sidecar (`<base>.digest.md` +
+`<base>.digest.marker`) was **removed** in the memory × thread
+realignment. The thread manifest addresses history for the model, and the
+memory pack's mining slice distills it; no lossy digest exists. Stale
+digest files on disk are simply ignored.
 
 ### Legacy migration
 
@@ -41,11 +45,6 @@ A one-time rename guard in `append_thread_entry` moves a legacy
 `<base>.jsonl` to `<base>.current.jsonl` on first write. The old path is
 never read again after the rename (hard cutover, no compat shims, no
 dual-path read code).
-
-The legacy shared `thread_digest.md` sidecar (per-directory, not
-per-user) is **orphaned** — it is not migrated to the new per-user
-`<base>.digest.md`. Operators may delete stale `thread_digest.md` files
-manually if they care; the new store starts a fresh digest per user.
 
 ## Record schemas
 
@@ -79,6 +78,7 @@ One JSON object per line in the active and sealed segments:
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
 | `turn_input` | object | no | Raw, unedited model input captured at the `hooks.complete` seam: `{"calls": [{iteration, messages, tools, model_id, provider, reasoning_model, temperature, max_tokens, response_format}, ...]}`, one entry per model round-trip in the turn. Absent for turns with no model call (host commands) or turns predating this field. Read back by `/debug [N]`. |
+| `memory_ids` | list[int] | no | Memory records minted from this turn (auto-capture or `synthesize_and_store_learning`). The thread → memory provenance link. |
 
 ### Segment index record
 
@@ -177,32 +177,33 @@ zstd is a lossless compressor. Sealed segments decompress to the exact
 bytes of the original active segment. The `load_thread_range` API gives
 the harness a way to pull old turns back in by range on demand.
 
-## Compaction / digest interaction
+## Compaction model (post realignment)
 
-### `FileBackedStateProvider` slice
+**There is no compaction.** The thread store is the lossless record of
+what happened; history is never truncated or summarized in place.
 
-The deterministic slice summarizes **sealed segments** (not the active
-segment) into the per-user `<base>.digest.md` sidecar:
+- **Sealing** is storage management (bounding the active segment for
+  O(limit) reads), not history loss — sealed segments decompress to exact
+  original bytes.
+- **Context injection** is bounded by the manifest window: recent turns
+  verbatim, older turns as a manifest table the model addresses on demand
+  via `thread_read_range`.
+- **Distillation** is owned by the memory pack's consolidation slice
+  (`sdk/packs/memory/slice_provider.py`), which mines sealed segments
+  opportunistically inside the post-turn slice budget and writes durable
+  facts to `memory.db` with thread-turn provenance. It never mutates the
+  thread.
 
-1. Read `<base>.index.jsonl` to list sealed segments.
-2. Read `<base>.digest.marker` for the last-digested `seg_id`.
-3. Decompress undigested sealed segments (budget-bounded by
-   `max_thread_entries` segments per slice).
-4. Build digest entries (same host-command filtering, same 200-char
-   preview as before).
-5. Append to `<base>.digest.md`, apply the digest line cap.
-6. Update `<base>.digest.marker`.
-
-The active segment is **never truncated** — sealing already moves old
-turns out of it. `max_thread_entries` now bounds how many sealed segments
-to digest per slice (budget-bounded), not a truncation threshold.
+The legacy lossy digest pipeline (`<base>.digest.md` sidecar + marker +
+`FileBackedStateProvider._compact_thread`) was deleted in the memory ×
+thread realignment (hard cutover, no compat shims).
 
 ## Configuration
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `LISA_THREAD_DIR` | `<data_dir>/threads` | Thread directory |
-| `LISA_THREAD_MAX_ENTRIES` | `50` | Recent-N window for context injection; also bounds digest segments per slice |
+| `LISA_THREAD_MAX_ENTRIES` | `50` | Recent-N window for context injection |
 | `LISA_THREAD_SEGMENT_TURNS` | `256` | Seal threshold — active segment is sealed when it reaches this many entries |
 
 `LISA_THREAD_MAX_ENTRIES` (50) and `LISA_THREAD_SEGMENT_TURNS` (256) are

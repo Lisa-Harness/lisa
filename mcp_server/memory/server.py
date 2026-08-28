@@ -167,6 +167,14 @@ async def add_memory(
 
     Enforces Lisa's surface-scoped privacy isolation.
 
+    Curation contract — memory is ONLY what is true beyond this thread
+    (the thread log already records what happened). Do NOT store:
+    - ephemeral tool/MCP errors, registration gaps, session drops;
+    - iteration-budget pauses or execution-flow state;
+    - point-in-time volatile infrastructure status (query it live instead).
+    DO store durable user preferences, stable architectural invariants,
+    verified problem/solution pairs, and permanent project configuration.
+
     Optional metadata fields (``memory_tier``, ``memory_kind``,
     ``operation_id``, ``instruction_id``, ``content_json``, ``salience``,
     ``supersedes_id``, ``item_ids``, ``confidence``, ``valid_until``)

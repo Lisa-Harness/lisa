@@ -1020,6 +1020,11 @@ async def _execute_mode_turn(
         turn_input=run_context.get("turn_input")
         if isinstance(run_context.get("turn_input"), dict)
         else None,
+        # Thread → memory provenance: memory records minted by this turn's
+        # auto-capture (stamped onto run_context by the turn-complete hook).
+        memory_ids=run_context.get("memory_ids")
+        if isinstance(run_context.get("memory_ids"), list)
+        else None,
     )
 
     # ── Centralized loop decision classification ────────────────────

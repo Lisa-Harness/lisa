@@ -664,8 +664,16 @@ class SqliteMemoryStore:
 
         # Opportunistic access tracking: bump access_count and last_accessed_at
         # for the records we actually surfaced. Piggybacks on the recall call
-        # — no separate maintenance pass needed.
+        # — no separate maintenance pass needed. Only positive matches reach
+        # this point (zero-overlap candidates are filtered above), so the
+        # logged count reflects genuine salience, not recency noise.
         top_ids = [record.id for _, record in top]
+        logger.debug(
+            "memory recall: query_chars=%d surfaced=%d candidates=%d",
+            len(query),
+            len(top_ids),
+            len(ranked),
+        )
         if top_ids:
             placeholders = ",".join("?" * len(top_ids))
             self._conn.execute(

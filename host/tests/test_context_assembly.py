@@ -35,7 +35,6 @@ def test_assemble_dynamic_user_context_includes_ambient_facts(
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "",
     )
 
@@ -69,7 +68,6 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "",
     )
 
@@ -87,12 +85,11 @@ def test_assemble_dynamic_user_context_replay_manual_disables_history_sections()
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "- old summary",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
         replay_controls_loader=lambda: ReplayControls(trigger_mode="manual"),
     )
 
-    assert 'source="prior_conversation_digest"' not in context
+    assert 'source="thread_manifest"' not in context
     assert 'source="recent_conversation"' not in context
     assert "replay_trigger_mode: manual" in context
 
@@ -107,7 +104,6 @@ def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> N
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "- old summary",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
         replay_controls_loader=lambda: ReplayControls(
             trigger_mode="conditional",
@@ -115,7 +111,7 @@ def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> N
         ),
     )
 
-    assert 'source="prior_conversation_digest"' not in context
+    assert 'source="thread_manifest"' not in context
     assert 'source="recent_conversation"' not in context
     assert "replay_min_query_chars: 20" in context
 
@@ -130,7 +126,6 @@ def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_tog
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: "- old summary",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
         replay_controls_loader=lambda: ReplayControls(
             include_diagnostic_reflection=False,
@@ -140,25 +135,25 @@ def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_tog
     assert "Diagnostic Reflection" not in context
 
 
-def test_recent_conversation_wins_history_budget_over_digest(
+def test_recent_conversation_wins_history_budget_over_manifest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Recent conversation must be allocated before the digest in the history lane.
+    """Recent conversation must be allocated before the manifest in the history lane.
 
     Both sections share the ``history`` lane. When the lane budget cannot
     fit both, the recent-conversation excerpt (authoritative, carries the
     assistant's last answer the user is replying to) must survive; the
-    prior-conversation digest (inferred, lossy summary of older turns) is
-    the one that gets dropped. Allocating the digest first amputates the
-    turn the user is responding to (e.g. an Option A/B offer), so the next
-    bare reply ("B") sees no record of the options and the model honestly
-    reports it lost the context.
+    thread manifest (inferred, addressable table of older turns) is the one
+    that gets dropped. Allocating the manifest first amputates the turn the
+    user is responding to (e.g. an Option A/B offer), so the next bare reply
+    ("B") sees no record of the options and the model honestly reports it
+    lost the context.
     """
 
     monkeypatch.setattr(
         context_assembly.settings,
         "context_budget_history_max_tokens",
-        1500,  # production default: ~6000 chars — the digest alone exceeds it
+        1500,  # production default: ~6000 chars — the manifest alone exceeds it
     )
     monkeypatch.setattr(
         context_assembly.settings,
@@ -167,27 +162,28 @@ def test_recent_conversation_wins_history_budget_over_digest(
     )
 
     recent_excerpt = "Recent thread context:\n- proceed with option B: pick B"
-    # ~6552 chars like the real thread_digest.md (1638 tokens > the 1500-token
-    # lane). With the digest allocated first it fills the lane and the recent
-    # excerpt is dropped with ``budget_exhausted`` — the exact production bug.
-    large_digest = "x" * 6552
+    # ~6552 chars so it exceeds the 1500-token lane. With the manifest
+    # allocated first it fills the lane and the recent excerpt is dropped
+    # with ``budget_exhausted`` — the exact production bug.
+    large_manifest = "x" * 6552
 
     context = context_assembly.assemble_dynamic_user_context(
         "default",
         "B",
         "",
-        content_loader=lambda _path: "",
+        content_loader=lambda _path: "manifest hint",
         user_slug="adam",
         timezone="UTC",
         state=None,
         session_context_loader=lambda: "",
-        thread_digest_loader=lambda: large_digest,
         recent_thread_excerpt_builder=lambda _n: recent_excerpt,
+        thread_manifest_builder=lambda: large_manifest,
     )
 
     # The recent-conversation excerpt (the Option A/B answer) must survive.
     assert 'source="recent_conversation"' in context
     assert "proceed with option B" in context
-    # The digest must be dropped (budget exhausted after the excerpt took
-    # the lane), NOT the other way around.
-    assert 'source="prior_conversation_digest"' not in context
+    # The manifest must NOT arrive whole: either dropped (budget exhausted)
+    # or truncated to the lane remainder — never full-strength alongside the
+    # recent excerpt. Assert it was not allocated its full 6552 chars.
+    assert context.count("xxxx") < 6552

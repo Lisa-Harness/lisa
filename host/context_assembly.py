@@ -33,7 +33,6 @@ from kernel.context.context_broker import (
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.context_mapper import (
     ContextMapper,
-    ContextMappingError,
     context_candidates_from_unified_state,
 )
 from kernel.context.models import ContextBudgetSnapshot, ContextMapperRequest
@@ -48,7 +47,7 @@ from kernel.models import (
     WorkflowModeConfig,
 )
 from kernel.session_plan import ContextPlan
-from sdk.content import require_authored_text
+from sdk.content import MissingAuthoredContentError, require_authored_text
 
 from host.model_runtime import StubModelDefinition
 from host.session_context import ReplayControls
@@ -216,13 +215,10 @@ def build_session_mapped_context_markdown(
     if state is None or not state.compiled_at or context_plan is None:
         return ""
 
-    try:
-        candidates = context_candidates_from_unified_state(state)
-    except ContextMappingError:
-        # A ContextMappingError means the state/plan is broken — not that
-        # there is nothing to say. Re-raise so the turn fails loudly instead
-        # of silently executing with empty context.
-        raise
+    # A ContextMappingError from candidate extraction means the state/plan is
+    # broken — not that there is nothing to say. Let it propagate so the turn
+    # fails loudly instead of silently executing with empty context.
+    candidates = context_candidates_from_unified_state(state)
     if not candidates:
         return ""
 
@@ -237,16 +233,13 @@ def build_session_mapped_context_markdown(
         conversation_tokens=conversation_tokens,
         tool_schema_tokens=tool_schema_tokens,
     )
-    try:
-        result = ContextMapper().map(request)
-    except ContextMappingError:
-        # The mapper raises on a broken plan/budget, not on an empty result.
-        # Re-raise so the turn fails loudly instead of silently degrading to
-        # empty context.
-        raise
+    # The mapper raises ContextMappingError on a broken plan/budget, not on
+    # an empty result. Let it propagate so the turn fails loudly instead of
+    # silently degrading to empty context.
+    result = ContextMapper().map(request)
     if snapshot_sink is not None:
         try:
-            snapshot_sink(result.budget)
+            snapshot_sink(result.trace.budget)
         except Exception:  # pylint: disable=broad-except
             # The snapshot sink is observational only; its failure must
             # never change the rendered context the model receives.
@@ -308,14 +301,25 @@ def publish_context_usage_event(
     mode_id: str,
     query: str,
 ) -> None:
-    """Publish a ContextUsageEvent with the allocator summary.
+    """Emit a structured context-usage log line for the turn.
 
-    **Stub**: the event bus is not wired in this module yet. This is a
-    no-op so callers can pass it as a hook without conditional logic.
+    The event bus is not wired in this module yet; this logs the lane
+    summary via stdlib logging so per-turn context salience is observable
+    in host.jsonl (which lanes were spent, which sections dropped/truncated).
+
+    Never raises — telemetry must not break the turn.
     """
-    _ = allocator
-    _ = mode_id
-    _ = query
+    try:
+        summary = allocator.summary()
+        logger.info(
+            "context usage: mode=%s lanes=%s dropped=%s truncated=%s",
+            mode_id,
+            summary.get("lane_totals"),
+            summary.get("dropped_keys"),
+            summary.get("truncated_keys"),
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("context usage telemetry failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +337,6 @@ def assemble_dynamic_user_context(
     timezone: str,
     state: UnifiedState | None,
     session_context_loader: Callable[[], str],
-    thread_digest_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
     replay_controls_loader: Callable[[], ReplayControls] | None = None,
     thread_manifest_builder: Callable[[], str] | None = None,
@@ -427,7 +430,6 @@ def assemble_dynamic_user_context(
     replay_policy = _resolve_replay_policy(
         replay_controls,
         query=query,
-        thread_digest_loader=thread_digest_loader,
     )
 
     user_context = session_context_loader().strip()
@@ -468,7 +470,7 @@ def assemble_dynamic_user_context(
             thread_manifest = thread_manifest_builder().strip()
         except Exception:  # pylint: disable=broad-except
             thread_manifest = ""
-    if replay_policy.include_prior_conversation_digest and thread_manifest:
+    if replay_policy.include_thread_manifest and thread_manifest:
         # The hint prose ("Use the `thread_read_range` tool...") is authored
         # Markdown shipped as package data. Load it through the strict loader
         # so a missing/empty asset fails loudly instead of silently degrading
@@ -488,9 +490,8 @@ def assemble_dynamic_user_context(
             min_query_chars=replay_policy.min_query_chars,
             effective_history_max_tokens=replay_policy.effective_history_max_tokens,
             effective_reflection_max_tokens=replay_policy.effective_reflection_max_tokens,
-            digest_max_lines=replay_policy.digest_max_lines,
             query=query,
-            thread_digest_present=bool(thread_manifest),
+            thread_manifest_present=bool(thread_manifest),
             recent_conversation_present=bool(conversation_excerpt),
         )
         raw_sections.append(("diagnostic_reflection", "reflection", diagnostic_reflection))
@@ -596,12 +597,14 @@ def assemble_dynamic_user_context(
 # Provenance kind per section key. Keys absent from this map default to
 # ``authoritative``. Keep this table co-located with
 # ``assemble_dynamic_user_context`` so the mapping is auditable in one place.
+# ``prior_conversation_digest`` was removed in the memory × thread
+# realignment: the thread manifest is the only prior-history representation.
 _SECTION_PROVENANCE: dict[str, str] = {
     "ambient_facts": "system_observed",
     "dynamic_context": "authoritative",
     "selected_user_context": "authoritative",
-    "prior_conversation_digest": "inferred",
     "recent_conversation": "authoritative",
+    "thread_manifest": "inferred",
     "diagnostic_reflection": "diagnostic",
     "ranked_context": "recalled_memory",
     "capability_context": "authoritative",
@@ -612,14 +615,12 @@ class _ReplayPolicy:
     """Resolved replay controls after tighten-only clamping."""
 
     __slots__ = (
-        "digest_max_lines",
         "effective_history_max_tokens",
         "effective_reflection_max_tokens",
         "include_diagnostic_reflection",
-        "include_prior_conversation_digest",
         "include_recent_conversation",
+        "include_thread_manifest",
         "min_query_chars",
-        "thread_digest_text",
         "trigger_mode",
     )
 
@@ -627,52 +628,48 @@ class _ReplayPolicy:
         self,
         *,
         trigger_mode: str,
-        include_prior_conversation_digest: bool,
+        include_thread_manifest: bool,
         include_recent_conversation: bool,
         include_diagnostic_reflection: bool,
         effective_history_max_tokens: int,
         effective_reflection_max_tokens: int,
         min_query_chars: int,
-        digest_max_lines: int,
-        thread_digest_text: str,
     ) -> None:
         self.trigger_mode = trigger_mode
-        self.include_prior_conversation_digest = include_prior_conversation_digest
+        self.include_thread_manifest = include_thread_manifest
         self.include_recent_conversation = include_recent_conversation
         self.include_diagnostic_reflection = include_diagnostic_reflection
         self.effective_history_max_tokens = effective_history_max_tokens
         self.effective_reflection_max_tokens = effective_reflection_max_tokens
         self.min_query_chars = min_query_chars
-        self.digest_max_lines = digest_max_lines
-        self.thread_digest_text = thread_digest_text
 
 
 def _resolve_replay_policy(
     controls: ReplayControls,
     *,
     query: str,
-    thread_digest_loader: Callable[[], str],
 ) -> _ReplayPolicy:
-    """Resolve replay controls with tighten-only clamping and trigger gating."""
+    """Resolve replay controls with tighten-only clamping and trigger gating.
+
+    The lossy digest path was removed in the memory × thread realignment;
+    the thread manifest (built by ``thread_manifest_builder``) is the only
+    prior-history section, gated by ``include_thread_manifest``.
+    """
 
     trigger_mode = controls.trigger_mode or "hybrid"
     min_query_chars = max(0, controls.min_query_chars or 0)
     query_gate_passed = len(query.strip()) >= min_query_chars
 
-    digest_text = thread_digest_loader() or ""
-    digest_max_lines = max(1, controls.digest_max_lines or 200)
-    digest_text = _truncate_digest_lines(digest_text, digest_max_lines)
-
-    include_prior = True if controls.include_prior_conversation_digest is not False else False
+    include_manifest = True if controls.include_thread_manifest is not False else False
     include_recent = True if controls.include_recent_conversation is not False else False
     include_diag = True if controls.include_diagnostic_reflection is not False else False
 
     if trigger_mode == "manual":
-        include_prior = False
+        include_manifest = False
         include_recent = False
     elif trigger_mode in {"conditional", "hybrid"}:
         if not query_gate_passed:
-            include_prior = False
+            include_manifest = False
             include_recent = False
 
     effective_history_max_tokens = _tighten_cap(
@@ -686,14 +683,12 @@ def _resolve_replay_policy(
 
     return _ReplayPolicy(
         trigger_mode=trigger_mode,
-        include_prior_conversation_digest=include_prior,
+        include_thread_manifest=include_manifest,
         include_recent_conversation=include_recent,
         include_diagnostic_reflection=include_diag,
         effective_history_max_tokens=effective_history_max_tokens,
         effective_reflection_max_tokens=effective_reflection_max_tokens,
         min_query_chars=min_query_chars,
-        digest_max_lines=digest_max_lines,
-        thread_digest_text=digest_text,
     )
 
 
@@ -707,26 +702,14 @@ def _tighten_cap(default_value: int, candidate: int | None) -> int:
     return min(default_value, candidate)
 
 
-def _truncate_digest_lines(text: str, max_lines: int) -> str:
-    """Keep only the most recent digest lines under ``max_lines``."""
-
-    if not text.strip():
-        return ""
-    lines = [line for line in text.splitlines() if line.strip()]
-    if len(lines) <= max_lines:
-        return "\n".join(lines)
-    return "\n".join(lines[-max_lines:])
-
-
 def _build_diagnostic_reflection_block(
     *,
     trigger_mode: str,
     min_query_chars: int,
     effective_history_max_tokens: int,
     effective_reflection_max_tokens: int,
-    digest_max_lines: int,
     query: str,
-    thread_digest_present: bool,
+    thread_manifest_present: bool,
     recent_conversation_present: bool,
 ) -> str:
     """Render a compact diagnostic reflection section."""
@@ -737,8 +720,7 @@ def _build_diagnostic_reflection_block(
         f"- replay_min_query_chars: {min_query_chars}\n"
         f"- replay_effective_history_max_tokens: {effective_history_max_tokens}\n"
         f"- replay_effective_reflection_max_tokens: {effective_reflection_max_tokens}\n"
-        f"- replay_digest_max_lines: {digest_max_lines}\n"
         f"- replay_query_chars: {len(query.strip())}\n"
-        f"- replay_thread_digest_present: {'true' if thread_digest_present else 'false'}\n"
+        f"- replay_thread_manifest_present: {'true' if thread_manifest_present else 'false'}\n"
         f"- replay_recent_conversation_present: {'true' if recent_conversation_present else 'false'}"
     )

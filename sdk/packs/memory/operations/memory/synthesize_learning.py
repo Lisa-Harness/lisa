@@ -302,6 +302,12 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     content_json: dict[str, object] = {"query": ctx.query, "model": ctx.model_id}
     if "had_briefing" in ctx.extra:
         content_json["had_chase_briefing"] = ctx.extra["had_briefing"]
+    # Memory → thread linkage: when the host stamps the global turn index
+    # into the capture context, carry it into the stored record so recall
+    # can point back to the exact turn the learning came from.
+    thread_turn = ctx.extra.get("thread_turn")
+    if isinstance(thread_turn, int):
+        content_json["thread_turn"] = thread_turn
 
     if ctx.host is None:
         return OperationResult(
@@ -335,8 +341,22 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if getattr(tool_result, "error", None):
         return OperationResult(output_text=f"⛔ Learning storage failed: {tool_result.error}")
 
+    # Thread → memory linkage: surface the minted record id so the host can
+    # stamp it onto the thread entry's provenance. The lisa-memory backend
+    # replies "Memory stored with ID <n>".
+    memory_id: int | None = None
+    add_text = getattr(tool_result, "output_text", "") or ""
+    if "ID " in add_text:
+        try:
+            memory_id = int(add_text.split("ID ", 1)[1].rstrip("."))
+        except (ValueError, IndexError):
+            memory_id = None
+
     preview = distilled_text[:80]
+    extra: dict[str, object] = {"recorded": True, "distilled": distilled_text}
+    if memory_id is not None:
+        extra["memory_ids"] = [memory_id]
     return OperationResult(
         output_text=f"✅ Learning stored: '{preview}{'...' if len(distilled_text) > 80 else ''}'",
-        extra={"recorded": True, "distilled": distilled_text},
+        extra=extra,
     )

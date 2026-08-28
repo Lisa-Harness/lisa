@@ -48,10 +48,6 @@ LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 
 _DEFAULT_THREAD_MAX_ENTRIES = 50
 _DEFAULT_MEMORY_MAX_RECORDS = 200
-# Legacy shared digest sidecar (pre-segmentation). The new per-user digest
-# lives at ``<base>.digest.md`` (see ``host.thread``). Kept only for
-# ``FileBackedStateProvider`` backward-compat against pre-migration dirs.
-_THREAD_DIGEST_FILE_NAME = "thread_digest.md"
 
 # ── Lookup tables ─────────────────────────────────────────────────────
 

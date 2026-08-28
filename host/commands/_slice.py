@@ -20,7 +20,6 @@ from kernel.slice import SliceMode, SliceOutcome, SlicePolicy
 from host.commands._log import (
     _append_thread_entry,
     _append_turn_log,
-    _resolve_int_env,
     _set_turn_context,
 )
 from host.lisa_config import _resolve_slice_tuning
@@ -49,10 +48,6 @@ async def run_explicit_slice_command(
     _, explicit_budget_ms = _resolve_slice_tuning()
     provider = FileBackedStateProvider(
         thread_path=runtime.thread_path,
-        max_thread_entries=_resolve_int_env(
-            "LISA_THREAD_MAX_ENTRIES",
-            runtime.config.thread_max_entries,
-        ),
     )
     policy = SlicePolicy(
         mode=SliceMode.EXPLICIT,

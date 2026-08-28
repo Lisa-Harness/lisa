@@ -415,14 +415,17 @@ class ContextBudgetPlan(_StrictSessionModel):
 
 
 class ContextHistoryPlan(_StrictSessionModel):
-    """Conversation sources and deterministic digest constraints."""
+    """Conversation sources for context assembly.
 
-    include_digest: bool = True
+    The lossy digest knobs (``include_digest``, ``digest_max_lines``,
+    ``digest_summary_max_chars``) were removed in the memory × thread
+    realignment: the thread manifest (always emitted when a thread store
+    exists) replaced the digest, and history is never compacted.
+    """
+
     include_recent_conversation: bool = True
     include_reflection: bool = False
     recent_message_limit: int = Field(default=6, ge=0)
-    digest_max_lines: int = Field(default=200, ge=1)
-    digest_summary_max_chars: int = Field(default=240, ge=60)
 
 
 def _default_context_lanes() -> tuple[ContextLanePlan, ...]:
@@ -475,6 +478,12 @@ class MemoryConsolidationTuning(_StrictSessionModel):
     max_records: int = Field(default=200, ge=1)
     preferred_model_id: str = "default"
     consolidate_operation: str = "consolidate_semantic"
+    #: Mine newly sealed thread segments into durable semantic memories
+    #: (the ``mine_thread_segment`` operation) whenever the consolidation
+    #: slice runs. Sealed segments are the cross-session evidence pool;
+    #: mining is idempotent per segment (``mine.marker`` sidecar). Defaults
+    #: on — sensible defaults first, externalize later.
+    mine_on_segment_seal: bool = True
 
     @model_validator(mode="after")
     def _validate_thresholds(self) -> MemoryConsolidationTuning:

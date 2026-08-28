@@ -18,11 +18,13 @@ The store is a three-tier lossless layout keyed by a *base path*
 
 Sidecars:
 
-- ``<base>.digest.md`` — lossy digest (per-user). The
-  ``FileBackedStateProvider`` slice summarizes sealed segments into it.
-- ``<base>.digest.marker`` — the last digested ``seg_id``.
 - ``<base>.dict.zstd`` — optional trained zstd dictionary for better
   compression on the homogeneous JSON-key vocabulary.
+
+The legacy lossy digest sidecar (``<base>.digest.md`` +
+``<base>.digest.marker``) was removed in the memory × thread realignment:
+the thread manifest addresses history and the memory pack's mining slice
+distills it. Existing digest files on disk are simply stale and ignored.
 
 The one-time rename guard in :func:`append_thread_entry` migrates a
 legacy ``<base>.jsonl`` to ``<base>.current.jsonl`` on first write. The
@@ -35,15 +37,14 @@ Dependency direction
 ``thread.py`` ← ``main.py`` / ``handle_message.py``  (callers import from
 thread; thread never imports main or any transport code)
 
-``thread.py`` → ``host.host_commands`` (leaf: command-prefix registry),
-``host.lisa_config`` (legacy digest constant). Neither imports thread back.
+``thread.py`` → ``host.host_commands`` (leaf: command-prefix registry).
+It does not import thread back.
 
 Public surface
 --------------
 - :func:`load_recent_thread_entries`
 - :func:`load_thread_range`
 - :func:`append_thread_entry`
-- :func:`load_thread_digest`
 - :func:`build_recent_thread_excerpt`
 """
 
@@ -76,7 +77,6 @@ __all__ = [
     "build_recent_thread_excerpt",
     "build_thread_manifest",
     "load_recent_thread_entries",
-    "load_thread_digest",
     "load_thread_range",
     "next_turn_index",
     "set_thread_redaction_policy",
@@ -119,8 +119,6 @@ class _SegmentPaths(NamedTuple):
     base: Path
     current: Path  # <base>.current.jsonl
     index_path: Path  # <base>.index.jsonl
-    digest: Path  # <base>.digest.md
-    marker: Path  # <base>.digest.marker
     dictionary: Path  # <base>.dict.zstd
     legacy: Path  # <base>.jsonl (pre-segmentation, for the rename guard)
 
@@ -130,8 +128,6 @@ def _segment_paths(base: Path) -> _SegmentPaths:
         base=base,
         current=Path(f"{base}.current.jsonl"),
         index_path=Path(f"{base}.index.jsonl"),
-        digest=Path(f"{base}.digest.md"),
-        marker=Path(f"{base}.digest.marker"),
         dictionary=Path(f"{base}.dict.zstd"),
         legacy=Path(f"{base}.jsonl"),
     )
@@ -474,23 +470,6 @@ def next_turn_index(*, thread_path: Path | None) -> int:
     return store.next_turn_index()
 
 
-def load_thread_digest(*, thread_path: Path | None) -> str:
-    """Load the per-user thread digest sidecar (``<base>.digest.md``).
-
-    Returns an empty string when ``thread_path`` is ``None`` or the digest
-    file is absent or unreadable.
-    """
-    if thread_path is None:
-        return ""
-    paths = _segment_paths(thread_path)
-    if not paths.digest.is_file():
-        return ""
-    try:
-        return paths.digest.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
-
 # ── Public write API ───────────────────────────────────────────────────
 
 
@@ -510,6 +489,7 @@ def append_thread_entry(
     yielded: bool = False,
     yield_question: str = "",
     turn_input: dict[str, Any] | None = None,
+    memory_ids: list[int] | None = None,
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -538,6 +518,13 @@ def append_thread_entry(
     the ``hooks.complete`` seam (one snapshot per model round-trip within
     the turn) — the durable source ``/debug [N]`` reads back by turn index.
     ``None`` when the turn made no model call (host-command turns).
+
+    ``memory_ids`` lists the memory records minted from this turn (by
+    auto-capture or model-called ``synthesize_and_store_learning``). This is
+    the thread → memory provenance link: a thread entry that produced
+    distilled learnings names them, so the thread manifest can show which
+    turns contributed to long-term memory and mining slices can skip
+    already-mined turns.
     """
     if thread_path is None or not user_slug:
         return
@@ -584,6 +571,8 @@ def append_thread_entry(
             entry["yield_question"] = yield_question
     if turn_input:
         entry["turn_input"] = turn_input
+    if memory_ids:
+        entry["memory_ids"] = memory_ids
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:

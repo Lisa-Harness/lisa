@@ -285,6 +285,79 @@ async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
     assert "memory.list" in [c[0] for c in hooks.tool_calls]
 
 
+@pytest.mark.asyncio
+async def test_mines_new_sealed_segments(tmp_path: Path) -> None:
+    """A newly sealed thread segment is mined into semantic memories exactly once."""
+    # Build a real sealed thread segment.
+    from host.thread import append_thread_entry
+
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir(parents=True)
+    thread_path = threads_dir / "adam"
+    for i in range(5):
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="adam",
+            mode_id="default",
+            query=f"q{i}",
+            response_text=f"response {i}",
+            segment_turns=3,  # seal at 3 → one sealed segment + 2 active
+        )
+
+    hooks = _FakeHooks(episodic_records=[])
+    slc = MemoryConsolidationSlice(
+        config=_config(
+            memory_data_dir=tmp_path,
+            user_slug="adam",
+        ),
+        turn_hooks=hooks,
+    )
+    slc._mine_enabled = True
+    outcome = await slc.slice(None, _policy())
+
+    # One sealed segment was mined.
+    mine_calls = [c for c in hooks.op_calls if c[0] == "mine_thread_segment"]
+    assert len(mine_calls) == 1
+    assert outcome.work_items_completed >= 1
+    assert outcome.last_item.startswith("mined:")
+    # The mine.marker records the mined segment id.
+    marker = tmp_path / "mine.marker"
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8").strip() == "0001"
+
+    # A second slice run must NOT re-mine the same segment (idempotent).
+    outcome2 = await slc.slice(None, _policy())
+    mine_calls_2 = [c for c in hooks.op_calls if c[0] == "mine_thread_segment"]
+    assert len(mine_calls_2) == 1
+    assert not outcome2.last_item.startswith("mined:")
+
+
+@pytest.mark.asyncio
+async def test_mining_disabled_when_mine_on_segment_seal_false(tmp_path: Path) -> None:
+    """mine_on_segment_seal=False suppresses the mining pass entirely."""
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir(parents=True)
+    thread_path = threads_dir / "adam"
+    from host.thread import append_thread_entry
+
+    for i in range(5):
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="adam",
+            mode_id="default",
+            query=f"q{i}",
+            response_text=f"response {i}",
+            segment_turns=3,
+        )
+
+    hooks = _FakeHooks(episodic_records=[])
+    slc = MemoryConsolidationSlice(config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks)
+    slc._mine_enabled = False
+    outcome = await slc.slice(None, _policy())
+    assert not [c for c in hooks.op_calls if c[0] == "mine_thread_segment"]
+    assert not outcome.last_item.startswith("mined:")
+
+
 def test_factory_returns_none_when_disabled() -> None:
     factory = get_slice_provider_factory()
 

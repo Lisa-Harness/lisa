@@ -304,14 +304,6 @@ class Settings(BaseSettings):
         "high": 1.0,
     }
 
-    # ── Conversation digest ─────────────────────────────────────────────
-    conversation_digest_enabled: bool = True
-    conversation_digest_model: str = ""
-    conversation_digest_max_prompt_chars: int = 12000
-    conversation_digest_max_summary_chars: int = 800
-    conversation_digest_source_turns: int = 8
-    conversation_digest_recent_turns: int = 4
-
     # ── Memory recall (pre-turn injection) ─────────────────────────────
     memory_recall_enabled: bool = True
     memory_recall_pre_turn_limit: int = 3
@@ -410,10 +402,6 @@ class Settings(BaseSettings):
         "context_budget_history_max_tokens",
         "context_budget_operational_max_tokens",
         "context_budget_token_char_ratio",
-        "conversation_digest_max_prompt_chars",
-        "conversation_digest_max_summary_chars",
-        "conversation_digest_source_turns",
-        "conversation_digest_recent_turns",
         "passive_intelligence_min_recurrence",
         "passive_intelligence_evidence_limit",
         "passive_intelligence_max_items",

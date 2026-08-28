@@ -5,11 +5,14 @@ This module owns:
 - :func:`build_unified_state` — compiles a :class:`UnifiedState` from a
   dict-based state snapshot (loaded via ``--state-snapshot``) without
   touching global runtime state.
-- :class:`FileBackedStateProvider` — a file-only digest provider that runs
-  one deterministic, no-LLM slice operation: compacting overflowed thread
-  JSONL entries into a ``thread_digest.md`` sidecar.
-- :func:`_slice_budget_expired` — a private helper used by the provider to
-  honour the slice time budget.
+- :class:`FileBackedStateProvider` — the host's state-provider slot. The
+  legacy lossy thread-digest pipeline was removed in the memory × thread
+  realignment: the thread store is the lossless ground truth (manifest +
+  ``thread_read_range`` address it), and the memory pack's consolidation
+  slice owns distillation. Sealing (in ``host.thread``) is storage
+  management, not compaction — no slice truncates history.
+- :func:`_slice_budget_expired` — a private helper used by slice providers
+  to honour the slice time budget.
 
 All functions are transport-neutral: they take explicit ``thread_path`` and
 ``state_snapshot`` parameters rather than reading global runtime state. A
@@ -44,9 +47,6 @@ from kernel.models import (
 from kernel.seams.protocols import ExtensionItemBuilder
 from kernel.slice import SliceOutcome
 from pydantic import ValidationError
-
-from host.host_commands import is_host_command_query as _is_host_command_query
-from host.lisa_config import _DEFAULT_THREAD_MAX_ENTRIES
 
 logger = logging.getLogger(__name__)
 
@@ -187,190 +187,39 @@ def _slice_budget_expired(policy: Any, started: float) -> bool:
 
 
 class FileBackedStateProvider:
-    """File-only digest provider for hosts with a segmented thread store.
+    """Host state-provider slot (post realignment): no-LLM, no-op slice.
 
-    Runs one deterministic, no-LLM operation inside the existing slice
-    budget:
+    The legacy lossy thread-digest pipeline (``<base>.digest.md`` +
+    ``<base>.digest.marker``) is removed. Under the memory × thread split
+    the thread store is the lossless record of what happened — addressed by
+    the thread manifest and ``thread_read_range`` — and cross-session
+    distillation is owned by the memory pack's consolidation slice
+    (``sdk/packs/memory/slice_provider.py``), which mines sealed segments
+    opportunistically inside the post-turn slice budget.
 
-    1. Thread digest: summarize sealed (compressed) thread segments into
-       the per-user ``<base>.digest.md`` sidecar. The active segment is
-       never truncated — sealing (in ``host.thread``) already moves old
-       turns out of it. This slice digests sealed segments that haven't
-       been digested yet (tracked by ``<base>.digest.marker``).
-
-    Memory eviction is not host-side: ``lisa-memory``'s SQLite store
-    enforces TTL via its ``expires_at`` column, so there is nothing for
-    the slice to do.
+    This class remains because the host slice wiring and the ``/slice``
+    explicit command expect a state-provider object; it simply reports
+    zero work so the pack-provided slices own all useful slice labor.
     """
 
     def __init__(
         self,
         *,
         thread_path: Path | None,
-        max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
-        digest_max_lines: int | None = None,
-        digest_summary_max_chars: int | None = None,
     ) -> None:
-        self._thread_path = thread_path
-        # ``max_thread_entries`` bounds how many sealed segments to digest
-        # per slice (budget-bounded), not a truncation threshold.
-        self._max_thread_entries = max(1, max_thread_entries)
-        self._digest_max_lines = max(1, digest_max_lines or 200)
-        self._digest_summary_max_chars = max(60, digest_summary_max_chars or 240)
+        # ``thread_path`` retained for signature stability with callers
+        # (turn_hooks_builder, /slice command); nothing is digested.
+        del thread_path
 
     def __call__(self) -> Any:
         return None
 
     async def slice(self, ctx: Any, policy: Any) -> SliceOutcome:
-        """Run bounded thread compaction."""
-        del ctx
-        started = time.monotonic()
-        work_items = 0
-        notes: list[str] = []
-        last_item = ""
-
-        thread_compacted = self._compact_thread(policy, started)
-        if thread_compacted[0] > 0:
-            work_items += thread_compacted[0]
-            last_item = thread_compacted[1]
-            notes.append(thread_compacted[2])
-
-        elapsed_ms = (time.monotonic() - started) * 1000.0
+        """No-op slice: history is never compacted, only sealed and mined."""
+        del ctx, policy
         return SliceOutcome(
-            work_items_completed=work_items,
-            elapsed_ms=elapsed_ms,
-            last_item=last_item,
-            notes=tuple(notes),
+            work_items_completed=0,
+            elapsed_ms=0.0,
+            last_item="",
+            notes=("no_op_no_compaction",),
         )
-
-    def _build_digest_from_entry(self, entry: dict[str, Any]) -> str | None:
-        """Build one digest line from a thread entry, or ``None`` to skip."""
-        query = str(entry.get("query") or "").strip()
-        response = str(entry.get("response_text") or "").strip()
-        if not query and not response:
-            return None
-        # Strip host-only commands from the digest sidecar too.
-        if _is_host_command_query(query):
-            return None
-        preview = response[:200] if response else query[:200]
-        return f"- {query or 'unknown'}: {preview}"
-
-    def _digest_segment(
-        self,
-        record: Any,
-        paths_base: Path,
-        policy: Any,
-        started: float,
-    ) -> tuple[list[str], int] | None:
-        """Decompress and digest one sealed segment. Returns (lines, count) or None."""
-        from host.thread import (  # noqa: PLC0415  # lazy: breaks cycle
-            _decompress_bytes,
-            _parse_entries,
-            _sealed_segment_path,
-        )
-
-        if _slice_budget_expired(policy, started):
-            return None
-        sealed_path = _sealed_segment_path(paths_base, record.seg_id)
-        if not sealed_path.exists():
-            return [], 0
-        try:
-            decompressed = _decompress_bytes(
-                sealed_path.read_bytes(), Path(f"{paths_base}.dict.zstd")
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("digest: failed to decompress %s: %s", record.seg_id, exc)
-            return [], 0
-        entries = _parse_entries(decompressed.decode("utf-8").splitlines())
-        lines: list[str] = []
-        for entry in entries:
-            digest_line = self._build_digest_from_entry(entry)
-            if digest_line is not None:
-                lines.append(digest_line)
-        return lines, len(entries)
-
-    def _compact_thread(
-        self,
-        policy: Any,
-        started: float,
-    ) -> tuple[int, str, str]:
-        """Digest sealed thread segments into the per-user digest sidecar.
-
-        Returns ``(entries_digested, last_item, note)``.
-        """
-        if self._thread_path is None or _slice_budget_expired(policy, started):
-            return 0, "", ""
-
-        from host.thread import _read_index  # noqa: PLC0415  # lazy: breaks cycle
-
-        paths_base = self._thread_path
-        index_path = Path(f"{paths_base}.index.jsonl")
-        digest_path = Path(f"{paths_base}.digest.md")
-        marker_path = Path(f"{paths_base}.digest.marker")
-
-        records = _read_index(index_path)
-        if not records:
-            return 0, "", ""
-
-        # Read the last-digested segment id.
-        last_digested = ""
-        if marker_path.exists():
-            last_digested = marker_path.read_text(encoding="utf-8").strip()
-
-        # Find undigested sealed segments, budget-bounded.
-        digested_ids = {last_digested} if last_digested else set()
-        to_digest = [r for r in records if r.seg_id not in digested_ids]
-        if not to_digest:
-            return 0, "", ""
-        to_digest = to_digest[: self._max_thread_entries]
-
-        digest_parts: list[str] = []
-        entries_digested = 0
-        last_seg_id = last_digested
-        for record in to_digest:
-            result = self._digest_segment(record, paths_base, policy, started)
-            if result is None:
-                break  # budget expired
-            lines, count = result
-            digest_parts.extend(lines)
-            entries_digested += count
-            last_seg_id = record.seg_id
-
-        if not digest_parts:
-            return 0, "", ""
-
-        existing = ""
-        if digest_path.is_file():
-            existing = digest_path.read_text(encoding="utf-8").strip()
-        new_block = "\n".join(digest_parts)
-        digest_text = f"{existing}\n\n{new_block}" if existing else new_block
-        digest_text = self._apply_digest_cap(digest_text)
-        digest_path.parent.mkdir(parents=True, exist_ok=True)
-        digest_path.write_text(digest_text, encoding="utf-8")
-
-        # Update the marker.
-        if last_seg_id:
-            marker_path.parent.mkdir(parents=True, exist_ok=True)
-            marker_path.write_text(last_seg_id, encoding="utf-8")
-
-        note = f"digested {entries_digested} thread entries from {len(to_digest)} segment(s)"
-        return entries_digested, f"thread:{entries_digested} entries", note
-
-    def _apply_digest_cap(self, digest_text: str) -> str:
-        """Bound digest growth and prepend one lossy summary when capped."""
-
-        lines = [line for line in digest_text.splitlines() if line.strip()]
-        if len(lines) <= self._digest_max_lines:
-            return "\n".join(lines)
-
-        dropped_count = len(lines) - self._digest_max_lines
-        kept = lines[-self._digest_max_lines :]
-        summary = (
-            f"- [lossy_summary] Omitted {dropped_count} older digest lines "
-            f"to enforce digest_max_lines={self._digest_max_lines}."
-        )
-        summary = summary[: self._digest_summary_max_chars].rstrip()
-
-        if self._digest_max_lines == 1:
-            return summary
-        return "\n".join([summary, *kept[-(self._digest_max_lines - 1) :]])
