@@ -120,14 +120,25 @@ def _detect_query_intents(
     routing_targets: list[str],
 ) -> set[str]:
     """Detect which intents the user's query expresses, using the routing
-    targets' ``fast_path_patterns`` as the pattern source.
+    targets' ``fast_path_patterns`` and ``routing_intent_keywords``.
 
     Returns the set of intent tag strings (lowercased) that the query matches.
-    Each routing target's ``routing_intent_tags`` are attributed to the query
-    when any of that target's ``fast_path_patterns`` matches the query
-    (case-insensitive). This is data-driven: the kernel does not hardcode
-    which keywords map to which intents — the mode front-matter declares both
-    the patterns and the tags.
+    Attribution is per-signal:
+
+    - ``fast_path_patterns`` / ``command_pattern`` are mode-level (anchored
+      regex / explicit mode name), so a match attributes ALL of the mode's
+      ``routing_intent_tags``.
+    - ``routing_intent_keywords`` are per-tag substring matches, so a match
+      attributes ONLY the matched tag(s) — a "list vms" keyword must not
+      dump the mode's write/stop/terminate tags into the detected set (the
+      2026-08-28 cloudservers misroute: a read-only "what VMs are running?"
+      query matched the list-vms keyword, all 7 cloudservers tags were
+      attributed, and the read query was routed into a write-contract mode
+      that then synthesized a destructive ``cs_apply_cloud_init`` call).
+
+    This is data-driven: the kernel does not hardcode which keywords map to
+    which intents — the mode front-matter declares both the patterns and the
+    tags.
 
     Intent polarity guard: when the session's ``topic_abandonment_markers``
     vocabulary contains a marker present in the query (e.g. "side quest",
@@ -169,37 +180,46 @@ def _detect_query_intents(
         if mode_config is None:
             _log.debug("query intent detection: target=%s not in catalog", target_id)
             continue
-        # Check fast_path_patterns (anchored regex) first.
-        matched = False
+        # Tags attributed by this target. ``fast_path_patterns`` and
+        # ``command_pattern`` are mode-level signals (anchored regex /
+        # explicit mode name) so they attribute ALL of the mode's
+        # ``routing_intent_tags``. ``routing_intent_keywords`` are per-tag
+        # substring matches so they attribute ONLY the matched tag(s) — a
+        # "list vms" keyword match must not dump the mode's write/stop/
+        # terminate tags into the detected set (the 2026-08-28 cloudservers
+        # misroute: "what VMs are running?" matched the list-vms keyword
+        # and attributed all 7 cloudservers tags, routing a read-only query
+        # into a write-contract mode that then synthesized a destructive
+        # ``cs_apply_cloud_init`` call with empty args).
+        matched_tags: set[str] = set()
         for pattern in mode_config.fast_path_patterns:
             try:
                 if re.search(pattern, query_lower, re.IGNORECASE):
-                    matched = True
+                    matched_tags.update(mode_config.routing_intent_tags)
                     break
             except re.error:
                 _log.debug("query intent detection: target=%s invalid pattern=%r", target_id, pattern)
-        if not matched:
+        if not matched_tags:
             # Check routing_intent_keywords (per-tag substring match). Each
             # keyword only attributes its associated tag, so a keyword match
             # for one tag does not falsely trigger a different tag the same
             # mode declares. The tag vocabulary is pack-authored and opaque
             # to the kernel.
-            for keywords in mode_config.routing_intent_keywords.values():
+            for tag, keywords in mode_config.routing_intent_keywords.items():
                 for keyword in keywords:
                     if keyword in query_lower:
-                        matched = True
+                        matched_tags.add(tag)
                         break
-                if matched:
-                    break
             # Also check the command_pattern — a query that explicitly names
-            # the mode (e.g. "remember that...") is a strong signal.
-            if not matched and not mode_config.routing_intent_keywords and mode_config.command_pattern:
+            # the mode (e.g. "remember that...") is a strong signal. Mode-
+            # level, so it attributes all the mode's routing_intent_tags.
+            if not matched_tags and not mode_config.routing_intent_keywords and mode_config.command_pattern:
                 try:
                     if re.search(mode_config.command_pattern, query, re.IGNORECASE):
-                        matched = True
+                        matched_tags.update(mode_config.routing_intent_tags)
                 except re.error:
                     _log.debug("query intent detection: target=%s invalid command_pattern=%r", target_id, mode_config.command_pattern)
-        if not matched:
+        if not matched_tags:
             continue
         # Polarity guard: this target matched, but if an abandonment marker
         # is present the match means the user is *mentioning* the topic to
@@ -214,8 +234,8 @@ def _detect_query_intents(
                 target_id,
             )
             continue
-        detected.update(mode_config.routing_intent_tags)
-        _log.debug("query intent detection: target=%s matched (tags=%s)", target_id, mode_config.routing_intent_tags)
+        detected.update(matched_tags)
+        _log.debug("query intent detection: target=%s matched (tags=%s)", target_id, sorted(matched_tags))
     _log.info(
         "query intents detected: intents=%s suppressed=%s (from %d routing targets)",
         sorted(detected),

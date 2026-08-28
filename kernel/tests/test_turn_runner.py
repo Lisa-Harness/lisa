@@ -3296,6 +3296,95 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
     assert "remember" in hint and "markdown" in hint
 
 
+def test_detect_query_intents_attributes_only_matched_keyword_tag() -> None:
+    """``routing_intent_keywords`` are per-tag substring matches, so a
+    keyword for one tag attributes ONLY that tag — not all of the mode's
+    ``routing_intent_tags``.
+
+    Regression for the 2026-08-28 cloudservers misroute: a read-only
+    "what VMs are running?" query matched the ``list-vms`` keyword, the
+    old code attributed ALL 7 cloudservers tags (including the write-
+    intent ``create-vm``, ``start-vm``, ``terminate-vm``, ...) to the
+    query, and the read query was routed into the write-contract
+    ``cloudservers`` mode. The write-contract backstop then synthesized
+    a destructive ``cs_apply_cloud_init`` call with empty args.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    # cloudservers declares 7 tags; the ``list-vms`` keyword bucket is the
+    # only one the read query hits.
+    cloudservers_cfg = _mode_config(
+        mode_id="cloudservers",
+        routing_intent_tags=[
+            "cloud-init", "create-vm", "list-vms", "schedule-vm",
+            "start-vm", "stop-vm", "terminate-vm",
+        ],
+        routing_intent_keywords={
+            "list-vms": ["list vms", "what vms", "running"],
+            "create-vm": ["create vm", "new vm"],
+            "start-vm": ["start vm"],
+            "stop-vm": ["stop vm"],
+            "terminate-vm": ["terminate vm"],
+            "schedule-vm": ["schedule"],
+            "cloud-init": ["cloud-init"],
+        },
+    )
+    patched_catalog = {"cloudservers": cloudservers_cfg}
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query="what VMs are running?",
+            routing_targets=["cloudservers"],
+        )
+
+    # Only the list-vms intent is detected — NOT create-vm, start-vm, etc.
+    assert detected == {"list-vms"}
+
+
+def test_detect_query_intents_fast_path_attributes_all_tags() -> None:
+    """``fast_path_patterns`` are mode-level (anchored regex), so a match
+    attributes ALL of the mode's ``routing_intent_tags``. This preserves
+    the high-precision fast-path signal: a pattern that names the mode is
+    a strong signal the user wants that mode's full capability set.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import WorkflowModeConfig
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    multi_cfg = WorkflowModeConfig(
+        mode_id="multi",
+        start_stage_id="none",
+        mode_kind="chat",
+        routable=True,
+        routing_intent_tags=["read", "write", "execute"],
+        fast_path_patterns=[r"^run multi mode$"],
+        routing_intent_keywords={
+            "read": ["read"],
+            "write": ["write"],
+            "execute": ["execute"],
+        },
+    )
+    patched_catalog = {"multi": multi_cfg}
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query="run multi mode",
+            routing_targets=["multi"],
+        )
+
+    assert detected == {"read", "write", "execute"}
+
+
 def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     """A query whose gap mixes a producer intent (research/reasoning) with
     a consumer intent (write/coding) must NOT fork — the consumer needs
