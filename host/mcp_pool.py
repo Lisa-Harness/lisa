@@ -590,6 +590,26 @@ def compile_mcp_configs(
         os.environ["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
     if config.user_slug:
         os.environ["LISA_USER_SLUG"] = config.user_slug
+    # Thread-read redaction: the same env contract ``host.config`` resolves
+    # for the host's in-process excerpt/manifest/search reads. The read-only
+    # lisa-thread subprocess applies the same policy to ``thread_read_range``
+    # / ``thread_read_recent`` / ``thread_search`` so the model cannot pull
+    # prior harness-authored budget/cap prose back into context verbatim
+    # through deep reads (the 2026-08-30 budget-claim relapse: the model
+    # called ``thread_read_range`` and re-read its own unredacted cap-fire
+    # claims). ``enabled=0`` or ``patterns=none`` tells the server to build
+    # an unredacted store; unset patterns fall back to the framework
+    # defaults inside the server. Unconditional assignment (never
+    # ``setdefault``) per the parent-shell pollution note above.
+    os.environ["LISA_THREAD_REDACTION_ENABLED"] = (
+        "1" if config.thread_redaction_enabled else "0"
+    )
+    if config.thread_redaction_enabled and config.thread_redaction_patterns:
+        os.environ["LISA_THREAD_REDACTION_PATTERNS"] = "\n".join(
+            config.thread_redaction_patterns
+        )
+    else:
+        os.environ.pop("LISA_THREAD_REDACTION_PATTERNS", None)
 
     registry = MCPServerRegistry()
 

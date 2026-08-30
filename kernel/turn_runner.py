@@ -6131,6 +6131,25 @@ async def _run_turn_inner(
             # canonical extractor so reasoning models that put the answer in
             # ``reasoning_content`` (empty ``content``) still surface it.
             content = completion_content(completion).strip()
+            if not content:
+                # Empty final completion with zero tool calls: the provider
+                # produced nothing usable (provider-empty response, all
+                # tokens spent on unextracted reasoning, or a truncation that
+                # dropped the visible text). Log the cause so remote boxes
+                # can diagnose WHY without the local jsonl artifacts —
+                # ``finish_reason`` distinguishes truncation (``length``)
+                # from a clean-but-empty stop.
+                _log.warning(
+                    "turn loop: model returned empty final completion "
+                    "(mode=%s, iteration=%d/%d, finish_reason=%s, "
+                    "tool_calls_total=%d) — harness will yield for redirect, "
+                    "not claim a budget hit",
+                    mode_id,
+                    _state.iteration,
+                    max_tool_iterations,
+                    getattr(completion, "finish_reason", "unknown"),
+                    _state.total_tool_calls,
+                )
             break
 
     if not content:
@@ -6219,15 +6238,40 @@ async def _run_turn_inner(
             _yielded = True
         elif _resolve_yield_policy(mode_config, _yield_policy_override).allowed:
             _yield_policy = _resolve_yield_policy(mode_config, _yield_policy_override)
+            # Be honest about WHY the turn ended with no content. The budget
+            # claim is only true when the iteration cap actually fired; an
+            # empty final completion at iteration N of N (the 2026-08-30
+            # remote-box relapse: kimi-k3:cloud returned empty visible
+            # content on 1-2 model calls) must NOT be labeled "I've hit my
+            # iteration budget" — that fabricated claim is persisted to the
+            # thread, the model later reads it back (via the thread manifest
+            # or the lisa-thread MCP server) as ground truth, and the
+            # pattern re-fires every turn. An authored
+            # ``yield_policy.default_question`` still wins in both branches.
+            _budget_actually_exhausted = _state.iteration >= max_tool_iterations
+            if _budget_actually_exhausted:
+                _fallback_question = _yield_policy.default_question or (
+                    "I've hit my iteration budget for this turn. "
+                    "How would you like me to proceed?"
+                )
+                _fallback_context = (
+                    f"iteration cap {max_tool_iterations} reached "
+                    f"with no final content"
+                )
+            else:
+                _fallback_question = _yield_policy.default_question or (
+                    "The model returned an empty response before reaching "
+                    "any budget limit. How would you like me to proceed?"
+                )
+                _fallback_context = (
+                    f"empty final completion at iteration "
+                    f"{_state.iteration} of {max_tool_iterations} — budget "
+                    f"not exhausted; check the provider response "
+                    f"(finish_reason/reasoning extraction)"
+                )
             _pending_yield = YieldAction(
-                question=(
-                    _yield_policy.default_question
-                    or (
-                        "I've hit my iteration budget for this turn. "
-                        "How would you like me to proceed?"
-                    )
-                ),
-                context=f"iteration cap {max_tool_iterations} reached with no final content",
+                question=_fallback_question,
+                context=_fallback_context,
                 target_mode_id=_yield_policy.fallback_mode,
             )
             content = _pending_yield.question

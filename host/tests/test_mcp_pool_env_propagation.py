@@ -87,3 +87,63 @@ async def test_compile_mcp_configs_skips_thread_dir_env_when_no_thread(
 
     assert "LISA_THREAD_DIR" not in os.environ
     assert os.environ["LISA_USER_SLUG"] == "testing"
+
+
+@pytest.mark.asyncio
+async def test_compile_mcp_configs_exports_thread_redaction_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The thread redaction env contract reaches the server subprocess.
+
+    The lisa-thread server reads ``LISA_THREAD_REDACTION_ENABLED`` /
+    ``LISA_THREAD_REDACTION_PATTERNS`` to build its redaction policy. The
+    host is the authoritative source (the same fields
+    ``host.config`` resolves for in-process reads); pre-set empty
+    shell values must not leak, and unset custom patterns must be popped
+    so the server can fall back to framework defaults.
+    """
+    # Set AFTER nothing: HostConfig.from_env reads these vars at construction,
+    # so a polluted patterns var would leak into runtime.config. Set the
+    # polluted shell value FIRST, then construct → config picks it up →
+    # the export path must still be correct. For the defaults case, start
+    # from a clean patterns var so the runtime resolves defaults.
+    monkeypatch.setenv("LISA_THREAD_REDACTION_ENABLED", "")
+    monkeypatch.delenv("LISA_THREAD_REDACTION_PATTERNS", raising=False)
+
+    runtime = _make_runtime(tmp_path, user_slug="testing")
+    _stub_discovery(monkeypatch)
+
+    mcp_pool.compile_mcp_configs(runtime)
+
+    # Default config: enabled with no custom patterns → "1" and the
+    # patterns var is popped (server falls back to DEFAULT_REDACTION_PATTERNS).
+    assert os.environ["LISA_THREAD_REDACTION_ENABLED"] == "1"
+    assert "LISA_THREAD_REDACTION_PATTERNS" not in os.environ
+
+
+@pytest.mark.asyncio
+async def test_compile_mcp_configs_exports_custom_redaction_patterns(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Configured custom patterns are newline-joined into the env var."""
+    monkeypatch.setenv("LISA_THREAD_REDACTION_PATTERNS", "stale-shell-pattern")
+
+    runtime = _make_runtime(tmp_path, user_slug="testing")
+    # Rebuild the runtime config with custom patterns (HostConfig is frozen;
+    # ``runtime.config`` is a plain attribute so this assignment sticks).
+    import dataclasses  # noqa: PLC0415
+
+    runtime.config = dataclasses.replace(
+        runtime.config,
+        thread_redaction_patterns=(r"leaked_secret_\d+", r"stale_warning[^\n]*"),
+    )
+    _stub_discovery(monkeypatch)
+
+    mcp_pool.compile_mcp_configs(runtime)
+
+    assert (
+        os.environ["LISA_THREAD_REDACTION_PATTERNS"]
+        == "leaked_secret_\\d+\nstale_warning[^\\n]*"
+    )

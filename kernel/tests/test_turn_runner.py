@@ -1868,6 +1868,64 @@ async def test_run_turn_execution_policy_caps_specific_capability_calls() -> Non
 
 
 @pytest.mark.asyncio
+async def test_empty_final_completion_does_not_claim_iteration_budget() -> None:
+    """An empty final completion far from the cap must NOT be labeled a
+    budget hit.
+
+    Regression for the 2026-08-30 remote-box relapse: kimi-k3:cloud
+    returned empty visible content on 1-2 model calls, the loop broke with
+    empty content at iteration 1-2 of 300, and the post-loop fallback
+    fabricated "I've hit my iteration budget for this turn." That claim was
+    false (the cap never fired), was persisted to the thread, was read back
+    by the model as ground truth, and re-fired on every subsequent turn —
+    "over and over after 1 call". The fallback now relabels this honestly
+    as an empty completion and reserves the budget claim for the case
+    where the cap was actually reached.
+    """
+
+    async def empty_completion(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="")
+
+    hooks = _build_minimal_hooks(empty_completion)
+    # Neutral query: no producer-intent markers, so no routing hint (and no
+    # forced-action synthesis) competes with the empty-completion path.
+    result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    lowered = result.response_text.lower()
+    assert "iteration budget" not in lowered
+    assert "empty response" in lowered.lower() or "empty" in lowered
+    # Still a yield for redirect (chat mode) — semantics preserved.
+    assert result.yielded is not None
+
+
+@pytest.mark.asyncio
+async def test_empty_final_completion_near_cap_does_not_claim_budget() -> None:
+    """An empty final completion before the cap is honestly relabeled even
+    when close to the cap.
+
+    An empty completion breaks the loop immediately (``iteration 1`` with
+    ``max_tool_iterations=2``); only a strip-tools path (router finish)
+    can carry an empty completion to the exhausted branch. The regression
+    we care about: whenever the cap has NOT actually fired, the response
+    must not claim a budget hit — including the near-cap case where the
+    user could easily believe the budget ran out.
+    """
+
+    async def empty_completion(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="")
+
+    hooks = _build_minimal_hooks(empty_completion)
+    result = await run_turn(
+        mode_id="default", query="hello there", hooks=hooks, max_tool_iterations=2
+    )
+
+    lowered = result.response_text.lower()
+    assert "iteration budget" not in lowered
+    assert "empty response" in lowered or "empty" in lowered
+    assert result.yielded is not None
+
+
+@pytest.mark.asyncio
 async def test_run_turn_calls_on_turn_complete() -> None:
     """on_turn_complete is called after a successful turn."""
     side_effects: list[dict[str, Any]] = []

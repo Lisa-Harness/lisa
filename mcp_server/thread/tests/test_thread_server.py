@@ -244,3 +244,114 @@ async def test_thread_read_recent_returns_entries(
     )
     data = json.loads(_tool_text(result))
     assert len(data) == 2
+
+
+# ── Read-path redaction ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_thread_read_range_redacts_default_patterns_by_default(
+    thread_deps: None,
+    tmp_path: Path,
+) -> None:
+    """Without env overrides, served entries apply the default redaction
+    policy: harness-authored cap-fire prose is struck through before it
+    ever reaches the model.
+
+    Regression for the 2026-08-30 remote-box relapse: the model called
+    ``thread_read_range`` and pulled its own prior fabricated budget
+    claims back into context verbatim (the host's in-process excerpt was
+    redacted since 2026-08-27, but the MCP server's store was not). The
+    server now builds its store through the same env-resolved policy the
+    host uses.
+    """
+    from mcp_server.thread.server import mcp
+
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="do the work",
+        response_text=(
+            "I've hit my iteration budget in default "
+            "(stuck in default for 6 iterations (cap))."
+        ),
+    )
+    _write_active_entry(thread_path, query="next", response_text="clean answer")
+
+    result = await mcp.call_tool(
+        "thread_read_range",
+        {"start_turn": 0, "end_turn": 999},
+    )
+    data = json.loads(_tool_text(result))
+    assert len(data) == 2
+    assert "I've hit my iteration budget" not in data[0]["response_text"]
+    assert "stuck in default for 6 iterations" not in data[0]["response_text"]
+    # The clean entry and the raw store are untouched.
+    assert data[1]["response_text"] == "clean answer"
+
+    from sdk.thread import ThreadStore
+
+    raw = ThreadStore(thread_path).load_recent(limit=5)
+    assert "I've hit my iteration budget" in raw[0]["response_text"]
+
+
+@pytest.mark.asyncio
+async def test_thread_read_recent_env_patterns_override_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-empty ``LISA_THREAD_REDACTION_PATTERNS`` replaces defaults
+    entirely (hard cutover, same contract as the host)."""
+    from mcp_server.thread.server import mcp
+
+    monkeypatch.setenv("LISA_THREAD_REDACTION_PATTERNS", r"hunter2")
+    from mcp_server.thread.server import init_thread
+
+    init_thread(
+        data_dir=tmp_path,
+        thread_dir=str(tmp_path / "threads"),
+        user_slug="tester",
+    )
+
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="secret query with hunter2 inside",
+        response_text="I've hit my iteration budget for this turn.",
+    )
+
+    result = await mcp.call_tool("thread_read_recent", {"limit": 5})
+    data = json.loads(_tool_text(result))
+    # Custom pattern fired; the default cap-fire pattern did NOT.
+    assert "hunter2" not in data[0]["query"]
+    assert "I've hit my iteration budget" in data[0]["response_text"]
+
+
+@pytest.mark.asyncio
+async def test_thread_read_range_redaction_disabled_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``LISA_THREAD_REDACTION_ENABLED=0`` builds an unredacted store."""
+    from mcp_server.thread.server import init_thread, mcp
+
+    monkeypatch.setenv("LISA_THREAD_REDACTION_ENABLED", "0")
+    init_thread(
+        data_dir=tmp_path,
+        thread_dir=str(tmp_path / "threads"),
+        user_slug="tester",
+    )
+
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="q",
+        response_text="stuck in default for 6 iterations (cap).",
+    )
+
+    result = await mcp.call_tool(
+        "thread_read_range",
+        {"start_turn": 0, "end_turn": 999},
+    )
+    data = json.loads(_tool_text(result))
+    assert "stuck in default for 6 iterations (cap)" in data[0]["response_text"]
