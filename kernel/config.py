@@ -26,26 +26,6 @@ from pydantic_settings import (
 _LISA_ENV_PREFIX = "LISA_"
 
 
-_REMOVED_MODEL_ENV_ALIASES = frozenset(
-    {
-        "deep_model",
-        "DEEP_MODEL",
-        "azure_openai_deployment_deep",
-        "AZURE_OPENAI_DEPLOYMENT_DEEP",
-        "self_model_enabled",
-        "SELF_MODEL_ENABLED",
-        "self_model_max_entries",
-        "SELF_MODEL_MAX_ENTRIES",
-        "self_model_max_markdown_chars",
-        "SELF_MODEL_MAX_MARKDOWN_CHARS",
-        "self_model_include_help_hints",
-        "SELF_MODEL_INCLUDE_HELP_HINTS",
-        "self_learning_enabled",
-        "SELF_LEARNING_ENABLED",
-    }
-)
-
-
 def _normalized_settings_keys(settings_cls: type[BaseSettings]) -> set[str]:
     """Return normalized field and alias keys accepted by the settings model."""
 
@@ -70,8 +50,6 @@ class _KnownSettingFilteringSource(PydanticBaseSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         data = dict(self._source())
-        for alias in _REMOVED_MODEL_ENV_ALIASES:
-            data.pop(alias, None)
         allowed_keys = _normalized_settings_keys(self.settings_cls)
         return {key: value for key, value in data.items() if key.lower() in allowed_keys}
 
@@ -258,7 +236,8 @@ class Settings(BaseSettings):
     # to "use" the budget it sees. The full contract is injected at
     # turn start; each subsequent iteration replaces it with a
     # super-brief delta. Override via ``BUDGET_BRIEFING_ENABLED``.
-    budget_briefing_enabled: bool = True    # Minimum response length (characters) before a chat-kind mode's
+    budget_briefing_enabled: bool = True
+    # Minimum response length (characters) before a chat-kind mode's
     # unverified prose is accepted as a successful completion. When a
     # write-contract mode ends with no write receipt, the kernel blocks
     # as ``no_tools`` — UNLESS the mode is ``chat``-kind, the model
