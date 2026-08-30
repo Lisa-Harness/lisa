@@ -4,6 +4,85 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Kernel config: dead settings removed, identity + context budgets migrated to host
+
+- **What:** `kernel/config.py` cut to only settings the kernel actually
+  reads. Removed as dead (zero consumers): `workspace_id_fallback` (kernel
+  and sdk copies), the `memory_recall_*` / `memory_auto_capture_*` copies
+  (hosts read their own copies in `host/config.py`), all eleven
+  `passive_intelligence_*` fields (the layer was never wired), and the
+  dead `state_container` / `intel_inbox_container` fields in
+  `sdk/config.py`. Migrated out of the kernel: the nine `identity_*` scope
+  defaults and the per-lane `context_budget_*` ceilings now live on
+  `host/config.py` (`HostConfig`, env-overridable via
+  `LISA_CONTEXT_BUDGET_*`); `TurnHooks` and `_build_minimal_context` fall
+  back to plain personal-DM literals instead of kernel settings.
+  `ContextBudgetAllocator.for_turn` now takes `enabled` / `lane_limits` /
+  `token_char_ratio` as explicit parameters injected by the host call site
+  instead of reading kernel settings; the kernel keeps only the shared
+  chars-per-token estimate (`CONTEXT_BUDGET_TOKEN_CHAR_RATIO`) and the
+  mapper scoring dicts. The duplicated
+  `declarative_completion_max_tokens` / `_temperature` now have a single
+  source of truth (kernel); `sdk/content/_catalog.py` reads them from
+  `kernel.config`. The kernel `memory_recall_final_limit`-style duplicate
+  went with it — `sdk.config` keeps only what packs read
+  (`memory_recall_final_limit`, `external_signal_timeout_seconds`).
+- **Why:** Every dead field was env-overridable surface area that silently
+  did nothing — an operator tuning `LISA_PASSIVE_INTELLIGENCE_*` got no
+  effect and no error. Identity defaults only mattered for bare/test hosts
+  (the CLI host builder overrides all nine from its own config), and the
+  context-budget lanes are an assembly/prompting product decision, not
+  kernel mechanics. Both belong to the host.
+- **Config:** New host env vars `LISA_CONTEXT_BUDGET_{ENABLED,
+  CORE_MAX_TOKENS, RETRIEVAL_MAX_TOKENS, MEMORY_MAX_TOKENS,
+  REFLECTION_MAX_TOKENS, HISTORY_MAX_TOKENS, OPERATIONAL_MAX_TOKENS,
+  TOKEN_CHAR_RATIO}` (optional; dataclass defaults unchanged). Removed env
+  names (`LISA_IDENTITY_*` never existed; `WORKSPACE_ID_FALLBACK` was never
+  read) — a hard cutover with no aliases, per the framework's no-compat
+  rule. Every remaining kernel setting now carries a complete standalone
+  definition (what it bounds, what failure mode motivated it, the interplay
+  with the budgets it shares a pool with).
+- **Tests:** `kernel/context/tests/test_evidence_freshness_regression.py`
+  now pins importability *and* the migration (asserts the removed fields
+  stay removed) instead of asserting the dead fields existed;
+  `test_turn_runner_tool_dispatch.py` and
+  `test_config_env_prefix.py` updated for the literal identity defaults and
+  the corrected `stage_nudge_cap` baseline (9); allocator tests construct
+  budgets explicitly.
+
+### Fixed
+
+#### Budget-claim loop on empty completions (`thread_read_range` redaction + honest fallback)
+
+- **What:** Two fixes for the 2026-08-30 remote-box relapse where Lisa claimed
+  "I've hit my iteration budget" after 1-2 model calls on every turn:
+  (1) the `lisa-thread` MCP server now resolves the same
+  `LISA_THREAD_REDACTION_ENABLED` / `LISA_THREAD_REDACTION_PATTERNS` env
+  contract as the host and applies the policy to every served entry
+  (`thread_read_range` / `thread_read_recent` / `thread_search`) — the host
+  exports both variables to the subprocess in `host.mcp_pool`;
+  (2) the kernel's post-loop fallback in `kernel.turn_runner` no longer
+  fabricates "I've hit my iteration budget" when the iteration cap never
+  fired — an empty final completion now yields an honest "the model returned
+  an empty response" question, and the budget claim is reserved for the case
+  where `iteration >= max_tool_iterations` actually held. An empty-completion
+  break now logs `finish_reason` so remote boxes can diagnose WHY the provider
+  returned nothing (truncation vs unextracted reasoning) without local jsonls.
+- **Why:** The exact "I've hit my iteration budget for this turn." string was
+  harness-authored at any empty-content exit, persisted to the thread, and
+  re-read by the model as ground truth — relabeling a provider-side empty
+  response as a budget event and re-firing every turn. The 2026-08-27
+  redaction facility covered the host's in-process excerpt/manifest/search
+  reads but not the read-only MCP server the model calls for deep history
+  (`thread_read_range` was observed in the failing trace immediately before
+  each relapse), and redaction cannot prevent the next fabrication — the
+  kernel authored each one fresh from empty content.
+- **Config:** No new env vars — the server reuses
+  `LISA_THREAD_REDACTION_ENABLED` / `LISA_THREAD_REDACTION_PATTERNS` (and
+  `none`) with hard-cutover semantics identical to the host contract.
+
 ### Removed
 
 #### Checkpoint system entirely

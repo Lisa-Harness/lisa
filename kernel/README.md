@@ -41,7 +41,7 @@ Key principles:
 | --- | --- |
 | `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. Supports pack exclusion via `excluded_packs`. |
 | `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by key, model_id, alias, or display_alias. Supports per-mode model overrides via `mode_models`. |
-| `config.py` | Kernel-owned settings: `sdk_content_roots`, `workspace_id_fallback`, and workshop budget parameters. Loads from environment with unknown-key filtering. |
+| `config.py` | Kernel-owned settings: `sdk_content_roots`, declarative-completion defaults, turn-runner iteration budgets, guard caps, mapper scoring weights, and the shared chars-per-token estimate. Loads from environment with unknown-key filtering and an optional `LISA_` prefix. Surface identity defaults and per-lane context budgets live on the host (`host/config.py`). |
 | `pack_activation.py` | Shared helpers for reading disabled-pack state from `installed-packs.json` and `LISA_DISABLED_PACKS` env var. Used by all entry-point discovery mechanisms. |
 | `pack_configuration.py` | Immutable, pack-scoped configuration resolved from a session plan. `SessionPackConfigurationResolver` freezes configuration at construction time. |
 | `session_plan.py` | Strict session-manifest contracts (`SessionManifestV2`) and deterministic plan compilation. Defines `SessionPlan`, `PackSelection`, `ResourceSelection`, `ContextPlan`, and related models. |

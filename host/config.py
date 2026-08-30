@@ -8,6 +8,7 @@ construction time — no deferred env-var reads.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -37,6 +38,14 @@ LISA_THREAD_SEGMENT_TURNS_ENV = "LISA_THREAD_SEGMENT_TURNS"
 LISA_THREAD_REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
 LISA_THREAD_REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
 LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
+LISA_CONTEXT_BUDGET_ENABLED_ENV = "LISA_CONTEXT_BUDGET_ENABLED"
+LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS"
+LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV = "LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO"
 
 # ── Default values ────────────────────────────────────────────────────
 
@@ -100,6 +109,51 @@ def _normalize_slice_flag(value: str) -> bool | None:
     return None
 
 
+def _context_budget_overrides() -> dict[str, int | bool]:
+    """Resolve context-budget values that have explicit env overrides.
+
+    Returns only the keys actually present in the environment; the
+    dataclass defaults are the source of truth for everything else.
+    Invalid integers log a warning and fall back to the default.
+    """
+
+    overrides: dict[str, int | bool] = {}
+    bool_raw = _resolve_env(LISA_CONTEXT_BUDGET_ENABLED_ENV)
+    if bool_raw:
+        enabled = _resolve_env_bool(LISA_CONTEXT_BUDGET_ENABLED_ENV, True)
+        overrides["context_budget_enabled"] = enabled
+    int_specs = (
+        (LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS_ENV, "context_budget_core_max_tokens", 2000),
+        (
+            LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS_ENV,
+            "context_budget_retrieval_max_tokens",
+            1500,
+        ),
+        (LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS_ENV, "context_budget_memory_max_tokens", 1200),
+        (
+            LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV,
+            "context_budget_reflection_max_tokens",
+            1000,
+        ),
+        (LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV, "context_budget_history_max_tokens", 1500),
+        (
+            LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV,
+            "context_budget_operational_max_tokens",
+            800,
+        ),
+        (LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV, "context_budget_token_char_ratio", 4),
+    )
+    for env_name, field_name, default_value in int_specs:
+        raw = _resolve_env(env_name)
+        if not raw:
+            continue
+        try:
+            overrides[field_name] = max(0, int(raw))
+        except ValueError:
+            logger.warning("invalid %s value %r; using default %d", env_name, raw, default_value)
+    return overrides
+
+
 @dataclass(frozen=True, slots=True)
 class SliceConfig:
     """Slice (opportunistic house-keeping) configuration."""
@@ -118,6 +172,74 @@ class SliceConfig:
         if self.explicit_enabled is not None:
             tuning["explicit_enabled"] = self.explicit_enabled
         return tuning
+
+
+@dataclass(frozen=True, slots=True)
+class _SliceEnvOverrides:
+    """Slice flags and explicit budget as resolved from the environment."""
+
+    pre_turn_enabled: bool | None
+    post_turn_enabled: bool | None
+    explicit_enabled: bool | None
+    explicit_budget_ms: int
+
+
+def _slice_overrides() -> _SliceEnvOverrides:
+    """Resolve slice flags and explicit-budget from the environment."""
+
+    return _SliceEnvOverrides(
+        pre_turn_enabled=_normalize_slice_flag(_resolve_env(LISA_SLICE_PRE_TURN_ENV)),
+        post_turn_enabled=_normalize_slice_flag(_resolve_env(LISA_SLICE_POST_TURN_ENV)),
+        explicit_enabled=_normalize_slice_flag(_resolve_env(LISA_SLICE_EXPLICIT_ENV)),
+        explicit_budget_ms=_slice_explicit_budget_env(),
+    )
+
+
+def _slice_explicit_budget_env() -> int:
+    """Read LISA_SLICE_BUDGET_MS with clamping; default when unset/invalid."""
+
+    raw_budget = _resolve_env(LISA_SLICE_BUDGET_MS_ENV, "").strip()
+    if not raw_budget:
+        return _DEFAULT_SLICE_EXPLICIT_BUDGET_MS
+    with contextlib.suppress(ValueError):
+        return max(50, min(int(raw_budget), 30_000))
+    return _DEFAULT_SLICE_EXPLICIT_BUDGET_MS
+
+
+def _log_level_override(explicit_log_level: str) -> str:
+    """Resolve log level: explicit CLI arg wins, then env, else empty."""
+
+    raw_log_level = explicit_log_level.strip()
+    if raw_log_level:
+        return raw_log_level
+    env_log = _resolve_env(LISA_LOG_LEVEL_ENV)
+    return env_log if env_log else ""
+
+
+def _thread_redaction_env() -> tuple[bool, tuple[str, ...]]:
+    """Resolve thread-redaction enabled flag and patterns from the environment.
+
+    Returns the effective ``(enabled, patterns)`` pair. A ``none`` pattern
+    value disables redaction entirely; explicit patterns replace defaults;
+    unset falls back to the compiled-in defaults with redaction enabled.
+    """
+
+    enabled = _resolve_env_bool(LISA_THREAD_REDACTION_ENABLED_ENV, True)
+    raw_patterns = _resolve_env(LISA_THREAD_REDACTION_PATTERNS_ENV, "").strip()
+    if raw_patterns.lower() == "none":
+        return False, ()
+    if raw_patterns:
+        return enabled, tuple(p for p in raw_patterns.splitlines() if p.strip())
+    return enabled, ()
+
+
+def _resolved_path_or_none(raw_value: str, env_name: str) -> Path | None:
+    """Resolve one optional path field (CLI arg first, then env) to absolute."""
+
+    raw = raw_value.strip() or _resolve_env(env_name)
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +336,87 @@ class HostConfig:
     memory_auto_capture_daily_threshold: float = 0.65
     memory_auto_capture_weekly_threshold: float = 0.8
 
+    # ── Context budget (per-lane token ceilings for prompt assembly) ───
+    # The dynamic user-context block is assembled from optional prompt
+    # sections grouped into six lanes. Each lane has a token ceiling; a
+    # section that exceeds its lane's remaining budget is dropped (or
+    # truncated when allowed) rather than pushing other sections out.
+    # ``ContextBudgetAllocator`` (kernel) consults these values via the
+    # ``for_turn`` factory; the allocator's total ceiling is normally the
+    # model-aware window computed by the context mapper, and the lane
+    # ceilings are the per-lane split of that window.
+    # Master switch. When False, sections bypass budgeting entirely and
+    # pass through at full size — assembly is unbounded. Override via
+    # ``LISA_CONTEXT_BUDGET_ENABLED``.
+    context_budget_enabled: bool = True
+    # Ceiling for the ``core`` lane: always-on turn framing — ambient
+    # facts (time, host OS, host name) and the per-turn dynamic-context
+    # header (mode id/kind, query length, host/user slug). This lane is
+    # allocated first and small by design; if the core header ever
+    # exceeds 2000 tokens something upstream is broken, so treat a breach
+    # as a bug signal rather than raising the cap. Override via
+    # ``LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS``.
+    context_budget_core_max_tokens: int = 2000
+    # Ceiling for the ``retrieval`` lane: ranked context evidence the
+    # session-owned ContextMapper selected from UnifiedState (pack items,
+    # operational state, recalled evidence). Note the mapper already fits
+    # its output to the model-aware window before this ceiling applies,
+    # so this lane budget is a secondary bound, not the primary trim.
+    # Override via ``LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS``.
+    context_budget_retrieval_max_tokens: int = 1500
+    # Ceiling for the ``memory`` lane: authored session context the user
+    # pinned for the session (``--session-context`` markdown, normalized
+    # to provenance tags). Pinned instructions outrank derived evidence,
+    # so this lane is generous; it exists so a runaway authored file
+    # cannot crowd out live conversation. Override via
+    # ``LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS``.
+    context_budget_memory_max_tokens: int = 1200
+    # Ceiling for the ``reflection`` lane: the diagnostic-reflection
+    # block injected when replay controls enable it, summarizing what the
+    # previous turn did and what remains. Session front matter may
+    # tighten this cap but never raise it. Override via
+    # ``LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS``.
+    context_budget_reflection_max_tokens: int = 1000
+    # Ceiling for the ``history`` lane: the recent-conversation excerpt
+    # and the thread manifest. Both sections share this lane; the recent
+    # excerpt is allocated first (it carries the assistant's last answer
+    # the user is replying to) and the manifest takes the remainder, so
+    # an oversized manifest is what gets dropped. Session front matter
+    # may tighten this cap but never raise it. Override via
+    # ``LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS``.
+    context_budget_history_max_tokens: int = 1500
+    # Ceiling for the ``operational`` lane: the live capability manifest
+    # (modes/operations/tools/models the model may call this turn).
+    # Counts scale with installed packs; keep the ceiling generous, but
+    # not so generous that a pathological pack catalog silently floods
+    # the prompt. Override via
+    # ``LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS``.
+    context_budget_operational_max_tokens: int = 800
+
+    # ── Surface identity defaults ─────────────────────────────────────
+    # Default scope values stamped onto every OperationExecutionContext
+    # and TurnHooks when the host does not supply a more specific value.
+    # The CLI host derives most of these from ``user_slug`` and the
+    # session plan; these defaults exist so bare/test hosts produce
+    # coherent scope addresses without wiring. Keep them aligned with the
+    # framework's convention for single-user personal surfaces; a host
+    # with real multi-tenancy must set its own identity per turn.
+    # Workspace partitions durable state (memories, approvals, caches).
+    identity_workspace_id: str = "lisa-host"
+    # Stable user identifiers for memory scoping and privacy boundaries.
+    identity_user_id: str = "lisa-user"
+    identity_user_slug: str = "lisa-user"
+    identity_user_name: str = "Lisa User"
+    # Principal key for approval/audit attribution.
+    identity_principal_key: str = "lisa-user"
+    # Conversation and surface identity for the default single-user
+    # personal-DM console surface.
+    identity_conversation_id: str = "lisa-host-console"
+    identity_surface_type: str = "personal_dm"
+    identity_surface_id: str = "lisa-host-console"
+    # Memory privacy scope: which memory tier this surface may read.
+    identity_memory_scope: str = "personal"
+
     # ── Execution policy ───────────────────────────────────────────────
     execution_policy: ExecutionPolicy = field(default_factory=default_interactive_execution_policy)
 
@@ -305,15 +508,7 @@ class HostConfig:
         cli_tz = timezone.strip()
         resolved_tz, tz_source = resolve_timezone(cli_tz)
 
-        # ── Log level ─────────────────────────────────────────────────
-        # When debug=True and no explicit log_level is passed, leave it
-        # empty so effective_log_level falls back to "debug".
-        raw_log_level = log_level.strip()
-        if raw_log_level:
-            resolved_log_level = raw_log_level
-        else:
-            env_log = _resolve_env(LISA_LOG_LEVEL_ENV)
-            resolved_log_level = env_log if env_log else ""
+        resolved_log_level = _log_level_override(log_level)
 
         # ── Data dir ──────────────────────────────────────────────────
         resolved_data_dir = (
@@ -329,35 +524,17 @@ class HostConfig:
             resolved_overlays_dir = Path(raw_overlays).expanduser().resolve()
 
         # ── Paths ──────────────────────────────────────────────────────
-        resolved_thread_dir: Path | None = None
-        raw_thread_dir = thread_dir.strip() or _resolve_env(LISA_THREAD_DIR_ENV)
-        if raw_thread_dir:
-            resolved_thread_dir = Path(raw_thread_dir).expanduser().resolve()
-
-        resolved_log_path: Path | None = None
-        raw_log_path = log_path.strip()
-        if raw_log_path:
-            resolved_log_path = Path(raw_log_path).expanduser().resolve()
-
-        resolved_host_log_path: Path | None = None
-        raw_host_log = host_log_path.strip()
-        if raw_host_log:
-            resolved_host_log_path = Path(raw_host_log).expanduser().resolve()
+        resolved_thread_dir = _resolved_path_or_none(thread_dir, LISA_THREAD_DIR_ENV)
+        resolved_log_path = _resolved_path_or_none(log_path, "")
+        resolved_host_log_path = _resolved_path_or_none(host_log_path, "")
 
         # ── Debug-module overrides (LISA_LOG_DEBUG) ────────────────────
         from sdk.logging_setup import _parse_debug_modules
 
         resolved_debug_modules = tuple(_parse_debug_modules(_resolve_env(LISA_LOG_DEBUG_ENV)))
 
-        resolved_mcp_manifest: Path | None = None
-        raw_mcp = mcp_manifest_path.strip()
-        if raw_mcp:
-            resolved_mcp_manifest = Path(raw_mcp).expanduser().resolve()
-
-        resolved_snapshot: Path | None = None
-        raw_snapshot = state_snapshot.strip()
-        if raw_snapshot:
-            resolved_snapshot = Path(raw_snapshot).expanduser().resolve()
+        resolved_mcp_manifest = _resolved_path_or_none(mcp_manifest_path, "")
+        resolved_snapshot = _resolved_path_or_none(state_snapshot, "")
 
         # ── Streaming ──────────────────────────────────────────────────
         from host.config_resolver import parse_streaming_option
@@ -365,16 +542,7 @@ class HostConfig:
         stream_mode, stream_delay = parse_streaming_option(streaming)
 
         # ── Slice ──────────────────────────────────────────────────────
-        pre = _normalize_slice_flag(_resolve_env(LISA_SLICE_PRE_TURN_ENV))
-        post = _normalize_slice_flag(_resolve_env(LISA_SLICE_POST_TURN_ENV))
-        explicit = _normalize_slice_flag(_resolve_env(LISA_SLICE_EXPLICIT_ENV))
-        raw_budget = _resolve_env(LISA_SLICE_BUDGET_MS_ENV, "").strip()
-        explicit_budget = _DEFAULT_SLICE_EXPLICIT_BUDGET_MS
-        if raw_budget:
-            try:
-                explicit_budget = max(50, min(int(raw_budget), 30_000))
-            except ValueError:
-                pass
+        slice_values = _slice_overrides()
 
         # ── Limits ─────────────────────────────────────────────────────
         thread_max = _resolve_env_int(LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES)
@@ -382,22 +550,10 @@ class HostConfig:
             LISA_THREAD_SEGMENT_TURNS_ENV, _DEFAULT_THREAD_SEGMENT_TURNS
         )
         # ── Thread redaction config ────────────────────────────────
-        thread_redaction_enabled = _resolve_env_bool(
-            LISA_THREAD_REDACTION_ENABLED_ENV, True
-        )
-        raw_redaction_patterns = _resolve_env(
-            LISA_THREAD_REDACTION_PATTERNS_ENV, ""
-        ).strip()
-        if raw_redaction_patterns.lower() == "none":
-            thread_redaction_patterns: tuple[str, ...] = ()
-            thread_redaction_enabled = False
-        elif raw_redaction_patterns:
-            thread_redaction_patterns = tuple(
-                p for p in raw_redaction_patterns.splitlines() if p.strip()
-            )
-        else:
-            thread_redaction_patterns = ()
+        thread_redaction_enabled, thread_redaction_patterns = _thread_redaction_env()
         memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
+
+        context_budget = _context_budget_overrides()
 
         # ── User / session ─────────────────────────────────────────────
         # Session source compilation is intentionally deferred to HostRuntime
@@ -432,10 +588,10 @@ class HostConfig:
             no_thread=no_thread,
             streaming=StreamingConfig(mode=stream_mode, char_delay_ms=stream_delay),
             slice_config=SliceConfig(
-                pre_turn_enabled=pre,
-                post_turn_enabled=post,
-                explicit_enabled=explicit,
-                explicit_budget_ms=explicit_budget,
+                pre_turn_enabled=slice_values.pre_turn_enabled,
+                post_turn_enabled=slice_values.post_turn_enabled,
+                explicit_enabled=slice_values.explicit_enabled,
+                explicit_budget_ms=slice_values.explicit_budget_ms,
             ),
             thread_max_entries=thread_max,
             thread_segment_turns=thread_segment_turns,
@@ -447,4 +603,5 @@ class HostConfig:
             surface_id=resolved_surface_id,
             memory_scope=resolved_memory_scope,
             always_on_packs=resolved_always_on_packs,
+            **context_budget,  # type: ignore[arg-type]
         )

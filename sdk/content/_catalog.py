@@ -17,12 +17,14 @@ from typing import Any
 
 import yaml
 
-from sdk.config import settings as _sdk_settings
+from kernel.config import settings as _kernel_settings
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
 
-# Config-backed completion defaults for declarative operations.
-_DEFAULT_COMPLETION_MAX_TOKENS = _sdk_settings.declarative_completion_max_tokens
-_DEFAULT_COMPLETION_TEMPERATURE = _sdk_settings.declarative_completion_temperature
+# Config-backed completion defaults for declarative operations. The kernel
+# is the single source of truth (its runtime applies these); the catalog
+# reads them only to advertise defaults in front-matter documentation.
+_DEFAULT_COMPLETION_MAX_TOKENS = _kernel_settings.declarative_completion_max_tokens
+_DEFAULT_COMPLETION_TEMPERATURE = _kernel_settings.declarative_completion_temperature
 
 logger = logging.getLogger(__name__)
 

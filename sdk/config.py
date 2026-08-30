@@ -39,14 +39,9 @@ class Settings(BaseSettings):
         )
 
     external_signal_timeout_seconds: float = 10.0
-    workspace_id_fallback: str = "default"
-    state_container: str = "lisa-state"
-    intel_inbox_container: str = "lisa-intel-inbox"
+    # Final ranked-evidence limit for the ``memory.recall`` operation, as a
+    # floor on the caller-supplied limit and the parameter default.
     memory_recall_final_limit: int = 8
-
-    # ── Declarative operations ──────────────────────────────────────────
-    declarative_completion_max_tokens: int = 1500
-    declarative_completion_temperature: float = 0.2
 
     @staticmethod
     def _strip_inline_comment(value: object) -> object:
@@ -55,7 +50,6 @@ class Settings(BaseSettings):
         return value.split("#", 1)[0].strip()
 
     @field_validator(
-        "declarative_completion_max_tokens",
         "external_signal_timeout_seconds",
         "memory_recall_final_limit",
         mode="before",

@@ -1,8 +1,9 @@
 """Kernel-owned runtime configuration.
 
 This module intentionally contains only settings consumed by `kernel/**`.
-Public packs and extensions use `sdk.config`, while the root app owns its
-broader host and product settings in `app.config`.
+Public packs and extensions use `sdk.config`; hosts own their wiring and
+product settings (surface identity, per-lane context budgets) in
+`host.config`.
 """
 
 from __future__ import annotations
@@ -87,183 +88,219 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
+    # ── Content roots ──────────────────────────────────────────────────────
+    # Semicolon-separated list of extra pack directories to scan for modes,
+    # operations, and tools. Resolved via ``os.pathsep`` so Windows
+    # drive-letter paths survive; entries are stripped and skipped with a
+    # warning when they do not exist. Override via ``SDK_CONTENT_ROOTS``.
     sdk_content_roots: str = ""
-    workspace_id_fallback: str = "default"
 
-    # ── Identity defaults ───────────────────────────────────────────────
-    identity_workspace_id: str = "lisa-host"
-    identity_user_id: str = "lisa-user"
-    identity_user_slug: str = "lisa-user"
-    identity_user_name: str = "Lisa User"
-    identity_principal_key: str = "lisa-user"
-    identity_conversation_id: str = "lisa-host-console"
-    identity_surface_type: str = "personal_dm"
-    identity_surface_id: str = "lisa-host-console"
-    identity_memory_scope: str = "personal"
-
-    # ── Declarative operations ──────────────────────────────────────────
+    # ── Declarative operations ────────────────────────────────────────────
+    # Completion defaults for prompt-authored declarative operations. A
+    # declarative operation is markdown front matter plus instructions; the
+    # kernel executes it with one chat completion and no Python logic of its
+    # own. These are the completion budget and sampling temperature used
+    # when the operation's own front matter does not override them. 1500
+    # tokens fits a structured extraction/transformation answer; 0.2 keeps
+    # output near-deterministic so retries and structured parsing are
+    # stable. Authoring docs (``sdk/AUTHORING.md``) and the content catalog
+    # surface the same two values for front-matter documentation, so hosts
+    # override in exactly one place. Override via
+    # ``DECLARATIVE_COMPLETION_MAX_TOKENS`` and
+    # ``DECLARATIVE_COMPLETION_TEMPERATURE``.
     declarative_completion_max_tokens: int = 1500
     declarative_completion_temperature: float = 0.2
 
-    # ── Turn runner ─────────────────────────────────────────────────────
-    # Maximum model-completion iterations per turn. Shared across all
-    # handoffs within a single turn (the counter is not reset on
-    # ``transition_stage``), so chained producer→consumer pipelines
-    # (research→write) consume the same budget. The default is the
-    # per-turn runaway governor value (see docs/TOKEN_BUDGET.md); lower it
-    # only for sandboxed test runs. Override via
-    # ``MAX_TOOL_ITERATIONS``.
+    # ── Turn runner: iteration budgets ────────────────────────────────────
+    # Maximum model-completion iterations (one model round-trip plus its
+    # tool dispatches) in a single top-level turn. The counter is shared
+    # across every stage handoff inside the turn — it never resets on
+    # ``transition_stage`` — so a chained producer→consumer pipeline
+    # (research→write) draws down the same pool. 300 is the per-turn
+    # runaway governor: far above any legitimate workflow (the deepest
+    # observed chained pipeline used ~90) but tight enough that a looping
+    # model cannot burn unbounded tokens. The per-step sub-budgets below
+    # only redistribute *when* this pool is spent. Hosts lower this only
+    # for sandboxed test runs. Override via ``MAX_TOOL_ITERATIONS``.
     max_tool_iterations: int = 300
-    # Per-child iteration cap for fork fan-out. Fork children run in
-    # parallel and get a smaller slice than a full sequential turn, but
-    # still need enough room to inspect → act → verify. A coding child
-    # (inspect → isolate → patch → check → publish) cannot fit a
-    # non-trivial change in fewer than ~30 iterations; 50 leaves headroom
-    # for the publish step. Override via
-    # ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
+    # Per-child iteration cap for fork fan-out. When a mode calls
+    # ``fork``, each child runs as an independent sub-turn in parallel
+    # with this ceiling before its turn is concluded. Children get a
+    # smaller share than the parent's 300 because their job is narrower
+    # (inspect → act → verify) and N children multiply N× the cost at the
+    # same cap. 50 fits a non-trivial code change (~30 iterations for
+    # inspect→isolate→patch→check, plus headroom for the publish step).
+    # Override via ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
     fork_child_max_tool_iterations: int = 50
-    # Per-child iteration cap for delegate sub-turns. Delegate children
-    # run sequentially (one at a time, parent waits) and get the same
-    # inspect → act → verify room as fork children. Defaults to the fork
-    # child cap so a delegate child has identical headroom unless a host
-    # explicitly tunes it. Override via
+    # Per-child iteration cap for delegate sub-turns. When a mode calls
+    # ``delegate``, exactly one child runs at a time and the parent waits
+    # for it; this is the child's iteration ceiling. Defaults to the fork
+    # child cap so a delegated child and a forked child have identical
+    # headroom unless a host explicitly tunes them apart. Override via
     # ``DELEGATE_CHILD_MAX_TOOL_ITERATIONS``.
     delegate_child_max_tool_iterations: int = 50
-    # Maximum recursion depth for delegate sub-turns. A delegate child
-    # may itself delegate, forming an agent tree of arbitrary depth. This
-    # cap bounds the tree so a misbehaving mode cannot recurse
-    # indefinitely. The root parent turn is depth 0; a direct delegate
-    # child is depth 1. Override via ``DELEGATE_MAX_DEPTH``.
+    # Delegate recursion depth bound. A delegate child may itself
+    # delegate, forming a tree of sub-turns; this caps the tree's depth.
+    # The root turn is depth 0, its delegate children depth 1, and so on.
+    # 4 admits parent → child → grandchild → great-grandchild chains (the
+    # legitimate orchestration pattern) while bounding a misbehaving mode
+    # that would otherwise recurse indefinitely. Override via
+    # ``DELEGATE_MAX_DEPTH``.
     delegate_max_depth: int = 4
-    # Per-step iteration sub-budget. Each workflow step (between two
-    # ``transition_stage`` handoffs) gets its own iteration budget so a
-    # chained producer→consumer pipeline does not starve its final step
-    # on the shared ``max_tool_iterations`` budget. When a step exhausts
-    # its per-step cap but the global cap has not fired, the kernel
-    # synthesizes a handoff to the next remaining step instead of the
-    # generic empty-content final completion. The global cap remains the
-    # hard ceiling: a 6-step chain with per_step=75 cannot exceed 300
-    # total iterations — the per-step cap only redistributes *when* the
-    # budget runs out. Override via ``PER_STEP_MAX_ITERATIONS``.
+
+    # ── Turn runner: per-step sub-budgets ─────────────────────────────────
+    # Per-step iteration sub-budget. Each workflow step (the span between
+    # two ``transition_stage`` handoffs) gets its own iteration allowance
+    # so a chained producer→consumer pipeline cannot starve its final step
+    # on the shared ``max_tool_iterations`` pool: when a step exhausts its
+    # allowance but the global cap has not fired, the kernel synthesizes a
+    # handoff to the next remaining step instead of ending the turn with
+    # empty content. The global cap remains the hard ceiling — a 6-step
+    # chain at per_step=75 cannot exceed 300 total iterations; the
+    # per-step cap only controls *when* the remaining budget moves on.
+    # Override via ``PER_STEP_MAX_ITERATIONS``.
     per_step_max_iterations: int = 75
-    # Per-step tool-call sub-budget. Secondary guard against a model that
-    # burns many tool calls within one step without converging. Same reset
-    # and handoff-synth behavior as ``per_step_max_iterations``.
-    # Override via ``PER_STEP_MAX_TOOL_CALLS``.
+    # Per-step tool-call sub-budget. Companion to
+    # ``per_step_max_iterations`` but counted in dispatched tool calls
+    # rather than model iterations — a model that burns many tool calls
+    # inside one step without converging is cut over to the next step (or
+    # a synthesized handoff) instead of consuming the step's whole
+    # iteration allowance. Resets on ``transition_stage`` exactly like the
+    # per-step iteration budget. Override via ``PER_STEP_MAX_TOOL_CALLS``.
     per_step_max_tool_calls: int = 150
 
-    # ── Turn-runner guard caps ──────────────────────────────────────────
-    # These bound the various correction-nudge and loop-backstop guards
-    # in ``kernel.turn_runner``. They were previously module-level
-    # constants; they now live here so hosts can tune them via env vars
-    # without editing kernel source. Each defaults to its historical
-    # value (see the git-blame comments in ``turn_runner.py`` for the
-    # incidents that motivated each cap).
+    # ── Turn runner: guard caps ───────────────────────────────────────────
+    # Caps for the correction-nudge and loop-backstop guards in
+    # ``kernel.turn_runner`` and the lifecycle resolver. Each was a
+    # module-level constant until hosts needed per-env tuning; the values
+    # below are the production defaults (git-blame ``turn_runner.py`` for
+    # the incident that motivated each). All are read by the turn loop and
+    # threaded into the lifecycle resolver.
     #
-    # Override any of these via the bare env-var name (e.g.
-    # ``STAGE_NUDGE_CAP``) OR the ``LISA_``-prefixed name (e.g.
-    # ``LISA_STAGE_NUDGE_CAP``) in the shell; the bare name wins when
-    # both are set. In ``.env`` files only the bare name is honored.
-    # Forced-action enforcer (Phase 5): when a routing hint encodes a
-    # deterministic routing decision — a ``fork:`` fan-out or any
-    # single-handoff target (``plan``, ``search``, ``remember`` …) — and
-    # the model refuses to call the expected tool (``fork`` /
-    # ``transition_stage``), instead burning iterations on read-only
-    # tools or returning empty completions (the 2026-07-27 fork incident;
-    # the 2026-07-30 400k-token pre-plan burn; the 2026-08-07
-    # ``plan → remember → search`` stall), the kernel synthesizes the
-    # call itself after this many non-compliant tool dispatches. This
-    # bounds the pre-handoff token burn to roughly
-    # ``cap x per-iteration-tokens`` instead of the full
-    # ``max_tool_iterations`` budget. Override via
-    # ``FORCED_ACTION_NON_COMPLIANT_CAP``.
+    # Forced-action enforcer cap. When the routing hint encodes a
+    # deterministic decision — a ``fork:`` fan-out or a single handoff
+    # target (``plan``, ``search``, ``remember``, …) — and the model
+    # refuses to call the expected tool (``fork`` / ``transition_stage``),
+    # burning iterations instead on read-only tools or empty completions,
+    # this bounds how many non-compliant dispatches pass before the
+    # kernel synthesizes the required call itself. 2 bounds the
+    # pre-handoff token burn to roughly ``2 × per-iteration tokens``
+    # instead of the full ``max_tool_iterations`` budget (the 2026-07-27
+    # fork incident; the 2026-07-30 400k-token pre-plan burn). Override
+    # via ``FORCED_ACTION_NON_COMPLIANT_CAP``.
     forced_action_non_compliant_cap: int = 2
-    # Stuck-session guard: after this many turns in the same stage
-    # without a transition, the loop injects a nudge. Override via
-    # ``STAGE_NUDGE_THRESHOLD``.
+    # Stuck-in-stage nudge threshold. After this many consecutive
+    # iterations in the same stage without a ``transition_stage``, the
+    # loop injects a nudge into the next prompt telling the model it is
+    # stalled and what to do about it. 4 gives a normal step (2–3
+    # productive iterations) room before the kernel starts pushing.
+    # Override via ``STAGE_NUDGE_THRESHOLD``.
     stage_nudge_threshold: int = 4
-    # After this many turns in the same stage, the loop forces a final
-    # no-tools completion to stop burning tokens. Override via
-    # ``STAGE_NUDGE_CAP``.
+    # Stuck-in-stage hard cap. At this many consecutive non-transitioning
+    # iterations in the same stage the loop stops nudging and forces a
+    # final no-tools completion, so the turn ends with an answer instead
+    # of burning the remaining iteration budget in place. Must be greater
+    # than ``stage_nudge_threshold`` — nudges fire between the threshold
+    # and this cap. Override via ``STAGE_NUDGE_CAP``.
     stage_nudge_cap: int = 9
-    # Iterations *before* the stuck-in-stage cap at which the parent-turn
-    # write-nudge fires for a mode with unmet ``action_tool_ids``. ``1``
-    # means the nudge fires one iteration before the cap would pause the
-    # turn, giving the model a final chance to call a write tool (e.g.
-    # ``markdown_forge_document``) rather than ending blocked as
+    # Write-nudge lead time, in iterations before the stuck-stage cap.
+    # For a mode that carries write-contract obligations
+    # (``action_tool_ids``), the parent turn fires one last "land your
+    # write" nudge this many iterations before the stage cap would pause
+    # the turn — the model's final chance to complete the write (e.g.
+    # ``markdown_forge_document``) rather than end blocked as
     # ``no_tools``. ``0`` disables the pre-cap nudge. Override via
     # ``WRITE_DEADLINE_MARGIN``.
     write_deadline_margin: int = 1
-    # Write-rescue last-resort mode: when a write-contract mode is one
-    # iteration away from the stuck-in-stage cap with no verified write,
-    # the lifecycle resolver forces a transition to this mode so the
-    # turn ends productively instead of pausing on a hallucinated-success
-    # block. Defaults to ``explainer`` (a terminal capture persona whose
-    # only write is ``markdown_forge_document``). Set to ``""`` to disable
-    # the write-rescue forced transition. Override via
-    # ``WRITE_RESCUE_MODE``.
+    # Write-rescue forced-transition target. When a write-contract mode
+    # is within ``write_deadline_margin`` of the stuck-stage cap with no
+    # verified write, the lifecycle resolver transitions the turn to this
+    # mode so the turn ends with a productively written artifact instead
+    # of pausing on a hallucinated-success block. Must name a terminal
+    # capture persona whose only write is ``markdown_forge_document``;
+    # set to ``""`` to disable the rescue transition entirely. Override
+    # via ``WRITE_RESCUE_MODE``.
     write_rescue_mode: str = "explainer"
-    # Hard backstop against routing-hint loops: caps the total mode
-    # handoffs per turn and forces a final completion. Loosened from the
-    # historical 6 to accommodate deep producer→consumer pipelines (the
-    # 2026-08-02 fork fan-out work hit 6 handoffs on a routine coding
-    # turn). Override via ``MAX_HANDOFFS_PER_TURN``.
+    # Total mode-handoff ceiling per turn. Counts every
+    # ``transition_stage`` call, routed handoff, and delegate return in
+    # one turn; when reached, the kernel forces a final completion. This
+    # is the backstop against routing-hint ping-pong loops. It bounds
+    # *handoffs*, not model iterations (``max_tool_iterations`` does
+    # that). 50 accommodates deep producer→consumer pipelines; the
+    # historical 6 was exceeded routinely by the 2026-08-02 fork fan-out
+    # work. Override via ``MAX_HANDOFFS_PER_TURN``.
     max_handoffs_per_turn: int = 50
-    # Consecutive identical routing hints before the duplicate-hint dedup
-    # suppresses injection. Override via ``DUPLICATE_HINT_LIMIT``.
+    # Duplicate-hint suppression threshold. The hint layer re-injects the
+    # routing hint each iteration; once this many consecutive hints carry
+    # the same target, further identical injection stops — the model has
+    # demonstrably seen the instruction and repetition is now prompt
+    # noise. 2 suppresses the third identical consecutive hint. Override
+    # via ``DUPLICATE_HINT_LIMIT``.
     duplicate_hint_limit: int = 2
-    # Minimum hint-target history length that forms a detectable 2-cycle
-    # (A, B, A). Override via ``HINT_CYCLE_MIN_LEN``.
+    # Minimum routing-hint history length for 2-cycle detection. Cycle
+    # detection scans the hint-target history for A,B,A… alternation;
+    # with fewer than this many consecutive targets the history cannot
+    # distinguish a genuine alternation loop from legitimate reordering,
+    # so suppression stays off. 3 makes A,B,A the shortest detectable
+    # cycle. Override via ``HINT_CYCLE_MIN_LEN``.
     hint_cycle_min_len: int = 3
-    # Consecutive routing-hint overrides (model hands off to a target
-    # that differs from the hint's suggested target) before the hint
-    # layer stops injecting further hints for the rest of the turn. The
-    # historical 2 silenced hints far too early on multi-intent queries
-    # where the model legitimately reorders the suggested sequence; 50
-    # let the model redirect but bounded nothing — the override path
-    # suppressed the hint yet kept cycling until the 300-iteration
-    # ceiling (the 2026-08-05 markdown burn: 16 round-trips at ~48k
-    # prompt tokens each after hint suppression). Override via
-    # ``HINT_OVERRIDE_LIMIT``.
+    # Hint-override allowance before suppression. An override is a
+    # handoff to a target that differs from the hint's suggestion —
+    # legitimate routing flexibility. But a long run of overrides while
+    # hints keep flowing means the hints have stopped helping and are just
+    # prompt overhead; after this many consecutive overrides the hint
+    # layer stops injecting for the rest of the turn. 5 balances two
+    # failure modes: 2 silenced hints too early on multi-intent queries
+    # (the model legitimately reorders the suggested sequence), while 50
+    # let the model redirect but bounded nothing (the 2026-08-05 markdown
+    # burn: 16 round-trips at ~48k prompt tokens each after hint
+    # suppression). Override via ``HINT_OVERRIDE_LIMIT``.
     hint_override_limit: int = 5
-    # Budget briefing: inject a compact, per-iteration budget status
-    # block into the system prompt so the model can self-scope its
-    # work within the remaining iteration / tool-call / per-target
-    # envelope. Only discrete, actionable budgets are surfaced
-    # (iterations, tool calls, per-target call limits) — never
-    # continuous budgets (tokens, wall time) which the model cannot
-    # reliably convert into action and which risk anchoring the model
-    # to "use" the budget it sees. The full contract is injected at
-    # turn start; each subsequent iteration replaces it with a
-    # super-brief delta. Override via ``BUDGET_BRIEFING_ENABLED``.
+
+    # ── Budget briefing ───────────────────────────────────────────────────
+    # When True, inject a compact per-iteration budget status block into
+    # the system prompt — remaining iterations, remaining tool calls, and
+    # remaining per-target call allowance — so the model can self-scope
+    # its work. Only discrete, actionable budgets are surfaced; never
+    # continuous budgets (tokens, wall time), which the model cannot
+    # convert into action and which anchor it to "use up" whatever it
+    # sees. The full contract is injected at turn start and replaced with
+    # a one-line delta each later iteration so it never accumulates in
+    # the prompt. Override via ``BUDGET_BRIEFING_ENABLED``.
     budget_briefing_enabled: bool = True
-    # Minimum response length (characters) before a chat-kind mode's
-    # unverified prose is accepted as a successful completion. When a
-    # write-contract mode ends with no write receipt, the kernel blocks
-    # as ``no_tools`` — UNLESS the mode is ``chat``-kind, the model
-    # dispatched at least one tool, and the response text meets this
-    # threshold (the softening for "did real read-only work and
-    # synthesized an answer but never landed the write"). The old
-    # hard-coded 150 let "I'll start the research once you confirm"
-    # announcement prose mask a hallucinated success (the 2026-08-14
-    # proceed-loop); 1000 requires a real synthesized answer. Override
+
+    # ── Effect receipts: chat-kind softening ─────────────────────────────
+    # Minimum response length (characters) for the chat-kind softening in
+    # the effect-receipt verifier. A write-contract mode that ends with
+    # no verified write normally blocks as ``no_tools``; the exception is
+    # a chat-kind mode that dispatched at least one tool and produced
+    # prose at least this long — read-only work plus a genuine
+    # synthesized answer is accepted as a complete turn without a write.
+    # The old hard-coded 150 let "I'll start the research once you
+    # confirm" announcement prose pass as success (the 2026-08-14
+    # proceed-loop); 1000 requires an actual synthesized answer. Override
     # via ``CHAT_MODE_DENSE_CONTENT_MIN_CHARS``.
     chat_mode_dense_content_min_chars: int = 1000
-    # ── Context budget ──────────────────────────────────────────────────
-    context_budget_enabled: bool = True
-    context_budget_core_max_tokens: int = 2000
-    context_budget_retrieval_max_tokens: int = 1500
-    context_budget_memory_max_tokens: int = 1200
-    context_budget_reflection_max_tokens: int = 1000
-    context_budget_history_max_tokens: int = 1500
-    context_budget_operational_max_tokens: int = 800
+
+    # ── Context candidate token estimation ───────────────────────────────
+    # Characters-per-token ratio used to estimate context candidate sizes
+    # (and budget-allocated prompt sections) that do not carry their own
+    # token count. 4 is the conventional English-prose middle ground:
+    # 1 token ≈ 4 characters. The estimate is deliberately cheap — real
+    # tokenizers are too slow per candidate in the mapper's hot path, and
+    # a consistent ±20% estimate is sufficient for ranking and lane
+    # budgeting. Override via ``CONTEXT_BUDGET_TOKEN_CHAR_RATIO``.
     context_budget_token_char_ratio: int = 4
 
-    # ── Context mapper scoring ─────────────────────────────────────────
-    # Per-provenance authority multiplier used when scoring context
-    # candidates. Keys must exactly match the ``ContextProvenance``
-    # literals in ``kernel/context/models.py``. Override via
-    # ``CONTEXT_MAPPER_PROVENANCE_AUTHORITY`` as a JSON object.
+    # ── Context mapper: scoring weights ────────────────────────────────
+    # Per-provenance authority multiplier, applied in the mapper's
+    # authority component as ``authority × confidence × multiplier``.
+    # Keys must exactly match the ``ContextProvenance`` literals in
+    # ``kernel/context/models.py``. The ordering encodes trust: curated
+    # and system-observed evidence outranks user assertion, which
+    # outranks recalled memory, then inference, diagnostics, and pure
+    # speculation. Override via ``CONTEXT_MAPPER_PROVENANCE_AUTHORITY``
+    # as a JSON object (all seven keys required).
     context_mapper_provenance_authority: dict[str, float] = {
         "authoritative": 1.0,
         "system_observed": 0.98,
@@ -273,43 +310,18 @@ class Settings(BaseSettings):
         "diagnostic": 0.45,
         "speculative": 0.30,
     }
-    # Per-conflict-risk penalty applied to the conflict component. Keys
-    # must exactly match the ``ContextConflictRisk`` literals in
-    # ``kernel/context/models.py``. Override via
+    # Per-conflict-risk penalty, weighted by the session plan's
+    # ``conflict_penalty`` weight and subtracted from a candidate's base
+    # score. Keys must exactly match the ``ContextConflictRisk`` literals
+    # in ``kernel/context/models.py``. Contradicting evidence stays
+    # selectable but ranks below clean evidence proportionally to how
+    # risky the contradiction is. Override via
     # ``CONTEXT_MAPPER_CONFLICT_PENALTY`` as a JSON object.
     context_mapper_conflict_penalty: dict[str, float] = {
         "low": 0.0,
         "medium": 0.5,
         "high": 1.0,
     }
-
-    # ── Memory recall (pre-turn injection) ─────────────────────────────
-    memory_recall_enabled: bool = True
-    memory_recall_pre_turn_limit: int = 3
-    memory_recall_min_query_chars: int = 3
-
-    # ── Memory auto-capture (post-turn learning) ───────────────────────
-    memory_auto_capture_enabled: bool = True
-    memory_auto_capture_min_salience: float = 0.5
-    # Salience → tier cut points for auto-captured learnings (see
-    # ``host.turn_hooks.classify_memory_tier``). Below ``daily_threshold``
-    # is ``daily``; between the two is ``weekly``; at/above
-    # ``weekly_threshold`` is ``long_term``.
-    memory_auto_capture_daily_threshold: float = 0.65
-    memory_auto_capture_weekly_threshold: float = 0.8
-
-    # ── Passive intelligence ────────────────────────────────────────────
-    passive_intelligence_enabled: bool = True
-    passive_intelligence_default_chat_enabled: bool = True
-    passive_intelligence_min_recurrence: int = 2
-    passive_intelligence_min_salience: float = 0.3
-    passive_intelligence_min_score: float = 0.2
-    passive_intelligence_evidence_limit: int = 3
-    passive_intelligence_max_items: int = 5
-    passive_intelligence_window_turns: int = 12
-    passive_intelligence_window_memories: int = 20
-    passive_intelligence_stale_after_minutes: int = 30
-    passive_intelligence_default_chat_min_overlap: float = 0.25
 
     @model_validator(mode="after")
     def _validate_mapper_scoring_keys(self) -> Settings:
@@ -364,6 +376,8 @@ class Settings(BaseSettings):
         "fork_child_max_tool_iterations",
         "delegate_child_max_tool_iterations",
         "delegate_max_depth",
+        "per_step_max_iterations",
+        "per_step_max_tool_calls",
         "forced_action_non_compliant_cap",
         "stage_nudge_threshold",
         "stage_nudge_cap",
@@ -372,21 +386,8 @@ class Settings(BaseSettings):
         "duplicate_hint_limit",
         "hint_cycle_min_len",
         "hint_override_limit",
-        "budget_briefing_enabled",
         "chat_mode_dense_content_min_chars",
-        "context_budget_core_max_tokens",
-        "context_budget_retrieval_max_tokens",
-        "context_budget_memory_max_tokens",
-        "context_budget_reflection_max_tokens",
-        "context_budget_history_max_tokens",
-        "context_budget_operational_max_tokens",
         "context_budget_token_char_ratio",
-        "passive_intelligence_min_recurrence",
-        "passive_intelligence_evidence_limit",
-        "passive_intelligence_max_items",
-        "passive_intelligence_window_turns",
-        "passive_intelligence_window_memories",
-        "passive_intelligence_stale_after_minutes",
         mode="before",
     )
     @classmethod

@@ -455,23 +455,18 @@ def _build_minimal_context(
         fork_fn=fork_fn,
         gateway_provider_fn=gateway_provider_fn,
     )
-    _ws_id = workspace_id if workspace_id is not None else _kernel_settings.identity_workspace_id
-    _u_id = user_id if user_id is not None else _kernel_settings.identity_user_id
-    _u_slug = user_slug if user_slug is not None else _kernel_settings.identity_user_slug
-    _u_name = user_name if user_name is not None else _kernel_settings.identity_user_name
-    _pk = principal_key if principal_key is not None else _kernel_settings.identity_principal_key
-    _conv_id = (
-        conversation_id
-        if conversation_id is not None
-        else _kernel_settings.identity_conversation_id
-    )
-    _surf_type = (
-        surface_type if surface_type is not None else _kernel_settings.identity_surface_type
-    )
-    _surf_id = surface_id if surface_id is not None else _kernel_settings.identity_surface_id
-    _mem_scope = (
-        memory_scope if memory_scope is not None else _kernel_settings.identity_memory_scope
-    )
+    # Identity defaults mirror the ``OperationExecutionContext`` model
+    # defaults (single-user personal-DM console). Production hosts wire
+    # their own identity; bare/test contexts get the canonical defaults.
+    _ws_id = workspace_id if workspace_id is not None else "default"
+    _u_id = user_id if user_id is not None else "default"
+    _u_slug = user_slug if user_slug is not None else "default"
+    _u_name = user_name if user_name is not None else ""
+    _pk = principal_key if principal_key is not None else "default"
+    _conv_id = conversation_id if conversation_id is not None else "default"
+    _surf_type = surface_type if surface_type is not None else "personal_dm"
+    _surf_id = surface_id if surface_id is not None else "default"
+    _mem_scope = memory_scope if memory_scope is not None else "personal"
     return OperationExecutionContext(
         workspace_id=_ws_id,
         user_id=_u_id,

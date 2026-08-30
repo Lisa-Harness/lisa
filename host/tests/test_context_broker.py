@@ -22,7 +22,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from kernel.config import settings
 from kernel.context.context_budget import ContextBudgetAllocator
 from kernel.context.context_mapper import (
     ContextMapper,
@@ -150,13 +149,9 @@ class TestContextBudgetAllocator:
 
     def test_allocator_enforces_total_token_ceiling(
         self,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Set a very low total token budget so sections get dropped.
-        monkeypatch.setattr(settings, "context_budget_enabled", True)
-        monkeypatch.setattr(settings, "context_budget_token_char_ratio", 4)
-
-        allocator = ContextBudgetAllocator.for_turn(total_tokens=50)
+        allocator = ContextBudgetAllocator.for_turn(enabled=True, total_tokens=50)
         # Allocate a large section that exceeds the budget.
         large_text = "x" * 5000
         result = allocator.allocate(
@@ -170,10 +165,8 @@ class TestContextBudgetAllocator:
 
     def test_allocator_disabled_returns_full_text(
         self,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(settings, "context_budget_enabled", False)
-        allocator = ContextBudgetAllocator.for_turn()
+        allocator = ContextBudgetAllocator.for_turn(enabled=False)
         text = "This is a test section that should pass through unchanged."
         result = allocator.allocate(
             key="test_section",
@@ -183,7 +176,10 @@ class TestContextBudgetAllocator:
         assert result == text
 
     def test_allocator_summary_contains_lane_info(self) -> None:
-        allocator = ContextBudgetAllocator.for_turn()
+        allocator = ContextBudgetAllocator.for_turn(
+            enabled=True,
+            lane_limits={"history": 1500, "core": 2000},
+        )
         allocator.allocate(
             key="test",
             lane="history",
@@ -199,7 +195,7 @@ class TestContextUsageEvent:
     """Tests that ContextUsageEvent can be built from allocator summary."""
 
     def test_event_carries_budget_summary(self) -> None:
-        allocator = ContextBudgetAllocator.for_turn()
+        allocator = ContextBudgetAllocator.for_turn(enabled=True)
         allocator.allocate(
             key="test",
             lane="core",
@@ -225,7 +221,7 @@ class TestFullChain:
         state = _make_populated_state()
         packet_md = _map_state(state, "cloudflare error rate alert")
 
-        allocator = ContextBudgetAllocator.for_turn()
+        allocator = ContextBudgetAllocator.for_turn(enabled=True)
         elected = allocator.allocate(
             key="ranked_context",
             lane="retrieval",

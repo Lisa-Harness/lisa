@@ -22,10 +22,9 @@ import logging
 import platform
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from kernel.capability_manifest import render_capability_manifest_context
-from kernel.config import settings
 from kernel.context.context_broker import (
     build_ambient_facts,
     resolve_host_name,
@@ -66,6 +65,69 @@ _SYSTEM_PROMPT_PATH = "prompts/system-prompt.md"
 #: how to pull prior turns on demand. Authored Markdown — not inline — so a
 #: missing or empty asset fails loudly instead of silently degrading.
 _THREAD_MANIFEST_HINT_PATH = "prompts/thread_manifest_hint.md"
+
+
+class ContextBudgetValues(TypedDict, total=False):
+    """Host-owned per-lane context budgets passed into context assembly.
+
+    Built via :func:`context_budget_values_from_config` from a
+    ``HostConfig``; mirrors the ``context_budget_*`` fields there. Keys map
+    to ``ContextBudgetAllocator`` constructor inputs.
+    """
+
+    enabled: bool
+    token_char_ratio: int
+    core_max_tokens: int
+    retrieval_max_tokens: int
+    memory_max_tokens: int
+    reflection_max_tokens: int
+    history_max_tokens: int
+    operational_max_tokens: int
+
+
+#: Defaults for pure-function callers (tests, tools) that construct
+#: ``assemble_dynamic_user_context`` without a ``HostConfig``. Values match
+#: the ``HostConfig`` context-budget defaults; a real host always supplies
+#: its own.
+_DEFAULT_CONTEXT_BUDGET_VALUES: ContextBudgetValues = {
+    "enabled": True,
+    "token_char_ratio": 4,
+    "core_max_tokens": 2000,
+    "retrieval_max_tokens": 1500,
+    "memory_max_tokens": 1200,
+    "reflection_max_tokens": 1000,
+    "history_max_tokens": 1500,
+    "operational_max_tokens": 800,
+}
+
+
+def context_budget_values_from_config(config: Any) -> ContextBudgetValues:
+    """Build the assembly-time context-budget bundle from a ``HostConfig``."""
+
+    return {
+        "enabled": bool(getattr(config, "context_budget_enabled", True)),
+        "token_char_ratio": int(
+            getattr(config, "context_budget_token_char_ratio", 4) or 4
+        ),
+        "core_max_tokens": int(
+            getattr(config, "context_budget_core_max_tokens", 2000) or 2000
+        ),
+        "retrieval_max_tokens": int(
+            getattr(config, "context_budget_retrieval_max_tokens", 1500) or 1500
+        ),
+        "memory_max_tokens": int(
+            getattr(config, "context_budget_memory_max_tokens", 1200) or 1200
+        ),
+        "reflection_max_tokens": int(
+            getattr(config, "context_budget_reflection_max_tokens", 1000) or 1000
+        ),
+        "history_max_tokens": int(
+            getattr(config, "context_budget_history_max_tokens", 1500) or 1500
+        ),
+        "operational_max_tokens": int(
+            getattr(config, "context_budget_operational_max_tokens", 800) or 800
+        ),
+    }
 
 
 def load_system_prompt(content_loader: Callable[[str], str]) -> str:
@@ -348,6 +410,7 @@ def assemble_dynamic_user_context(
     context_plan: ContextPlan | None = None,
     model_context_window_tokens: int = 0,
     snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
+    context_budget_values: "ContextBudgetValues | None" = None,
 ) -> str:
     """Assemble the dynamic user-context block for the current turn.
 
@@ -358,7 +421,11 @@ def assemble_dynamic_user_context(
 
     *snapshot_sink* is forwarded to the session-owned context mapper so a
     host can capture the latest ``ContextBudgetSnapshot`` on each turn.
+    *context_budget_values* carries the host's per-lane context budgets
+    (see ``context_budget_values_from_config``); when omitted, module
+    defaults are used so pure-function tests do not need a HostConfig.
     """
+    budget_values = context_budget_values or _DEFAULT_CONTEXT_BUDGET_VALUES
     gap_fn = mode_support_gap or (lambda _m: None)
 
     # --- Inject metadata into the live capability manifest ----------------
@@ -430,6 +497,7 @@ def assemble_dynamic_user_context(
     replay_policy = _resolve_replay_policy(
         replay_controls,
         query=query,
+        budget_values=budget_values,
     )
 
     user_context = session_context_loader().strip()
@@ -548,13 +616,27 @@ def assemble_dynamic_user_context(
     # context (window minus reserves, prefix, conversation, and tool
     # schema). When the mapper produced no snapshot (no ranked context),
     # fall back to the sum of the lane ceilings so the lane limits remain
-    # the binding constraint.
+    # the binding constraint. Lane budgets and the master switch live on
+    # the host config (migrated from kernel.config).
     allocator = ContextBudgetAllocator.for_turn(
+        enabled=budget_values["enabled"],
+        token_char_ratio=budget_values["token_char_ratio"],
+        lane_limits=cast(
+            "dict[ContextLane, int]",
+            {
+                "core": budget_values["core_max_tokens"],
+                "retrieval": budget_values["retrieval_max_tokens"],
+                "memory": budget_values["memory_max_tokens"],
+                "reflection": budget_values["reflection_max_tokens"],
+                "history": budget_values["history_max_tokens"],
+                "operational": budget_values["operational_max_tokens"],
+            },
+        ),
         total_tokens=(
             mapper_snapshot.available_context_tokens
             if mapper_snapshot is not None
             else None
-        )
+        ),
     )
     # Tighten-only override: session front matter may reduce lane budgets,
     # never increase kernel defaults.
@@ -648,6 +730,7 @@ def _resolve_replay_policy(
     controls: ReplayControls,
     *,
     query: str,
+    budget_values: ContextBudgetValues,
 ) -> _ReplayPolicy:
     """Resolve replay controls with tighten-only clamping and trigger gating.
 
@@ -673,11 +756,11 @@ def _resolve_replay_policy(
             include_recent = False
 
     effective_history_max_tokens = _tighten_cap(
-        settings.context_budget_history_max_tokens,
+        budget_values["history_max_tokens"],
         controls.history_max_tokens,
     )
     effective_reflection_max_tokens = _tighten_cap(
-        settings.context_budget_reflection_max_tokens,
+        budget_values["reflection_max_tokens"],
         controls.reflection_max_tokens,
     )
 

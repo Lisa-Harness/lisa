@@ -346,7 +346,8 @@ def test_build_minimal_context_populates_all_fields() -> None:
 
 
 def test_build_minimal_context_uses_defaults() -> None:
-    """_build_minimal_context uses sensible defaults when optional fields omitted."""
+    """_build_minimal_context uses the canonical personal-DM defaults when
+    optional identity fields are omitted (mirrors the model defaults)."""
     ctx = _build_minimal_context(
         mode_id="default",
         query="test",
@@ -356,13 +357,13 @@ def test_build_minimal_context_uses_defaults() -> None:
         execute_tool_fn=None,
         execute_operation_fn=None,
     )
-    assert ctx.workspace_id == "lisa-host"
-    assert ctx.user_id == "lisa-user"
-    assert ctx.user_slug == "lisa-user"
-    assert ctx.user_name == "Lisa User"
-    assert ctx.conversation_id == "lisa-host-console"
+    assert ctx.workspace_id == "default"
+    assert ctx.user_id == "default"
+    assert ctx.user_slug == "default"
+    assert ctx.user_name == ""
+    assert ctx.conversation_id == "default"
     assert ctx.surface_type == "personal_dm"
-    assert ctx.surface_id == "lisa-host-console"
+    assert ctx.surface_id == "default"
     assert ctx.memory_scope == "personal"
 
 

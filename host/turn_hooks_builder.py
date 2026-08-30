@@ -33,6 +33,7 @@ from kernel.turn_runner import ContextSeams, TurnHooks
 from host.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
+    context_budget_values_from_config,
 )
 from host.introspect import gather_introspection
 from host.model_runtime import StubModelDefinition, load_manifest, resolve_model
@@ -337,7 +338,9 @@ def build_turn_hooks(
             copilot_customizations=runtime.copilot_customizations_text,
         )
 
-    # ── Dynamic user context assembly ─────────────────────────────
+    # ── Dynamic user context assembly ─────────────────────────────────
+    _budget_values = context_budget_values_from_config(runtime.config)
+
     def _assemble_user_context(
         mode_id: str,
         query: str,
@@ -433,6 +436,7 @@ def build_turn_hooks(
             context_plan=context_plan,
             model_context_window_tokens=model_context_window,
             snapshot_sink=_snapshot_sink,
+            context_budget_values=_budget_values,
         )
 
     # ── Operation execution ───────────────────────────────────────

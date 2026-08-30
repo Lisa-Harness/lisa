@@ -1,7 +1,9 @@
 """Context budget allocation helpers for prompt assembly.
 
 This module keeps per-turn prompt assembly frugal by applying lane-specific
-budgets and a total token ceiling across optional context blocks.
+budgets and a total token ceiling across optional context blocks. The
+budgets themselves are host-owned (see ``host.config``); the kernel provides
+only the allocation mechanics plus a shared chars-per-token estimate.
 """
 
 from __future__ import annotations
@@ -10,15 +12,12 @@ from dataclasses import dataclass
 from math import ceil
 from typing import Literal
 
-from kernel.config import settings
-
 __all__ = [
     "ContextBudgetAllocator",
     "ContextBudgetRecord",
     "ContextLane",
     "RequiredContextBudgetError",
-    "settings",
-]
+]  # noqa: F401  (settings re-export removed with the config migration)
 
 ContextLane = Literal["core", "retrieval", "memory", "reflection", "history", "operational"]
 
@@ -68,30 +67,40 @@ class ContextBudgetAllocator:
         self.records: dict[str, ContextBudgetRecord] = {}
 
     @classmethod
-    def for_turn(cls, *, total_tokens: int | None = None) -> ContextBudgetAllocator:
-        """Build one allocator instance from runtime settings.
+    def for_turn(
+        cls,
+        *,
+        enabled: bool,
+        token_char_ratio: int = 4,
+        lane_limits: dict[ContextLane, int] | None = None,
+        total_tokens: int | None = None,
+    ) -> ContextBudgetAllocator:
+        """Build one allocator instance from host-supplied budgets.
 
+        *enabled* is the host's master switch; when False every section
+        passes through unbudgeted. *token_char_ratio* is the
+        chars-per-token estimate used for sections that lack their own
+        token count. *lane_limits* supplies each lane's token ceiling;
+        when omitted, every lane falls back to the allocator's total.
         *total_tokens* is the model-aware ceiling for the turn's assembled
-        context. When omitted (or non-positive), the allocator falls back to
-        the sum of the lane ceilings so the lane limits remain the binding
-        constraint — there is no fixed global default to guess at.
+        context. When omitted (or non-positive), the allocator falls back
+        to the sum of the lane ceilings so the lane limits remain the
+        binding constraint — there is no fixed global default to guess at.
         """
 
-        lane_limits: dict[ContextLane, int] = {
-            "core": settings.context_budget_core_max_tokens,
-            "retrieval": settings.context_budget_retrieval_max_tokens,
-            "memory": settings.context_budget_memory_max_tokens,
-            "reflection": settings.context_budget_reflection_max_tokens,
-            "history": settings.context_budget_history_max_tokens,
-            "operational": settings.context_budget_operational_max_tokens,
-        }
+        resolved_lane_limits: dict[ContextLane, int] = (
+            dict(lane_limits) if lane_limits is not None else {}
+        )
         if total_tokens is None or total_tokens <= 0:
-            total_tokens = sum(lane_limits.values())
+            if resolved_lane_limits:
+                total_tokens = sum(resolved_lane_limits.values())
+            else:
+                total_tokens = 0
         return cls(
-            enabled=settings.context_budget_enabled,
+            enabled=enabled,
             total_tokens=total_tokens,
-            token_char_ratio=settings.context_budget_token_char_ratio,
-            lane_limits=lane_limits,
+            token_char_ratio=token_char_ratio,
+            lane_limits=resolved_lane_limits,
         )
 
     def allocate(
