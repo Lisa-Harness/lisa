@@ -1097,16 +1097,18 @@ class TurnHooks:
     slices treat this as "unknown" and no-op). Read-only from the
     kernel's perspective — the kernel never writes this field."""
 
-    # Identity defaults are read from ``kernel.config.Settings.identity_*``
-    workspace_id: str = field(default_factory=lambda: _kernel_settings.identity_workspace_id)
-    user_id: str = field(default_factory=lambda: _kernel_settings.identity_user_id)
-    user_slug: str = field(default_factory=lambda: _kernel_settings.identity_user_slug)
-    user_name: str = field(default_factory=lambda: _kernel_settings.identity_user_name)
-    principal_key: str = field(default_factory=lambda: _kernel_settings.identity_principal_key)
-    conversation_id: str = field(default_factory=lambda: _kernel_settings.identity_conversation_id)
-    surface_type: str = field(default_factory=lambda: _kernel_settings.identity_surface_type)
-    surface_id: str = field(default_factory=lambda: _kernel_settings.identity_surface_id)
-    memory_scope: str = field(default_factory=lambda: _kernel_settings.identity_memory_scope)
+    # Identity scope defaults. Bare/test hosts that never wire identity
+    # get coherent personal-DM addresses; production hosts (the CLI host
+    # builder) always override every field from their own config.
+    workspace_id: str = "default"
+    user_id: str = "default"
+    user_slug: str = "default"
+    user_name: str = ""
+    principal_key: str = "default"
+    conversation_id: str = "default"
+    surface_type: str = "personal_dm"
+    surface_id: str = "default"
+    memory_scope: str = "personal"
     session_plan_digest: str = ""
 
     # ── Memory recall (pre-turn injection) ────────────────────────────────
