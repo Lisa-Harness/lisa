@@ -216,5 +216,9 @@ def render_pack_list(runtime: HostRuntime) -> str:
             lines.append(f"| {cap} | {prov} |")
 
     lines.append("")
-    lines.append("Tip: use /pack enable <name> or /pack disable <name> for bundled/runtime packs.")
+    lines.append(
+        "Tip: use /pack enable <name> or /pack disable <name> for bundled/runtime packs. "
+        "Use /pack update <name> or /pack update --all to refresh runtime-installed packs "
+        "from their recorded sources."
+    )
     return "\n".join(lines)

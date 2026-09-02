@@ -16,6 +16,7 @@ This is the largest command cluster (~715 lines). It owns:
 - Packs-venv lifecycle (``_bundled_pack_dirs``, ``_seed_packs_venv_with_framework``,
   ``_ensure_packs_venv``).
 - Install/uninstall drivers (``run_pack_install``, ``run_pack_uninstall``).
+- In-place update drivers (``run_pack_update``, ``run_pack_update_all``).
 
 The ``/pack`` dispatcher (``handle_pack_command``) lives in ``__init__.py``
 because it delegates to ``_simple`` and ``_lists`` in addition to this module.
@@ -65,6 +66,16 @@ LISA_PACK_ALLOWED_PREFIXES_ENV = "LISA_PACK_ALLOWED_PREFIXES"
 LISA_PACK_GIT_ALLOW_HOSTS_ENV = "LISA_PACK_GIT_ALLOW_HOSTS"
 LISA_PACK_REQUIRE_GIT_REF_ENV = "LISA_PACK_REQUIRE_GIT_REF"
 LISA_PACK_GIT_ROOT_ENV = "LISA_PACK_GIT_ROOT"
+
+# Lock source kinds that carry a re-installable ``source_ref`` (eligible for
+# in-place update). Mirrors ``host.content_roots._RUNTIME_INSTALL_SOURCE_KINDS``.
+_RUNTIME_UPDATE_SOURCE_KINDS = frozenset({"package", "git", "local"})
+
+# Placeholder ``source_ref`` values stamped by lock seeding for packs that
+# were installed outside the runtime installer (see
+# ``host.content_roots.seed_bundled_packs_lock``). These are not re-installable
+# specs; updating from them would ``uv pip install`` the literal string.
+_PLACEHOLDER_SOURCE_REFS = frozenset({"package", "git", "local"})
 
 _FRAMEWORK_ROOT = _framework_root()
 
@@ -833,3 +844,140 @@ async def run_pack_uninstall(
         f"Uninstalled '{normalized}'. "
         "Restart required to unload entry points, pack catalogs, and MCP manifests."
     )
+
+
+# ── Update drivers ───────────────────────────────────────────────────
+
+
+async def run_pack_update(
+    runtime: HostRuntime,
+    package_name: str,
+) -> tuple[bool, str]:
+    """Upgrade one installed pack in place from its recorded install source.
+
+    Resolves the pack name from the lock (aliases accepted), then re-runs the
+    install core with the pack's recorded ``source_ref`` so git pins, local
+    paths, and PyPI refs all refresh through the same trust-validated path.
+    """
+    return await asyncio.to_thread(run_pack_update_sync, runtime, package_name)
+
+
+def run_pack_update_sync(
+    runtime: HostRuntime,
+    package_name: str,
+    *,
+    request_restart: bool = True,
+) -> tuple[bool, str]:
+    """Synchronous in-place update of one installed pack.
+
+    Shares the install core (``run_pack_install_sync``) so provenance and
+    capability-provider selection stay identical to a fresh install, but the
+    update driver owns restart semantics so the restart reason reflects
+    ``pack update`` rather than ``pack install``.
+
+    Only packs with a real lock entry carrying a re-installable
+    ``source_ref`` are updatable: bundled packs (``source_kind == "bundled"``)
+    ship with the framework tree and have nothing to re-fetch, and
+    placeholder refs stamped by lock seeding (``"package"``) identify packs
+    installed outside the runtime installer — re-running those would
+    re-install the literal placeholder string.
+    """
+    requested = package_name.strip()
+    if not requested:
+        return False, "Usage: /pack update <package-name>"
+
+    lock = _load_installed_packs_lock(runtime)
+    resolved = resolve_pack_name(requested, lock)
+    if not resolved:
+        return False, (
+            f"Unknown pack '{requested}'. Run /pack list to see available packs "
+            "and their canonical names."
+        )
+
+    entry = next(
+        (
+            item
+            for item in lock.get("packs", [])
+            if isinstance(item, dict)
+            and normalize_pack_name(str(item.get("package_name") or "")) == resolved
+        ),
+        None,
+    )
+    if entry is None:
+        return False, (
+            f"Pack '{resolved}' has no installed-packs lock entry (not installed by "
+            "the runtime installer); there is no recorded source to update from."
+        )
+    source_kind = str(entry.get("source_kind") or "").strip().lower()
+    source_ref = str(entry.get("source_ref") or "").strip()
+    if source_kind == "bundled" or not source_ref or source_ref in _PLACEHOLDER_SOURCE_REFS:
+        return False, (
+            f"Pack '{resolved}' is bundled with the framework (no install source to "
+            "refresh). Upgrade the framework itself to update it."
+        )
+
+    ok, details = run_pack_install_sync(runtime, source_ref, request_restart=False)
+    if not ok:
+        return False, details
+    if request_restart:
+        runtime.request_restart(reason=f"pack update: {resolved}")
+    return True, details.replace(
+        "Installed '", f"Updated '{resolved}' from '{source_ref}'. Installed '",
+        1,
+    )
+
+
+async def run_pack_update_all(runtime: HostRuntime) -> tuple[bool, str]:
+    """Upgrade every runtime-installed pack with a recorded install source.
+
+    Iterates the lock's runtime entries (``package``, ``git``, ``local``),
+    skipping bundled packs, entries with no usable ``source_ref``, and
+    placeholder refs stamped by lock seeding, and re-installs each remaining
+    entry from its recorded source. A single restart is requested after the
+    batch regardless of how many packs were refreshed; per-pack failures do
+    not stop the batch and are listed in the output.
+    """
+    lock = _load_installed_packs_lock(runtime)
+    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+    updatable: list[tuple[str, str]] = []
+    for entry in entries:
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
+        source_kind = str(entry.get("source_kind") or "").strip().lower()
+        source_ref = str(entry.get("source_ref") or "").strip()
+        if not package_name or source_kind not in _RUNTIME_UPDATE_SOURCE_KINDS:
+            continue
+        if not source_ref or source_ref in _PLACEHOLDER_SOURCE_REFS:
+            continue
+        updatable.append((package_name, source_ref))
+
+    if not updatable:
+        return True, "No runtime-installed packs with recorded sources to update."
+
+    updated: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for package_name, source_ref in updatable:
+        ok, details = run_pack_install_sync(
+            runtime,
+            source_ref,
+            request_restart=False,
+        )
+        if ok:
+            updated.append(package_name)
+        else:
+            failed.append((package_name, details))
+
+    runtime.request_restart(reason=f"pack update-all: {len(updated)} pack(s)")
+
+    lines: list[str] = []
+    if updated:
+        lines.append(
+            "Updated " + ", ".join(sorted(updated)) + ". "
+            "Restart required to reload entry points, pack catalogs, and MCP manifests."
+        )
+    else:
+        lines.append("No packs were updated.")
+    for package_name, details in failed:
+        preview = details.splitlines()[-1].strip() if details.strip() else ""
+        suffix = f" ({preview})" if preview else ""
+        lines.append(f"- Update failed for '{package_name}'{suffix}.")
+    return bool(updated), "\n".join(lines)

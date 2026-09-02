@@ -382,7 +382,8 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "- /help [command|capabilities] — this overview, per-command guidance, "
             "or the runtime capability snapshot.",
             "- /pack list|enable <pack>|disable <pack>|install <spec>|uninstall <package> "
-            "manages pack activation and runtime installs (restart required after changes).",
+            "|update <pack>|update --all manages pack activation and runtime installs "
+            "(restart required after changes).",
             "- /models show|discover|apply|reload|edit — manage the active model manifest "
             "(run /help models for switches).",
             "- /modes — list every discovered mode (supported and unsupported).",
@@ -516,6 +517,10 @@ def _pack_command_help_text() -> str:
             "- /pack install <spec> — install a pack from a git URL, local path, or bare name.",
             "    Append ` --resume <message>` to replay a turn after the restart.",
             "- /pack uninstall <package> — remove an installed pack (restart required).",
+            "- /pack update <pack> — reinstall an installed pack in place from its "
+            "recorded source (restart required).",
+            "- /pack update --all — reinstall every runtime-installed pack from its "
+            "recorded source (restart required).",
             "",
             "Activation changes take effect after a restart; install/uninstall reseed "
             "the packs venv and re-discover modes, operations, and commands.",

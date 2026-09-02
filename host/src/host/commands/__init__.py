@@ -127,6 +127,8 @@ from host.commands._packs import (
     resolve_pack_name,
     run_pack_install,
     run_pack_uninstall,
+    run_pack_update,
+    run_pack_update_all,
     set_pack_enabled,
 )
 from host.commands._render import (
@@ -237,6 +239,8 @@ __all__ = [
     "run_explicit_slice_command",
     "run_pack_install",
     "run_pack_uninstall",
+    "run_pack_update",
+    "run_pack_update_all",
     "set_pack_enabled",
     "set_runtime_route_preview",
 ]
@@ -421,7 +425,8 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
             message,
             "pack",
             "Usage: /pack list | /pack enable <pack> | /pack disable <pack> "
-            "| /pack install <spec> | /pack uninstall <package>",
+            "| /pack install <spec> | /pack uninstall <package> | /pack update <pack> "
+            "| /pack update --all",
         )
 
     verb, _, remainder = command_text.partition(" ")
@@ -429,7 +434,7 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
     arg = remainder.strip()
 
     resume_message = ""
-    if action in {"install", "uninstall"} and " --resume " in arg:
+    if action in {"install", "uninstall", "update"} and " --resume " in arg:
         arg, _, maybe_resume = arg.partition(" --resume ")
         resume_message = maybe_resume.strip()
 
@@ -470,9 +475,38 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
             os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
         return handle_simple_command(runtime, message, "pack", details)
 
+    if action == "update":
+        if not arg or arg.lower() in {"help", "--help", "-h"}:
+            return handle_simple_command(
+                runtime,
+                message,
+                "pack",
+                "Usage: /pack update <pack> | /pack update --all",
+            )
+        if arg.lower() in {"--all", "all"}:
+            ok, details = await run_pack_update_all(runtime)
+            if not ok:
+                return handle_simple_command(runtime, message, "pack", details)
+            if resume_message:
+                runtime.request_restart(
+                    reason=runtime.restart_reason or "pack update --all",
+                )
+                os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
+            return handle_simple_command(runtime, message, "pack", details)
+
+        ok, details = await run_pack_update(runtime, arg)
+        if not ok:
+            return handle_simple_command(runtime, message, "pack", details)
+        if resume_message:
+            runtime.request_restart(
+                reason=runtime.restart_reason or "pack update",
+            )
+            os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
+        return handle_simple_command(runtime, message, "pack", details)
+
     return handle_simple_command(
         runtime,
         message,
         "pack",
-        "Unknown /pack action. Supported: list, enable, disable, install, uninstall.",
+        "Unknown /pack action. Supported: list, enable, disable, install, uninstall, update.",
     )

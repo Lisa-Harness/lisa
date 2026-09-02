@@ -4,6 +4,29 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### In-place pack updates: `/pack update`
+
+- **What:** New `/pack update <pack>` and `/pack update --all` commands that
+  upgrade installed packs in place. Both drivers read the pack's provenance
+  entry in `installed-packs.json` and re-run the existing install core
+  (`run_pack_install_sync`) with the recorded `source_ref`, so git pins,
+  local paths, and PyPI refs all refresh through the same trust-validated
+  path used by `/pack install`. Bundled packs (no install source) are
+  rejected with an actionable message. `update --all` batches every
+  runtime-installed pack and requests a single restart; per-pack failures do
+  not stop the batch and are listed in the output.
+- **Why:** Until now the only way to pick up a newer pack version was
+  `/pack uninstall` + `/pack install` — or re-typing the original install
+  spec by hand. The lock file already records exactly where each pack came
+  from, so an in-place update is a thin loop over that record rather than a
+  new resolution mechanism.
+- **Tests:** `host/tests/test_pack_manager.py` (update from recorded source,
+  unknown-pack and bundled-pack rejections, install-failure propagation,
+  `--all` batching with bundled/empty-ref skips, no-op `--all`, partial
+  failure reporting).
+
 ### Changed
 
 #### Turn runner: routing-misfire prose surfacing (2026-09-02 executor block)

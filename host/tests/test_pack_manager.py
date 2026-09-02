@@ -236,6 +236,292 @@ async def test_run_pack_uninstall_success_updates_lock_and_restart(
     assert lock["packs"] == []
 
 
+# ---------------------------------------------------------------------------
+# /pack update — in-place upgrade from recorded install source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_reinstalls_from_recorded_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A runtime-installed pack is re-installed from its recorded source_ref."""
+    runtime = _make_runtime(tmp_path)
+    seen_specs: list[str] = []
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = b"installed"
+
+    def _fake_install_sync(rt: HostRuntime, spec: str, **kwargs: object) -> tuple[bool, str]:
+        _ = rt
+        seen_specs.append(spec)
+        return True, (
+            "Installed 'lisa-pack-cloudflare' from git source. "
+            "Restart required to reload entry points, pack catalogs, and MCP manifests."
+        )
+
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "git",
+                    "source_ref": (
+                        "git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0"
+                        "#egg=lisa-pack-cloudflare"
+                    ),
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update(runtime, "cloudflare")
+
+    assert ok is True
+    assert len(seen_specs) == 1
+    assert seen_specs[0].startswith("git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0")
+    assert "Updated 'lisa-pack-cloudflare'" in details
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack update: lisa-pack-cloudflare"
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_rejects_unknown_pack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unknown pack name fails with the /pack list hint and no restart."""
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setattr(
+        commands._packs,
+        "run_pack_install_sync",
+        lambda *a, **kw: pytest.fail("install core must not run for unknown packs"),
+    )
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update(runtime, "lisa-pack-nowhere")
+
+    assert ok is False
+    assert "Unknown pack" in details
+    assert "/pack list" in details
+    assert runtime.restart_required is False
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_rejects_bundled_pack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Bundled packs have no install source; update explains the framework path."""
+    runtime = _make_runtime(tmp_path)
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-core",
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        commands._packs,
+        "run_pack_install_sync",
+        lambda *a, **kw: pytest.fail("install core must not run for bundled packs"),
+    )
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update(runtime, "lisa-pack-core")
+
+    assert ok is False
+    assert "bundled" in details
+    assert runtime.restart_required is False
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_propagates_install_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An install-core failure surfaces its message and requests no restart."""
+    runtime = _make_runtime(tmp_path)
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "package",
+                    "source_ref": "lisa-pack-cloudflare==0.1.0",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        commands._packs,
+        "run_pack_install_sync",
+        lambda *a, **kw: (False, "Install failed for 'lisa-pack-cloudflare==0.1.0'.\nboom"),
+    )
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update(runtime, "lisa-pack-cloudflare")
+
+    assert ok is False
+    assert "Install failed" in details
+    assert runtime.restart_required is False
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_all_refreshes_runtime_packs_and_skips_bundled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """update --all re-installs every runtime entry and skips bundled packs."""
+    runtime = _make_runtime(tmp_path)
+    seen_specs: list[str] = []
+
+    def _fake_install_sync(rt: HostRuntime, spec: str, **kwargs: object) -> tuple[bool, str]:
+        _ = rt
+        seen_specs.append(spec)
+        assert kwargs.get("request_restart") is False
+        return True, f"Installed '{spec}'. Restart required."
+
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-core",
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                },
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "git",
+                    "source_ref": "git+https://github.com/acme/lisa-pack-cloudflare.git@v0.2.0",
+                },
+                {
+                    "package_name": "lisa-pack-mem0",
+                    "source_kind": "package",
+                    "source_ref": "lisa-pack-mem0==0.3.1",
+                },
+                {
+                    "package_name": "lisa-pack-no-source",
+                    "source_kind": "package",
+                    "source_ref": "",
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update_all(runtime)
+
+    assert ok is True
+    assert sorted(seen_specs) == [
+        "git+https://github.com/acme/lisa-pack-cloudflare.git@v0.2.0",
+        "lisa-pack-mem0==0.3.1",
+    ]
+    assert "Updated lisa-pack-cloudflare, lisa-pack-mem0" in details
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack update-all: 2 pack(s)"
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_all_without_runtime_packs_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No updatable entries → friendly message, no install, no restart."""
+    runtime = _make_runtime(tmp_path)
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-core",
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        commands._packs,
+        "run_pack_install_sync",
+        lambda *a, **kw: pytest.fail("install core must not run with nothing to update"),
+    )
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update_all(runtime)
+
+    assert ok is True
+    assert "No runtime-installed packs" in details
+    assert runtime.restart_required is False
+
+
+@pytest.mark.asyncio
+async def test_run_pack_update_all_reports_partial_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """One failing pack does not stop the batch; failures are listed per pack."""
+    runtime = _make_runtime(tmp_path)
+
+    def _fake_install_sync(rt: HostRuntime, spec: str, **kwargs: object) -> tuple[bool, str]:
+        _ = rt
+        if spec == "lisa-pack-mem0==0.3.1":
+            return False, "Install failed for 'lisa-pack-mem0==0.3.1'.\nresolver boom"
+        return True, f"Installed '{spec}'."
+
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "package",
+                    "source_ref": "lisa-pack-cloudflare==0.2.0",
+                },
+                {
+                    "package_name": "lisa-pack-mem0",
+                    "source_kind": "package",
+                    "source_ref": "lisa-pack-mem0==0.3.1",
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+
+    ok, details = await commands.run_pack_update_all(runtime)
+
+    assert ok is True
+    assert "Updated lisa-pack-cloudflare" in details
+    assert "Update failed for 'lisa-pack-mem0'" in details
+    assert "resolver boom" in details
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack update-all: 1 pack(s)"
+
+
 def test_validate_pack_spec_for_install_package_prefix_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
