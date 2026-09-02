@@ -4388,6 +4388,31 @@ async def _run_turn_inner(
                 )
                 _state.forced_action = None
                 _state.forced_work_tool = ""
+                if _state.total_tool_calls == 0:
+                    # ── Routing-misfire prose surfacing ───────────────────
+                    # The abort happened on the FIRST dispatch attempt of a
+                    # turn that dispatched nothing real (the 2026-09-02
+                    # executor misroute: a conversational question routed
+                    # planner→thinker→reviewer→executor, the model answered
+                    # in prose with zero tool calls, the write-contract
+                    # backstop synthesized its first action tool with ``{}``,
+                    # and this guard aborted). Without a marker here the
+                    # post-loop ``_parent_no_tools`` check sees zero
+                    # receipts + zero calls, classifies the turn as
+                    # hallucinated success, and REPLACES the model's prose
+                    # with the no-verified-write block — directly
+                    # contradicting this guard's "surfacing model prose"
+                    # contract. The prose may be a genuine answer (the
+                    # routing put the user's question in front of a
+                    # write-contract mode); it may also be a claim of work.
+                    # Distinguish honestly: keep the prose and append the
+                    # no-write warning footnote (same authored asset the
+                    # chat-mode softening uses) instead of a hard block.
+                    # Bounded to zero-dispatch turns: a turn that already
+                    # dispatched real tools keeps the strict block (its
+                    # prose rides on top of actual work, so a failed write
+                    # attempt must still block — the 2026-08-14 rule).
+                    _state.routing_misfire_prose = True
                 break
 
             # ── Forced-action enforcer (dispatch path) ────────────────
@@ -6665,6 +6690,38 @@ async def _run_turn_inner(
         # than a hallucinated success.
         turn_blocked = True
     elif _parent_no_tools:
+        # ── Routing-misfire prose surfacing (work-gated) ───────────────
+        # The synthesized-call required-params guard aborted the FIRST
+        # dispatch of a turn that dispatched nothing real. The guard's
+        # contract is "surfacing model prose" — but without this branch
+        # the strict block below REPLACED that prose with the
+        # no-verified-write failure text. The prose may be a genuine
+        # answer: a conversational question can route into a
+        # write-contract mode (the 2026-09-02 executor misroute), and
+        # answering a question is honest work even though the receipt
+        # ledger shows zero tool calls. Keep the prose and append the
+        # no-write warning footnote so the user can still see whether
+        # any write was claimed. Never masks a failed write attempt
+        # (``_rm_write_attempted``) or a turn that dispatched real tools —
+        # those keep the strict block below.
+        _rm_called_bare = {
+            bare_tool_name(n) for n in _state.called_tool_names
+        } | set(_state.called_tool_names)
+        _rm_write_attempted = bool(_rm_called_bare & _state.action_tool_ids)
+        if _state.routing_misfire_prose and content.strip() and not _rm_write_attempted:
+            _log.warning(
+                "parent turn mode=%s aborted a synthesized action-tool "
+                "dispatch (missing required params) on a zero-dispatch "
+                "turn; surfacing the model's prose with the no-write "
+                "warning instead of blocking as no_tools",
+                mode_id,
+            )
+            _action_names = ", ".join(
+                f"`{t}`" for t in sorted(_state.action_tool_ids)
+            )
+            _warning = render_no_write_warning(action_names=_action_names)
+            if _warning:
+                content = content.rstrip() + "\n\n" + _warning
         # ── Chat-mode content softening (work-gated) ────────────────────
         # A mode with a side-effecting completion contract (``action_tool_ids``
         # non-empty) that ends the turn with no write receipt is normally
@@ -6699,7 +6756,17 @@ async def _run_turn_inner(
             bare_tool_name(n) for n in _state.called_tool_names
         } | set(_state.called_tool_names)
         _write_attempted = bool(_called_bare & _state.action_tool_ids)
-        if _is_chat_mode and has_dense_content and _did_work:
+        _misfire_surfaced = (
+            _state.routing_misfire_prose
+            and content.strip()
+            and not _rm_write_attempted
+        )
+        if _misfire_surfaced:
+            # The routing-misfire branch above already appended the
+            # no-write footnote to the prose; the turn is accepted. Skip
+            # the softening/block chain so the prose is not replaced.
+            pass
+        elif _is_chat_mode and has_dense_content and _did_work:
             _log.info(
                 "parent turn mode=%s completed with no verified write, but "
                 "is a chat mode that did read-only work and produced dense "

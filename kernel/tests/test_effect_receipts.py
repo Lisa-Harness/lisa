@@ -907,6 +907,217 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     assert all(r.effect == "read" for r in read_receipts)
 
 
+# ── Routing-misfire prose surfacing (2026-09-02 executor misroute) ────
+
+
+def _misroute_tool_catalog() -> dict[str, Any]:
+    """A tool catalog entry for ``coding_apply_patch`` that REQUIRES params.
+
+    The synthesized-call required-params guard consults this definition;
+    without it the guard cannot detect the missing-params synthesis and
+    the test exercises nothing. Mirrors the real ``apply_patch.tool.yml``
+    shape (a write-effect tool whose params are user-supplied).
+    """
+    from pydantic import BaseModel
+
+    from kernel.models import ToolDefinition
+
+    class _ApplyPatchParams(BaseModel):
+        path: str
+        patch: str
+
+    return {
+        "coding_apply_patch": ToolDefinition(
+            tool_id="coding_apply_patch",
+            description="apply a bounded patch",
+            parameters_schema=_ApplyPatchParams,
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_routing_misfire_zero_dispatch_prose_surfaced_not_blocked() -> None:
+    """A conversational misroute into a write-contract mode keeps its prose.
+
+    Regression for the 2026-09-02 turn-70 executor block: the user asked a
+    conversational question, routing put it in front of ``executor`` (a
+    write-contract mode), the model answered entirely in prose with zero
+    tool calls, the write-contract empty-completion backstop synthesized
+    ``coding_apply_patch`` with ``{}``, and the synthesized-call
+    required-params guard aborted the dispatch ("surfacing model prose").
+    But the post-loop ``_parent_no_tools`` check then REPLACED that prose
+    with the no-verified-write block — directly contradicting the guard's
+    contract. The kernel must surface the model's prose with the no-write
+    warning footnote instead: answering a question is honest work even
+    though the receipt ledger shows zero tool calls.
+    """
+    from kernel import config
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _EmptyPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="tool ran")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return None
+
+        async def __aenter__(self) -> _EmptyPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    prose = (
+        "Reviewing the two files you already have: the miner covers conn, "
+        "dns, http, ssl, ssh, notice, and weird logs with gzip support, and "
+        "the quickref walks through the zeek policy replacement. To extend "
+        "them I would add a daily report wrapper and a new-since-yesterday "
+        "diff, but tell me which direction you prefer."
+    )
+
+    async def prose_only(**_kwargs: Any) -> _StubCompletion:
+        # Zero tool calls, zero receipts: pure conversational prose from a
+        # write-contract mode the routing chose.
+        return _StubCompletion(content=prose)
+
+    hooks = TurnHooks(complete=prose_only, mcp_tool_pool=_EmptyPool())
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_tool_ids=["coding_apply_patch"],
+            allowed_tool_ids=["coding_apply_patch"],
+        ),
+    }
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 1000)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.turn_runner.get_tool_catalog",
+                return_value=_misroute_tool_catalog(),
+            ),
+        ):
+            result = await run_turn(
+                mode_id="executor", query="what would you extend?", hooks=hooks
+            )
+    finally:
+        mp.undo()
+
+    # The prose is surfaced with the warning footnote — NOT replaced by
+    # the no_tools failure text.
+    assert result.block_origin != "no_tools"
+    assert "no verified write" not in result.response_text
+    assert "daily report wrapper" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_routing_misfire_empty_prose_yields_not_surfaces() -> None:
+    """Empty prose on an aborted synth dispatch yields for redirect.
+
+    When the synthesized-call guard aborts on a zero-dispatch turn but
+    the model's completion carries NO usable text, there is nothing to
+    surface. The empty-content post-loop path yields an honest redirect
+    question ("model returned an empty response…") — the turn is NOT
+    blocked as no_tools and NOT silently accepted.
+    """
+    from kernel import config
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _EmptyPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="tool ran")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return None
+
+        async def __aenter__(self) -> _EmptyPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    async def empty_prose(**_kwargs: Any) -> _StubCompletion:
+        # Zero tool calls AND zero content: nothing to surface.
+        return _StubCompletion(content="")
+
+    hooks = TurnHooks(complete=empty_prose, mcp_tool_pool=_EmptyPool())
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_tool_ids=["coding_apply_patch"],
+            allowed_tool_ids=["coding_apply_patch"],
+        ),
+    }
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 1000)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.turn_runner.get_tool_catalog",
+                return_value=_misroute_tool_catalog(),
+            ),
+        ):
+            result = await run_turn(
+                mode_id="executor", query="do the work", hooks=hooks
+            )
+    finally:
+        mp.undo()
+
+    # Nothing to surface: the empty-content path yields for redirect.
+    assert result.blocked is False
+    assert result.yielded is not None
+
+
 # ── Parent-turn pre-cap write-nudge (2026-08-11) ──────────────────────
 
 

@@ -344,6 +344,18 @@ class _TurnState:
     lifecycle briefing and must not repeat: a model that genuinely
     declines to write gets nudged once, then the turn is accepted
     honestly. Reset to False only by a fresh ``_TurnState``."""
+    routing_misfire_prose: bool = False
+    """Set True by the synthesized-call required-params guard when the
+    abort happened on a turn that dispatched ZERO real tools (the
+    2026-09-02 executor misroute: a conversational question routed into a
+    write-contract mode, the model answered in prose, the write-contract
+    backstop synthesized its first action tool with ``{}``, and the guard
+    aborted). The post-loop ``_parent_no_tools`` check reads this to
+    surface the model's prose with the no-write warning footnote instead
+    of replacing it with the hard ``no_tools`` block — the prose may be a
+    genuine answer to the user's question, and the guard's own contract
+    is "surfacing model prose". A turn that dispatched real tools never
+    sets this (failed writes still block strictly)."""
 
     # ── Within-turn read cache (Level C) ─────────────────────────────
     # Per-turn cache of read-tool call signatures → one-line abbreviations.

@@ -6,6 +6,33 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### Turn runner: routing-misfire prose surfacing (2026-09-02 executor block)
+
+- **What:** When the synthesized-call required-params guard aborts a
+  kernel-synthesized action-tool dispatch on a turn that dispatched ZERO
+  real tools, the post-loop completion contract now surfaces the model's
+  prose with the no-write warning footnote instead of replacing it with
+  the `no_tools` hallucinated-success block. `_TurnState` gains
+  `routing_misfire_prose`, set by the guard only when
+  `total_tool_calls == 0`; the post-loop `_parent_no_tools` branch reads
+  it and accepts the prose (never when a write was attempted or the
+  prose is empty — an empty zero-dispatch turn still yields the honest
+  redirect question).
+- **Why:** The 2026-09-02 turn-70 executor misroute: a conversational
+  question routed planner→thinker→reviewer→executor, the model answered
+  entirely in prose with zero tool calls, the write-contract
+  empty-completion backstop synthesized `coding_apply_patch` with `{}`,
+  and the guard aborted — correctly avoiding a guaranteed validation
+  failure, but its stated intent ("surfacing model prose") was then
+  contradicted by the post-loop check, which classified the
+  zero-receipt/zero-call turn as hallucinated success and discarded the
+  model's answer. Answering a question is honest work even when routing
+  put it in front of a write-contract mode.
+- **Tests:** `kernel/tests/test_effect_receipts.py` (misroute prose
+  surfaced with footnote, `no_tools` not fired; empty prose on an
+  aborted dispatch yields for redirect instead of surfacing; 2 new
+  tests).
+
 #### Turn runner: write-announcement loop breakers (2026-09-02 incident)
 
 - **What:** Two kernel fixes for the p920 stuck-loop where Lisa ended eight
