@@ -336,6 +336,14 @@ class _TurnState:
     iteration. Reset to False only by a fresh ``_TurnState`` (one per
     turn / fork child), so each child gets exactly one nudge
     opportunity."""
+    stalled_write_rescue_fired: bool = False
+    """One-shot guard for the stalled-write rescue. Set True when a
+    natural completion announced a write (``_STALLED_WRITE_PATTERNS``)
+    while the receipt ledger shows zero write attempts — the rescue
+    injects a one-shot dispatch directive into the next iteration's
+    lifecycle briefing and must not repeat: a model that genuinely
+    declines to write gets nudged once, then the turn is accepted
+    honestly. Reset to False only by a fresh ``_TurnState``."""
 
     # ── Within-turn read cache (Level C) ─────────────────────────────
     # Per-turn cache of read-tool call signatures → one-line abbreviations.

@@ -606,6 +606,15 @@ def extract_openai_content(response: Any) -> str:
     terse. Fall back to ``reasoning_content`` so the caller sees the model's
     actual answer instead of an empty string (which the turn runner would
     otherwise turn into "The model did not produce a final response.").
+
+    Ollama's OpenAI-compatible endpoint (and several other OpenAI-compatible
+    servers) name the field ``message.reasoning`` instead of
+    ``reasoning_content``. The openai SDK preserves unknown fields
+    (``model_config extra="allow"``), so the attribute is readable via
+    ``getattr`` — check it as a second fallback so glm/deepseek models served
+    through Ollama do not lose their answer (the 2026-09-02 empty-turn
+    incident: glm-5.3-flash:cloud spent the whole completion budget on
+    reasoning and returned ``content: ""``).
     """
 
     choices = getattr(response, "choices", [])
@@ -624,10 +633,12 @@ def extract_openai_content(response: Any) -> str:
         except Exception:  # pylint: disable=broad-except
             return str(parsed)
     # Visible answer empty — fall back to reasoning content for reasoning
-    # models. Empty string if neither is present.
-    reasoning = getattr(message, "reasoning_content", None)
-    if isinstance(reasoning, str) and reasoning.strip():
-        return reasoning
+    # models. ``reasoning_content`` is the gpt-5.x wire name; ``reasoning``
+    # is Ollama's. Empty string if neither is present.
+    for attr in ("reasoning_content", "reasoning"):
+        reasoning = getattr(message, attr, None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
     return ""
 
 
@@ -1308,8 +1319,14 @@ class OpenAICompatibleGateway:
                     # ``delta.reasoning_content`` (separate from
                     # ``delta.content``). Capture it so the aggregated
                     # completion can surface it as a fallback when the
-                    # visible answer is empty.
-                    delta_reasoning = getattr(delta, "reasoning_content", None) or ""
+                    # visible answer is empty. Ollama names the same field
+                    # ``delta.reasoning`` — read both so reasoning models
+                    # served through Ollama keep their answer visible.
+                    delta_reasoning = (
+                        getattr(delta, "reasoning_content", None)
+                        or getattr(delta, "reasoning", None)
+                        or ""
+                    )
                 finish_reason = getattr(choice, "finish_reason", None)
             usage = extract_openai_completion_usage(event)
             yield StreamedChunk(

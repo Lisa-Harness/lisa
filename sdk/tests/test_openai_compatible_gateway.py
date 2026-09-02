@@ -17,6 +17,7 @@ import pytest
 from kernel.provider_contracts import CompletionRequest
 from sdk.providers.openai_gateway import (
     OpenAICompatibleGateway,
+    extract_openai_content,
     sanitize_chat_history_tool_names,
     sanitize_chat_tool_names,
 )
@@ -221,3 +222,111 @@ async def test_complete_stream_sanitizes_wire_names() -> None:
         captured["kwargs"]["tools"][0]["function"]["name"]
         == "lisa-storage_read_file"
     )
+
+
+# ── Reasoning-field fallbacks (2026-09-02 empty-turn incident) ────────
+
+
+class TestOllamaReasoningFieldFallback:
+    """Ollama names the reasoning field ``reasoning``, not ``reasoning_content``.
+
+    The openai SDK preserves the extra attribute (``model_config
+    extra="allow"``), so both names must be read. Without the fallback,
+    reasoning models served through Ollama that exhaust their completion
+    budget on thinking return ``content=""`` and the turn yields
+    "empty response" (the 2026-09-02 glm-5.3-flash:cloud incident).
+    """
+
+    @staticmethod
+    def _ollama_message(reasoning_attr: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            content="",
+            **{reasoning_attr: "The user asked about zeek. I should read the config."},
+        )
+
+    def test_extract_prefers_content_over_reasoning(self) -> None:
+        message = SimpleNamespace(content="Final answer.", reasoning="thinking")
+        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        assert extract_openai_content(response) == "Final answer."
+
+    def test_extract_falls_back_to_reasoning_content(self) -> None:
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=self._ollama_message("reasoning_content"))]
+        )
+        assert "read the config" in extract_openai_content(response)
+
+    def test_extract_falls_back_to_ollama_reasoning(self) -> None:
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=self._ollama_message("reasoning"))]
+        )
+        assert "read the config" in extract_openai_content(response)
+
+    def test_extract_returns_empty_when_both_absent(self) -> None:
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=""))]
+        )
+        assert extract_openai_content(response) == ""
+
+    @pytest.mark.asyncio
+    async def test_complete_surfaces_ollama_reasoning_as_content(self) -> None:
+        # Simulate the exact Ollama shape: extra ``reasoning`` field on the
+        # parsed message (as the openai SDK preserves it via extra="allow").
+        message = SimpleNamespace(
+            content="",
+            reasoning="long thinking that consumed the budget",
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            id="chat-1",
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=200, total_tokens=210
+            ),
+        )
+        client = _StubClient(response, {})
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.content == "long thinking that consumed the budget"
+
+    @pytest.mark.asyncio
+    async def test_complete_stream_captures_ollama_reasoning_delta(self) -> None:
+        events = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=None, reasoning="thinking..."),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=None, reasoning=None),
+                        finish_reason="length",
+                    )
+                ],
+                usage=None,
+            ),
+        ]
+
+        class _Stream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not events:
+                    raise StopAsyncIteration
+                return events.pop(0)
+
+        class _StreamCompletions:
+            async def create(self, **kwargs: Any) -> Any:
+                return _Stream()
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=_StreamCompletions())
+        )
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        chunks = [chunk async for chunk in gateway.complete_stream(_request())]
+        assert chunks[0].reasoning_content == "thinking..."
+        assert chunks[1].finish_reason == "length"

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -194,3 +195,122 @@ async def test_turn_runner_stream_tool_calls_falls_back_to_complete() -> None:
     hooks = _build_minimal_hooks(complete_fn, stream_fn)
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert "final answer" in result.response_text
+
+
+# ── Truncated-stream rescue (the 2026-09-02 write-announcement loop) ───
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rescues_truncated_stream_with_tools_offered() -> None:
+    """A stream that stops at ``length`` while tools were offered is
+    retried once with a doubled budget instead of being accepted as a
+    narration-only final completion.
+
+    Regression for the 2026-09-02 write-announcement loop: v1 streaming
+    does not parse tool-call deltas, so when glm-5.2:cloud spent its
+    4096-token budget narrating and starting a multi-KB ``write_file``
+    payload, the stream ended ``finish_reason='length'`` with tool calls
+    still pending. The kernel treated the narration as a natural
+    completion, the announced write never dispatched, and the user had to
+    re-ask "continue" every turn.
+    """
+    calls: list[int] = []
+
+    def _stream_fn(chunks_by_call: list[list[StreamedChunk]]):
+        call_idx = {"n": 0}
+
+        async def stream_fn(**kwargs: Any):
+            calls.append(kwargs.get("max_tokens"))
+            chunks = chunks_by_call[call_idx["n"]]
+            call_idx["n"] += 1
+            for chunk in chunks:
+                yield chunk
+
+        return stream_fn
+
+    chunks_by_call = [
+        # First call: narration streams fine, then truncation mid payload.
+        [StreamedChunk(content="Writing both files now."), StreamedChunk(finish_reason="length")],
+        # Retry: the same narration plus a tool_calls finish — the payload
+        # fits in the doubled budget.
+        [StreamedChunk(content="Writing both files now."), StreamedChunk(finish_reason="tool_calls")],
+    ]
+    stream_fn = _stream_fn(chunks_by_call)
+
+    async def complete_fn(**kwargs: Any):
+        return _StubCompletion(content="wrote it")
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    result = await run_turn(mode_id="default", query="write the scripts", hooks=hooks)
+
+    # The retry fired with a doubled budget…
+    assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
+    # …the retried stream ended tool_calls, so the fallback complete() ran
+    # and produced the tool-call turn.
+    assert "wrote it" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_truncated_stream_without_tools_is_not_retried() -> None:
+    """``finish_reason='length'`` with NO tools offered is a natural
+    completion, not a lost tool call — no rescue retry."""
+
+    calls: list[int] = []
+
+    async def stream_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        yield StreamedChunk(content="A plain answer that ran long.")
+        yield StreamedChunk(finish_reason="length")
+
+    async def complete_fn(**kwargs: Any):
+        raise AssertionError("complete() must not be called on the natural path")
+
+    async def empty_tool_surface(_mode_config: Any, **_kwargs: Any):
+        return ([], {"input_count": 0, "output_count": 0, "dropped_duplicate": 0,
+                     "dropped_disallowed": 0, "dropped_invalid": 0})
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    # The default catalog loads ambient memory/yield tools; strip the tool
+    # surface so this test exercises the genuinely tools-offered=False path.
+    with patch("kernel.turn_runner.build_tool_surface", empty_tool_surface):
+        result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert calls == [4096], "no retry should fire when tools were not offered"
+    assert "plain answer" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None:
+    """The rescue retry budget is bounded by the model's context window."""
+
+    calls: list[int] = []
+
+    async def stream_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        yield StreamedChunk(content="partial")
+        yield StreamedChunk(finish_reason="length")
+
+    async def complete_fn(**kwargs: Any):
+        return _StubCompletion(content="wrote it")
+
+    hooks = TurnHooks(
+        complete=complete_fn,
+        complete_stream=stream_fn,
+        resolve_model=lambda _mid: SimpleNamespace(
+            provider="test",
+            model_id="small-model",
+            display_name="Small Model",
+            reasoning_model=False,
+            thinking_model=False,
+            context_window=6000,
+        ),
+    )
+    # context_window 6000 caps the doubled budget at 6000 (not 8192).
+    result = await run_turn(
+        mode_id="default",
+        query="write the scripts",
+        hooks=hooks,
+    )
+
+    assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
+    assert "partial" in result.response_text

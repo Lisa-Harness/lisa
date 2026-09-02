@@ -36,6 +36,12 @@ class _StubCompletion:
 
     content: str
     tool_calls: list[dict[str, Any]] | None = None
+    # Optional provider metadata the turn loop reads via getattr with
+    # defaults (finish_reason, token counters). Present only on stubs
+    # that exercise provider-diagnostics paths.
+    finish_reason: str | None = None
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
 
 
 def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None = None):
@@ -1923,6 +1929,61 @@ async def test_empty_final_completion_near_cap_does_not_claim_budget() -> None:
     assert "iteration budget" not in lowered
     assert "empty response" in lowered or "empty" in lowered
     assert result.yielded is not None
+
+
+@pytest.mark.asyncio
+async def test_empty_natural_completion_logs_diagnostic_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A natural completion (zero tool calls) with empty content logs the
+    empty-completion warning.
+
+    The d4a06be diagnostic only covered the dispatch-path exit (tool_calls
+    existed but none dispatched); a natural completion with zero tool calls
+    breaks out of the loop before reaching that block, so the 2026-09-02
+    glm-5.3-flash:cloud incident produced "empty response" yields with NO
+    logged cause. This locks the warning to the natural-completion break.
+    """
+
+    async def empty_completion(**kwargs: Any) -> _StubCompletion:
+        # Mimic the incident shape: reasoning burned the budget, finish=-length.
+        return _StubCompletion(
+            content="", finish_reason="length", completion_tokens=980
+        )
+
+    hooks = _build_minimal_hooks(empty_completion)
+    with caplog.at_level("WARNING", logger="kernel.turn_runner"):
+        result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert result.yielded is not None
+    empty_warnings = [
+        rec for rec in caplog.records
+        if "natural completion returned empty content" in rec.getMessage()
+    ]
+    assert empty_warnings, "expected the empty natural-completion warning"
+    message = empty_warnings[-1].getMessage()
+    assert "finish_reason=length" in message
+    assert "completion_tokens=200" not in message  # cumulative, not per-call
+    assert "mode=default" in message
+
+
+@pytest.mark.asyncio
+async def test_natural_completion_with_content_logs_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A normal natural completion (non-empty content) must NOT log the
+    empty-content warning."""
+
+    hooks = _build_minimal_hooks(_make_stub_complete("Hello, world!"))
+    with caplog.at_level("WARNING", logger="kernel.turn_runner"):
+        result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert result.response_text == "Hello, world!"
+    assert result.yielded is None
+    assert not [
+        rec for rec in caplog.records
+        if "natural completion returned empty content" in rec.getMessage()
+    ]
 
 
 @pytest.mark.asyncio

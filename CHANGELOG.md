@@ -6,6 +6,40 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### Turn runner: write-announcement loop breakers (2026-09-02 incident)
+
+- **What:** Two kernel fixes for the p920 stuck-loop where Lisa ended eight
+  consecutive turns (thread turns 59–66) with narration ("Writing both
+  files now") while the receipt ledger held only read receipts, so the
+  user had to re-ask "continue" every turn. (1) **Truncated-stream
+  rescue**: when the streaming path ends `finish_reason="length"` while
+  tools were offered, the kernel retries the call once with a doubled
+  `max_tokens` (bounded by the model's `context_window`) before accepting
+  a narration-only aggregate — v1 streaming does not parse tool-call
+  deltas, so a generation cut off mid-payload is indistinguishable from a
+  narration-only completion and the announced write is silently lost.
+  (2) **Stalled-write rescue**: when a natural completion announces a
+  write (`_STALLED_WRITE_PATTERNS` commitment language) while the ledger
+  shows zero write attempts but real read receipts, the kernel injects a
+  one-shot Phase-7 dispatch directive (named action tools, "no narration
+  before the tool call") into the next iteration's lifecycle briefing.
+  Latched per turn via `stalled_write_rescue_fired` on `_TurnState`; the
+  chat-mode completion contract still accepts an honest read-only turn
+  after the single nudge. No kernel-synthesized write dispatch — an
+  MCP-native action tool (`lisa-storage.write_file`) requires `path` +
+  `content` the kernel cannot fabricate, so a synth is a guaranteed
+  validation failure.
+- **Why:** The empty-completion backstop requires `total_tool_calls == 0`
+  (turn 60+ had read receipts), the midpoint write-nudge skips turns with
+  read receipts (the 2026-08-27 read-receipt fix), and the chat-mode
+  softening accepts dense content — three correct guards whose
+  intersection left the announcement loop uncaught.
+- **Tests:** `kernel/tests/test_streaming.py` (retry fires at 2x with a
+  `context_window` cap; no retry without tools offered; 13 passed),
+  `kernel/tests/test_effect_receipts.py` (rescue directive injected once
+  and the follow-up write dispatches; honest dense answers untouched;
+  one-shot latch; 18 passed).
+
 #### Kernel config: dead settings removed, identity + context budgets migrated to host
 
 - **What:** `kernel/config.py` cut to only settings the kernel actually

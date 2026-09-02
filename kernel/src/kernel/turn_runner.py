@@ -102,7 +102,27 @@ from kernel.tools.schema_translator import (
 )
 from kernel.workflow_position import WorkflowStep, _step_id_for
 
+import re
+
 logger = logging.getLogger(__name__)
+
+# ── Stalled-write rescue: announcement detection ───────────────────────────
+# Prose that ANNOUNCES a write in future/present-continuous tense while the
+# receipt ledger shows zero write attempts is the signature of the
+# write-announcement loop (the 2026-09-02 incident: eight consecutive turns
+# of "Writing both files now" with only read tool dispatches). The patterns
+# are intentionally narrow — they must match commitment language, not
+# discussion of writing in general — and are compiled once at import.
+_STALLED_WRITE_PATTERNS = re.compile(
+    r"(?:"
+    r"\bwriting\s+(?:both\s+)?(?:the\s+)?(?:files?|scripts?|it|them|now)\b"
+    r"|\b(?:i'?ll|i\s+will|let\s+me|i'm\s+going\s+to)\s+(?:now\s+)?"
+    r"(?:write|create|save|generate|produce|build)\b"
+    r"|\bwriting\s+(?:the\s+)?(?:\w+\s+)?(?:script|toolkit|cheat\s?sheet)s?\b"
+    r"|\bno\s+more\s+stalling\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str:
@@ -2950,6 +2970,12 @@ async def _run_turn_inner(
     # completes or the hint is suppressed. Persistent across iterations —
     # the briefing rebuild re-injects it every iteration until cleared.
     _chain_advance_guidance = ""
+    # One-shot stalled-write rescue directive (the 2026-09-02
+    # write-announcement loop): set when a natural completion announces a
+    # write while the receipt ledger shows zero write attempts. Rides the
+    # per-iteration lifecycle briefing for exactly one iteration; cleared
+    # after the next model call regardless of outcome.
+    _stalled_write_guidance = ""
     routing_hint = ""
     if not suppress_routing_hint:
         routing_hint = _compute_capability_routing_hint(
@@ -3677,6 +3703,11 @@ async def _run_turn_inner(
             _guidance_lines.append(_midpoint_nudge_text)
         if _chain_advance_guidance:
             _guidance_lines.append(_chain_advance_guidance)
+        if _stalled_write_guidance:
+            _guidance_lines.append(_stalled_write_guidance)
+            # One-shot: clear after the briefing carries it so the
+            # directive cannot accumulate across iterations.
+            _stalled_write_guidance = ""
         if _kernel_settings.budget_briefing_enabled:
             _briefing = _build_budget_briefing(
                 state=_state,
@@ -3878,10 +3909,53 @@ async def _run_turn_inner(
                     chunks.append(chunk)
                 _stream_ms = (time.perf_counter() - _complete_started) * 1000.0
                 aggregated = _aggregate_streamed_chunks(chunks)
+                _fallback_request = completion_request
+
+                # Truncated-stream rescue retry: when tools were offered and
+                # the stream stops by length, the generation was cut off
+                # mid-generation — quite possibly mid tool-call payload (v1
+                # streaming does not parse deltas, so a truncated payload is
+                # indistinguishable from a narration-only completion and the
+                # announced write is silently lost; the 2026-09-02
+                # write-announcement loop: glm-5.2:cloud narrated "Writing
+                # both files now" every turn while a multi-KB write_file
+                # payload blew the 4096-token budget). Retry once with a
+                # doubled budget (bounded by the model's context window)
+                # before accepting the narration-only aggregate as final.
+                if aggregated.finish_reason == "length" and effective_tools:
+                    _base_max_tokens = int(completion_request.max_tokens or 0)
+                    _retry_max_tokens = _base_max_tokens * 2
+                    _cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
+                    if _cap_window > 0:
+                        _retry_max_tokens = min(_retry_max_tokens, _cap_window)
+                    if _retry_max_tokens > _base_max_tokens:
+                        _log.warning(
+                            "stream truncated with tools offered; retrying once "
+                            "with higher max_tokens (mode=%s, model=%s, from=%d, to=%d)",
+                            mode_id,
+                            getattr(effective_model_def, "model_id", ""),
+                            _base_max_tokens,
+                            _retry_max_tokens,
+                        )
+                        _fallback_request = CompletionRequest(
+                            messages=completion_request.messages,
+                            model_def=completion_request.model_def,
+                            max_tokens=_retry_max_tokens,
+                            temperature=completion_request.temperature,
+                            tools=completion_request.tools,
+                            response_format=completion_request.response_format,
+                        )
+                        _retry_started = time.perf_counter()
+                        _retry_chunks: list[StreamedChunk] = []
+                        async for chunk in _stream_gateway_fn(_fallback_request):
+                            _retry_chunks.append(chunk)
+                        _stream_ms += (time.perf_counter() - _retry_started) * 1000.0
+                        aggregated = _aggregate_streamed_chunks(_retry_chunks)
+
                 if aggregated.finish_reason == "tool_calls":
                     # Fall back to non-streaming for tool-call payload
                     _fallback_started = time.perf_counter()
-                    completion = await _gateway.complete(completion_request)
+                    completion = await _gateway.complete(_fallback_request)
                     if completion.duration_ms <= 0.0:
                         completion.duration_ms = (
                             time.perf_counter() - _fallback_started
@@ -4163,11 +4237,100 @@ async def _run_turn_inner(
                     )
                     continue
 
+                # ── Stalled-write rescue (read-work, no write attempt) ────
+                # A write-contract mode did read-only work this turn but
+                # ended with prose that ANNOUNCES a write that never
+                # happened. This is the 2026-09-02 write-announcement
+                # loop: every turn the model said "Writing both files
+                # now" while dispatching only read tools, the
+                # completion contract accepted the turn (read receipts +
+                # no write attempt = honest read-only), and the user had
+                # to re-ask "continue" eight times.
+                #
+                # The empty-completion backstop above cannot fire (it
+                # requires ``total_tool_calls == 0``) and the chat-mode
+                # softening downstream accepts the turn. Detection keys
+                # on the announcement itself: the prose contains a
+                # future-tense write claim ("Writing…", "I'll write…",
+                # "Let me create…") while the ledger shows zero write
+                # attempts. The rescue is a one-shot Phase-7 guidance
+                # line (rides the next iteration's lifecycle briefing):
+                # it names the mode's action tool and forbids further
+                # narration. No kernel-synthesized dispatch here — an
+                # MCP-native action tool (``lisa-storage.write_file``)
+                # requires ``path`` + ``content`` the kernel cannot
+                # fabricate, so a synthesized call is a guaranteed
+                # validation failure (the synthesized-call guard would
+                # abort the turn instead).
+                #
+                # Latched via ``stalled_write_rescue_fired`` so a model
+                # that genuinely declines to write is nudged once, then
+                # the turn is accepted honestly.
+                if (
+                    mode_config is not None
+                    and _state.action_tool_ids
+                    and not _has_write_receipt
+                    and _has_read_receipt
+                    and not _state.stalled_write_rescue_fired
+                    and _STALLED_WRITE_PATTERNS.search(content)
+                ):
+                    _state.stalled_write_rescue_fired = True
+                    _rescue_action_list = ", ".join(sorted(_state.action_tool_ids))
+                    _stalled_write_guidance = (
+                        "STOP ANNOUNCING AND DISPATCH. Your previous "
+                        "response described a write that never happened — "
+                        "no write tool was called this turn. You have all "
+                        "the information you need. Call one of "
+                        f"[{_rescue_action_list}] NOW with complete "
+                        "arguments in this iteration. Do NOT narrate the "
+                        "write before making the tool call; narration "
+                        "instead of the tool call wastes the user's time."
+                    )
+                    _log.warning(
+                        "stalled-write rescue armed (mode=%s iteration=%d "
+                        "tools=%s): prose announced a write while the "
+                        "ledger shows zero write attempts — one-shot "
+                        "dispatch directive injected into the next "
+                        "iteration's briefing",
+                        mode_id,
+                        _state.iteration,
+                        sorted(_state.action_tool_ids),
+                    )
+                    continue
+
                 _log.debug(
                     "turn loop: natural completion (mode=%s, iteration=%d, no tool calls, no pending yield)",
                     mode_id,
                     _state.iteration,
                 )
+                if not content:
+                    # Natural completion with zero tool calls AND empty
+                    # content: the provider produced nothing usable. This
+                    # break path bypasses the ``if not tools_dispatched``
+                    # warning further down (that block only runs when
+                    # tool_calls existed but none dispatched), so without
+                    # this diagnostic the post-loop fallback yields the
+                    # "empty response" question with NO logged cause. The
+                    # 2026-09-02 incident: glm-5.3-flash:cloud via Ollama
+                    # burned the whole completion budget on reasoning the
+                    # gateway did not extract, produced ``content=""``, and
+                    # every such turn exited silently here.
+                    # ``finish_reason`` distinguishes truncation
+                    # (``length``) from a clean-but-empty stop.
+                    _log.warning(
+                        "turn loop: natural completion returned empty content "
+                        "(mode=%s, iteration=%d/%d, finish_reason=%s, "
+                        "completion_tokens=%d, reasoning_tokens=%d) — "
+                        "harness will yield for redirect; if "
+                        "finish_reason=length, reasoning consumed the "
+                        "completion budget before any visible text",
+                        mode_id,
+                        _state.iteration,
+                        max_tool_iterations,
+                        getattr(completion, "finish_reason", "unknown"),
+                        _state.total_completion_tokens,
+                        _state.total_reasoning_tokens,
+                    )
                 break
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.

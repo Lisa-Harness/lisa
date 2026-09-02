@@ -1187,3 +1187,284 @@ async def test_midpoint_nudge_fires_for_guidance_model_gather_without_output(
         "midpoint write-nudge did not fire for a gather-without-output turn. "
         f"prompts={captured_prompts!r}"
     )
+
+
+# ── Stalled-write rescue (the 2026-09-02 write-announcement loop) ──────
+
+
+def _announcement_writer_catalog() -> dict[str, WorkflowModeConfig]:
+    """A chat mode with a write contract and an ambient read tool.
+
+    Mirrors the production ``default`` mode: ``lisa-storage.read_file`` is
+    ambient (reads work) and ``write_file`` is the action tool the model
+    keeps announcing but never calling.
+    """
+    return {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_operation_ids=["write_file"],
+            allowed_operation_ids=["write_file"],
+            authored_allowed_tool_ids=["lisa-storage.read_file"],
+            allowed_tool_ids=["lisa-storage.read_file"],
+        ),
+    }
+
+
+class _ReadThenWritePool:
+    """MCP pool stub: reads succeed; writes record their payload."""
+
+    def __init__(self) -> None:
+        self.write_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+        return []
+
+    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> Any:
+        from kernel.tools.mcp_client import MCPToolResult
+
+        if "write" in tool_id or "append" in tool_id:
+            self.write_calls.append((tool_id, dict(arguments)))
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text='{"ok": true}',
+                is_error=False,
+            )
+        return MCPToolResult(tool_id=tool_id, output_text="read result", is_error=False)
+
+    def tool_spec(self, tool_id: str) -> Any:
+        # read_file is server-declared read-only; write tools are not.
+        return SimpleNamespace(read_only_hint=("write" not in tool_id and "append" not in tool_id))
+
+    async def __aenter__(self) -> "_ReadThenWritePool":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def start(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stalled_write_rescue_directs_announced_write_to_dispatch() -> None:
+    """Announced-but-unwritten prose after read work injects a one-shot
+    dispatch directive and the follow-up write actually dispatches.
+
+    Regression for the 2026-09-02 write-announcement loop: glm-5.2:cloud
+    ended eight consecutive turns with "Writing both files now" while the
+    receipt ledger held only read receipts; the completion contract
+    accepted each turn (read receipts + no write attempt = honest
+    read-only) and the user had to re-ask "continue" every time. The
+    rescue detects the announcement shape and rides the next iteration's
+    lifecycle briefing with a directive naming the action tool.
+    """
+    from kernel.tools.mcp_client import MCPToolResult  # noqa: F401
+
+    pool = _ReadThenWritePool()
+    call_count = 0
+    captured_prompts: list[str] = []
+
+    async def announcing_model(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        messages = kwargs.get("messages", [])
+        if messages:
+            captured_prompts.append(str(messages[0].get("content", "")))
+        if call_count == 1:
+            # Read work first (a real tool call), then announce.
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_read",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "zeek/local.zeek"}',
+                        },
+                    }
+                ],
+            )
+        if call_count == 2:
+            # The announcement: prose that claims a write with NO tool call.
+            return _StubCompletion(
+                content=(
+                    "Now I have everything. Writing both files now — "
+                    "the Python analysis script and the cheat sheet."
+                )
+            )
+        # After the rescue directive: actually dispatch the write.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_write",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"path": "zeek/log-mining.py", "content": "#!/usr/bin/env python3"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(complete=announcing_model, mcp_tool_pool=pool)
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+        ),
+        patch(
+            "kernel.turn_runner.get_tool_catalog",
+            return_value={},
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="write the scripts", hooks=hooks)
+
+    # The write actually dispatched — the loop is broken.
+    assert pool.write_calls, "the rescue must lead to a real write dispatch"
+    assert result.blocked is False
+    # The rescue directive was injected into the briefing exactly once.
+    rescue_prompts = [p for p in captured_prompts if "STOP ANNOUNCING AND DISPATCH" in p]
+    assert rescue_prompts, "rescue directive missing from the briefing"
+    assert len(rescue_prompts) == 1, "rescue directive must be one-shot"
+    assert "write_file" in rescue_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_stalled_write_rescue_does_not_fire_for_dense_honest_answers() -> None:
+    """A genuine synthesized answer (no announcement language) must NOT
+    trigger the rescue — honest read-only chat work stays honest."""
+    from kernel import config
+
+    pool = _ReadThenWritePool()
+    captured_prompts: list[str] = []
+
+    async def honest_model(**kwargs: Any) -> _StubCompletion:
+        messages = kwargs.get("messages", [])
+        if messages:
+            captured_prompts.append(str(messages[0].get("content", "")))
+        if not captured_prompts or len(captured_prompts) == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_read",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "zeek/local.zeek"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content=(
+                "I reviewed the zeek configuration and gathered the "
+                "context. The policy loads the base protocol scripts and "
+                "the intel framework is commented out pending the do_notice "
+                "path fix. The capture-loss estimate is within normal "
+                "bounds for this deployment and no further configuration "
+                "changes are required right now."
+            )
+        )
+
+    hooks = TurnHooks(complete=honest_model, mcp_tool_pool=pool)
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 100)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+            ),
+            patch("kernel.turn_runner.get_tool_catalog", return_value={}),
+        ):
+            result = await run_turn(mode_id="writer", query="review the config", hooks=hooks)
+    finally:
+        mp.undo()
+
+    assert result.blocked is False
+    assert pool.write_calls == [], "honest answers must not trigger a forced write"
+    assert not [p for p in captured_prompts if "STOP ANNOUNCING" in p]
+
+
+@pytest.mark.asyncio
+async def test_stalled_write_rescue_is_one_shot_per_turn() -> None:
+    """The rescue fires once; a model that ignores it is not nudged again.
+
+    The latch (``stalled_write_rescue_fired``) prevents the kernel from
+    looping a genuinely write-averse model through repeated directives —
+    after one rescue the turn completes honestly whatever the model does.
+    """
+    call_count = 0
+    captured_prompts: list[str] = []
+
+    async def stalling_model(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        messages = kwargs.get("messages", [])
+        if messages:
+            captured_prompts.append(str(messages[0].get("content", "")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_read",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "a.md"}',
+                        },
+                    }
+                ],
+            )
+        # Every subsequent completion: announce, never dispatch.
+        return _StubCompletion(content="Writing both files now. No more stalling.")
+
+    hooks = TurnHooks(complete=stalling_model, mcp_tool_pool=_ReadThenWritePool())
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_announcement_writer_catalog(),
+        ),
+        patch("kernel.turn_runner.get_tool_catalog", return_value={}),
+    ):
+        result = await run_turn(mode_id="writer", query="write them", hooks=hooks)
+
+    rescue_prompts = [p for p in captured_prompts if "STOP ANNOUNCING AND DISPATCH" in p]
+    assert len(rescue_prompts) == 1, (
+        f"rescue must fire exactly once per turn, fired {len(rescue_prompts)}"
+    )
+    # The stalling prose was still accepted (chat softening) — no loop.
+    assert result.blocked is False
