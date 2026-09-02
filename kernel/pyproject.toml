@@ -3,8 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = [".."]
-include = ["kernel*"]
+where = ["src"]
 
 [project]
 name = "lisa-kernel"
@@ -39,7 +38,7 @@ memory = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = [".."]
+pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
     "live: hits real external signal or provider APIs and prints a tester-visible summary",

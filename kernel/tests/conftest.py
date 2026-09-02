@@ -6,14 +6,16 @@ MCP-mediated catalog loading fixture from ``conftest_catalog.py``.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Import the catalog setup fixture so it's auto-use across all kernel tests.
-from kernel.tests.conftest_catalog import _mcp_catalog_setup  # noqa: F401
+# Ensure sibling conftest_catalog is importable regardless of pytest import mode.
+sys.path.insert(0, str(Path(__file__).parent))
+from conftest_catalog import _mcp_catalog_setup  # noqa: F401,E402
 
 
 # ── Provider-gateway bridge for TurnHooks fakes ─────────────────────

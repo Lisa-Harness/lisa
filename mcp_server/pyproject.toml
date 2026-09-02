@@ -3,8 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["mcp_server*"]
+where = ["src"]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }
@@ -41,7 +40,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
     "live: hits real external signal or provider APIs and prints a tester-visible summary",

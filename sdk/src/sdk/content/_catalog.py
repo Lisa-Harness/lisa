@@ -1176,16 +1176,13 @@ def _load_runtime_operation(
     }
 
 
-def _is_package_dir(path: Path) -> bool:
+def _is_package_dir(path: Path, dotted_name: str | None = None) -> bool:
     """Return True if ``path`` is importable as a package.
 
     Recognizes both regular packages (with ``__init__.py``) and PEP 420
-    namespace packages, which install as a directory on ``sys.path`` with
-    no ``__init__.py``. External packs ship under the ``lisa_packs`` namespace
-    package; the namespace ``__init__.py`` is not always present on disk
-    (it is shared across pack wheels and can be dropped during install), so
-    relying solely on ``__init__.py`` would mis-infer bare module paths like
-    ``coding.tools.status.status`` for namespace-pack contents.
+    namespace packages. When ``dotted_name`` is provided (e.g. ``"sdk.packs.core"``),
+    uses it for the import-system probe so that non-top-level packages are
+    found correctly. Without it, falls back to the leaf directory name.
     """
 
     if (path / "__init__.py").is_file():
@@ -1194,7 +1191,12 @@ def _is_package_dir(path: Path) -> bool:
     # without an __init__.py when an ancestor is on sys.path.
     import importlib.util
 
-    spec = importlib.util.find_spec(path.name)
+    try:
+        spec = importlib.util.find_spec(dotted_name or path.name)
+    except ModuleNotFoundError:
+        # A partial dotted name (e.g. just "core" when the full path is
+        # "sdk.packs.core") is not importable on its own.
+        return False
     if spec is None or spec.submodule_search_locations is None:
         return False
     resolved = {Path(p).resolve() for p in spec.submodule_search_locations}
@@ -1210,19 +1212,53 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
 
     The package base is discovered by walking up from ``root``'s parent while
     each directory is importable as a package (regular or PEP 420 namespace),
-    so namespace-pack contents under ``lisa_packs`` resolve to
-    ``lisa_packs.<pack>.operations.<op>`` even when the shared namespace
-    ``__init__.py`` is absent from site-packages.
+    building the dotted name as we go so non-top-level packages (e.g.
+    ``sdk.packs.core``) are found by ``find_spec`` with the full dotted path.
     """
 
     relative = py_path.relative_to(root).with_suffix("")
     parts = list(relative.parts)
-    # Walk up from root's parent to find the package base
+    # Discover the package base by walking up from root's parent while each
+    # directory is importable as a package (regular or PEP 420 namespace).
+    # We walk all the way up collecting names, then find the top-level anchor
+    # (the topmost dir whose leaf name resolves via find_spec), and build the
+    # dotted path from the anchor down to root's parent.
+    import importlib.util
+
     package_dir = root.parent
-    pkg_parts: list[str] = []
-    while _is_package_dir(package_dir):
-        pkg_parts.insert(0, package_dir.name)
-        package_dir = package_dir.parent
+    dir_names: list[str] = []
+    anchor_idx = -1
+    while True:
+        leaf = package_dir.name
+        is_pkg = (package_dir / "__init__.py").is_file()
+        if not is_pkg:
+            try:
+                spec = importlib.util.find_spec(leaf)
+            except ModuleNotFoundError:
+                spec = None
+            if spec is not None and spec.submodule_search_locations is not None:
+                resolved = {Path(p).resolve() for p in spec.submodule_search_locations}
+                is_pkg = package_dir.resolve() in resolved
+        if is_pkg:
+            anchor_idx = len(dir_names)
+        dir_names.insert(0, leaf)
+        # Stop at the top: parent is a sys.path boundary (src/, site-packages)
+        parent = package_dir.parent
+        if not (parent / "__init__.py").is_file():
+            # Check if parent is on sys.path (i.e., package_dir is top-level)
+            try:
+                spec = importlib.util.find_spec(leaf)
+            except ModuleNotFoundError:
+                spec = None
+            if spec is not None and spec.parent is None:
+                # This is a top-level package — stop here
+                break
+            # Also stop if parent looks like a boundary
+            if parent.name in ("src",) or "site-packages" in str(parent):
+                break
+        package_dir = parent
+    # Build dotted path from the anchor (top-level importable package) down
+    pkg_parts = dir_names[:anchor_idx + 1] if anchor_idx >= 0 else []
     # Include the operations directory name itself
     if root.name:
         pkg_parts.append(root.name)

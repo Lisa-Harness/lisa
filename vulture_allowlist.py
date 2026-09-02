@@ -34,8 +34,8 @@ mcp_server.storage.server.main  # noqa: Vulture
 # ──────────────────────────────────────────────────────────────────────────
 # importlib.metadata entry-point targets — loaded via ep.load().
 # ──────────────────────────────────────────────────────────────────────────
-# reason: lisa.extensions.content_roots entry-point target (sdk:get_content_root)
-sdk.get_content_root  # noqa: Vulture
+# reason: lisa.extensions.content_roots entry-point target (sdk._content_root:get_content_root)
+sdk._content_root.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.content_roots entry-point target (sdk.packs.core:get_content_root)
 sdk.packs.core.get_content_root  # noqa: Vulture

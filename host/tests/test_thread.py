@@ -538,14 +538,9 @@ def test_core_pack_redaction_patterns_match_defaults() -> None:
 
     from sdk.thread import DEFAULT_REDACTION_PATTERNS
 
-    core_pack_yml = (
-        Path(__file__).resolve().parents[2]
-        / "sdk"
-        / "packs"
-        / "core"
-        / "content"
-        / "redaction_patterns.yml"
-    )
+    # Resolve through the import system (src-layout compatible)
+    import sdk.packs.core
+    core_pack_yml = sdk.packs.core.get_content_root() / "content" / "redaction_patterns.yml"
     assert core_pack_yml.is_file(), f"core pack redaction_patterns.yml not found at {core_pack_yml}"
     raw = _yaml.safe_load(core_pack_yml.read_text(encoding="utf-8"))
     assert isinstance(raw, dict)

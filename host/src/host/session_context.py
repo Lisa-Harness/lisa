@@ -62,9 +62,22 @@ class SessionContextSource:
 def bundled_default_session_path() -> Path:
     """Return the mandatory bundled v2 session used when none is selected."""
 
-    return (
-        Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
-    )
+    # Resolve through the import system so the path works in editable installs
+    # (src layout) and installed wheels alike. The core pack's content root is
+    # discovered via its entry point, not a hardcoded relative path.
+    try:
+        import importlib.metadata
+
+        eps = importlib.metadata.entry_points(group="lisa.extensions.content_roots")
+        for ep in eps:
+            if ep.name == "core":
+                root_loader = ep.load()
+                candidate = Path(root_loader()) / "sessions" / "default.md"
+                if candidate.is_file():
+                    return candidate
+    except Exception:  # noqa: BLE001
+        pass  # fall through to the legacy path below
+    return Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
 
 
 LISA_SESSION_CONTEXT_PATH_ENV = "LISA_SESSION_CONTEXT_PATH"

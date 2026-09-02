@@ -53,7 +53,30 @@ lisa-pack-recovery = { workspace = true }
 lisa-host-runtime = { workspace = true }
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [
+    "kernel/src",
+    "sdk/src",
+    "mcp_server/src",
+    "host/src",
+    "sdk/packs/core/src",
+    "sdk/packs/introspect/src",
+    "sdk/packs/memory/src",
+    "sdk/packs/recovery/src",
+]
+testpaths = [
+    "kernel/tests",
+    "sdk/tests",
+    "sdk/packs/core/tests",
+    "sdk/packs/memory/tests",
+    "sdk/packs/recovery/tests",
+    "mcp_server/tests",
+    "mcp_server/src/mcp_server/fetch/tests",
+    "mcp_server/src/mcp_server/memory/tests",
+    "mcp_server/src/mcp_server/thread/tests",
+    "host/tests",
+]
+addopts = "--import-mode=importlib"
+consider_namespace_packages = true
 markers = [
     "live: hits real external signal or provider APIs and prints a tester-visible summary",
     "integration: multi-module in-process test; may require local services",

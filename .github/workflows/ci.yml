@@ -40,10 +40,10 @@ jobs:
         run: uv run python scripts/check_direct_io_policy.py
 
       - name: Type check (mypy — all public packages)
-        run: uv run mypy kernel sdk mcp_server
+        run: uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
       - name: Dead code (vulture)
-        run: uv run vulture kernel sdk mcp_server host vulture_allowlist.py
+        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
 
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v

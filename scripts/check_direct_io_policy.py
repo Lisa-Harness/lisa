@@ -75,84 +75,84 @@ _WRITE_OPEN_MODES: frozenset[str] = frozenset({"w", "a", "x", "wb", "ab", "xb"})
 # Allowed direct-write callsites, keyed by repo-relative path.
 # Each value is a tuple of line substrings that are permitted in that file.
 _ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "mcp_server/storage/server.py": (
+    "mcp_server/src/mcp_server/storage/server.py": (
         "resolved.write_text(",
         "path.write_text(",
     ),
-    "host/content_roots.py": (
+    "host/src/host/content_roots.py": (
         "path.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/turn_hooks_builder.py": (
+    "host/src/host/turn_hooks_builder.py": (
         "thread_path.write_text(",
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/code_artifacts.py": (
+    "host/src/host/code_artifacts.py": (
         "temporary_path.write_text(",
         "os.replace(temporary_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/approvals.py": (
+    "host/src/host/approvals.py": (
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/intake.py": (
+    "host/src/host/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/recovery.py": (
+    "host/src/host/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "host/state_provider.py": (
+    "host/src/host/state_provider.py": (
         "digest_path.write_text(",
         "self._thread_path.write_text(",
     ),
-    "host/model_discovery/manifest.py": (
+    "host/src/host/model_discovery/manifest.py": (
         "tmp.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
         "tmp.unlink(missing_ok=True)",
     ),
-    "host/session_context_fetch.py": (
+    "host/src/host/session_context_fetch.py": (
         "cache_meta.write_text(",
         "cache_md.write_bytes(",
         "cache_md.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/thread.py": (
+    "host/src/host/thread.py": (
         'thread_path.open("a"',
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/workflow_instance_store.py": (
+    "host/src/host/workflow_instance_store.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "host/commands/_packs.py": (
+    "host/src/host/commands/_packs.py": (
         "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "kernel/token_usage.py": (
+    "kernel/src/kernel/token_usage.py": (
         'self._path.open("a"',
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "kernel/tools/mcp_client.py": (
+    "kernel/src/kernel/tools/mcp_client.py": (
         "Path(config.data_dir_path).mkdir(parents=True, exist_ok=True)",
     ),
-    "mcp_server/config/cli.py": (
+    "mcp_server/src/mcp_server/config/cli.py": (
         "path.mkdir(parents=True, exist_ok=True)",
     ),
-    "sdk/content/_fetcher.py": (
+    "sdk/src/sdk/content/_fetcher.py": (
         "cache_dir.mkdir(parents=True, exist_ok=True)",
     ),
-    "sdk/logging_setup.py": (
+    "sdk/src/sdk/logging_setup.py": (
         "log_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "sdk/memory/store.py": (
+    "sdk/src/sdk/memory/store.py": (
         "sqlite3.connect(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "sdk/storage/_backend.py": (
+    "sdk/src/sdk/storage/_backend.py": (
         "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
@@ -188,7 +188,8 @@ def _is_runtime_python(path: Path) -> bool:
     return "/build/" not in rel
 
 
-# In-tree scan roots (relative to repo root).
+# In-tree scan roots (relative to repo root). Packages live under <member>/src/
+# but rglob from the member root finds them regardless.
 _IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "host", "sdk", "mcp_server")
 
 # External pack repos (relative to repo root's parent).
