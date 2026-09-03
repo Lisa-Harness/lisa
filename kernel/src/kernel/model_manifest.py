@@ -116,15 +116,16 @@ class RouterConfig:
 
     ``backend`` names the active router backend (e.g. ``"lisa-router"``).
     ``rules`` is an ordered list of ``RouterRule`` entries evaluated
-    first-match-wins. ``fallback`` is the model_id used when no rule matches;
-    it is model-selection-only — terminal actions cannot be fallbacks.
+    first-match-wins. There is no ``fallback`` key: when no rule matches the
+    router returns ``None`` and the statically-resolved ``mode_models`` pin
+    (which is required at load time) is the default. A catch-all
+    ``when: 'true'`` rule expresses the old fallback explicitly.
     When ``backend`` is empty, no router is active — the manifest's
     ``mode_models`` static resolution is the only path.
     """
 
     backend: str = ""
     rules: tuple[RouterRule, ...] = ()
-    fallback: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,7 +314,17 @@ def _parse_router_config(
         raise ValueError("Model manifest 'router' must be a mapping when provided.")
 
     backend = str(raw_router.get("backend") or "").strip()
-    fallback = str(raw_router.get("fallback") or "").strip()
+    # ``fallback`` was removed (hard cutover): the statically-resolved
+    # ``mode_models`` pin is the only no-rule-match default, and a catch-all
+    # ``when: 'true'`` rule expresses the old fallback explicitly. Existing
+    # manifests carrying the key fail loudly here with the migration hint.
+    if "fallback" in raw_router:
+        raise ValueError(
+            "Model manifest 'router.fallback' is no longer supported. "
+            "Move it into a trailing catch-all rule (e.g. `when: 'true', use: <model_id>`) "
+            "or rely on the required mode_models.default pin; "
+            "re-run /models discover + /models apply to regenerate."
+        )
 
     raw_rules = raw_router.get("rules")
     if raw_rules is None:
@@ -346,7 +357,7 @@ def _parse_router_config(
             RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to)
         )
 
-    # Validate that ``fallback`` and every ``rules[].use`` reference a known model.
+    # Validate that every ``rules[].use`` references a known model.
     for rule in rules:
         if rule.use and all(
             rule.use.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
@@ -356,17 +367,8 @@ def _parse_router_config(
                 f"router.rules entry 'when: {rule.when}' references unknown model '{rule.use}'. "
                 f"Available models: {available}"
             )
-    if fallback:
-        if all(
-            fallback.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
-        ):
-            available = ", ".join(sorted(model.model_id for model in models))
-            raise ValueError(
-                f"router.fallback references unknown model '{fallback}'. "
-                f"Available models: {available}"
-            )
 
-    return RouterConfig(backend=backend, rules=tuple(rules), fallback=fallback)
+    return RouterConfig(backend=backend, rules=tuple(rules))
 
 
 def _parse_model_entry(

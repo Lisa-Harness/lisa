@@ -41,10 +41,18 @@ _MODELS = (
 )
 
 
-def _manifest(rules: tuple[RouterRule, ...], fallback: str = "") -> ModelManifest:
+def _manifest(rules: tuple[RouterRule, ...], catchall: str = "") -> ModelManifest:
+    """Build a manifest; ``catchall`` appends a trailing ``when: 'true'`` rule.
+
+    Replaces the removed ``fallback`` key — the catch-all rule is the
+    explicit no-match default.
+    """
+    all_rules = list(rules)
+    if catchall:
+        all_rules.append(RouterRule(when="true", use=catchall))
     return ModelManifest(
         models=_MODELS,
-        router=RouterConfig(backend="lisa-router", rules=rules, fallback=fallback),
+        router=RouterConfig(backend="lisa-router", rules=tuple(all_rules)),
     )
 
 
@@ -76,7 +84,7 @@ def test_factory_returns_none_when_backend_mismatches() -> None:
     factory = get_router_factory()
     manifest = ModelManifest(
         models=_MODELS,
-        router=RouterConfig(backend="aoi-router", rules=(), fallback=""),
+        router=RouterConfig(backend="aoi-router", rules=()),
     )
     assert factory(manifest, None) is None
 
@@ -107,12 +115,15 @@ def test_default_router_config_has_rules() -> None:
 
 
 def test_default_router_config_uses_symbolic_refs() -> None:
-    """Default rules use symbolic mode refs (default), not literal ids."""
+    """Default rules use symbolic mode refs (default), not literal ids.
+
+    The ``fallback`` key was removed — the config carries no such key.
+    """
     from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     uses = {rule["use"] for rule in config["rules"]}
-    assert config["fallback"] == "default"
+    assert "fallback" not in config
     assert uses == {"default"}
 
 
@@ -120,7 +131,7 @@ def test_factory_returns_router_when_backend_matches() -> None:
     from sdk.router import get_router_factory
 
     factory = get_router_factory()
-    manifest = _manifest(rules=(), fallback="gemma4:cloud")
+    manifest = _manifest(rules=(), catchall="gemma4:cloud")
     router = factory(manifest, None)
     assert router is not None
     assert isinstance(router, LisaRouter)
@@ -132,7 +143,7 @@ def test_factory_returns_router_when_backend_matches() -> None:
 def test_required_capabilities_rule_matches() -> None:
     manifest = _manifest(
         rules=(RouterRule(when='"code" in route.required_capabilities', use="gpt-5.2-codex"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(required_capabilities=("code", "text")))
@@ -144,7 +155,7 @@ def test_required_capabilities_rule_matches() -> None:
 def test_required_capabilities_rule_does_not_match() -> None:
     manifest = _manifest(
         rules=(RouterRule(when='"code" in route.required_capabilities', use="gpt-5.2-codex"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(required_capabilities=("text",)))
@@ -155,7 +166,7 @@ def test_required_capabilities_rule_does_not_match() -> None:
 def test_iteration_gt_rule() -> None:
     manifest = _manifest(
         rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(iteration=1)).model_id == "gemma4:cloud"
@@ -170,7 +181,7 @@ def test_compound_and_with_last_tool_result() -> None:
                 use="gpt-5.4",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(iteration=1, last_tool_result=None)).model_id == "gemma4:cloud"
@@ -189,7 +200,7 @@ def test_compound_or() -> None:
                 use="gpt-5.2-codex",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(required_capabilities=("code",))).model_id == "gpt-5.2-codex"
@@ -200,17 +211,18 @@ def test_compound_or() -> None:
 def test_tool_calls_so_far_rule() -> None:
     manifest = _manifest(
         rules=(RouterRule(when="turn.tool_calls_so_far >= 3", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(tool_calls_so_far=2)).model_id == "gemma4:cloud"
     assert router.choose(_req(tool_calls_so_far=3)).model_id == "gpt-5.4"
 
 
-def test_no_match_no_fallback_returns_none() -> None:
+def test_no_match_returns_none() -> None:
+    """No rule matched and no catch-all — the router returns None so the turn
+    loop falls back to the statically-resolved mode_models pin."""
     manifest = _manifest(
         rules=(RouterRule(when="turn.iteration > 100", use="gpt-5.4"),),
-        fallback="",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(iteration=1)) is None
@@ -222,7 +234,7 @@ def test_first_match_wins() -> None:
             RouterRule(when="turn.iteration > 1", use="gpt-5.4"),
             RouterRule(when="turn.iteration > 5", use="gpt-5.2-codex"),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(iteration=2)).model_id == "gpt-5.4"
@@ -232,7 +244,7 @@ def test_first_match_wins() -> None:
 def test_decision_reason_contains_rule_text() -> None:
     manifest = _manifest(
         rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(iteration=2))
@@ -254,7 +266,7 @@ def test_model_cost_tier_condition() -> None:
                 use="gemma4:cloud",
             ),
         ),
-        fallback="gpt-5.4",
+        catchall="gpt-5.4",
     )
     router = LisaRouter(manifest)
     effective_frontier = RouterModelRef(model_id="gpt-5.4", cost_tier="frontier")
@@ -274,7 +286,7 @@ def test_model_capabilities_condition() -> None:
 
     manifest = _manifest(
         rules=(RouterRule(when='"vision" in model.capabilities', use="gpt-5.4"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     effective_vision = RouterModelRef(model_id="gpt-5.4", capabilities=("vision", "text"))
@@ -291,7 +303,7 @@ def test_model_structured_reliability_condition() -> None:
 
     manifest = _manifest(
         rules=(RouterRule(when="model.structured_reliability < 0.8", use="deepseek-v4-pro:cloud"),),
-        fallback="deepseek-v4-flash:0731-cloud",
+        catchall="deepseek-v4-flash:0731-cloud",
     )
     router = LisaRouter(manifest)
     unreliable = RouterModelRef(
@@ -318,7 +330,7 @@ def test_model_structured_reliability_condition() -> None:
 def test_finish_action() -> None:
     manifest = _manifest(
         rules=(RouterRule(when="turn.tool_calls_so_far >= 8", finish="tool_budget_exhausted"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     # Not enough tool calls → fallback
@@ -337,7 +349,7 @@ def test_finish_action() -> None:
 def test_transition_to_action() -> None:
     manifest = _manifest(
         rules=(RouterRule(when="turn.iteration >= 10", transition_to="summary"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     # iteration 5 → fallback
@@ -360,7 +372,7 @@ def test_invalid_cel_expression_raises_at_construction() -> None:
     """An invalid CEL expression fails at router construction, not at choose()."""
     manifest = _manifest(
         rules=(RouterRule(when="this is not valid cel !!!", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     with pytest.raises(ValueError, match="failed to compile CEL"):
         LisaRouter(manifest)
@@ -373,7 +385,7 @@ def test_cel_evaluation_error_treated_as_no_match() -> None:
             RouterRule(when="model.nonexistent_field == 1", use="gpt-5.4"),
             RouterRule(when="turn.iteration > 1", use="gpt-5.2-codex"),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     # The first rule's evaluation error is skipped; the second rule matches.
@@ -394,17 +406,20 @@ def test_operation_id_rule_matches() -> None:
                 use="gpt-5.2-codex",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(operation_id="consolidate_semantic"))
     assert decision is not None
     assert decision.model_id == "gpt-5.2-codex"
-    assert decision.from_fallback is False
 
 
 def test_operation_id_rule_does_not_match_other_ops() -> None:
-    """An operation_id rule only matches the named operation."""
+    """An operation_id rule only matches the named operation.
+
+    Without a catch-all the router returns None — the operation keeps its
+    authored model (no fallback semantics for op-scoped consultations).
+    """
     manifest = _manifest(
         rules=(
             RouterRule(
@@ -412,13 +427,26 @@ def test_operation_id_rule_does_not_match_other_ops() -> None:
                 use="gpt-5.2-codex",
             ),
         ),
-        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    assert router.choose(_req(operation_id="synthesize_learning")) is None
+
+
+def test_operation_id_catchall_matches_when_no_op_rule() -> None:
+    """A trailing catch-all rule is the explicit no-match default."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when='route.operation_id == "consolidate_semantic"',
+                use="gpt-5.2-codex",
+            ),
+        ),
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(operation_id="synthesize_learning"))
     assert decision is not None
     assert decision.model_id == "gemma4:cloud"
-    assert decision.from_fallback is True
 
 
 def test_operation_id_empty_for_turn_loop_requests() -> None:
@@ -430,40 +458,9 @@ def test_operation_id_empty_for_turn_loop_requests() -> None:
                 use="gpt-5.2-codex",
             ),
         ),
-        fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
-    decision = router.choose(_req())  # no operation_id
-    assert decision is not None
-    assert decision.model_id == "gemma4:cloud"
-    assert decision.from_fallback is True
-
-
-def test_fallback_sets_from_fallback_flag() -> None:
-    """The fallback decision carries from_fallback=True so operation-scoped
-    consultations can ignore it."""
-    manifest = _manifest(
-        rules=(RouterRule(when="turn.iteration > 100", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
-    )
-    router = LisaRouter(manifest)
-    decision = router.choose(_req(iteration=1))
-    assert decision is not None
-    assert decision.model_id == "gemma4:cloud"
-    assert decision.from_fallback is True
-
-
-def test_rule_match_does_not_set_from_fallback() -> None:
-    """A rule-matched decision does not carry from_fallback."""
-    manifest = _manifest(
-        rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
-        fallback="gemma4:cloud",
-    )
-    router = LisaRouter(manifest)
-    decision = router.choose(_req(iteration=2))
-    assert decision is not None
-    assert decision.model_id == "gpt-5.4"
-    assert decision.from_fallback is False
+    assert router.choose(_req()) is None  # no operation_id → rule does not match
 
 
 def test_operation_id_in_list_rule() -> None:
@@ -475,7 +472,7 @@ def test_operation_id_in_list_rule() -> None:
                 use="gpt-5.4-mini",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     assert router.choose(_req(operation_id="mine_thread_segment")).model_id == "gpt-5.4-mini"
@@ -533,6 +530,35 @@ def test_router_rule_rejects_multiple_actions() -> None:
         yaml.dump(payload, f)
         f.flush()
         with pytest.raises(ValueError, match="exactly one"):
+            load_model_manifest(pathlib.Path(f.name))
+
+
+def test_loader_rejects_fallback_key() -> None:
+    """The removed ``router.fallback`` key fails manifest load with a hint.
+
+    Hard cutover: no silent tolerance. The error names the migration path
+    (catch-all rule or the required mode_models.default pin).
+    """
+    import pathlib
+    import tempfile
+
+    import yaml
+
+    from kernel.model_manifest import load_model_manifest
+
+    payload = {
+        "version": 1,
+        "models": [{"model_id": "m1", "provider": "openai"}],
+        "router": {
+            "backend": "lisa-router",
+            "rules": [{"when": "turn.iteration > 1", "use": "m1"}],
+            "fallback": "m1",
+        },
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        with pytest.raises(ValueError, match="no longer supported"):
             load_model_manifest(pathlib.Path(f.name))
 
 
@@ -636,7 +662,7 @@ def test_has_tool_result_true_when_any_tool_returned_even_if_last_empty() -> Non
                 use="gpt-5.4",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     # Earlier tool returned text, but the *last* result is empty — the turn
@@ -657,7 +683,7 @@ def test_has_tool_result_false_when_no_tool_returned() -> None:
                 use="gpt-5.4",
             ),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(
@@ -673,7 +699,7 @@ def test_has_tool_result_defaults_false_when_omitted() -> None:
         rules=(
             RouterRule(when="turn.has_tool_result", use="gpt-5.4"),
         ),
-        fallback="gemma4:cloud",
+        catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     # _req() omits has_tool_result → default False → no match → fallback.

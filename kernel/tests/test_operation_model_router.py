@@ -73,31 +73,15 @@ def test_router_rule_match_overrides_authored_model() -> None:
     assert _resolve_operation_model(definition, ctx) == "gpt-5.2-codex"
 
 
-# ── Router fallback is ignored ──────────────────────────────────────────────
-
-
-def test_router_fallback_ignored_returns_authored() -> None:
-    """A fallback decision (from_fallback=True) is ignored; authored model used."""
-
-    class _FallbackRouter:
-        def choose(self, req: RouterRequest) -> RouterDecision:
-            return RouterDecision(
-                model_id="gemma4:cloud",
-                reason="fallback",
-                routed_by="stub",
-                from_fallback=True,
-            )
-
-    definition = _definition(preferred_model_id="default")
-    ctx = _ctx(model_router=_FallbackRouter())
-    assert _resolve_operation_model(definition, ctx) == "default"
-
-
-# ── Router returns None ─────────────────────────────────────────────────────
+# ── Router returns None (no fallback in operation scope) ────────────────────
 
 
 def test_router_returning_none_returns_authored() -> None:
-    """When the router returns None, the authored model is used."""
+    """When the router returns None (no rule matched), the authored model is used.
+
+    Operation-scoped consultations have no fallback — the router's
+    turn-loop rules never silently change an operation's model.
+    """
 
     class _DecliningRouter:
         def choose(self, req: RouterRequest) -> None:

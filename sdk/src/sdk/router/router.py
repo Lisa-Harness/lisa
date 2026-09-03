@@ -13,9 +13,10 @@ A rule selects one action:
 - ``transition_to: <stage_id>`` — move the active workflow to a named
   terminal stage, then produce its closing summary.
 
-If no rule matches, the ``router.fallback`` model is used; if no fallback
-is configured, the router returns ``None`` so the turn loop falls back to
-the statically-resolved ``preferred_model_id``.
+If no rule matches, the router returns ``None`` so the turn loop falls back
+to the statically-resolved ``preferred_model_id`` (the required
+``mode_models`` pin). There is no ``fallback`` key — a catch-all
+``when: 'true'`` rule expresses the old fallback explicitly.
 
 Supported CEL bindings (see ``router/README.md`` for the full guide):
 
@@ -109,7 +110,6 @@ class LisaRouter(ModelRouter):
                     ) from exc
                 compiled.append((rule, program))
             self._rules = tuple(compiled)
-        self._fallback: str = manifest.router.fallback if manifest.router else ""
 
     def choose(self, req: RouterRequest) -> RouterDecision | None:
         activation = _build_activation(req)
@@ -126,15 +126,8 @@ class LisaRouter(ModelRouter):
             if not _truthy(result):
                 continue
             return _decision_for_rule(rule, req)
-        if self._fallback:
-            return RouterDecision(
-                model_id=self._fallback,
-                reason=f"{_ROUTE_REASON_PREFIX}no rule matched; using fallback",
-                routed_by="lisa-router",
-                from_fallback=True,
-            )
-        # No rule matched and no fallback — return None so the turn loop
-        # falls back to the statically-resolved preferred_model_id.
+        # No rule matched — return None so the turn loop falls back to the
+        # statically-resolved preferred_model_id (the required mode_models pin).
         return None
 
 

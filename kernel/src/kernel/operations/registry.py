@@ -25,13 +25,13 @@ from kernel.approval import (
     ApprovalRequired,
     build_approval_invocation,
 )
+from kernel.function_tools import build_strict_openai_function_tool
 from kernel.models import (
     OperationDefinition,
     OperationExecutionContext,
     OperationResult,
     ToolExecutionTelemetry,
 )
-from kernel.function_tools import build_strict_openai_function_tool
 from kernel.pack_configuration import EMPTY_PACK_CONFIGURATION
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
@@ -812,10 +812,11 @@ def _resolve_operation_model(
     Precedence:
     1. Model router (when wired on ``ctx.model_router``) — a rule matching
        ``route.operation_id`` with a ``use: <model_id>`` action wins.
-       Fallback decisions (``from_fallback=True``) are ignored so the
-       router's turn-loop fallback does not silently override the
-       operation's authored model.
     2. Definition's authored ``preferred_model_id``.
+
+    When no rule matches the router returns ``None`` and the authored value
+    stands — operation-scoped consultations have no fallback, so the
+    router's turn-loop rules never silently change an operation's model.
     """
     router = ctx.model_router
     if router is not None:
@@ -840,20 +841,14 @@ def _resolve_operation_model(
                 exc_info=True,
             )
             decision = None
-        if isinstance(decision, RouterDecision):
-            if decision.from_fallback:
-                logger.debug(
-                    "router fallback ignored for operation %r; using authored model",
-                    definition.operation_id,
-                )
-            elif decision.model_id.strip():
-                logger.debug(
-                    "router selected model %r for operation %r (rule: %s)",
-                    decision.model_id,
-                    definition.operation_id,
-                    decision.reason,
-                )
-                return decision.model_id.strip()
+        if isinstance(decision, RouterDecision) and decision.model_id.strip():
+            logger.debug(
+                "router selected model %r for operation %r (rule: %s)",
+                decision.model_id,
+                definition.operation_id,
+                decision.reason,
+            )
+            return decision.model_id.strip()
     return definition.preferred_model_id
 
 

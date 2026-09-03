@@ -102,7 +102,19 @@ router:
     # Terminal gate — stop runaway turns after the tool budget is exhausted.
     - when: turn.tool_calls_so_far >= 8
       finish: tool_budget_exhausted
-  fallback: gpt-5.4-mini        # if no rule matches, stay on the cheap model
+```
+
+There is **no `fallback` key**. When no rule matches, the router returns
+nothing and the statically-resolved `mode_models` pin is used — that pin is
+the required default. To make a specific model the "when nothing matched"
+choice, add a trailing catch-all rule:
+
+```yaml
+router:
+  rules:
+    # ...specific rules first...
+    - when: 'true'
+      use: gpt-5.4-mini   # catch-all: replaces the removed fallback key
 ```
 
 - **`backend`** — names the active router backend. When empty or absent, no
@@ -129,10 +141,12 @@ router:
   `"must include one of"` / `"exactly one"`. `RouterRule.action_kind()`
   is the selector the engine uses at `choose()` time to build the
   matching decision — it assumes exactly one action is set.
-- **`fallback`** — the model used when no rule matches. It is
-  model-selection-only — a terminal action (`finish`/`transition_to`)
-  cannot be a fallback. If empty, the router returns `None` and the loop
-  falls back to the statically-resolved `preferred_model_id`.
+
+> **Removed: `fallback`.** The `router.fallback` key was removed (the
+> manifest loader rejects it with a migration hint). The statically-resolved
+> `mode_models` pin — already required at load time — is the only
+> no-rule-match default. Use a trailing `when: 'true'` rule when you want an
+> explicit catch-all.
 
 > **YAML quoting.** CEL string literals use double-quotes (e.g.
 > `"code" in route.required_capabilities`), so the whole `when` value must
@@ -161,7 +175,7 @@ Order rules so earlier rules never shadow later ones:
 ### Presets
 
 The seeded default `router:` block (from `sdk/router/default_config.py`) is
-**intentionally minimal** — one capability-escalation rule and a fallback —
+**intentionally minimal** — one capability-escalation rule, nothing else —
 so every generated manifest is immediately understandable. Richer recipes
 live below as copy-paste presets rather than cluttering every generated
 manifest.
@@ -177,7 +191,7 @@ rule exists without flipping back to this doc:
 - **quality-first**: frontier everywhere, downgrade to cheap model only on
   very long tool-heavy turns.
 - **coding-focused**: code model for code turns, frontier for synthesis,
-  code model as fallback.
+  code model when nothing else matches.
 - **terminal-actions**: model selection plus `finish` and `transition_to` to
   stop runaway turns and close out workflow stages. Demonstrates all three
   action kinds in one block.
@@ -227,11 +241,10 @@ Semantics:
 - Only ``use:`` actions apply; ``finish`` and ``transition_to`` are
   turn-loop lifecycle actions and are ignored for operation-scoped
   requests.
-- The router's ``fallback`` does **not** override the operation's
-  authored ``preferred_model_id``. When no rule matches, the operation
-  uses its pack-declared model (or the mode default if the pack omitted
-  it). This prevents the router's turn-loop fallback from silently
-  changing every operation's model.
+- When no rule matches, the operation uses its pack-declared
+  ``preferred_model_id`` (or the mode default if the pack omitted it) —
+  operation-scoped consultations have no fallback, so turn-loop rules
+  never silently change an operation's model.
 - The consultation happens once per operation execution, not per
   internal tool-loop iteration inside the operation.
 
@@ -244,7 +257,7 @@ automatically — you don't have to hand-write the YAML:
   `lisa.extensions.model_router_configs` entry-point group.
 - `/models discover` calls `discover_pack_router_config()` (the first
   pack-declared config wins) and merges it into the proposed manifest.
-- Symbolic `use`/`fallback` references (mode names like `"default"`)
+- Symbolic `use` references (mode names like `"default"`)
   are resolved to concrete model ids against the discovered model set.
   Rules referencing models not in the discovered set are stripped, so the
   proposal always loads cleanly.
@@ -257,8 +270,8 @@ automatically — you don't have to hand-write the YAML:
   including any hand-edited `router:` block, with the pack default).
 
 The built-in `lisa-router` backend ships a minimal default config — one
-rule escalating code-capable turns to the `default` model, with `default`
-as fallback. After `/models discover --force`, the generated
+rule escalating code-capable turns to the `default` model. After
+`/models discover --force`, the generated
 `models.proposed.yaml` includes that ready-to-use `router:` block with
 symbolic refs resolved to concrete model ids — no manual editing required.
 Richer recipes (budget gates, phase gates, `finish`, `transition_to`) are
@@ -492,7 +505,7 @@ backend (e.g. `lisa-pack-aoi-router`).
   `thinking_model`, `needs_guidance`). No completion call is made.
 - **Active when**: `router.backend == "lisa-router"` in the manifest.
 - **Default config**: the backend declares a **minimal** default `router:`
-  block (one capability-escalation rule + fallback) with symbolic refs
+  block (one capability-escalation rule) with symbolic refs
   (`"default"`) that `/models discover` resolves to concrete model ids
   from the discovered set. See `sdk/router/default_config.py`.
 
@@ -602,8 +615,9 @@ are auditable via the `reason` and `routed_by` fields.
   the tool loop; `transition_to` hands off to a workflow stage. Exactly
   one is set per `RouterDecision`/`RouterRule`, enforced at manifest load.
 - **No replacement, layering.** `mode_models` is demoted from
-  "pinned model" to "starting model + fallback" but is not removed. It
-  remains the default when the router is absent or declines.
+  "pinned model" to "starting model + no-rule-match default" but is not
+  removed. It remains the default when the router is absent or declines,
+  and it is the *only* default — there is no `fallback` key.
 - **First-non-None wins.** Router discovery uses the same first-non-None
   pattern as `lisa.extensions.slice_providers`, keeping ordering deterministic.
 - **Graceful failure.** Router exceptions are caught and logged; the loop

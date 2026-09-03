@@ -184,7 +184,6 @@ class TestRouterBlock:
             "rules": [
                 {"when": '"code" in route.required_capabilities', "use": "default"},
             ],
-            "fallback": "default",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -196,7 +195,6 @@ class TestRouterBlock:
         assert router["backend"] == "lisa-router"
         # Symbolic ref resolved: "default" → gpt-5.
         assert router["rules"][0]["use"] == "gpt-5"
-        assert router["fallback"] == "gpt-5"
 
     def test_router_block_preserves_finish_action(self) -> None:
         """A ``finish`` action in the pack config is preserved, not dropped."""
@@ -207,7 +205,6 @@ class TestRouterBlock:
                 {"when": '"code" in route.required_capabilities', "use": "gpt-5"},
                 {"when": "turn.tool_calls_so_far >= 8", "finish": "tool_budget_exhausted"},
             ],
-            "fallback": "gpt-5",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -228,7 +225,6 @@ class TestRouterBlock:
             "rules": [
                 {"when": "turn.iteration >= 10", "transition_to": "summary"},
             ],
-            "fallback": "gpt-5",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -248,7 +244,6 @@ class TestRouterBlock:
             "rules": [
                 {"when": "turn.iteration > 1", "use": "gpt-5", "finish": "done"},
             ],
-            "fallback": "gpt-5",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -271,7 +266,6 @@ class TestRouterBlock:
                 {"when": "turn.iteration > 1", "use": "default"},  # resolvable
                 {"when": "turn.tool_calls_so_far >= 3", "use": "gpt-99-nonexistent"},  # stripped
             ],
-            "fallback": "default",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -281,7 +275,6 @@ class TestRouterBlock:
         router = payload["router"]
         assert len(router["rules"]) == 1
         assert router["rules"][0]["use"] == "gpt-5"
-        assert router["fallback"] == "gpt-5"
 
     def test_router_strips_fallback_referencing_unknown_model(self) -> None:
         """Fallback referencing an unknown model is dropped (not the whole block)."""
@@ -289,7 +282,6 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [{"when": "iteration > 1", "use": "default"}],
-            "fallback": "gpt-99-nonexistent",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -306,7 +298,6 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [{"when": "iteration > 1", "use": "gpt-99-nonexistent"}],
-            "fallback": "also-nonexistent",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -329,7 +320,6 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [{"when": "iteration > 1", "use": "gpt-5-mini"}],
-            "fallback": "gpt-5",
         }
         with patch(
             "kernel.model_router_config_discovery.discover_pack_router_config",
@@ -338,7 +328,6 @@ class TestRouterBlock:
             payload = build_manifest_payload(models)
         router = payload["router"]
         assert router["rules"][0]["use"] == "gpt-5-mini"
-        assert router["fallback"] == "gpt-5"
 
     def test_discover_regenerates_router_block_from_pack_default(self) -> None:
         """``/models discover`` regenerates the router block from the pack default
@@ -353,7 +342,6 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [{"when": '"code" in route.required_capabilities', "use": "default"}],
-            "fallback": "default",
         }
         # ``build_manifest_payload`` takes no active-manifest argument, so a
         # prior hand-edited router block cannot be passed in — the pack
@@ -385,7 +373,6 @@ class TestRouterPresetAnnotations:
                 {"when": "turn.tool_calls_so_far >= 5", "use": "gpt-5"},
                 {"when": "turn.iteration > 1 && turn.has_tool_result", "use": "o3-pro"},
             ],
-            "fallback": "gpt-5",
         }
 
     def test_includes_four_presets(self) -> None:
@@ -420,9 +407,10 @@ class TestRouterPresetAnnotations:
         router_block = payload.get("router")
         assert router_block is not None
         rendered = render_manifest_yaml(payload, router_block=router_block)
-        # The active block is present with its rules and fallback.
+        # The active block is present with its rules; the removed fallback
+        # key must not be rendered.
         assert "rules:" in rendered
-        assert "fallback:" in rendered
+        assert "fallback:" not in rendered
         # No inline explanation trailers remain on rule lines.
         assert "→" not in rendered
 

@@ -134,11 +134,11 @@ def _resolve_router_ref(
     model_ids: set[str],
     mode_models: dict[str, str],
 ) -> str:
-    """Resolve a symbolic ``use``/``fallback`` ref to a concrete model_id.
+    """Resolve a symbolic ``use`` ref to a concrete model_id.
 
     The pack's default router config uses *symbolic* references — mode names
     like ``"default"`` rather than literal model ids. The manifest loader
-    validates that every ``rules[].use`` and ``fallback`` references a known
+    validates that every ``rules[].use`` references a known
     model *by model_id*, so we must resolve symbolic refs to concrete model
     ids before emitting the ``router:`` block.
 
@@ -147,7 +147,7 @@ def _resolve_router_ref(
     2. Literal model id (already in the discovered set)
 
     Returns the resolved model_id, or an empty string when the ref cannot be
-    resolved (the caller strips the rule / fallback in that case).
+    resolved (the caller strips the rule in that case).
     """
 
     normalized = ref.strip().lower()
@@ -204,9 +204,10 @@ def _build_router_block(
 
     Discovers the first pack-declared router config via
     ``lisa.extensions.model_router_configs``. Resolves symbolic
-    ``use``/``fallback`` references (mode names) to concrete model ids
-    against the discovered set. Strips any rule whose ``use`` cannot be
-    resolved and drops ``fallback`` if it cannot be resolved.
+    ``use`` references (mode names) to concrete model ids against the
+    discovered set. Strips any rule whose ``use`` cannot be resolved. The
+    ``fallback`` key is not supported — the statically-resolved
+    ``mode_models`` pin is the only no-rule-match default.
 
     Returns ``None`` when no pack declares a router config or when no rules
     survive resolution (so the emitted YAML never carries an empty router
@@ -223,7 +224,6 @@ def _build_router_block(
         return None
 
     backend = str(raw_config.get("backend") or "").strip()
-    raw_fallback = str(raw_config.get("fallback") or "").strip()
     raw_rules = raw_config.get("rules")
     if not isinstance(raw_rules, list):
         raw_rules = []
@@ -236,13 +236,7 @@ def _build_router_block(
         if resolved is not None:
             resolved_rules.append(resolved)
 
-    resolved_fallback = (
-        _resolve_router_ref(raw_fallback, model_ids=model_ids, mode_models=mode_models)
-        if raw_fallback
-        else ""
-    )
-
-    if not backend and not resolved_rules and not resolved_fallback:
+    if not backend and not resolved_rules:
         return None
 
     block: dict[str, Any] = {}
@@ -250,8 +244,6 @@ def _build_router_block(
         block["backend"] = backend
     if resolved_rules:
         block["rules"] = resolved_rules
-    if resolved_fallback:
-        block["fallback"] = resolved_fallback
     return block or None
 
 
@@ -392,9 +384,13 @@ def _preset_block(
     blurb: str,
     best_for: str,
     rules: list[dict[str, str]],
-    fallback: str,
+    catchall_id: str,
 ) -> list[str]:
-    """Render one preset as a fully-annotated commented YAML block."""
+    """Render one preset as a fully-annotated commented YAML block.
+
+    The last positional arg is the catch-all model id: rendered as an
+    explicit ``when: 'true'`` rule (replaces the removed ``fallback`` key).
+    """
     lines = [
         f"# Preset: {name}",
         f"#   {blurb}",
@@ -404,7 +400,7 @@ def _preset_block(
         "#   rules:",
     ]
     lines.extend(_annotated_rule_lines(rules, indent="#   ", comment_each=True))
-    lines.append(f"#   fallback: {fallback}  # if no rule matches")
+    lines.append(f"#   - when: 'true'  # → {catchall_id} when no earlier rule matches")
     return lines
 
 
@@ -412,13 +408,11 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
     """Render the active ``router:`` block with inline per-rule comments.
 
     Produces the same YAML the dumper would emit, but with a trailing
-    ``# → <model> when <reason>`` on every rule line and on the fallback
-    line. This is what gets spliced into the proposal in place of the
-    plain dumped block so the reader sees *why* each rule exists right
-    where they edit.
+    ``# → <model> when <reason>`` on every rule line. This is what gets
+    spliced into the proposal in place of the plain dumped block so the
+    reader sees *why* each rule exists right where they edit.
     """
     rules = router_block.get("rules", [])
-    fallback = router_block.get("fallback", "")
     out: list[str] = ["router:"]
     if router_block.get("backend"):
         out.append(f"  backend: {router_block['backend']}")
@@ -426,8 +420,6 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
         out.append("  rules:")
         for rule in rules:
             out.append(f"  - {_rule_yaml_line(rule)}")
-    if fallback:
-        out.append(f"  fallback: {fallback}")
     return "\n".join(out)
 
 
@@ -505,7 +497,7 @@ def _router_preset_annotations(
     lines.extend(
         _preset_block(
             "coding-focused",
-            "Code model for code turns, reasoning model for synthesis, code model as fallback.",
+            "Code model for code turns, reasoning model for synthesis, code model when nothing else matches.",
             "software engineering work, agentic coding, repo Q&A.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
@@ -545,7 +537,7 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
 
     When a pack declares a default router config via the
     ``lisa.extensions.model_router_configs`` entry-point group, the config
-    is resolved, symbolic ``use``/``fallback`` refs are mapped to concrete
+    is resolved, symbolic ``use`` refs are mapped to concrete
     model ids, and a ``router:`` block is emitted. Rules referencing models
     not in the discovered set are stripped so the proposal always loads
     cleanly. When no pack declares a router config, no ``router:`` block
@@ -597,8 +589,8 @@ def render_manifest_yaml(
     """Serialize *payload* to YAML with the router block annotated inline.
 
     The active ``router:`` block is rendered by hand (not by the dumper)
-    with a trailing ``# → <model> when <reason>`` on every rule and on the
-    fallback line, then spliced in right after ``mode_models:``. The alternative
+    with a trailing ``# → <model> when <reason>`` on every rule line, then
+    spliced in right after ``mode_models:``. The alternative
     preset comments (*annotations*) follow immediately after the active
     block, before the ``models:`` list. Everything sits at the top of the
     file where the user edits, not 400 lines down.
