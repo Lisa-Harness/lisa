@@ -437,6 +437,7 @@ def _build_minimal_context(
     conversation_excerpt_markdown: str = "",
     response: str = "",
     gateway_provider_fn: Any = None,
+    model_router: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -489,4 +490,5 @@ def _build_minimal_context(
         code_change_artifact_store=code_change_artifact_store,
         data_dir=data_dir,
         host=host,
+        model_router=model_router,
     )

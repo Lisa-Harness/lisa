@@ -382,6 +382,107 @@ def test_cel_evaluation_error_treated_as_no_match() -> None:
     assert decision.model_id == "gpt-5.2-codex"
 
 
+# ── Operation-scoped routing tests ──────────────────────────────────────────
+
+
+def test_operation_id_rule_matches() -> None:
+    """A rule keyed on route.operation_id selects the model for that op."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when='route.operation_id == "consolidate_semantic"',
+                use="gpt-5.2-codex",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(_req(operation_id="consolidate_semantic"))
+    assert decision is not None
+    assert decision.model_id == "gpt-5.2-codex"
+    assert decision.from_fallback is False
+
+
+def test_operation_id_rule_does_not_match_other_ops() -> None:
+    """An operation_id rule only matches the named operation."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when='route.operation_id == "consolidate_semantic"',
+                use="gpt-5.2-codex",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(_req(operation_id="synthesize_learning"))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    assert decision.from_fallback is True
+
+
+def test_operation_id_empty_for_turn_loop_requests() -> None:
+    """route.operation_id is empty for turn-loop requests (no op-scoped rule)."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when='route.operation_id == "consolidate_semantic"',
+                use="gpt-5.2-codex",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(_req())  # no operation_id
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    assert decision.from_fallback is True
+
+
+def test_fallback_sets_from_fallback_flag() -> None:
+    """The fallback decision carries from_fallback=True so operation-scoped
+    consultations can ignore it."""
+    manifest = _manifest(
+        rules=(RouterRule(when="turn.iteration > 100", use="gpt-5.4"),),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(_req(iteration=1))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    assert decision.from_fallback is True
+
+
+def test_rule_match_does_not_set_from_fallback() -> None:
+    """A rule-matched decision does not carry from_fallback."""
+    manifest = _manifest(
+        rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(_req(iteration=2))
+    assert decision is not None
+    assert decision.model_id == "gpt-5.4"
+    assert decision.from_fallback is False
+
+
+def test_operation_id_in_list_rule() -> None:
+    """A rule using `in` on route.operation_id matches any of the listed ops."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when='route.operation_id in ["mine_thread_segment", "synthesize_learning"]',
+                use="gpt-5.4-mini",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    assert router.choose(_req(operation_id="mine_thread_segment")).model_id == "gpt-5.4-mini"
+    assert router.choose(_req(operation_id="synthesize_learning")).model_id == "gpt-5.4-mini"
+    assert router.choose(_req(operation_id="consolidate_semantic")).model_id == "gemma4:cloud"
+
+
 # ── Manifest validation tests ───────────────────────────────────────────────
 
 

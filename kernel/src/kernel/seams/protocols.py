@@ -77,6 +77,11 @@ class RouterRequest:
     required_capabilities: tuple[str, ...] = ()
     mode_id: str = ""
     effective_model: RouterModelRef | None = None
+    #: The operation id when this request originates from an operation
+    #: execution (not the turn loop). Empty for turn-loop iterations.
+    #: CEL rules can key off ``route.operation_id`` to select a model for
+    #: a specific operation without editing the pack's ``.yml``/``.md``.
+    operation_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +108,11 @@ class RouterDecision:
     transition_to: str = ""
     reason: str = ""
     routed_by: str = ""
+    #: ``True`` when the decision came from the router's ``fallback``
+    #: config rather than a matching rule. Operation-scoped consultations
+    #: ignore fallback decisions so the operation's authored
+    #: ``preferred_model_id`` is respected when no explicit rule matches.
+    from_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)

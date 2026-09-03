@@ -200,6 +200,41 @@ This is **not replaced**. It becomes the router's input default:
 Remove the `router:` block (or set `backend: ""`) and you're back to pure
 static selection — no code path changes.
 
+### Operation-scoped model selection
+
+The router is also consulted when an **operation** executes (not just the
+turn loop). This lets you pin a model for a specific operation in
+`models.yaml` without editing the pack's `.yml` or `.md` file:
+
+```yaml
+router:
+  rules:
+    - when: 'route.operation_id == "consolidate_semantic"'
+      use: gpt-5.2-codex
+    - when: 'route.operation_id in ["mine_thread_segment", "synthesize_learning"]'
+      use: gpt-5.4-mini
+```
+
+ CEL bindings for operation-scoped requests:
+
+- ``route.operation_id`` — the operation's catalog id (e.g.
+  ``"consolidate_semantic"``). Empty for turn-loop iterations.
+- ``route.mode_id`` — the mode that dispatched the operation.
+- ``route.query`` — the operation's query text.
+
+Semantics:
+
+- Only ``use:`` actions apply; ``finish`` and ``transition_to`` are
+  turn-loop lifecycle actions and are ignored for operation-scoped
+  requests.
+- The router's ``fallback`` does **not** override the operation's
+  authored ``preferred_model_id``. When no rule matches, the operation
+  uses its pack-declared model (or the mode default if the pack omitted
+  it). This prevents the router's turn-loop fallback from silently
+  changing every operation's model.
+- The consultation happens once per operation execution, not per
+  internal tool-loop iteration inside the operation.
+
 ### Pack-seeded router config
 
 Installing a router pack can also **seed** the `router:` block

@@ -227,6 +227,12 @@ class OperationExecutionContext(BaseModel):
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)
+    #: Active model router (from ``ContextSeams.model_router``). When wired,
+    #: the operation registry consults it before falling back to the
+    #: definition's authored ``preferred_model_id``. CEL rules can key off
+    #: ``route.operation_id`` to select a model per operation without editing
+    #: the pack's ``.yml``/``.md``. ``None`` means no router is active.
+    model_router: Any = Field(default=None, exclude=True)
     # Typed seam: operations call ``ctx.host.complete(...)`` /
     # ``ctx.host.resolve_model(...)`` / ``ctx.host.execute_tool(...)`` etc.
     # instead of reaching into untyped ``Any`` callables directly.

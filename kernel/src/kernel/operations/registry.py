@@ -669,8 +669,14 @@ async def execute_operation(
     _validate_parameters(definition, ctx)
     await _require_approval(definition, ctx)
 
-    # Inject preferred model from definition
-    ctx.preferred_model_id = definition.preferred_model_id
+    # Inject preferred model from definition, then consult the model
+    # router (when wired) for an operation-scoped override. A router rule
+    # that matches ``route.operation_id`` and carries ``use: <model_id>``
+    # wins over the definition's authored ``preferred_model_id``. Fallback
+    # decisions are ignored so the authored value is respected when no
+    # explicit rule matches — the router's ``fallback`` is a turn-loop
+    # concept, not an operation default.
+    ctx.preferred_model_id = _resolve_operation_model(definition, ctx)
     ctx.tool_schemas = _build_tool_schemas(definition.tool_ids)
     # Wrap the host's execute_tool with the declarative allowlist, then
     # rebuild the typed host seam so ``ctx.host.execute_tool`` routes
@@ -797,11 +803,66 @@ async def execute_operation(
     )
 
 
+def _resolve_operation_model(
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+) -> str | None:
+    """Resolve the preferred model id for an operation, consulting the router.
+
+    Precedence:
+    1. Model router (when wired on ``ctx.model_router``) — a rule matching
+       ``route.operation_id`` with a ``use: <model_id>`` action wins.
+       Fallback decisions (``from_fallback=True``) are ignored so the
+       router's turn-loop fallback does not silently override the
+       operation's authored model.
+    2. Definition's authored ``preferred_model_id``.
+    """
+    router = ctx.model_router
+    if router is not None:
+        from kernel.seams.protocols import RouterDecision, RouterRequest  # noqa: PLC0415
+
+        authored = definition.preferred_model_id or ""
+        req = RouterRequest(
+            default_model_id=authored or "default",
+            iteration=1,
+            tool_calls_so_far=0,
+            budget_remaining=None,
+            query=ctx.query or "",
+            mode_id=ctx.mode_id or "",
+            operation_id=definition.operation_id,
+        )
+        try:
+            decision = router.choose(req)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "model_router.choose failed for operation %r",
+                definition.operation_id,
+                exc_info=True,
+            )
+            decision = None
+        if isinstance(decision, RouterDecision):
+            if decision.from_fallback:
+                logger.debug(
+                    "router fallback ignored for operation %r; using authored model",
+                    definition.operation_id,
+                )
+            elif decision.model_id.strip():
+                logger.debug(
+                    "router selected model %r for operation %r (rule: %s)",
+                    decision.model_id,
+                    definition.operation_id,
+                    decision.reason,
+                )
+                return decision.model_id.strip()
+    return definition.preferred_model_id
+
+
 def _resolve_execution_configuration(
     definition: OperationDefinition,
     ctx: OperationExecutionContext,
 ) -> None:
     """Attach only the target pack's immutable session configuration."""
+    # ...existing code...
 
     resolver = ctx.pack_configuration_resolver
     pack_key = definition.effective_provider_id()

@@ -29,6 +29,10 @@ Supported CEL bindings (see ``router/README.md`` for the full guide):
 - ``route.query`` — the user query text.
 - ``route.mode_id`` — the active mode id.
 - ``route.required_capabilities`` — a list of required capability names.
+- ``route.operation_id`` — the operation id when the request originates
+  from an operation execution (not the turn loop). Empty for turn-loop
+  iterations. Lets rules pin a model for a specific operation without
+  editing the pack's ``.yml``/``.md``.
 - ``model.model_id`` / ``model.provider`` / ``model.cost_tier`` /
   ``model.latency_tier`` / ``model.capabilities`` /
   ``model.reasoning_model`` / ``model.thinking_model`` /
@@ -127,6 +131,7 @@ class LisaRouter(ModelRouter):
                 model_id=self._fallback,
                 reason=f"{_ROUTE_REASON_PREFIX}no rule matched; using fallback",
                 routed_by="lisa-router",
+                from_fallback=True,
             )
         # No rule matched and no fallback — return None so the turn loop
         # falls back to the statically-resolved preferred_model_id.
@@ -182,6 +187,7 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
         "query": req.query,
         "mode_id": req.mode_id,
         "required_capabilities": list(req.required_capabilities),
+        "operation_id": req.operation_id,
     }
 
     if req.effective_model is not None:

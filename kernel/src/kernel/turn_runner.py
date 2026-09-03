@@ -2230,6 +2230,7 @@ async def execute_approved_invocation(
             "session_plan_digest": hooks.session_plan_digest,
             "code_change_artifact_store": hooks.code_change_artifact_store,
             "data_dir": hooks.data_dir,
+            "model_router": hooks.context_seams.model_router,
         }
         if invocation.target_kind == "tool":
             return await execute_tool(
@@ -2584,6 +2585,7 @@ async def _run_turn_inner(
                 delegate_fn=_delegate_fn,
                 fork_fn=_fork_fn,
                 conversation_excerpt_markdown=_early_user_context,
+                model_router=hooks.context_seams.model_router,
             )
             result = await run_mode_entry_operations(
                 mode_id,
@@ -2800,6 +2802,7 @@ async def _run_turn_inner(
         delegate_fn=_delegate_fn,
         fork_fn=_fork_fn,
         conversation_excerpt_markdown=_early_user_context,
+        model_router=hooks.context_seams.model_router,
     )
     pre_result = await run_mode_pre_turn_operations(
         mode_id,
@@ -3105,6 +3108,7 @@ async def _run_turn_inner(
                 data_dir=hooks.data_dir,
                 delegate_fn=_delegate_fn,
                 fork_fn=_fork_fn,
+                model_router=hooks.context_seams.model_router,
             )
             recall_ctx.params = {
                 "query": query,
