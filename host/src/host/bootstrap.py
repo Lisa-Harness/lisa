@@ -66,6 +66,7 @@ def build_runtime(
     streaming: str = "hybrid",
     host_log_path: str = "",
     logging_configurator: LoggingConfigurator | None = None,
+    in_process_mcp: bool = False,
 ) -> HostRuntime:
     """Build and wire a ``HostRuntime`` from CLI args + env vars.
 
@@ -160,7 +161,7 @@ def build_runtime(
     else:
         _set_thread_redaction(None)
 
-    runtime = HostRuntime(config)
+    runtime = HostRuntime(config, in_process_mcp=in_process_mcp)
     runtime.state_snapshot = load_state_snapshot(
         explicit_path=state_snapshot_path,
         data_dir=config.data_dir,

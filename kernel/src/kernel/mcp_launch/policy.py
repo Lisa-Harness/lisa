@@ -40,6 +40,7 @@ class RuntimeKind(str, Enum):
     NPX = "npx"  # npx -y @scope/server
     BINARY = "binary"  # /usr/local/bin/server
     HTTP = "http"  # streamable-HTTP MCP endpoint (no subprocess)
+    IN_PROCESS = "in_process"  # first-party server run in-process via memory transport
 
 
 @dataclass(frozen=True, slots=True)

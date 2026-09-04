@@ -184,6 +184,32 @@ def test_compile_command_venv_bin_requires_venv_dir() -> None:
         compile_command(spec)
 
 
+def test_compile_command_in_process() -> None:
+    """IN_PROCESS runtime kind returns empty command/args (no subprocess)."""
+    spec = MCPServerSpec(
+        server_id="lisa-content",
+        runtime_kind=RuntimeKind.IN_PROCESS,
+    )
+    cmd, args = compile_command(spec)
+    assert cmd == ""
+    assert args == []
+
+
+def test_compile_mcp_config_in_process_skips_log_path() -> None:
+    """In-process configs do not inject LISA_MCP_LOG_PATH (no subprocess)."""
+    spec = MCPServerSpec(
+        server_id="lisa-content",
+        runtime_kind=RuntimeKind.IN_PROCESS,
+        data_dir="/tmp/lisa-data",
+    )
+    config = compile_mcp_config(spec)
+    assert config.runtime_kind == "in_process"
+    assert config.command == ""
+    # LISA_MCP_LOG_PATH must not be set for in-process servers.
+    if config.env:
+        assert "LISA_MCP_LOG_PATH" not in config.env
+
+
 # ── compile_env ──────────────────────────────────────────────────────────────
 
 

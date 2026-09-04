@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "SYNTHETIC_SERVER_ID",
+    "InProcessResolver",
+    "InProcessServerEntry",
     "MCPClientConfig",
     "MCPConnectionError",
     "MCPToolPool",
@@ -328,6 +330,39 @@ class MCPConnectionError(RuntimeError):
     """Raised when an MCP server cannot be reached or initialized."""
 
 
+# ── In-process resolver protocol ─────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class InProcessServerEntry:
+    """One first-party server ready for in-process connection.
+
+    The host constructs these from ``mcp_server.registry`` and passes a
+    resolver callable to :class:`MCPToolPool`. The kernel defines this
+    dataclass so it does not import from ``mcp_server`` — the host adapts
+    the registry's own entry type to this shape at injection time.
+
+    Attributes:
+        server_id: Stable identifier matching the ``MCPClientConfig.server_id``.
+        mcp: The MCP SDK server instance (``MCPServer``). Accessed via
+            ``mcp._lowlevel_server`` for the in-memory transport.
+        init: The server's ``_init(args)`` function. Called once before
+            the in-process session starts to populate lifespan config.
+    """
+
+    server_id: str
+    mcp: Any
+    init: Callable[[Any], None]
+
+
+InProcessResolver = Callable[[str], InProcessServerEntry | None]
+"""Resolver callable: server_id → InProcessServerEntry | None.
+
+Injected by the host into :class:`MCPToolPool`. Returns ``None`` when the
+server_id is not a known first-party server (e.g. a pack-contributed or
+third-party server that doesn't support in-process mode)."""
+
+
 class MCPToolPool:
     """Manages N MCP server subprocesses and exposes a unified tool catalog.
 
@@ -373,7 +408,13 @@ class MCPToolPool:
     _MAX_RESTARTS = 3
     _RESTART_WINDOW_S = 60.0
 
-    def __init__(self, configs: list[MCPClientConfig]) -> None:
+    def __init__(
+        self,
+        configs: list[MCPClientConfig],
+        *,
+        in_process_resolver: InProcessResolver | None = None,
+    ) -> None:
+        self._in_process_resolver = in_process_resolver
         self._configs = list(configs)
         self._warm_configs = [c for c in self._configs if c.warm]
         self._cold_configs = [c for c in self._configs if not c.warm]
@@ -952,6 +993,10 @@ class MCPToolPool:
             await self._connect_http(config)
             return
 
+        if config.runtime_kind == "in_process":
+            await self._connect_in_process(config)
+            return
+
         # Optionally pre-create the data directory before spawning. A server
         # may own a managed subfolder under the host data-dir and expect it to
         # exist; the host guarantees it here so the server can use it (possibly
@@ -1109,6 +1154,147 @@ class MCPToolPool:
             self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
         self._last_errors.pop(config.server_id, None)
+
+    async def _connect_in_process(self, config: MCPClientConfig) -> None:
+        """Connect one first-party MCP server in-process via memory transport.
+
+        Instead of spawning a subprocess, this resolves the server's
+        :class:`MCPServer` instance from the host-provided resolver
+        (``self._in_process_resolver``), calls its ``_init`` to populate
+        lifespan config, then wires a :class:`ClientSession` to the
+        server's lowlevel ``Server`` via
+        :func:`mcp.shared.memory.create_client_server_memory_streams`.
+
+        The server's lowlevel ``run()`` coroutine is driven in a
+        background :class:`asyncio.Task` that lives for the session's
+        lifetime. The task is tracked in ``_child_stacks`` (via an
+        :class:`AsyncExitStack` that cancels and awaits it on teardown)
+        so the existing ``restart_warm`` / ``aclose`` machinery works
+        unchanged.
+        """
+        from mcp.client.session import ClientSession  # noqa: PLC0415
+        from mcp.shared.memory import (  # noqa: PLC0415
+            create_client_server_memory_streams,
+        )
+
+        if self._in_process_resolver is None:
+            raise MCPConnectionError(
+                f"In-process server '{config.server_id}' cannot be connected: "
+                "no in-process resolver was provided to MCPToolPool. The host "
+                "must inject a resolver when in-process mode is active."
+            )
+
+        entry = self._in_process_resolver(config.server_id)
+        if entry is None:
+            raise MCPConnectionError(
+                f"In-process server '{config.server_id}' is not registered. "
+                "Only first-party servers support in-process mode."
+            )
+
+        # Build a lightweight args namespace from the compiled config so
+        # the server's _init can populate its lifespan config holder.
+        # The standard CLI contract fields + server-specific env vars are
+        # reconstructed from config.env / config.args.
+        from argparse import Namespace
+
+        args = Namespace(
+            data_dir=self._in_process_data_dir(config),
+            workspace_root=self._in_process_workspace_root(config),
+            readonly=self._in_process_readonly(config),
+            thread_dir=self._in_process_env(config, "LISA_THREAD_DIR"),
+            user_slug=self._in_process_env(config, "LISA_USER_SLUG"),
+            backend=self._in_process_env(config, "LISA_GUARD_BACKEND", "passthrough"),
+            timezone=self._in_process_env(config, "LISA_TIMEZONE", "UTC"),
+            embedding_model=self._in_process_env(config, "LISA_EMBEDDING_MODEL"),
+            embedding_endpoint=self._in_process_env(config, "LISA_EMBEDDING_ENDPOINT"),
+            deny_glob=self._in_process_deny_globs(config),
+            log_level=self._in_process_env(config, "LOG_LEVEL", "INFO"),
+            server_id=config.server_id,
+        )
+        entry.init(args)
+
+        lowlevel = entry.mcp._lowlevel_server
+        init_options = lowlevel.create_initialization_options()
+
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        session: Any = None
+        server_task: asyncio.Task[None] | None = None
+        try:
+            client_streams, server_streams = await stack.enter_async_context(
+                create_client_server_memory_streams()
+            )
+            client_read, client_write = client_streams
+            server_read, server_write = server_streams
+
+            # Drive the server's lowlevel run() in a background task. The
+            # task exits when the client closes the write stream (on
+            # session teardown) or the server encounters an error.
+            server_task = asyncio.create_task(
+                lowlevel.run(server_read, server_write, init_options),
+                name=f"mcp-in-process-{config.server_id}",
+            )
+            # Register the task for cancellation on teardown.
+            stack.callback(server_task.cancel)
+
+            session = await stack.enter_async_context(
+                ClientSession(client_read, client_write)
+            )
+            await session.initialize()
+        except BaseException as exc:
+            await stack.aclose()
+            if server_task is not None and not server_task.done():
+                server_task.cancel()
+            self._last_errors[config.server_id] = _safe_exc_desc(exc)
+            raise
+        async with self._connect_lock:
+            self._child_stacks[config.server_id] = stack
+        self._sessions[config.server_id] = session
+        self._last_errors.pop(config.server_id, None)
+
+    # ── In-process arg reconstruction helpers ────────────────────────
+
+    @staticmethod
+    def _in_process_env(
+        config: MCPClientConfig, key: str, default: str | None = None
+    ) -> str | None:
+        """Read an env var from the compiled config's env dict."""
+        if config.env:
+            val = config.env.get(key)
+            if val is not None:
+                return val
+        return default
+
+    @staticmethod
+    def _in_process_data_dir(config: MCPClientConfig) -> str:
+        """Extract --data-dir from the compiled args list."""
+        for i, arg in enumerate(config.args):
+            if arg == "--data-dir" and i + 1 < len(config.args):
+                return config.args[i + 1]
+        # Fall back to the env-injected data dir path.
+        return config.data_dir_path or ""
+
+    @staticmethod
+    def _in_process_workspace_root(config: MCPClientConfig) -> str | None:
+        """Extract --workspace-root from the compiled args list."""
+        for i, arg in enumerate(config.args):
+            if arg == "--workspace-root" and i + 1 < len(config.args):
+                return config.args[i + 1]
+        return None
+
+    @staticmethod
+    def _in_process_readonly(config: MCPClientConfig) -> bool:
+        """Check if --readonly is in the compiled args list."""
+        return "--readonly" in config.args
+
+    @staticmethod
+    def _in_process_deny_globs(config: MCPClientConfig) -> list[str]:
+        """Extract --deny-glob values from the compiled args list."""
+        globs: list[str] = []
+        for i, arg in enumerate(config.args):
+            if arg == "--deny-glob" and i + 1 < len(config.args):
+                globs.append(config.args[i + 1])
+        return globs
 
     def _build_http_client(self, config: MCPClientConfig) -> Any:
         """Build the httpx.AsyncClient used to reach a network MCP server.

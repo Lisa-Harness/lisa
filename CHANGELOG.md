@@ -6,6 +6,28 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### In-process MCP server mode (default for `lisa once`)
+
+- **What:** First-party MCP servers (catalog, content, context, guard, memory,
+  storage, thread) can now run in a single interpreter instance via the MCP
+  SDK's in-memory transport, eliminating subprocess spawn overhead. This is
+  the default for `lisa once` — single-turn execution no longer spawns 4+
+  child processes. A new `RuntimeKind.IN_PROCESS` marks first-party servers
+  for in-process connection; `MCPToolPool._connect_in_process` wires a
+  `ClientSession` to each server's `MCPServer` instance via
+  `create_client_server_memory_streams`, driving the server's lowlevel
+  `run()` in a background `asyncio.Task`. The host injects a resolver
+  callable (backed by `mcp_server.registry`) so the kernel never imports from
+  `mcp_server`, preserving the architecture boundary.
+- **Why:** Subprocess spawn is the dominant startup cost for `lisa once`.
+  Running servers in-process cuts cold-start time significantly and simplifies
+  debugging (single process, shared logging, no stdio pipes).
+- **Tests:** `kernel/tests/test_mcp_in_process.py` (end-to-end in-process
+  connect + list_tools + call_tool, missing-resolver and unknown-server
+  error paths), `mcp_server/tests/test_in_process_registry.py` (registry
+  lazy import + caching), `kernel/tests/test_mcp_launch.py` (compiler
+  IN_PROCESS kind + log-path skip).
+
 #### In-place pack updates: `/pack update`
 
 - **What:** New `/pack update <pack>` and `/pack update --all` commands that

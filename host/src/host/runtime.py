@@ -34,6 +34,30 @@ from host.session_context import compile_selected_session_plan
 logger = logging.getLogger(__name__)
 
 
+def _make_in_process_resolver():
+    """Build an ``InProcessResolver`` backed by ``mcp_server.registry``.
+
+    Imported lazily so the kernel never imports from ``mcp_server`` at
+    module load time. The host (which depends on both packages) bridges
+    the registry's entry type to the kernel's
+    :class:`~kernel.tools.mcp_client.InProcessServerEntry`.
+    """
+    from kernel.tools.mcp_client import InProcessServerEntry
+    from mcp_server.registry import get_in_process_server
+
+    def resolver(server_id: str) -> InProcessServerEntry | None:
+        entry = get_in_process_server(server_id)
+        if entry is None:
+            return None
+        return InProcessServerEntry(
+            server_id=entry.server_id,
+            mcp=entry.mcp,
+            init=entry.init,
+        )
+
+    return resolver
+
+
 @dataclass(slots=True)
 class TokenCounters:
     """Per-turn and per-session token counters."""
@@ -117,7 +141,13 @@ class HostRuntime:
         await runtime.aclose()    # closes MCP pool in same loop
     """
 
-    def __init__(self, config: HostConfig, *, session_plan: SessionPlan | None = None) -> None:
+    def __init__(
+        self,
+        config: HostConfig,
+        *,
+        session_plan: SessionPlan | None = None,
+        in_process_mcp: bool = False,
+    ) -> None:
         self.session_plan = session_plan or compile_selected_session_plan(
             session_context=config.session_context,
             data_dir=config.data_dir,
@@ -168,6 +198,11 @@ class HostRuntime:
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
         self._mcp_started: bool = False
+        # When True, first-party MCP servers run in-process via the MCP
+        # SDK's in-memory transport instead of subprocesses. The host
+        # injects a resolver into MCPToolPool so the kernel can connect
+        # to server instances without importing mcp_server directly.
+        self._in_process_mcp: bool = in_process_mcp
         self._mcp_start_task: asyncio.Task[None] | None = None
         """Background task started by start_pool_deferred(); awaited by
         ensure_pool_ready() before any pool read. When None, the pool
@@ -660,7 +695,13 @@ class HostRuntime:
         # when the default backend is a cold HTTP server. The `warm` flag on
         # each config controls eager-vs-lazy start; cold servers stay down
         # at start() and connect best-effort on first call.
-        self._mcp_tool_pool = MCPToolPool([*self._mcp_warm_configs, *self._mcp_cold_configs])
+        pool_kwargs: dict[str, Any] = {}
+        if self._in_process_mcp:
+            pool_kwargs["in_process_resolver"] = _make_in_process_resolver()
+        self._mcp_tool_pool = MCPToolPool(
+            [*self._mcp_warm_configs, *self._mcp_cold_configs],
+            **pool_kwargs,
+        )
         try:
             await self._mcp_tool_pool.start()
         except BaseException:

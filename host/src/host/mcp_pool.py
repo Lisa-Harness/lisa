@@ -741,6 +741,26 @@ def compile_mcp_configs(
     runtime.memory_config_pack_slug = memory_owner_slug
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+
+    # When in-process mode is active, rewrite first-party VENV_BIN configs
+    # to IN_PROCESS so the pool connects via memory transport instead of
+    # spawning subprocesses. Only first-party servers (registered in
+    # ``mcp_server.registry``) are rewritten; pack-contributed and
+    # third-party servers keep their original runtime kind.
+    if getattr(runtime, "_in_process_mcp", False):
+        from mcp_server.registry import in_process_server_ids
+
+        first_party_ids = set(in_process_server_ids())
+        rewritten: list[MCPClientConfig] = []
+        for cfg in compiled:
+            if cfg.server_id in first_party_ids and cfg.runtime_kind == "venv_bin":
+                rewritten.append(
+                    dataclasses.replace(cfg, runtime_kind="in_process", command="", args=[])
+                )
+            else:
+                rewritten.append(cfg)
+        compiled = rewritten
+
     warm = [c for c in compiled if c.warm]
     cold = [c for c in compiled if not c.warm]
     return warm, cold

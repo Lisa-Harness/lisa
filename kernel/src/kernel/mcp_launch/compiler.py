@@ -122,6 +122,12 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
             raise ValueError(f"HTTP runtime requires 'url' for server '{spec.server_id}'")
         return "", []
 
+    if spec.runtime_kind == RuntimeKind.IN_PROCESS:
+        # In-process servers don't spawn a subprocess — the pool connects
+        # directly via the MCP SDK's in-memory transport. command/args are
+        # unused but kept as empty lists so MCPClientConfig stays uniform.
+        return "", []
+
     raise ValueError(f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'")
 
 
@@ -178,7 +184,13 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     # and drop a ``<server_name>.jsonl`` in the subprocess's cwd (the
     # project root when the host launched from there) — the 2026-08-25
     # stray-jsonl-files-in-root symptom.
-    if resolved_data_dir is not None and not env.get("LISA_MCP_LOG_PATH"):
+    # In-process servers skip log-path injection: there is no subprocess
+    # and no stderr to leak. The host process already configures logging.
+    if (
+        resolved_data_dir is not None
+        and not env.get("LISA_MCP_LOG_PATH")
+        and spec.runtime_kind is not RuntimeKind.IN_PROCESS
+    ):
         env["LISA_MCP_LOG_PATH"] = str(Path(resolved_data_dir) / f"{spec.server_id}.jsonl")
 
     return MCPClientConfig(
