@@ -344,6 +344,17 @@ class _TurnState:
     lifecycle briefing and must not repeat: a model that genuinely
     declines to write gets nudged once, then the turn is accepted
     honestly. Reset to False only by a fresh ``_TurnState``."""
+    consecutive_tool_errors: int = 0
+    """Count of trailing dispatches to the same tool that returned an
+    error (``ToolResult.error`` non-empty, ``OperationResult`` not
+    success, or ``MCPToolResult.is_error``). Reset to 0 when a different
+    tool is dispatched or the same tool succeeds. Used by the stage
+    nudge to tell the model to synthesize what it has and diagnose the
+    failure rather than retrying blindly."""
+    last_error_tool: str = ""
+    """The tool name that most recently returned an error. Paired with
+    ``consecutive_tool_errors`` so the stage nudge can name the failing
+    tool. Cleared when any tool succeeds."""
     routing_misfire_prose: bool = False
     """Set True by the synthesized-call required-params guard when the
     abort happened on a turn that dispatched ZERO real tools (the

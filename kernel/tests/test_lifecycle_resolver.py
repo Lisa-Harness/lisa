@@ -50,6 +50,9 @@ class _State:
     action_tool_ids: frozenset[str] = frozenset()
     has_write_receipt: bool = False
     has_read_receipt: bool = False
+    # Error-streak inputs (stage nudge enrichment).
+    consecutive_tool_errors: int = 0
+    last_error_tool: str = ""
 
 
 @dataclass

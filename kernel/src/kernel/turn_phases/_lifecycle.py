@@ -313,6 +313,18 @@ class _TurnStateView:
     # fire (the 2026-08-27 cloudservers incident — a read-only VM listing
     # in a write-capable mode was rescued into a write mode).
     has_read_receipt: bool = False
+    # ── Error-streak inputs (stage nudge enrichment) ────────────────
+    # Count of trailing dispatches to the same tool that returned errors,
+    # and the name of that tool. When the stage nudge fires and the turn
+    # has a non-zero streak, the nudge text changes from the generic
+    # "transition or yield" to "synthesize what you have, diagnose the
+    # failure from the error, then transition or yield." This is NOT a
+    # new nudge type — it is the same ContinueAction at the same
+    # threshold, enriched with turn context so the model gets actionable
+    # guidance instead of a generic prompt (the 2026-09-04 fetch_page
+    # loop: 30 calls with 404/402, the generic nudge was ignored).
+    consecutive_tool_errors: int = 0
+    last_error_tool: str = ""
 
 
 def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
@@ -736,6 +748,44 @@ def resolve_lifecycle_action(
 
     # ── 6. Stuck-in-stage threshold (soft nudge) ────────────────────────
     if state.turns_in_stage >= settings.stage_nudge_threshold:
+        # Enrich the nudge with turn context so the model gets actionable
+        # guidance instead of a generic "transition or yield." This is NOT
+        # a new nudge type — same ContinueAction, same threshold, same
+        # transport. The text adapts based on what the turn has been doing:
+        #
+        # - **Error streak** (``consecutive_tool_errors >= 2``): the same
+        #   tool has failed back-to-back. The model has evidence from
+        #   successful calls and diagnostic signal from the error strings.
+        #   Tell it to synthesize both — the findings AND the failure
+        #   diagnosis — then advance (the 2026-09-04 fetch_page loop:
+        #   30 calls with 404/402, the generic nudge was ignored because
+        #   it didn't tell the model what to do with the errors).
+        # - **Read-only turn**: the turn has read receipts but no error
+        #   streak. The model has evidence — tell it to synthesize and
+        #   advance, not just "consider yielding."
+        # - **Default**: the generic nudge (empty completions, write
+        #   stalls, etc.).
+        if state.consecutive_tool_errors >= 2 and state.last_error_tool:
+            return ContinueAction(
+                nudge=(
+                    f"You have been in {mode_id} for {state.turns_in_stage} iterations "
+                    f"without advancing. Your last {state.consecutive_tool_errors} calls "
+                    f"to `{state.last_error_tool}` returned errors. Synthesize what you "
+                    f"have learned from the successful calls, diagnose why "
+                    f"`{state.last_error_tool}` is failing from the error text, then "
+                    f"call transition_stage to advance with your findings or call yield "
+                    f"to ask for help."
+                )
+            )
+        if state.has_read_receipt:
+            return ContinueAction(
+                nudge=(
+                    f"You have been in {mode_id} for {state.turns_in_stage} iterations "
+                    f"without advancing. You have gathered evidence from read calls. "
+                    f"Synthesize your findings, then call transition_stage to advance "
+                    f"or call yield with a clarifying question."
+                )
+            )
         return ContinueAction(
             nudge=(
                 f"You have been in {mode_id} for {state.turns_in_stage} iterations "

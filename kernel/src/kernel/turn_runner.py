@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -101,8 +102,6 @@ from kernel.tools.schema_translator import (
     openai_tool_call_to_mcp,
 )
 from kernel.workflow_position import WorkflowStep, _step_id_for
-
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -1223,7 +1222,7 @@ class StreamedCompletionAdapter:
     ``self.reasoning_content`` for callers that want to distinguish the two.
     """
 
-    __slots__ = ("_aggregated", "content", "reasoning_content", "tool_calls", "usage", "duration_ms")
+    __slots__ = ("_aggregated", "content", "duration_ms", "reasoning_content", "tool_calls", "usage")
 
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated
@@ -3471,6 +3470,8 @@ async def _run_turn_inner(
             has_read_receipt=any(
                 r.effect in ("read", "execute") for r in _state.effect_receipts
             ),
+            consecutive_tool_errors=_state.consecutive_tool_errors,
+            last_error_tool=_state.last_error_tool,
         )
         _active_position_for_resolver: Any = None
         if hooks.workflow_position is not None:
@@ -5322,6 +5323,7 @@ async def _run_turn_inner(
                                 # "... is not allowed for mode '<entry>'".
                                 # Patch ctx.mode_id so subsequent dispatches
                                 # authorize against the new mode.
+                                _departing_mode_id = mode_id
                                 mode_id = target_stage
                                 mode_config = target_mode_config
                                 handoff_to = target_stage
@@ -5386,9 +5388,32 @@ async def _run_turn_inner(
                                     # steps that already ran. The entry
                                     # mode's intents were added at init; each
                                     # handoff adds its target's intents here.
-                                    _state.chain_satisfied.update(
-                                        target_mode_config.satisfies_intents
+                                    #
+                                    # **Work-gate**: only accumulate if the
+                                    # departing mode produced at least one
+                                    # relevant receipt (read/execute for
+                                    # research/gather modes, write for
+                                    # code/write modes). A mode that was
+                                    # visited but did nothing — forced out
+                                    # by the forced-action enforcer after
+                                    # zero productive calls — must NOT mark
+                                    # its intents as satisfied. Otherwise the
+                                    # next mode inherits a false "research
+                                    # already done" and never redirects back
+                                    # (the 2026-09-04 incident: researcher
+                                    # was forced to executor after 1 failed
+                                    # fetch_page, but chain_satisfied already
+                                    # contained {research,gather,learn}, so
+                                    # executor saw no gap and crawled to the
+                                    # cap).
+                                    _departing_has_work = any(
+                                        r.effect in ("read", "execute", "write", "external_write")
+                                        for r in _state.effect_receipts
                                     )
+                                    if _departing_has_work:
+                                        _state.chain_satisfied.update(
+                                            target_mode_config.satisfies_intents
+                                        )
                                     # Per-step counters were already reset by
                                     # ``apply_routing`` above (before the
                                     # durable instance advancement so a
@@ -5461,55 +5486,54 @@ async def _run_turn_inner(
                                                         _next_step.step_id,
                                                         _next_step.mode_id,
                                                     )
-                                                else:
-                                                    # ── Do-the-work backstop ──
-                                                    # The routing hint and the
-                                                    # plan-driven hint both
-                                                    # correctly go silent here,
-                                                    # leaving a guidance-needing
-                                                    # model with no directive.
-                                                    # When the effective model
-                                                    # declared ``needs_guidance``
-                                                    # and this mode has action
-                                                    # tools, arm a do-the-work
-                                                    # backstop: the empty-
-                                                    # completion enforcer will
-                                                    # synthesize a call to one
-                                                    # of the mode's action tools
-                                                    # instead of accepting prose
-                                                    # and ending blocked as
-                                                    # ``no_tools`` (the
-                                                    # 2026-08-15 researcher
-                                                    # no-verified-write block).
-                                                    # Cleared as soon as any
-                                                    # tool dispatches, so it
-                                                    # cannot loop.
-                                                    if getattr(
-                                                        _state.effective_model,
-                                                        "needs_guidance",
-                                                        False,
-                                                    ):
-                                                        _work_tools = (
-                                                            mode_completion_effects(
-                                                                target_stage,
-                                                                mcp_pool=pool,
-                                                            )
-                                                            if pool is not None
-                                                            else _state.action_tool_ids
+                                                # ── Do-the-work backstop ──
+                                                # The routing hint and the
+                                                # plan-driven hint both
+                                                # correctly go silent here,
+                                                # leaving a guidance-needing
+                                                # model with no directive.
+                                                # When the effective model
+                                                # declared ``needs_guidance``
+                                                # and this mode has action
+                                                # tools, arm a do-the-work
+                                                # backstop: the empty-
+                                                # completion enforcer will
+                                                # synthesize a call to one
+                                                # of the mode's action tools
+                                                # instead of accepting prose
+                                                # and ending blocked as
+                                                # ``no_tools`` (the
+                                                # 2026-08-15 researcher
+                                                # no-verified-write block).
+                                                # Cleared as soon as any
+                                                # tool dispatches, so it
+                                                # cannot loop.
+                                                elif getattr(
+                                                    _state.effective_model,
+                                                    "needs_guidance",
+                                                    False,
+                                                ):
+                                                    _work_tools = (
+                                                        mode_completion_effects(
+                                                            target_stage,
+                                                            mcp_pool=pool,
                                                         )
-                                                        if _work_tools:
-                                                            _state.forced_work_tool = next(
-                                                                iter(sorted(_work_tools))
-                                                            )
-                                                            _log.info(
-                                                                "self-handoff "
-                                                                "do-the-work "
-                                                                "backstop armed "
-                                                                "(mode=%s "
-                                                                "tool=%s)",
-                                                                target_stage,
-                                                                _state.forced_work_tool,
-                                                            )
+                                                        if pool is not None
+                                                        else _state.action_tool_ids
+                                                    )
+                                                    if _work_tools:
+                                                        _state.forced_work_tool = next(
+                                                            iter(sorted(_work_tools))
+                                                        )
+                                                        _log.info(
+                                                            "self-handoff "
+                                                            "do-the-work "
+                                                            "backstop armed "
+                                                            "(mode=%s "
+                                                            "tool=%s)",
+                                                            target_stage,
+                                                            _state.forced_work_tool,
+                                                        )
                                 if post_handoff_hint:
                                     # ── Hint-override suppression ──────
                                     # After the model overrides the hint
@@ -6196,6 +6220,39 @@ async def _run_turn_inner(
                 # Sync the ledger counts to _state so the per-iteration
                 # budget briefing can report per-target remaining calls.
                 _state.call_ledger_counts = dict(ledger.counts)
+                # ── Consecutive-error streak tracking ────────────────────
+                # Track trailing errors from the same tool so the stage
+                # nudge can tell the model to synthesize what it has and
+                # diagnose the failure instead of retrying blindly (the
+                # 2026-09-04 fetch_page loop: 30 calls, many 404/402, no
+                # guard ever told the model to stop crawling). Determined
+                # AFTER the receipt blocks so ``_dispatched_succeeded``
+                # (write) and ``_mcp_succeeded`` (read) are both resolved.
+                _dispatch_failed = False
+                if _dispatched_effect in ("write", "external_write"):
+                    _dispatch_failed = not _dispatched_succeeded
+                elif _dispatched_effect in ("read", "execute"):
+                    # ``_mcp_succeeded`` is set in the read/execute branch
+                    # above; for in-process tools, ``tool_result.error``
+                    # determines failure (mirrored via ``_dispatched_succeeded``
+                    # for writes; for reads the receipt block checks
+                    # ``_mcp_succeeded``). Re-derive here so we catch both
+                    # in-process and MCP read failures.
+                    if "tool_result" in locals() and isinstance(tool_result, ToolResult):
+                        _dispatch_failed = bool(tool_result.error.strip())
+                    elif "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
+                        _dispatch_failed = bool(getattr(mcp_result, "is_error", False))
+                    elif "op_result" in locals() and isinstance(op_result, OperationResult):
+                        _dispatch_failed = not op_result.is_success
+                if _dispatch_failed:
+                    if _state.last_error_tool == tool_name:
+                        _state.consecutive_tool_errors += 1
+                    else:
+                        _state.last_error_tool = tool_name
+                        _state.consecutive_tool_errors = 1
+                else:
+                    _state.consecutive_tool_errors = 0
+                    _state.last_error_tool = ""
                 if recovery_item_id and hooks.recovery_service is not None:
                     try:
                         await hooks.recovery_service.settle(
