@@ -62,3 +62,52 @@ class TestInferModulePath:
             assert _infer_module_path(py, tools) == "lisa_packs.coding.tools.status.status"
         finally:
             sys.path.remove(str(site_dir))
+
+    def test_walk_terminates_at_filesystem_root(self, tmp_path: Path) -> None:
+        """The package-base walk must stop at ``/``, not spin forever.
+
+        Regression for the 2026-09-03 hang: an editable-installed pack
+        rooted at ``/home/<user>/<dir>/<pack>/lisa_packs/<name>`` has no
+        ``src/`` or ``site-packages`` ancestor, so the walk-up loop ran past
+        every boundary into ``/`` where ``Path('/').parent == Path('/')``
+        and the leaf name is ``''`` — spinning ``find_spec('')`` at 50k+
+        calls/second until the process was killed. The guard must break the
+        loop when ``package_dir`` reaches the filesystem root.
+        """
+        # Lay out a pack with no src/ or site-packages ancestor: the walk
+        # climbs tmp_path → tmp_path.parent → … → / and would previously
+        # spin there. ``somepack`` is not importable, so no anchor is found
+        # and the result falls back to the root-relative parts.
+        tools = tmp_path / "somepack" / "tools"
+        tools.mkdir(parents=True)
+        py = tools / "status" / "status.py"
+        py.parent.mkdir()
+        py.write_text("")
+        assert _infer_module_path(py, tools) == "tools.status.status"
+
+    def test_walk_terminates_for_home_rooted_pack(self) -> None:
+        """A real-world home-rooted pack path terminates without hanging.
+
+        Mirrors ``/home/<user>/<repo>/<pack>/lisa_packs/<pack>/operations/…``
+        with no ``src/`` or ``site-packages`` anywhere in the ancestor
+        chain. The dotted path still includes the ``lisa_packs.<pack>``
+        anchor chain when import resolution succeeds; the contract under
+        test is that the call **returns** rather than spinning.
+        """
+        import shutil
+
+        scratch = Path.home() / "_lisa_test_walk_home_pack"
+        pack_pkg = scratch / "lisa_packs" / "walkhome"
+        ops = pack_pkg / "operations"
+        ops.mkdir(parents=True)
+        (pack_pkg / "__init__.py").write_text("")
+        py = ops / "demo" / "demo.py"
+        py.parent.mkdir()
+        py.write_text("")
+        try:
+            result = _infer_module_path(py, ops)
+            # Termination is the contract; the tail (operations.demo.demo)
+            # must still be present regardless of how the anchor resolved.
+            assert result.endswith("operations.demo.demo")
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)

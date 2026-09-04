@@ -1229,6 +1229,14 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
     dir_names: list[str] = []
     anchor_idx = -1
     while True:
+        # Guard: Path('/').parent == Path('/'), so without an explicit
+        # root check the walk spins forever at the filesystem root, calling
+        # ``find_spec('')`` once per loop iteration (2026-09-03 hang: the
+        # catalog server spun at 50k+ calls/second scanning an empty module
+        # name). Stop as soon as the walk reaches an anchor, a sys.path
+        # boundary, or the filesystem root.
+        if package_dir == package_dir.parent:
+            break
         leaf = package_dir.name
         is_pkg = (package_dir / "__init__.py").is_file()
         if not is_pkg:
