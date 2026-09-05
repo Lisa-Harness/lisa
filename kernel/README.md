@@ -31,7 +31,7 @@ Key principles:
 
 | Module | Responsibility |
 | --- | --- |
-| `models.py` | All runtime-neutral Pydantic contracts: surface context, route decisions, operation/tool execution, workflow FSM, workshop fan-out, memory, unified state, context evidence, anomaly alerts, capability manifest, introspection snapshots, token usage events, call ledger, and approval contracts. |
+| `models.py` | All runtime-neutral Pydantic contracts: surface context, operation/tool execution, workflow FSM, fork fan-out (`ForkTarget`/`ForkChildResult`), delegation, memory, unified state, context evidence, anomaly alerts, capability manifest, introspection snapshots, token usage events, call ledger, and approval contracts. |
 | `provider_core.py` | Provider gateway abstractions: `AzureOpenAIGateway`, `AnthropicGateway`, `GoogleGeminiGateway`, `BedrockGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, streaming support, message normalization, and usage extraction. |
 | `extension_runtime.py` | Minimal extension runtime surface (stripped down 2026-07-11): `ExtensionRuntimeContext` for host services injection, `ExtensionAnomalyDetector` callable shape, and `ExtensionContextItemBuilder` callable shape. The bottom half is now `kernel.intake.contracts.ProcessingLoop`. |
 
@@ -212,8 +212,8 @@ sequenceDiagram
 | --- | --- |
 | `workflow_position` | Returns the current `WorkflowPosition` for the active user/surface — the single durable workflow object (inter-mode plan + intra-mode stage pointer). Required for stage instructions to be injected into prompts. |
 | `workflow_position_updater` | Persists an updated `WorkflowPosition` after a `transition_stage` call (stage advance or mode handoff) or a turn-start position creation. |
-| `workflow_turn_runner` | Callable for workshop child-workflow execution. |
-| `workflow_session_factory` | Creates isolated child workflow sessions for workshop fan-out. |
+| `fork_fn` | Executes a parallel fork fan-out (`transition_stage` `fork:` target). Default: `_default_fork_fn` wraps `kernel.turn_phases._fork` and fans children out via `asyncio.TaskGroup`. |
+| `delegate_fn` | Executes one sequential delegate sub-turn. Default: `_default_delegate_fn` recurses into `run_turn` as a `sub_turn_kind="delegate"` child. |
 
 ### Host State & Services
 
@@ -223,7 +223,6 @@ sequenceDiagram
 | `pack_configuration_resolver` | Session-owned resolver for immutable pack configuration. |
 | `approval_service` | Host-owned persistence for exact-action approval. |
 | `code_change_artifact_store` | Host-owned store for coding workflow artifacts. |
-| `build_workshop_context_bundle_fn` | Builds a `WorkshopContextBundle` from a plan and state. |
 | `introspect` | Returns an `IntrospectSnapshot` from the host's live runtime. |
 
 ### Identity Fields

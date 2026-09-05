@@ -233,7 +233,7 @@ If a pack is in `include` but not installed, it is silently absent from the cata
 
 External (non-bundled) packs belong **only in the packs venv**, not the main framework `.venv`. The catalog and content MCP subprocesses activate the packs-venv site-packages via `site.addsitedir`; if the same external pack is installed in both the main `.venv` and the packs venv, `importlib.metadata.entry_points()` sees two distinct content-root paths for one pack and the catalog raises a `Duplicate operation ID` collision that crashes boot.
 
-Do **not** install external packs into the main `.venv` via `uv sync --extra ext --extra wip` (the root `pyproject.toml` `ext`/`wip` optional extras). Those extras exist only as a dev/IDE convenience for import resolution during editing; installing them into the live venv recreates the duplicate. Uninstall any stray external packs from the main `.venv` with `uv pip uninstall --python .venv lisa-pack-<name>` (leaving the bundled packs: core, checkpoint, introspect, memory).
+Do **not** install external packs into the main `.venv` via `uv sync --extra ext --extra wip` (the root `pyproject.toml` `ext`/`wip` optional extras). Those extras exist only as a dev/IDE convenience for import resolution during editing; installing them into the live venv recreates the duplicate. Uninstall any stray external packs from the main `.venv` with `uv pip uninstall --python .venv lisa-pack-<name>` (leaving the bundled packs: core, introspect, memory, recovery).
 
 ### `providers`
 
@@ -250,11 +250,29 @@ All IDs must be non-empty strings.
 
 ### `routing`
 
-Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing priority is authored in each mode's `_mode.md` front matter (`priority`), not in the session plan.
+Session-level routing seed plus the author-curated vocabulary the kernel's routing-hint generator reads. There is no pre-turn router — natural-language turns go directly to `current_mode_id` and hand off mid-turn via `transition_stage`; `start_mode` is a bypass pin, not a router seed. When `current_mode_id == start_mode != "default"`, the turn goes directly to the pinned mode; `start_mode: default` means "let the model decide via handoff." See [ROUTER_DESIGN.md](ROUTER_DESIGN.md#3-session-context-controls).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `start_mode` | `string` | `default` | Initial mode seed. Does not bypass the router — it sets the router's starting point. |
+| `start_mode` | `string` | `default` | Bypass pin: the mode a turn goes directly to when it equals `current_mode_id`. `default` is exempt (routing hub, hands off mid-turn). |
+| `aliases` | `map<str, str>` | `{}` | Slash-command aliases (`go: discuss` → `/go` routes like `/discuss`). |
+| `priority_adjustments` | `map<str, int>` | `{}` | Override per-mode catalog ordering priority from the session. |
+| `hints` | `map<str, tuple<str,...>>` | `{}` | Per-mode hint strings injected by the routing-hint fast path. |
+| `sequential_connectors` | `tuple<str,...>` | `()` | Whitespace-padded substrings marking a query as an ordered chain (`then`, `based on`, `once`). A match routes sequential handoffs instead of a parallel `fork:`. Session-authored vocabulary — opaque to the kernel. |
+| `resume_phrases` | `tuple<str,...>` | `()` | Lowercased imperatives marking a short message as a workflow/approval resume rather than a fresh query (`proceed`, `continue`, `go ahead`). Applied as prefix matches. |
+| `producer_intents` | `tuple<str,...>` | `()` | Intent tags whose satisfaction produces evidence a consumer needs (`research`, `review`, `analyze`). The fork guard refuses a parallel fork when a gap mixes a producer with a consumer. |
+| `consumer_intents` | `tuple<str,...>` | `()` | Intent tags whose satisfaction consumes a producer's output (`code`, `write`, `implement`). Counterpart to `producer_intents`. |
+| `topic_abandonment_markers` | `tuple<str,...>` | `()` | Lowercased substrings signalling the user is *leaving* a topic (`side quest`, `never mind`), so a keyword mention does not route *into* that topic. |
+
+```yaml
+routing:
+  start_mode: default
+  sequential_connectors: [then, "and then", "followed by", "based on", once]
+  resume_phrases: [proceed, continue, "go ahead", "keep going"]
+  producer_intents: [research, gather, learn, read, analyze, review, architect]
+  consumer_intents: [code, write, implement, document]
+  topic_abandonment_markers: ["side quest", rewind, "never mind", forget]
+```
 
 ### `instructions`
 

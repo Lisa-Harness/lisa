@@ -1,7 +1,10 @@
 # Thread Store Format Specification
 
 > **Status:** Active. Introduced 2026-08-10.
-> **Implementation:** `host/thread.py`, `host/state_provider.py`
+> **Implementation:** write path in `host/thread.py`; read path (segment derival,
+> sparse-index parsing, zstd decompress, recent-N / range reads) in
+> `sdk/thread/_backend.py` (wrapped by `mcp_server.thread.server` and used by
+> `host/state_provider.py`).
 
 ## Overview
 
@@ -108,9 +111,12 @@ One JSON line per sealed segment in `<base>.index.jsonl`:
 
 ### Digest marker
 
-Plain text file containing the `seg_id` of the last digested sealed
-segment. When all sealed segments have been digested, this equals the
-most recent `seg_id` in the index.
+Removed. The `mine_thread_segment` operation tracks its own per-segment
+completion via a `mine.marker` sidecar written by the memory pack's
+consolidation slice; the thread store no longer reads or writes any digest
+marker. The `digest` / `marker` path entries still derived in
+`sdk/thread/_backend.py::_SegmentPaths` are vestigial — nothing consumes
+them.
 
 ## Write path
 

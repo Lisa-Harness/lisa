@@ -44,7 +44,7 @@ forbidden from reaching into the one above it.
 | Layer | Responsibility | Must not own |
 | --- | --- | --- |
 | `kernel` | Runtime-neutral contracts, mode catalog loading, workflow state (`ipsar`), the operation registry, tool and storage protocols, per-iteration model-router discovery, the slice (pressure-driven housekeeping) contract | Host transport SDKs, production deployment, proprietary app behavior |
-| `sdk` | Author-facing helpers for rendering, workshop execution, integration contracts, pack composition, and the CEL-based model router | Private app imports, private model policy, production storage |
+| `sdk` | Author-facing helpers for rendering, integration contracts, pack composition, and the CEL-based model router | Private app imports, private model policy, production storage |
 | `sdk/packs` | Bundled reference packs with modes, operations, authored content, and pack-registered slash commands | Private product strategy, market-intel workflows |
 | `host` | Transport-neutral runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence | Production chat transport, durable memory, production-grade model policy |
 | `mcp_server` | First-party MCP servers that expose Lisa's surface-scoped tools over stdio | Transport, host wiring |
@@ -71,7 +71,7 @@ packages together.
 ├── kernel/              # Runtime-neutral contracts, FSM engine, operation registry
 ├── sdk/                 # Author-facing helpers and integration contracts
 │   ├── packs/           # Bundled reference packs
-│   │   ├── core/        #   baseline modes (default, workshop) and shared assets
+│   │   ├── core/        #   baseline mode (default) and shared assets
 │   │   ├── memory/      #   memory-backed learning operations
 │   │   ├── introspect/  #   operational self-model and reflective assessment
 │   │   └── recovery/    #   thread-based /resume and recovery records
@@ -180,7 +180,7 @@ Packs are the unit of authoring. A pack contributes modes, operations, authored
 content, and pack-registered slash commands under a single namespace. Bundled
 reference packs:
 
-- **`lisa-pack-core`** — baseline modes (`default`, `workshop`) and shared
+- **`lisa-pack-core`** — baseline mode (`default`) and shared
   prompt assets.
 - **`lisa-pack-memory`** — memory-backed learning operations (`learn`, memory
   ops). Enabled by default.
@@ -189,8 +189,9 @@ reference packs:
 - **`lisa-pack-recovery`** — thread-based `/resume` and recovery records.
 
 External integration packs live in the public
-[`lisa-packs`][lisa-packs] repo (`brave`, `letta`, `markdown`, `mem0`, `okf`,
-`search`) and the WIP [`packs-wip`][packs-wip] repo, all under the
+[`lisa-packs`][lisa-packs] repo (`brave`, `cloudservers`, `letta`, `markdown`,
+`mem0`, `okf`, `personas`, `search`, `serper`, `tavily`) and the WIP
+[`packs-wip`][packs-wip] repo, all under the
 `lisa_packs.*` namespace.
 
 ## Model providers

@@ -61,19 +61,20 @@ addressed before any new feature work.
   the `fork:` target at all, burning iterations on read-only tools or
   returning empty completions until the iteration cap, ending the turn
   with no fork ever running. Fixed by the forced-fork enforcer — see
-  `docs/lessons/lisa-fork-refusal-2026-07-27.md` and the Forced-Fork
-  section of `docs/ROUTER_DESIGN.md`. Regression tests:
+  Invariant 2 in `docs/lessons/fork-incident-digest.md` and the
+  Forced-Fork section of `docs/ROUTER_DESIGN.md`. Regression tests:
   `test_forced_fork_when_model_refuses_to_fork`,
   `test_forced_fork_when_model_returns_empty_completion`.
 
 ### 0.3 Pre-existing test environment issues
 
-- **Status:** `kernel/tests/test_model_router.py` fails at collection time
-  with `ModuleNotFoundError: No module named 'lisa_packs'` because
-  `kernel.turn_runner` transitively imports an external pack.
-- **Action:** Break the transitive import dependency or gate it behind a
-  `TYPE_CHECKING` guard / lazy import so kernel tests can run without external
-  packs installed.
+- **Status:** ✅ Fixed. `kernel/tests/test_model_router.py` no longer
+  transitively imports external packs — it imports only
+  `kernel.model_router_discovery`, `kernel.seams.protocols`, and
+  `kernel.turn_runner`, and collects cleanly in a kernel-only venv.
+- **What changed:** The kernel-side imports that pulled `lisa_packs` were
+  broken; kernel tests run without external packs installed. (Remaining
+  0.5 action — preventing future transitive couplings — is 2.5.)
 
 ### 0.4 Stale Pyright / lint issues
 
@@ -228,7 +229,7 @@ addressed before any new feature work.
 | --- | --- | --- | --- |
 | 0.1 | Model-router factory-factory crash | Stabilization | ✅ Done |
 | 0.2 | Fork fan-out reliability | Stabilization | ✅ Done |
-| 0.3 | Test env import breakage | Stabilization | 🟡 High |
+| 0.3 | Test env import breakage | Stabilization | ✅ Done |
 | 0.4 | Stale Pyright/lint issues | Stabilization | 🟡 Medium |
 | 1.1 | Generalize factory-factory resolution | Hardening | 🟡 High |
 | 1.2 | Fork child observability | Hardening | ✅ Done |

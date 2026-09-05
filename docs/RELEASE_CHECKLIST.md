@@ -37,7 +37,7 @@ ______________________________________________________________________
 - [ ] `README.md` accurately describes the pack registry, pack lifecycle, and how to add packs
 - [ ] `CONTRIBUTING.md` present and aligned with the promotion lifecycle (private standalone → packs-wip → lisa-packs)
 - [ ] `docs/PROMOTION_GUIDE.md` reviewed for accuracy and completeness
-- [ ] `.gitmodules` reviewed — all 6 submodule URLs resolve and point to `github.com/Lisa-Framework/lisa-pack-<name>`
+- [ ] `.gitmodules` reviewed — all 10 submodule URLs resolve and point to `github.com/Lisa-Framework/lisa-pack-<name>` (brave, cloudservers, letta, markdown, mem0, okf, personas, search, serper, tavily)
 - [ ] All submodule SHAs pinned to intended commits (not floating `HEAD`)
 - [ ] `.cspell` dictionary reviewed; no false positives blocking CI
 - [ ] `.github` workflows reviewed and passing

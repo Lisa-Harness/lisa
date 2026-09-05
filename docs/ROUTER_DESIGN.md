@@ -268,7 +268,8 @@ refuse: they do "useful" read-only work instead (`fetch_page`,
 `web_search`), burn iterations, and return an empty completion. The
 turn then exits at the iteration cap with no fork ever running, and the
 no-tools final-completion fallback hallucinates the tool call as prose.
-See `docs/lessons/lisa-fork-refusal-2026-07-27.md`.
+See Invariant 2 in `docs/lessons/fork-incident-digest.md` — the
+forced-fork enforcer is the load-bearing guard for this refusal mode.
 
 The kernel does not beg the model via nudges when it has already
 computed the deterministic next step. The fork target is derivable from
