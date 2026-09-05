@@ -111,3 +111,28 @@ class TestInferModulePath:
             assert result.endswith("operations.demo.demo")
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+
+    def test_site_packages_nested_package_path(self, tmp_path: Path) -> None:
+        """Site-packages paths for non-top-level packages resolve full dotted path.
+
+        Regression for startup failure on installed hosts where
+        'site-packages' in str(parent) matched on /.../site-packages/sdk/packs
+        because 'site-packages' appeared in the string representation of every
+        child directory under site-packages, prematurely stopping the walk
+        and producing un-importable paths like 'packs.introspect...'.
+        """
+        site_dir = tmp_path / "venv" / "lib" / "python3.13" / "site-packages"
+        ops = site_dir / "sdk" / "packs" / "introspect" / "operations"
+        ops.mkdir(parents=True)
+        (site_dir / "sdk" / "packs" / "introspect" / "__init__.py").write_text("")
+        (site_dir / "sdk" / "packs" / "__init__.py").write_text("")
+        py = ops / "self_model" / "self_model.py"
+        py.parent.mkdir()
+        py.write_text("")
+
+        sys.path.insert(0, str(site_dir))
+        try:
+            result = _infer_module_path(py, ops)
+            assert result == "sdk.packs.introspect.operations.self_model.self_model"
+        finally:
+            sys.path.remove(str(site_dir))

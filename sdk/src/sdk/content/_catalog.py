@@ -1203,6 +1203,24 @@ def _is_package_dir(path: Path, dotted_name: str | None = None) -> bool:
     return path.resolve() in resolved
 
 
+def _is_sys_path_boundary(path: Path) -> bool:
+    """Return True if ``path`` represents a sys.path boundary (src, site-packages, etc.)."""
+    if (
+        path.name in ("src", "site-packages", "dist-packages")
+        or path.name.startswith("site-packages")
+        or path.name.startswith("dist-packages")
+    ):
+        return True
+    import sys
+
+    try:
+        resolved = path.resolve()
+        sys_paths = {Path(p).resolve() for p in sys.path if p}
+        return resolved in sys_paths
+    except Exception:
+        return False
+
+
 def _infer_module_path(py_path: Path, root: Path) -> str:
     """Infer a dotted Python module path from the file path relative to root.
 
@@ -1258,11 +1276,11 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
                 spec = importlib.util.find_spec(leaf)
             except ModuleNotFoundError:
                 spec = None
-            if spec is not None and spec.parent is None:
+            if spec is not None and "." not in spec.name:
                 # This is a top-level package — stop here
                 break
             # Also stop if parent looks like a boundary
-            if parent.name in ("src",) or "site-packages" in str(parent):
+            if _is_sys_path_boundary(parent):
                 break
         package_dir = parent
     # Build dotted path from the anchor (top-level importable package) down
