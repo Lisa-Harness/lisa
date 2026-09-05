@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
 
 
 # Virtual environments
@@ -26,5 +25,3 @@ htmlcov/
 
 # Outputs
 artifacts/
-lisa-content.jsonl
-lisa-guard.jsonl

@@ -166,6 +166,12 @@ async def test_mcp_input_guard_integration(tmp_path: Path) -> None:
             "--data-dir",
             str(tmp_path),
         ],
+        env={
+            # Route the child's JSONL log into tmp_path. Without this the
+            # child's configure_logging falls back to <cwd>/<server>.jsonl,
+            # and the subprocess inherits the pytest cwd (the repo root).
+            "LISA_MCP_LOG_PATH": str(tmp_path / "lisa-guard.jsonl"),
+        },
     )
     guard = MCPInputGuard(cfg)
     surface = SurfaceContext(surface_id="test-surface")
@@ -188,6 +194,12 @@ async def test_mcp_output_guard_integration(tmp_path: Path) -> None:
             "--data-dir",
             str(tmp_path),
         ],
+        env={
+            # Route the child's JSONL log into tmp_path. Without this the
+            # child's configure_logging falls back to <cwd>/<server>.jsonl,
+            # and the subprocess inherits the pytest cwd (the repo root).
+            "LISA_MCP_LOG_PATH": str(tmp_path / "lisa-guard.jsonl"),
+        },
     )
     guard = MCPOutputGuard(cfg)
     surface = SurfaceContext(surface_id="test-surface")
@@ -209,6 +221,12 @@ def test_mcp_content_registry_integration(tmp_path: Path) -> None:
             "--data-dir",
             str(tmp_path),
         ],
+        env={
+            # Route the child's JSONL log into tmp_path. Without this the
+            # child's configure_logging falls back to <cwd>/<server>.jsonl,
+            # and the subprocess inherits the pytest cwd (the repo root).
+            "LISA_MCP_LOG_PATH": str(tmp_path / "lisa-content.jsonl"),
+        },
     )
     registry = MCPContentRegistry(cfg)
     text = registry.read_authored_text("nonexistent/path.md")
