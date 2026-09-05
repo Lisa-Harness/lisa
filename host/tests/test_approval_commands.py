@@ -20,7 +20,10 @@ from kernel.turn_runner import TurnHooks
 from pydantic import BaseModel
 
 from host import HostConfig, HostRuntime, NullTransport
+from host.approvals import FileApprovalService
 from host.handle_message import handle_message
+from host.policy import PolicyDocument, PolicyRule
+from host.policy_service import PolicyApprovalService
 from host.types import HostCommandResult
 
 
@@ -148,6 +151,63 @@ async def test_approve_dispatches_only_the_saved_invocation(
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_policy_minted_receipt_executes_without_second_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An auto-approved record executes its receipt without re-approving it."""
+
+    runtime = _make_runtime(tmp_path)
+    runtime.approval_service = PolicyApprovalService(
+        FileApprovalService(tmp_path / "approvals.json"),
+        policy=PolicyDocument(allow=[PolicyRule(tool="bash_run")]),
+        data_dir=tmp_path,
+    )
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "pwd"},
+        identity=_identity(runtime),
+        pack_config={},
+        safe_preview="run a shell command",
+    )
+    await runtime.approval_service.request(invocation)
+    record = await runtime.approval_service.get(invocation.request_id)
+    assert record is not None and record.state == "approved" and record.receipt is not None
+
+    async def must_not_reapprove(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an approved record must execute its existing receipt")
+
+    executed: list[str] = []
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        executed.append(invocation.request_id)
+        return ToolResult(output_text="/workspace")
+
+    class _RecordingTransport(NullTransport):
+        def __init__(self) -> None:
+            self.responses: list[tuple[str, dict[str, object] | None]] = []
+
+        async def on_response(self, text: str, data: dict[str, object] | None = None) -> None:
+            self.responses.append((text, data))
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(runtime.approval_service, "approve", must_not_reapprove)
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    _stub_continuation_turn(monkeypatch)
+    transport = _RecordingTransport()
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", transport)
+
+    assert result.text == "continuation synthesized"
+    assert executed == [invocation.request_id]
+    assert transport.responses == [("continuation synthesized", None)]
 
 
 @pytest.mark.asyncio

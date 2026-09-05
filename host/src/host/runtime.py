@@ -276,9 +276,18 @@ class HostRuntime:
         # ── Approval persistence ──────────────────────────────────────
         from host.approvals import FileApprovalService
         from host.code_artifacts import FileCodeChangeArtifactStore
+        from host.policy_service import PolicyApprovalService
         from host.recovery import FileRecoveryService
 
-        self.approval_service = FileApprovalService(self.data_dir / "approvals.json")
+        # The policy service decorates the durable file store with the host
+        # policy engine (host/policy.py): it pre-decides each request (allow /
+        # ask / deny) before side effects, minting receipts for auto-approvals
+        # and prompting the operator only when policy demands it. The receipt
+        # contract on disk is unchanged — it is the same FileApprovalService.
+        self.approval_service = PolicyApprovalService(
+            FileApprovalService(self.data_dir / "approvals.json"),
+            data_dir=self.data_dir,
+        )
         self.recovery_service = FileRecoveryService(self.data_dir / "recovery-items.json")
         self.code_change_artifact_store = FileCodeChangeArtifactStore(
             self.data_dir / "code-change-artifacts.json"

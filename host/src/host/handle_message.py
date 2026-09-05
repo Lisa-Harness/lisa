@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kernel.approval import (
@@ -78,6 +80,7 @@ from host.host_commands import (
     register_host_command_prefix,
     register_host_command_prefixes,
 )
+from host.policy import AUTO_APPROVE_TURN_CAP, read_containment, remember_allow_prefix
 from host.thread import append_thread_entry
 from host.token_accounting import apply_turn_usage, coerce_non_negative_int
 from host.turn_hooks_builder import build_turn_hooks
@@ -277,7 +280,7 @@ async def handle_message(
         return HostCommandResult(text=response_text, is_error=True)
 
     if isinstance(model_result, HostCommandResult):
-        await tport.on_response(model_result.text)
+        await tport.on_response(model_result.text, model_result.data)
         return model_result
     await tport.on_response(model_result)
     return HostCommandResult(text=model_result)
@@ -503,23 +506,44 @@ def _is_affirmative_resume(lowered: str) -> bool:
     return any(lowered.startswith(phrase) for phrase in get_resume_phrases())
 
 
+# Negative resume phrases that, when a single approval is pending, are treated
+# as an implicit ``/deny <id>``. Whole-message match only (denial must be
+# unambiguous: "no way that breaks" should never deny). Deliberately tiny.
+_NEGATIVE_EXACT = frozenset({"no", "n", "nope", "deny", "deny it", "cancel"})
+
+# Approve-and-remember phrases: approve this once AND persist a policy rule so
+# future matching runs are auto-approved (the panel's 'a' key sends these).
+_REMEMBER_EXACT = frozenset({"a", "always", "approve always", "remember"})
+
+
 async def _try_affirmative_approval_resume(
     runtime: HostRuntime,
     stripped: str,
     lowered: str,
     transport: TransportCallbacks,
 ) -> HostCommandResult | None:
-    """Treat a short affirmative as ``/approve <single-pending-id>``.
+    """Treat a short decision phrase as an implicit approval decision.
 
-    Returns a ``HostCommandResult`` when the message was consumed as a
-    resume, or ``None`` to let normal model-turn routing proceed. Only fires
-    when the message is an affirmative phrase AND exactly one non-expired
-    approval is pending for the current session identity. When multiple
-    approvals are pending the user must disambiguate with an explicit
-    ``/approve <id>`` — guessing would silently execute the wrong action.
+    Maps a one-word reply to the matching command when exactly one approval is
+    pending for the current session identity:
+
+    - affirmative ("yes", "proceed", ...) -> ``/approve <id>``
+    - negative ("no", "cancel", ...)      -> ``/deny <id>``
+    - remember ("a", "always")            -> ``/approve <id> --remember``
+
+    Returns a ``HostCommandResult`` when the message was consumed, or ``None``
+    to let normal model-turn routing proceed. When multiple approvals are
+    pending the phrase is left for the model and the user must disambiguate
+    with an explicit ``/approve <id>`` — guessing would silently execute the
+    wrong action.
     """
-
-    if not _is_affirmative_resume(lowered):
+    if lowered in _REMEMBER_EXACT:
+        decision_cmd = "/approve {id} --remember"
+    elif lowered in _NEGATIVE_EXACT:
+        decision_cmd = "/deny {id}"
+    elif _is_affirmative_resume(lowered):
+        decision_cmd = "/approve {id}"
+    else:
         return None
     service = runtime.approval_service
     if service is None or not hasattr(service, "list_pending"):
@@ -527,20 +551,17 @@ async def _try_affirmative_approval_resume(
     try:
         pending = await service.list_pending(_approval_identity(runtime))
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("affirmative-resume list_pending failed: %s", exc)
+        logger.debug("approval decision list_pending failed: %s", exc)
         return None
     if len(pending) != 1:
         return None
     request_id = pending[0].invocation.request_id
-    logger.debug(
-        "affirmative-resume: treating %r as /approve %s",
-        stripped,
-        request_id,
-    )
+    final_command = decision_cmd.format(id=request_id)
+    logger.debug("approval decision: treating %r as %s", stripped, final_command)
     result_text = await _handle_approval_command(
         runtime,
-        f"/approve {request_id}",
-        approve=True,
+        final_command,
+        approve=not decision_cmd.startswith("/deny"),
         transport=transport,
     )
     if isinstance(result_text, HostCommandResult):
@@ -548,6 +569,140 @@ async def _try_affirmative_approval_resume(
         return result_text
     await transport.on_response(result_text)
     return HostCommandResult(text=result_text)
+
+
+# Parameter keys whose values are withheld from the transport approval payload:
+# they are the most likely carriers of secrets or huge bodies, and the panel
+# only needs the command itself plus a preview to render.
+_APPROVAL_REDACT_KEYS = frozenset({"api_key", "token", "secret", "password", "content", "patch"})
+
+
+def _redact_parameters(parameters: dict[str, Any]) -> dict[str, str]:
+    """Redact invocation parameters for the transport approval payload.
+
+    Keeps scalar values (truncated) so the panel can show the command being
+    proposed, but replaces sensitive/large keys and any long value with a
+    placeholder. Never raises — a payload is display-only.
+    """
+    out: dict[str, str] = {}
+    for key, value in (parameters or {}).items():
+        lower = key.lower()
+        if lower in _APPROVAL_REDACT_KEYS or any(
+            token in lower for token in ("key", "token", "secret", "pass")
+        ):
+            out[key] = "[redacted]"
+            continue
+        if isinstance(value, (list, tuple)):
+            value = " ".join(str(v) for v in value)
+        text = str(value)
+        out[key] = text if len(text) <= 200 else text[:199] + "…"
+    return out
+
+
+def _build_approval_data(runtime: HostRuntime, invocation: ApprovalInvocation) -> dict[str, Any]:
+    """Build the structured ``data["approval"]`` payload for one pending action.
+
+    Carries everything a panel transport needs to render a keystroke decision
+    without parsing prose, plus the containment the policy engine resolved so
+    the panel can badge why it is asking. Non-panel transports see only the
+    ``text`` half. Never raises.
+    """
+    try:
+        fact = read_containment(Path(runtime.data_dir), invocation.identity)
+        containment = str(fact.get("containment", "unknown") or "unknown")
+        reasons = str(fact.get("reasons", "") or "")
+    except Exception:  # pylint: disable=broad-except
+        containment, reasons = "unknown", ""
+    redacted = _redact_parameters(getattr(invocation, "parameters", None) or {})
+    expires = getattr(invocation, "expires_at", None)
+    expires_in_seconds: int | None = None
+    if isinstance(expires, datetime):
+        with suppress(TypeError):
+            expires_in_seconds = max(0, int((expires - datetime.now(UTC)).total_seconds()))
+    policy_verdict = ""
+    policy_reason = ""
+    policy_tier = ""
+    try:
+        decide = getattr(runtime.approval_service, "decide", None)
+        if callable(decide):
+            decision = decide(invocation)
+            policy_verdict = str(getattr(decision, "verdict", "") or "")
+            policy_reason = str(getattr(decision, "reason", "") or "")
+            policy_tier = str(getattr(decision, "tier", "") or "")
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return {
+        "schema": "lisa.approval.v1",
+        "request_id": getattr(invocation, "request_id", ""),
+        "target_kind": getattr(invocation, "target_kind", ""),
+        "target_id": getattr(invocation, "target_id", ""),
+        "pack_id": getattr(invocation, "pack_id", ""),
+        "effect": getattr(invocation, "effect", ""),
+        "preview": getattr(invocation, "safe_preview", "") or "",
+        "command": redacted.get("command", ""),
+        "parameters": redacted,
+        "containment": containment,
+        "containment_reasons": reasons,
+        "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else str(expires or ""),
+        "expires_in_seconds": expires_in_seconds,
+        "policy_verdict": policy_verdict,
+        "policy_reason": policy_reason,
+        "policy_tier": policy_tier,
+    }
+
+
+async def _maybe_auto_continue_approval(
+    runtime: HostRuntime,
+    invocation: ApprovalInvocation,
+    transport: TransportCallbacks,
+) -> HostCommandResult | None:
+    """Drive the policy auto-approved path in-process.
+
+    Returns the continuation ``HostCommandResult`` when the invocation was
+    policy-approved (a receipt already minted by ``PolicyApprovalService``) and
+    the per-turn cap has room, so the action executes and synthesizes without
+    waiting on the operator. Returns ``None`` to fall back to the normal
+    still-pending prompt path (ask) or when the cap is exhausted (a runaway
+    loop must surface as a prompt, not burn the ledger).
+    """
+    service = runtime.approval_service
+    if service is None or not hasattr(service, "get"):
+        return None
+    request_id = getattr(invocation, "request_id", "")
+    try:
+        record = await service.get(request_id)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("auto-continue: get(%s) failed: %s", request_id, exc)
+        return None
+    if record is None or record.state != "approved" or record.receipt is None:
+        return None
+
+    # Per-turn cap on unattended auto-approvals. Exceeding it falls back to the
+    # prompt so the operator re-engages with a runaway approval loop.
+    used = int(getattr(runtime, "_auto_approved_this_turn", 0))
+    if used >= AUTO_APPROVE_TURN_CAP:
+        logger.warning(
+            "auto-approve cap (%d) reached; prompting for %s",
+            AUTO_APPROVE_TURN_CAP,
+            invocation.target_id,
+        )
+        return None
+    runtime._auto_approved_this_turn = used + 1
+
+    logger.info(
+        "auto-approving policy-contained action %s (receipt %s)",
+        invocation.target_id,
+        request_id[:8],
+    )
+    result = await _handle_approval_command(
+        runtime,
+        f"/approve {request_id}",
+        approve=True,
+        transport=transport,
+    )
+    if isinstance(result, HostCommandResult):
+        return result
+    return HostCommandResult(text=str(result))
 
 
 def _approval_result_text(result: Any) -> str:
@@ -724,6 +879,54 @@ async def _record_and_continue_after_approval(
     return HostCommandResult(text=str(routed))
 
 
+def _command_and_prefix(invocation: ApprovalInvocation, remember: str | None) -> tuple[str, str]:
+    """Return (command, allow-rule prefix) for a ``--remember`` write.
+
+    ``remember`` is the explicit ``--remember <prefix>`` value when given; the
+    command is the action's command parameter. The default prefix is the
+    command's program + first subcommand token (``git status`` from
+    ``git status -sb``) — the natural "this thing, repeatedly" scope. Only the
+    first two tokens are used so a path/flag never widens the rule.
+    """
+    params = getattr(invocation, "parameters", None) or {}
+    command = ""
+    for key in ("command", "cmd", "script"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            command = value.strip()
+            break
+    argv = params.get("argv")
+    if not command and isinstance(argv, (list, tuple)) and argv:
+        command = " ".join(str(part) for part in argv).strip()
+    if remember and remember.strip():
+        return command, remember.strip()
+    tokens = command.split()
+    prefix = " ".join(tokens[:2]) if tokens else command
+    return command, prefix
+
+
+def _remember_allow_rule(
+    runtime: HostRuntime, invocation: ApprovalInvocation, remember: str | None
+) -> None:
+    """Persist a policy ``allow`` rule for an approved action.
+
+    No-op for actions without a command to remember (no executable prefix to
+    scope a rule to) and swallowed on any write error — a failure to persist a
+    convenience rule must never break a successful approve.
+    """
+    command, prefix = _command_and_prefix(invocation, remember)
+    if not command or not prefix:
+        logger.debug("approve --remember: no command on %s to remember", invocation.target_id)
+        return
+    try:
+        remember_allow_prefix(
+            Path(runtime.data_dir), tool=str(invocation.target_id or ""), command_prefix=prefix
+        )
+        logger.info("approve --remember: allow %s prefix %r", invocation.target_id, prefix)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("approve --remember: failed to persist rule: %s", exc)
+
+
 async def _handle_approval_command(
     runtime: HostRuntime,
     command: str,
@@ -752,6 +955,17 @@ async def _handle_approval_command(
     _, _, request_id = command.partition(" ")
     request_id = request_id.strip()
     verb = "approve" if approve else "deny"
+    if not request_id:
+        return f"Usage: /{verb} <request_id>"
+
+    # `--remember [prefix]` (approve only): on success, persist an allow rule
+    # so future runs of this command are auto-approved without a prompt. The
+    # host owns the policy write — the CLI only ever sends the command text.
+    remember: str | None = None
+    if approve and "--remember" in request_id:
+        head, _, tail = request_id.partition("--remember")
+        request_id = head.strip()
+        remember = tail.strip() or None
     if not request_id:
         return f"Usage: /{verb} <request_id>"
 
@@ -791,13 +1005,20 @@ async def _handle_approval_command(
             return f"Denied approval request {request_id}."
         return _unresolved_approval_text(request_id, record)
 
-    receipt = await runtime.approval_service.approve(request_id, identity)
-    if receipt is None:
-        # The service may have mutated the record inside this call (e.g.
-        # latched an expired TTL) — re-fetch so the diagnostic reflects the
-        # post-attempt state, not the pre-call snapshot.
-        fresh = await runtime.approval_service.get(request_id)
-        return _unresolved_approval_text(request_id, fresh or record)
+    # Policy ``allow`` has already persisted and approved this exact action
+    # so the registry can consume its genuine receipt. Re-approving would
+    # reject the record as non-pending and strand an otherwise valid
+    # auto-approval. Human approvals remain the normal pending transition.
+    if record.state == "approved" and record.receipt is not None:
+        receipt = record.receipt
+    else:
+        receipt = await runtime.approval_service.approve(request_id, identity)
+        if receipt is None:
+            # The service may have mutated the record inside this call (e.g.
+            # latched an expired TTL) — re-fetch so the diagnostic reflects the
+            # post-attempt state, not the pre-call snapshot.
+            fresh = await runtime.approval_service.get(request_id)
+            return _unresolved_approval_text(request_id, fresh or record)
 
     hooks = build_turn_hooks(runtime, context={}, transport=transport)
     try:
@@ -823,6 +1044,15 @@ async def _handle_approval_command(
         state="succeeded",
         result_preview=_approval_result_text(result)[:240],
     )
+
+    # `--remember`: persist an allow rule so future runs of this command are
+    # auto-approved. Default prefix = the executed command's first token (the
+    # program / program+subcommand, e.g. "git status" from "git status -sb"),
+    # which is the natural "this thing, repeatedly" scope; an explicit flag
+    # value overrides it. Host-side write — the CLI never edits policy.yaml.
+    if approve and "--remember" in command:
+        _remember_allow_rule(runtime, record.invocation, remember)
+
     # ── Post-approval continuation ───────────────────────────────────
     # Return the raw action output alone and the model never learns the
     # action ran: no thread record exists, the next turn re-plans from the
@@ -1110,6 +1340,11 @@ async def _execute_mode_turn(
         runtime.operator_signal_value = ""
         return response_text
 
+    # Reset the per-turn auto-approval cap counter before we consult
+    # ``pending_approval`` — this turn's budget of unattended auto-continues
+    # starts here (see ``_maybe_auto_continue_approval``).
+    runtime._auto_approved_this_turn = 0  # noqa: SLF001  # host-local counter
+
     # Clear the operator signal after the turn ends so the next turn starts
     # clean (the signal is one-shot; the transport re-sets it on the next
     # key press).
@@ -1135,6 +1370,27 @@ async def _execute_mode_turn(
             logger.info("handle_message: turn stopped by operator (mode=%s)", mode.mode_id)
         elif _operator_exit == "terminated":
             logger.info("handle_message: turn terminated by operator (mode=%s)", mode.mode_id)
+
+    # ── Pending-approval intercept (policy-driven auto-approve + payload) ──
+    # ``run_turn`` pauses the turn before the side effect and exposes the
+    # canonical invocation on ``result.pending_approval``. The policy service
+    # has already pre-decided it: a policy ``allow`` minted a receipt (record
+    # state = approved), while ``ask`` left it pending. Drive the two paths:
+    #
+    # - already-approved -> run the normal approve machinery in-process (up to
+    #   a per-turn cap) so a policy-contained action completes unattended,
+    #   WITHOUT waiting on the operator;
+    # - still-pending     -> attach a structured ``data["approval"]`` payload
+    #   so a panel-capable transport (the CLI) renders a keystroke panel
+    #   instead of the bare "run /approve <uuid>" text.
+    pending_approval = getattr(result, "pending_approval", None)
+    if pending_approval is not None:
+        approved_result = await _maybe_auto_continue_approval(runtime, pending_approval, transport)
+        if approved_result is not None:
+            return approved_result
+        approval_data = _build_approval_data(runtime, pending_approval)
+        payload_text = result.response_text
+        return HostCommandResult(text=payload_text, data=approval_data)
 
     # Apply token usage accounting.
     # Sync the runtime's stage from the result's terminal transition so the
