@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from kernel.session_plan import compile_session_plan
 
 from host import commands, content_roots, mcp_pool
 from host.config import HostConfig
+from host.paths import framework_seed_requirements
 from host.runtime import HostRuntime
 
 
@@ -730,17 +732,20 @@ async def test_seed_packs_venv_seeds_framework_and_bundled_packs(
 
     calls: list[list[str]] = []
 
-    class _FakeProc:
-        returncode = 0
-
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return (b"ok", b"")
-
-    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+    def _fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
         calls.append([str(a) for a in args])
-        return _FakeProc()
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b"ok")
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    def _fake_seed_requirements() -> list[str]:
+        """Repo-mode style requirements: editable local member dirs."""
+        fw = Path(commands._FRAMEWORK_ROOT)
+        reqs = [f"-e {fw / member}" for member in ("kernel", "sdk", "mcp_server")]
+        reqs.extend(f"-e {fw / 'sdk' / 'packs' / name}" for name in ("core", "recovery"))
+        return reqs
+
+    monkeypatch.setattr(commands._packs, "framework_seed_requirements", _fake_seed_requirements)
 
     ok, err = await commands._seed_packs_venv_with_framework(packs_venv)
     assert ok is True
@@ -756,29 +761,105 @@ async def test_seed_packs_venv_seeds_framework_and_bundled_packs(
     assert any("kernel" in t for t in targets)
     assert any("sdk" in t for t in targets)
     assert any("mcp_server" in t for t in targets)
-    # Bundled packs under sdk/packs/ are present (e.g. core, recovery, ...).
-    bundled = commands._bundled_pack_dirs()
-    assert bundled, "expected at least one bundled pack dir under sdk/packs/"
-    bundled_names = {p.name for p in bundled}
-    # Every bundled dir must appear as a -e target.
+    # Bundled packs are present.
+    bundled_names = {"core", "recovery"}
     for name in bundled_names:
         assert any(name in t for t in targets), f"bundled pack {name!r} missing from seed targets"
 
 
 @pytest.mark.asyncio
-async def test_bundled_pack_dirs_discovers_packs_with_pyproject(
+async def test_seed_packs_venv_tool_mode_uses_direct_url_requirements(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """_bundled_pack_dirs returns dirs under sdk/packs/ that have a pyproject.toml."""
-    dirs = commands._bundled_pack_dirs()
-    assert dirs, "expected bundled pack dirs under sdk/packs/ in this repo"
-    for d in dirs:
-        assert d.is_dir()
-        assert (d / "pyproject.toml").is_file()
-    # recovery is a pack that compaction cross-depends on; it must be found.
-    names = {d.name for d in dirs}
-    assert "recovery" in names
+    """Tool-mode seeding installs commit-pinned git requirements, not -e paths.
+
+    Regression for the clean-box failure: ``uv tool install`` from git gives
+    the venv no framework source tree, so the seed list must come from PEP
+    610 direct_url metadata (commit-pinned ``git+`` requirements) instead of
+    local directories. An empty repo-mode-style list must not silently
+    no-op the seeding.
+    """
+    packs_venv = tmp_path / "packs-venv"
+    packs_venv.mkdir(parents=True, exist_ok=True)
+    (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append([str(a) for a in args])
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b"ok")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    def _fake_seed_requirements() -> list[str]:
+        """Tool-mode style: pinned git direct requirements (no leading -e)."""
+        return [
+            "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=kernel",
+            "lisa-sdk @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=sdk",
+        ]
+
+    monkeypatch.setattr(commands._packs, "framework_seed_requirements", _fake_seed_requirements)
+
+    ok, err = await commands._seed_packs_venv_with_framework(packs_venv)
+    assert ok is True
+    assert err == ""
+
+    assert len(calls) == 1
+    args = calls[0]
+    assert args[:5] == ["uv", "pip", "install", "--python", str(packs_venv)]
+    # Git direct requirements pass through verbatim — no -e prefix.
+    assert "-e" not in args
+    assert (
+        "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=kernel"
+        in args
+    )
+    assert (
+        "lisa-sdk @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=sdk"
+        in args
+    )
+
+
+@pytest.mark.asyncio
+async def test_seed_packs_venv_noop_when_no_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No seed requirements (nothing installable) skips the uv call entirely."""
+    packs_venv = tmp_path / "packs-venv"
+    packs_venv.mkdir(parents=True, exist_ok=True)
+    (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def _fail_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append([str(a) for a in args])
+        raise AssertionError("uv must not be invoked when there is nothing to seed")
+
+    monkeypatch.setattr(subprocess, "run", _fail_run)
+    monkeypatch.setattr(commands._packs, "framework_seed_requirements", list)
+
+    ok, err = await commands._seed_packs_venv_with_framework(packs_venv)
+    assert ok is True
+    assert err == ""
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_framework_seed_requirements_repo_mode_covers_bundled_packs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repo-mode requirements cover kernel/sdk/mcp_server plus bundled packs."""
+    monkeypatch.setattr(
+        "host.paths.is_tool_install", lambda: False, raising=False
+    )
+    reqs = framework_seed_requirements()
+    assert reqs, "repo checkout must produce seed requirements"
+    joined = "\n".join(reqs)
+    for member in ("kernel", "sdk", "mcp_server"):
+        assert member in joined
+    # Bundled packs live under sdk/packs/ with a pyproject.toml each.
+    assert "recovery" in joined
 
 
 @pytest.mark.asyncio

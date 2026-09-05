@@ -24,10 +24,12 @@ directory is injected into ``sys.path`` at CLI startup so that
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
 import tomllib
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -249,10 +251,125 @@ def inject_packs_venv_site_packages() -> Path | None:
     return None
 
 
+def framework_seed_requirements() -> list[str]:
+    """Return install requirements for the framework packages that external
+    packs depend on.
+
+    Repo mode (development checkout): returns local directory paths for
+    ``kernel/``, ``sdk/``, ``mcp_server/``, and bundled ``sdk/packs/*`` —
+    the caller installs them with ``uv pip install -e``.
+
+    Tool mode (``uv tool install`` from git): the venv has no framework
+    source tree, but each framework distribution records where it was
+    installed from in its PEP 610 ``direct_url.json``. For git-sourced
+    installs that yields a commit-pinned ``git+<url>@<commit>
+    #subdirectory=<sub>`` requirement that can be re-installed into the
+    packs venv, giving its resolver a concrete ``lisa-kernel`` candidate
+    instead of failing with "not found in the package registry".
+
+    Returns an empty list when no framework package source can be located
+    (callers should then skip seeding rather than fail).
+    """
+    # Repo mode: framework member directories under the framework root.
+    if not is_tool_install():
+        fw_root = framework_root()
+        dirs = [
+            str(fw_root / member_dir)
+            for dist_name, member_dir in _REPO_SEED_MEMBERS.items()
+            if (fw_root / member_dir).is_dir()
+        ]
+        packs_root = fw_root / "sdk" / "packs"
+        if packs_root.is_dir():
+            for child in sorted(packs_root.iterdir()):
+                if child.is_dir() and (child / "pyproject.toml").is_file():
+                    dirs.append(str(child))
+        return dirs
+
+    # Tool mode: reconstruct install requirements from PEP 610 direct_url.json
+    # metadata recorded for each framework distribution in this venv.
+    requirements: list[str] = []
+    seen: set[str] = set()
+    for dist_name in _TOOL_SEED_DISTRIBUTIONS:
+        try:
+            dist = importlib_metadata.distribution(dist_name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        direct_url_raw = dist.read_text("direct_url.json")
+        if not direct_url_raw:
+            continue
+        try:
+            payload = json.loads(direct_url_raw)
+        except json.JSONDecodeError:
+            continue
+        requirement = _requirement_from_direct_url(dist_name, payload)
+        if requirement and requirement not in seen:
+            seen.add(requirement)
+            requirements.append(requirement)
+    return requirements
+
+
+def _requirement_from_direct_url(dist_name: str, payload: object) -> str | None:
+    """Convert one PEP 610 ``direct_url.json`` payload to a pip requirement.
+
+    Handles the two shapes the installer produces:
+
+    - VCS installs (git mode): ``git+<url>@<commit>#subdirectory=<sub>``.
+      The commit pin makes the requirement reproducible and prevents the
+      resolver from re-resolving a moving branch.
+    - Local-directory installs (``--source local``): the recorded absolute
+      path, reinstalled non-editable into the packs venv.
+
+    Returns ``None`` for shapes that cannot be reinstalled (e.g. registry
+    installs), letting the caller skip them.
+    """
+    if not isinstance(payload, dict):
+        return None
+    url = payload.get("url")
+    vcs_info = payload.get("vcs_info")
+    if isinstance(vcs_info, dict) and vcs_info.get("vcs") == "git":
+        if not isinstance(url, str) or not url:
+            return None
+        commit = vcs_info.get("commit_id")
+        requirement = f"{dist_name} @ git+{url}"
+        if isinstance(commit, str) and commit:
+            requirement += f"@{commit}"
+        subdirectory = payload.get("subdirectory")
+        if isinstance(subdirectory, str) and subdirectory:
+            requirement += f"#subdirectory={subdirectory}"
+        return requirement
+    dir_info = payload.get("dir_info")
+    if isinstance(url, str) and url.startswith("file://"):
+        path = url.removeprefix("file://")
+        if isinstance(dir_info, dict) and dir_info.get("editable"):
+            return f"-e {path}"
+        return path
+    return None
+
+
+# Repo-mode seed members: distribution name → directory under framework root.
+_REPO_SEED_MEMBERS: dict[str, str] = {
+    "lisa-kernel": "kernel",
+    "lisa-sdk": "sdk",
+    "lisa-mcp-servers": "mcp_server",
+}
+
+# Tool-mode seed distributions: framework packages external packs depend on.
+_TOOL_SEED_DISTRIBUTIONS: tuple[str, ...] = (
+    "lisa-kernel",
+    "lisa-sdk",
+    "lisa-mcp-servers",
+    "lisa-pack-core",
+    "lisa-pack-memory",
+    "lisa-pack-introspect",
+    "lisa-pack-recovery",
+)
+
+
 __all__ = [
     "LISA_PACKS_VENV_ENV",
     "default_packs_venv",
     "framework_root",
+    "framework_seed_requirements",
     "inject_packs_venv_site_packages",
     "is_tool_install",
     "packs_venv_for",

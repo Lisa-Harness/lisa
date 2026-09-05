@@ -13,8 +13,7 @@ This is the largest command cluster (~715 lines). It owns:
 - Spec parsing/validation (``_is_git_pack_spec``, ``_is_local_pack_spec``,
   ``_extract_package_name_from_spec``, ``_validate_pack_spec_for_install``,
   ``_normalize_pack_install_spec``, ``_is_bare_pack_name``, ``_expand_bare_pack_name``).
-- Packs-venv lifecycle (``_bundled_pack_dirs``, ``_seed_packs_venv_with_framework``,
-  ``_ensure_packs_venv``).
+- Packs-venv lifecycle (``_seed_packs_venv_with_framework``, ``_ensure_packs_venv``).
 - Install/uninstall drivers (``run_pack_install``, ``run_pack_uninstall``).
 - In-place update drivers (``run_pack_update``, ``run_pack_update_all``).
 
@@ -54,6 +53,9 @@ from host.paths import (
     framework_root as _framework_root,
 )
 from host.paths import (
+    framework_seed_requirements,
+)
+from host.paths import (
     packs_venv_for as _packs_venv_for,
 )
 from host.runtime import HostRuntime
@@ -78,14 +80,6 @@ _RUNTIME_UPDATE_SOURCE_KINDS = frozenset({"package", "git", "local"})
 _PLACEHOLDER_SOURCE_REFS = frozenset({"package", "git", "local"})
 
 _FRAMEWORK_ROOT = _framework_root()
-
-# Framework workspace member directories whose packages external packs may
-# depend on (e.g. ``lisa-kernel``, ``lisa-sdk``, ``lisa-mcp-servers``). These
-# are not published to PyPI, so the packs venv must be seeded with editable
-# installs of them after creation — otherwise ``uv pip install`` of an
-# external pack that declares ``dependencies = ["lisa-kernel", ...]`` fails
-# dependency resolution. The directories are relative to the framework root.
-_FRAMEWORK_SEED_PACKAGES: tuple[str, ...] = ("kernel", "sdk", "mcp_server")
 
 # Default git root template for expanding bare pack names (e.g.
 # ``lisa-pack-brave`` → ``git+https://github.com/Lisa-framework/lisa-pack-brave@main``).
@@ -483,28 +477,6 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
 # ── Bundled packs + packs-venv lifecycle ─────────────────────────────
 
 
-def _bundled_pack_dirs() -> list[Path]:
-    """Discover bundled pack source directories under ``sdk/packs/``.
-
-    Bundled packs ship with the framework tree (``<framework_root>/sdk/packs/
-    <name>``) and are **not** published to PyPI. External packs may declare
-    cross-pack dependencies on them (see ``sdk/README.md``). Without
-    seeding the packs venv with editable installs of these directories, ``uv
-    pip install`` of the depending external pack fails dependency resolution.
-
-    Returns the sorted list of bundled pack directories (each containing a
-    ``pyproject.toml``).
-    """
-    root = _FRAMEWORK_ROOT / "sdk" / "packs"
-    if not root.is_dir():
-        return []
-    dirs: list[Path] = []
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "pyproject.toml").is_file():
-            dirs.append(child)
-    return dirs
-
-
 async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
     """Seed the packs venv with editable installs of framework packages.
 
@@ -529,18 +501,28 @@ def _seed_packs_venv_with_framework_sync(packs_venv: Path) -> tuple[bool, str]:
     Used by the startup auto-install path (which runs in the synchronous
     ``_initialize_runtime`` of every host) and wrapped in
     :func:`asyncio.to_thread` by the async variant above.
+
+    Seed targets come from :func:`host.paths.framework_seed_requirements`:
+
+    - Repo mode: local member directories (``kernel/``, ``sdk/``,
+      ``mcp_server/``, bundled ``sdk/packs/*``), installed editable.
+    - Tool mode (``uv tool install`` from git): commit-pinned
+      ``git+`` requirements reconstructed from each framework package's
+      PEP 610 ``direct_url.json``. The tool venv has no framework source
+      tree, so without this the seed list would be empty and external pack
+      installs would fail with "lisa-kernel was not found in the package
+      registry".
     """
     import subprocess
 
     seed_targets: list[str] = []
-    for member in _FRAMEWORK_SEED_PACKAGES:
-        member_path = _FRAMEWORK_ROOT / member
-        if member_path.is_dir():
+    for target in framework_seed_requirements():
+        if target.startswith("-e "):
+            # Editable local path (repo mode).
             seed_targets.append("-e")
-            seed_targets.append(str(member_path))
-    for bundled in _bundled_pack_dirs():
-        seed_targets.append("-e")
-        seed_targets.append(str(bundled))
+            seed_targets.append(target.removeprefix("-e "))
+        else:
+            seed_targets.append(target)
     if not seed_targets:
         return True, ""
 
