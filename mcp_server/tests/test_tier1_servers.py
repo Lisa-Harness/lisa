@@ -277,6 +277,36 @@ async def test_catalog_list_modes_returns_json(catalog_setup: None) -> None:
     assert isinstance(data, dict)
 
 
+@pytest.mark.asyncio
+async def test_catalog_list_tools_collision_surfaces_real_message(
+    catalog_setup: None, tmp_path: Path, monkeypatch
+) -> None:
+    """A CatalogCollisionError reaches the client as its own ToolError text.
+
+    Regression test: unwrapped ``CatalogCollisionError`` (a plain
+    ``ValueError``) is treated by the MCP framework as an unexpected crash,
+    redacting its message down to the opaque "Error executing tool
+    list_tools". The server must catch and re-raise it as a ``ToolError``.
+    """
+    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp_server.catalog.server import CatalogDeps, mcp, set_deps_for_test
+
+    def _make_tool(pack_id: str) -> None:
+        pack_dir = tmp_path / pack_id / "tools" / "dup_tool"
+        pack_dir.mkdir(parents=True)
+        (pack_dir / "dup_tool.py").write_text("def run() -> None: pass\n")
+        (pack_dir / "dup_tool.tool.yml").write_text(
+            f"tool_id: dup_tool\npack_id: {pack_id}\ntool_provider_id: {pack_id}\n"
+        )
+
+    _make_tool("pack_a")
+    _make_tool("pack_b")
+    set_deps_for_test(CatalogDeps(extra_roots=[tmp_path / "pack_a", tmp_path / "pack_b"]))
+
+    with pytest.raises(ToolError, match="Duplicate tool ID 'dup_tool'"):
+        await mcp.call_tool("list_tools", {})
+
+
 def test_catalog_default_mcp_tools_env_reader(monkeypatch) -> None:
     """_read_default_mcp_tools_env parses LISA_DEFAULT_MCP_TOOLS into a set."""
     from mcp_server.catalog import server

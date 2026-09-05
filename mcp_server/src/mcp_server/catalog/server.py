@@ -34,14 +34,18 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
 # Suppress a benign runpy RuntimeWarning + activate packs venv site-packages.
 # See ``mcp_server/_entrypoint.py`` for the full rationale. Imported
-# side-effect-first at the top so the packs venv is on sys.path before any
-# `from sdk.content import ...` triggers catalog loading.
-import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim
+# side-effect-first, pinned above the ``sdk.content`` import via `isort:
+# skip` (autofixers otherwise reorder it after, which is import-order
+# dependent breakage: packs venv must be on sys.path before `sdk.content`
+# triggers catalog loading).
+import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim  # isort: skip
 from sdk.content import (
+    CatalogCollisionError,
     build_catalog_diagnostics_json,
     build_mode_catalog_json,
     build_operation_catalog_json,
@@ -160,17 +164,20 @@ async def list_modes(
     mode_roots = resolve_mode_roots(_all_roots(ctx))
     operation_roots = resolve_operation_roots(_all_roots(ctx))
     tool_roots = resolve_tool_roots(_all_roots(ctx))
-    operation_catalog_json = build_operation_catalog_json(operation_roots)
-    tool_catalog_json = build_tool_catalog_json(tool_roots)
-    default_mcp_tool_ids = _read_default_mcp_tools_env()
-    overlay_root = _read_overlay_root_env()
-    return build_mode_catalog_json(
-        mode_roots,
-        operation_catalog_json=operation_catalog_json,
-        tool_catalog_json=tool_catalog_json,
-        default_mcp_tool_ids=default_mcp_tool_ids,
-        overlay_root=overlay_root,
-    )
+    try:
+        operation_catalog_json = build_operation_catalog_json(operation_roots)
+        tool_catalog_json = build_tool_catalog_json(tool_roots)
+        default_mcp_tool_ids = _read_default_mcp_tools_env()
+        overlay_root = _read_overlay_root_env()
+        return build_mode_catalog_json(
+            mode_roots,
+            operation_catalog_json=operation_catalog_json,
+            tool_catalog_json=tool_catalog_json,
+            default_mcp_tool_ids=default_mcp_tool_ids,
+            overlay_root=overlay_root,
+        )
+    except CatalogCollisionError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _read_default_mcp_tools_env() -> set[str]:
@@ -213,7 +220,10 @@ async def list_operations(
     ``operation_id`` to a serializable operation definition dict.
     """
     operation_roots = resolve_operation_roots(_all_roots(ctx))
-    return build_operation_catalog_json(operation_roots)
+    try:
+        return build_operation_catalog_json(operation_roots)
+    except CatalogCollisionError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -229,7 +239,10 @@ async def list_tools(
     ``module_path`` field (same pattern as operations).
     """
     tool_roots = resolve_tool_roots(_all_roots(ctx))
-    return build_tool_catalog_json(tool_roots)
+    try:
+        return build_tool_catalog_json(tool_roots)
+    except CatalogCollisionError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
