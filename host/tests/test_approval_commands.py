@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from host import HostConfig, HostRuntime, NullTransport
 from host.handle_message import handle_message
+from host.types import HostCommandResult
 
 
 class _Parameters(BaseModel):
@@ -71,21 +72,45 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
     )
 
 
+def _stub_continuation_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """Stub the post-approval continuation turn and return its queries.
+
+    The approve path now records the executed action and routes a synthesis
+    turn in the owning mode; tests stub ``_route_model_turn`` so no model
+    call is attempted and the continuation query can be asserted (it must
+    carry the action output and the do-not-re-run instruction).
+    """
+
+    queries: list[str] = []
+
+    async def _continuation(
+        _runtime: HostRuntime,
+        message: str,
+        _transport: object,
+    ) -> HostCommandResult:
+        queries.append(message)
+        return HostCommandResult(text="continuation synthesized")
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(handle_message_module, "_route_model_turn", _continuation)
+    return queries
+
+
 @pytest.mark.asyncio
 async def test_approve_dispatches_only_the_saved_invocation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`/approve` bypasses model routing and calls the exact executor once."""
+    """`/approve` executes the exact saved invocation once, then continues.
 
-    runtime = HostRuntime(
-        HostConfig.from_env(
-            data_dir=str(tmp_path),
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-        )
-    )
+    The action output must reach the model: the continuation turn carries
+    it as observed data with an explicit do-not-re-run instruction, so the
+    model reports the result instead of re-issuing the action.
+    """
+
+    runtime = _make_runtime(tmp_path)
     identity = _identity(runtime)
     invocation = build_approval_invocation(
         target_kind="tool",
@@ -107,11 +132,15 @@ async def test_approve_dispatches_only_the_saved_invocation(
 
     handle_message_module = importlib.import_module("host.handle_message")
     monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
-    assert result.text == "patch applied"
     assert executed == [invocation.request_id]
+    assert len(continuation_queries) == 1
+    assert "patch applied" in continuation_queries[0]
+    assert "Do not re-run" in continuation_queries[0]
+    assert result.text == "continuation synthesized"
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
@@ -122,16 +151,10 @@ async def test_approve_consumes_receipt_through_real_registry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`/approve` executes only the approved action and consumes its receipt."""
+    """`/approve` executes only the approved action, consumes its receipt, and
+    carries the output into the continuation turn."""
 
-    runtime = HostRuntime(
-        HostConfig.from_env(
-            data_dir=str(tmp_path),
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-        )
-    )
+    runtime = _make_runtime(tmp_path)
     executed: list[str] = []
 
     async def write_file(ctx: ToolExecutionContext) -> ToolResult:
@@ -181,11 +204,14 @@ async def test_approve_consumes_receipt_through_real_registry(
             session_plan_digest=runtime.session_plan.plan_digest,
         ),
     )
+    continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
-    assert result.text == "file written"
+    assert result.text == "continuation synthesized"
     assert executed == ["src/a.py"]
+    assert len(continuation_queries) == 1
+    assert "file written" in continuation_queries[0]
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "consumed"
@@ -259,11 +285,14 @@ async def test_affirmative_resume_approves_the_single_pending_request(
 
     handle_message_module = importlib.import_module("host.handle_message")
     monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, "proceed", NullTransport())
 
-    assert result.text == "patch applied"
     assert executed == [invocation.request_id]
+    assert len(continuation_queries) == 1
+    assert "patch applied" in continuation_queries[0]
+    assert result.text == "continuation synthesized"
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
@@ -298,10 +327,13 @@ async def test_affirmative_resume_is_case_insensitive_and_phrase_scoped(
 
     handle_message_module = importlib.import_module("host.handle_message")
     monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, "OK", NullTransport())
-    assert result.text == "patch applied"
+    assert result.text == "continuation synthesized"
     assert executed == [invocation.request_id]
+    assert len(continuation_queries) == 1
+    assert "patch applied" in continuation_queries[0]
 
 
 @pytest.mark.asyncio
@@ -598,6 +630,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
 
     handle_message_module = importlib.import_module("host.handle_message")
     monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
     monkeypatch.setattr(
         handle_message_module,
         "build_turn_hooks",
@@ -615,7 +648,9 @@ async def test_approve_settles_paired_stalled_recovery_record(
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
-    assert result.text == "worktree created"
+    assert result.text == "continuation synthesized"
+    assert len(continuation_queries) == 1
+    assert "worktree created" in continuation_queries[0]
     # The paired stall must be cleared so subsequent turns route to the model
     # instead of re-yielding the zombie stall.
     settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
@@ -783,14 +818,77 @@ async def test_approve_after_process_restart_matches_recorded_owner_identity(
 
     handle_message_module = importlib.import_module("host.handle_message")
     monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
-    assert result.text == "hostname ok"
     assert executed == [invocation.request_id]
+    assert len(continuation_queries) == 1
+    assert "hostname ok" in continuation_queries[0]
+    assert result.text == "continuation synthesized"
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_approve_records_action_in_thread_with_effect_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The executed action lands in the thread with its receipt before the
+    continuation turn.
+
+    Reproduces the tumbleweed3 re-issue loop: the approval executed and
+    returned ``root``, but no thread entry recorded it, so the next turn's
+    context excerpt ended at the approval request and the model re-planned
+    from the stale prompt — re-issuing the exact command it had already run.
+    With the receipt in the ledger, the completion contract counts the
+    action as done and later turns read an honest history.
+    """
+
+    runtime = _make_runtime(tmp_path)
+    identity = _shell_owner_identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "whoami"},
+        identity=identity,
+        pack_config={},
+        safe_preview="run a shell command",
+    )
+    await runtime.approval_service.request(invocation)
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        return ToolResult(output_text="root")
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    _stub_continuation_turn(monkeypatch)
+
+    await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    # lazy: reads back the appended entry after the approve turn ran
+    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+
+    entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=5)
+    action_entries = [
+        e for e in entries if e.get("provenance", {}).get("source") == "host-approved"
+    ]
+    assert len(action_entries) == 1
+    entry = action_entries[0]
+    # The receipt carries the executed capability and its effect kind so the
+    # completion contract counts the action as done.
+    assert entry["effect_receipts"] == [
+        {"capability_id": "bash_run", "effect": "execute", "artifact_id": ""}
+    ]
+    assert entry["response_text"] == "root"
+    assert entry["provenance"]["approval_request_id"] == invocation.request_id
+    # The entry is stamped with the owning mode, not the reset start mode.
+    assert entry["mode_id"] == "shell"
 
 
 @pytest.mark.asyncio

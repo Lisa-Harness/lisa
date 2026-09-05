@@ -200,6 +200,39 @@ All notable changes to the Lisa Framework will be documented in this file.
   patches the ipsar_fsm bindings (per the kernel test-seams rule) and pins
   the owning-mode propagation.
 
+#### Post-approval continuation: record the action, then synthesize
+
+- **What:** Follow-up on the tumbleweed3 approval flow after the
+  recorded-owner fix landed. `/approve <id>` now executed the action
+  correctly (recovery records show `bash_run` → `root` succeeded), but the
+  flow dead-ended there: the raw tool output was returned to the terminal
+  with no thread record and no model synthesis. The paused turn's history
+  ended at the approval request, so the next turn's context excerpt showed
+  the announced action as never-run — the model re-planned from the stale
+  prompt and re-issued the exact command it had already executed (`whoami`
+  twice). `_handle_approval_command` now: (1) appends a thread entry for the
+  executed action carrying its `EffectReceipt`
+  (`capability_id` = target, `effect` from the invocation, provenance
+  `source: "host-approved"` + the approval request id) so the completion
+  contract counts the action and later turns read an honest history; and
+  (2) routes a continuation turn in the invocation's owning mode with a
+  query framing the output as observed data ("`bash_run` executed
+  successfully and returned this output … Continue the task … Do not
+  re-run the approved action"). The command dispatcher and the
+  affirmative-resume path accept the structured `HostCommandResult` the
+  continuation returns, preserving `operator_exit`.
+- **Why:** An approval is a handoff back to the paused task, not a terminal
+  answer. Returning raw output alone drops the task: the model never sees
+  the result, the user must re-ask, and the re-issue loop defeats the
+  exact-action contract the approvals exist to enforce.
+- **Tests:** `host/tests/test_approval_commands.py` — 19 passed: the six
+  approve-path tests converted to a stubbed continuation turn (asserting
+  the continuation query carries the action output and the do-not-re-run
+  instruction), plus a new test pinning the thread entry: one
+  `host-approved` entry with the `bash_run`/`execute` receipt, the raw
+  output as `response_text`, the approval id in provenance, and the owning
+  mode stamped even after a restart-mode reset.
+
 #### Budget-claim loop on empty completions (`thread_read_range` redaction + honest fallback)
 
 - **What:** Two fixes for the 2026-08-30 remote-box relapse where Lisa claimed

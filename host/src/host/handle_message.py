@@ -353,6 +353,10 @@ async def _dispatch_host_command(
     # completed no-op task is free.
     await runtime.ensure_pool_ready()
     response_text: str | None = None
+    # The approve path may run a post-approval continuation turn and return
+    # a structured result (preserving ``operator_exit``) rather than plain
+    # text; when set it short-circuits the string wrapping below.
+    continuation_result: HostCommandResult | None = None
 
     if lowered.startswith("/help") or lowered == "help":
         response_text = await handle_help_command(runtime, stripped, lowered, message)
@@ -383,12 +387,16 @@ async def _dispatch_host_command(
     elif lowered.startswith("/mcp"):
         response_text = await handle_mcp_command(runtime, stripped, message)
     elif lowered == "/approve" or lowered.startswith("/approve "):
-        response_text = await _handle_approval_command(
+        approved = await _handle_approval_command(
             runtime,
             stripped,
             approve=True,
             transport=transport,
         )
+        if isinstance(approved, HostCommandResult):
+            continuation_result = approved
+        else:
+            response_text = approved
     elif lowered == "/deny" or lowered.startswith("/deny "):
         response_text = await _handle_approval_command(
             runtime,
@@ -398,6 +406,10 @@ async def _dispatch_host_command(
         )
     elif lowered.startswith("/debug"):
         response_text = handle_debug_command(runtime, stripped, message)
+
+    if continuation_result is not None:
+        await transport.on_response(continuation_result.text)
+        return continuation_result
 
     if response_text is not None:
         await transport.on_response(response_text)
@@ -531,6 +543,9 @@ async def _try_affirmative_approval_resume(
         approve=True,
         transport=transport,
     )
+    if isinstance(result_text, HostCommandResult):
+        await transport.on_response(result_text.text)
+        return result_text
     await transport.on_response(result_text)
     return HostCommandResult(text=result_text)
 
@@ -604,13 +619,112 @@ def _decision_state_text(record: Any) -> str:
     return f"its state is {state or 'unknown'}"
 
 
+def _approval_action_receipt(invocation: ApprovalInvocation) -> dict[str, str]:
+    """Build the effect-receipt dict for one approved invocation.
+
+    The completion contract counts receipts, not tool names, so an action
+    executed via ``/approve`` must land in the thread ledger exactly as it
+    would have in the paused turn — otherwise the next model turn reads a
+    history that shows the announced action never ran (the re-issue loop
+    observed on tumbleweed3: the model re-planned and re-issued ``whoami``
+    even though the approval had already executed it).
+    """
+
+    return {
+        "capability_id": str(invocation.target_id or ""),
+        "effect": str(invocation.effect or ""),
+        "artifact_id": "",
+    }
+
+
+async def _record_and_continue_after_approval(
+    runtime: HostRuntime,
+    invocation: ApprovalInvocation,
+    result: Any,
+    *,
+    transport: TransportCallbacks,
+) -> HostCommandResult:
+    """Record an approved action in the thread, then run a synthesis turn.
+
+    Two durable-state problems with returning the raw action output alone:
+
+    1. No thread record. The paused turn's history ends with the approval
+       request; the action's execution is invisible to every later context
+       assembly, so the model re-plans from the stale approval prompt and
+       re-issues the same command (observed twice on tumbleweed3).
+    2. No synthesis. The raw output (e.g. ``root``) lands in the operator's
+       terminal, but the model never sees it — the task it announced is
+       dropped and the user must re-ask to continue.
+
+    This helper appends a turn entry carrying the executed action and its
+    effect receipt, then routes a model turn in the owning mode with the
+    action output as the continuation query. The model sees what ran, what
+    it produced, and finishes the task it announced. The continuation turn
+    reuses the existing single-turn machinery (``_route_model_turn``) so
+    mode dispatch, persistence, and token accounting stay identical to a
+    user-initiated turn.
+    """
+
+    from host.thread import (  # noqa: PLC0415  # lazy: defers host.thread import to approval time
+        append_thread_entry,
+    )
+
+    action_text = _approval_result_text(result)
+    owner_mode = invocation.identity.mode_id or runtime.current_mode_id or "default"
+
+    # ── Thread record for the approved action ────────────────────────
+    # No model call was made (the registry executed the saved invocation
+    # directly), so there is no ``turn_input`` snapshot — provenance states
+    # the source so /debug does not try to replay a model input that never
+    # existed. The receipt makes the write/execute contract countable.
+    append_thread_entry(
+        thread_path=runtime.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id=owner_mode,
+        query=f"/approve {invocation.request_id}",
+        response_text=action_text,
+        provenance={
+            "source": "host-approved",
+            "finish_reason": "approved-action",
+            "model_id": "",
+            "approval_request_id": invocation.request_id,
+            "target_kind": invocation.target_kind,
+            "target_id": invocation.target_id,
+        },
+        effect_receipts=[_approval_action_receipt(invocation)],
+        handoff_to="" if owner_mode == runtime.current_mode_id else runtime.current_mode_id,
+    )
+
+    # ── Continuation turn in the owning mode ─────────────────────────
+    # A dedicated thread entry keeps the action output addressable while
+    # the synthesis turn carries the query "<target> executed and returned:
+    # <output>" so the model treats the output as observed data, not as a
+    # fresh user instruction to re-interpret.
+    continuation_query = (
+        f"The approved action `{invocation.target_id}` executed successfully "
+        f"(approval {invocation.request_id}) and returned this output:\n\n"
+        f"{action_text}\n\n"
+        "Continue the task that requested this action: report the result and "
+        "complete any remaining steps. Do not re-run the approved action."
+    )
+    runtime.current_mode_id = owner_mode
+    routed = await _route_model_turn(runtime, continuation_query, transport)
+    # ``_route_model_turn`` returns a ``HostCommandResult`` on the normal
+    # turn path and a bare ``str`` on the early-exit paths (budget gate,
+    # unsupported mode) — normalize so the command dispatcher always has a
+    # string to emit while preserving ``operator_exit``.
+    if isinstance(routed, HostCommandResult):
+        return routed
+    return HostCommandResult(text=str(routed))
+
+
 async def _handle_approval_command(
     runtime: HostRuntime,
     command: str,
     *,
     approve: bool,
     transport: TransportCallbacks,
-) -> str:
+) -> str | HostCommandResult:
     """Approve or deny one persisted invocation without asking the model.
 
     Identity handling is two-stage. The primary path rebuilds the identity
@@ -623,6 +737,10 @@ async def _handle_approval_command(
     service that owns this data dir, so the operator's explicit id reference
     is the session-boundary decision. Cross-user references are still
     rejected — the fallback only ever matches the record's own owner.
+
+    Returns a plain ``str`` for the deny and failure paths; a successful
+    approve returns a ``HostCommandResult`` from the post-approval
+    continuation turn so ``operator_exit`` survives the command dispatch.
     """
 
     _, _, request_id = command.partition(" ")
@@ -699,7 +817,18 @@ async def _handle_approval_command(
         state="succeeded",
         result_preview=_approval_result_text(result)[:240],
     )
-    return _approval_result_text(result)
+    # ── Post-approval continuation ───────────────────────────────────
+    # Return the raw action output alone and the model never learns the
+    # action ran: no thread record exists, the next turn re-plans from the
+    # stale approval prompt, and the user must re-ask to continue (the
+    # tumbleweed3 re-issue loop). Record the action and run a synthesis
+    # turn in the owning mode instead.
+    return await _record_and_continue_after_approval(
+        runtime,
+        record.invocation,
+        result,
+        transport=transport,
+    )
 
 
 async def _settle_paired_recovery_record(
