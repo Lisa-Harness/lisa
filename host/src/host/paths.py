@@ -7,8 +7,9 @@ repo checkout present).
 Resolution modes
 ----------------
 - **Repo mode**: the module file lives inside a git checkout. The framework
-  root is ``Path(__file__).resolve().parents[1]`` (the repo root), and the
-  venv root is ``<repo>/.venv``.
+  root is found by walking up from ``Path(__file__)`` until a repo marker
+  (``.git`` or a ``[tool.uv.workspace]`` ``pyproject.toml``) is found, and
+  the venv root is ``<repo>/.venv``.
 - **Tool mode**: the module file lives inside an isolated ``uv tool`` venv
   (no ``.git`` dir and no workspace ``pyproject.toml`` above it). The
   framework root is ``sys.prefix`` (the tool venv root), and the venv root
@@ -26,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -40,8 +42,19 @@ _PACKS_VENV_DIR_NAME = "packs-venv"
 
 
 def _repo_root_from_module() -> Path:
-    """Return the directory two parents up from this module (repo root)."""
-    return Path(__file__).resolve().parents[1]
+    """Return the repository root by walking up from this module's location.
+
+    The module lives at ``<repo>/host/src/host/paths.py`` (src layout), so a
+    fixed parent count is fragile: the pre-src-layout version anchored on
+    ``parents[1]``, which silently broke when the tree was restructured. Walk
+    up instead, stopping at the filesystem root. Callers combine this with
+    :func:`_is_repo_checkout` to distinguish repo mode from tool mode.
+    """
+    current = Path(__file__).resolve().parent
+    for candidate in (current, *current.parents):
+        if _is_repo_checkout(candidate):
+            return candidate
+    return current
 
 
 def _is_repo_checkout(path: Path) -> bool:
@@ -56,8 +69,6 @@ def _is_repo_checkout(path: Path) -> bool:
     pyproject = path / "pyproject.toml"
     if pyproject.is_file():
         try:
-            import tomllib
-
             payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
             return isinstance(payload.get("tool", {}).get("uv", {}).get("workspace"), dict)
         except Exception:  # pylint: disable=broad-except
