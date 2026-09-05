@@ -130,9 +130,7 @@ def _derive_view(runtime: HostRuntime) -> Any:
     from host.thread import load_recent_thread_entries  # noqa: PLC0415
     from kernel.workflow_view import derive_workflow_view  # noqa: PLC0415
 
-    entries = load_recent_thread_entries(
-        thread_path=runtime.thread_path, limit=30
-    )
+    entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=30)
     return derive_workflow_view(entries)
 
 
@@ -216,6 +214,17 @@ def build_turn_hooks(
     # back to static resolution.
     def _discover_active_router() -> Any:
         if runtime.manifest is None:
+            # A missing models.yaml is a valid first-run state: degrade to
+            # "no router" instead of aborting the turn. The turn path's
+            # resolve_model raises its own actionable error only when a
+            # model is actually needed. Non-router approval turns (e.g.
+            # /approve building hooks) must not require a manifest at all.
+            if runtime.models_path is None or not runtime.models_path.exists():
+                logger.debug(
+                    "model manifest not found at %s; router discovery skipped",
+                    runtime.models_path,
+                )
+                return None
             runtime.manifest = load_manifest(
                 {}, data_dir=runtime.data_dir, path=runtime.models_path
             )
@@ -369,9 +378,7 @@ def build_turn_hooks(
         from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
         progress = ""
-        thread_entries = load_recent_thread_entries(
-            thread_path=runtime.thread_path, limit=30
-        )
+        thread_entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=30)
         view = derive_workflow_view(thread_entries)
         if view is not None:
             progress = render_workflow_progress(view)
@@ -724,9 +731,11 @@ def build_turn_hooks(
             runtime.state_snapshot["context_items"] = catalog
         # Replace any prior self-model evidence so only the freshest survives.
         catalog[:] = [
-            e for e in catalog
+            e
+            for e in catalog
             if not (
-                isinstance(e, dict) and e.get("item_id") == evidence.item_id
+                isinstance(e, dict)
+                and e.get("item_id") == evidence.item_id
                 or getattr(e, "item_id", None) == evidence.item_id
             )
         ]

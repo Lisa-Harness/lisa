@@ -547,6 +547,63 @@ def _approval_result_text(result: Any) -> str:
     return "Approved action completed."
 
 
+def _same_session_scope(live: ApprovalIdentity, recorded: ApprovalIdentity) -> bool:
+    """Return whether two identities name the same operator session.
+
+    The approval fallback matches the *recorded owner* identity when the
+    live rebuild differs (process restarts reset ``current_mode_id`` to the
+    start mode, so ``mode_id`` legitimately diverges). Mode divergence is
+    safe to bridge — the owning mode is exactly what the live rebuild loses.
+    User, workspace, and surface must still agree: a request id from another
+    user or surface is not approvable from this one.
+    """
+
+    return (
+        live.user_slug == recorded.user_slug
+        and live.workspace_id == recorded.workspace_id
+        and live.surface_id == recorded.surface_id
+        and live.surface_type == recorded.surface_type
+        and live.memory_scope == recorded.memory_scope
+    )
+
+
+def _unresolved_approval_text(request_id: str, record: Any) -> str:
+    """Render a diagnostic reply for an approve/deny that could not act.
+
+    ``ApprovalService.approve``/``deny`` return ``None``/``False`` for three
+    distinct conditions: a non-pending state (decided, consumed, or expired)
+    and an identity mismatch. The persisted record distinguishes them, so the
+    reply reports the actual state instead of one ambiguous message — the
+    no-logs CLI host otherwise leaves the operator guessing between "already
+    decided" and "stranded across a process restart".
+    """
+
+    return f"Approval request {request_id} cannot be approved — {_decision_state_text(record)}."
+
+
+def _decision_state_text(record: Any) -> str:
+    """Render the persisted decision state of an approval record.
+
+    Distinguishes the three non-pending outcomes so ``/approve`` failures are
+    diagnosable from the operator reply alone — the CLI host is one process
+    per turn with no log tail by default, and "expired" and "already decided"
+    previously rendered as the same message.
+    """
+
+    state = str(getattr(record, "state", "") or "")
+    if state == "expired":
+        return "it has expired"
+    decision = getattr(record, "decision", None)
+    decision_state = str(getattr(decision, "state", "") or "") if decision is not None else ""
+    if state == "approved" or decision_state == "approved":
+        return "it was already approved"
+    if state == "denied" or decision_state == "denied":
+        return "it was already denied"
+    if state == "consumed" or decision_state == "consumed":
+        return "it was already executed"
+    return f"its state is {state or 'unknown'}"
+
+
 async def _handle_approval_command(
     runtime: HostRuntime,
     command: str,
@@ -554,7 +611,19 @@ async def _handle_approval_command(
     approve: bool,
     transport: TransportCallbacks,
 ) -> str:
-    """Approve or deny one persisted invocation without asking the model."""
+    """Approve or deny one persisted invocation without asking the model.
+
+    Identity handling is two-stage. The primary path rebuilds the identity
+    from the live runtime — the same identity the turn path used, so a
+    pending approval inside one process resolves exactly. When that rebuild
+    cannot match (mode handoffs reset ``current_mode_id`` across process
+    boundaries; the invocation's identity carries the *owning* mode), the
+    recorded owner identity on the saved invocation is used instead: the
+    record is a host-persisted claim, and the id was minted by the approval
+    service that owns this data dir, so the operator's explicit id reference
+    is the session-boundary decision. Cross-user references are still
+    rejected — the fallback only ever matches the record's own owner.
+    """
 
     _, _, request_id = command.partition(" ")
     request_id = request_id.strip()
@@ -567,6 +636,22 @@ async def _handle_approval_command(
         return f"No pending approval request named '{request_id}'."
 
     identity = _approval_identity(runtime)
+    recorded = getattr(record.invocation, "identity", None)
+    identity_fallback_used = recorded is not None and identity != recorded
+    if identity_fallback_used:
+        if not _same_session_scope(identity, recorded):
+            return (
+                f"Approval request {request_id} belongs to a different session "
+                f"(user {record.invocation.identity.user_slug or 'unknown'})."
+            )
+        logger.info(
+            "approval %s: live identity mismatch (mode %r vs owner %r); using recorded owner",
+            request_id,
+            identity.mode_id,
+            recorded.mode_id,
+        )
+        identity = recorded
+
     if not approve:
         if await runtime.approval_service.deny(request_id, identity):
             # Denying the approval also unblocks the paired recovery record:
@@ -580,11 +665,15 @@ async def _handle_approval_command(
                 last_error="denied by operator",
             )
             return f"Denied approval request {request_id}."
-        return f"Approval request {request_id} is not pending for this session."
+        return _unresolved_approval_text(request_id, record)
 
     receipt = await runtime.approval_service.approve(request_id, identity)
     if receipt is None:
-        return f"Approval request {request_id} is not pending for this session."
+        # The service may have mutated the record inside this call (e.g.
+        # latched an expired TTL) — re-fetch so the diagnostic reflects the
+        # post-attempt state, not the pre-call snapshot.
+        fresh = await runtime.approval_service.get(request_id)
+        return _unresolved_approval_text(request_id, fresh or record)
 
     hooks = build_turn_hooks(runtime, context={}, transport=transport)
     try:
@@ -626,12 +715,11 @@ async def _settle_paired_recovery_record(
     The model-turn path raises ``ApprovalRequired`` *after* the recovery
     service has already ``begin``-ed a record for the same target. Approving
     via ``/approve`` re-executes through a fresh registry path that does not
-    touch the recovery service, so the original record stays ``stalled`` and
-    ``blocks_workflow=True`` — the zombie stall that re-yields on every
-    subsequent turn. This correlates by ``target_id`` + identity
-    (``session_plan_digest`` is part of the recovery identity) and settles
-    the first open stalled match. Correlation is deliberately by target id,
-    not approval request id: the two stores never share an id.
+    touch the recovery service, so the original record stays ``stalled`` —
+    the stalled record that re-yields on every subsequent turn. This
+    correlates by ``target_id`` + identity and settles the first open
+    stalled match. Correlation is deliberately by target id, not approval
+    request id: the two stores never share an id.
     """
 
     recovery_service = getattr(runtime, "recovery_service", None)
@@ -657,7 +745,6 @@ async def _settle_paired_recovery_record(
                 state=state,  # type: ignore[arg-type]
                 last_error=last_error,
                 result_preview=result_preview,
-                blocks_workflow=False,
             )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning(
@@ -675,11 +762,12 @@ def _recovery_identity_for_invocation(
 ) -> Any | None:
     """Build the recovery identity scoped to an approval invocation.
 
-    ``ApprovalIdentity`` and ``RecoveryIdentity`` carry the same fields with
-    the same scoping; ``session_plan_digest`` is part of both, so a record
-    minted mid-turn matches the invocation that paused for the same turn.
-    Returns ``None`` when the digests diverge (stale approval from a prior
-    session plan) so the caller can skip settlement safely.
+    ``ApprovalIdentity`` and ``RecoveryIdentity`` carry the same scoping
+    fields (``RecoveryIdentity`` dropped ``session_plan_digest`` when the
+    checkpoint layer was removed — see CHANGELOG "Trimmed RecoveryRecord").
+    The approval invocation still carries a plan digest, so a stale approval
+    from a prior session plan returns ``None`` and the caller skips
+    settlement safely rather than clearing another session's stall.
     """
 
     from kernel.recovery import RecoveryIdentity  # noqa: PLC0415
@@ -694,7 +782,6 @@ def _recovery_identity_for_invocation(
         surface_type=identity.surface_type,  # type: ignore[arg-type]
         surface_id=identity.surface_id,
         memory_scope=identity.memory_scope,  # type: ignore[arg-type]
-        session_plan_digest=identity.session_plan_digest,
     )
 
 
@@ -908,17 +995,11 @@ async def _execute_mode_turn(
     _operator_exit = getattr(result, "operator_exit", "")
     if _operator_exit:
         if _operator_exit == "paused":
-            logger.info(
-                "handle_message: turn paused by operator (mode=%s)", mode.mode_id
-            )
+            logger.info("handle_message: turn paused by operator (mode=%s)", mode.mode_id)
         elif _operator_exit == "stopped":
-            logger.info(
-                "handle_message: turn stopped by operator (mode=%s)", mode.mode_id
-            )
+            logger.info("handle_message: turn stopped by operator (mode=%s)", mode.mode_id)
         elif _operator_exit == "terminated":
-            logger.info(
-                "handle_message: turn terminated by operator (mode=%s)", mode.mode_id
-            )
+            logger.info("handle_message: turn terminated by operator (mode=%s)", mode.mode_id)
 
     # Apply token usage accounting.
     # Sync the runtime's stage from the result's terminal transition so the
@@ -971,10 +1052,7 @@ async def _execute_mode_turn(
         logger,
         level=logging.INFO,
         event="turn.completed",
-        message=(
-            f"turn.completed: mode={mode.mode_id} "
-            f"handoff={result.handoff_to or ''}"
-        ),
+        message=(f"turn.completed: mode={mode.mode_id} handoff={result.handoff_to or ''}"),
         **build_turn_completed_payload(
             mode_id=mode.mode_id,
             result=result,

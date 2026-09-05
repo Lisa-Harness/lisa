@@ -160,6 +160,46 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Fixed
 
+#### Approval resume across a process restart (recorded-owner identity + decision diagnostics)
+
+- **What:** Three fixes for the 2026-09-04 tumbleweed3 `bash_run` approval
+  strand: the turn entered `default`, handed off to `shell` mid-turn, and the
+  pending invocation's identity carried `mode_id="shell"`. Every CLI
+  invocation is a fresh process, so `current_mode_id` reset to the start mode
+  and the `/approve <id>` identity rebuild no longer matched the saved
+  invocation — the approval stranded and every retry rendered one ambiguous
+  "not pending" message. (1) `_handle_approval_command` now falls back to the
+  **recorded owner identity** when the live rebuild diverges but the session
+  scope (user, workspace, surface, memory scope) still agrees; cross-user
+  references are still rejected. (2) The approve/deny failure replies
+  distinguish the actual state — already approved/denied/executed, expired
+  (latched by the service during the failed attempt via a re-fetch), or a
+  different session — instead of one "not pending" string. (3)
+  `_recovery_identity_for_invocation` and the paired-stall `settle` call were
+  updated to the trimmed `RecoveryIdentity` / `RecoveryRecord` contracts
+  (no `session_plan_digest` / `conversation_id` / `blocks_workflow` /
+  `failure_scope`): the removed `blocks_workflow=False` kwarg raised
+  `TypeError` inside the broad `except`, so paired stalls silently never
+  settled and re-yielded on every subsequent turn. `_discover_active_router`
+  also degrades to "no router" on a missing `models.yaml` instead of aborting
+  hook construction for manifest-less hosts.
+- **Why:** The exact-match approval identity is turn-scoped state
+  (`current_mode_id`) that does not survive the process boundary the CLI
+  model implies; the persisted invocation is the durable owner claim. The
+  no-logs CLI host needs the failure reason in the operator reply itself.
+- **Tests:** `host/tests/test_approval_commands.py` (approve after a
+  process-restart mode reset matches the recorded owner; decision-state and
+  expiry diagnostics; cross-user rejection; paired-stall settle asserts
+  without the removed fields — 18 passed). The pre-existing
+  `kernel/tests/test_turn_runner_approval_handoff.py` failure was a stale
+  test seam, not a kernel regression: the transition gate reads the catalog
+  through `kernel.ipsar_fsm.get_workflow_catalog`, so patching only the
+  `kernel.turn_runner` re-export left the real `default`-only catalog in
+  charge of `is_routable_mode` — the handoff fell through to "Unknown
+  transition target" and minted the approval in the entry mode. The test now
+  patches the ipsar_fsm bindings (per the kernel test-seams rule) and pins
+  the owning-mode propagation.
+
 #### Budget-claim loop on empty completions (`thread_read_range` redaction + honest fallback)
 
 - **What:** Two fixes for the 2026-08-30 remote-box relapse where Lisa claimed

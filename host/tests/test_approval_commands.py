@@ -442,7 +442,18 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
 
     try:
         register_routing_vocabulary(
-            resume_phrases=["proceed", "continue", "go ahead", "go for it", "do it", "carry on", "pick up", "resume", "next step", "keep going"],
+            resume_phrases=[
+                "proceed",
+                "continue",
+                "go ahead",
+                "go for it",
+                "do it",
+                "carry on",
+                "pick up",
+                "resume",
+                "next step",
+                "keep going",
+            ],
         )
         assert _is_affirmative_resume("proceed with the current step in the plan")
         assert _is_affirmative_resume("continue with the current step in the current plan")
@@ -560,12 +571,10 @@ async def test_approve_settles_paired_stalled_recovery_record(
         surface_type=runtime.config.surface_type,
         surface_id=runtime.config.surface_id,
         memory_scope=cast(MemoryScope, runtime.config.memory_scope),
-        session_plan_digest=runtime.session_plan.plan_digest,
     )
     started = await runtime.recovery_service.begin(
         RecoveryRecord(
             identity=recovery_identity,
-            conversation_id="host-console",
             mode_id="coding",
             stage_id="remember_1",
             target_kind="pack_tool",
@@ -580,9 +589,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
         recovery_identity,
         state="stalled",
         last_error="approval required",
-        failure_scope="workflow",
         retry_policy="confirm",
-        blocks_workflow=True,
     )
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
@@ -614,7 +621,6 @@ async def test_approve_settles_paired_stalled_recovery_record(
     settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "succeeded"
-    assert settled.blocks_workflow is False
 
 
 @pytest.mark.asyncio
@@ -654,12 +660,10 @@ async def test_deny_settles_paired_stalled_recovery_record(
         surface_type=runtime.config.surface_type,
         surface_id=runtime.config.surface_id,
         memory_scope=cast(MemoryScope, runtime.config.memory_scope),
-        session_plan_digest=runtime.session_plan.plan_digest,
     )
     started = await runtime.recovery_service.begin(
         RecoveryRecord(
             identity=recovery_identity,
-            conversation_id="host-console",
             mode_id="coding",
             stage_id="remember_1",
             target_kind="pack_tool",
@@ -674,9 +678,7 @@ async def test_deny_settles_paired_stalled_recovery_record(
         recovery_identity,
         state="stalled",
         last_error="approval required",
-        failure_scope="workflow",
         retry_policy="confirm",
-        blocks_workflow=True,
     )
 
     handle_message_module = importlib.import_module("host.handle_message")
@@ -701,4 +703,186 @@ async def test_deny_settles_paired_stalled_recovery_record(
     settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "cancelled"
-    assert settled.blocks_workflow is False
+
+
+# ── Recorded-owner identity fallback (process-restart approval resume) ──
+
+
+def _shell_owner_identity(runtime: HostRuntime) -> ApprovalIdentity:
+    """The identity an approval carries when minted in a mid-turn handoff mode.
+
+    Mirrors the 2026-09-04 remote bash_run incident: the turn entered
+    ``default``, handed off to ``shell`` mid-turn, and ``bash_run`` minted
+    the approval with ``mode_id="shell"``. After the process exited, the next
+    ``lisa "/approve <id>"`` rebuilt the identity with ``mode_id="default"``
+    and the exact-match stranded the approval.
+    """
+
+    return ApprovalIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        mode_id="shell",
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+
+
+def _reset_runtime_mode_to_start_mode(runtime: HostRuntime) -> None:
+    """Simulate a fresh host process whose mode state reset to the start mode."""
+
+    runtime.current_mode_id = runtime.session_plan.manifest.routing.start_mode or "default"
+
+
+@pytest.mark.asyncio
+async def test_approve_after_process_restart_matches_recorded_owner_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/approve` resumes an approval minted in a mid-turn handoff mode.
+
+    Reproduces the 2026-09-04 remote bash_run incident: the pending
+    invocation's identity carries the *owning* mode (``shell``, set after the
+    default → shell handoff), but every CLI invocation is a fresh process, so
+    ``current_mode_id`` reset to the start mode (``default``). The live
+    identity rebuild no longer matched and the approval stranded with an
+    ambiguous "not pending" message. The handler now falls back to the
+    recorded owner identity when the session scope still agrees.
+    """
+
+    runtime = _make_runtime(tmp_path)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=_shell_owner_identity(runtime),
+        pack_config={},
+        safe_preview="run a shell command",
+    )
+    await runtime.approval_service.request(invocation)
+
+    # Fresh process: the mode state reset to the start mode, so the live
+    # identity rebuild diverges from the recorded owner exactly as observed.
+    _reset_runtime_mode_to_start_mode(runtime)
+    # lazy: the private helper is asserted against, not imported at module
+    # scope like the public surface above.
+    from host.handle_message import _approval_identity as _host_approval_identity
+
+    assert _host_approval_identity(runtime).mode_id != "shell"
+
+    executed: list[str] = []
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        executed.append(invocation.request_id)
+        return ToolResult(output_text="hostname ok")
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert result.text == "hostname ok"
+    assert executed == [invocation.request_id]
+    persisted = await runtime.approval_service.get(invocation.request_id)
+    assert persisted is not None
+    assert persisted.state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_approve_reports_decision_state_for_already_denied_request(
+    tmp_path: Path,
+) -> None:
+    """Re-approving a decided request names the decision, not "not pending"."""
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=identity,
+        pack_config={},
+    )
+    await runtime.approval_service.request(invocation)
+    assert await runtime.approval_service.deny(invocation.request_id, identity) is True
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert "already denied" in result.text
+    assert "not pending" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_approve_reports_expiry_for_expired_request(
+    tmp_path: Path,
+) -> None:
+    """Approving an expired request says "expired" instead of "not pending"."""
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=identity,
+        pack_config={},
+    )
+    await runtime.approval_service.request(invocation)
+
+    # Backdate past the TTL so is_expired() fires inside approve().
+    import json as _json  # noqa: PLC0415  # local to this one-off store backdate
+
+    store_path = Path(runtime.data_dir) / "approvals.json"
+    payload = _json.loads(store_path.read_text())
+    payload[invocation.request_id]["invocation"]["expires_at"] = "2020-01-01T00:00:00Z"
+    store_path.write_text(_json.dumps(payload))
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert "expired" in result.text
+    assert "not pending" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_cross_user_request_from_other_session(
+    tmp_path: Path,
+) -> None:
+    """A request id belonging to another user is never approvable."""
+
+    runtime = _make_runtime(tmp_path)
+    other_owner = ApprovalIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="someone-else",
+        user_slug="someone-else",
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        mode_id="shell",
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=other_owner,
+        pack_config={},
+    )
+    await runtime.approval_service.request(invocation)
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert "different session" in result.text
+    persisted = await runtime.approval_service.get(invocation.request_id)
+    assert persisted is not None
+    assert persisted.state == "pending"

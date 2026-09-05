@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel
 
 from kernel.approval import InMemoryApprovalService
+from kernel.ipsar_fsm import synthesize_routing_transitions
 from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
@@ -148,7 +149,27 @@ async def test_run_turn_approval_after_mid_turn_handoff_propagates_owning_mode(
         session_plan_digest="plan-a",
     )
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    # Patch the binding where the behavior is defined: the transition
+    # interception's routability gate (``is_routable_mode``) and the FSM
+    # target list (``get_routing_targets`` →
+    # ``synthesize_routing_transitions``) read the catalog through
+    # ``kernel.ipsar_fsm.get_workflow_catalog``, NOT the turn_runner
+    # re-export. Patching only ``kernel.turn_runner.get_workflow_catalog``
+    # left the real catalog (``default``-only in tests) in charge of the
+    # gate: the handoff fell through to ``Unknown transition target`` and
+    # the approval minted in the entry mode — the exact-match test below
+    # then compared ``default`` vs ``coding`` and failed.
+    transitions = synthesize_routing_transitions(patched_catalog)
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch(
+            "kernel.ipsar_fsm.synthesize_routing_transitions",
+            lambda catalog=None: (
+                synthesize_routing_transitions(patched_catalog) if catalog is None else transitions
+            ),
+        ),
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+    ):
         result = await run_turn(mode_id="default", query="patch the file", hooks=hooks)
 
     # The tool paused before the side effect.
