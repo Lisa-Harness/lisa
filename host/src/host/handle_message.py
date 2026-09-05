@@ -699,13 +699,19 @@ async def _record_and_continue_after_approval(
     # A dedicated thread entry keeps the action output addressable while
     # the synthesis turn carries the query "<target> executed and returned:
     # <output>" so the model treats the output as observed data, not as a
-    # fresh user instruction to re-interpret.
+    # fresh user instruction to re-interpret. The continuation is a REPORT,
+    # not an invitation to plan more work: this host may be a one-shot CLI
+    # process, so any new effectful action the model tries here pauses for
+    # another approval the operator must type by hand — the double-approve
+    # friction observed on tumbleweed3. Report, then stop.
     continuation_query = (
         f"The approved action `{invocation.target_id}` executed successfully "
         f"(approval {invocation.request_id}) and returned this output:\n\n"
         f"{action_text}\n\n"
-        "Continue the task that requested this action: report the result and "
-        "complete any remaining steps. Do not re-run the approved action."
+        "Report the result to the operator in plain prose. Do not call any "
+        "tools in this turn — do not re-run the approved action and do not "
+        "start follow-up commands; the operator is watching and can ask for "
+        "more work explicitly."
     )
     runtime.current_mode_id = owner_mode
     routed = await _route_model_turn(runtime, continuation_query, transport)

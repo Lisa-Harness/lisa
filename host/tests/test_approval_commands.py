@@ -139,7 +139,11 @@ async def test_approve_dispatches_only_the_saved_invocation(
     assert executed == [invocation.request_id]
     assert len(continuation_queries) == 1
     assert "patch applied" in continuation_queries[0]
-    assert "Do not re-run" in continuation_queries[0]
+    # The continuation is a report, not an invitation to plan more tool
+    # work — a one-shot CLI process would pause for another approval on any
+    # new effectful action (the double-approve friction on tumbleweed3).
+    assert "Do not call any tools" in continuation_queries[0]
+    assert "do not start follow-up commands" in continuation_queries[0]
     assert result.text == "continuation synthesized"
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None

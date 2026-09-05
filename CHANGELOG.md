@@ -227,11 +227,37 @@ All notable changes to the Lisa Framework will be documented in this file.
   exact-action contract the approvals exist to enforce.
 - **Tests:** `host/tests/test_approval_commands.py` — 19 passed: the six
   approve-path tests converted to a stubbed continuation turn (asserting
-  the continuation query carries the action output and the do-not-re-run
+  the continuation query carries the action output and the report-only
   instruction), plus a new test pinning the thread entry: one
   `host-approved` entry with the `bash_run`/`execute` receipt, the raw
   output as `response_text`, the approval id in provenance, and the owning
   mode stamped even after a restart-mode reset.
+
+#### Continuation turn is report-only (single-approval UX)
+
+- **What:** Follow-up on the first double-approval run after the
+  continuation landed. The first `/approve` executed the action correctly,
+  but the continuation prompt ("Continue the task … complete any remaining
+  steps") invited the model to plan more tool work — it issued a genuinely
+  new `bash_run` seconds later, minting a second approval the operator had
+  to type by hand. That second pause was the exact-action contract working
+  (a different command needs a different approval; receipts are
+  single-use), but the UX friction came from the continuation's framing.
+  The continuation query now instructs report-only: report the result in
+  plain prose, do not call any tools, do not re-run the approved action,
+  do not start follow-up commands — the operator is watching and can ask
+  for more work explicitly. Any further effectful action still goes
+  through the approval gate; it just no longer fires unprompted from the
+  synthesis turn.
+- **Why:** This host may be a one-shot CLI process: every new effectful
+  action inside the continuation turn pauses the turn for another approval
+  the operator must type by hand. The approval gate's job is to pause
+  un-approved actions; the continuation turn's job is to report what the
+  approved action produced.
+- **Tests:** the continuation assertions in
+  `host/tests/test_approval_commands.py` pin the report-only wording
+  ("Do not call any tools", "do not start follow-up commands"); suite
+  19 passed.
 
 #### Budget-claim loop on empty completions (`thread_read_range` redaction + honest fallback)
 
