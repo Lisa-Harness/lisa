@@ -94,6 +94,25 @@ class WorkProduct(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     safe_summary: str = ""
 
+    def belongs_to(self, ctx: object) -> bool:
+        """Return whether this WorkProduct is owned by the current host identity.
+
+        The single canonical ownership check for the artifact handoff: an exact
+        match on workspace, user, surface, and session plan digest. Both the
+        producing pack (coding) and the publishing pack (github) call this so
+        the identity rule cannot drift between them. ``ctx`` is a
+        ``kernel.models.ToolExecutionContext``; typed as ``object`` here because
+        the SDK must not import the kernel's higher-level models.
+        """
+        return (
+            self.workspace_id == getattr(ctx, "workspace_id", None)
+            and self.user_id == getattr(ctx, "user_id", None)
+            and self.user_slug == getattr(ctx, "user_slug", None)
+            and self.surface_type == getattr(ctx, "surface_type", None)
+            and self.surface_id == getattr(ctx, "surface_id", None)
+            and self.session_plan_digest == getattr(ctx, "session_plan_digest", None)
+        )
+
 
 @runtime_checkable
 class WorkProductStore(Protocol):
