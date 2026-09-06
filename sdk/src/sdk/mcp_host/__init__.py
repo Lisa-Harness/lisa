@@ -23,7 +23,7 @@ Public surface::
         content_roots=[Path("../lisa-packs/search/lisa_packs/search")],
         disabled_packs=frozenset(),
         provider_selections=selections,
-        packs_venv_site_packages=Path("~/.lisa/packs-venv/lib/python3.11/site-packages"),
+        packs_venv_site_packages=Path("~/.lisa/venv/lib/python3.11/site-packages"),
     )
     catalog_cfg = build_catalog_mcp_config(content_config=content_cfg, data_dir=Path("~/.lisa"))
 """

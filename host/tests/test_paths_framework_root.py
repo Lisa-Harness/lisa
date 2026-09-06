@@ -4,7 +4,7 @@ Covers the src-layout regression where ``_repo_root_from_module`` anchored on
 a fixed ``parents[1]`` from ``<repo>/host/paths.py``. After the tree moved to
 ``<repo>/host/src/host/paths.py`` the fixed parent count resolved to
 ``<repo>/host/src``, which is not a repo checkout — so ``framework_root()``
-fell back to tool mode (``sys.prefix``), the packs-venv seeding found no
+fell back to tool mode (``sys.prefix``), the packs venv seeding found no
 framework member directories, and external pack installs failed with
 "lisa-kernel was not found in the package registry".
 """
@@ -35,7 +35,7 @@ def test_repo_root_walks_up_past_src_layout() -> None:
     assert repo in module_file.parents
     assert _is_repo_checkout(repo), (
         f"resolved framework root {repo} is not a repo checkout; "
-        "packs-venv seeding will silently no-op and pack installs will fail"
+        "packs venv seeding will silently no-op and pack installs will fail"
     )
 
 

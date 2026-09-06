@@ -474,7 +474,7 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
     return True, ""
 
 
-# ── Bundled packs + packs-venv lifecycle ─────────────────────────────
+# ── Bundled packs + packs venv lifecycle ─────────────────────────────
 
 
 async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:

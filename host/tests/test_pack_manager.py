@@ -693,7 +693,7 @@ async def test_ensure_packs_venv_creates_venv_without_seeding(
     tmp_path: Path,
 ) -> None:
     """_ensure_packs_venv creates the venv but does NOT seed it (caller owns seeding)."""
-    packs_venv = tmp_path / "packs-venv"
+    packs_venv = tmp_path / "packs venv"
     # Simulate that pyvenv.cfg does NOT exist → venv will be created.
     assert not (packs_venv / "pyvenv.cfg").is_file()
 
@@ -726,7 +726,7 @@ async def test_seed_packs_venv_seeds_framework_and_bundled_packs(
     tmp_path: Path,
 ) -> None:
     """_seed_packs_venv_with_framework seeds framework members AND bundled packs."""
-    packs_venv = tmp_path / "packs-venv"
+    packs_venv = tmp_path / "packs venv"
     packs_venv.mkdir(parents=True, exist_ok=True)
     (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
 
@@ -780,7 +780,7 @@ async def test_seed_packs_venv_tool_mode_uses_direct_url_requirements(
     local directories. An empty repo-mode-style list must not silently
     no-op the seeding.
     """
-    packs_venv = tmp_path / "packs-venv"
+    packs_venv = tmp_path / "packs venv"
     packs_venv.mkdir(parents=True, exist_ok=True)
     (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
 
@@ -826,7 +826,7 @@ async def test_seed_packs_venv_noop_when_no_requirements(
     tmp_path: Path,
 ) -> None:
     """No seed requirements (nothing installable) skips the uv call entirely."""
-    packs_venv = tmp_path / "packs-venv"
+    packs_venv = tmp_path / "packs venv"
     packs_venv.mkdir(parents=True, exist_ok=True)
     (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
 
@@ -868,7 +868,7 @@ async def test_ensure_packs_venv_skips_creation_when_already_exists(
     tmp_path: Path,
 ) -> None:
     """An existing valid packs venv (pyvenv.cfg present) skips creation."""
-    packs_venv = tmp_path / "packs-venv"
+    packs_venv = tmp_path / "packs venv"
     packs_venv.mkdir(parents=True, exist_ok=True)
     (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
 

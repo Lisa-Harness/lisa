@@ -9,7 +9,7 @@ wire the framework's content and catalog MCP servers.
 Lifecycle (pool start / deferred-start / close) is NOT owned here — it is
 host-owned because anyio cancel scopes bind to the host's event loop.
 
-The builders accept the packs-venv site-packages path as an explicit
+The builders accept the packs venv site-packages path as an explicit
 argument (``packs_venv_site_packages``) so this module has no dependency
 on ``host.paths``. Hosts resolve that path via their own path
 machinery (``host.paths.packs_venv_site_packages`` in this repo;
@@ -194,7 +194,7 @@ def build_catalog_mcp_config(
     ``mcp_server.content.server``).
     """
     # Reuse the content server's env (which already sets SDK_CONTENT_ROOTS,
-    # LISA_DISABLED_PACKS, the packs-venv PYTHONPATH, and LISA_MCP_LOG_PATH),
+    # LISA_DISABLED_PACKS, the packs venv PYTHONPATH, and LISA_MCP_LOG_PATH),
     # but override the log path so this server writes to its own file. Like
     # build_content_mcp_config, this is built directly rather than via
     # kernel.mcp_launch.compiler, so without this the child's

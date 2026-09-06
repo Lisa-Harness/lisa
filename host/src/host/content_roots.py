@@ -407,7 +407,7 @@ def active_installed_pack_roots(
     session_excluded = _normalize_pack_names(session_pack_exclude)
 
     # Combine entry-point-discovered roots (bundled packs installed in the
-    # framework venv) with packs-venv-discovered roots (external packs
+    # framework venv) with packs venv-discovered roots (external packs
     # installed in the separate packs venv). Entry-point discovery cannot
     # find packs venv packages because ``importlib.metadata`` does not
     # re-scan after ``sys.path`` is modified at startup.
@@ -440,10 +440,10 @@ def active_installed_pack_roots(
     # The same pack may be discovered from both surfaces when an external
     # pack is also installed into the main venv (e.g. via
     # ``uv sync --extra ext``): entry-point discovery returns the main-venv
-    # ``lisa_packs/<name>`` root and the packs-venv scan returns the source
+    # ``lisa_packs/<name>`` root and the packs venv scan returns the source
     # ``lisa_packs/<name>`` root. Two distinct paths for one pack produce
     # duplicate catalog entries → ``CatalogCollisionError`` at boot. Dedupe
-    # by package name, preferring the packs-venv root (the authoritative
+    # by package name, preferring the packs venv root (the authoritative
     # home for external packs); bundled packs only appear via entry points.
     selected_by_name: dict[str, Path] = {}
     root_from_packs_venv: dict[str, bool] = {}
@@ -466,7 +466,7 @@ def active_installed_pack_roots(
             selected_by_name[package_name] = root
             root_from_packs_venv[package_name] = from_packs_venv
             continue
-        # Prefer the packs-venv-discovered root for external packs so the
+        # Prefer the packs venv-discovered root for external packs so the
         # authoritative install wins over an accidental main-venv copy.
         if from_packs_venv and not root_from_packs_venv[package_name]:
             selected_by_name[package_name] = root

@@ -52,7 +52,7 @@ def discover_installed_content_roots(
 
     The same pack may be installed in more than one venv visible to
     ``importlib.metadata`` (e.g. the framework venv and the packs venv when
-    ``mcp_server._packs_venv_site`` adds the packs-venv site-packages to
+    ``mcp_server._packs_venv_site`` adds the packs venv site-packages to
     ``sys.path`` in the catalog/content subprocess). Two distinct paths for
     one pack produce duplicate catalog entries → ``CatalogCollisionError``
     at boot. Dedupe by normalized pack name (first wins) so each pack
@@ -93,7 +93,7 @@ def discover_packs_venv_content_roots(
 ) -> list[Path]:
     """Discover content roots from packs installed in the packs venv.
 
-    External packs are installed into a separate ``packs-venv`` whose
+    External packs are installed into a separate ``packs venv`` whose
     site-packages contain ``lisa_packs/<pack_name>/`` directories. These
     directories hold ``modes/``, ``operations/``, ``tools/``, and
     ``content/`` subdirectories — the same layout bundled packs use under

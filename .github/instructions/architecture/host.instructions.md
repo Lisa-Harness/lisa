@@ -23,5 +23,5 @@ description: Architecture boundaries for the host package.
 - Allocate `recent_conversation` before the lossy prior-conversation digest; budget allocation order is a correctness property.
 - Update the current stage from a transition before applying turn usage. Use per-mode usage from nested handoffs when present instead of collapsing it into the entry mode.
 - Configure MCP-native default tools through `default_available_tools` and include those resolved IDs in mode-catalog cache keys.
-- Resolve the packs-venv site-packages path from `pyvenv.cfg`, then guarded directory fallbacks; a missing first-launch venv must not make startup fail.
+- Resolve the packs venv site-packages path from `pyvenv.cfg`, then guarded directory fallbacks; a missing first-launch venv must not make startup fail.
 - Deduplicate packs installed in both the main and packs virtual environments by normalized distribution name before building the catalog.

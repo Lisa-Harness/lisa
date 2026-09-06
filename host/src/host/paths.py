@@ -16,7 +16,7 @@ Resolution modes
   is also ``sys.prefix`` — the ``Scripts/`` (Windows) or ``bin/`` (POSIX)
   directory that holds the ``lisa-*`` console scripts.
 
-The packs venv (``~/.lisa/packs-venv``) is a separate, dedicated venv where
+The packs venv (``~/.lisa/venv``) is a separate, dedicated venv where
 runtime ``/pack install`` commands land new packs. Its site-packages
 directory is injected into ``sys.path`` at CLI startup so that
 ``importlib.metadata.entry_points`` discovers packs installed there.
@@ -40,7 +40,7 @@ LISA_PACKS_VENV_ENV = "LISA_PACKS_VENV"
 
 # ── Defaults ─────────────────────────────────────────────────────────
 
-_PACKS_VENV_DIR_NAME = "packs-venv"
+_PACKS_VENV_DIR_NAME = "venv"
 
 
 def _repo_root_from_module() -> Path:
@@ -124,7 +124,7 @@ def packs_venv_for(data_dir: Path) -> Path:
     Resolution order:
       1. ``LISA_PACKS_VENV`` — explicit override (absolute venv path).
          Takes precedence over everything, including ``data_dir``.
-      2. ``<data_dir>/packs-venv`` — the packs venv always lives inside
+      2. ``<data_dir>/venv`` — the packs venv always lives inside
          the host's resolved data directory, so a ``--data-dir`` override
          is honored consistently across pack install/uninstall and the
          rest of the host.
@@ -143,10 +143,10 @@ def default_packs_venv() -> Path:
 
     Resolution order (matches :func:`HostConfig.from_env`):
       1. ``LISA_PACKS_VENV`` — explicit override (absolute venv path).
-      2. ``LISA_DATA_DIR`` — the packs venv is ``<data_dir>/packs-venv``.
+      2. ``LISA_DATA_DIR`` — the packs venv is ``<data_dir>/venv``.
          A relative value is resolved against the current working
          directory, matching ``HostConfig.from_env``'s ``.resolve()``.
-      3. ``~/.lisa/packs-venv`` — the default data dir.
+      3. ``~/.lisa/venv`` — the default data dir.
 
     A trailing path separator on ``LISA_DATA_DIR`` (e.g. ``artifacts/``) is
     handled correctly by :class:`pathlib.Path`.

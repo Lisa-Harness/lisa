@@ -217,7 +217,7 @@ The host installs **every missing `required` pack** regardless of whether it has
 
 To stop the host from installing a pack, **remove it from `required`**. A pack listed only in `include` (or in neither field) is never auto-installed — it must already be importable or it will not appear in the catalog.
 
-Use `include` (not `required`) when you manage the packs-venv yourself (`uv pip install -e <pack dir>` into the packs venv) and want the host to activate the pack without trying to install it:
+Use `include` (not `required`) when you manage the packs venv yourself (`uv pip install -e <pack dir>` into the packs venv) and want the host to activate the pack without trying to install it:
 
 ```yaml
 # Operator manages the packs venv; host activates but does not install.
@@ -231,7 +231,7 @@ If a pack is in `include` but not installed, it is silently absent from the cata
 
 #### Where external packs must live
 
-External (non-bundled) packs belong **only in the packs venv**, not the main framework `.venv`. The catalog and content MCP subprocesses activate the packs-venv site-packages via `site.addsitedir`; if the same external pack is installed in both the main `.venv` and the packs venv, `importlib.metadata.entry_points()` sees two distinct content-root paths for one pack and the catalog raises a `Duplicate operation ID` collision that crashes boot.
+External (non-bundled) packs belong **only in the packs venv**, not the main framework `.venv`. The catalog and content MCP subprocesses activate the packs venv site-packages via `site.addsitedir`; if the same external pack is installed in both the main `.venv` and the packs venv, `importlib.metadata.entry_points()` sees two distinct content-root paths for one pack and the catalog raises a `Duplicate operation ID` collision that crashes boot.
 
 Do **not** install external packs into the main `.venv` via `uv sync --extra ext --extra wip` (the root `pyproject.toml` `ext`/`wip` optional extras). Those extras exist only as a dev/IDE convenience for import resolution during editing; installing them into the live venv recreates the duplicate. Uninstall any stray external packs from the main `.venv` with `uv pip uninstall --python .venv lisa-pack-<name>` (leaving the bundled packs: core, introspect, memory, recovery).
 

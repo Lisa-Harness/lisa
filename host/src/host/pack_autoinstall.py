@@ -77,7 +77,7 @@ def _installed_pack_names(runtime: HostRuntime) -> set[str]:
         )
 
     # External packs installed in the packs venv are invisible to
-    # importlib.metadata; recover them from the packs-venv content-root
+    # importlib.metadata; recover them from the packs venv content-root
     # filesystem scan so auto-install does not re-install packs the user
     # already installed there.
     try:
@@ -103,7 +103,7 @@ def _installed_pack_names(runtime: HostRuntime) -> set[str]:
                 names.add(normalize_pack_name(package_name))
     except Exception:  # pragma: no cover - defensive; fail-open discovery
         logger.warning(
-            "auto-install: packs-venv discovery raised; only main-venv packs counted",
+            "auto-install: packs venv discovery raised; only main-venv packs counted",
             exc_info=True,
         )
     return names

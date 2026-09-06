@@ -133,7 +133,7 @@ def test_discover_packs_venv_content_roots_missing_venv_returns_empty(
     ``FileNotFoundError`` that propagated up through
     ``discover_packs_venv_content_roots`` and crashed boot.
     """
-    nonexistent_venv = tmp_path / "packs-venv"  # deliberately not created
+    nonexistent_venv = tmp_path / "packs venv"  # deliberately not created
 
     def venv_resolver(_data_dir: Path | None) -> Path:
         return nonexistent_venv
@@ -154,7 +154,7 @@ def test_discover_packs_venv_content_roots_venv_exists_no_packs_returns_empty(
     tmp_path: Path,
 ) -> None:
     """Empty packs venv (no lisa_packs/, no editable finders) returns empty."""
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     site = venv / "lib" / "python3.11" / "site-packages"
     site.mkdir(parents=True)
 

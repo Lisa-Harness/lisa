@@ -105,7 +105,7 @@ def test_build_content_mcp_config_passes_disabled_packs_to_child(tmp_path: Path)
 
 
 def test_build_content_mcp_config_injects_packs_venv_site_packages(tmp_path: Path) -> None:
-    venv_site = tmp_path / "packs-venv" / "site-packages"
+    venv_site = tmp_path / "packs venv" / "site-packages"
     venv_site.mkdir(parents=True)
 
     config = build_content_mcp_config(

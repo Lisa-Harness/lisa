@@ -28,7 +28,7 @@ def _write_pyvenv_cfg(venv: Path, version: str) -> None:
 
 def test_venv_python_dir_reads_version_info(tmp_path: Path) -> None:
     """``pyvenv.cfg`` ``version_info`` wins over ``sys.version_info``."""
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     venv.mkdir()
     _write_pyvenv_cfg(venv, "3.11.7")
     assert _venv_python_dir(venv) == "python3.11"
@@ -36,7 +36,7 @@ def test_venv_python_dir_reads_version_info(tmp_path: Path) -> None:
 
 def test_venv_python_dir_reads_version_field(tmp_path: Path) -> None:
     """Older ``pyvenv.cfg`` uses ``version`` instead of ``version_info``."""
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     venv.mkdir()
     (venv / "pyvenv.cfg").write_text(
         "home = /usr/bin\nversion = 3.12.1\n",
@@ -47,7 +47,7 @@ def test_venv_python_dir_reads_version_field(tmp_path: Path) -> None:
 
 def test_venv_python_dir_scans_lib_when_no_cfg(tmp_path: Path) -> None:
     """Without ``pyvenv.cfg``, fall back to scanning ``lib/python*/``."""
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     lib = venv / "lib"
     (lib / "python3.10").mkdir(parents=True)
     (lib / "python3.11").mkdir()
@@ -73,7 +73,7 @@ def test_packs_venv_site_packages_uses_venv_version_not_host(tmp_path: Path) -> 
     packs venv with 3.11. The returned path must point at
     ``lib/python3.11/site-packages``, not ``lib/python3.13/site-packages``.
     """
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     site = venv / "lib" / "python3.11" / "site-packages"
     site.mkdir(parents=True)
     _write_pyvenv_cfg(venv, "3.11.4")
@@ -90,7 +90,7 @@ def test_packs_venv_site_packages_uses_venv_version_not_host(tmp_path: Path) -> 
 
 def test_packs_venv_site_packages_windows_layout(tmp_path: Path) -> None:
     """On Windows the layout is ``Lib/site-packages`` regardless of version."""
-    venv = tmp_path / "packs-venv"
+    venv = tmp_path / "packs venv"
     venv.mkdir()
     # The Windows branch does not consult pyvenv.cfg, so this test just
     # asserts the shape when os.name == "nt". On non-Windows runners the

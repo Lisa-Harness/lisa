@@ -73,7 +73,7 @@ def _resolve_packs_venv_site_packages(data_dir: Path) -> Path | None:
     Returns the site-packages path if it exists, otherwise ``None``. The
     result is forwarded to :func:`sdk.mcp_host.build_content_mcp_config`
     so the child ``lisa-content`` / ``lisa-catalog`` MCP servers inherit
-    the packs-venv site-packages via ``LISA_PACKS_VENV_SITE_PACKAGES`` and
+    the packs venv site-packages via ``LISA_PACKS_VENV_SITE_PACKAGES`` and
     can import editable-installed packs (``lisa_packs.<name>``).
 
     The host process calls ``inject_packs_venv_site_packages()`` at startup
@@ -203,7 +203,7 @@ def build_content_mcp_config(
     """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
 
     Thin host-side wrapper over :func:`sdk.mcp_host.build_content_mcp_config`
-    that resolves the packs-venv site-packages via this host's path machinery
+    that resolves the packs venv site-packages via this host's path machinery
     (``host.paths``) and forwards it. The pure projection logic lives
     in the SDK so external hosts can reuse it without depending on
     ``host``.
