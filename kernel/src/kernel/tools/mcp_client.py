@@ -1267,12 +1267,29 @@ class MCPToolPool:
 
     @staticmethod
     def _in_process_data_dir(config: MCPClientConfig) -> str:
-        """Extract --data-dir from the compiled args list."""
+        """Extract --data-dir from the compiled args list.
+
+        Fail closed: a config with neither ``--data-dir`` in ``args`` nor a
+        ``data_dir_path`` fallback must raise, not return ``""``. An empty
+        data dir reaches ``server._init`` as ``Path("")`` (the cwd), making
+        the files sandbox cwd-relative — the 2026-09-04 sandbox escape where
+        lisa-storage wrote under the host process's cwd instead of the data
+        dir. The compiled contract always injects ``--data-dir`` when the
+        spec has ``data_dir_arg`` and a resolved data dir, so an empty value
+        here is a compile-time bug, not a server guess.
+        """
         for i, arg in enumerate(config.args):
             if arg == "--data-dir" and i + 1 < len(config.args):
                 return config.args[i + 1]
-        # Fall back to the env-injected data dir path.
-        return config.data_dir_path or ""
+        data_dir_path = config.data_dir_path
+        if data_dir_path:
+            return data_dir_path
+        raise MCPConnectionError(
+            f"In-process server '{config.server_id}' has no --data-dir in its "
+            "compiled args and no data_dir_path fallback; refusing to connect "
+            "with a cwd-relative data dir (sandbox escape). Check the server's "
+            "manifest entry (data_dir_arg / data_dir) and the host compiler."
+        )
 
     @staticmethod
     def _in_process_workspace_root(config: MCPClientConfig) -> str | None:

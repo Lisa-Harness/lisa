@@ -747,6 +747,14 @@ def compile_mcp_configs(
     # spawning subprocesses. Only first-party servers (registered in
     # ``mcp_server.registry``) are rewritten; pack-contributed and
     # third-party servers keep their original runtime kind.
+    #
+    # ``args`` MUST be preserved: the pool's in-process arg reconstruction
+    # helpers (``_in_process_data_dir`` et al.) parse the standard CLI
+    # contract flags out of ``args``. Wiping them drops ``--data-dir`` /
+    # ``--deny-glob`` / ``--readonly``, so the server's ``_init`` receives
+    # ``data_dir=""`` and builds a cwd-relative sandbox (the 2026-09-04
+    # $HOME/files sandbox-escape: lisa-storage wrote the research doc the
+    # model asked for into the host process's cwd instead of the data dir).
     if getattr(runtime, "_in_process_mcp", False):
         from mcp_server.registry import in_process_server_ids
 
@@ -755,7 +763,7 @@ def compile_mcp_configs(
         for cfg in compiled:
             if cfg.server_id in first_party_ids and cfg.runtime_kind == "venv_bin":
                 rewritten.append(
-                    dataclasses.replace(cfg, runtime_kind="in_process", command="", args=[])
+                    dataclasses.replace(cfg, runtime_kind="in_process")
                 )
             else:
                 rewritten.append(cfg)
