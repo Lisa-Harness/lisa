@@ -1450,4 +1450,5 @@ def _load_runtime_tool(
         "exportable": bool(metadata.get("exportable", False)),
         "default_available": bool(metadata.get("default_available", False)),
         "abbreviation_template": str(metadata.get("abbreviation_template", "") or ""),
+        "display_template": str(metadata.get("display_template", "") or ""),
     }

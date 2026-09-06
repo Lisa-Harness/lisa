@@ -493,6 +493,8 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         implementation_module=implementation_module,
         exportable=bool(data.get("exportable", False)),
         default_available=bool(data.get("default_available", False)),
+        abbreviation_template=str(data.get("abbreviation_template", "") or ""),
+        display_template=str(data.get("display_template", "") or ""),
     )
 
 

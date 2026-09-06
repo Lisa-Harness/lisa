@@ -28,6 +28,7 @@ from kernel.turn_runner import (
     TurnHooks,
     _build_minimal_context,
     _extract_pre_turn_briefing,
+    _resolve_tool_display_label,
     _stringify_pack_tool_result,
     _stringify_result,
     _to_tool_context,
@@ -854,5 +855,40 @@ def test_streamed_completion_adapter_repr() -> None:
     repr_str = repr(adapter)
     assert "Hi" in repr_str
     assert "stop" in repr_str
+
+
+# ── _resolve_tool_display_label ───────────────────────────────────────
+
+
+def test_display_label_renders_template_against_params() -> None:
+    """Display template renders the primary parameter (bash_run's command)."""
+    out = _resolve_tool_display_label("{command}", {"command": "ls -la /etc", "cwd": "/"})
+    assert out == "ls -la /etc"
+
+
+def test_display_label_missing_key_renders_placeholder() -> None:
+    """A template key absent from the params renders as ``{key}``, not KeyError."""
+    out = _resolve_tool_display_label("{command}", {})
+    assert out == "{command}"
+
+
+def test_display_label_empty_template_returns_empty() -> None:
+    """Empty/whitespace templates yield no label so the host falls back."""
+    assert _resolve_tool_display_label("", {"command": "ls"}) == ""
+    assert _resolve_tool_display_label("   ", {"command": "ls"}) == ""
+
+
+def test_display_label_truncates_to_limit() -> None:
+    """Labels are newline-flattened and capped at 80 chars."""
+    long_command = "x" * 200
+    out = _resolve_tool_display_label("{command}", {"command": long_command})
+    assert len(out) == 80
+    assert out.endswith("…")
+    assert "\n" not in _resolve_tool_display_label("{command}", {"command": "a\nb"})
+
+
+def test_display_label_format_error_returns_empty() -> None:
+    """A malformed template yields empty rather than raising mid-turn."""
+    assert _resolve_tool_display_label("{command!bad}", {"command": "ls"}) == ""
 
 

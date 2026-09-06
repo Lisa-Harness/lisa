@@ -178,6 +178,14 @@ class ToolDefinition(BaseModel):
     # tokens on the 2026-08-03 code review. Empty (default) disables caching
     # for this tool; the kernel never names tool ids or hardcodes templates.
     abbreviation_template: str = ""
+    # Authored in ``.tool.yml`` front matter. A ``str.format_map`` template
+    # applied to the call *parameters* to produce the short operator-visible
+    # label for the tool call on host progress surfaces (e.g. bash_run's
+    # ``{command}`` renders the truncated command line). Model-facing behavior
+    # is unchanged — this is display-only. Missing keys render as ``{key}``
+    # rather than raising, and any format error falls back to the host's
+    # primary-argument preview. Empty disables the template path.
+    display_template: str = ""
 
     def effective_provider_id(self) -> str:
         """Return the canonical owning-provider id for this tool.

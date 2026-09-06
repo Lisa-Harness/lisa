@@ -230,6 +230,45 @@ def _format_read_abbreviation(
     return template.format_map(_MissingKeyDict(fields))
 
 
+#: Maximum characters of the operator-visible tool display label emitted in
+#: the ``tool_dispatch`` stage payload. Long enough to read a command, short
+#: enough that hosts don't need to truncate again for a one-line status.
+_DISPLAY_LABEL_MAX = 80
+
+
+def _resolve_tool_display_label(
+    template: str,
+    params: dict[str, Any],
+) -> str:
+    """Render a tool's ``display_template`` against the call parameters.
+
+    Same tolerant ``format_map`` semantics as ``_format_read_abbreviation``:
+    missing keys render as ``{key}`` instead of raising, so a template that
+    references an absent optional parameter still produces a readable label.
+    Any format error (or an empty template) returns an empty string so the
+    host falls back to its own primary-argument preview. The label is
+    newline-flattened and truncated to ``_DISPLAY_LABEL_MAX``.
+
+    This is display-only: it surfaces on host progress UIs (CLI once mode,
+    REPL transcript) and never enters the model's context.
+    """
+    if not template or not isinstance(template, str) or not template.strip():
+        return ""
+
+    class _MissingKeyDict(dict):
+        def __missing__(self, key: str) -> str:  # type: ignore[override]
+            return "{" + key + "}"
+
+    try:
+        rendered = template.format_map(_MissingKeyDict(dict(params or {})))
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    rendered = str(rendered).replace("\n", " ").strip()
+    if len(rendered) > _DISPLAY_LABEL_MAX:
+        return rendered[: _DISPLAY_LABEL_MAX - 1] + "…"
+    return rendered
+
+
 # Turn-runner guard caps live in ``kernel.config.Settings`` (fields
 # ``max_tool_iterations`` / ``fork_child_max_tool_iterations`` /
 # ``per_step_max_iterations`` / ``per_step_max_tool_calls`` /
@@ -4563,12 +4602,26 @@ async def _run_turn_inner(
                 _tool_kind = "pack_tool"
             else:
                 _tool_kind = "mcp_tool"
+            # Operator-visible display label: render the tool's
+            # ``display_template`` against the call params (display-only;
+            # never enters model context). Empty when the tool has no
+            # template — hosts fall back to their own arg preview.
+            _display_label = ""
+            if isinstance(tool_arguments, dict):
+                _tool_definition = tool_catalog.get(tool_name)
+                _display_template = getattr(_tool_definition, "display_template", "") or ""
+                if _display_template:
+                    _display_label = _resolve_tool_display_label(
+                        _display_template,
+                        tool_arguments,
+                    )
             await _emit_stage(
                 "tool_dispatch",
                 {
                     "tool": tool_name,
                     "tool_kind": _tool_kind,
                     "arguments": tool_arguments if isinstance(tool_arguments, dict) else {},
+                    "display": _display_label,
                     "_state.iteration": _state.iteration,
                     "tool_calls_so_far": _state.total_tool_calls + 1,
                     "max_tool_calls": max_tool_iterations,
