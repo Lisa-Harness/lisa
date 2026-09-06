@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from kernel.code_artifacts import CodeChangeArtifact, CodeCheckRecord
+from sdk.workproducts import WorkProduct, WorkProductCheck
 
 from host.code_artifacts import FileCodeChangeArtifactStore
 
@@ -15,7 +15,7 @@ async def test_file_store_round_trips_updated_artifact(tmp_path: Path) -> None:
     """The host store persists an artifact independently of either pack."""
 
     store = FileCodeChangeArtifactStore(tmp_path / "code-changes.json")
-    artifact = CodeChangeArtifact(
+    artifact = WorkProduct(
         workspace_id="workspace",
         user_id="user",
         user_slug="user",
@@ -30,7 +30,7 @@ async def test_file_store_round_trips_updated_artifact(tmp_path: Path) -> None:
     await store.create(artifact)
     artifact.revision = 1
     artifact.changed_paths = ["src/main.py"]
-    artifact.checks["unit"] = CodeCheckRecord(
+    artifact.checks["unit"] = WorkProductCheck(
         check_id="unit",
         revision=1,
         status="passed",

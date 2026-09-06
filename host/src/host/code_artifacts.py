@@ -1,4 +1,8 @@
-"""Atomic file-backed storage for pack-neutral code change artifacts."""
+"""Atomic file-backed storage for pack-neutral WorkProducts.
+
+The typed contract (``WorkProduct`` / ``WorkProductStore`` Protocol) lives in
+``sdk.workproducts``; the host only owns this concrete file store and injects
+it into the opaque ``code_change_artifact_store`` execution-context field."""
 
 from __future__ import annotations
 
@@ -8,19 +12,19 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kernel.code_artifacts import CodeChangeArtifact
+from sdk.workproducts import WorkProduct
 
 __all__ = ["FileCodeChangeArtifactStore"]
 
 
 class FileCodeChangeArtifactStore:
-    """Persist code change artifacts under a host-controlled data directory."""
+    """Persist WorkProducts under a host-controlled data directory."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = asyncio.Lock()
 
-    async def create(self, artifact: CodeChangeArtifact) -> CodeChangeArtifact:
+    async def create(self, artifact: WorkProduct) -> WorkProduct:
         async with self._lock:
             artifacts = self._load()
             if artifact.artifact_id in artifacts:
@@ -30,11 +34,11 @@ class FileCodeChangeArtifactStore:
             self._store(artifacts)
             return artifact
 
-    async def get(self, artifact_id: str) -> CodeChangeArtifact | None:
+    async def get(self, artifact_id: str) -> WorkProduct | None:
         async with self._lock:
             return self._load().get(artifact_id)
 
-    async def save(self, artifact: CodeChangeArtifact) -> CodeChangeArtifact:
+    async def save(self, artifact: WorkProduct) -> WorkProduct:
         async with self._lock:
             artifacts = self._load()
             if artifact.artifact_id not in artifacts:
@@ -53,7 +57,7 @@ class FileCodeChangeArtifactStore:
             self._store(artifacts)
             return True
 
-    def _load(self) -> dict[str, CodeChangeArtifact]:
+    def _load(self) -> dict[str, WorkProduct]:
         if not self._path.is_file():
             return {}
         try:
@@ -62,15 +66,15 @@ class FileCodeChangeArtifactStore:
             return {}
         if not isinstance(raw, dict):
             return {}
-        artifacts: dict[str, CodeChangeArtifact] = {}
+        artifacts: dict[str, WorkProduct] = {}
         for artifact_id, value in raw.items():
             try:
-                artifacts[str(artifact_id)] = CodeChangeArtifact.model_validate(value)
+                artifacts[str(artifact_id)] = WorkProduct.model_validate(value)
             except Exception:  # pylint: disable=broad-except
                 continue
         return artifacts
 
-    def _store(self, artifacts: dict[str, CodeChangeArtifact]) -> None:
+    def _store(self, artifacts: dict[str, WorkProduct]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             artifact_id: artifact.model_dump(mode="json")
