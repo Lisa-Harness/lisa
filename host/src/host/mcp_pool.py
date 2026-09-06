@@ -55,6 +55,46 @@ from host.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
 
+
+class PackPrerequisiteError(RuntimeError):
+    """A registered pack cannot satisfy a host-level prerequisite."""
+
+
+def _validate_pack_prerequisites() -> None:
+    """Fail startup loudly when a pack's host prerequisites are missing.
+
+    Packs expose a zero-arg callable via the
+    ``lisa.extensions.prerequisites`` entry point that returns a list of miss
+    reasons (empty = can run). Any non-empty list aborts startup, so a""
+    present-but-cannot-run sandbox (or any other capability pack) never
+    silently degrades to a less-safe posture without the operator knowing.
+    A broken callable (raises) is logged and skipped - a faulty probe must not
+    itself take the host down; only a *reported* miss is fatal.
+    """
+    from importlib import metadata  # noqa: PLC0415
+
+    try:
+        eps = metadata.entry_points(group="lisa.extensions.prerequisites")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("pack prerequisites: entry-point discovery failed (%s)", exc)
+        return
+    problems: list[str] = []
+    for ep in eps:
+        try:
+            checker = ep.load()
+            reasons = checker()
+        except Exception as exc:  # noqa: BLE001 - a faulty probe must not abort
+            logger.warning("pack prerequisites: %s probe failed (%s); skipping", ep.name, exc)
+            continue
+        if reasons:
+            problems.extend(f"[{ep.name}] {reason}" for reason in reasons)
+    if problems:
+        raise PackPrerequisiteError(
+            "Pack prerequisites unmet; refusing to start with a silently degraded "
+            "capability:\n  - " + "\n  - ".join(problems)
+        )
+
+
 # Venv root containing the console-script entry points (lisa-context,
 # lisa-catalog, etc.). In repo mode this is <repo>/.venv; in tool-install
 # mode this is sys.prefix. Exported as the FRAMEWORK_ROOT env var so that
@@ -408,6 +448,16 @@ def setup_framework(
 
     register_operation_mcp(catalog_config)
     register_tool_mcp(catalog_config)
+
+    # ── Pack prerequisite validation (bare-vs-none elimination) ────────
+    # A pack that cannot satisfy a host-level prerequisite (e.g. bwrap needs
+    # the bubblewrap binary) must fail startup LOUDLY rather than be silently
+    # skipped at runtime - a "present but cannot run" sandbox would otherwise
+    # degrade to unsandboxed host execution without the operator knowing. Packs
+    # expose a zero-arg callable via the ``lisa.extensions.prerequisites``
+    # entry point returning a list of miss reasons; any miss aborts startup.
+    _validate_pack_prerequisites()
+
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(catalog_config)
 

@@ -153,13 +153,21 @@ def test_ask_mode_prompts_for_execute_by_default() -> None:
 
 def test_trust_mode_allows_execute_and_write_but_prompts_external_write() -> None:
     policy = PolicyDocument(mode=PolicyMode.TRUST)
-    assert decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict == VERDICT_ALLOW
+    # A bare (unsandboxed) execute prompts even in TRUST mode: the bare guard
+    # overrides the silent allow by default (bare_requires_approval=True).
+    assert decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict == VERDICT_ASK
     assert decide(policy=policy, invocation=_invocation(effect="write", target_id="write_file")).verdict == VERDICT_ALLOW
     # external_write never auto-approves, even in trust mode.
     ext = decide(
         policy=policy, invocation=_invocation(effect="external_write", target_id="github_open_pr")
     )
     assert ext.verdict == VERDICT_ASK
+
+
+def test_trust_mode_allows_bare_execute_when_guard_disabled() -> None:
+    """Turning the bare guard off restores TRUST's silent allow for execute."""
+    policy = PolicyDocument(mode=PolicyMode.TRUST, bare_requires_approval=False)
+    assert decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict == VERDICT_ALLOW
 
 
 def test_plan_mode_denies_all_effectful() -> None:
@@ -229,6 +237,56 @@ def test_downgrade_disabled_by_flag(tmp_path: Path) -> None:
     )
     # Downgrade off -> execute falls through to ask-mode fallback.
     assert decision.verdict == VERDICT_ASK
+
+
+# ── Bare-mode guard (unsandboxed execute needs explicit approval) ────────
+
+
+def test_bare_guard_prompts_for_none_containment_in_trust(tmp_path: Path) -> None:
+    """A bare host run (no sandbox) must not be silently allowed by TRUST."""
+    _write_containment(tmp_path, _identity(), "none")
+    decision = decide(
+        policy=PolicyDocument(mode=PolicyMode.TRUST),
+        invocation=_invocation(command="rm -rf build", identity=_identity()),
+        data_dir=tmp_path,
+    )
+    assert decision.verdict == VERDICT_ASK
+    assert "unsandboxed" in decision.reason
+
+
+def test_bare_guard_still_allows_contained_in_trust(tmp_path: Path) -> None:
+    """Contained commands are unaffected by the bare guard in TRUST mode."""
+    identity = _identity()
+    _write_containment(tmp_path, identity, "contained")
+    decision = decide(
+        policy=PolicyDocument(mode=PolicyMode.TRUST),
+        invocation=_invocation(command="ls", identity=identity),
+        data_dir=tmp_path,
+    )
+    assert decision.verdict == VERDICT_ALLOW
+    assert decision.containment == "contained"
+
+
+def test_bare_guard_does_not_override_plan_deny(tmp_path: Path) -> None:
+    """PLAN's blanket deny of effectful work beats the bare guard's ask."""
+    _write_containment(tmp_path, _identity(), "none")
+    decision = decide(
+        policy=PolicyDocument(mode=PolicyMode.PLAN),
+        invocation=_invocation(command="make", identity=_identity()),
+        data_dir=tmp_path,
+    )
+    assert decision.verdict == VERDICT_DENY
+
+
+def test_bare_guard_leaves_write_effect_to_trust(tmp_path: Path) -> None:
+    """The guard targets execute only; write still auto-allows in TRUST."""
+    _write_containment(tmp_path, _identity(), "none")
+    decision = decide(
+        policy=PolicyDocument(mode=PolicyMode.TRUST),
+        invocation=_invocation(effect="write", target_id="write_file", identity=_identity()),
+        data_dir=tmp_path,
+    )
+    assert decision.verdict == VERDICT_ALLOW
 
 
 def test_external_write_not_downgraded_even_when_contained(tmp_path: Path) -> None:

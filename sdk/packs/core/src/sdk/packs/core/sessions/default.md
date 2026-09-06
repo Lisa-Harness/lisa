@@ -8,6 +8,31 @@ surface:
 resources:
   packs:
     required: [lisa-pack-core]
+    configuration:
+      # Sandbox containment floor for the shell/bubblewrap packs (Biba-style:
+      # the model may only RAISE integrity above this floor, never loosen it).
+      # This is the global session floor; a user session_context.md or a
+      # per-pack configuration key may tighten (not loosen) it further.
+      #   execution:    bare | sandbox     — sandbox = never run bare on host
+      #   persistence:  direct-write | overlay | ephemeral | readonly
+      #                 overlay = capture workspace changes in a mergeable layer
+      #                 (the model may tighten to ephemeral/readonly from here)
+      #   network:      deny | allow
+      #   device:       dev | minimal | none
+      #   ipc:          shared | unshared
+      #   paths:        per-path visibility rw | ro | hidden
+      #   tmpfs_budget_bytes / timeout_ceiling_seconds: ceilings only.
+      lisa-pack-bwrap:
+        sandbox:
+          floor:
+            execution: sandbox
+            persistence: overlay
+            network: deny
+            device: minimal
+            ipc: unshared
+            paths:
+              /run/log/journal: ro
+            tmpfs_budget_bytes: 67108864
 providers:
   modes:
     default: lisa-pack-core

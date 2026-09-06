@@ -161,6 +161,7 @@ class PolicyDocument(BaseModel):
     version: int = 1
     mode: PolicyMode = PolicyMode.ASK
     sandbox_downgrade: bool = True
+    bare_requires_approval: bool = True
     allow: list[PolicyRule] = Field(default_factory=list)
     ask: list[PolicyRule] = Field(default_factory=list)
     deny: list[PolicyRule] = Field(default_factory=list)
@@ -246,6 +247,7 @@ def _write_policy(path: Path, doc: PolicyDocument) -> None:
         "version": doc.version,
         "mode": doc.mode.value,
         "sandbox_downgrade": doc.sandbox_downgrade,
+        "bare_requires_approval": doc.bare_requires_approval,
         "allow": [r.model_dump(exclude_defaults=True) for r in doc.allow],
         "ask": [r.model_dump(exclude_defaults=True) for r in doc.ask],
         "deny": [r.model_dump(exclude_defaults=True) for r in doc.deny],
@@ -254,6 +256,8 @@ def _write_policy(path: Path, doc: PolicyDocument) -> None:
     header = (
         "# Lisa approval policy. Decide which actions need operator approval.\n"
         "# mode: ask|trust|plan   sandbox_downgrade: auto-approve sandboxed commands\n"
+        "# bare_requires_approval: prompt for execute actions that are NOT sandboxed\n"
+        "#   (containment none/degraded/unknown) even under trust mode.\n"
         "# Rules: allow/ask/deny lists, evaluated deny -> ask -> allow, first match.\n"
         "# Matchers: tool, effect (read|write|execute|external_write), pack, command_prefix.\n"
     )
@@ -458,6 +462,31 @@ def _containment_decision(
     return None, containment
 
 
+def _bare_mode_decision(
+    policy: PolicyDocument, *, effect: str, tier: str, containment: str
+) -> PolicyDecision | None:
+    """Require explicit approval for execute actions that are NOT sandboxed.
+
+    This is the guard on the user's chosen 'bare' mode: a contained action
+    auto-approves at the sandbox boundary, but a bare host run must never be
+    silently allowed by TRUST mode. When ``bare_requires_approval`` is on and
+    an ``execute`` action is running without containment, this short-circuits
+    to ``ask`` before the mode fallback can auto-allow it.
+    """
+    if (
+        policy.bare_requires_approval
+        and effect in _DOWNGRADE_ELIGIBLE_EFFECTS
+        and containment not in _CONTAINED_STATES
+    ):
+        return PolicyDecision(
+            verdict=VERDICT_ASK,
+            reason="unsandboxed host execution; explicit approval required",
+            tier=tier,
+            containment=containment,
+        )
+    return None
+
+
 def decide(
     *,
     policy: PolicyDocument,
@@ -496,7 +525,8 @@ def decide(
     if downgraded is not None:
         return downgraded
 
-    # 5. Mode fallback.
+    # 5. Mode fallback - blanket-deny first. PLAN's deny is stricter than the
+    # bare-mode guard and must win: a plan-mode execute is denied, not asked.
     if effect == "read":
         return PolicyDecision(
             verdict=VERDICT_ALLOW,
@@ -511,7 +541,17 @@ def decide(
             tier=tier,
             containment=containment,
         )
+
+    # A bare (unsandboxed) execute action needs explicit approval instead of
+    # TRUST's silent allow - the user's floor may permit bare, but it is never
+    # allowed without a prompt. Narrows TRUST only; ask-mode and plan-mode are
+    # already at least as strict.
+    if data_dir is None:
+        containment = "unknown"
     if policy.mode is PolicyMode.TRUST and effect in _TRUST_AUTO_EFFECTS:
+        bare = _bare_mode_decision(policy, effect=effect, tier=tier, containment=containment)
+        if bare is not None:
+            return bare
         return PolicyDecision(
             verdict=VERDICT_ALLOW,
             reason=f"trust mode: {effect} actions allowed",
