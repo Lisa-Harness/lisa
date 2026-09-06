@@ -1,10 +1,12 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["sdk*"]
+[tool.hatch.build.targets.wheel]
+# sdk is a PEP 420 namespace shared with the packs: the wheel must carry
+# only sdk/ minus the packs subtree (packs ship their own wheels).
+packages = ["src/sdk"]
+exclude = ["src/sdk/packs"]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }

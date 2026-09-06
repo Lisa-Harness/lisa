@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+dist/
+build/
 
 
 # Virtual environments

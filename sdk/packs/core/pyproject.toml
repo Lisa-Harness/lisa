@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-"sdk.packs.core" = ["content/**/*", "modes/**/*", "operations/**/*", "tools/**/*", "sessions/**/*"]
+[tool.hatch.build.targets.wheel]
+# sdk.packs.core lives under the shared sdk namespace; hatchling includes
+# all files in the package dir by default (no package-data globs needed).
+packages = ["src/sdk"]
+only-include = ["src/sdk/packs/core"]
 
 [project]
 name = "lisa-pack-core"
