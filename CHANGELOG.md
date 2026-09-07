@@ -56,6 +56,28 @@ All notable changes to the Lisa Framework will be documented in this file.
   pre-existing failure blocks; all 15 passed), `kernel/tests/test_effect_receipts.py`
   (22 passed).
 
+#### Turn scenario matrix & structured stalled-write trigger (Loop 3)
+
+- **What:** Added a comprehensive scenario matrix suite in
+  `kernel/tests/test_turn_scenario_matrix.py` (20 tests) codifying the
+  cross-product of guard inputs across both the in-loop lifecycle resolver
+  (`resolve_lifecycle_action`) and the post-loop completion contract resolver
+  (`resolve_completion_contract`). Named matrix cells pin all 6 major historical
+  incident patterns (08-03 fork-child read-loop, 08-27 read-receipt fix,
+  09-02 write-announcement, 09-04 fetch_page read-loop burn, turn-70 prose discard,
+  and 08-30 budget-claim fabrication). Restructured the stalled-write rescue in
+  `kernel/src/kernel/turn_runner.py`: trigger is now structured (mode declares
+  action tools, 0 write receipts, >=1 read receipt, 0 writes attempted, and
+  either announcement prose or reaching `stage_nudge_threshold`), demoting
+  `_STALLED_WRITE_PATTERNS` to guidance-line enrichment. Added regression test
+  in `kernel/tests/test_effect_receipts.py` verifying the structured trigger on
+  silent read loops.
+- **Why:** Guard-intersection bugs historically arose because each guard was tested
+  in isolation. The scenario matrix tests the cross-product of receipts, attempts,
+  and mode kinds directly, preventing guard-interaction deadlocks.
+- **Tests:** `kernel/tests/test_turn_scenario_matrix.py` (20 passed),
+  `kernel/tests/test_effect_receipts.py` (23 passed).
+
 #### In-process MCP server mode (default for `lisa once`)
 
 - **What:** First-party MCP servers (catalog, content, context, guard, memory,

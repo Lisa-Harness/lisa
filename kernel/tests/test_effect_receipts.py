@@ -1679,3 +1679,87 @@ async def test_stalled_write_rescue_is_one_shot_per_turn() -> None:
     )
     # The stalling prose was still accepted (chat softening) — no loop.
     assert result.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_stalled_write_rescue_fires_on_silent_read_loop_at_threshold() -> None:
+    """A silent read loop (no announcement language) triggers the structured
+    write rescue when reaching stage_nudge_threshold.
+
+    Regression for the 2026-09-04 incident (executor read-loop burn): 30
+    fetch_page calls with no write attempts and no announcement prose burned
+    to the cap because read receipts exempted the turn from every write guard.
+    The structured trigger fires on read-work + 0 write attempts at threshold,
+    injecting the 'COMMIT TO A WRITE OR CONCLUDE' directive.
+    """
+    from kernel import config
+
+    pool = _ReadThenWritePool()
+    call_count = 0
+    captured_prompts: list[str] = []
+
+    async def read_loop_model(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        messages = kwargs.get("messages", [])
+        if messages:
+            captured_prompts.append(str(messages[0].get("content", "")))
+        if call_count < 3:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_read_{call_count}",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "a.md"}',
+                        },
+                    }
+                ],
+            )
+        if call_count == 3:
+            # Silent natural completion with non-dense content (no announcement).
+            return _StubCompletion(content="Still looking.")
+        # Follow-up after rescue directive: dispatch the write.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_write",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"path": "b.md", "content": "data"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(complete=read_loop_model, mcp_tool_pool=pool)
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "stage_nudge_threshold", 3)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=_announcement_writer_catalog(),
+            ),
+            patch("kernel.turn_runner.get_tool_catalog", return_value={}),
+        ):
+            result = await run_turn(mode_id="writer", query="find and write", hooks=hooks)
+    finally:
+        mp.undo()
+
+    assert pool.write_calls, "the rescue must lead to a real write dispatch"
+    assert result.blocked is False
+    commit_prompts = [p for p in captured_prompts if "COMMIT TO A WRITE OR CONCLUDE" in p]
+    assert len(commit_prompts) == 1, "structured directive must fire once"
+    assert "write_file" in commit_prompts[0]

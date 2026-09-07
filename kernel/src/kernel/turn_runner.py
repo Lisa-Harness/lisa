@@ -4283,62 +4283,82 @@ async def _run_turn_inner(
 
                 # ── Stalled-write rescue (read-work, no write attempt) ────
                 # A write-contract mode did read-only work this turn but
-                # ended with prose that ANNOUNCES a write that never
-                # happened. This is the 2026-09-02 write-announcement
-                # loop: every turn the model said "Writing both files
-                # now" while dispatching only read tools, the
-                # completion contract accepted the turn (read receipts +
-                # no write attempt = honest read-only), and the user had
-                # to re-ask "continue" eight times.
+                # ended with prose that either explicitly ANNOUNCES a write
+                # that never happened (the 2026-09-02 write-announcement
+                # loop), or stalled in a read loop across multiple iterations
+                # without committing to a write (the 2026-09-04 read-loop burn).
                 #
                 # The empty-completion backstop above cannot fire (it
                 # requires ``total_tool_calls == 0``) and the chat-mode
-                # softening downstream accepts the turn. Detection keys
-                # on the announcement itself: the prose contains a
-                # future-tense write claim ("Writing…", "I'll write…",
-                # "Let me create…") while the ledger shows zero write
-                # attempts. The rescue is a one-shot Phase-7 guidance
-                # line (rides the next iteration's lifecycle briefing):
-                # it names the mode's action tool and forbids further
-                # narration. No kernel-synthesized dispatch here — an
-                # MCP-native action tool (``lisa-storage.write_file``)
-                # requires ``path`` + ``content`` the kernel cannot
-                # fabricate, so a synthesized call is a guaranteed
-                # validation failure (the synthesized-call guard would
-                # abort the turn instead).
+                # softening downstream accepts the turn. The rescue is a
+                # one-shot Phase-7 guidance line (rides the next iteration's
+                # lifecycle briefing): it names the mode's action tool and
+                # directs immediate action. No kernel-synthesized dispatch
+                # here — an MCP-native action tool requires parameters the
+                # kernel cannot fabricate.
                 #
-                # Latched via ``stalled_write_rescue_fired`` so a model
-                # that genuinely declines to write is nudged once, then
-                # the turn is accepted honestly.
+                # Trigger is structured:
+                # 1. Mode declares action tools and has 0 write receipts.
+                # 2. Read receipts are present (real non-write work was done).
+                # 3. 0 writes were attempted.
+                # 4. Either prose announced a write (_STALLED_WRITE_PATTERNS)
+                #    OR the mode has stalled in stage >= stage_nudge_threshold
+                #    without producing dense content.
+                _has_write_attempt = any(
+                    bare_tool_name(n) in _state.action_tool_ids or n in _state.action_tool_ids
+                    for n in _state.called_tool_names
+                )
+                _announcement_match = (
+                    bool(_STALLED_WRITE_PATTERNS.search(content)) if content else False
+                )
+                _is_chat = mode_config.mode_kind == "chat" if mode_config else False
+                _has_dense = (
+                    len(content.strip()) >= _kernel_settings.chat_mode_dense_content_min_chars
+                )
+                _stalled_at_threshold = (
+                    _turns_in_stage >= _kernel_settings.stage_nudge_threshold
+                    and not (_is_chat and _has_dense)
+                )
+
                 if (
                     mode_config is not None
                     and _state.action_tool_ids
                     and not _has_write_receipt
                     and _has_read_receipt
+                    and not _has_write_attempt
                     and not _state.stalled_write_rescue_fired
-                    and _STALLED_WRITE_PATTERNS.search(content)
+                    and (_announcement_match or _stalled_at_threshold)
                 ):
                     _state.stalled_write_rescue_fired = True
                     _rescue_action_list = ", ".join(sorted(_state.action_tool_ids))
-                    _stalled_write_guidance = (
-                        "STOP ANNOUNCING AND DISPATCH. Your previous "
-                        "response described a write that never happened — "
-                        "no write tool was called this turn. You have all "
-                        "the information you need. Call one of "
-                        f"[{_rescue_action_list}] NOW with complete "
-                        "arguments in this iteration. Do NOT narrate the "
-                        "write before making the tool call; narration "
-                        "instead of the tool call wastes the user's time."
-                    )
+                    if _announcement_match:
+                        _stalled_write_guidance = (
+                            "STOP ANNOUNCING AND DISPATCH. Your previous "
+                            "response described a write that never happened — "
+                            "no write tool was called this turn. You have all "
+                            "the information you need. Call one of "
+                            f"[{_rescue_action_list}] NOW with complete "
+                            "arguments in this iteration. Do NOT narrate the "
+                            "write before making the tool call; narration "
+                            "instead of the tool call wastes the user's time."
+                        )
+                    else:
+                        _stalled_write_guidance = (
+                            "COMMIT TO A WRITE OR CONCLUDE. You have gathered "
+                            "evidence across read calls but have not called any "
+                            f"action tool. Call one of [{_rescue_action_list}] "
+                            "NOW with complete arguments in this iteration to land "
+                            "your work, or synthesize your final findings."
+                        )
                     _log.warning(
                         "stalled-write rescue armed (mode=%s iteration=%d "
-                        "tools=%s): prose announced a write while the "
-                        "ledger shows zero write attempts — one-shot "
-                        "dispatch directive injected into the next "
-                        "iteration's briefing",
+                        "tools=%s announcement=%s): read-only work with zero "
+                        "write attempts — one-shot dispatch directive injected "
+                        "into the next iteration's briefing",
                         mode_id,
                         _state.iteration,
                         sorted(_state.action_tool_ids),
+                        _announcement_match,
                     )
                     continue
 
