@@ -173,6 +173,9 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
@@ -241,6 +244,9 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(mode_id="plan", query="draft a doc", hooks=hooks)
@@ -303,6 +309,9 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -383,6 +392,9 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -447,6 +459,9 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -532,6 +547,9 @@ async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_pl
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -621,6 +639,9 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -697,6 +718,9 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -953,6 +977,9 @@ async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1046,6 +1073,9 @@ async def test_resume_in_flight_does_not_fire_for_real_query() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         await run_turn(
@@ -1151,6 +1181,9 @@ async def test_resume_in_flight_skips_routing_entry_op_and_advances_plan() -> No
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1338,6 +1371,9 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1456,6 +1492,9 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         await run_turn(
@@ -1553,6 +1592,9 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -2446,8 +2488,8 @@ async def test_run_turn_fork_transition_basic() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "default"}, {"mode_id": "default"}]}',
                         },
                     }
                 ],
@@ -2491,8 +2533,8 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:remember,markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -2552,8 +2594,8 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> 
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -2620,8 +2662,8 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -2721,8 +2763,8 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:coding"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "coding"}]}',
                         },
                     }
                 ],
@@ -2788,8 +2830,8 @@ async def test_fork_child_model_yield_propagates_question_to_parent() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -2862,8 +2904,8 @@ async def test_fork_child_never_advertises_yield_tool(
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -2983,8 +3025,8 @@ async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -3266,7 +3308,12 @@ def test_routing_hint_after_handoff_names_next_target() -> None:
     )
     patched_catalog = {"search": search_cfg, "markdown": markdown_cfg}
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         # After handing off to search (satisfies "research"), the remaining
         # "write" intent is still a gap — the hint must name markdown.
         hint = _compute_capability_routing_hint(
@@ -3301,7 +3348,12 @@ def test_routing_hint_after_handoff_empty_when_new_mode_satisfies_all() -> None:
     )
     patched_catalog = {"search": search_cfg, "markdown": markdown_cfg}
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="markdown",
             query="write a markdown report of the findings",
@@ -3361,7 +3413,12 @@ def test_routing_hint_sequential_query_does_not_fork() -> None:
         "coding mode and use it as input for a code-level gap analysis "
         "then write a markdown of it."
     )
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query=q,
@@ -3391,17 +3448,19 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
         satisfies_intents=["remember"],
         routing_intent_tags=["remember"],
         routing_intent_keywords={"remember": ["remember", "note", "capture"]},
+        fork_allowed=True,
     )
     markdown_cfg = _mode_config(
         mode_id="markdown",
         satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document"]},
+        fork_allowed=True,
     )
     default_cfg = _mode_config(mode_id="default")
     patched_catalog = {"remember": remember_cfg, "markdown": markdown_cfg, "default": default_cfg}
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with _patched_hint_catalog(patched_catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="remember this and write a markdown of it",
@@ -3411,7 +3470,7 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
         )
 
     assert hint != ""
-    assert "fork:" in hint
+    assert "`fork`" in hint
     assert "remember" in hint and "markdown" in hint
 
 
@@ -3545,7 +3604,12 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
         "default": default_cfg,
     }
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="analyze the frameworks and write a markdown doc",
@@ -3889,7 +3953,12 @@ def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
     )
     try:
         q = "search for python news and write a markdown based on the results"
-        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        with (
+            patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
                 query=q,
@@ -3952,7 +4021,12 @@ def test_routing_hint_chain_memory_skips_completed_steps() -> None:
 
     # After search + coding: chain_satisfied = {research, coding}.
     # Gap = {write}. Hint must name markdown, NOT search.
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="coding",
             query=q,
@@ -4001,6 +4075,7 @@ def _mode_config(
     routing_intent_tags: list[str] | None = None,
     routing_intent_keywords: dict[str, list[str]] | None = None,
     routable: bool = True,
+    fork_allowed: bool = False,
 ) -> WorkflowModeConfig:
     """A minimal WorkflowModeConfig for routing-hint tests.
 
@@ -4014,17 +4089,83 @@ def _mode_config(
     so tests that need a target to "cover" an intent must populate these.
     ``routable`` defaults to True so ``get_routing_targets`` returns the
     target set; pass ``routable=False`` to simulate a non-routable mode.
+    ``fork_allowed`` defaults to False; fork-target tests must opt in.
     """
     return WorkflowModeConfig(
         mode_id=mode_id,
         start_stage_id="none",
         mode_kind="chat",
         routable=routable,
+        fork_allowed=fork_allowed,
         satisfies_intents=list(satisfies_intents) if satisfies_intents else [],
         required_capabilities=list(required_capabilities) if required_capabilities else [],
         routing_intent_tags=list(routing_intent_tags) if routing_intent_tags else [],
         routing_intent_keywords=dict(routing_intent_keywords) if routing_intent_keywords else {},
     )
+
+
+def _hint_catalog(
+    *mode_ids: str,
+    keywords: dict[str, list[str]] | None = None,
+) -> dict[str, WorkflowModeConfig]:
+    """Build a synthetic catalog where each mode's tags match its own id.
+
+    The routing-hint tests exercise the kernel's pure mapping over a
+    synthetic ``routing_targets`` list (``fork:remember,markdown``,
+    single-handoff to ``markdown``, ...). Intent detection resolves each
+    target through the workflow catalog, which the ambient fixture
+    catalog (``default`` + ``letta`` only — external persona/search packs
+    are not installed in this venv) cannot serve. This helper builds a
+    per-test catalog whose synthetic modes declare ``routing_intent_tags``
+    and ``routing_intent_keywords`` keyed on their own mode id, so a query
+    mentioning "remember" attributes the ``remember`` intent etc.
+
+    ``keywords`` optionally overrides the self-keyed keywords per mode
+    (``{"ponder": ["understand", "SWOT"]}``), for tests that assert
+    keyword-driven steering toward a mode whose id the query never
+    mentions.
+
+    Patch BOTH bindings with the result (see the kernel test-seams rule):
+    ``kernel.turn_phases._routing_hint.get_workflow_catalog`` (where
+    ``_detect_query_intents``/``_compute_fork_targets`` resolve it) and
+    ``kernel.turn_runner.get_workflow_catalog`` (where the runner reads it
+    directly).
+    """
+    modes: list[str] = []
+    for entry in mode_ids:
+        for piece in entry.replace("fork:", "").split(","):
+            piece = piece.strip()
+            if piece and piece not in modes:
+                modes.append(piece)
+    catalog: dict[str, WorkflowModeConfig] = {"default": _mode_config(mode_id="default")}
+    for mode in modes:
+        if mode == "default":
+            continue
+        catalog[mode] = _mode_config(
+            mode_id=mode,
+            satisfies_intents=[mode],
+            routing_intent_tags=[mode],
+            routing_intent_keywords={mode: (keywords or {}).get(mode, [mode])},
+            fork_allowed=True,
+        )
+    return catalog
+
+
+def _patched_hint_catalog(catalog: dict[str, Any]):
+    """Patch the two catalog bindings the hint path reads.
+
+    Returns a single context manager that patches both bindings (see the
+    kernel test-seams rule); use as ``with _patched_hint_catalog(catalog):``.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog)
+    )
+    stack.enter_context(patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog))
+    return stack
 
 
 def test_routing_hint_returns_empty_when_no_routing_targets() -> None:
@@ -4079,12 +4220,20 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="get a better understanding of the latest frameworks and agent building tools on the market today and do a SWOT based on it",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["search", "ponder", "markdown", "coding"],
+    catalog = _hint_catalog(
+        "search", "ponder", "markdown", "coding",
+        keywords={
+            "search": ["search", "web"],
+            "ponder": ["understand", "swot", "tradeoffs", "analyze"],
+        },
     )
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="get a better understanding of the latest frameworks and agent building tools on the market today and do a SWOT based on it",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["search", "ponder", "markdown", "coding"],
+        )
     assert hint != ""
     assert "ponder" in hint
     assert "transition_stage" in hint
@@ -4099,12 +4248,20 @@ def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
     """'analyze the latest tradeoffs' is research-then-reason → ponder."""
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="analyze the latest tradeoffs in serverless frameworks",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["search", "ponder"],
+    catalog = _hint_catalog(
+        "search", "ponder",
+        keywords={
+            "search": ["search", "web"],
+            "ponder": ["analyze", "tradeoff", "understand"],
+        },
     )
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="analyze the latest tradeoffs in serverless frameworks",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["search", "ponder"],
+        )
     assert "ponder" in hint
 
 
@@ -4148,7 +4305,12 @@ def test_routing_hint_suppresses_target_on_topic_abandonment_marker() -> None:
         default_cfg = _mode_config(mode_id="default")
         patched_catalog = {"cloudservers": cloudservers_cfg, "default": default_cfg}
 
-        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        with (
+            patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
                 query="TBH, the whole cloudservers thing was a bit of a side quest. So lets just rewind",
@@ -4194,7 +4356,12 @@ def test_routing_hint_routes_into_target_when_no_abandonment_marker() -> None:
         default_cfg = _mode_config(mode_id="default")
         patched_catalog = {"cloudservers": cloudservers_cfg, "default": default_cfg}
 
-        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        with (
+            patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
                 query="help me provision a new cloudservers vm",
@@ -4215,12 +4382,20 @@ def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="write a file with the results",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["markdown", "coding", "ponder"],
+    catalog = _hint_catalog(
+        "markdown", "coding", "ponder",
+        keywords={
+            "markdown": ["write", "markdown", "document"],
+            "coding": ["code", "implement"],
+        },
     )
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="write a file with the results",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["markdown", "coding", "ponder"],
+        )
     assert hint != ""
     assert "transition_stage" in hint
     # No ponder-specific steering copy
@@ -4233,12 +4408,14 @@ def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="search the web for cloud costs",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["search", "ponder"],
-    )
+    catalog = _hint_catalog("search", "ponder")
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="search the web for cloud costs",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["search", "ponder"],
+        )
     assert hint != ""
     assert "transition_stage" in hint
     assert "one-shot" not in hint.lower()
@@ -4266,16 +4443,21 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="remember that pretty much verbatim and also write a markdown of it",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["remember", "markdown", "coding", "ponder", "search"],
-    )
+    catalog = _hint_catalog("remember", "markdown", "coding", "ponder", "search")
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="remember that pretty much verbatim and also write a markdown of it",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["remember", "markdown", "coding", "ponder", "search"],
+        )
     assert hint != ""
-    assert "transition_stage" in hint
-    # Must name the fork target, not a single mode handoff
-    assert "fork:remember,markdown" in hint
+    # The fork hint names the fork operation and the target list (the
+    # transition_stage directive is the single-handoff shape; fork is the
+    # fan-out shape).
+    assert "`fork`" in hint
+    # Must name the fork target list, not a single mode handoff
+    assert "[remember, markdown]" in hint
     # The kernel must not narrate tool-policy semantics in its own prose.
     # The handoff instruction is purely mechanical.
     assert "mode-scoped" not in hint.lower()
@@ -4305,13 +4487,33 @@ def test_routing_hint_fork_preserves_target_case() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="default",
-        query="take a note of this and write a markdown document",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["remember", "markdown"],
-    )
-    assert "fork:remember,markdown" in hint
+    # Synthetic modes with mixed-case ids; the catalog keys the exact ids
+    # so intent detection resolves them and the fork string preserves case.
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "Remember": _mode_config(
+            mode_id="Remember",
+            satisfies_intents=["remember"],
+            routing_intent_tags=["remember"],
+            routing_intent_keywords={"remember": ["note", "remember"]},
+            fork_allowed=True,
+        ),
+        "Markdown": _mode_config(
+            mode_id="Markdown",
+            satisfies_intents=["write"],
+            routing_intent_tags=["write"],
+            routing_intent_keywords={"write": ["markdown", "document", "write"]},
+            fork_allowed=True,
+        ),
+    }
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="take a note of this and write a markdown document",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["Remember", "Markdown"],
+        )
+    assert "fork:Remember,Markdown" in hint
 
 
 def test_routing_hint_forks_from_coding_mode() -> None:
@@ -4326,16 +4528,19 @@ def test_routing_hint_forks_from_coding_mode() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint = _compute_capability_routing_hint(
-        mode_id="coding",
-        query="remember the entire thing and write a markdown document of it",
-        capability_manifest=_empty_manifest(),
-        # Post-mesh coding routing targets include remember + markdown.
-        routing_targets=["default", "remember", "markdown", "ponder", "search"],
-    )
+    catalog = _hint_catalog("remember", "markdown", "coding", "ponder", "search")
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="coding",
+            query="remember the entire thing and write a markdown document of it",
+            capability_manifest=_empty_manifest(),
+            # Post-mesh coding routing targets include remember + markdown.
+            routing_targets=["default", "remember", "markdown", "ponder", "search"],
+        )
     assert hint != ""
-    assert "transition_stage" in hint
-    assert "fork:remember,markdown" in hint
+    # The fan-out hint names the fork operation and the target list.
+    assert "`fork`" in hint
+    assert "[remember, markdown]" in hint
 
 
 # ── Single-intent handoff tests (satisfies_intents) ──────────────────
@@ -4367,18 +4572,26 @@ def test_routing_hint_single_handoff_coding_to_markdown() -> None:
     from kernel.turn_runner import _compute_capability_routing_hint
 
     coding_manifest = _manifest_with_coding_tools()
-    hint = _compute_capability_routing_hint(
+    catalog = _hint_catalog("default", "remember", "markdown", "ponder", "search")
+    catalog["coding"] = _mode_config(
         mode_id="coding",
-        query="write a markdown document of the report you just produced",
-        capability_manifest=coding_manifest,
-        routing_targets=["default", "remember", "markdown", "ponder", "search"],
-        mode_config=_mode_config(
-            mode_id="coding",
-            # Coding declares it handles coding intent in-place, NOT write.
-            # The pack authors this in coding/_mode.md; the kernel believes it.
-            satisfies_intents=["coding"],
-        ),
+        satisfies_intents=["coding"],
+        routing_intent_tags=["coding"],
+        routing_intent_keywords={"coding": ["coding"]},
     )
+    with _patched_hint_catalog(catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="coding",
+            query="write a markdown document of the report you just produced",
+            capability_manifest=coding_manifest,
+            routing_targets=["default", "remember", "markdown", "ponder", "search"],
+            mode_config=_mode_config(
+                mode_id="coding",
+                # Coding declares it handles coding intent in-place, NOT write.
+                # The pack authors this in coding/_mode.md; the kernel believes it.
+                satisfies_intents=["coding"],
+            ),
+        )
     assert hint != ""
     assert "transition_stage" in hint
     assert "markdown" in hint
@@ -4424,20 +4637,28 @@ def test_routing_hint_single_handoff_fires_even_with_rich_manifest() -> None:
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    hint_with_rich_manifest = _compute_capability_routing_hint(
+    catalog = _hint_catalog("default", "remember", "markdown", "ponder", "search")
+    catalog["coding"] = _mode_config(
         mode_id="coding",
-        query="draft a markdown document of the findings",
-        capability_manifest=_manifest_with_coding_tools(),
-        routing_targets=["default", "remember", "markdown", "ponder", "search"],
-        mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
+        satisfies_intents=["coding"],
+        routing_intent_tags=["coding"],
+        routing_intent_keywords={"coding": ["coding"]},
     )
-    hint_with_empty_manifest = _compute_capability_routing_hint(
-        mode_id="coding",
-        query="draft a markdown document of the findings",
-        capability_manifest=_empty_manifest(),
-        routing_targets=["default", "remember", "markdown", "ponder", "search"],
-        mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
-    )
+    with _patched_hint_catalog(catalog):
+        hint_with_rich_manifest = _compute_capability_routing_hint(
+            mode_id="coding",
+            query="draft a markdown document of the findings",
+            capability_manifest=_manifest_with_coding_tools(),
+            routing_targets=["default", "remember", "markdown", "ponder", "search"],
+            mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
+        )
+        hint_with_empty_manifest = _compute_capability_routing_hint(
+            mode_id="coding",
+            query="draft a markdown document of the findings",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["default", "remember", "markdown", "ponder", "search"],
+            mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
+        )
     # Both must fire and produce identical steering — the manifest is
     # irrelevant to the gap decision under the declarative check.
     assert hint_with_rich_manifest != ""
@@ -4529,7 +4750,12 @@ def test_routing_hint_partial_coverage_fallback_instead_of_silence() -> None:
         "default": default_cfg,
     }
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="remember this and explain the summary",
@@ -4568,7 +4794,12 @@ def test_routing_hint_silence_when_no_target_covers_any_gap_intent() -> None:
     default_cfg = _mode_config(mode_id="default")
     patched_catalog = {"other": other_cfg, "default": default_cfg}
 
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="research the observability problem",
@@ -4949,6 +5180,9 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch(
             "kernel.turn_runner.run_mode_entry_operations", side_effect=failing_plan_entry_operation
         ),
@@ -4994,8 +5228,8 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:remember,markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -5054,8 +5288,8 @@ async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yie
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
                         },
                     }
                 ],
@@ -5361,6 +5595,9 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -5486,6 +5723,9 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -5671,8 +5911,8 @@ async def test_fork_child_sees_sub_turn_contract_with_action_tools() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:remember"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "remember"}]}',
                         },
                     }
                 ],
@@ -5769,8 +6009,8 @@ async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:remember"}',
+                            "name": "fork",
+                            "arguments": '{"targets": [{"mode_id": "remember"}]}',
                         },
                     }
                 ],

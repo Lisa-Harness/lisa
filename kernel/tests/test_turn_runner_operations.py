@@ -115,7 +115,15 @@ async def test_operation_tool_call_dispatches_via_execute_operation() -> None:
             )
         return _StubCompletion(content="Memory stored successfully.")
 
-    hooks = TurnHooks(complete=two_step, execute_operation=stub_execute_op)
+    hooks = TurnHooks(
+        complete=two_step,
+        execute_operation=stub_execute_op,
+        # The Phase-1 pre-turn recall calls recall_memory through the same
+        # hook; this test asserts the model-driven dispatch list exactly, so
+        # ambient recall must stay off (same pattern as the tool-dispatch
+        # and transitions suite hooks builders).
+        memory_recall_enabled=False,
+    )
 
     result = await run_turn(
         mode_id="remember", query="remember that we decided to use PostgreSQL", hooks=hooks
@@ -226,7 +234,12 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
             )
         return _StubCompletion(content="Handled error.")
 
-    hooks = TurnHooks(complete=two_step, execute_operation=failing_execute_op)
+    hooks = TurnHooks(
+        complete=two_step,
+        execute_operation=failing_execute_op,
+        # Off so ambient pre-turn recall does not add extra model calls.
+        memory_recall_enabled=False,
+    )
 
     result = await run_turn(mode_id="remember", query="test", hooks=hooks)
 
@@ -240,8 +253,11 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
     ]
     assert tool_messages, "the failed dispatch must surface as a tool result"
     assert "boom" in str(tool_messages[0].get("content", ""))
-    # The operation raised, so total_tool_calls stays at 0 (counted after success)
-    assert result.tool_call_count == 0
+    # The failed dispatch IS counted as an attempt: budget counters and
+    # the write-contract backstop key on ``total_tool_calls``, so a raised
+    # dispatch must count (a failed write must not re-arm the backstop and
+    # burn iterations synthesizing a doomed empty-args call).
+    assert result.tool_call_count == 1
     assert result.iteration_count == 2
     # Phase 8: remember declares a write contract and the only write
     # attempt failed — zero verified writes, so the parent-turn

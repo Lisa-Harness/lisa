@@ -99,7 +99,12 @@ def _wire_sub_turn_content_registry() -> None:
         def read_authored_text(self, relative_path: str) -> str:
             return (self._root / relative_path).read_text(encoding="utf-8")
 
-    fixtures_root = (Path(__file__).resolve().parents[1] / "testing" / "fixtures").resolve()
+    # The prompt assets live under the kernel *package* (src layout:
+    # kernel/src/kernel/testing/fixtures). parents[1] is the member dir;
+    # the package itself is its src/kernel subtree.
+    fixtures_root = (
+        Path(__file__).resolve().parents[1] / "src" / "kernel" / "testing" / "fixtures"
+    ).resolve()
     from kernel.context.sub_turn_contract import set_content_registry
 
     set_content_registry(_DirContentRegistry(fixtures_root))
@@ -135,3 +140,102 @@ def _reset_routing_vocabulary() -> None:
     yield
     reset_routing_vocabulary()
     reset_routing_vocabulary()
+
+
+# ── Synthetic target-mode augmentation for the ambient test catalog ──
+#
+# The routing/transition/fork tests route against target modes
+# (``markdown``, ``remember``, ``ponder``, ``search``, ``coding``, …)
+# that were removed from every authoritative pack by the 2026-08 mode
+# migrations (093f6f8 moved search/markdown/letta to external submodules;
+# 336a73f and 04d921d deleted the domain modes). This venv has no
+# installed external packs, so the ambient fixture catalog serves only
+# ``default`` / ``letta`` / ``letta-agent`` and every test that hands off
+# to a named target falls through with "Unknown transition target".
+#
+# The fix is hermetic: after the ambient catalog loads, augment it with
+# synthetic routable WorkflowModeConfigs for the target vocabulary the
+# tests were authored against. Each synthetic mode is generic (tags and
+# keywords keyed on its own id, fork_allowed) and carries no
+# pack-specific semantics, so the kernel's pure mapping is what the tests
+# exercise. Tests that need a *specific* mode shape still patch the
+# catalog per-test (the kernel test-seams rule) and their patch wins.
+
+_SYNTHETIC_TEST_MODES: dict[str, dict[str, Any]] = {
+    # markdown mirrors the real pack's shape: a write-contract mode whose
+    # completion contract names a write-effect operation the catalog cannot
+    # resolve (unknown → conservative write), so the parent no_tools block
+    # fires on unverified prose, matching the production contract.
+    "markdown": {
+        "tags": ["write"],
+        "keywords": ["markdown", "document", "write"],
+        "authored_ops": ["markdown_forge_document"],
+    },
+    # remember mirrors the pre-migration core pack shape: an action mode
+    # whose authored write operation the tests' child-classification
+    # expectations assume (mode_completion_effects non-empty). The ambient
+    # memory ops (recall_memory / synthesize_and_store_learning) are bound
+    # so the authoritative tool surface advertises them.
+    "remember": {
+        "tags": ["remember"],
+        "keywords": ["remember", "note", "capture"],
+        "authored_ops": ["remember_capture"],
+        "bound_ops": ["recall_memory", "synthesize_and_store_learning"],
+    },
+    "ponder": {"tags": ["reasoning", "research"], "keywords": ["understand", "swot", "analyze", "tradeoffs", "reason"]},
+    "search": {"tags": ["research"], "keywords": ["search", "web", "find"]},
+    "coding": {"tags": ["coding"], "keywords": ["code", "coding", "implement"]},
+    "plan": {"tags": ["plan"], "keywords": ["plan"]},
+    "discuss": {"tags": ["discuss"], "keywords": ["discuss"]},
+    "read": {"tags": ["read"], "keywords": ["read"]},
+    "explainer": {"tags": ["explain"], "keywords": ["explain", "expound"]},
+}
+
+
+def _augment_catalog_with_synthetic_modes() -> None:
+    """Add synthetic routable modes to the ambient workflow catalog.
+
+    Idempotent: runs once per process; safe if the catalog was already
+    loaded without the augmentation.
+    """
+    from kernel.ipsar_fsm import get_workflow_catalog
+    from kernel.models import WorkflowModeConfig
+
+    catalog = get_workflow_catalog()
+    for mode_id, spec in _SYNTHETIC_TEST_MODES.items():
+        if mode_id in catalog:
+            continue
+        authored_ops = list(spec.get("authored_ops", []))
+        bound_ops = list(spec.get("bound_ops", []))
+        # Keyword map: the spec's ``keywords`` list is flat (one pool per
+        # mode), while ``routing_intent_keywords`` is keyed per tag. Attribute
+        # the full pool to EVERY tag — intent detection is per-tag substring
+        # matching over the pool, so sharing the pool keeps each tag able to
+        # fire on its cue words.
+        tags = list(spec["tags"])
+        kw_pool = list(spec["keywords"])
+        catalog[mode_id] = WorkflowModeConfig(
+            mode_id=mode_id,
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            fork_allowed=True,
+            satisfies_intents=sorted(set(tags) | {mode_id}),
+            routing_intent_tags=tags,
+            routing_intent_keywords={tag: list(kw_pool) for tag in tags},
+            authored_allowed_operation_ids=authored_ops,
+            allowed_operation_ids=authored_ops + bound_ops,
+        )
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _augmented_ambient_catalog(_mcp_catalog_setup):  # noqa: F811 — deliberate fixture dependency on the module-scope import
+    """Augment the ambient test catalog with the synthetic target modes.
+
+    Depends on ``_mcp_catalog_setup`` so the ambient catalog is loaded
+    (and eagerly validated) BEFORE the augmentation runs. Individual tests
+    that patch the catalog bindings override this per-test — their patch
+    takes precedence while active.
+    """
+    _augment_catalog_with_synthetic_modes()
+    yield

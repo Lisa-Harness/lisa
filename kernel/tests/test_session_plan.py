@@ -226,9 +226,21 @@ def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
     pack ships its own graceful ``web_search`` stub, so the bundled default
     stays pack-encapsulated (no reference to external search provider packs).
     """
-    default_session_path = (
-        Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core" / "sessions" / "default.md"
-    )
+    # Resolve through the same entry-point path the host uses
+    # (``host.session_context.bundled_default_session_path``) so the test
+    # follows the src-layout / wheel layout instead of a hardcoded
+    # pre-src-layout relative path. Falls back to a repo-relative guess
+    # when the host package is not importable (kernel-only venvs).
+    try:
+        from host.session_context import bundled_default_session_path
+
+        default_session_path = bundled_default_session_path()
+    except ImportError:
+        default_session_path = (
+            Path(__file__).resolve().parents[2]
+            / "sdk" / "packs" / "core" / "src" / "sdk" / "packs" / "core"
+            / "sessions" / "default.md"
+        )
     text = default_session_path.read_text(encoding="utf-8")
 
     plan = compile_session_plan(text=text, source_uri=str(default_session_path))

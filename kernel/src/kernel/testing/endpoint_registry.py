@@ -26,6 +26,11 @@ class Endpoint:
         contract_name: The Protocol/ABC class name.
         consumer_site: The ``module.attr`` that loads this group at runtime.
         description: What this endpoint does, for pack authors.
+        known_orphan: True when no producer exists anywhere yet but the
+            endpoint stays registered (live consumer + intended public
+            surface). The producer test asserts NOT known_orphan instead
+            of failing, so the registry documents the orphan honestly
+            rather than turning the suite red.
     """
 
     group: str
@@ -33,6 +38,7 @@ class Endpoint:
     contract_name: str
     consumer_site: str
     description: str
+    known_orphan: bool = False
 
 
 REGISTRY: list[Endpoint] = [
@@ -69,6 +75,14 @@ REGISTRY: list[Endpoint] = [
             "a ``list[ContextItem]``. The session-owned context mapper "
             "merges these into ranked, lane-ordered context for each turn."
         ),
+        # Known orphan (2026-09-06): the consumer is live (host wiring builds
+        # EntryPointExtensionItemBuilder), but no pack declares this group —
+        # the would-be producers in packs-wip (cloudflare/github/stripe) still
+        # declare the pre-rename ``lisa.extensions.context_evidence`` group
+        # and emit the deleted ``ContextEvidence`` model. The endpoint stays
+        # registered for pack authors; re-pointing those packs is pack-repo
+        # work, not kernel work.
+        known_orphan=True,
     ),
     Endpoint(
         group="lisa.extensions.host_commands",

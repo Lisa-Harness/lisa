@@ -6338,6 +6338,18 @@ async def _run_turn_inner(
                         )
                 raise
             except Exception as exc:  # pylint: disable=broad-except
+                # Count the attempt: a raised dispatch (OperationExecutionError,
+                # MCP connection failure, …) IS a tool call for every budget
+                # and backstop that keys on ``total_tool_calls``. Without
+                # this, the empty-completion write-contract backstop (which
+                # requires ``total_tool_calls == 0``) arms on the NEXT
+                # iteration and synthesizes a doomed empty-args call — the
+                # model already tried and failed, it must not be forced to
+                # fire the same contract blind.
+                _state.total_tool_calls += 1
+                _state.step_tool_calls += 1
+                _state.called_tool_names.add(tool_name)
+                ledger.record(tool_name)
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
                 if recovery_item_id and hooks.recovery_service is not None:

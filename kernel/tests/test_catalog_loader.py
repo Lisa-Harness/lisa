@@ -28,6 +28,7 @@ from kernel.ipsar_fsm import (
     _apply_mode_overrides,
     load_catalog_from_disk,
     parse_front_matter,
+    validate_workflow_catalog,
 )
 from kernel.models import WorkflowModeConfig
 
@@ -471,8 +472,11 @@ def test_load_catalog_from_disk_rejects_fork_allowed_no_action_tools(
             "yield_policy": {"allowed": False},
         },
     )
+    # load_catalog_from_disk returns an unvalidated catalog by contract
+    # ("Call validate_workflow_catalog() on the result before use"); the
+    # fork_allowed invariants live in the validation step.
     with pytest.raises(WorkflowValidationError, match="no authored action tools"):
-        _load(tmp_path)
+        validate_workflow_catalog(_load(tmp_path))
 
 
 def test_load_catalog_from_disk_rejects_fork_allowed_empty_satisfies_intents(
@@ -488,7 +492,7 @@ def test_load_catalog_from_disk_rejects_fork_allowed_empty_satisfies_intents(
         },
     )
     with pytest.raises(WorkflowValidationError, match="empty satisfies_intents"):
-        _load(tmp_path)
+        validate_workflow_catalog(_load(tmp_path))
 
 
 def test_load_catalog_from_disk_rejects_fork_allowed_yield_policy_contradiction(
@@ -505,7 +509,7 @@ def test_load_catalog_from_disk_rejects_fork_allowed_yield_policy_contradiction(
         },
     )
     with pytest.raises(WorkflowValidationError, match="yield_policy allows inline asks"):
-        _load(tmp_path)
+        validate_workflow_catalog(_load(tmp_path))
 
 
 # ---------------------------------------------------------------------------

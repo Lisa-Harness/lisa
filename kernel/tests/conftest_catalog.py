@@ -7,6 +7,7 @@ and registers it with the kernel so ``get_workflow_catalog()`` and
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -99,7 +100,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
             str(_CORE_ROOT),
         ],
         env={
-            "SDK_CONTENT_ROOTS": ";".join(str(r) for r in content_roots),
+            "SDK_CONTENT_ROOTS": os.pathsep.join(str(r) for r in content_roots),
             "LISA_SESSION_PROVIDER_SELECTIONS": (
                 '{"modes":{"default":"lisa-pack-core","read":"lisa-pack-core"},'
                 '"tools":{"web_search":"lisa-pack-brave"}}'

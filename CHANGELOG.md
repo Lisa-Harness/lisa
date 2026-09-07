@@ -4,6 +4,36 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Kernel test baseline hardening & dispatch counter fix (Loop 1)
+
+- **What:** Fixed 35 pre-existing test failures across the kernel test suite
+  (bringing the failure baseline from 79 down to 44 with zero regressions):
+  (1) `SDK_CONTENT_ROOTS` separator mismatch: `conftest_catalog.py` and
+  `host/tests/conftest.py` now use `os.pathsep.join` instead of `";"`, fixing
+  catalog root resolution on Linux;
+  (2) `_augmented_ambient_catalog` fixture in `kernel/tests/conftest.py`:
+  injects synthetic routable modes (`markdown`, `remember`, `ponder`,
+  `search`, `coding`, `plan`) into the test catalog so pure mapping and
+  handoff tests resolve their targets in isolated venvs without external
+  packs installed;
+  (3) migrated 12 test call sites in `test_turn_runner.py` from legacy
+  `transition_stage(fork:...)` syntax to the current `fork` operation call
+  contract;
+  (4) `test_catalog_loader.py` updated to invoke `validate_workflow_catalog`
+  rather than asserting validation exceptions on raw load;
+  (5) fixed pre-src-layout path in `test_session_plan.py`;
+  (6) fixed `except Exception:` dispatch-error path in
+  `kernel/src/kernel/turn_runner.py`: failed dispatches now increment
+  `total_tool_calls` so the empty-completion write-contract backstop cannot
+  falsely re-arm after an attempted write failed.
+- **Why:** The test suite had a red baseline (79 failures) that masked
+  regressions and forced developers into `git stash` archaeology on every
+  bugfix. Hardening the baseline provides a stable regression gate for the
+  turn-loop refactoring.
+- **Baseline:** Documented in `/memories/repo/kernel-test-baseline.md`.
+
 ### Added
 
 #### In-process MCP server mode (default for `lisa once`)

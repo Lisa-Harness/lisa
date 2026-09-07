@@ -7,6 +7,7 @@ in tests that exercise command dispatch (``/help``, ``/debug``, etc.).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -62,7 +63,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
             str(_CORE_ROOT),
         ],
         env={
-            "SDK_CONTENT_ROOTS": ";".join(str(r) for r in content_roots),
+            "SDK_CONTENT_ROOTS": os.pathsep.join(str(r) for r in content_roots),
             "LISA_SESSION_PROVIDER_SELECTIONS": json.dumps(
                 {
                     "modes": {"default": "lisa-pack-core"},
