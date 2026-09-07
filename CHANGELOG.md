@@ -78,6 +78,22 @@ All notable changes to the Lisa Framework will be documented in this file.
 - **Tests:** `kernel/tests/test_turn_scenario_matrix.py` (20 passed),
   `kernel/tests/test_effect_receipts.py` (23 passed).
 
+#### Turn-loop invariant registry & fail-loud exception hardening (Loop 4)
+
+- **What:** (1) Created `docs/lessons/turn-loop-invariants.md`, establishing an
+  authoritative registry of all 12 active turn-loop invariants mapping each invariant
+  to its code site, incident provenance, pinning unit test, and scenario matrix cell;
+  (2) Replaced the git-blame comment in `kernel/src/kernel/turn_runner.py` with an
+  explicit pointer to the invariant registry;
+  (3) Hardened exception handling across `kernel/src/kernel/turn_runner.py` and
+  `kernel/src/kernel/turn_phases/`: recovery settle errors now log with `exc_info=True`
+  to prevent silent failures, and workflow position wrappers log debug diagnostics
+  instead of blind exception swallows.
+- **Why:** Incident memory was previously scattered in commit messages, CHANGELOG
+  notes, and inline comments. The registry provides a single discoverable contract
+  for why each guard exists, while fail-loud logging prevents silent failures from
+  masking state corruption.
+
 #### In-process MCP server mode (default for `lisa once`)
 
 - **What:** First-party MCP servers (catalog, content, context, guard, memory,

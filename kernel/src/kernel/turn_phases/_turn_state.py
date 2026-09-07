@@ -416,8 +416,8 @@ async def emit_stage(
     payload.setdefault("max_handoffs", state.max_handoffs)
     try:
         await on_stage_hook(label, payload)
-    except Exception as stage_exc:  # pylint: disable=broad-except
-        log.debug("on_stage(%s) hook failed: %s", label, stage_exc)
+    except Exception as stage_exc:  # noqa: BLE001  # pylint: disable=broad-except
+        log.debug("on_stage(%s) hook failed: %s", label, stage_exc, exc_info=True)
 
 
 async def mcp_tool_executor(

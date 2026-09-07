@@ -275,13 +275,12 @@ def _resolve_tool_display_label(
 # ``forced_action_non_compliant_cap`` /
 # ``stage_nudge_threshold`` / ``stage_nudge_cap`` / ``max_handoffs_per_turn`` /
 # ``duplicate_hint_limit`` / ``hint_cycle_min_len`` / ``hint_override_limit``)
-# so hosts can tune them via env vars without editing kernel source. They
-# were previously module-level constants here; see the git-blame history
-# for the incidents that motivated each cap (the 2026-07-27 fork-refusal,
-# the 2026-07-30 plan→ponder→markdown bounce, etc.). ``_run_turn_inner``
-# reads them from the shared ``_kernel_settings`` singleton and, for the
-# few that are referenced multiple times per turn, binds a local alias
-# once at the top of the loop to avoid repeated attribute access.
+# so hosts can tune them via env vars without editing kernel source. For
+# the complete registry of invariants, provenance incidents, pinning tests,
+# and scenario matrix cells, see ``docs/lessons/turn-loop-invariants.md``.
+# ``_run_turn_inner`` reads them from the shared ``_kernel_settings``
+# singleton and, for the few that are referenced multiple times per turn,
+# binds a local alias once at the top of the loop.
 
 
 def _extract_hint_target(hint_text: str) -> str:
@@ -563,7 +562,8 @@ def _is_workflow_position_complete(position: Any) -> bool:
         from kernel.workflow_view import is_complete
 
         return bool(is_complete(position))
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("is_complete check raised (degrading to complete=True): %s", exc)
         return True
 
 
@@ -589,7 +589,8 @@ def _next_remaining_step(position: Any) -> Any:
             if step.step_id != current:
                 return step
         return remaining[0]
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("remaining_steps check raised (degrading to None): %s", exc)
         return None
 
 
@@ -631,7 +632,8 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
         return ""
     try:
         position = hooks.workflow_position()
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("hooks.workflow_position() raised in next step lookup: %s", exc)
         return ""
     step = _next_remaining_step(position)
     return step.mode_id if step is not None else ""
@@ -671,7 +673,8 @@ def _active_position_resume_target(hooks: Any) -> str:
         return ""
     try:
         position = hooks.workflow_position()
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("hooks.workflow_position() raised in resume lookup: %s", exc)
         return ""
     if position is None:
         return ""
@@ -6339,6 +6342,7 @@ async def _run_turn_inner(
                             "recovery settle success failed for %s: %s",
                             tool_name,
                             recovery_exc,
+                            exc_info=True,
                         )
             except ApprovalRequired:
                 if recovery_item_id and hooks.recovery_service is not None:
@@ -6355,6 +6359,7 @@ async def _run_turn_inner(
                             "recovery settle approval failed for %s: %s",
                             tool_name,
                             recovery_exc,
+                            exc_info=True,
                         )
                 raise
             except Exception as exc:  # pylint: disable=broad-except
@@ -6386,6 +6391,7 @@ async def _run_turn_inner(
                             "recovery settle failure failed for %s: %s",
                             tool_name,
                             recovery_exc,
+                            exc_info=True,
                         )
 
             await _emit_stage(

@@ -340,7 +340,8 @@ def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
         from kernel.workflow_position import is_complete  # noqa: PLC0415
 
         return not is_complete(position)
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+        _log.debug("workflow_position.is_complete raised: %s", exc)
         return bool(position.declared_steps) and bool(position.current_step_id)
 
 
@@ -364,7 +365,8 @@ def _next_step_mode_id(position: _WorkflowPositionLike | None) -> str:
             if step.step_id != current:
                 return step.mode_id
         return remaining[0].mode_id
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+        _log.debug("workflow_position.remaining_steps raised: %s", exc)
         return ""
 
 
@@ -450,7 +452,8 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
             if getattr(step, "write_capability", None):
                 return step.mode_id
         return ""
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+        _log.debug("planned_writer_mode_id raised: %s", exc)
         return ""
 
 
