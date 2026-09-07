@@ -1,15 +1,8 @@
 """Proactive capability-manifest routing-hint computation.
 
-Extracted from ``kernel.turn_runner`` to reduce the file's complexity. The
-hint is injected into the system prompt when the current mode lacks tools
+The hint is injected into the system prompt when the current mode lacks tools
 the query seems to need. Tag-blind and prose-blind: the kernel works over
 opaque pack-authored intent-tag vocabulary.
-
-DESIGN — Re-exported by ``kernel.turn_runner``:
-    Existing tests import ``_compute_capability_routing_hint``,
-    ``_detect_query_intents``, ``_query_is_sequential`` and others directly
-    from ``kernel.turn_runner``. That module re-exports every symbol below so
-    no test file needs editing.
 """
 
 from __future__ import annotations
@@ -18,21 +11,22 @@ import logging
 import re
 from typing import Any
 
-from kernel import turn_runner
+from kernel import ipsar_fsm
 from kernel.models import CapabilityManifest, WorkflowModeConfig
 
 _log = logging.getLogger(__name__)
 
 
 def get_workflow_catalog() -> dict[str, Any]:
-    """Return the workflow catalog via the turn runner for patchability.
+    """Return the workflow catalog for patchability.
 
     Exposed at module scope (no leading underscore) so tests can patch
-    ``kernel.turn_phases._routing_hint.get_workflow_catalog`` and both
+    ``kernel.turn_phases._routing_hint.get_workflow_catalog`` or
+    ``kernel.ipsar_fsm.get_workflow_catalog`` and both
     ``_detect_query_intents`` and ``_compute_fork_targets`` resolve through
     the same indirection.
     """
-    return turn_runner.get_workflow_catalog()
+    return ipsar_fsm.get_workflow_catalog()
 
 # The stable plan-escalation hint text. Authored once here so the
 # ad-hoc instance guard (``is_plan_escalation_hint``) can detect it

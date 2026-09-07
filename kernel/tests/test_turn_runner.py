@@ -2562,7 +2562,7 @@ def test_fork_mode_requires_tools_true_for_action_modes() -> None:
     """``_fork_mode_requires_tools`` returns True for modes that declare
     non-empty ``allowed_operation_ids`` or ``allowed_tool_ids`` (remember,
     markdown), and False for chat-only modes (default, ponder)."""
-    from kernel.turn_runner import _fork_mode_requires_tools
+    from kernel.turn_phases._fork import _fork_mode_requires_tools
 
     assert _fork_mode_requires_tools("remember") is True
     assert _fork_mode_requires_tools("markdown") is True
@@ -3297,7 +3297,7 @@ def test_routing_hint_after_handoff_names_next_target() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
     markdown_cfg = _mode_config(
@@ -3337,7 +3337,7 @@ def test_routing_hint_after_handoff_empty_when_new_mode_satisfies_all() -> None:
     detected intents, the recomputed hint is empty (gap is zero)."""
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
     search_cfg = _mode_config(
@@ -3380,7 +3380,7 @@ def test_routing_hint_sequential_query_does_not_fork() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
         mode_id="search",
@@ -3441,7 +3441,7 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     remember_cfg = _mode_config(
         mode_id="remember",
@@ -3578,7 +3578,7 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # ponder = producer (satisfies research/reasoning), markdown = consumer
     # (satisfies write). A fork mixing them is sequential-wrong.
@@ -3645,7 +3645,7 @@ def test_routing_hint_refuses_fork_for_consumer_only_gap() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # markdown = consumer (write), coding = consumer (coding). No producer
     # in the gap. A parallel fork is sequential-wrong. search is a producer
@@ -3712,7 +3712,7 @@ def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     plan_cfg = _mode_config(
         mode_id="plan",
@@ -3843,7 +3843,7 @@ def test_query_is_sequential_detects_connectors() -> None:
     """The sequential connector detector recognizes the built-in fallback
     connectors ('then', 'and then', 'after that', 'next', 'followed by').
     """
-    from kernel.turn_runner import _query_is_sequential
+    from kernel.turn_phases._routing_hint import _query_is_sequential
 
     assert _query_is_sequential("search for X then write a markdown")
     assert _query_is_sequential("search for X and then write a markdown")
@@ -3864,7 +3864,7 @@ def test_query_is_sequential_uses_session_vocabulary() -> None:
     child had no access to the search child's output.
     """
     from kernel.routing_vocabulary import register_routing_vocabulary
-    from kernel.turn_runner import _query_is_sequential
+    from kernel.turn_phases._routing_hint import _query_is_sequential
 
     # Without the session vocabulary, 'based on' is NOT sequential — the
     # fallback list does not include it.
@@ -3927,7 +3927,7 @@ def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
     from unittest.mock import patch
 
     from kernel.routing_vocabulary import register_routing_vocabulary
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
         mode_id="search",
@@ -3988,7 +3988,7 @@ def test_routing_hint_chain_memory_skips_completed_steps() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
         mode_id="search",
@@ -4170,7 +4170,7 @@ def _patched_hint_catalog(catalog: dict[str, Any]):
 
 def test_routing_hint_returns_empty_when_no_routing_targets() -> None:
     """No routing targets means no hint is injected (zero tokens)."""
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     hint = _compute_capability_routing_hint(
         mode_id="default",
@@ -4191,7 +4191,7 @@ def test_routing_hint_returns_empty_when_mode_has_search_and_no_reasoning() -> N
     tool-bearing mode as satisfying every intent, which suppressed
     handoffs from tool-rich modes that lacked the specific intent's tools.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     hint = _compute_capability_routing_hint(
         mode_id="search",
@@ -4218,7 +4218,7 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     such prose would be pack-authored routing *input*, not kernel-emitted
     routing *output*.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
         "search", "ponder", "markdown", "coding",
@@ -4246,7 +4246,7 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
 
 def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
     """'analyze the latest tradeoffs' is research-then-reason → ponder."""
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
         "search", "ponder",
@@ -4285,7 +4285,7 @@ def test_routing_hint_suppresses_target_on_topic_abandonment_marker() -> None:
         register_routing_vocabulary,
         reset_routing_vocabulary,
     )
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_routing_vocabulary()
     register_routing_vocabulary(
@@ -4336,7 +4336,7 @@ def test_routing_hint_routes_into_target_when_no_abandonment_marker() -> None:
         register_routing_vocabulary,
         reset_routing_vocabulary,
     )
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_routing_vocabulary()
     register_routing_vocabulary(
@@ -4380,7 +4380,7 @@ def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
     """A pure tool-gap query (write a file) with no reasoning cue lists all
     targets rather than singling out ponder.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
         "markdown", "coding", "ponder",
@@ -4406,7 +4406,7 @@ def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
     """A pure 'search the web' query (no reasoning cue) gets the generic
     target list, not the ponder-preferred copy.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog("search", "ponder")
     with _patched_hint_catalog(catalog):
@@ -4441,7 +4441,7 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     (transition_stage + the fork target id). Any such narration would be
     kernel-authored routing *output*, which is pack coupling.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog("remember", "markdown", "coding", "ponder", "search")
     with _patched_hint_catalog(catalog):
@@ -4468,7 +4468,7 @@ def test_routing_hint_fork_requires_both_routable_modes() -> None:
     """When one of remember/markdown is not a routing target, do not suggest a
     fork — fall back to the single-goal branches (or no hint).
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # markdown not routable from here → no fork hint; remember+write cues with
     # no tool/search/research-reason gap means no hint at all.
@@ -4485,7 +4485,7 @@ def test_routing_hint_fork_preserves_target_case() -> None:
     """The fork target string preserves the original (non-lowercased) mode
     IDs from routing_targets, matching what the FSM catalog expects.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # Synthetic modes with mixed-case ids; the catalog keys the exact ids
     # so intent detection resolves them and the fork string preserves case.
@@ -4526,7 +4526,7 @@ def test_routing_hint_forks_from_coding_mode() -> None:
     never passed. The model then fell back to coding_create_worktree
     (approval-gated), producing a worktree approval loop instead of a fork.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog("remember", "markdown", "coding", "ponder", "search")
     with _patched_hint_catalog(catalog):
@@ -4569,7 +4569,7 @@ def test_routing_hint_single_handoff_coding_to_markdown() -> None:
     "write") leave the write intent as a gap, the single-handoff branch
     (step 5) fires, and the hint names markdown.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     coding_manifest = _manifest_with_coding_tools()
     catalog = _hint_catalog("default", "remember", "markdown", "ponder", "search")
@@ -4610,7 +4610,7 @@ def test_routing_hint_suppressed_when_mode_satisfies_write_intent() -> None:
     issued from markdown mode should not trigger a handoff hint back to
     itself or anywhere else.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     hint = _compute_capability_routing_hint(
         mode_id="markdown",
@@ -4635,7 +4635,7 @@ def test_routing_hint_single_handoff_fires_even_with_rich_manifest() -> None:
     manifest and suppressed the gap for any tool-bearing mode; the new
     check reads ``mode_config.satisfies_intents`` and is manifest-blind.
     """
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog("default", "remember", "markdown", "ponder", "search")
     catalog["coding"] = _mode_config(
@@ -4725,7 +4725,7 @@ def test_routing_hint_partial_coverage_fallback_instead_of_silence() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # Two modes, each covering a disjoint non-producer/non-consumer intent.
     # Neither declares fork_allowed (the default), so the fork branch
@@ -4782,7 +4782,7 @@ def test_routing_hint_silence_when_no_target_covers_any_gap_intent() -> None:
     """
     from unittest.mock import patch
 
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     # A mode whose intent tags don't overlap the detected gap at all.
     other_cfg = _mode_config(
@@ -4858,7 +4858,7 @@ def test_capability_gate_blocks_weak_model_when_router_wired() -> None:
     """A mode requiring ``tools`` with a text-only model + a wired router
     returns a blocked TurnResult naming the missing capability.
     """
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
     model_def = _StubModel(model_id="gemma4:cloud", capabilities=("text",))
@@ -4878,7 +4878,7 @@ def test_capability_gate_blocks_weak_model_when_router_wired() -> None:
 
 def test_capability_gate_passes_when_model_capable() -> None:
     """A model that declares the required capabilities is admitted."""
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     mode_config = _mode_config(mode_id="coding", required_capabilities=["tools", "code"])
     model_def = _StubModel(model_id="gpt-5.3-codex", capabilities=("text", "tools", "code"))
@@ -4893,7 +4893,7 @@ def test_capability_gate_passes_when_model_capable() -> None:
 
 def test_capability_gate_skips_when_no_required_capabilities() -> None:
     """A mode with no required_capabilities never blocks (backward compat)."""
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     mode_config = _mode_config(mode_id="default")  # no required_capabilities
     model_def = _StubModel(model_id="weak", capabilities=())
@@ -4911,7 +4911,7 @@ def test_capability_gate_advisory_when_no_router_wired() -> None:
     model is missing required capabilities. A host without a router has no
     escalation path, so blocking would dead-end.
     """
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
     model_def = _StubModel(model_id="weak", capabilities=("text",))
@@ -4926,7 +4926,7 @@ def test_capability_gate_advisory_when_no_router_wired() -> None:
 
 def test_capability_gate_skips_when_mode_config_none() -> None:
     """No mode config → no gate (backward compat for hosts without modes)."""
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     model_def = _StubModel(model_id="weak", capabilities=())
     block = _validate_model_capabilities(
@@ -4942,7 +4942,7 @@ def test_capability_gate_treats_missing_capabilities_field_as_empty() -> None:
     """A model_def without a ``capabilities`` attribute is treated as having
     no declared capabilities — only matters when the mode requires caps.
     """
-    from kernel.turn_runner import _validate_model_capabilities
+    from kernel.turn_phases._post_turn import _validate_model_capabilities
 
     mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
     # A bare object with only model_id — no capabilities attribute.
@@ -4972,7 +4972,7 @@ def test_tool_effect_reads_write_effect_from_tool_catalog() -> None:
     """``_tool_effect`` returns ``write`` for a tool whose catalog definition
     declares ``effect: write``.
     """
-    from kernel.turn_runner import _tool_effect
+    from kernel.turn_phases._routing_hint import _tool_effect
 
     tool_def = type("Tool", (), {"effect": "write"})()
     assert (
@@ -4987,7 +4987,7 @@ def test_tool_effect_reads_write_effect_from_tool_catalog() -> None:
 
 def test_tool_effect_reads_write_effect_from_operation_catalog() -> None:
     """``_tool_effect`` prefers the operation catalog on id collision."""
-    from kernel.turn_runner import _tool_effect
+    from kernel.turn_phases._routing_hint import _tool_effect
 
     op_def = type("Op", (), {"effect": "write"})()
     assert (
@@ -5004,14 +5004,14 @@ def test_tool_effect_defaults_read_for_unknown_tool() -> None:
     """Unknown tools (no catalog entry) default to ``read`` so the
     routing-hint guard only fires on declared write-effect tools.
     """
-    from kernel.turn_runner import _tool_effect
+    from kernel.turn_phases._routing_hint import _tool_effect
 
     assert _tool_effect("unknown", operation_catalog={}, tool_catalog={}) == "read"
 
 
 def test_tool_effect_defaults_read_when_definition_has_no_effect() -> None:
     """A definition without an ``effect`` attribute defaults to ``read``."""
-    from kernel.turn_runner import _tool_effect
+    from kernel.turn_phases._routing_hint import _tool_effect
 
     bare_def = type("Bare", (), {})()
     assert (
@@ -5026,7 +5026,7 @@ def test_tool_effect_defaults_read_when_definition_has_no_effect() -> None:
 
 def test_tool_effect_returns_external_write() -> None:
     """``external_write`` is treated as a write-effect for the guard."""
-    from kernel.turn_runner import _tool_effect
+    from kernel.turn_phases._routing_hint import _tool_effect
 
     tool_def = type("Tool", (), {"effect": "external_write"})()
     assert (

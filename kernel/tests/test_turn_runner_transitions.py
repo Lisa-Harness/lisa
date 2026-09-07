@@ -27,10 +27,12 @@ from kernel.models import (
     TurnBudget,
 )
 from kernel.workflow_position import WorkflowPosition
-from kernel.turn_runner import (
-    TurnHooks,
+from kernel.turn_phases._fork import (
     _fork_child_budget,
     _fork_mode_requires_tools,
+)
+from kernel.turn_runner import (
+    TurnHooks,
     run_turn,
 )
 

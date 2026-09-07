@@ -21,13 +21,15 @@ from typing import Any
 import pytest
 
 from kernel.models import YieldPolicy
-from kernel.turn_runner import (
-    TurnHooks,
+from kernel.turn_phases._tool_schemas import (
     _build_in_process_tool_schemas,
     _mode_bound_operation_ids,
     _operation_allowed_for_mode,
     _prune_model_tool_schemas,
     _tool_schema_name,
+)
+from kernel.turn_runner import (
+    TurnHooks,
     run_turn,
 )
 
@@ -407,7 +409,7 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
     the target has routing targets or stage edges.
     """
     from kernel.turn_phases import _tool_schemas as _ts
-    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+    from kernel.turn_phases._tool_schemas import _rebuild_tool_schemas_for_mode
 
     mode_config = _make_mode_config(
         mode_id="okf",
@@ -450,7 +452,7 @@ async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_t
     single-mode chat turns (no handoffs available).
     """
     from kernel.turn_phases import _tool_schemas as _ts
-    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+    from kernel.turn_phases._tool_schemas import _rebuild_tool_schemas_for_mode
 
     mode_config = _make_mode_config(
         mode_id="discuss",
@@ -521,7 +523,7 @@ async def test_rebuild_surface_is_identical_to_phase1_surface(
     yield-drop. Phase 6c: the surface no longer depends on session/position
     wiring — only on the mode config — so there is no session axis to vary.
     """
-    from kernel.turn_runner import _rebuild_tool_schemas_for_mode, build_tool_surface
+    from kernel.turn_phases._tool_schemas import _rebuild_tool_schemas_for_mode, build_tool_surface
 
     mode_config = _make_mode_config(
         mode_id="parity",
@@ -568,7 +570,7 @@ async def test_rebuild_advertises_yield_identically_to_phase1(
     the old rebuild path never advertised ``yield`` at all, so a mode handed
     off mid-turn silently lost the ability to ask the user a question.
     """
-    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+    from kernel.turn_phases._tool_schemas import _rebuild_tool_schemas_for_mode
 
     mode_config = _make_mode_config(
         mode_id="chatty",

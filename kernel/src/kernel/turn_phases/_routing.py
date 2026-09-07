@@ -21,10 +21,6 @@ the coordinator decision, advances the durable position, and resets the
 per-step counters. It does NOT rebuild the tool surface or run entry ops —
 those stay in the turn loop's existing handoff continuation, which every
 origin now funnels through.
-
-DESIGN — re-exported by ``kernel.turn_runner``:
-    Existing tests import routing helpers from ``kernel.turn_runner``. That
-    module re-exports the symbols below so no test file needs editing.
 """
 
 from __future__ import annotations

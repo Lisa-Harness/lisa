@@ -1,17 +1,10 @@
 """Tool-schema assembly and pruning for the turn runner.
 
-Extracted from ``kernel.turn_runner`` to reduce file complexity. Owns the
-final model-facing tool-surface construction: MCP tool translation, in-process
-(pack-contributed) tool schema building, operation-catalog filtering, mode
-allowlist enforcement, duplicate/invalid schema pruning, and the post-handoff
+Owns the final model-facing tool-surface construction: MCP tool translation,
+in-process (pack-contributed) tool schema building, operation-catalog filtering,
+mode allowlist enforcement, duplicate/invalid schema pruning, and the post-handoff
 tool-surface rebuild. Also owns the ``_TRANSITION_TOOL_NAME`` constant used
 by both the prune pass and the turn loop's transition interception.
-
-DESIGN — Re-exported by ``kernel.turn_runner``:
-    Existing tests import ``_prune_model_tool_schemas``,
-    ``_build_in_process_tool_schemas``, and ``_rebuild_tool_schemas_for_mode``
-    directly from ``kernel.turn_runner``. That module re-exports every symbol
-    below so no test file needs editing.
 """
 
 from __future__ import annotations

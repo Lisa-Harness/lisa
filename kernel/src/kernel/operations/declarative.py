@@ -142,14 +142,6 @@ def _empty_content_detail(
     return f"[{', '.join(parts)}]"
 
 
-# Structured-output helpers (extraction, tolerant parse, json-only retry) live in
-# kernel.operations.structured_output and are re-exported here so legacy callers
-# keep working. Prefer importing from structured_output directly in new code.
-_is_structured_output_unsupported = is_structured_output_unsupported
-_build_json_only_instruction = json_only_instruction
-_parse_structured_payload = parse_structured_payload
-
-
 def _build_operation_result_from_structured_payload(
     *,
     operation_id: str,
@@ -292,14 +284,14 @@ async def execute_declarative_operation(
             parsed_payload: BaseModel | None = None
             if response_format_model is not None and content_text:
                 try:
-                    parsed_payload = _parse_structured_payload(
+                    parsed_payload = parse_structured_payload(
                         response_format_model,
                         content_text,
                     )
                 except ValidationError:
                     should_retry_for_json_only = True
         except Exception as exc:  # pylint: disable=broad-except
-            if response_format_model is None or not _is_structured_output_unsupported(exc):
+            if response_format_model is None or not is_structured_output_unsupported(exc):
                 raise
             should_retry_for_json_only = True
         if should_retry_for_json_only and response_format_model is not None:
@@ -324,7 +316,7 @@ async def execute_declarative_operation(
                 parsed_payload = None
             elif content_text:
                 try:
-                    parsed_payload = _parse_structured_payload(
+                    parsed_payload = parse_structured_payload(
                         response_format_model,
                         content_text,
                     )

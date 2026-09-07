@@ -31,13 +31,19 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
-from kernel.turn_phases._dispatch import (
-    dispatch_capability,
-    enforce_write_receipt as _enforce_write_receipt,
-    format_read_abbreviation as _format_read_abbreviation,
-    read_cache_signature as _read_cache_signature,
+from kernel.turn_phases._child_turn import classify_child_turn
+from kernel.turn_phases._completion_contract import (
+    AcceptTurn,
+    BlockNoVerifiedWrite,
+    ChatReadFootnote,
+    ChatSoftAccept,
+    PreexistingFailureBlock,
+    SurfaceProseWithFootnote,
+    resolve_completion_contract,
 )
+from kernel.turn_phases._dispatch import dispatch_capability
 from kernel.turn_phases._entry import EntryPhaseResult, execute_entry_phase
+from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
     FinishAction as _FinishAction,
@@ -48,6 +54,26 @@ from kernel.turn_phases._lifecycle import (
     TransitionAction as _TransitionAction,
     _TurnStateView as _TSV,
     resolve_lifecycle_action as _resolve_lifecycle,
+)
+from kernel.turn_phases._post_turn import (
+    _extract_completion_usage,
+    _to_tool_context,
+    _validate_model_capabilities,
+)
+from kernel.turn_phases._routing import RoutingContext, apply_routing
+from kernel.turn_phases._routing_hint import (
+    _compute_capability_routing_hint,
+    _compute_fork_targets,
+    _detect_query_intents,
+    _format_remaining_steps,
+    emit_transition_hint,
+)
+from kernel.turn_phases._tool_schemas import (
+    _TRANSITION_TOOL_NAME,
+    _YIELD_TOOL_NAME,
+    _rebuild_tool_schemas_for_mode,
+    _tool_schema_name,
+    build_tool_surface,
 )
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
@@ -5998,16 +6024,6 @@ async def _run_turn_inner(
 
     # ── Phase 3: Post-turn ────────────────────────────────────────────
     # ── Parent-turn completion contract (Phase 8) ────────────────────
-    from kernel.turn_phases._completion_contract import (
-        AcceptTurn,
-        BlockNoVerifiedWrite,
-        ChatReadFootnote,
-        ChatSoftAccept,
-        PreexistingFailureBlock,
-        SurfaceProseWithFootnote,
-        resolve_completion_contract,
-    )
-
     contract_decision = resolve_completion_contract(
         mode_id=mode_id,
         mode_kind=mode_config.mode_kind if mode_config else "chat",
@@ -6194,88 +6210,3 @@ async def _run_turn_inner(
         per_model_usage=list(_state.per_model_usage.values()),
         per_mode_usage=list(_state.per_mode_usage.values()),
     )
-
-
-# ---------------------------------------------------------------------------
-# Re-exports from extracted turn_phases submodules.
-#
-# These symbols were historically defined in this module. They have been
-# extracted to kernel.turn_phases.* for complexity management but are
-# re-exported here so the 21 test files that import them via
-# ``from kernel.turn_runner import _compute_capability_routing_hint`` etc.
-# continue to resolve without edits.
-# ---------------------------------------------------------------------------
-
-# Routing-hint cluster (extracted in Phase 1)
-# Fork fan-out cluster (extracted in Phase 2)
-# Shared child-turn classifier (extracted in Phase 5)
-from kernel.turn_phases._child_turn import (
-    classify_child_turn,
-)
-from kernel.turn_phases._fork import (  # noqa: F401
-    _build_minimal_context,
-    _execute_fork_fanout,
-    _fork_child_budget,
-    _fork_mode_requires_tools,
-    _run_fork_child,
-    _run_fork_child_turn,
-)
-
-# Post-turn / capability-gate / serialization cluster (extracted in Phase 4)
-from kernel.turn_phases._post_turn import (  # noqa: F401
-    _CapabilityGateBlock,
-    _coerce_non_negative_float,
-    _coerce_non_negative_int,
-    _extract_completion_usage,
-    _serialize_tool_json,
-    _stringify_pack_tool_result,
-    _stringify_result,
-    _to_tool_context,
-    _validate_model_capabilities,
-)
-
-# Unified routing applier (Phase 3 of the uniformity refactor)
-from kernel.turn_phases._routing import (  # noqa: F401
-    RoutingContext,
-    TurnDecision,
-    TurnDecisionResult,
-    apply_routing,
-    evaluate_turn_decision,
-    save_route_decision,
-)
-from kernel.turn_phases._routing_hint import (  # noqa: F401
-    _compute_capability_routing_hint,
-    _compute_fork_targets,
-    _detect_query_intents,
-    _first_target_for_earliest_intent,
-    _format_remaining_steps,
-    _query_is_sequential,
-    _single_handoff_target_for_gap,
-    _tool_effect,
-    emit_transition_hint,
-)
-
-# Tool-schema cluster (extracted in Phase 3)
-from kernel.turn_phases._tool_schemas import (  # noqa: F401
-    _TRANSITION_TOOL_NAME,
-    _YIELD_TOOL_NAME,
-    _build_in_process_tool_schemas,
-    _mode_bound_operation_ids,
-    _operation_allowed_for_mode,
-    _prune_model_tool_schemas,
-    _rebuild_tool_schemas_for_mode,
-    _tool_schema_name,
-    build_tool_surface,
-)
-
-# Completion-contract resolver (extracted in Loop 2)
-from kernel.turn_phases._completion_contract import (  # noqa: F401
-    AcceptTurn,
-    BlockNoVerifiedWrite,
-    ChatReadFootnote,
-    ChatSoftAccept,
-    CompletionContractDecision,
-    PreexistingFailureBlock,
-    SurfaceProseWithFootnote,
-    resolve_completion_contract,
-)

@@ -4,6 +4,20 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+#### Compatibility re-exports from `kernel.turn_runner` & `declarative`
+
+- **What:** Removed compatibility re-exports from `kernel/src/kernel/turn_runner.py`
+  (which formerly re-exported internal helpers from `turn_phases.*` for legacy
+  test suites) and from `kernel/src/kernel/operations/declarative.py` (which
+  aliased structured-output helpers). Updated all test files and host modules to
+  import directly from their canonical `kernel.turn_phases.*` and `kernel.operations.*`
+  modules. Cleaned up stale "DESIGN — re-exported by kernel.turn_runner" docstrings
+  across `kernel/src/kernel/turn_phases/`.
+- **Why:** The repository follows a hard-cutover contract; compatibility shims and
+  stale aliases mask broken package configurations and cause cyclic import workarounds.
+
 ### Fixed
 
 #### Kernel test baseline hardening & dispatch counter fix (Loop 1)

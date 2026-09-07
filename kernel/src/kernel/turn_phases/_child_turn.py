@@ -24,10 +24,6 @@ adapter maps to its host-facing model. The classification order is fixed:
 3. ``interrupted`` — the harness force-yielded (iteration cap / budget / stuck).
 4. ``timeout`` / ``error`` / ``cancelled`` — exception-based outcomes.
 5. ``complete`` / ``no_tools`` — completion-contract validation via receipts.
-
-DESIGN — re-exported by ``kernel.turn_runner``:
-    Existing tests import fork helpers from ``kernel.turn_runner``. That
-    module re-exports the symbols below so no test file needs editing.
 """
 
 from __future__ import annotations

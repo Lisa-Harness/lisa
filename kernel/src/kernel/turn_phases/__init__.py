@@ -1,7 +1,4 @@
-"""Turn phase submodules extracted from ``kernel.turn_runner``.
+"""Turn phase submodules of the kernel turn loop.
 
-Each submodule owns one cohesive cluster of the turn pipeline. The
-``kernel.turn_runner`` module re-exports these helpers so existing test
-imports (``from kernel.turn_runner import _compute_capability_routing_hint``)
-keep working without edits.
+Each submodule owns one cohesive cluster of the turn pipeline.
 """

@@ -1,16 +1,10 @@
 """Fork fan-out orchestration for the turn runner.
 
-Extracted from ``kernel.turn_runner`` to reduce file complexity. Owns the
-parallel fan-out to heterogeneous modes: budget division, child turn
+Owns the parallel fan-out to heterogeneous modes: budget division, child turn
 execution, status mapping (``ok``/``no_tools``/``timeout``/``error``/
 ``cancelled``), and stage-event emission. Also owns
 ``_build_minimal_context``, the shared ``OperationExecutionContext``
 builder used by both the fork path and the main turn loop.
-
-DESIGN — Re-exported by ``kernel.turn_runner``:
-    Existing tests import ``_fork_mode_requires_tools`` and
-    ``_build_minimal_context`` directly from ``kernel.turn_runner``. That
-    module re-exports every symbol below so no test file needs editing.
 """
 
 from __future__ import annotations

@@ -45,10 +45,9 @@ from kernel.approval import (
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
+from kernel.turn_phases._routing import TurnDecision, evaluate_turn_decision
 from kernel.turn_runner import (
-    TurnDecision,
     TurnResult,
-    evaluate_turn_decision,
     execute_approved_invocation,
     run_turn,
 )

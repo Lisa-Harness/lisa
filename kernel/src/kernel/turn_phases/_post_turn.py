@@ -1,19 +1,12 @@
 """Post-turn helpers and capability-gate utilities for the turn runner.
 
-Extracted from ``kernel.turn_runner`` to reduce file complexity. Owns the
-capability-gate check (``_validate_model_capabilities`` +
+Owns the capability-gate check (``_validate_model_capabilities`` +
 ``_CapabilityGateBlock``), the result-stringification helpers
 (``_stringify_result``, ``_serialize_tool_json``,
 ``_stringify_pack_tool_result``), the tool-context builder
 (``_to_tool_context``), and the completion-usage extraction helpers
 (``_coerce_non_negative_int``, ``_coerce_non_negative_float``,
 ``_extract_completion_usage``).
-
-DESIGN — Re-exported by ``kernel.turn_runner``:
-    Existing tests import ``_validate_model_capabilities``,
-    ``_extract_completion_usage``, and ``_coerce_non_negative_int`` directly
-    from ``kernel.turn_runner``. That module re-exports every symbol below so
-    no test file needs editing.
 """
 
 from __future__ import annotations

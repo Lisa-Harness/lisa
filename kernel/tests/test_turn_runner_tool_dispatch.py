@@ -24,14 +24,16 @@ from kernel.models import (
     OperationResult,
     ToolResult,
 )
-from kernel.turn_runner import (
-    TurnHooks,
-    _build_minimal_context,
-    _extract_pre_turn_briefing,
-    _resolve_tool_display_label,
+from kernel.turn_phases._fork import _build_minimal_context
+from kernel.turn_phases._post_turn import (
     _stringify_pack_tool_result,
     _stringify_result,
     _to_tool_context,
+)
+from kernel.turn_runner import (
+    TurnHooks,
+    _extract_pre_turn_briefing,
+    _resolve_tool_display_label,
     run_turn,
 )
 
@@ -688,7 +690,7 @@ async def test_thought_signature_preserved_nested_in_function(
 
 def test_extract_completion_usage_from_flat_attributes() -> None:
     """_extract_completion_usage reads flat prompt_tokens/completion_tokens."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=100,
@@ -712,7 +714,7 @@ def test_extract_completion_usage_from_flat_attributes() -> None:
 
 def test_extract_completion_usage_from_usage_dict() -> None:
     """_extract_completion_usage reads from a usage dict when flat attrs are 0."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=0,
@@ -740,7 +742,7 @@ def test_extract_completion_usage_from_usage_dict() -> None:
 
 def test_extract_completion_usage_computes_total_when_missing() -> None:
     """When total_tokens is 0, it's computed as prompt + completion."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=50,
@@ -758,7 +760,7 @@ def test_extract_completion_usage_computes_total_when_missing() -> None:
 
 def test_extract_completion_usage_from_usage_object() -> None:
     """_extract_completion_usage reads from a usage object (not dict)."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=0,
@@ -784,7 +786,7 @@ def test_extract_completion_usage_from_usage_object() -> None:
 
 def test_extract_completion_usage_handles_input_tokens_alias() -> None:
     """_extract_completion_usage reads input_tokens as an alias for prompt_tokens."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=0,
@@ -804,7 +806,7 @@ def test_extract_completion_usage_handles_input_tokens_alias() -> None:
 
 def test_extract_completion_usage_defaults_to_zero() -> None:
     """All values default to 0 when nothing is present."""
-    from kernel.turn_runner import _extract_completion_usage
+    from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
         prompt_tokens=0,

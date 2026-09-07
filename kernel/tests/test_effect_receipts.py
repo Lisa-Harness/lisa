@@ -33,9 +33,9 @@ from kernel.models import (
     OperationResult,
     WorkflowModeConfig,
 )
+from kernel.turn_phases._dispatch import enforce_write_receipt as _enforce_write_receipt
 from kernel.turn_runner import (
     TurnHooks,
-    _enforce_write_receipt,
     run_turn,
 )
 

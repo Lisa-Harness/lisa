@@ -137,7 +137,7 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
 def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
     """A sequential query with 2+ gap intents escalates to ``planner``."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = _full_catalog()
@@ -167,7 +167,7 @@ def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
 def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() -> None:
     """A non-sequential query with 3+ gap intents also escalates to ``planner``."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = _full_catalog()
@@ -189,7 +189,7 @@ def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() 
 def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
     """A 2-intent sequential query escalates to ``planner`` (2 + sequential)."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = _full_catalog()
@@ -211,7 +211,7 @@ def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
 def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None:
     """When ``planner`` is not among routing targets, the existing fork logic runs."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = {
@@ -237,7 +237,7 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
 def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
     """A simple single-intent query routes directly, no planner escalation."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = {
@@ -270,7 +270,7 @@ def test_discuss_mode_detects_clarify_intent_from_new_keywords() -> None:
     ``reasoning`` to ``clarify`` on 2026-07-30 so it only punts there when
     the right next step is a question to the user, not a deep analysis
     (which belongs to ``ponder``)."""
-    from kernel.turn_runner import _detect_query_intents
+    from kernel.turn_phases._routing_hint import _detect_query_intents
 
     discuss = _mode_config(
         mode_id="discuss",
@@ -329,7 +329,7 @@ def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
         mark_plan_unreliable_for_model,
         reset_plan_reliability,
     )
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = _full_catalog()
@@ -363,7 +363,7 @@ def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
     targets cover the *same* single intent, not a disjoint pair) and
     producer-first does not fire (no producer/consumer mix)."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     # Two targets both declare the SAME intent tag (research). A query
@@ -431,7 +431,7 @@ def test_routing_hint_single_handoff_is_directive() -> None:
     requires X's tools') rather than the old hedged prose ('Your current
     mode may lack...') that invited the model to override it."""
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = {
@@ -960,7 +960,7 @@ def test_review_code_query_routes_to_reviewer_not_ambiguity() -> None:
     ambiguity so the model self-routes via ``transition_stage``).
     """
     from kernel.routing_vocabulary import reset_plan_reliability
-    from kernel.turn_runner import _compute_capability_routing_hint
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = _persona_catalog()
