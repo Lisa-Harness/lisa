@@ -31,6 +31,12 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.turn_phases._dispatch import (
+    dispatch_capability,
+    enforce_write_receipt as _enforce_write_receipt,
+    format_read_abbreviation as _format_read_abbreviation,
+    read_cache_signature as _read_cache_signature,
+)
 from kernel.turn_phases._entry import EntryPhaseResult, execute_entry_phase
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
@@ -136,29 +142,6 @@ _STALLED_WRITE_PATTERNS = re.compile(
 )
 
 
-def _read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str:
-    """Build a stable cache key for one read-tool invocation.
-
-    The signature is ``tool_name`` + a deterministic rendering of the
-    *identity-relevant* parameters. We include all params because read
-    tools are bounded and their params are small (path, line range, query,
-    max_results). Sorting the keys makes the signature order-independent
-    so two calls with the same params in different key order hit the same
-    cache entry. The kernel never names tool ids here — the caller passes
-    ``tool_name``; this function only formats the params.
-    """
-    parts = [tool_name]
-    for key in sorted(tool_arguments):
-        val = tool_arguments[key]
-        # Normalize nested values to a stable string. Lists/dicts are
-        # JSON-serialized with sorted keys; scalars use ``str()``.
-        if isinstance(val, dict) or isinstance(val, list):
-            parts.append(f"{key}={json.dumps(val, sort_keys=True)}")
-        else:
-            parts.append(f"{key}={val}")
-    return "|".join(parts)
-
-
 def _synthesized_call_missing_all_required(
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -212,34 +195,6 @@ def _synthesized_call_missing_all_required(
         return False
     supplied = {k for k, v in (tool_arguments or {}).items() if v is not None}
     return not any(name in supplied for name in required_names)
-
-
-def _format_read_abbreviation(
-    template: str,
-    params: dict[str, Any],
-    result_json: dict[str, Any],
-    result_text: str = "",
-) -> str:
-    """Apply a tool's ``abbreviation_template`` to params + result JSON.
-
-    Uses ``str.format_map`` with a missing-key-tolerant mapping so an
-    absent field renders as ``{field_name}`` (visible to the model) rather
-    than raising ``KeyError``. The template references both parameter
-    fields (e.g. ``{path}``, ``{start_line}``) and result-JSON fields
-    (e.g. ``{total_lines_observed}``). ``{output_text}`` is also available
-    so a template can reuse the tool's own one-line summary. When params
-    and result JSON share a key, the result JSON takes precedence (it
-    carries the observed outcome, not the request).
-    """
-    fields: dict[str, Any] = dict(params)
-    fields.update(result_json)
-    fields["output_text"] = result_text
-
-    class _MissingKeyDict(dict):
-        def __missing__(self, key: str) -> str:  # type: ignore[override]
-            return "{" + key + "}"
-
-    return template.format_map(_MissingKeyDict(fields))
 
 
 #: Maximum characters of the operator-visible tool display label emitted in
@@ -528,36 +483,6 @@ def _build_sub_turn_contract(
         tools_list=tools_list,
         remaining_iterations=remaining_iterations,
         budget_exhausted=budget_exhausted,
-    )
-
-
-def _enforce_write_receipt(
-    *,
-    tool_name: str,
-    dispatched_effect: str,
-    dispatched_succeeded: bool,
-    receipts: list[EffectReceipt],
-    receipts_before: int,
-) -> str | None:
-    """Enforce the Phase-8 receipt invariant for one dispatch.
-
-    A capability whose declared effect is ``write`` / ``external_write``
-    and whose dispatch succeeded MUST have produced an ``EffectReceipt``
-    in this dispatch (``receipts[receipts_before:]``). Returns a loud
-    kernel-error marker string when the invariant is violated, else
-    ``None``. A successful write with no receipt would let a hallucinated
-    "I wrote it" slip past the completion contract — the kernel treats
-    that as its own bug, not the model's.
-    """
-    if dispatched_effect not in ("write", "external_write") or not dispatched_succeeded:
-        return None
-    if any(r.capability_id == tool_name for r in receipts[receipts_before:]):
-        return None
-    return (
-        f"KERNEL ERROR: write capability '{tool_name}' (effect="
-        f"{dispatched_effect}) returned success without producing an "
-        "EffectReceipt. The completion contract cannot verify this write; "
-        "the kernel counts it as unverified."
     )
 
 
@@ -5664,495 +5589,68 @@ async def _run_turn_inner(
                     )
                     continue
 
-                if tool_name in operation_catalog:
-                    # Operation: dispatch in-process via the host's
-                    # execute_operation hook, which injects all host
-                    # callbacks (complete_fn, resolve_model_fn,
-                    # execute_tool, introspect, etc.).
-                    op_ctx = ctx.model_copy(
-                        update={"operation_id": tool_name, "params": tool_arguments}
-                    )
-                    op_result = await exec_op(tool_name, op_ctx)
-                    tool_output = _stringify_result(op_result)
-                    # Fork/delegate operations carry the child turns'
-                    # per-model / per-mode token usage in ``output_json``
-                    # (``ForkResult`` / ``DelegationResult``). Merge it
-                    # into this turn's ``_state`` so ``/tokens`` reports
-                    # every model/mode the children actually called — not
-                    # just the parent's resolved default. Without this, a
-                    # multi-model fork shows only the parent's model
-                    # (the 2026-08-06 regression). Operations that do not
-                    # carry usage (no ``per_model_usage`` key) are no-ops.
-                    op_json = getattr(op_result, "output_json", None)
-                    if isinstance(op_json, dict) and (
-                        op_json.get("per_model_usage") or op_json.get("per_mode_usage")
-                    ):
-                        _merge_child_usage_fn(
-                            _state,
-                            per_model_usage=op_json.get("per_model_usage"),
-                            per_mode_usage=op_json.get("per_mode_usage"),
-                        )
-                    # The fork operation's ``output_json`` is a
-                    # ``ForkResult`` dump carrying ``children``. Restore
-                    # ``_state.fork_results`` from it so the parent
-                    # ``TurnResult.fork_results`` reflects the fan-out
-                    # (the 2026-08-06 regression: the fork: routing-syntax
-                    # extraction dropped the inline assignment that used
-                    # to set this). Only the ``fork`` operation carries
-                    # ``children``; other operations are no-ops.
-                    if (
-                        isinstance(op_json, dict)
-                        and tool_name == "fork"
-                        and isinstance(op_json.get("children"), list)
-                    ):
-                        _state.fork_results = [
-                            ForkChildResult.model_validate(child)
-                            for child in op_json["children"]
-                            if isinstance(child, dict)
-                        ]
-                    # ── Delegate model_yield propagation ──────────────────
-                    # When a delegate child returns ``status="model_yield"``
-                    # with a ``yield_action``, the parent turn intercepts it
-                    # and surfaces the child's question to the user — the
-                    # parent is the interactive proxy. The ``YieldAction``
-                    # context is enriched with the original delegated query
-                    # so the user has the surrounding input to answer
-                    # ("the delegate was asked 'X'; it asks 'Y'"). Set
-                    # ``_pending_yield`` and ``break`` the ``for`` loop; the
-                    # ``while`` loop's forced-yield path (L4091) then breaks
-                    # with the question as the turn content, and the
-                    # thread entry records ``yielded=True`` on the thread entry.
-                    if (
-                        isinstance(op_json, dict)
-                        and tool_name == "delegate"
-                        and op_json.get("status") == "model_yield"
-                        and isinstance(op_json.get("yield_action"), dict)
-                    ):
-                        _ya_dict = op_json["yield_action"]
-                        _child_question = str(_ya_dict.get("question") or "")
-                        _delegated_query = str(tool_arguments.get("query") or "")
-                        _ya_dict["context"] = (
-                            f"The delegate was asked: '{_delegated_query}'. "
-                            f"It asks: '{_child_question}'"
-                        )
-                        _pending_yield = YieldAction.model_validate(_ya_dict)
-                        content = _pending_yield.question
-                        _yielded = True
-                        _log.info(
-                            "delegate child model_yield propagated to user "
-                            "(mode=%s, delegate_target=%s, iteration=%d)",
-                            mode_id,
-                            str(op_json.get("target_mode_id") or ""),
-                            _state.iteration,
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": f"Yielded to user: {_pending_yield.question}",
-                            }
-                        )
-                        break
-                elif tool_name in tool_catalog:
-                    # In-process tool (pack-contributed): dispatch via the
-                    # tool registry, which imports the implementation module
-                    # and calls execute(ctx) under a timeout.
-                    tool_def = tool_catalog[tool_name]
-                    # ── Within-turn read cache (Level C) ──────────────
-                    # When the tool declares ``effect == "read"`` and an
-                    # ``abbreviation_template``, check the per-turn cache
-                    # before dispatching. A hit returns the one-line
-                    # abbreviation instead of re-running the tool and
-                    # appending a second full result to ``messages``. This
-                    # is the within-turn analog of cross-turn conversation
-                    # compaction — it prevents the linear prompt-token
-                    # accumulation that burned 1.4M tokens on the 2026-08-03
-                    # code review (the model re-read the same files across
-                    # ~25 iterations). The cache still counts as a tool
-                    # call (the model sees its call was answered) but costs
-                    # ~200 tokens instead of ~4,000.
-                    _cache_template = getattr(tool_def, "abbreviation_template", "") or ""
-                    _cacheable = (
-                        getattr(tool_def, "effect", "") == "read"
-                        and bool(_cache_template)
-                        and isinstance(tool_arguments, dict)
-                    )
-                    if _cacheable:
-                        _cache_key = _read_cache_signature(tool_name, tool_arguments)
-                        _cached = _state.read_cache.get(_cache_key)
-                    else:
-                        _cache_key = ""
-                        _cached = None
-                    if _cached is not None:
-                        _log.info(
-                            "read cache hit (tool=%s, key=%s); returning "
-                            "abbreviation instead of re-running",
-                            tool_name,
-                            _cache_key[:120],
-                        )
-                        tool_output = _cached
-                    elif tool_def.implementation_module is not None:
-                        tool_ctx = _to_tool_context(tool_name, ctx)
-                        tool_ctx.parameters = tool_arguments
-                        tool_result = await execute_tool(tool_name, tool_ctx)
-                        tool_output = _stringify_pack_tool_result(tool_result)
-                        # Record the abbreviation for future re-reads. The
-                        # template is applied to the tool's params + result
-                        # JSON so the abbreviation carries the observed
-                        # outcome (e.g. line count) not just the request.
-                        if _cacheable and isinstance(tool_result, ToolResult):
-                            try:
-                                _abbrev = _format_read_abbreviation(
-                                    _cache_template,
-                                    tool_arguments,
-                                    tool_result.output_json or {},
-                                    result_text=tool_result.output_text or "",
-                                )
-                                _state.read_cache[_cache_key] = _abbrev
-                            except Exception as cache_exc:  # pylint: disable=broad-except
-                                _log.debug(
-                                    "read cache record failed for %s: %s",
-                                    tool_name,
-                                    cache_exc,
-                                )
-                    else:
-                        mcp_result = await pool.call_tool(tool_name, tool_arguments)
-                        tool_output = mcp_result.output_text or "Done"
-                else:
-                    mcp_result = await pool.call_tool(tool_name, tool_arguments)
-                    tool_output = mcp_result.output_text or "Done"
-                _state.total_tool_calls += 1
-                _state.step_tool_calls += 1
-                _state.called_tool_names.add(tool_name)
-                ledger.record(tool_name)
-                # ── Effect receipt capture ──────────────────────────────
-                # Collect an ``EffectReceipt`` for every successfully-
-                # dispatched capability. Write/external_write receipts
-                # satisfy a mode's write contract; read/execute receipts
-                # prove real read-only work so the completion contract can
-                # distinguish an honest read-only turn from a hallucinated
-                # success (the 2026-08-27 cloudservers warning: a read-only
-                # "what VMs are running?" query in a write-capable mode
-                # produced a "no verified write" warning because read
-                # capabilities left no ledger entry at all).
-                _dispatched_effect = "read"
-                _dispatched_succeeded = False
-                _dispatched_artifact_id = ""
-                _receipts_before = len(_state.effect_receipts)
-                if tool_name in operation_catalog:
-                    _op_def = operation_catalog[tool_name]
-                    _dispatched_effect = str(getattr(_op_def, "effect", "read") or "read")
-                    _dispatched_artifact_id = str(
-                        getattr(op_result, "output_json", {}).get("artifact_id", "")
-                        or getattr(op_result, "output_json", {}).get("document_id", "")
-                        or getattr(op_result, "output_json", {}).get("memory_id", "")
-                        or ""
-                    )
-                elif tool_name in tool_catalog:
-                    _tool_def = tool_catalog[tool_name]
-                    _dispatched_effect = str(getattr(_tool_def, "effect", "read") or "read")
-                    # ``tool_result`` is only bound on the in-process tool
-                    # dispatch sub-branch (``tool_def.implementation_module
-                    # is not None``). When the tool dispatches via MCP (the
-                    # ``else`` sub-branch) ``tool_result`` is unbound and
-                    # ``isinstance(tool_result, ToolResult)`` raises
-                    # ``UnboundLocalError`` — the 2026-08-14 ``web_search``
-                    # incident: serper/tavily register ``web_search`` as a
-                    # tool, but when it falls through to MCP dispatch the
-                    # artifact-id extraction crashed the turn. Guard with
-                    # ``in locals()`` (same pattern as the ``_dispatched_succeeded``
-                    # block below) so the receipt never touches an unbound name.
-                    if "tool_result" in locals() and isinstance(tool_result, ToolResult):
-                        _dispatched_artifact_id = str(
-                            (tool_result.output_json or {}).get("artifact_id", "")
-                            or (tool_result.output_json or {}).get("document_id", "")
-                            or (tool_result.output_json or {}).get("memory_id", "")
-                            or ""
-                        )
-                if _dispatched_effect in ("write", "external_write"):
-                    # Only record a receipt when the capability actually
-                    # landed its work. A pack tool that reports an error
-                    # (``ToolResult.error`` non-empty) did NOT write — no
-                    # receipt, so the child-turn completion contract does
-                    # not count a failed write as success. An operation
-                    # that returns ``OperationResult(status in
-                    # {"degraded","error"})`` likewise did NOT write — the
-                    # ``status`` contract (kernel.models.OperationResult)
-                    # lets an operation signal a soft failure (truncated,
-                    # empty, persisted-with-warning) without raising. A
-                    # degraded/error write is logged so the degradation is
-                    # visible in the turn log, not silently absorbed.
-                    _dispatched_succeeded = True
-                    # ``tool_result`` is only bound on the in-process tool
-                    # dispatch branch (the ``elif tool_name in tool_catalog``
-                    # block above). When a capability is registered as BOTH
-                    # an operation and a tool (e.g. ``web_search``), the
-                    # operation branch runs first and ``tool_result`` is
-                    # unbound — guard with ``in locals()`` so the receipt
-                    # block never touches an unbound name (same pattern as
-                    # the ``op_result`` guard below).
-                    if (
-                        tool_name in tool_catalog
-                        and "tool_result" in locals()
-                        and isinstance(tool_result, ToolResult)
-                    ):
-                        _dispatched_succeeded = not tool_result.error.strip()
-                    # ``op_result`` is only bound on the operation dispatch
-                    # branch (line ~5510); when the operation raised, the
-                    # ``except Exception`` block above set ``tool_output``
-                    # and ``op_result`` is unbound. Guard with ``in locals()``
-                    # so the receipt block never touches an unbound name.
-                    if (
-                        tool_name in operation_catalog
-                        and "op_result" in locals()
-                        and isinstance(op_result, OperationResult)
-                    ):
-                        if not op_result.is_success:
-                            _dispatched_succeeded = False
-                            _log.warning(
-                                "operation '%s' returned status=%s (effect=%s); "
-                                "not recording a write receipt. detail=%s",
-                                tool_name,
-                                op_result.status,
-                                _dispatched_effect,
-                                op_result.error_detail or op_result.output_text[:200],
-                            )
-                    if _dispatched_succeeded:
-                        _state.effect_receipts.append(
-                            EffectReceipt(
-                                # ``_dispatched_effect`` is guaranteed to be
-                                # one of the write literals by the guard above.
-                                effect=cast(EffectKind, _dispatched_effect),
-                                capability_id=tool_name,
-                                artifact_id=_dispatched_artifact_id,
-                            )
-                        )
-                elif _dispatched_effect in ("read", "execute"):
-                    # A read/execute-effect capability. Two sub-cases share
-                    # this branch:
-                    #
-                    # (a) Catalog-known capability (``_dispatched_effect``
-                    #     was set from the operation/tool definition above).
-                    #     Emit a receipt on success so the completion
-                    #     contract can see the turn did real non-write work —
-                    #     the honest read-only signal that stops a write-capable
-                    #     mode from warning/blocking a read-only query.
-                    #
-                    # (b) Opaque MCP tool (``_dispatched_effect`` defaulted to
-                    #     "read" because the name is in neither catalog). MCP
-                    #     failures are returned as
-                    #     ``MCPToolResult(is_error=True)`` rather than raised,
-                    #     so check success before emitting. A server-declared
-                    #     ``read_only_hint`` is authoritative: a read-only MCP
-                    #     tool must NEVER emit a *write* receipt (the
-                    #     2026-08-07 over-count fix — an undeclared-effect read
-                    #     tool was being counted as a verified write); it now
-                    #     emits a *read* receipt instead. An unknown-effect
-                    #     opaque MCP write still emits a ``write`` receipt on
-                    #     success, for ANY tool name — not just those in the
-                    #     current mode's action set. The completion contract is
-                    #     enforced later by the intersection of the ledger with
-                    #     the FINAL mode's action set (Phase 3), so a write
-                    #     performed in an entry mode (e.g. ``default``) before
-                    #     a handoff to a write-contract mode (e.g. ``remember``)
-                    #     is still counted — otherwise the handoff target's
-                    #     contract would falsely block a turn that genuinely
-                    #     wrote (the 2026-08-07 Bug-1 follow-on).
-                    _mcp_read_only = False
-                    # ``tool_spec`` is a pool accessor; guard with getattr so
-                    # test stub pools (and any pool without the accessor)
-                    # degrade to "unknown ⇒ potentially side-effecting" rather
-                    # than raising. The real MCPToolPool always provides it.
-                    _known_read = tool_name in operation_catalog or tool_name in tool_catalog
-                    _mcp_spec_fn = getattr(pool, "tool_spec", None)
-                    if _mcp_spec_fn is not None and not _known_read:
-                        _mcp_spec = _mcp_spec_fn(tool_name)
-                        if _mcp_spec is not None:
-                            _mcp_read_only = bool(getattr(_mcp_spec, "read_only_hint", False))
-                    _mcp_succeeded = True
-                    # ``mcp_result`` is bound on both MCP dispatch branches
-                    # above; the in-process branches do not set it.
-                    if "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
-                        _mcp_succeeded = not getattr(mcp_result, "is_error", False)
-                    if _mcp_succeeded:
-                        if _known_read or _mcp_read_only:
-                            # (a)/(b) non-write work: record it. For a known
-                            # capability ``_dispatched_effect`` is guaranteed
-                            # "read"/"execute" by the branch guard; an opaque
-                            # read-only MCP tool is "read".
-                            _state.effect_receipts.append(
-                                EffectReceipt(
-                                    effect=cast(EffectKind, _dispatched_effect),
-                                    capability_id=tool_name,
-                                    artifact_id=_dispatched_artifact_id,
-                                )
-                            )
-                        else:
-                            # (b) opaque MCP write: success on an unknown-
-                            # effect tool is a potential external write; keep
-                            # the conservative ``write`` receipt.
-                            _state.effect_receipts.append(
-                                EffectReceipt(
-                                    effect="write",
-                                    capability_id=tool_name,
-                                    artifact_id="",
-                                )
-                            )
-                # ── Receipt enforcement (Phase 8) ────────────────────
-                # A capability whose declared effect is write /
-                # external_write and whose dispatch succeeded MUST have
-                # appended an ``EffectReceipt`` in the capture block
-                # above. A successful write with no receipt would let a
-                # hallucinated "I wrote it" slip past the completion
-                # contract — surfaced loudly as a kernel error instead of
-                # silently miscounted.
-                _receipt_error = _enforce_write_receipt(
+                # Capability dispatch (operation, pack tool, or MCP tool)
+                _outcome = await dispatch_capability(
                     tool_name=tool_name,
-                    dispatched_effect=_dispatched_effect,
-                    dispatched_succeeded=_dispatched_succeeded,
-                    receipts=_state.effect_receipts,
-                    receipts_before=_receipts_before,
+                    tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
+                    tool_kind=_tool_kind,
+                    ctx=ctx,
+                    state=_state,
+                    ledger=ledger,
+                    pool=pool,
+                    operation_catalog=operation_catalog,
+                    tool_catalog=tool_catalog,
+                    exec_op=exec_op,
+                    hooks=hooks,
+                    recovery_item_id=recovery_item_id,
+                    recovery_retry_policy=recovery_retry_policy,
+                    build_recovery_identity_fn=_build_recovery_identity,
+                    log=_log,
                 )
-                if _receipt_error is not None:
-                    _log.error("%s", _receipt_error)
-                    tool_output = _receipt_error
-                # Sync the ledger counts to _state so the per-iteration
-                # budget briefing can report per-target remaining calls.
-                _state.call_ledger_counts = dict(ledger.counts)
-                # ── Consecutive-error streak tracking ────────────────────
-                # Track trailing errors from the same tool so the stage
-                # nudge can tell the model to synthesize what it has and
-                # diagnose the failure instead of retrying blindly (the
-                # 2026-09-04 fetch_page loop: 30 calls, many 404/402, no
-                # guard ever told the model to stop crawling). Determined
-                # AFTER the receipt blocks so ``_dispatched_succeeded``
-                # (write) and ``_mcp_succeeded`` (read) are both resolved.
-                _dispatch_failed = False
-                if _dispatched_effect in ("write", "external_write"):
-                    _dispatch_failed = not _dispatched_succeeded
-                elif _dispatched_effect in ("read", "execute"):
-                    # ``_mcp_succeeded`` is set in the read/execute branch
-                    # above; for in-process tools, ``tool_result.error``
-                    # determines failure (mirrored via ``_dispatched_succeeded``
-                    # for writes; for reads the receipt block checks
-                    # ``_mcp_succeeded``). Re-derive here so we catch both
-                    # in-process and MCP read failures.
-                    if "tool_result" in locals() and isinstance(tool_result, ToolResult):
-                        _dispatch_failed = bool(tool_result.error.strip())
-                    elif "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
-                        _dispatch_failed = bool(getattr(mcp_result, "is_error", False))
-                    elif "op_result" in locals() and isinstance(op_result, OperationResult):
-                        _dispatch_failed = not op_result.is_success
-                if _dispatch_failed:
-                    if _state.last_error_tool == tool_name:
-                        _state.consecutive_tool_errors += 1
-                    else:
-                        _state.last_error_tool = tool_name
-                        _state.consecutive_tool_errors = 1
-                else:
-                    _state.consecutive_tool_errors = 0
-                    _state.last_error_tool = ""
-                if recovery_item_id and hooks.recovery_service is not None:
-                    try:
-                        await hooks.recovery_service.settle(
-                            recovery_item_id,
-                            _build_recovery_identity(hooks),
-                            state="succeeded",
-                            result_preview=str(tool_output)[:240],
-                        )
-                    except Exception as recovery_exc:  # pylint: disable=broad-except
-                        _log.warning(
-                            "recovery settle success failed for %s: %s",
-                            tool_name,
-                            recovery_exc,
-                            exc_info=True,
-                        )
+                tool_output = _outcome.tool_output
+
+                await _emit_stage(
+                    "tool_dispatch_complete",
+                    {
+                        "tool": tool_name,
+                        "tool_kind": _tool_kind,
+                        "_state.iteration": _state.iteration,
+                        "tool_calls_so_far": _state.total_tool_calls,
+                        "ok": _outcome.is_ok,
+                        "duration_ms": _outcome.duration_ms,
+                        "result_preview": str(tool_output)[:200],
+                    },
+                )
+
+                if not tool_output.strip():
+                    tool_output = "Done"
+
+                # Track the latest tool result for the model router.
+                _state.last_tool_result_text = str(tool_output)
+                _state.last_operation_result = _outcome.operation_result
+                _state.tool_results_received += 1
+
+                if _outcome.delegate_yield is not None:
+                    _pending_yield = _outcome.delegate_yield
+                    content = _pending_yield.question
+                    _yielded = True
+                    _log.info(
+                        "delegate child model_yield propagated to user "
+                        "(mode=%s, iteration=%d)",
+                        mode_id,
+                        _state.iteration,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": f"Yielded to user: {_pending_yield.question}",
+                        }
+                    )
+                    break
             except ApprovalRequired:
-                if recovery_item_id and hooks.recovery_service is not None:
-                    try:
-                        await hooks.recovery_service.settle(
-                            recovery_item_id,
-                            _build_recovery_identity(hooks),
-                            state="stalled",
-                            last_error="approval required",
-                            retry_policy="confirm",
-                        )
-                    except Exception as recovery_exc:  # pylint: disable=broad-except
-                        _log.warning(
-                            "recovery settle approval failed for %s: %s",
-                            tool_name,
-                            recovery_exc,
-                            exc_info=True,
-                        )
                 raise
-            except Exception as exc:  # pylint: disable=broad-except
-                # Count the attempt: a raised dispatch (OperationExecutionError,
-                # MCP connection failure, …) IS a tool call for every budget
-                # and backstop that keys on ``total_tool_calls``. Without
-                # this, the empty-completion write-contract backstop (which
-                # requires ``total_tool_calls == 0``) arms on the NEXT
-                # iteration and synthesizes a doomed empty-args call — the
-                # model already tried and failed, it must not be forced to
-                # fire the same contract blind.
-                _state.total_tool_calls += 1
-                _state.step_tool_calls += 1
-                _state.called_tool_names.add(tool_name)
-                ledger.record(tool_name)
-                _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
-                tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
-                if recovery_item_id and hooks.recovery_service is not None:
-                    try:
-                        await hooks.recovery_service.settle(
-                            recovery_item_id,
-                            _build_recovery_identity(hooks),
-                            state="stalled",
-                            last_error=str(exc),
-                            retry_policy=cast(Any, recovery_retry_policy),
-                        )
-                    except Exception as recovery_exc:  # pylint: disable=broad-except
-                        _log.warning(
-                            "recovery settle failure failed for %s: %s",
-                            tool_name,
-                            recovery_exc,
-                            exc_info=True,
-                        )
-
-            await _emit_stage(
-                "tool_dispatch_complete",
-                {
-                    "tool": tool_name,
-                    "tool_kind": _tool_kind,
-                    "_state.iteration": _state.iteration,
-                    "tool_calls_so_far": _state.total_tool_calls,
-                    "ok": not tool_output.startswith("Tool execution failed:"),
-                    "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                    "result_preview": str(tool_output)[:200],
-                },
-            )
-
-            if not tool_output.strip():
-                tool_output = "Done"
-
-            # Track the latest tool result for the model router.
-            _state.last_tool_result_text = str(tool_output)
-            # Track the latest in-process operation result for the
-            # cap-pause diagnostic so it can surface structured context
-            # (continuation attempts, truncation reason) from ``extra``.
-            # Only set on the operation dispatch branch; cleared on every
-            # other branch so a stale value never leaks into the next
-            # iteration's diagnostic. Guard with ``in locals()`` because
-            # ``op_result`` is unbound when the operation raised (the
-            # ``except`` block set ``tool_output`` instead).
-            if (
-                tool_name in operation_catalog
-                and "op_result" in locals()
-                and isinstance(op_result, OperationResult)
-            ):
-                _state.last_operation_result = op_result
-            else:
-                _state.last_operation_result = None
-            _state.tool_results_received += 1
 
             tool_result_msg: dict[str, Any] = {
                 "role": "tool",

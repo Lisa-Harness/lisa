@@ -71,6 +71,22 @@ All notable changes to the Lisa Framework will be documented in this file.
 - **Why:** Reduces `_run_turn_inner` complexity, eliminates per-iteration import overhead
   in the hot tool loop, and provides typed guarantees for the mutable turn state.
 
+#### Phase 2 capability dispatch extraction (Loop 6)
+
+- **What:** Extracted the core capability dispatch machinery from `turn_runner.py`
+  (~550 lines) into `kernel.turn_phases._dispatch.dispatch_capability`, which encapsulates:
+  (1) in-process operation execution and fork/delegate result aggregation,
+  (2) pack-tool execution with within-turn read caching,
+  (3) MCP tool execution,
+  (4) effect receipt capture and write receipt invariant enforcement,
+  (5) consecutive-error streak tracking, and
+  (6) recovery record settlement with fail-loud logging.
+  Re-exported `read_cache_signature`, `format_read_abbreviation`, and `enforce_write_receipt`
+  from `kernel.turn_runner` for backwards compatibility.
+- **Why:** Replaces over 500 lines of complex nested dispatch logic in `_run_turn_inner`
+  with a clean 40-line call, significantly reducing cyclomatic complexity and isolating
+  tool execution side-effects into a modular, testable unit.
+
 #### Turn scenario matrix & structured stalled-write trigger (Loop 3)
 
 - **What:** Added a comprehensive scenario matrix suite in
