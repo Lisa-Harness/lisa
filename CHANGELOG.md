@@ -36,6 +36,26 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### Pure parent-turn completion contract resolver (Loop 2)
+
+- **What:** Extracted the post-loop Phase 3 completion contract chain from
+  `kernel/src/kernel/turn_runner.py` into a pure, typed resolver
+  (`kernel.turn_phases._completion_contract.resolve_completion_contract`).
+  Returns a tagged union (`AcceptTurn`, `PreexistingFailureBlock`,
+  `SurfaceProseWithFootnote`, `ChatSoftAccept`, `ChatReadFootnote`,
+  `BlockNoVerifiedWrite`). The parent turn loop in `_run_turn_inner` now
+  calls the pure resolver and applies the decision. Added a dedicated unit test
+  suite in `kernel/tests/test_completion_contract.py` covering all outcome variants.
+- **Why:** The inline ~150-line post-loop chain mixed receipt verification,
+  routing-misfire prose rescue, chat-mode softening, and unverified-write
+  blocking with multiple mutable state checks. Extracting it into a pure,
+  pack-blind function makes post-loop contracts independently testable and
+  eliminates guard-interaction ordering bugs.
+- **Tests:** `kernel/tests/test_completion_contract.py` (15 unit tests covering
+  receipt verification, misfire surfacing, chat softening, strict blocks, and
+  pre-existing failure blocks; all 15 passed), `kernel/tests/test_effect_receipts.py`
+  (22 passed).
+
 #### In-process MCP server mode (default for `lisa once`)
 
 - **What:** First-party MCP servers (catalog, content, context, guard, memory,

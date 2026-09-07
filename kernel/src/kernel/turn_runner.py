@@ -6719,258 +6719,121 @@ async def _run_turn_inner(
 
     # ── Phase 3: Post-turn ────────────────────────────────────────────
     # ── Parent-turn completion contract (Phase 8) ────────────────────
-    # The receipt-ledger contract fork children are held to, applied to
-    # the parent turn's clean exit: a mode with a side-effecting
-    # completion contract (``mode_completion_effects`` non-empty —
-    # ``_state.action_tool_ids``) whose turn ends with ZERO successful
-    # dispatches (and therefore an empty receipt ledger) reported
-    # unverified success — the 2026-08-06 remember-child hallucination
-    # check generalized to the parent. Exempt by construction: yields
-    # (the turn deliberately pauses to ask the user), sub-turns
-    # (validated by ``classify_child_turn``), approval pauses
-    # (``ApprovalRequired`` returns before Phase 3), and modes with no
-    # write contract (chat / ponder — their output IS the response
-    # text). A parent that made read-only calls is deliberately NOT
-    # flagged here — read-loops escalate through the stuck-in-stage
-    # nudge/cap path; this check targets pure hallucination (zero
-    # verified work claimed as done).
-    _parent_no_tools = False
-    if (
-        not _state.sub_turn_kind
-        and not _yielded
-        and _state.action_tool_ids
-    ):
-        # A write-contract mode that ends with zero verified writes is
-        # hallucinated success — whether the model never invoked a tool,
-        # or invoked one and every attempt failed. Key on the receipt
-        # ledger, NOT the attempt counter: a failed MCP dispatch still
-        # increments ``total_tool_calls`` (the server returns
-        # ``is_error=True`` without raising) but produces no receipt, so
-        # ``total_tool_calls == 0`` would let a failed-write hallucination
-        # slip through unblocked (the 2026-08-07 review finding). This
-        # matches the fork-child classifier contract exactly.
-        #
-        # Three-way check (the 2026-08-27 read-receipt fix):
-        #   1. A write/external_write receipt matching the action set →
-        #      the contract is satisfied.
-        #   2. Read/execute receipts (real read-only work) with NO write
-        #      attempt → the turn was read-only; the write contract does
-        #      not apply. No block, no warning — a read-only query in a
-        #      write-capable mode is honest work, not a hallucination.
-        #   3. Otherwise (zero receipts, or a write attempted that
-        #      failed) → hallucinated success. A failed write attempt is
-        #      never rescued by reads: the model may claim success on the
-        #      failed write.
-        #
-        # Match the receipt against the action set using BOTH the raw
-        # capability id and its bare form. ``bare_tool_name`` strips a
-        # ``server_id.`` namespace prefix (``lisa-storage.write_file`` →
-        # ``write_file``) so a namespaced MCP write matches its bare
-        # authored action id; but it ALSO strips the dot from synthetic
-        # dotted tool names (``memory.add`` → ``add``), which would
-        # wrongly fail to match the authored ``memory.add``. Including the
-        # raw id covers the synthetic case; including the bare form covers
-        # the namespaced-MCP case.
-        _write_receipt_ids = {
-            bare_tool_name(r.capability_id)
-            for r in _state.effect_receipts
-            if r.effect in ("write", "external_write")
-        } | {
-            r.capability_id
-            for r in _state.effect_receipts
-            if r.effect in ("write", "external_write")
-        }
-        _write_landed = bool(_write_receipt_ids & _state.action_tool_ids)
-        _read_work = any(
-            r.effect in ("read", "execute") for r in _state.effect_receipts
+    from kernel.turn_phases._completion_contract import (
+        AcceptTurn,
+        BlockNoVerifiedWrite,
+        ChatReadFootnote,
+        ChatSoftAccept,
+        PreexistingFailureBlock,
+        SurfaceProseWithFootnote,
+        resolve_completion_contract,
+    )
+
+    contract_decision = resolve_completion_contract(
+        mode_id=mode_id,
+        mode_kind=mode_config.mode_kind if mode_config else "chat",
+        content=content,
+        action_tool_ids=_state.action_tool_ids,
+        effect_receipts=_state.effect_receipts,
+        called_tool_names=_state.called_tool_names,
+        total_tool_calls=_state.total_tool_calls,
+        sub_turn_kind=_state.sub_turn_kind,
+        yielded=_yielded,
+        routing_misfire_prose=_state.routing_misfire_prose,
+        dense_content_min_chars=_kernel_settings.chat_mode_dense_content_min_chars,
+        preexisting_block=bool(
+            _state.entry_failed
+            or _state.plan_failed
+            or (
+                _state.fork_results
+                and any(r.status != "ok" for r in (_state.fork_results or []))
+            )
+        ),
+    )
+
+    turn_blocked = False
+    _block_origin = ""
+
+    if isinstance(contract_decision, PreexistingFailureBlock):
+        turn_blocked = True
+    elif isinstance(contract_decision, SurfaceProseWithFootnote):
+        _log.warning(
+            "parent turn mode=%s aborted a synthesized action-tool "
+            "dispatch (missing required params) on a zero-dispatch "
+            "turn; surfacing the model's prose with the no-write "
+            "warning instead of blocking as no_tools",
+            mode_id,
         )
-        _called_bare = {
-            bare_tool_name(n) for n in _state.called_tool_names
-        } | set(_state.called_tool_names)
-        _write_attempted = bool(_called_bare & _state.action_tool_ids)
-        _parent_no_tools = not (
-            _write_landed or (_read_work and not _write_attempted)
+        _action_names = ", ".join(
+            f"`{t}`" for t in sorted(contract_decision.action_tool_ids)
         )
+        _warning = render_no_write_warning(action_names=_action_names)
+        if _warning:
+            content = content.rstrip() + "\n\n" + _warning
+    elif isinstance(contract_decision, ChatSoftAccept):
+        _log.info(
+            "parent turn mode=%s completed with no verified write, but "
+            "is a chat mode that did read-only work and produced dense "
+            "content (%d chars); accepting as successful.",
+            mode_id,
+            contract_decision.content_len,
+        )
+    elif isinstance(contract_decision, ChatReadFootnote):
+        _log.warning(
+            "parent turn mode=%s completed with no verified write for its "
+            "mode's action tools %s; appending warning footnote",
+            mode_id,
+            sorted(contract_decision.action_tool_ids),
+        )
+        _action_names = ", ".join(
+            f"`{t}`" for t in sorted(contract_decision.action_tool_ids)
+        )
+        _warning = render_no_write_warning(action_names=_action_names)
+        if _warning:
+            content = content.rstrip() + "\n\n" + _warning
+    elif isinstance(contract_decision, BlockNoVerifiedWrite):
+        _log.warning(
+            "parent turn mode=%s completed with no verified write for its "
+            "mode's action tools %s; blocking as no_tools (hallucinated success)",
+            mode_id,
+            sorted(contract_decision.action_tool_ids),
+        )
+        content = contract_decision.block_message
+        turn_blocked = True
+        _block_origin = "no_tools"
+    elif isinstance(contract_decision, AcceptTurn):
+        pass
+
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
-    turn_blocked = False
-    _block_origin = ""
-    if (
-        _state.entry_failed
-        or _state.plan_failed
-        or (
-            _state.fork_results
-            and any(
-                r.status != "ok"
-                for r in (_state.fork_results or [])
-            )
-        )
-    ):
-        # A handoff entry operation failed, or a fork child was marked
-        # ``no_tools`` (hallucinated success). Either way the turn broke
-        # with a deterministic failure message. Mark blocked so the host
-        # skips opportunistic post-turn house-keeping (same contract as
-        # an output guard block) and the user sees a hard failure rather
-        # than a hallucinated success.
-        turn_blocked = True
-    elif _parent_no_tools:
-        # ── Routing-misfire prose surfacing (work-gated) ───────────────
-        # The synthesized-call required-params guard aborted the FIRST
-        # dispatch of a turn that dispatched nothing real. The guard's
-        # contract is "surfacing model prose" — but without this branch
-        # the strict block below REPLACED that prose with the
-        # no-verified-write failure text. The prose may be a genuine
-        # answer: a conversational question can route into a
-        # write-contract mode (the 2026-09-02 executor misroute), and
-        # answering a question is honest work even though the receipt
-        # ledger shows zero tool calls. Keep the prose and append the
-        # no-write warning footnote so the user can still see whether
-        # any write was claimed. Never masks a failed write attempt
-        # (``_rm_write_attempted``) or a turn that dispatched real tools —
-        # those keep the strict block below.
-        _rm_called_bare = {
-            bare_tool_name(n) for n in _state.called_tool_names
-        } | set(_state.called_tool_names)
-        _rm_write_attempted = bool(_rm_called_bare & _state.action_tool_ids)
-        if _state.routing_misfire_prose and content.strip() and not _rm_write_attempted:
+    if not turn_blocked:
+        if not output_guard_result.allowed:
+            original_len = len(content)
+            safe_fallback = "I'm unable to provide that response. Please rephrase your request."
             _log.warning(
-                "parent turn mode=%s aborted a synthesized action-tool "
-                "dispatch (missing required params) on a zero-dispatch "
-                "turn; surfacing the model's prose with the no-write "
-                "warning instead of blocking as no_tools",
+                "Output guard blocked turn for mode=%s (original_len=%d)",
                 mode_id,
+                original_len,
             )
-            _action_names = ", ".join(
-                f"`{t}`" for t in sorted(_state.action_tool_ids)
-            )
-            _warning = render_no_write_warning(action_names=_action_names)
-            if _warning:
-                content = content.rstrip() + "\n\n" + _warning
-        # ── Chat-mode content softening (work-gated) ────────────────────
-        # A mode with a side-effecting completion contract (``action_tool_ids``
-        # non-empty) that ends the turn with no write receipt is normally
-        # blocked as ``no_tools`` (hallucinated success). Honest cases the
-        # three-way gate above already accepted: a landed write receipt, and
-        # pure read-only work (read/execute receipts, no write attempt —
-        # the 2026-08-27 read-receipt fix, which removed the warning
-        # footnote for read-only queries in write-capable modes).
-        #
-        # The softening here is gated on TWO conditions so it cannot mask a
-        # hallucination:
-        #   1. ``mode_kind == "chat"`` — the mode's output is conversational
-        #      content, not a durable side effect on external state. Action
-        #      and workflow modes keep the strict block: their writes land
-        #      outside the thread and the receipt is the only honest signal.
-        #   2. ``_state.total_tool_calls > 0`` — the model actually
-        #      dispatched at least one tool this turn. A turn that made ZERO
-        #      tool calls and only emitted "I'll start once you confirm…"
-        #      prose is a hallucinated success regardless of mode kind or
-        #      content length (the 2026-08-14 proceed-loop).
-        #
-        # The kernel never names pack-supplied tools or infers pack
-        # semantics from tool-name prefixes. ``mode_kind`` and the receipt
-        # ledger are the only signals used; which packs supplied the action
-        # tools is irrelevant.
-        _is_chat_mode = mode_config.mode_kind == "chat" if mode_config else False
-        _did_work = _state.total_tool_calls > 0
-        has_dense_content = (
-            len(content.strip()) >= _kernel_settings.chat_mode_dense_content_min_chars
-        )
-        _called_bare = {
-            bare_tool_name(n) for n in _state.called_tool_names
-        } | set(_state.called_tool_names)
-        _write_attempted = bool(_called_bare & _state.action_tool_ids)
-        _misfire_surfaced = (
-            _state.routing_misfire_prose
-            and content.strip()
-            and not _rm_write_attempted
-        )
-        if _misfire_surfaced:
-            # The routing-misfire branch above already appended the
-            # no-write footnote to the prose; the turn is accepted. Skip
-            # the softening/block chain so the prose is not replaced.
-            pass
-        elif _is_chat_mode and has_dense_content and _did_work:
-            _log.info(
-                "parent turn mode=%s completed with no verified write, but "
-                "is a chat mode that did read-only work and produced dense "
-                "content (%d chars); accepting as successful.",
-                mode_id,
-                len(content.strip()),
-            )
-        elif _is_chat_mode and _did_work and not _write_attempted:
-            # ── Warning footnote for chat-mode read-only work ───────
-            # A chat mode did real work (read-only tool calls) and
-            # produced content below the "dense" threshold but still
-            # substantive. Its answer is legitimate — for chat modes
-            # the conversational response IS the artifact. Append a
-            # warning footnote instead of throwing away the answer.
-            # Non-chat modes (action/workflow) keep the strict block:
-            # their writes land outside the thread.
-            # The warning prose is authored Markdown loaded via
-            # ``render_no_write_warning`` (same pattern as the midpoint
-            # write-nudge). Absence of the authored asset means the
-            # warning is omitted entirely.
-            _log.warning(
-                "parent turn mode=%s completed with no verified write for its "
-                "mode's action tools %s; appending warning footnote",
-                mode_id,
-                sorted(_state.action_tool_ids),
-            )
-            _action_names = ", ".join(
-                f"`{t}`" for t in sorted(_state.action_tool_ids)
-            )
-            _warning = render_no_write_warning(action_names=_action_names)
-            if _warning:
-                content = content.rstrip() + "\n\n" + _warning
-        else:
-            # A turn that made ZERO tool calls and only emitted prose is
-            # a hallucinated success regardless of mode kind or content
-            # length. A non-chat mode that did read-only work is blocked
-            # (its writes land outside the thread). A turn that attempted
-            # an action tool and it failed is likewise hallucinated.
-            _log.warning(
-                "parent turn mode=%s completed with no verified write for its "
-                "mode's action tools %s; blocking as no_tools (hallucinated success)",
-                mode_id,
-                sorted(_state.action_tool_ids),
-            )
-            content = (
-                f"The `{mode_id}` turn produced no verified write: none of the "
-                f"mode's action tools ({', '.join(sorted(_state.action_tool_ids))}) "
-                "completed successfully. The reported result is unverified — "
-                "nothing was written to disk or memory. Re-issue the request, "
-                "or narrow it so the mode can complete its work."
-            )
+            try:
+                await hooks.context_seams.event_bus.publish(
+                    "guardrail.audit",
+                    {
+                        "surface_id": guard_surface.surface_id,
+                        "mode_id": mode_id,
+                        "blocked_reason": output_guard_result.blocked_reason or "",
+                        "original_text_len": original_len,
+                    },
+                )
+            except Exception as audit_exc:  # pylint: disable=broad-except
+                _log.warning("guardrail.audit publish failed: %s", audit_exc)
+            content = safe_fallback
             turn_blocked = True
-            _block_origin = "no_tools"
-    elif not output_guard_result.allowed:
-        original_len = len(content)
-        safe_fallback = "I'm unable to provide that response. Please rephrase your request."
-        _log.warning(
-            "Output guard blocked turn for mode=%s (original_len=%d)",
-            mode_id,
-            original_len,
-        )
-        try:
-            await hooks.context_seams.event_bus.publish(
-                "guardrail.audit",
-                {
-                    "surface_id": guard_surface.surface_id,
-                    "mode_id": mode_id,
-                    "blocked_reason": output_guard_result.blocked_reason or "",
-                    "original_text_len": original_len,
-                },
-            )
-        except Exception as audit_exc:  # pylint: disable=broad-except
-            _log.warning("guardrail.audit publish failed: %s", audit_exc)
-        content = safe_fallback
-        turn_blocked = True
-        _block_origin = "output_guard"
-    elif output_guard_result.sanitized_text is not None:
-        content = output_guard_result.sanitized_text
+            _block_origin = "output_guard"
+        elif output_guard_result.sanitized_text is not None:
+            content = output_guard_result.sanitized_text
 
     await on_complete(mode_id, query, content, messages, list(_state.effect_receipts))
 
@@ -7124,4 +6987,16 @@ from kernel.turn_phases._tool_schemas import (  # noqa: F401
     _rebuild_tool_schemas_for_mode,
     _tool_schema_name,
     build_tool_surface,
+)
+
+# Completion-contract resolver (extracted in Loop 2)
+from kernel.turn_phases._completion_contract import (  # noqa: F401
+    AcceptTurn,
+    BlockNoVerifiedWrite,
+    ChatReadFootnote,
+    ChatSoftAccept,
+    CompletionContractDecision,
+    PreexistingFailureBlock,
+    SurfaceProseWithFootnote,
+    resolve_completion_contract,
 )
