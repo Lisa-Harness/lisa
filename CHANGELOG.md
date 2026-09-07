@@ -36,6 +36,17 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### Turn decision telemetry (`turn.decision`) (Loop 7)
+
+- **What:** Added per-iteration structured `turn.decision` event publishing to
+  `hooks.context_seams.event_bus`. Each event carries `mode_id`, `iteration`,
+  `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`,
+  and `read_receipts`. Documented the event payload in `docs/LOGGING.md`. Added a unit
+  test in `kernel/tests/test_turn_decision.py` verifying event capture.
+- **Why:** Post-incident reconstruction previously required manual log correlation across
+  multiple local/remote jsonl files. Structured `turn.decision` events make turn progression
+  and lifecycle decisions queryable in real-time.
+
 #### Pure parent-turn completion contract resolver (Loop 2)
 
 - **What:** Extracted the post-loop Phase 3 completion contract chain from

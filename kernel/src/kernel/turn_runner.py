@@ -3181,6 +3181,37 @@ async def _run_turn_inner(
             recovery_records=_open_records,
         )
 
+        # ── Turn decision telemetry ──────────────────────────────────
+        if hooks.context_seams.event_bus is not None:
+            try:
+                _action_type = type(_lifecycle_action).__name__
+                _action_reason = getattr(_lifecycle_action, "reason", "") or getattr(
+                    _lifecycle_action, "rationale", ""
+                )
+                await hooks.context_seams.event_bus.publish(
+                    "turn.decision",
+                    {
+                        "mode_id": mode_id,
+                        "iteration": _state.iteration,
+                        "turns_in_stage": _turns_in_stage,
+                        "action_type": _action_type,
+                        "action_reason": _action_reason,
+                        "total_tool_calls": _state.total_tool_calls,
+                        "write_receipts": sum(
+                            1
+                            for r in _state.effect_receipts
+                            if r.effect in ("write", "external_write")
+                        ),
+                        "read_receipts": sum(
+                            1
+                            for r in _state.effect_receipts
+                            if r.effect in ("read", "execute")
+                        ),
+                    },
+                )
+            except Exception as _bus_exc:  # pylint: disable=broad-except
+                _log.debug("turn.decision telemetry publish failed: %s", _bus_exc)
+
         # ── Apply the lifecycle action ───────────────────────────────
         # The resolver returns a tagged union; the loop applies the
         # side effects. This is the single application point that replaces

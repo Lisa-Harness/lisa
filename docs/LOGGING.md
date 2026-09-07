@@ -140,6 +140,23 @@ emit_structured_event(
 
 Structured fields are emitted as top-level JSON keys in the output and indexed by observability tools.
 
+### Turn Decision Telemetry (`turn.decision`)
+
+On every iteration of the turn loop, when the lifecycle resolver determines the next action, the kernel publishes a structured `turn.decision` event to `hooks.context_seams.event_bus`. This enables live observability and post-incident reconstruction of turn progression.
+
+**Event Payload:**
+
+| Field | Type | Description |
+|---|---|---|
+| `mode_id` | `str` | Active mode ID for the iteration |
+| `iteration` | `int` | 1-based turn iteration counter |
+| `turns_in_stage` | `int` | Cumulative turns/iterations in the current stage/mode |
+| `action_type` | `str` | Class name of the resolved `LifecycleAction` (`ContinueAction`, `TransitionAction`, `YieldAction`, `PauseAction`, etc.) |
+| `action_reason` | `str` | Rationale or diagnostic reason associated with the action |
+| `total_tool_calls` | `int` | Total tools dispatched this turn |
+| `write_receipts` | `int` | Count of verified write/external_write receipts |
+| `read_receipts` | `int` | Count of verified read/execute receipts |
+
 ## What NOT to log
 
 - **User prompts and conversational content** — Summarize with intent tags, mode, or bounded summaries only. If you must reference prompt text, truncate and use quotes to bound it.

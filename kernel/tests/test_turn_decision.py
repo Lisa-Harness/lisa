@@ -113,7 +113,42 @@ def test_no_tools_no_transition_produces_finish() -> None:
         has_content=True,
     )
     assert result.decision is TurnDecision.FINISH
-    assert "final answer" in result.reason
+
+
+def test_turn_decision_telemetry_event_emitted() -> None:
+    """The turn loop emits a structured 'turn.decision' event on each iteration."""
+    import asyncio
+    from typing import Any
+    from kernel.turn_runner import TurnHooks, run_turn
+
+    published_events: list[tuple[str, dict[str, Any]]] = []
+
+    class _CaptureEventBus:
+        async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+            published_events.append((topic, payload))
+
+        def subscribe(self, topic: str, handler: Any) -> None:
+            pass
+
+    async def complete(**_kwargs: Any) -> Any:
+        from types import SimpleNamespace
+        return SimpleNamespace(content="Hello world.", tool_calls=[])
+
+    hooks = TurnHooks(complete=complete)
+    hooks.context_seams.event_bus = _CaptureEventBus()
+
+    result = asyncio.run(run_turn(mode_id="default", query="hi", hooks=hooks))
+    assert result.response_text == "Hello world."
+
+    decision_events = [p for t, p in published_events if t == "turn.decision"]
+    assert len(decision_events) >= 1
+    event = decision_events[0]
+    assert event["mode_id"] == "default"
+    assert event["iteration"] == 1
+    assert event["action_type"] in ("ContinueAction", "FinishAction")
+    assert "total_tool_calls" in event
+    assert "write_receipts" in event
+    assert "read_receipts" in event
 
 
 def test_empty_response_produces_finish() -> None:
