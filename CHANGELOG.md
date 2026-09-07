@@ -56,6 +56,21 @@ All notable changes to the Lisa Framework will be documented in this file.
   pre-existing failure blocks; all 15 passed), `kernel/tests/test_effect_receipts.py`
   (22 passed).
 
+#### Phase 1 entry-phase extraction, typed turn state & loop import hoisting (Loop 5)
+
+- **What:** (1) Extracted Phase 1 entry operations, resume-in-flight gate, and planner
+  execution from `turn_runner.py` (~320 lines) into `kernel.turn_phases._entry.execute_entry_phase`
+  returning a typed `EntryPhaseResult`;
+  (2) Hoisted 9 per-iteration `_lifecycle` imports out of the `while` loop body in
+  `turn_runner.py` to top level;
+  (3) Strongly typed `_TurnState` in `kernel.turn_phases._turn_state`: fields `fork_results`
+  and `effect_receipts` now carry concrete model types (`list[ForkChildResult] | None` and
+  `list[EffectReceipt]`) rather than `list[Any]`;
+  (4) Eliminated redundant 30-line `_build_minimal_context` duplication via parameterized
+  `_build_entry_ctx` helper.
+- **Why:** Reduces `_run_turn_inner` complexity, eliminates per-iteration import overhead
+  in the hot tool loop, and provides typed guarantees for the mutable turn state.
+
 #### Turn scenario matrix & structured stalled-write trigger (Loop 3)
 
 - **What:** Added a comprehensive scenario matrix suite in

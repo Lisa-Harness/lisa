@@ -31,6 +31,18 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.turn_phases._entry import EntryPhaseResult, execute_entry_phase
+from kernel.turn_phases._lifecycle import (
+    ContinueAction as _ContinueAction,
+    FinishAction as _FinishAction,
+    LifecycleResolverSettings as _LRS,
+    PauseAction as _PauseAction,
+    StopAction as _StopAction,
+    TerminateAction as _TerminateAction,
+    TransitionAction as _TransitionAction,
+    _TurnStateView as _TSV,
+    resolve_lifecycle_action as _resolve_lifecycle,
+)
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
     get_routing_targets,
@@ -2517,334 +2529,74 @@ async def _run_turn_inner(
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
 
-    # ── Phase 1: Pre-turn ─────────────────────────────────────────────
-    # Assemble the user context early so the planner entry op
-    # (``plan_workflow``) can see the recent thread excerpt — without
-    # it, the planner re-synthesizes a generic plan from the raw query
-    # alone and loses the rich plan already presented in the prior turn
-    # (the 2026-08-09 plan-amnesia incident). The capability manifest is
-    # not yet built (tool surface assembly happens later), so it is
-    # passed as ``None`` — the excerpt does not need it. A second pass
-    # with the full manifest reassembles the user message later in Phase 2.
-    # Only build the early excerpt when the mode has entry operations;
-    # otherwise the single late pass (with the manifest) suffices, and
-    # tests that count ``assemble_user_context`` calls see exactly one.
-    pre_briefing = ""
-    _has_entry_ops = mode_config is not None and bool(mode_config.entry_operation_ids)
-    _early_user_context = (
-        assemble_user(mode_id, query, pre_briefing, None) if _has_entry_ops else ""
-    )
-    _log.debug(
-        "early user context: built=%s has_entry_ops=%s mode=%s",
-        bool(_early_user_context),
-        _has_entry_ops,
-        mode_id,
-    )
-    if mode_config is not None and mode_config.entry_operation_ids:
-        # ── Resume-in-flight gate (work + routing entry ops) ──────────
-        # When the user resumes an in-flight plan with a bare imperative
-        # ("proceed", "continue", …) while parked on an entry-op mode,
-        # the literal phrase must not be fed to that mode's entry op.
-        # For work entry ops (e.g. ``search``), the phrase has no
-        # search/research intent and would be sent to the backend as the
-        # query (the 2026-08-08 ``proceed`` → Brave ``q=proceed+meaning``
-        # incident). For routing entry ops (e.g. ``plan``), the planner
-        # receives the literal "proceed" as ``ctx.query`` and cannot match
-        # it to any mode — it returns an empty ``target_stage_id`` and the
-        # turn dead-ends in a recovery prompt (the 2026-08-10 planning
-        # loop). In both cases, skip the entry op and drive the resume as
-        # a kernel-synthesized handoff; the coordinator routing hint
-        # (``_coordinator_routing_hint``, built later this turn) reads the
-        # same active position and drives a ``transition_stage`` handoff to
-        # the next planned step.
-        _resume_target = _resume_in_flight_target(
-            hooks=hooks, mode_id=mode_id, query=query
+    # ── Phase 1: Pre-turn (entry operations and plan execution) ───────
+    def _build_entry_ctx(**overrides: Any) -> Any:
+        base_ctx_kwargs = dict(
+            mode_id=mode_id,
+            query=query,
+            resolve_model_fn=resolve_model,
+            complete_fn=complete,
+            read_authored_text_fn=getattr(
+                hooks.context_seams.content_registry,
+                "read_authored_text",
+                None,
+            ),
+            execute_tool_fn=_mcp_tool_executor,
+            execute_operation_fn=exec_op,
+            state_provider=hooks.state_provider,
+            pack_configuration_resolver=hooks.pack_configuration_resolver,
+            approval_service=hooks.approval_service,
+            code_change_artifact_store=hooks.code_change_artifact_store,
+            gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
+            workspace_id=hooks.workspace_id,
+            user_id=hooks.user_id,
+            user_slug=hooks.user_slug,
+            user_name=hooks.user_name,
+            principal_key=hooks.principal_key,
+            conversation_id=hooks.conversation_id,
+            surface_type=hooks.surface_type,
+            surface_id=hooks.surface_id,
+            memory_scope=hooks.memory_scope,
+            session_plan_digest=hooks.session_plan_digest,
+            data_dir=hooks.data_dir,
+            delegate_fn=_delegate_fn,
+            fork_fn=_fork_fn,
+            model_router=hooks.context_seams.model_router,
         )
-        _skip_work_entry_op = bool(_resume_target)
-        _log.debug(
-            "resume-in-flight check: mode=%s target=%s skip=%s",
-            mode_id,
-            _resume_target or "(none)",
-            _skip_work_entry_op,
-        )
-        if _skip_work_entry_op:
-            _log.info(
-                "resume-in-flight: skipping work entry op for mode=%s "
-                "on continuation query; plan resumes to %s",
-                mode_id,
-                _resume_target,
-            )
-            # Drive the resume as a kernel-synthesized handoff (same
-            # mechanism as a successful ``plan_workflow``): set
-            # ``pending_planned_handoff`` so the loop's synthesis block
-            # emits a ``transition_stage`` tool call to ``_resume_target``
-            # without asking the model. The parked mode's entry op (which
-            # already ran in the prior turn) is skipped, and the plan
-            # advances in flight to the next declared step. Suppress the
-            # emergent routing hint so it does not compete with the
-            # synthesized handoff; the target mode's hint is computed
-            # after the handoff lands.
-            _state.pending_planned_handoff = _resume_target
-            suppress_routing_hint = True
-        if not _skip_work_entry_op:
-            # Stage-entry operations (Phase 6c): entering a mode's start stage
-            # runs its entry ops, regardless of mode kind. The result-shape
-            # contract decides what the output means: a non-empty
-            # ``output_json["target_stage_id"]`` is a routing contract and the
-            # kernel drives the handoff; anything else IS the turn's output
-            # (``entry_op_kind: work`` — the default). A mode that needs setup
-            # work without turn-ending output declares ``pre_turn_operation_ids``
-            # instead.
-            ctx = _build_minimal_context(
-                mode_id=mode_id,
-                query=query,
-                resolve_model_fn=resolve_model,
-                complete_fn=complete,
-                read_authored_text_fn=getattr(
-                    hooks.context_seams.content_registry,
-                    "read_authored_text",
-                    None,
-                ),
-                execute_tool_fn=_mcp_tool_executor,
-                execute_operation_fn=exec_op,
-                state_provider=hooks.state_provider,
-                pack_configuration_resolver=hooks.pack_configuration_resolver,
-                approval_service=hooks.approval_service,
-                code_change_artifact_store=hooks.code_change_artifact_store,
-                gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-                workspace_id=hooks.workspace_id,
-                user_id=hooks.user_id,
-                user_slug=hooks.user_slug,
-                user_name=hooks.user_name,
-                principal_key=hooks.principal_key,
-                conversation_id=hooks.conversation_id,
-                surface_type=hooks.surface_type,
-                surface_id=hooks.surface_id,
-                memory_scope=hooks.memory_scope,
-                session_plan_digest=hooks.session_plan_digest,
-                data_dir=hooks.data_dir,
-                delegate_fn=_delegate_fn,
-                fork_fn=_fork_fn,
-                conversation_excerpt_markdown=_early_user_context,
-                model_router=hooks.context_seams.model_router,
-            )
-            result = await run_mode_entry_operations(
-                mode_id,
-                ctx,
-                ledger=ledger,
-                execution_policy=execution_policy,
-            )
-            # ── Data-driven routing contract ─────────────────────────
-            # The entry-op result itself declares whether it carries a routing
-            # decision: a non-empty ``output_json["target_stage_id"]`` IS the
-            # routing contract — no op-id list, no mode-name check (the
-            # hardcoded ``_ROUTING_ENTRY_OP_IDS`` frozenset is deleted). When
-            # the target is empty, the mode's declared ``entry_op_kind``
-            # decides what an empty result means: ``routing`` modes promised
-            # a routing contract, so an empty target is a plan failure
-            # (handled by the recovery block below); ``work`` modes (the
-            # default — e.g. ``search``/``web_search``) return their own
-            # output shape and that output IS the turn's result. Misreading
-            # a work mode's empty target as a failed plan was the
-            # 2026-08-06 ``plan → search`` stall (every planned ``search``
-            # step terminated with "plan_workflow returned no target
-            # (mode=search)").
-            planned_target = str(
-                (result.output_json or {}).get("target_stage_id", "") or ""
-            ).strip()
-            promises_routing = _promises_routing_contract(mode_config)
-            if not planned_target and not promises_routing:
-                # Work entry op: the result IS the turn output; the turn ends
-                # cleanly with no routing semantics applied.
-                entry_text = (result.output_text or "").strip()
-                return TurnResult(
-                    response_text=entry_text,
-                    tool_call_count=0,
-                    iteration_count=1,
-                )
-            # ── Kernel-driven handoff for routing entry ops ──────────────
-            # When an action mode's entry operation returns a routing target
-            # (``output_json["target_stage_id"]``), the kernel drives the
-            # handoff itself instead of asking the model to call
-            # ``transition_stage``. This is the hard cutover from the old
-            # contract (``plan`` mode's ``_mode.md`` told the model to call
-            # ``transition_stage`` after ``plan_workflow``) to a kernel-driven
-            # one: weak models that stop after planning — emitting a summary
-            # like "the next step is `search`" without calling the tool — left
-            # no persisted route state, so a follow-up ``proceed`` had nothing
-            # to load and the chain stalled (the 2026-07-28 incident).
-            #
-            # The kernel persists the coordinator decision *from the plan
-            # result* (not from a successful ``transition_stage`` tool call)
-            # and sets ``pending_planned_handoff`` so the loop's synthesis
-            # block drives the handoff through the same transition_stage
-            # interception the model-driven path uses (Phase 3: one
-            # transition). An empty ``target_stage_id`` from a routing-declared
-            # mode falls through to the plan-failure recovery block below.
-            # The visible plan block (rendered markdown) from plan_workflow's
-            # output_text. When the model returned a ``steps`` array, this is a
-            # ``## Plan`` block the user sees before the first step executes.
-            # When the model returned no steps (weak-model fallback), this is
-            # the single-target rationale (no plan block) — same as pre-steps.
-            plan_block = (result.output_text or "").strip()
-            plan_steps_raw = (result.output_json or {}).get("steps") or []
-            if not isinstance(plan_steps_raw, list):
-                plan_steps_raw = []
-            if planned_target:
-                # ── Kernel-driven handoff (in-loop, no recursion) ────────────
-                # The kernel drives the handoff itself: save the coordinator
-                # decision and set ``pending_planned_handoff`` so the loop's
-                # synthesis block at the top of the next iteration funnels the
-                # handoff through the same transition_stage interception the
-                # model-driven path uses (Phase 3: one transition). The plan
-                # prose lives in the thread's ``response_text``; the
-                # WorkflowView derives declared/completed steps from it on the
-                # next turn. No mutable position is persisted.
-                workflow_steps = _plan_steps_to_workflow_steps(plan_steps_raw)
+        base_ctx_kwargs.update(overrides)
+        return _build_minimal_context(**base_ctx_kwargs)
 
-                # When synthesizing the handoff, update the query to the
-                # first step's derived sub-query so the handoff processor
-                # at the top of the next iteration sees it.
-                if workflow_steps and workflow_steps[0].mode_id == planned_target:
-                    _first_step_query = workflow_steps[0].step_query
-                    if _first_step_query:
-                        query = _first_step_query
-                        ctx = ctx.model_copy(update={"query": query})
-
-                save_route_decision(
-                    hooks,
-                    _routing_ctx,
-                    target_mode_id=planned_target,
-                    reason=(
-                        (result.output_json or {}).get("rationale")
-                        or f"planned handoff from {mode_id}"
-                    ),
-                )
-                _log.debug(
-                    "kernel-driven handoff from planner mode=%s target=%s "
-                    "(planned by entry op, not model transition_stage)",
-                    mode_id,
-                    planned_target,
-                )
-                _state.pending_planned_handoff = planned_target
-                # Stage the plan block for the final TurnResult: the loop
-                # prepends it to the produced content so the user sees the plan
-                # before the first step's output (the recursion used to prepend
-                # it to the child turn's response_text).
-                if plan_block and plan_steps_raw:
-                    _state.plan_prefix = plan_block
-                # The planner mode's own work is done — suppress its routing
-                # hint so the loop does not re-plan from inside ``plan`` while
-                # the synthesized handoff is pending. The target mode's hint is
-                # computed after the handoff lands.
-                suppress_routing_hint = True
-            # ── Plan failure: hard stop with a structured recovery prompt ──
-            # When the planner returned an empty ``target_stage_id`` (parse
-            # failure, model error, no wiring), do NOT fall through to the
-            # raw error text and do NOT let the post-handoff hint generator
-            # re-hallucinate a target on the next turn (the 2026-07-30
-            # plan→ponder→markdown bounce: plan failed with ``StubCompletion``,
-            # the post-handoff hint re-fired telling the model to go to
-            # ``discuss``, and the model improvised to ``ponder``). The turn
-            # terminates with a deterministic recovery prompt that tells the
-            # user plan failed and offers concrete next steps. Mark the model
-            # unreliable for planning so the hint generator stops escalating
-            # to ``plan`` for it (see ``routing_vocabulary.is_plan_reliable``).
-            # Only reached when a routing-declared planner produced NO target
-            # (work modes returned their entry-op output above) — a successful
-            # plan stages ``pending_planned_handoff`` above and falls through
-            # to the main loop without entering this block.
-            if not planned_target:
-                plan_reason = (
-                    str((result.output_json or {}).get("rationale", "") or "").strip()
-                    or "the planner returned no routing target"
-                )
-                plan_model_id = str(preferred_model_id or "")
-                from kernel.routing_vocabulary import (
-                    mark_plan_unreliable_for_model,
-                )
-
-                mark_plan_unreliable_for_model(plan_model_id)
-                _log.warning(
-                    "plan_workflow returned no target (mode=%s, model=%s, reason=%s); "
-                    "marking model unreliable for planning and terminating turn with "
-                    "recovery prompt",
-                    mode_id,
-                    plan_model_id,
-                    plan_reason,
-                )
-                # If the planner produced partial steps before failing (e.g. a
-                # parse failure on a multi-step plan that partially populated),
-                # include them in the recovery message so the user has context on
-                # what was attempted. This is rare — most failures produce no
-                # steps at all — but when it happens the partial plan is useful
-                # diagnostic information for rephrasing.
-                partial_steps = (result.output_json or {}).get("steps") or []
-                partial_block = ""
-                if isinstance(partial_steps, list) and partial_steps:
-                    partial_lines = ["The planner partially identified these steps before failing:"]
-                    for idx, s in enumerate(partial_steps, start=1):
-                        if isinstance(s, dict):
-                            partial_lines.append(
-                                f"  {idx}. {s.get('mode_id', '?')} — {s.get('description', '')}"
-                            )
-                    partial_block = "\n\n" + "\n".join(partial_lines)
-                recovery = (
-                    f"I attempted to plan this request in `{mode_id}` mode but could "
-                    f"not produce a routing decision (reason: {plan_reason}). This is "
-                    f"often a sign of a complex or ambiguous multi-step request."
-                    f"{partial_block}\n\n"
-                    f"You can:\n"
-                    f"  1. Rephrase the request with explicit sequential steps "
-                    f'(e.g. "search for X, then write a markdown report").\n'
-                    f"  2. Name the target mode directly (e.g. `/markdown ...`, "
-                    f"`/ponder ...`) to bypass planning.\n"
-                    f"  3. Ask me to discuss it first (`/discuss ...`) so I can "
-                    f"clarify what you want before committing to a workflow."
-                )
-                return TurnResult(
-                    response_text=recovery,
-                    tool_call_count=0,
-                    iteration_count=1,
-                )
-            # A successful plan falls through here: the loop runs in ``plan``
-            # mode with ``pending_planned_handoff`` set, and the synthesis block
-            # at the top of the first iteration hands off to the planned target.
-
-    # Chat/workflow modes: run pre-turn operations
-    ctx = _build_minimal_context(
+    _entry_result = await execute_entry_phase(
         mode_id=mode_id,
         query=query,
-        resolve_model_fn=resolve_model,
-        complete_fn=complete,
-        read_authored_text_fn=getattr(
-            hooks.context_seams.content_registry,
-            "read_authored_text",
-            None,
-        ),
-        execute_tool_fn=_mcp_tool_executor,
-        execute_operation_fn=exec_op,
-        state_provider=hooks.state_provider,
-        pack_configuration_resolver=hooks.pack_configuration_resolver,
-        approval_service=hooks.approval_service,
-        code_change_artifact_store=hooks.code_change_artifact_store,
-        gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-        workspace_id=hooks.workspace_id,
-        user_id=hooks.user_id,
-        user_slug=hooks.user_slug,
-        user_name=hooks.user_name,
-        principal_key=hooks.principal_key,
-        conversation_id=hooks.conversation_id,
-        surface_type=hooks.surface_type,
-        surface_id=hooks.surface_id,
-        memory_scope=hooks.memory_scope,
-        session_plan_digest=hooks.session_plan_digest,
-        data_dir=hooks.data_dir,
-        delegate_fn=_delegate_fn,
-        fork_fn=_fork_fn,
-        conversation_excerpt_markdown=_early_user_context,
-        model_router=hooks.context_seams.model_router,
+        mode_config=mode_config,
+        hooks=hooks,
+        ledger=ledger,
+        execution_policy=execution_policy,
+        routing_ctx=_routing_ctx,
+        preferred_model_id=preferred_model_id,
+        assemble_user_fn=assemble_user,
+        build_minimal_context_fn=_build_entry_ctx,
+        plan_steps_to_workflow_steps_fn=_plan_steps_to_workflow_steps,
+        promises_routing_contract_fn=_promises_routing_contract,
+        resume_in_flight_target_fn=_resume_in_flight_target,
+        run_mode_entry_operations_fn=run_mode_entry_operations,
     )
+    if _entry_result.early_return is not None:
+        return _entry_result.early_return
+
+    if _entry_result.pending_planned_handoff:
+        _state.pending_planned_handoff = _entry_result.pending_planned_handoff
+    if _entry_result.plan_prefix:
+        _state.plan_prefix = _entry_result.plan_prefix
+    if _entry_result.suppress_routing_hint:
+        suppress_routing_hint = True
+    if _entry_result.first_step_query:
+        query = _entry_result.first_step_query
+    _early_user_context = _entry_result.early_user_context
+
+    # Chat/workflow modes: run pre-turn operations
+    ctx = _build_entry_ctx(conversation_excerpt_markdown=_early_user_context)
     pre_result = await run_mode_pre_turn_operations(
         mode_id,
         ctx,
@@ -3434,34 +3186,6 @@ async def _run_turn_inner(
                         "_state.iteration": _state.iteration,
                     },
                 )
-
-        from kernel.turn_phases._lifecycle import (
-            ContinueAction as _ContinueAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            FinishAction as _FinishAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            LifecycleResolverSettings as _LRS,
-        )
-        from kernel.turn_phases._lifecycle import (
-            PauseAction as _PauseAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            StopAction as _StopAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            TerminateAction as _TerminateAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            TransitionAction as _TransitionAction,
-        )
-        from kernel.turn_phases._lifecycle import (
-            _TurnStateView as _TSV,
-        )
-        from kernel.turn_phases._lifecycle import (
-            resolve_lifecycle_action as _resolve_lifecycle,
-        )
 
         _resolver_settings = _LRS(
             max_tool_iterations=max_tool_iterations,

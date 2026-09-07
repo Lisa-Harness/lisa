@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import OperationResult, ToolResult
+from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolResult
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
 
@@ -131,7 +131,7 @@ class _TurnState:
     content: str = ""
     transitioned_to: str | None = None
     handoff_to: str | None = None
-    fork_results: list[Any] | None = None
+    fork_results: list[ForkChildResult] | None = None
     workflow_terminated: bool = False
     iteration: int = 0
     # ── Per-step iteration sub-budget ────────────────────────────────
@@ -282,7 +282,7 @@ class _TurnState:
     action tools — not just read-only fetches. A child that did 4
     ``fetch_page`` calls but never called ``markdown_forge_document``
     hallucinated its success (the 2026-07-27 follow-on incident)."""
-    effect_receipts: list[Any] = field(default_factory=list)
+    effect_receipts: list[EffectReceipt] = field(default_factory=list)
     """``EffectReceipt`` instances collected at dispatch time for every
     successfully-dispatched capability. Write/external_write receipts prove
     a mode's write contract was satisfied; read/execute receipts prove real
