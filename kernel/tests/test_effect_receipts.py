@@ -907,6 +907,112 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     assert all(r.effect == "read" for r in read_receipts)
 
 
+# ── Resolver: op id mislisted as a tool id (2026-09-07 shell incident) ─
+
+
+def _shell_incident_catalog() -> dict[str, WorkflowModeConfig]:
+    """The shell mode as authored in the 2026-09-07 bash pack.
+
+    ``allowed_tool_ids`` listed ``layers_list`` — a read-effect OPERATION
+    from the bwrap pack — alongside the real ``bash_run`` tool. With the
+    tool catalog unaware of ``layers_list``, the resolver's conservative
+    write default gave shell a phantom write contract.
+    """
+    return {
+        "shell": WorkflowModeConfig(
+            mode_id="shell",
+            start_stage_id="none",
+            mode_kind="action",
+            routable=True,
+            authored_allowed_tool_ids=["bash_run", "layers_list"],
+            allowed_tool_ids=["bash_run", "layers_list"],
+        ),
+    }
+
+
+def test_read_effect_operation_mislisted_as_tool_excluded_from_contract() -> None:
+    """A read-effect operation listed under allowed_tool_ids is not a write contract.
+
+    Regression for the 2026-09-07 shell block (turns 114/116/118): the bash
+    pack's shell mode listed the bwrap pack's read-only ``layers_list``
+    OPERATION in ``allowed_tool_ids``. Operations and tools live in separate
+    catalogs, so the tool-catalog lookup missed and the conservative write
+    default classified the read op as a required write. Every summarize-only
+    shell turn was then blocked as a hallucinated success, and the
+    write-contract backstop synthesized a doomed ``layers_list`` dispatch on
+    top. The resolver must consult the operation catalog first: an id that
+    names a resolvable read/execute operation can never be a
+    write-completion requirement.
+    """
+    from kernel.models import OperationDefinition
+    from kernel.operations import registry as ops_registry
+
+    op_catalog = {
+        "layers_list": OperationDefinition(
+            operation_id="layers_list",
+            description="list overlayfs layers",
+            effect="read",
+        ),
+    }
+    # The tool catalog does NOT know ``layers_list`` (it is an operation);
+    # ``bash_run`` resolves as an execute-effect tool.
+    tool_catalog: dict[str, Any] = {}
+
+    with (
+        patch.object(ops_registry, "get_operation_catalog", return_value=op_catalog),
+        patch("kernel.tools.registry.get_tool_catalog", return_value=tool_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=_shell_incident_catalog()),
+    ):
+        effects = ops_registry.mode_completion_effects("shell")
+
+    assert "layers_list" not in effects, (
+        "read-effect operation mislisted as a tool leaked into the write contract"
+    )
+    # ``bash_run`` is also unresolvable in this minimal fixture (it lives in
+    # the MCP tool catalog in production), so the conservative default keeps
+    # it as the mode's real completion requirement.
+    assert "bash_run" in effects
+
+
+def test_write_effect_operation_mislisted_as_tool_stays_in_contract() -> None:
+    """The exclusion is effect-scoped: a WRITE-effect op stays a requirement.
+
+    Guarding the guard: the 1b pass must only demote read/execute
+    capabilities. An operation with declared ``write`` effect that a mode
+    mislists under ``allowed_tool_ids`` keeps its completion requirement —
+    otherwise a mislisted write op would silently drop out of the contract
+    and unverified-success turns would pass.
+    """
+    from kernel.models import OperationDefinition
+    from kernel.operations import registry as ops_registry
+
+    op_catalog = {
+        "remember_store": OperationDefinition(
+            operation_id="remember_store",
+            description="store a memory record",
+            effect="write",
+        ),
+    }
+    catalog = {
+        "remember": WorkflowModeConfig(
+            mode_id="remember",
+            start_stage_id="none",
+            mode_kind="action",
+            routable=True,
+            authored_allowed_tool_ids=["remember_store"],
+            allowed_tool_ids=["remember_store"],
+        ),
+    }
+    with (
+        patch.object(ops_registry, "get_operation_catalog", return_value=op_catalog),
+        patch("kernel.tools.registry.get_tool_catalog", return_value={}),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        effects = ops_registry.mode_completion_effects("remember")
+
+    assert "remember_store" in effects
+
+
 # ── Routing-misfire prose surfacing (2026-09-02 executor misroute) ────
 
 

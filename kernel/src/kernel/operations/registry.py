@@ -476,7 +476,7 @@ def build_operation_tool_schemas(
     return schemas
 
 
-def mode_completion_effects(
+def mode_completion_effects(  # noqa: C901  (was 13 pre-2026-09-07 fix; +1 branch for the op-id mislisted-as-tool demotion pass)
     mode_id: str,
     *,
     mcp_pool: Any = None,
@@ -557,6 +557,20 @@ def mode_completion_effects(
         effect = str(getattr(op_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(op_id)
+    # 1b) Authored TOOL bindings that name a resolvable read-effect OPERATION.
+    #    Operations and tools live in separate catalogs (in-process behaviors
+    #    vs MCP-dispatched tools), but a mode author can list an operation id
+    #    under ``allowed_tool_ids`` — the 2026-09-07 shell incident listed the
+    #    bwrap pack's read-only ``layers_list`` operation there. Step 2 could
+    #    not resolve it in the tool catalog, fell through to the conservative
+    #    write default, and shell acquired a phantom write contract: every
+    #    summarize-only turn (no layers_list call) was blocked as a
+    #    hallucinated success by the write-contract backstop, and the backstop
+    #    then synthesized a doomed ``layers_list`` dispatch. The operation
+    #    catalog is authoritative for an id that names an operation: read /
+    #    execute effect means it can never be a write-completion requirement.
+    #    Runs AFTER step 2 so the demotion cannot be overwritten by step 2's
+    #    conservative re-add of the same unresolvable id.
     # 2) Authored tool bindings filtered by declared effect. An unresolvable
     #    tool is an MCP alias (not in the in-process catalog); resolve it via
     #    the pool's ``read_only_hint`` when available. A server-declared
@@ -575,6 +589,12 @@ def mode_completion_effects(
         effect = str(getattr(tool_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(tool_id)
+    for tool_id in mode.authored_allowed_tool_ids:
+        op_def = op_catalog.get(tool_id)
+        if op_def is not None and str(
+            getattr(op_def, "effect", "write") or "write"
+        ) not in ("write", "external_write"):
+            result.discard(tool_id)
     # 3) Operations explicitly bound via their own ``mode_allowlist``.
     result.update(_mode_allowlist_write_ops(op_catalog, mode_id))
     # 4) Tools explicitly bound via their own ``mode_allowlist``.
