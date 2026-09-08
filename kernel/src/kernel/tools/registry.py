@@ -56,6 +56,11 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
+#: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
+#: fire-and-forget telemetry; the set keeps them garbage-collectable only
+#: after completion and is pruned on each publish.
+_PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
+
 __all__ = [
     "execute_tool",
     "get_tool_catalog",
@@ -223,7 +228,21 @@ async def execute_tool(
                     duration_ms=duration_ms,
                     error_message=err_msg,
                 )
-                asyncio.create_task(ctx.event_bus.publish(event))
+                # Fire-and-forget telemetry on the EventBus (topic, payload)
+                # contract. Strictly best-effort: a publish failure must never
+                # replace the tool's own result/exception, so the coroutine is
+                # wrapped before scheduling — a synchronous raise here would
+                # otherwise surface from this ``finally`` and mask the real
+                # dispatch outcome (2026-09-08 fetch_page incident).
+                try:
+                    task = asyncio.create_task(
+                        ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug("tool telemetry publish failed for %s", tool_id, exc_info=True)
+                else:
+                    _PENDING_TELEMETRY_TASKS.add(task)
+                    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
 
     if isinstance(result, ToolResult):
         return result
@@ -244,8 +263,15 @@ def _resolve_execution_configuration(
     pack_key = definition.effective_provider_id()
     if not pack_key or resolver is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
-        return
-    ctx.pack_config = resolver.for_pack(pack_key)
+    else:
+        ctx.pack_config = resolver.for_pack(pack_key)
+    # Propagate the catalog-declared streaming posture onto the call context
+    # so tools don't have to re-resolve the catalog to know whether they may
+    # publish incremental output. The host subscribes only for tools that
+    # declare ``stream_output: true``, so the flag here mirrors the
+    # declaration and hosts that never wired a subscriber simply receive
+    # nothing (the publish path is best-effort on the tool side).
+    ctx.stream_output = definition.stream_output
 
 
 def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) -> None:

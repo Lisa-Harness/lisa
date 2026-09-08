@@ -420,6 +420,30 @@ async def emit_stage(
         log.debug("on_stage(%s) hook failed: %s", label, stage_exc, exc_info=True)
 
 
+async def emit_tool_output(
+    state: _TurnState,
+    on_stage_hook: Any,
+    log: logging.Logger,
+    data: dict[str, Any],
+) -> None:
+    """Forward one incremental tool-output line to the transport.
+
+    Streamed by tools that declare ``stream_output: true`` in their
+    ``.tool.yml`` (the pack publishes on the ``lisa.tool_output`` event-bus
+    topic; the host subscribes and re-emits here). Same failure-swallowing
+    contract as :func:`emit_stage` — a slow or broken transport must never
+    break the tool call — but deliberately NOT stamped with the iteration/
+    cap bookkeeping: an output line is not a stage transition and must not
+    touch the transport's counters.
+    """
+    if on_stage_hook is None:
+        return
+    try:
+        await on_stage_hook("tool_output", dict(data))
+    except Exception as stage_exc:  # noqa: BLE001  # pylint: disable=broad-except
+        log.debug("on_stage(tool_output) hook failed: %s", stage_exc, exc_info=True)
+
+
 async def mcp_tool_executor(
     tool_id: str,
     _ctx: Any,

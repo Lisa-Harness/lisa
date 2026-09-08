@@ -100,6 +100,13 @@ class ToolExecutionContext(BaseModel):
     code_change_artifact_store: Any = Field(default=None, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
+    # When ``True``, the tool is allowed to publish incremental
+    # operator-visible output lines while it runs (see
+    # ``ToolDefinition.stream_output``). Wired by the turn runner from the
+    # catalog definition so tools don't re-resolve the catalog themselves.
+    # ``False`` keeps behavior identical for tools that don't declare the
+    # flag (and for the MCP-server path where no transport is attached).
+    stream_output: bool = Field(default=False, exclude=True)
     # Canonical host data root. Hosts inject their resolved ``data_dir`` so
     # pack tools (e.g. ``fetch_page``) can persist caches without resolving
     # a relative path against the process CWD. There is deliberately NO
@@ -186,6 +193,17 @@ class ToolDefinition(BaseModel):
     # rather than raising, and any format error falls back to the host's
     # primary-argument preview. Empty disables the template path.
     display_template: str = ""
+    # Authored in ``.tool.yml`` front matter. When ``True``, the tool declares
+    # that its long-running body publishes incremental operator-visible output
+    # lines (e.g. a shell command's streaming stdout) via the turn's event bus
+    # under the ``lisa.tool_output`` topic. The host forwards those payloads to
+    # the transport, which may reserve a live scrolling region for them.
+    # Display-only and best-effort: a host without a subscriber (headless, MCP)
+    # simply never receives the events and the tool is unaffected. The kernel
+    # never names tool ids or topics; the contract is between the pack author
+    # and the host's transport. ``False`` (default) keeps a tool's output
+    # invisible until dispatch completes.
+    stream_output: bool = False
 
     def effective_provider_id(self) -> str:
         """Return the canonical owning-provider id for this tool.

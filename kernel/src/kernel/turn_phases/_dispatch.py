@@ -212,6 +212,7 @@ async def _dispatch_pack_tool(
     if tool_def.implementation_module is not None:
         tool_ctx = _to_tool_context(tool_name, ctx)
         tool_ctx.parameters = tool_arguments
+        tool_ctx.stream_output = bool(getattr(tool_def, "stream_output", False))
         tool_result = await execute_tool(tool_name, tool_ctx)
         tool_output = _stringify_pack_tool_result(tool_result)
 

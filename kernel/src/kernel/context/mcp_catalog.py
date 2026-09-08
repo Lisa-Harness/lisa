@@ -495,6 +495,7 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         default_available=bool(data.get("default_available", False)),
         abbreviation_template=str(data.get("abbreviation_template", "") or ""),
         display_template=str(data.get("display_template", "") or ""),
+        stream_output=bool(data.get("stream_output", False)),
     )
 
 

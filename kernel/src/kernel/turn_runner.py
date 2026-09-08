@@ -2194,6 +2194,12 @@ async def execute_approved_invocation(
         raise ValueError("Approval request belongs to a different session plan.")
 
     async def _dispatch(pool: MCPToolPool) -> ToolResult | OperationResult:
+        # Tools that declare ``stream_output`` publish incremental lines on
+        # the ``lisa.tool_output`` bus topic; the same turn-level subscription
+        # pattern as _run_turn_inner applies here (approval resume also runs
+        # inside the host process with the transport attached).
+        _tool_output_bus = getattr(hooks.context_seams, "event_bus", None)
+
         async def _nested_tool_executor(tool_id: str, source_ctx: Any) -> ToolResult:
             tool_catalog = get_tool_catalog()
             definition = tool_catalog.get(tool_id)
@@ -2204,6 +2210,8 @@ async def execute_approved_invocation(
                     or getattr(source_ctx, "params", {})
                     or {}
                 )
+                tool_ctx.stream_output = bool(getattr(definition, "stream_output", False))
+                tool_ctx.event_bus = _tool_output_bus
                 return await execute_tool(tool_id, tool_ctx)
             mcp_result = await pool.call_tool(
                 tool_id,
@@ -2237,11 +2245,14 @@ async def execute_approved_invocation(
             "model_router": hooks.context_seams.model_router,
         }
         if invocation.target_kind == "tool":
+            _tool_def = get_tool_catalog().get(invocation.target_id)
             return await execute_tool(
                 invocation.target_id,
                 ToolExecutionContext(
                     tool_id=invocation.target_id,
                     parameters=invocation.parameters,
+                    stream_output=bool(getattr(_tool_def, "stream_output", False)) if _tool_def else False,
+                    event_bus=_tool_output_bus,
                     **common,
                 ),
             )
@@ -2365,6 +2376,9 @@ async def _run_turn_inner(
         emit_stage as _emit_stage_fn,
     )
     from kernel.turn_phases._turn_state import (
+        emit_tool_output as _emit_tool_output_fn,
+    )
+    from kernel.turn_phases._turn_state import (
         mcp_tool_executor as _mcp_tool_executor_fn,
     )
     from kernel.turn_phases._turn_state import (
@@ -2437,6 +2451,26 @@ async def _run_turn_inner(
 
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
         await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
+
+    # ── Tool-output streaming wiring ────────────────────────────────
+    # Pack tools that declare ``stream_output: true`` publish incremental
+    # operator-visible lines on the ``lisa.tool_output`` event-bus topic
+    # (``ctx.event_bus``). When a bus is present, this host-side subscriber
+    # re-emits each line through the same ``on_stage`` hook as a
+    # ``tool_output`` stage event so transports can render a live scrolling
+    # region. Without a bus (headless tests, MCP server) this is a no-op —
+    # the tool's publish call simply finds no subscribers.
+    _tool_output_bus = getattr(hooks.context_seams, "event_bus", None)
+    if _tool_output_bus is not None and hasattr(_tool_output_bus, "subscribe"):
+
+        async def _on_tool_output_event(payload: dict[str, Any]) -> None:
+            await _emit_tool_output_fn(_state, _on_stage_hook, _log, payload)
+
+        _tool_output_bus.subscribe("lisa.tool_output", _on_tool_output_event)
+
+    async def _emit_tool_output(data: dict[str, Any]) -> None:
+        """Direct (non-bus) forwarder, for tests and fork children."""
+        await _emit_tool_output_fn(_state, _on_stage_hook, _log, data)
 
     # ── Fork hook wiring ──────────────────────────────────────────────
     # Build the ``fork_fn`` closure that the pack-level ``fork`` operation
@@ -2513,6 +2547,7 @@ async def _run_turn_inner(
             delegate_fn=_delegate_fn,
             fork_fn=_fork_fn,
             model_router=hooks.context_seams.model_router,
+            event_bus=_tool_output_bus,
         )
         base_ctx_kwargs.update(overrides)
         return _build_minimal_context(**base_ctx_kwargs)
@@ -4336,6 +4371,7 @@ async def _run_turn_inner(
             # never enters model context). Empty when the tool has no
             # template — hosts fall back to their own arg preview.
             _display_label = ""
+            _tool_streams_output = False
             if isinstance(tool_arguments, dict):
                 _tool_definition = tool_catalog.get(tool_name)
                 _display_template = getattr(_tool_definition, "display_template", "") or ""
@@ -4344,6 +4380,13 @@ async def _run_turn_inner(
                         _display_template,
                         tool_arguments,
                     )
+                # Streamed-output posture: transports open a live output
+                # region only for tools whose ``.tool.yml`` declares
+                # ``stream_output`` — the flag travels on the dispatch event
+                # so the region is armed before the first line arrives.
+                _tool_streams_output = bool(
+                    getattr(_tool_definition, "stream_output", False)
+                )
             await _emit_stage(
                 "tool_dispatch",
                 {
@@ -4351,6 +4394,7 @@ async def _run_turn_inner(
                     "tool_kind": _tool_kind,
                     "arguments": tool_arguments if isinstance(tool_arguments, dict) else {},
                     "display": _display_label,
+                    "stream_output": _tool_streams_output,
                     "_state.iteration": _state.iteration,
                     "tool_calls_so_far": _state.total_tool_calls + 1,
                     "max_tool_calls": max_tool_iterations,

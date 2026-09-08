@@ -38,6 +38,11 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
+#: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
+#: fire-and-forget telemetry; the set keeps them garbage-collectable only
+#: after completion and is pruned on each publish.
+_PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
+
 __all__ = [
     "build_operation_tool_schemas",
     "execute_operation",
@@ -800,7 +805,21 @@ async def execute_operation(
                     duration_ms=duration_ms,
                     error_message=err_msg,
                 )
-                asyncio.create_task(ctx.event_bus.publish(event))
+                # Fire-and-forget telemetry on the EventBus (topic, payload)
+                # contract. Strictly best-effort: a publish failure must never
+                # replace the operation's own result/exception, so the
+                # coroutine is wrapped before scheduling — a synchronous raise
+                # here would otherwise surface from this ``finally`` and mask
+                # the real dispatch outcome (2026-09-08 fetch_page incident).
+                try:
+                    task = asyncio.create_task(
+                        ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug("operation telemetry publish failed for %s", operation_id, exc_info=True)
+                else:
+                    _PENDING_TELEMETRY_TASKS.add(task)
+                    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
 
     if isinstance(result, OperationResult):
         if result.status == "error":

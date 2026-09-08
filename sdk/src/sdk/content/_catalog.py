@@ -1451,4 +1451,5 @@ def _load_runtime_tool(
         "default_available": bool(metadata.get("default_available", False)),
         "abbreviation_template": str(metadata.get("abbreviation_template", "") or ""),
         "display_template": str(metadata.get("display_template", "") or ""),
+        "stream_output": bool(metadata.get("stream_output", False)),
     }

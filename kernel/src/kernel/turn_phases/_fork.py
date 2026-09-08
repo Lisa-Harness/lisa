@@ -433,6 +433,7 @@ def _build_minimal_context(
     response: str = "",
     gateway_provider_fn: Any = None,
     model_router: Any = None,
+    event_bus: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -486,4 +487,5 @@ def _build_minimal_context(
         data_dir=data_dir,
         host=host,
         model_router=model_router,
+        event_bus=event_bus,
     )
