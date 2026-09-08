@@ -28,6 +28,7 @@ from kernel.provider_gateway_discovery import discover_provider_gateway_factorie
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
+from kernel.token_usage import TOKEN_USAGE_TOPIC
 from kernel.turn_runner import ContextSeams, TurnHooks
 
 from host.context_assembly import (
@@ -904,6 +905,39 @@ def build_turn_hooks(
     _post_turn_slice_chained = _chain_pack_slices(_post_turn_slice, "post_turn")
     _explicit_slice_chained = _chain_pack_slices(_explicit_slice, "explicit")
 
+    # ── Token-usage telemetry subscription ────────────────────────
+    # The kernel publishes one ``TokenUsageEvent`` per model call on the
+    # ``lisa.token_usage`` bus topic (per-iteration calls, forced-final,
+    # and terminal-stage completions). The runtime's durable
+    # ``TokenUsageTelemetryHandler`` appends every event to
+    # ``token-usage.jsonl``; introspection (/tokens lifetime view and the
+    # 24h summary) reads the resulting file. A fresh ``InProcessEventBus``
+    # is created per hook build, so the handler must be re-subscribed
+    # every turn. Idempotent: duplicate events dedupe on the handler's
+    # idempotency-key... in-memory set (best-effort). A subscription
+    # failure is logged and swallowed — telemetry must never break
+    # hook construction.
+    def _wire_context_seams() -> ContextSeams:
+        seams = ContextSeams(
+            content_registry=cast("Any", content_registry() or None),
+            model_router=_discover_active_router(),
+            provider_gateways=_discover_active_provider_gateways(),
+            extension_item_builder=_item_builder,
+        )
+        bus = getattr(seams, "event_bus", None)
+        handler = runtime.token_usage_handler
+        if bus is not None and handler is not None and hasattr(bus, "subscribe"):
+            try:
+                bus.subscribe(TOKEN_USAGE_TOPIC, handler.publish)
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "token-usage telemetry subscribe failed; usage will not "
+                    "be persisted to %s",
+                    runtime.token_usage_path,
+                    exc_info=True,
+                )
+        return seams
+
     return TurnHooks(
         resolve_model=_resolve_model,
         complete=None,
@@ -955,12 +989,7 @@ def build_turn_hooks(
         # pack is active (or the manifest has no ``router:`` block),
         # ``model_router`` stays ``None`` and the loop falls back to static
         # resolution — preserving today's behavior.
-        context_seams=ContextSeams(
-            content_registry=cast("Any", content_registry() or None),
-            model_router=_discover_active_router(),
-            provider_gateways=_discover_active_provider_gateways(),
-            extension_item_builder=_item_builder,
-        ),
+        context_seams=_wire_context_seams(),
         # Forward the kernel's fine-grained stage events to the transport so
         # the CLI/web stage line can show model_call, tool_dispatch,
         # and fork-child progress as it happens. The kernel's _emit_stage

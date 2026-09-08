@@ -19,6 +19,8 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -29,12 +31,24 @@ from kernel.models import TokenUsageEvent
 
 logger = logging.getLogger(__name__)
 
+#: Event-bus topic every ``TokenUsageEvent`` is published on. The host
+#: subscribes its durable ``TokenUsageTelemetryHandler`` to this topic;
+#: headless contexts (no bus, no subscriber) drop the events silently.
+TOKEN_USAGE_TOPIC = "lisa.token_usage"
+
+#: Strong references to in-flight token-usage publish tasks (RUF006). Tasks
+#: are fire-and-forget telemetry; the set keeps them garbage-collectable
+#: only after completion and is pruned on each publish.
+_PENDING_PUBLISH_TASKS: set[asyncio.Task[None]] = set()
+
 __all__ = [
+    "TOKEN_USAGE_TOPIC",
     "TokenUsageTelemetryHandler",
     "build_token_usage_event",
     "coerce_non_negative_float",
     "coerce_non_negative_int",
     "ensure_usage_entry",
+    "publish_token_usage",
 ]
 
 
@@ -44,6 +58,30 @@ def coerce_non_negative_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def publish_token_usage(bus: Any, event: TokenUsageEvent) -> None:
+    """Publish one ``TokenUsageEvent`` to the host's event bus, best-effort.
+
+    The turn runner calls this at every point where a completion's usage
+    has been normalized (per-iteration model calls, forced-final, and
+    terminal-stage completions). The host wires its durable
+    :class:`TokenUsageTelemetryHandler` as a subscriber so every event
+    survives process restarts; headless contexts (no bus) drop the event.
+
+    Strictly best-effort per the telemetry contract: a publish failure is
+    swallowed and must never break the model-call path. When no event loop
+    is running (sync test contexts) the publish is dropped rather than
+    blocking.
+    """
+    if bus is None or not hasattr(bus, "publish"):
+        return
+    with contextlib.suppress(Exception):
+        task = asyncio.create_task(
+            bus.publish(TOKEN_USAGE_TOPIC, event.model_dump(mode="json"))
+        )
+        _PENDING_PUBLISH_TASKS.add(task)
+        task.add_done_callback(_PENDING_PUBLISH_TASKS.discard)
 
 
 def coerce_non_negative_float(value: Any) -> float:
@@ -114,12 +152,28 @@ class TokenUsageTelemetryHandler:
     async def publish(self, event: Any) -> None:
         """Persist one ``TokenUsageEvent`` as a single JSONL line.
 
-        Silently returns for non-``TokenUsageEvent`` payloads so the
-        handler can be wired into a bus that fans out to many event
-        types without per-type filtering at the call site.
+        Accepts either a ``TokenUsageEvent`` instance or a payload dict
+        (the shape the ``EventBus`` contract delivers to subscribers —
+        publishers serialize events via ``model_dump(mode="json")``).
+        Dicts are revalidated into the typed event; records that fail
+        validation are dropped with a warning so one malformed payload
+        cannot wedge the subscription.
+
+        Silently returns for other payloads so the handler can be wired
+        into a bus that fans out to many event types without per-type
+        filtering at the call site.
         """
         if not isinstance(event, TokenUsageEvent):
-            return
+            if isinstance(event, dict):
+                try:
+                    event = TokenUsageEvent.model_validate(event)
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning(
+                        "token-usage dropped unvalidatable dict payload: %s", exc
+                    )
+                    return
+            else:
+                return
         if self._filter_fn is not None:
             try:
                 if not self._filter_fn(event):

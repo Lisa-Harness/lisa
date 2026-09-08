@@ -141,6 +141,8 @@ from kernel.slice import (
     resolve_mode_for_trigger,
 )
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool, bare_tool_name
+from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
+from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
     openai_tool_call_to_mcp,
@@ -3785,6 +3787,32 @@ async def _run_turn_inner(
             d=duration_ms,
             lat=latency_ms,
         )
+        # Durable per-call token telemetry. The host subscribes its
+        # TokenUsageTelemetryHandler to ``lisa.token_usage`` so every model
+        # call survives process restarts (the /tokens lifetime view and the
+        # introspection 24h summary read the resulting JSONL). Best-effort:
+        # a publish failure never breaks the model-call path.
+        _publish_token_usage_fn(
+            hooks.context_seams.event_bus,
+            _build_token_usage_event_fn(
+                provider=str(getattr(effective_model_def, "provider", "") or ""),
+                model_id=str(getattr(effective_model_def, "model_id", "") or ""),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=completion_total_tokens,
+                cached_tokens=cached_tokens,
+                reasoning_tokens=reasoning_tokens,
+                duration_ms=duration_ms,
+                latency_ms=latency_ms,
+                request_id=str(getattr(completion, "request_id", "") or ""),
+                mode_id=mode_id,
+                stage_id=str(getattr(_state, "current_stage_id", "") or ""),
+                call_site="turn_loop",
+                conversation_id=hooks.conversation_id,
+                user_slug=hooks.user_slug,
+                surface_id=str(hooks.surface_id or ""),
+            ),
+        )
 
         await _emit_stage(
             "model_call_complete",
@@ -6005,6 +6033,26 @@ async def _run_turn_inner(
                         d=final_usage[5],
                         lat=final_usage[6],
                     )
+                    _publish_token_usage_fn(
+                        hooks.context_seams.event_bus,
+                        _build_token_usage_event_fn(
+                            provider=str(getattr(effective_model_def, "provider", "") or ""),
+                            model_id=str(getattr(effective_model_def, "model_id", "") or ""),
+                            prompt_tokens=final_usage[0],
+                            completion_tokens=final_usage[1],
+                            total_tokens=final_usage[2],
+                            cached_tokens=final_usage[3],
+                            reasoning_tokens=final_usage[4],
+                            duration_ms=final_usage[5],
+                            latency_ms=final_usage[6],
+                            request_id=str(getattr(final_completion, "request_id", "") or ""),
+                            mode_id=mode_id,
+                            call_site="forced_final",
+                            conversation_id=hooks.conversation_id,
+                            user_slug=hooks.user_slug,
+                            surface_id=str(hooks.surface_id or ""),
+                        ),
+                    )
                 else:
                     _log.warning(
                         "iteration-cap final completion also returned empty "
@@ -6061,6 +6109,26 @@ async def _run_turn_inner(
                             rt=terminal_usage[4],
                             d=terminal_usage[5],
                             lat=terminal_usage[6],
+                        )
+                        _publish_token_usage_fn(
+                            hooks.context_seams.event_bus,
+                            _build_token_usage_event_fn(
+                                provider=str(getattr(effective_model_def, "provider", "") or ""),
+                                model_id=str(getattr(effective_model_def, "model_id", "") or ""),
+                                prompt_tokens=terminal_usage[0],
+                                completion_tokens=terminal_usage[1],
+                                total_tokens=terminal_usage[2],
+                                cached_tokens=terminal_usage[3],
+                                reasoning_tokens=terminal_usage[4],
+                                duration_ms=terminal_usage[5],
+                                latency_ms=terminal_usage[6],
+                                request_id=str(getattr(final_completion, "request_id", "") or ""),
+                                mode_id=mode_id,
+                                call_site="terminal_stage",
+                                conversation_id=hooks.conversation_id,
+                                user_slug=hooks.user_slug,
+                                surface_id=str(hooks.surface_id or ""),
+                            ),
                         )
                 except Exception as exc:  # pylint: disable=broad-except
                     _log.warning("terminal-stage summary failed: %s", exc)
