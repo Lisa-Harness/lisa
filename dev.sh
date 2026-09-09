@@ -16,7 +16,8 @@ pull_opts=
 sync_opts=
 install_opts=
 
-opts=$(getopt -n init.sh -o d:p:s:i:h -l dir:,pull:,sync:,install:,help -- "$@") ||
+name=$(basename $0)
+opts=$(getopt -n $name -o d:p:s:i:h -l dir:,pull:,sync:,install:,help -- "$@") ||
 	{ usage >&2; exit 1; }
 eval "set -- $opts"
 
@@ -36,20 +37,21 @@ test $# -eq 0 || { usage >&2; exit 1; }
 # upgrade shortcut
 test ${0##./} = $(basename $0) && wd=.. && sync_opts='-U --all-extras'
 
-test -d "$wd/lisa-packs" || gh repo clone lisa-packs "$wd/lisa-packs"
-cd "$wd/lisa-packs"
-git submodule update --init
-git pull $pull_opts --recurse-submodules
-
+for d in "$wd/lisa-packs" "$wd/lisa-packs-wip" "$wd/lisa-hosts"; do
+	if test ! -d "$d"; then
+		gp repo clone "$(basename $d)" "$d"
+		git config submodule.recurse==true
+		git submodule update --init
+	fi
+	cd "$d"
+	git pull $pull_opts
+done
 test -d "$wd/lisa" || gh repo clone lisa "$wd/lisa"
 cd "$wd/lisa"
 git pull $pull_opts
 uv sync $sync_opts
-
-test -d "$wd/lisa-hosts" || gh repo clone lisa-hosts "$wd/lisa-hosts"
-cd "$wd/lisa-hosts"
-git submodule update --init
-git pull $pull_opts --recurse-submodules
-
-cd cli
+cd "$wd/lisa-hosts/cli"
 uv sync $sync_opts
+
+# install shortcut
+case "${name%%.sh}" in *install) uv tool install hosts/cli ;; esac
