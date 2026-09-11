@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
+from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     ForkChildResult,
     ForkTarget,
@@ -26,7 +26,6 @@ from kernel.models import (
     OperationResult,
     TurnBudget,
 )
-from kernel.workflow_position import WorkflowPosition
 from kernel.turn_phases._fork import (
     _fork_child_budget,
     _fork_mode_requires_tools,
@@ -35,6 +34,7 @@ from kernel.turn_runner import (
     TurnHooks,
     run_turn,
 )
+from kernel.workflow_position import WorkflowPosition
 
 # ── Stubs ─────────────────────────────────────────────────────────────
 
@@ -932,3 +932,89 @@ def test_fork_child_result_error_status() -> None:
     )
     assert result.status == "error"
     assert "ValueError" in result.error_message
+
+
+# ── Mid-turn pre-turn operation dispatch ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_handoff_runs_target_mode_pre_turn_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (2026-09-10): a mid-turn mode handoff must run the target
+    mode's ``pre_turn_operation_ids``, exactly as a turn that STARTS in that
+    mode does.
+
+    The bash pack binds ``sandbox_facts`` as the shell mode's pre-turn op to
+    publish the sandbox containment fact BEFORE the first ``bash_run`` gate.
+    A turn that entered ``default`` and reached ``shell`` mid-turn never ran
+    that prewarm, so the host policy engine read a MISSING containment fact,
+    failed closed, and prompted the operator for approval even though the
+    command would have run sandboxed.
+
+    This test registers a synthetic ``probe`` mode whose pre-turn op records
+    the mode_id it was dispatched with, then hands off ``default -> probe``
+    and asserts the prewarm ran with the target mode.
+    """
+    from kernel.ipsar_fsm import _workflow_catalog
+    from kernel.models import OperationDefinition, WorkflowModeConfig
+    from kernel.operations import registry as op_registry
+
+    dispatched: list[tuple[str, str]] = []
+
+    async def stub_execute_op(
+        operation_id: str, ctx: OperationExecutionContext
+    ) -> OperationResult:
+        dispatched.append((operation_id, str(getattr(ctx, "mode_id", ""))))
+        return OperationResult(output_text=f"prewarmed in {ctx.mode_id}")
+
+    real_catalog = dict(_workflow_catalog or get_workflow_catalog())
+    base = real_catalog.get("default")
+    probe = (
+        base.model_copy(deep=True)
+        if base is not None
+        else WorkflowModeConfig(mode_id="probe")
+    )
+    probe.mode_id = "probe"
+    probe.routable = True
+    probe.pre_turn_operation_ids = ["probe_prewarm"]
+    patched_catalog = dict(real_catalog)
+    patched_catalog["probe"] = probe
+    monkeypatch.setattr(
+        "kernel.ipsar_fsm._workflow_catalog", patched_catalog
+    )
+
+    real_ops = dict(op_registry.get_operation_catalog())
+    fake_op = OperationDefinition(
+        operation_id="probe_prewarm",
+        description="probe prewarm",
+        effect="read",
+    )
+    patched_ops = dict(real_ops)
+    patched_ops["probe_prewarm"] = fake_op
+    monkeypatch.setattr(op_registry, "_OPERATION_CATALOG", patched_ops)
+    monkeypatch.setattr(
+        "kernel.ipsar_fsm._execute_operation_fn", stub_execute_op
+    )
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "probe")],
+            )
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.handoff_to == "probe"
+    # The prewarm must have dispatched exactly once, with the TARGET mode id.
+    assert dispatched == [("probe_prewarm", "probe")], (
+        f"mid-turn handoff must run the target mode's pre-turn ops; "
+        f"got {dispatched}"
+    )

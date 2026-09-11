@@ -5211,6 +5211,45 @@ async def _run_turn_inner(
                                             "operations may be mis-authorized.",
                                             target_stage,
                                         )
+                                # ── Mid-turn pre-turn operations ────────────
+                                # Run the new mode's ``pre_turn_operation_ids``
+                                # exactly as the turn-start path does. Without
+                                # this, lifecycle-bound prewarms (the bash
+                                # pack's ``sandbox_facts`` session probe) never
+                                # ran for a mode reached mid-turn, so the first
+                                # effectful gate in that mode saw a MISSING
+                                # containment fact and the host policy engine
+                                # fail-closed to an approval prompt even though
+                                # the command would have run sandboxed (the
+                                # 2026-09-10 scratch-dir approval prompt).
+                                # Non-approval failures stay isolated inside
+                                # ``run_mode_pre_turn_operations``
+                                # (``failure_policy="skip"``); an
+                                # ``ApprovalRequired`` propagates to the turn
+                                # wrapper's existing handler like at turn
+                                # start. ``_build_entry_ctx`` reads the
+                                # reassigned ``mode_id`` closure, so the ctx
+                                # already carries the new mode.
+                                if target_mode_config.pre_turn_operation_ids:
+                                    try:
+                                        pre_ctx = _build_entry_ctx(
+                                            mode_id=target_stage,
+                                        )
+                                        await run_mode_pre_turn_operations(
+                                            target_stage,
+                                            pre_ctx,
+                                            ledger=ledger,
+                                            execution_policy=execution_policy,
+                                        )
+                                    except ApprovalRequired:
+                                        raise
+                                    except Exception as pre_exc:  # pylint: disable=broad-except
+                                        _log.warning(
+                                            "mid-turn pre_turn targets failed for "
+                                            "mode '%s': %s",
+                                            target_stage,
+                                            pre_exc,
+                                        )
                                 # ── Chained-handoff hint recomputation ──
                                 # The proactive routing hint was computed in
                                 # Phase 1 against the *entry* mode. After a
