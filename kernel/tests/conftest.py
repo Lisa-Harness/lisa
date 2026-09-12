@@ -20,11 +20,12 @@ from conftest_catalog import _mcp_catalog_setup  # noqa: F401,E402
 
 # ── Provider-gateway bridge for TurnHooks fakes ─────────────────────
 #
-# The kernel's turn loop no longer calls the ``TurnHooks.complete`` callable —
-# every model call routes through ``ContextSeams.provider_gateways``. Kernel
-# unit tests still construct ``TurnHooks(complete=...)`` fakes. Rather than
+# The kernel's turn loop no longer calls the ``TurnHooks.models.complete``
+# callable — every model call routes through
+# ``ContextSeams.provider_gateways``. Kernel unit tests still construct
+# ``TurnHooks(models=ModelHooks(complete=...))`` fakes. Rather than
 # touch 175 test sites, the autouse fixture below patches ``TurnHooks.__init__``
-# so a non-None ``complete`` callable is ALSO wrapped as a
+# so a non-None ``models.complete`` callable is ALSO wrapped as a
 # ``StubGatewayProvider`` and set onto ``context_seams.provider_gateways`` (when
 # the caller did not already supply one). Tests that assert the *absence* of a
 # completion path (e.g. ``test_run_turn_requires_complete_hook``) pass
@@ -35,10 +36,11 @@ _ORIGINAL_TURNHOOKS_INIT: Any = None
 
 @pytest.fixture(autouse=True)
 def _bridge_turnhooks_complete_to_gateway() -> Any:
-    """Route ``TurnHooks(complete=...)`` fakes through the provider gateway.
+    """Route ``TurnHooks(models=ModelHooks(complete=...))`` fakes through the
+    provider gateway.
 
-    Wraps the test's ``complete`` callable into a ``StubGatewayProvider`` so
-    the kernel's gateway call-site resolves it. Preserves the caller's
+    Wraps the test's ``models.complete`` callable into a ``StubGatewayProvider``
+    so the kernel's gateway call-site resolves it. Preserves the caller's
     explicit ``context_seams`` if provided. Yields so the patch is active only
     during each test.
     """
@@ -56,7 +58,7 @@ def _bridge_turnhooks_complete_to_gateway() -> Any:
         if getattr(self, "context_seams", None) is None:
             # Should not happen (default_factory guarantees it), but be safe.
             self.context_seams = ContextSeams()
-        complete_fn = getattr(self, "complete", None)
+        complete_fn = getattr(self.models, "complete", None)
         if (
             complete_fn is not None
             and getattr(self.context_seams, "provider_gateways", None) is None
@@ -65,7 +67,7 @@ def _bridge_turnhooks_complete_to_gateway() -> Any:
                 self.context_seams,
                 provider_gateways=StubGatewayProvider(
                     complete_fn,
-                    complete_stream_fn=getattr(self, "complete_stream", None),
+                    complete_stream_fn=getattr(self.models, "complete_stream", None),
                 ),
             )
 

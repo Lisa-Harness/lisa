@@ -19,18 +19,17 @@ from typing import Any, Literal, cast
 from kernel.approval import (
     ApprovalInvocation,
     ApprovalRequired,
-    EffectKind,
     render_approval_request,
 )
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
-from kernel.context.models import ContextBudgetSnapshot
 from kernel.context.sub_turn_contract import (
     render_no_write_warning,
     render_sub_turn_contract,
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.turn_hooks import TurnHooks
 from kernel.turn_phases._child_turn import classify_child_turn
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
@@ -42,7 +41,7 @@ from kernel.turn_phases._completion_contract import (
     resolve_completion_contract,
 )
 from kernel.turn_phases._dispatch import dispatch_capability
-from kernel.turn_phases._entry import EntryPhaseResult, execute_entry_phase
+from kernel.turn_phases._entry import execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
@@ -131,7 +130,6 @@ from kernel.seams.protocols import (
     ModelRouter,
     OutputGuard,
     ProviderGatewayProvider,
-    RouteCoordinator,
 )
 from kernel.slice import (
     SliceMode,
@@ -140,7 +138,7 @@ from kernel.slice import (
     build_policy_for_trigger,
     resolve_mode_for_trigger,
 )
-from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool, bare_tool_name
+from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
 from kernel.tools.registry import execute_tool, get_tool_catalog
@@ -589,16 +587,16 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
     """Return the mode id of the next uncompleted workflow step, or "".
 
     Thin wrapper around ``_next_remaining_step`` that reads the active
-    ``WorkflowPosition`` from ``hooks.workflow_position``. Used by the
+    ``WorkflowPosition`` from ``hooks.workflow.workflow_position``. Used by the
     stuck-in-stage yield path to route a forced yield to the next step's
     mode when the current mode forbids inline asks (action modes).
     """
-    if hooks.workflow_position is None:
+    if hooks.workflow.workflow_position is None:
         return ""
     try:
-        position = hooks.workflow_position()
+        position = hooks.workflow.workflow_position()
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("hooks.workflow_position() raised in next step lookup: %s", exc)
+        logger.debug("hooks.workflow.workflow_position() raised in next step lookup: %s", exc)
         return ""
     step = _next_remaining_step(position)
     return step.mode_id if step is not None else ""
@@ -634,12 +632,12 @@ def _active_position_resume_target(hooks: Any) -> str:
     plan→markdown→learn→re-plan failure). Returns "" when no resumable
     position is active, so the caller falls through to the normal path.
     """
-    if hooks.workflow_position is None:
+    if hooks.workflow.workflow_position is None:
         return ""
     try:
-        position = hooks.workflow_position()
+        position = hooks.workflow.workflow_position()
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("hooks.workflow_position() raised in resume lookup: %s", exc)
+        logger.debug("hooks.workflow.workflow_position() raised in resume lookup: %s", exc)
         return ""
     if position is None:
         return ""
@@ -888,324 +886,10 @@ class ContextSeams:
     audited via ``event_bus.publish("guardrail.audit", ...)``."""
 
 
-@dataclass
-class TurnHooks:
-    """Extension points for the kernel turn runner.
-
-    The host (lightweight host or production app) provides concrete implementations.
-    Every callable defaults to a no-op or sensible stub, so a minimal host can
-    participate with zero overrides.
-
-    DESIGN: Hooks are named for *what they do*, not *why the app needs them*.
-    This keeps the kernel free of app-specific concepts like "passive
-    intelligence," "capability vibes," or "self-model context."
-    """
-
-    # ── Model resolution ────────────────────────────────────────────────
-    resolve_model: Callable[[str], Any] | None = None
-
-    complete: Callable[..., Awaitable[Any]] | None = None
-    """Core completion function. Must accept messages, model_def, max_tokens,
-    temperature, tools (optional), and response_format (optional). Returns
-    an object with `.content` (str) and `.tool_calls` (list[dict]).
-
-    A host MUST provide this. If None, `run_turn` raises NotImplementedError.
-    """
-
-    complete_stream: Callable[..., Any] | None = None
-    """Streaming completion function. When set, the turn runner uses this
-    instead of ``complete`` for the model call. Must be an async generator
-    that yields ``StreamedChunk`` objects as tokens arrive.
-
-    v1 streams tokens only — tool-call streaming is deferred to v2. When
-    the model wants to call tools, the stream's ``finish_reason`` will be
-    ``'tool_calls'`` and the host should fall back to ``complete`` for that
-    iteration. The turn runner handles this fallback automatically.
-    """
-
-    # ── Pre-turn context assembly ────────────────────────────────────────
-    assemble_system_prompt: Callable[[str, str | None], str] | None = None
-    """Given mode_instruction: str and optional stage_instruction: str|None,
-    return the full system prompt.  Default: mode_instruction only.
-
-    The app injects SYSTEM_PROMPT, turn-input contract, and planner block here.
-    """
-
-    assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
-    """Given mode_id: str, query: str, pre_turn_briefing: str, and an optional
-    CapabilityManifest, return additional user-context content injected before
-    the query in the final user message.  Default: empty string.
-
-    The manifest is compiled from the live tool schemas for this turn — it is
-    the ground truth for what the model can actually call. Hosts should use it
-    to render a capability context that matches the injected function schema,
-    eliminating the "Tooling Paradox" where self-knowledge diverges from the
-    real tool surface.
-
-    The app injects surface blocks, user blocks, live context, memory recall,
-    self-model, architecture atlas, etc. here.
-    """
-
-    # ── MCP tool servers ──────────────────────────────────────────────────
-    mcp_tool_servers: list[MCPClientConfig] = field(default_factory=list)
-    """MCP server configurations to spawn for tool discovery and dispatch.
-    Default: empty list (no external tools). The host declares which MCP
-    servers to run (e.g. ``lisa-context``, ``lisa-guard``)
-    and the kernel manages the subprocess lifecycle via ``MCPToolPool``.
-
-    The kernel speaks MCP tool schema internally. At the provider edge,
-    ``schema_translator`` converts to whatever the provider expects.
-    """
-
-    mcp_tool_pool: Any = None
-    """Optional host-owned long-lived :class:`MCPToolPool`.
-
-    When set, ``run_turn`` reuses this pool across turns instead of
-    spawning/tearing down a per-turn pool. The host owns the lifecycle:
-    it calls ``await pool.start()`` once at runtime init and
-    ``await pool.aclose()`` at process exit. This is the eager-start /
-    warm-server path — ``mcp_tool_servers`` should then contain only the
-    cold (per-turn) configs; the warm configs live inside this pool.
-
-    When ``None`` (default), ``run_turn`` builds a per-turn pool from
-    ``mcp_tool_servers`` as before — existing hosts and tests keep
-    working unchanged.
-    """
-
-    # ── Operation dispatch ────────────────────────────────────────────────
-    execute_operation: Callable[..., Awaitable[OperationResult]] | None = None
-    """Execute a named operation with an OperationExecutionContext. Default:
-    delegates to `kernel.operations.registry.execute_operation`.
-
-    Operations are internal kernel capabilities (pre-turn briefings, entry
-    actions, declarative prompts). They are also advertised to the LLM as
-    tools directly from the in-process catalog and dispatched via this hook
-    so they receive full host callbacks (complete_fn, resolve_model_fn, etc.).
-    """
-
-    delegate_fn: Callable[..., Awaitable[DelegationResult]] | None = None
-    """Execute one delegate sub-turn. Default: ``_default_delegate_fn``
-    (runs ``run_turn`` recursively as a ``sub_turn_kind="delegate"``
-    child). The pack-level ``delegate`` operation calls this with a
-    :class:`DelegationSpec` and awaits a :class:`DelegationResult`.
-
-    A host overrides this to inject a custom delegation backend (e.g. a
-    pooled agent runtime) without touching the pack handler. ``None``
-    means the kernel has not wired delegation; the delegate operation
-    fails loudly. The kernel wires ``_default_delegate_fn`` at turn
-    start, so hosts that want the default behavior leave this ``None``
-    and the kernel fills it in.
-    """
-
-    fork_fn: Callable[..., Awaitable[ForkResult]] | None = None
-    """Execute a parallel fork fan-out. Default: ``_default_fork_fn``
-    (wraps :func:`_execute_fork_fanout` from
-    :mod:`kernel.turn_phases._fork`, fanning the targets out via an
-    ``asyncio.TaskGroup`` and classifying each child via the shared
-    ``classify_child_turn``). The pack-level ``fork`` operation calls
-    this with a :class:`ForkSpec` and awaits a :class:`ForkResult`.
-
-    A host overrides this to inject a custom fan-out backend (e.g. a
-    pooled agent runtime) without touching the pack handler. ``None``
-    means the kernel has not wired fork; the fork operation fails
-    loudly. The kernel wires ``_default_fork_fn`` at turn start, so
-    hosts that want the default behavior leave this ``None`` and the
-    kernel fills it in.
-    """
-
-    # ── Post-turn side effects ───────────────────────────────────────────
-    on_turn_complete: Callable[[str, str, str, list[dict[str, Any]], list[Any]], Awaitable[None]] | None = None
-    """Called after every successful turn with mode_id, query, response_text,
-    the full message list, and the turn's ``EffectReceipt`` ledger. Default: no-op.
-
-    The app hooks thread persistence, conversation digest refresh, provenance,
-    and context-usage events here.
-    """
-
-    # ── Opportunistic house-keeping (turn-anchored slices) ───────────────
-    # See kernel/slice.py for the full contract. Each slice slot is
-    # independently optional. A host that wants only post-turn slices
-    # leaves pre_turn_slice and explicit_slice as None. A host that
-    # wants nothing (purposeful neglect) leaves all three as None.
-    slice_tuning: Any = None
-    """SliceTuning instance (from kernel.slice) that controls budget
-    shape. Default: ``None`` means "use SliceTuning() defaults and
-    disable all three triggers." A host picks the trigger modes by
-    setting the appropriate enabled flags.
-    """
-
-    pre_turn_slice: Callable[[Any], Awaitable[Any]] | None = None
-    """Opportunistic slice fired before the model call. Receives a
-    ``SlicePolicy`` (mode=PRE_TURN) and returns a ``SliceOutcome``.
-
-    The framework short-circuits the call if the budget is zero (e.g.
-    the pressure curve has collapsed to nothing on this turn).
-    """
-
-    post_turn_slice: Callable[[Any], Awaitable[Any]] | None = None
-    """Opportunistic slice fired after the response is committed.
-    Receives a ``SlicePolicy`` (mode=POST_TURN) and returns a
-    ``SliceOutcome``.
-    """
-
-    explicit_slice: Callable[[Any], Awaitable[Any]] | None = None
-    """Slice fired only when an operation or CLI command invokes it.
-    Receives a ``SlicePolicy`` (mode=EXPLICIT). The caller's budget
-    is honored verbatim — pressure does not apply."""
-
-    last_slice_finished_at: float | None = None
-    """Monotonic timestamp of the last slice that completed on this
-    host. Used by the framework's pressure math. The host can also
-    read/write this to coordinate multiple slices."""
-
-    context_seams: ContextSeams = field(default_factory=ContextSeams)
-    """Context-layer seams (content registry, model policy, provider gateways,
-    event bus, data sanitizer). Defaults wire the public implementations
-    shipped under ``kernel.context``; the production app overrides any of
-    them with its own."""
-
-    workflow_position: Any | None = None
-    """Callable returning the current ``WorkflowPosition`` for the active
-    user/surface, or ``None`` when no workflow is in flight. The position
-    is the single durable workflow object: inter-mode plan (declared /
-    completed steps) plus intra-mode stage pointer (``mode_id`` /
-    ``stage_id`` / ``turn_count``). The turn loop reads the stage pointer
-    to inject the current stage's ``instruction_body`` into the system
-    prompt alongside the mode instruction, hydrates ``chain_satisfied``
-    from ``completed_steps`` at turn start, and feeds ``turn_count`` to
-    the lifecycle resolver as the unified stall counter. Default: None
-    (no durable workflow state this turn)."""
-
-    workflow_position_updater: Any | None = None
-    """Callable receiving an updated ``WorkflowPosition`` after a
-    successful ``transition_stage`` (stage advance or mode handoff) or a
-    turn-start position creation. The host persists the position (file,
-    DB, in-memory map) so the next turn's ``workflow_position`` hook
-    returns the advanced state. Default: None (advances are applied
-    in-process but not persisted across turns)."""
-
-    route_coordinator: RouteCoordinator | None = None
-    """Optional route-coordinator backend that persists the next handoff
-    target across turns. The kernel consults it for continuation prompts such
-    as ``proceed`` and saves a target after a successful mid-turn handoff."""
-
-    # ── Host state provider ───────────────────────────────────────────────
-    state_provider: Any | None = None
-    """Callable returning a ``UnifiedState`` for the current host session.
-    When set, injected into ``OperationExecutionContext`` so operations that
-    need cached runtime state can access it. Default: None."""
-
-    pack_configuration_resolver: Any | None = None
-    """Session-owned resolver for immutable, target-pack configuration."""
-
-    approval_service: Any | None = None
-    """Host-owned persistence and receipt service for exact-action approval."""
-
-    recovery_service: Any | None = None
-    """Host-owned durable service for interrupted dispatch work items."""
-
-    code_change_artifact_store: Any | None = None
-    """Host-owned store for pack-neutral local coding workflow artifacts."""
-
-    data_dir: str = ""
-    """Canonical host data root, injected by the host. Threaded into every
-    operation/tool context so pack tools that persist caches (``fetch_page``)
-    resolve a stable, absolute path instead of a CWD-relative fallback. There
-    is deliberately no fallback — a host that wires tools that need a data
-    dir must inject it."""
-
-    last_context_snapshot: ContextBudgetSnapshot | None = None
-    """Most recent ``ContextBudgetSnapshot`` produced by the host's
-    context-mapper pass on this turn. Mutated by the host (or its
-    ``assemble_user_context``) after each prompt assembly so slice
-    providers can read actual context-window utilization without
-    re-running the mapper. Default: None (no snapshot; utilization-aware
-    slices treat this as "unknown" and no-op). Read-only from the
-    kernel's perspective — the kernel never writes this field."""
-
-    # Identity scope defaults. Bare/test hosts that never wire identity
-    # get coherent personal-DM addresses; production hosts (the CLI host
-    # builder) always override every field from their own config.
-    workspace_id: str = "default"
-    user_id: str = "default"
-    user_slug: str = "default"
-    user_name: str = ""
-    principal_key: str = "default"
-    conversation_id: str = "default"
-    surface_type: str = "personal_dm"
-    surface_id: str = "default"
-    memory_scope: str = "personal"
-    session_plan_digest: str = ""
-
-    # ── Memory recall (pre-turn injection) ────────────────────────────────
-    memory_recall_enabled: bool = True
-    """When True, the turn loop calls ``recall_memory`` during Phase 1 and
-    injects the result into the user message as a ``## Memory Recall`` block.
-    Gated independently of ``memory_enabled`` so hosts can opt out of the
-    per-turn recall cost while keeping the memory backend active."""
-
-    memory_recall_pre_turn_limit: int = 3
-    """Maximum number of recall results to inject into the user message."""
-
-    memory_recall_min_query_chars: int = 3
-    """Skip pre-turn recall when the query is shorter than this many
-    characters (e.g. ``"ok"``, ``"thanks"``)."""
-
-    # ── Live introspection ─────────────────────────────────────────────────
-    introspect: Any | None = None
-    """Async callable returning an ``IntrospectSnapshot`` from the host's
-    live runtime (process memory, asyncio tasks, MCP pool health, token
-    usage, log tail). When set, injected into
-    ``OperationExecutionContext.host.introspect`` so the self-model operation
-    and the reflect_self operation can access live runtime state. Default:
-    None (self-model telemetry fields stay empty)."""
-
-    # ── Live stage telemetry ─────────────────────────────────────────────
-    on_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
-    """Async callable invoked at key points during the turn so the host
-    transport can render a frequently-updated, detailed stage line.
-
-    The kernel emits ``(label, data)`` pairs at:
-      - ``"model_call"`` / ``"model_call_complete"`` — around each model
-        completion (carries ``mode_id``, ``model_id``, ``provider``,
-        ``iteration``, ``tool_calls_so_far``).
-      - ``"tool_dispatch"`` / ``"tool_dispatch_complete"`` — around each
-        tool/operation dispatch (carries ``tool``, ``tool_kind`` one of
-        ``"operation"|"pack_tool"|"mcp_tool"|"transition"``).
-      - ``"workflow_stage"`` — when the workflow session's stage is read
-        (carries ``stage_id``, ``turn_count``).
-      - ``"fork_start"`` / ``"fork_child_start"`` /
-        ``"fork_child_complete"`` / ``"fork_complete"`` — around the fork
-        fan-out, one event per child so a transport can show a line per
-        active call.
-
-    Failures in this hook are caught and logged; they never break the
-    turn. Default: None (no stage telemetry)."""
-
-    # ── Operator signals ────────────────────────────────────────────────
-    operator_signal: Callable[[], str] | None = None
-    """Poll the host for an operator-initiated pause/stop/terminate signal.
-
-    Called once per iteration at the top of the turn loop, before the
-    lifecycle resolver. Returns one of ``""`` (no signal), ``"pause"``,
-    ``"stop"``, ``"terminate"``. When ``None`` (the host did not wire it),
-    the loop never polls — zero overhead for hosts that do not expose
-    operator signals.
-
-    The signal is *terminal* — the resolver produces a ``PauseAction`` /
-    ``StopAction`` / ``TerminateAction`` on the iteration it is observed,
-    the loop breaks before the model call, and the operator exit is
-    encoded in ``TurnResult.operator_exit`` (``"paused"`` / ``"stopped"`` /
-    ``"terminated"``). The model never sees the signal; it is not a tool. In-flight
-    tool dispatches from the prior iteration complete before the loop breaks
-    at the next iteration boundary (the poll is at the top of the loop, not
-    mid-``await``).
-
-    .. versionchanged:: next
-        The return type widened from ``Literal["", "pause", "stop", "terminate"]``
-        to ``str`` to accept :class:`host.operator_signal.OperatorSignal`
-        enum values without requiring the kernel to import the host package.
-    """
+# Re-export the grouped ``TurnHooks`` so existing ``from kernel.turn_runner
+# import TurnHooks`` construction and annotation sites keep working; the
+# definition now lives in ``kernel.turn_hooks``.
+from kernel.turn_hooks import TurnHooks as TurnHooks  # noqa: E402, F811
 
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
@@ -1387,7 +1071,7 @@ async def _default_delegate_fn(
         # 7.1: the duplicated classifier is removed).
         action_ids = mode_completion_effects(
             spec.target_mode_id,
-            mcp_pool=getattr(hooks, "mcp_tool_pool", None),
+            mcp_pool=hooks.tools.mcp_tool_pool,
         )
         outcome = classify_child_turn(
             child_result=child_result,
@@ -1638,10 +1322,10 @@ def _coordinator_routing_hint(
     # names a step whose entry op already ran this turn) by skipping that
     # entry op; this hint still names ``current_step_id``'s mode so the
     # model can run it when the step genuinely hasn't executed yet.
-    if hooks.workflow_position is None:
+    if hooks.workflow.workflow_position is None:
         return ""
     try:
-        _position = hooks.workflow_position()
+        _position = hooks.workflow.workflow_position()
     except Exception:  # pylint: disable=broad-except
         return ""
     if _position is None or not getattr(_position, "current_step_id", ""):
@@ -1674,22 +1358,22 @@ def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
     """Build the exact identity scope for recovery records."""
 
     return RecoveryIdentity(
-        workspace_id=hooks.workspace_id,
-        user_id=hooks.user_id,
-        user_slug=hooks.user_slug,
-        surface_type=cast(ConversationSurface, hooks.surface_type),
-        surface_id=hooks.surface_id,
-        memory_scope=cast(MemoryScope, hooks.memory_scope),
+        workspace_id=hooks.identity.workspace_id,
+        user_id=hooks.identity.user_id,
+        user_slug=hooks.identity.user_slug,
+        surface_type=cast(ConversationSurface, hooks.identity.surface_type),
+        surface_id=hooks.identity.surface_id,
+        memory_scope=cast(MemoryScope, hooks.identity.memory_scope),
     )
 
 
 def _current_recovery_stage_id(*, hooks: TurnHooks) -> str:
     """Return the position's current stage id when available, else empty."""
 
-    if hooks.workflow_position is None:
+    if hooks.workflow.workflow_position is None:
         return ""
     try:
-        position = hooks.workflow_position()
+        position = hooks.workflow.workflow_position()
     except Exception:  # pylint: disable=broad-except
         return ""
     if position is None:
@@ -1713,36 +1397,36 @@ async def _fire_slice(
     corresponding slot AND enabled the trigger in its ``SliceTuning``.
 
     The caller is responsible for updating
-    ``hooks.last_slice_finished_at`` after the call returns; that
+    ``hooks.lifecycle.last_slice_finished_at`` after the call returns; that
     field is on the host's ``TurnHooks`` instance so it survives across
     turns of the same session.
     """
     slot = {
-        SliceMode.PRE_TURN: hooks.pre_turn_slice,
-        SliceMode.POST_TURN: hooks.post_turn_slice,
-        SliceMode.EXPLICIT: hooks.explicit_slice,
+        SliceMode.PRE_TURN: hooks.lifecycle.pre_turn_slice,
+        SliceMode.POST_TURN: hooks.lifecycle.post_turn_slice,
+        SliceMode.EXPLICIT: hooks.lifecycle.explicit_slice,
     }.get(trigger)
     if slot is None:
         return None
 
-    tuning = hooks.slice_tuning
+    tuning = hooks.lifecycle.slice_tuning
     if tuning is None:
         return None
     if resolve_mode_for_trigger(tuning=tuning, trigger=trigger) == SliceMode.NEVER:
         return None
 
     has_pre_turn = (
-        hooks.pre_turn_slice is not None
+        hooks.lifecycle.pre_turn_slice is not None
         and resolve_mode_for_trigger(tuning=tuning, trigger=SliceMode.PRE_TURN) != SliceMode.NEVER
     )
     has_post_turn = (
-        hooks.post_turn_slice is not None
+        hooks.lifecycle.post_turn_slice is not None
         and resolve_mode_for_trigger(tuning=tuning, trigger=SliceMode.POST_TURN) != SliceMode.NEVER
     )
     policy = build_policy_for_trigger(
         trigger=trigger,
         tuning=tuning,
-        last_slice_finished_at=hooks.last_slice_finished_at,
+        last_slice_finished_at=hooks.lifecycle.last_slice_finished_at,
         has_pre_turn=has_pre_turn,
         has_post_turn=has_post_turn,
     )
@@ -1941,10 +1625,10 @@ async def run_turn(
     Phases:
     1. **PRE-TURN**: Resolve mode config, run pre-turn/entry operations,
        assemble system prompt and user context, recall memory snippet.
-    2. **TOOL LOOP**: Call hooks.complete → dispatch MCP tool calls via
+    2. **TOOL LOOP**: Call hooks.models.complete → dispatch MCP tool calls via
        MCPToolPool → feed results back → repeat until the model returns
        content without tools or max_tool_iterations is reached.
-    3. **POST-TURN**: Call hooks.on_turn_complete.
+    3. **POST-TURN**: Call hooks.lifecycle.on_turn_complete.
 
     Args:
         mode_id: The route mode string (e.g. 'default', 'discuss', 'search').
@@ -1973,7 +1657,7 @@ async def run_turn(
         TurnResult with the final response text and loop statistics.
 
     Raises:
-        NotImplementedError: If hooks.complete is None.
+        NotImplementedError: If hooks.models.complete is None.
     """
     _log = logger_override or logger
 
@@ -1991,9 +1675,9 @@ async def run_turn(
     # *up* — the base default covers ad-hoc single turns that may burn
     # iterations on read-only exploration. A 5-step plan with per_step=75
     # gets 375 total iterations instead of the flat 300 ceiling.
-    if hooks.workflow_position is not None:
+    if hooks.workflow.workflow_position is not None:
         try:
-            _ratio_pos = hooks.workflow_position()
+            _ratio_pos = hooks.workflow.workflow_position()
         except Exception:  # pylint: disable=broad-except
             _ratio_pos = None
         if _ratio_pos is not None:
@@ -2023,32 +1707,32 @@ async def run_turn(
 
     mode_config = get_workflow_catalog().get(mode_id)
 
-    if hooks.recovery_service is not None:
+    if hooks.services.recovery_service is not None:
         try:
-            await hooks.recovery_service.mark_running_indeterminate(_build_recovery_identity(hooks))
+            await hooks.services.recovery_service.mark_running_indeterminate(_build_recovery_identity(hooks))
         except Exception as exc:  # pylint: disable=broad-except
             _log.warning("recovery startup reconciliation failed: %s", exc)
 
     # Resolve hook callables with defaults
-    resolve_model = hooks.resolve_model or _default_resolve_model
-    complete = hooks.complete or _noop_complete
-    assemble_system = hooks.assemble_system_prompt or _default_assemble_system_prompt
-    assemble_user = hooks.assemble_user_context or _default_assemble_user_context
-    exec_op = hooks.execute_operation or _default_execute_operation
-    on_complete = hooks.on_turn_complete or _default_on_turn_complete
+    resolve_model = hooks.models.resolve_model or _default_resolve_model
+    complete = hooks.models.complete or _noop_complete
+    assemble_system = hooks.context.assemble_system_prompt or _default_assemble_system_prompt
+    assemble_user = hooks.context.assemble_user_context or _default_assemble_user_context
+    exec_op = hooks.operations.execute_operation or _default_execute_operation
+    on_complete = hooks.lifecycle.on_turn_complete or _default_on_turn_complete
 
     # ── MCP tool pool ──────────────────────────────────────────────────
     # The kernel speaks MCP tool schema internally. Tool discovery and
     # dispatch go through MCPToolPool; provider-specific schemas are
     # translated at the provider edge by schema_translator.
     #
-    # When the host provides a long-lived warm pool (``hooks.mcp_tool_pool``),
+    # When the host provides a long-lived warm pool (``hooks.tools.mcp_tool_pool``),
     # reuse it across turns without spawning/tearing down subprocesses per
     # turn. The host owns that pool's lifecycle (start at init, aclose at
     # exit). Otherwise fall back to a per-turn pool built from
-    # ``hooks.mcp_tool_servers`` (cold servers only when a warm pool is
+    # ``hooks.tools.mcp_tool_servers`` (cold servers only when a warm pool is
     # present, or all servers when no warm pool is set).
-    host_pool = hooks.mcp_tool_pool
+    host_pool = hooks.tools.mcp_tool_pool
     if host_pool is not None:
         return await _run_turn_with_approval(
             mode_id=mode_id,
@@ -2075,7 +1759,7 @@ async def run_turn(
             delegate_depth=delegate_depth,
             stage_id_override=stage_id_override,
         )
-    pool = MCPToolPool(hooks.mcp_tool_servers)
+    pool = MCPToolPool(hooks.tools.mcp_tool_servers)
     await pool.start()
     try:
         return await _run_turn_with_approval(
@@ -2192,7 +1876,7 @@ async def execute_approved_invocation(
     the saved invocation, live session policy, and owner-scoped pack config.
     """
 
-    if invocation.session_plan_digest != hooks.session_plan_digest:
+    if invocation.session_plan_digest != hooks.identity.session_plan_digest:
         raise ValueError("Approval request belongs to a different session plan.")
 
     async def _dispatch(pool: MCPToolPool) -> ToolResult | OperationResult:
@@ -2230,20 +1914,20 @@ async def execute_approved_invocation(
             "workspace_id": identity.workspace_id,
             "user_id": identity.user_id,
             "user_slug": identity.user_slug,
-            "user_name": hooks.user_name,
-            "principal_key": hooks.principal_key,
-            "conversation_id": hooks.conversation_id,
+            "user_name": hooks.identity.user_name,
+            "principal_key": hooks.identity.principal_key,
+            "conversation_id": hooks.identity.conversation_id,
             "surface_type": cast(ConversationSurface, identity.surface_type),
             "surface_id": identity.surface_id,
             "memory_scope": cast(MemoryScope, identity.memory_scope),
             "mode_id": identity.mode_id,
             "query": "",
-            "pack_configuration_resolver": hooks.pack_configuration_resolver,
-            "approval_service": hooks.approval_service,
+            "pack_configuration_resolver": hooks.services.pack_configuration_resolver,
+            "approval_service": hooks.services.approval_service,
             "approval_request_id": invocation.request_id,
-            "session_plan_digest": hooks.session_plan_digest,
-            "code_change_artifact_store": hooks.code_change_artifact_store,
-            "data_dir": hooks.data_dir,
+            "session_plan_digest": hooks.identity.session_plan_digest,
+            "code_change_artifact_store": hooks.services.code_change_artifact_store,
+            "data_dir": hooks.services.data_dir,
             "model_router": hooks.context_seams.model_router,
         }
         if invocation.target_kind == "tool":
@@ -2262,28 +1946,28 @@ async def execute_approved_invocation(
         operation_context = OperationExecutionContext(
             operation_id=invocation.target_id,
             params=invocation.parameters,
-            state_provider=hooks.state_provider,
+            state_provider=hooks.services.state_provider,
             host=build_callable_host(
-                complete_fn=hooks.complete or _noop_complete,
-                resolve_model_fn=hooks.resolve_model or _default_resolve_model,
+                complete_fn=hooks.models.complete or _noop_complete,
+                resolve_model_fn=hooks.models.resolve_model or _default_resolve_model,
                 read_authored_text_fn=getattr(
                     hooks.context_seams.content_registry,
                     "read_authored_text",
                     None,
                 ),
                 execute_tool_fn=_nested_tool_executor,
-                execute_operation_fn=hooks.execute_operation or _default_execute_operation,
+                execute_operation_fn=hooks.operations.execute_operation or _default_execute_operation,
                 gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
             ),
             **common,
         )
-        execute_operation_fn = hooks.execute_operation or _default_execute_operation
+        execute_operation_fn = hooks.operations.execute_operation or _default_execute_operation
         return await execute_operation_fn(invocation.target_id, operation_context)
 
-    if hooks.mcp_tool_pool is not None:
-        return await _dispatch(hooks.mcp_tool_pool)
+    if hooks.tools.mcp_tool_pool is not None:
+        return await _dispatch(hooks.tools.mcp_tool_pool)
 
-    pool = MCPToolPool(hooks.mcp_tool_servers)
+    pool = MCPToolPool(hooks.tools.mcp_tool_servers)
     await pool.start()
     try:
         return await _dispatch(pool)
@@ -2326,14 +2010,14 @@ async def _run_turn_inner(
     # operation calls via ``ctx.host.delegate(spec)``. The closure captures
     # the turn's hooks, budget, execution policy, and the current depth so
     # the delegate child runs as a ``sub_turn_kind="delegate"`` turn at
-    # ``depth + 1``. When the host provides its own ``hooks.delegate_fn``,
+    # ``depth + 1``. When the host provides its own ``hooks.operations.delegate_fn``,
     # that takes precedence (custom delegation backend). Otherwise the
     # kernel's ``_default_delegate_fn`` is used. The closure is built
     # once per turn so every operation dispatched in this turn sees the
     # same delegate hook.
     _delegate_depth = delegate_depth
-    if hooks.delegate_fn is not None:
-        _delegate_fn: Callable[..., Awaitable[DelegationResult]] = hooks.delegate_fn
+    if hooks.operations.delegate_fn is not None:
+        _delegate_fn: Callable[..., Awaitable[DelegationResult]] = hooks.operations.delegate_fn
     else:
 
         async def _delegate_fn(
@@ -2384,9 +2068,6 @@ async def _run_turn_inner(
         mcp_tool_executor as _mcp_tool_executor_fn,
     )
     from kernel.turn_phases._turn_state import (
-        merge_child_usage as _merge_child_usage_fn,
-    )
-    from kernel.turn_phases._turn_state import (
         record_model_usage as _record_model_usage_fn,
     )
     from kernel.turn_phases._turn_state import (
@@ -2422,7 +2103,7 @@ async def _run_turn_inner(
         _state.action_tool_ids = mode_completion_effects(mode_id, mcp_pool=pool)
     except Exception:  # pylint: disable=broad-except
         _state.action_tool_ids = set()
-    _on_stage_hook = hooks.on_stage
+    _on_stage_hook = hooks.lifecycle.on_stage
 
     # Turn-runner guard caps, read once from the kernel settings singleton
     # (``kernel.config.Settings``). The three referenced multiple times
@@ -2445,10 +2126,10 @@ async def _run_turn_inner(
     # ``kernel.turn_phases._routing``.
     _routing_ctx = RoutingContext(
         query=query,
-        surface_id=str(hooks.surface_id or ""),
-        conversation_id=str(hooks.conversation_id or ""),
-        user_id=str(hooks.user_id or ""),
-        session_plan_digest=str(hooks.session_plan_digest or ""),
+        surface_id=str(hooks.identity.surface_id or ""),
+        conversation_id=str(hooks.identity.conversation_id or ""),
+        user_id=str(hooks.identity.user_id or ""),
+        session_plan_digest=str(hooks.identity.session_plan_digest or ""),
     )
 
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
@@ -2479,8 +2160,8 @@ async def _run_turn_inner(
     # calls via ``ctx.host.fork(spec)``. Built after ``_emit_stage`` is
     # defined (unlike ``_delegate_fn``) because the fan-out emits fork
     # stage events through it.
-    if hooks.fork_fn is not None:
-        _fork_fn: Callable[..., Awaitable[ForkResult]] = hooks.fork_fn
+    if hooks.operations.fork_fn is not None:
+        _fork_fn: Callable[..., Awaitable[ForkResult]] = hooks.operations.fork_fn
     else:
 
         async def _fork_fn(
@@ -2530,22 +2211,22 @@ async def _run_turn_inner(
             ),
             execute_tool_fn=_mcp_tool_executor,
             execute_operation_fn=exec_op,
-            state_provider=hooks.state_provider,
-            pack_configuration_resolver=hooks.pack_configuration_resolver,
-            approval_service=hooks.approval_service,
-            code_change_artifact_store=hooks.code_change_artifact_store,
+            state_provider=hooks.services.state_provider,
+            pack_configuration_resolver=hooks.services.pack_configuration_resolver,
+            approval_service=hooks.services.approval_service,
+            code_change_artifact_store=hooks.services.code_change_artifact_store,
             gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-            workspace_id=hooks.workspace_id,
-            user_id=hooks.user_id,
-            user_slug=hooks.user_slug,
-            user_name=hooks.user_name,
-            principal_key=hooks.principal_key,
-            conversation_id=hooks.conversation_id,
-            surface_type=hooks.surface_type,
-            surface_id=hooks.surface_id,
-            memory_scope=hooks.memory_scope,
-            session_plan_digest=hooks.session_plan_digest,
-            data_dir=hooks.data_dir,
+            workspace_id=hooks.identity.workspace_id,
+            user_id=hooks.identity.user_id,
+            user_slug=hooks.identity.user_slug,
+            user_name=hooks.identity.user_name,
+            principal_key=hooks.identity.principal_key,
+            conversation_id=hooks.identity.conversation_id,
+            surface_type=hooks.identity.surface_type,
+            surface_id=hooks.identity.surface_id,
+            memory_scope=hooks.identity.memory_scope,
+            session_plan_digest=hooks.identity.session_plan_digest,
+            data_dir=hooks.services.data_dir,
             delegate_fn=_delegate_fn,
             fork_fn=_fork_fn,
             model_router=hooks.context_seams.model_router,
@@ -2597,10 +2278,10 @@ async def _run_turn_inner(
     # house-keeping budget. A sanitizing guard rewrites the query for the
     # remainder of the turn.
     guard_surface = SurfaceContext(
-        surface_type=cast(ConversationSurface, hooks.surface_type),
-        surface_id=str(hooks.surface_id or ""),
-        memory_scope=cast(MemoryScope, hooks.memory_scope),
-        thread_owner_id=str(hooks.user_id or ""),
+        surface_type=cast(ConversationSurface, hooks.identity.surface_type),
+        surface_id=str(hooks.identity.surface_id or ""),
+        memory_scope=cast(MemoryScope, hooks.identity.memory_scope),
+        thread_owner_id=str(hooks.identity.user_id or ""),
     )
     input_guard_result = await hooks.context_seams.input_guard.validate(query, guard_surface)
     if not input_guard_result.allowed:
@@ -2624,7 +2305,7 @@ async def _run_turn_inner(
         slice_outcomes=slice_outcomes,
     )
     if pre_turn_outcome is not None:
-        hooks.last_slice_finished_at = time.monotonic()
+        hooks.lifecycle.last_slice_finished_at = time.monotonic()
 
     # Assemble prompts — one mode model (Phase 6c). Every catalog mode
     # carries a stage graph (synthesized for stageless modes) and every
@@ -2645,8 +2326,8 @@ async def _run_turn_inner(
         # (a stale or child-scoped hook must not inject another mode's
         # stage).
         _stage_for_instruction = stage_id_override or ""
-        if not _stage_for_instruction and hooks.workflow_position is not None:
-            _position_for_instruction = hooks.workflow_position()
+        if not _stage_for_instruction and hooks.workflow.workflow_position is not None:
+            _position_for_instruction = hooks.workflow.workflow_position()
             if (
                 _position_for_instruction is not None
                 and getattr(_position_for_instruction, "mode_id", "") == mode_id
@@ -2721,9 +2402,9 @@ async def _run_turn_inner(
     # ``proceed``, the position's completed research/write steps are
     # rehydrated and the router names the remaining consumer (coding) as the
     # gap instead of re-offering the first producer (search).
-    if hooks.workflow_position is not None:
+    if hooks.workflow.workflow_position is not None:
         try:
-            _active_position = hooks.workflow_position()
+            _active_position = hooks.workflow.workflow_position()
         except Exception:  # pylint: disable=broad-except
             _active_position = None
         if _active_position is not None:
@@ -2857,7 +2538,7 @@ async def _run_turn_inner(
     # ("ok", "thanks") don't waste a backend round-trip. A down memory
     # backend is logged and swallowed — it never blocks the turn.
     memory_snippet = ""
-    if hooks.memory_recall_enabled and query and len(query) >= hooks.memory_recall_min_query_chars:
+    if hooks.recall.enabled and query and len(query) >= hooks.recall.min_query_chars:
         try:
             recall_ctx = _build_minimal_context(
                 mode_id=mode_id,
@@ -2872,28 +2553,28 @@ async def _run_turn_inner(
                 execute_tool_fn=_mcp_tool_executor,
                 execute_operation_fn=exec_op,
                 gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-                state_provider=hooks.state_provider,
-                pack_configuration_resolver=hooks.pack_configuration_resolver,
-                approval_service=hooks.approval_service,
-                code_change_artifact_store=hooks.code_change_artifact_store,
-                workspace_id=hooks.workspace_id,
-                user_id=hooks.user_id,
-                user_slug=hooks.user_slug,
-                user_name=hooks.user_name,
-                principal_key=hooks.principal_key,
-                conversation_id=hooks.conversation_id,
-                surface_type=hooks.surface_type,
-                surface_id=hooks.surface_id,
-                memory_scope=hooks.memory_scope,
-                session_plan_digest=hooks.session_plan_digest,
-                data_dir=hooks.data_dir,
+                state_provider=hooks.services.state_provider,
+                pack_configuration_resolver=hooks.services.pack_configuration_resolver,
+                approval_service=hooks.services.approval_service,
+                code_change_artifact_store=hooks.services.code_change_artifact_store,
+                workspace_id=hooks.identity.workspace_id,
+                user_id=hooks.identity.user_id,
+                user_slug=hooks.identity.user_slug,
+                user_name=hooks.identity.user_name,
+                principal_key=hooks.identity.principal_key,
+                conversation_id=hooks.identity.conversation_id,
+                surface_type=hooks.identity.surface_type,
+                surface_id=hooks.identity.surface_id,
+                memory_scope=hooks.identity.memory_scope,
+                session_plan_digest=hooks.identity.session_plan_digest,
+                data_dir=hooks.services.data_dir,
                 delegate_fn=_delegate_fn,
                 fork_fn=_fork_fn,
                 model_router=hooks.context_seams.model_router,
             )
             recall_ctx.params = {
                 "query": query,
-                "limit": hooks.memory_recall_pre_turn_limit,
+                "limit": hooks.recall.limit,
                 "deep": False,
             }
             recall_result = await exec_op("recall_memory", recall_ctx)
@@ -3140,9 +2821,9 @@ async def _run_turn_inner(
 
         # Fetch recovery records once per iteration (the resolver needs them).
         _open_records: list[Any] = []
-        if hooks.recovery_service is not None:
+        if hooks.services.recovery_service is not None:
             try:
-                _open_records = await hooks.recovery_service.list_open(
+                _open_records = await hooks.services.recovery_service.list_open(
                     _build_recovery_identity(hooks)
                 )
             except Exception:  # pylint: disable=broad-except
@@ -3161,8 +2842,8 @@ async def _run_turn_inner(
         # and iterations drives the resolver's single stuck-in-stage guard
         # pair — no mode-kind gate.
         _turns_in_stage = _state.step_iteration
-        if hooks.workflow_position is not None:
-            _wf_position = hooks.workflow_position()
+        if hooks.workflow.workflow_position is not None:
+            _wf_position = hooks.workflow.workflow_position()
             if _wf_position is not None:
                 _turns_in_stage = max(0, _wf_position.turn_count - 1) + _state.step_iteration
                 await _emit_stage(
@@ -3193,9 +2874,9 @@ async def _run_turn_inner(
         # this iteration, the loop breaks before the model call. In-flight
         # tool dispatches from the prior iteration already completed.
         _operator_signal = ""
-        if hooks.operator_signal is not None:
+        if hooks.lifecycle.operator_signal is not None:
             try:
-                _operator_signal = hooks.operator_signal() or ""
+                _operator_signal = hooks.lifecycle.operator_signal() or ""
             except Exception:  # pylint: disable=broad-except
                 _operator_signal = ""
         _resolver_state = _TSV(
@@ -3228,9 +2909,9 @@ async def _run_turn_inner(
             last_error_tool=_state.last_error_tool,
         )
         _active_position_for_resolver: Any = None
-        if hooks.workflow_position is not None:
+        if hooks.workflow.workflow_position is not None:
             try:
-                _active_position_for_resolver = hooks.workflow_position()
+                _active_position_for_resolver = hooks.workflow.workflow_position()
             except Exception:  # pylint: disable=broad-except
                 _active_position_for_resolver = None
 
@@ -3605,8 +3286,8 @@ async def _run_turn_inner(
             _synth_delegated_goal = ""
             try:
                 _synth_pos = (
-                    hooks.workflow_position()
-                    if hooks.workflow_position
+                    hooks.workflow.workflow_position()
+                    if hooks.workflow.workflow_position
                     else None
                 )
             except Exception:
@@ -3688,7 +3369,7 @@ async def _run_turn_inner(
 
             _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
             _complete_started = time.perf_counter()
-            if hooks.complete_stream is not None and callable(_stream_gateway_fn):
+            if hooks.models.complete_stream is not None and callable(_stream_gateway_fn):
                 # ── Streaming path ──────────────────────────────────────
                 # v1: stream tokens to the host. When the stream indicates
                 # tool_calls are needed (finish_reason='tool_calls'), fall
@@ -3808,9 +3489,9 @@ async def _run_turn_inner(
                 mode_id=mode_id,
                 stage_id=str(getattr(_state, "current_stage_id", "") or ""),
                 call_site="turn_loop",
-                conversation_id=hooks.conversation_id,
-                user_slug=hooks.user_slug,
-                surface_id=str(hooks.surface_id or ""),
+                conversation_id=hooks.identity.conversation_id,
+                user_slug=hooks.identity.user_slug,
+                surface_id=str(hooks.identity.surface_id or ""),
             ),
         )
 
@@ -4437,7 +4118,7 @@ async def _run_turn_inner(
             # of ``RecoveryTargetKind`` (recovery.py), so constructing a
             # ``RecoveryRecord`` for them raises a pydantic ``literal_error``
             # and only logs a misleading "recovery begin failed" warning.
-            if hooks.recovery_service is not None and _tool_kind not in ("transition", "yield"):
+            if hooks.services.recovery_service is not None and _tool_kind not in ("transition", "yield"):
                 try:
                     effect = "read"
                     if tool_name in operation_catalog:
@@ -4455,14 +4136,14 @@ async def _run_turn_inner(
                     # can decide whether a stalled record blocks the
                     # position from advancing (``step_blocks_instance``).
                     _wi_step_id = ""
-                    if hooks.workflow_position is not None:
+                    if hooks.workflow.workflow_position is not None:
                         try:
-                            _position_for_record = hooks.workflow_position()
+                            _position_for_record = hooks.workflow.workflow_position()
                         except Exception:  # pylint: disable=broad-except
                             _position_for_record = None
                         if _position_for_record is not None:
                             _wi_step_id = getattr(_position_for_record, "current_step_id", "") or ""
-                    started_record = await hooks.recovery_service.begin(
+                    started_record = await hooks.services.recovery_service.begin(
                         RecoveryRecord(
                             identity=_build_recovery_identity(hooks),
                             mode_id=mode_id,
@@ -4798,8 +4479,8 @@ async def _run_turn_inner(
                                     _handoff_plan_text = ""
                                     try:
                                         _handoff_pos = (
-                                            hooks.workflow_position()
-                                            if hooks.workflow_position
+                                            hooks.workflow.workflow_position()
+                                            if hooks.workflow.workflow_position
                                             else None
                                         )
                                     except Exception:
@@ -4948,8 +4629,8 @@ async def _run_turn_inner(
                                         _step_query = ""
                                         try:
                                             _active_pos = (
-                                                hooks.workflow_position()
-                                                if hooks.workflow_position
+                                                hooks.workflow.workflow_position()
+                                                if hooks.workflow.workflow_position
                                                 else None
                                             )
                                         except Exception:
@@ -5021,9 +4702,9 @@ async def _run_turn_inner(
                                             # completed steps from it on the
                                             # next turn. No mutable position
                                             # is persisted.
-                                            if hooks.route_coordinator is not None:
+                                            if hooks.workflow.route_coordinator is not None:
                                                 try:
-                                                    hooks.route_coordinator.save(
+                                                    hooks.workflow.route_coordinator.save(
                                                         CoordinatorRouteDecision(
                                                             next_target=_planned_next,
                                                             reason=(
@@ -5036,10 +4717,10 @@ async def _run_turn_inner(
                                                         {
                                                             "mode_id": _planned_next,
                                                             "query": query,
-                                                            "surface_id": hooks.surface_id,
-                                                            "conversation_id": hooks.conversation_id,
-                                                            "user_id": hooks.user_id,
-                                                            "session_plan_digest": hooks.session_plan_digest,
+                                                            "surface_id": hooks.identity.surface_id,
+                                                            "conversation_id": hooks.identity.conversation_id,
+                                                            "user_id": hooks.identity.user_id,
+                                                            "session_plan_digest": hooks.identity.session_plan_digest,
                                                         },
                                                     )
                                                 except Exception as coord_exc:  # pylint: disable=broad-except
@@ -5332,9 +5013,9 @@ async def _run_turn_inner(
                                     # knows where to go next. No mutable
                                     # position is advanced — the view is
                                     # read-only and re-derived next turn.
-                                    if hooks.workflow_position is not None:
+                                    if hooks.workflow.workflow_position is not None:
                                         try:
-                                            _position = hooks.workflow_position()
+                                            _position = hooks.workflow.workflow_position()
                                         except Exception:  # pylint: disable=broad-except
                                             _position = None
                                         if _position is not None and getattr(
@@ -6087,9 +5768,9 @@ async def _run_turn_inner(
                             request_id=str(getattr(final_completion, "request_id", "") or ""),
                             mode_id=mode_id,
                             call_site="forced_final",
-                            conversation_id=hooks.conversation_id,
-                            user_slug=hooks.user_slug,
-                            surface_id=str(hooks.surface_id or ""),
+                            conversation_id=hooks.identity.conversation_id,
+                            user_slug=hooks.identity.user_slug,
+                            surface_id=str(hooks.identity.surface_id or ""),
                         ),
                     )
                 else:
@@ -6109,7 +5790,7 @@ async def _run_turn_inner(
     # stage, force one final no-tools completion using the
     # terminal stage's instruction so the model produces a closing summary.
     if transitioned_to is not None:
-        terminal_position = hooks.workflow_position() if hooks.workflow_position else None
+        terminal_position = hooks.workflow.workflow_position() if hooks.workflow.workflow_position else None
         if terminal_position is not None and is_terminal_stage(terminal_position):
             terminal_stage_config = mode_config.stages.get(terminal_position.stage_id)
             if terminal_stage_config and terminal_stage_config.instruction_body:
@@ -6164,9 +5845,9 @@ async def _run_turn_inner(
                                 request_id=str(getattr(final_completion, "request_id", "") or ""),
                                 mode_id=mode_id,
                                 call_site="terminal_stage",
-                                conversation_id=hooks.conversation_id,
-                                user_slug=hooks.user_slug,
-                                surface_id=str(hooks.surface_id or ""),
+                                conversation_id=hooks.identity.conversation_id,
+                                user_slug=hooks.identity.user_slug,
+                                surface_id=str(hooks.identity.surface_id or ""),
                             ),
                         )
                 except Exception as exc:  # pylint: disable=broad-except
@@ -6295,7 +5976,7 @@ async def _run_turn_inner(
             slice_outcomes=slice_outcomes,
         )
         if post_turn_outcome is not None:
-            hooks.last_slice_finished_at = time.monotonic()
+            hooks.lifecycle.last_slice_finished_at = time.monotonic()
 
     # ── Workflow progress rendering ───────────────────────────────
     # When a position is active and has remaining steps, append a short
@@ -6304,9 +5985,9 @@ async def _run_turn_inner(
     # plan_workflow_op positions alike — ``render_workflow_progress`` is
     # already origin-blind. Only appended when there is visible content
     # (don't append to an empty error response).
-    if content and hooks.workflow_position is not None:
+    if content and hooks.workflow.workflow_position is not None:
         try:
-            _progress_position = hooks.workflow_position()
+            _progress_position = hooks.workflow.workflow_position()
         except Exception:  # pylint: disable=broad-except
             _progress_position = None
         if _progress_position is not None and getattr(_progress_position, "declared_steps", ()):

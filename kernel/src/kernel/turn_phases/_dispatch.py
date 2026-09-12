@@ -454,7 +454,7 @@ async def _settle_recovery(
     retry_policy: Any = None,
 ) -> None:
     """Safely settle an active recovery record with fail-loud logging."""
-    if not (recovery_item_id and hooks.recovery_service is not None and rec_identity is not None):
+    if not (recovery_item_id and hooks.services.recovery_service is not None and rec_identity is not None):
         return
     try:
         kwargs: dict[str, Any] = {"state": state}
@@ -464,7 +464,7 @@ async def _settle_recovery(
             kwargs["last_error"] = last_error
         if retry_policy is not None:
             kwargs["retry_policy"] = retry_policy
-        await hooks.recovery_service.settle(
+        await hooks.services.recovery_service.settle(
             recovery_item_id,
             rec_identity,
             **kwargs,

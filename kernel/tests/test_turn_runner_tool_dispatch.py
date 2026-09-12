@@ -1,7 +1,7 @@
 """Tests for tool dispatch branches in the turn runner.
 
 Covers the three dispatch paths that fire after transition_stage interception:
-  1. Operation dispatch — via hooks.execute_operation
+  1. Operation dispatch — via hooks.operations.execute_operation
   2. In-process pack tool dispatch — via execute_tool from registry
   3. MCP tool dispatch — via pool.call_tool
 
@@ -55,7 +55,14 @@ def _make_tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[
 
 
 def _build_hooks(complete_fn: Any, **overrides: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn, memory_recall_enabled=False, **overrides)
+    # Flat hook overrides (e.g. ``mcp_tool_pool=``, ``execute_operation=``)
+    # fold into the correct grouped sub-dataclass; recall defaults to off.
+    from turn_hooks_fold import build_hooks
+
+    return build_hooks(
+        defaults={"models": {"complete": complete_fn}, "recall": {"enabled": False}},
+        **overrides,
+    )
 
 
 # ── CallLedger ────────────────────────────────────────────────────────
@@ -376,7 +383,7 @@ def test_build_minimal_context_uses_defaults() -> None:
 @pytest.mark.asyncio
 async def test_operation_dispatch_via_hooks_execute_operation() -> None:
     """When the model calls an operation by name, it dispatches through
-    hooks.execute_operation (not pool.call_tool)."""
+    hooks.operations.execute_operation (not pool.call_tool)."""
     dispatched: list[str] = []
 
     async def stub_execute_op(

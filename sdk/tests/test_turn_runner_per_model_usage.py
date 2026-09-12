@@ -20,6 +20,17 @@ import pytest
 from kernel.models import WorkflowModeConfig
 from kernel.provider_contracts import StreamedChunk
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 # ── Stubs ─────────────────────────────────────────────────────────────
 
@@ -101,9 +112,11 @@ async def test_run_turn_populates_per_model_usage_single_model() -> None:
         return completion
 
     hooks = TurnHooks(
+    models=ModelHooks(
         complete=complete,
         resolve_model=lambda mid: _StubModelDef("default-model"),
-    )
+    ),
+)
 
     with _patched_catalog():
         result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -133,9 +146,11 @@ async def test_run_turn_records_per_model_usage_for_streaming_path() -> None:
         )
 
     hooks = TurnHooks(
+    models=ModelHooks(
         complete_stream=complete_stream,
         resolve_model=lambda mid: _StubModelDef("stream-model"),
-    )
+    ),
+)
 
     with _patched_catalog():
         result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -176,9 +191,11 @@ async def test_run_turn_populates_per_mode_usage_for_entry_mode() -> None:
         return completion
 
     hooks = TurnHooks(
+    models=ModelHooks(
         complete=complete,
         resolve_model=lambda mid: _StubModelDef("default-model"),
-    )
+    ),
+)
 
     with _patched_catalog():
         result = await run_turn(mode_id="search", query="hello", hooks=hooks)
@@ -308,10 +325,12 @@ async def test_router_escalates_past_capability_gate() -> None:
     )
     try:
         hooks = TurnHooks(
-            complete=complete,
-            resolve_model=lambda mid: models.get(mid, models["default-model"]),
-            context_seams=ContextSeams(model_router=router),
-        )
+    models=ModelHooks(
+        complete=complete,
+        resolve_model=lambda mid: models.get(mid, models["default-model"]),
+    ),
+    context_seams=ContextSeams(model_router=router),
+)
         result = await run_turn(
             mode_id="coding",
             query="implement a thing",

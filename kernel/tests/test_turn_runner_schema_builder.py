@@ -28,6 +28,7 @@ from kernel.turn_phases._tool_schemas import (
     _prune_model_tool_schemas,
     _tool_schema_name,
 )
+from kernel.turn_hooks import ModelHooks, ToolHooks
 from kernel.turn_runner import (
     TurnHooks,
     run_turn,
@@ -604,7 +605,11 @@ async def test_schema_assembly_includes_operations_for_mode() -> None:
         captured_tools.extend(kwargs.get("tools") or [])
         return _StubCompletion(content="Done.")
 
-    hooks = TurnHooks(complete=capture)
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture,
+    ),
+)
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
@@ -657,7 +662,14 @@ async def test_schema_assembly_excludes_mcp_tools_not_in_allowlist() -> None:
         async def aclose(self) -> None:
             pass
 
-    hooks = TurnHooks(complete=capture, mcp_tool_pool=_StubPool())
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
@@ -713,7 +725,14 @@ async def test_schema_assembly_authoritative_empty_allowlist_no_mcp_tools() -> N
     original = default_mode.tools_authoritative
     default_mode.tools_authoritative = True
     try:
-        hooks = TurnHooks(complete=capture, mcp_tool_pool=_StubPool())
+        hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original
@@ -775,7 +794,14 @@ async def test_schema_assembly_deduplicates_before_model_call() -> None:
     original = default_mode.tools_authoritative
     default_mode.tools_authoritative = False
     try:
-        hooks = TurnHooks(complete=capture, mcp_tool_pool=_StubPool())
+        hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original

@@ -397,7 +397,7 @@ async def emit_stage(
     label: str,
     data: dict[str, Any] | None = None,
 ) -> None:
-    """Wrap ``hooks.on_stage`` with None-check and try/except.
+    """Wrap ``hooks.lifecycle.on_stage`` with None-check and try/except.
 
     Failures are logged and swallowed — a transport error never breaks the
     turn.

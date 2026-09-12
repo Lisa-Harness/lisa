@@ -119,6 +119,8 @@ def test_turn_decision_telemetry_event_emitted() -> None:
     """The turn loop emits a structured 'turn.decision' event on each iteration."""
     import asyncio
     from typing import Any
+
+    from kernel.turn_hooks import ModelHooks
     from kernel.turn_runner import TurnHooks, run_turn
 
     published_events: list[tuple[str, dict[str, Any]]] = []
@@ -134,7 +136,9 @@ def test_turn_decision_telemetry_event_emitted() -> None:
         from types import SimpleNamespace
         return SimpleNamespace(content="Hello world.", tool_calls=[])
 
-    hooks = TurnHooks(complete=complete)
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+    )
     hooks.context_seams.event_bus = _CaptureEventBus()
 
     result = asyncio.run(run_turn(mode_id="default", query="hi", hooks=hooks))

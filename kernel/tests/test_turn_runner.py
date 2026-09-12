@@ -20,6 +20,17 @@ from kernel.models import (
 )
 from kernel.seams.protocols import CoordinatorRouteDecision
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 # ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
@@ -60,7 +71,11 @@ async def _stub_execute_operation(
 
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
-    return TurnHooks(complete=complete_fn)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
 
 
 # ── Core flow tests ───────────────────────────────────────────────────
@@ -169,7 +184,7 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
 
     coordinator = _StubCoordinator()
     hooks = _build_minimal_hooks(complete)
-    hooks.route_coordinator = coordinator
+    hooks.workflow.route_coordinator = coordinator
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -240,7 +255,7 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position_updater = lambda _instance: None
+    hooks.workflow.workflow_position_updater = lambda _instance: None
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -635,7 +650,7 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
         saved_instances.append(instance)
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position_updater = _wi_updater
+    hooks.workflow.workflow_position_updater = _wi_updater
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -714,7 +729,7 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
         saved_instances.append(instance)
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position_updater = _wi_updater
+    hooks.workflow.workflow_position_updater = _wi_updater
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -796,8 +811,8 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.route_coordinator = coordinator
-    hooks.workflow_position= lambda: active_instance
+    hooks.workflow.route_coordinator = coordinator
+    hooks.workflow.workflow_position= lambda: active_instance
 
     result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
 
@@ -822,7 +837,7 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
     Regression for the 2026-08-01 incident: the host wires
     ``workflow_position`` (the durable cross-turn plan store) but never
     wires ``route_coordinator`` (a legacy single-target persistence). The
-    old guard ``if hooks.route_coordinator is None ... return ""`` short-
+    old guard ``if hooks.workflow.route_coordinator is None ... return ""`` short-
     circuited the whole resume path, so a continuation query like "proceed
     with P0" got no resume hint, re-entered ``plan`` mode, and
     ``plan_workflow`` refused to route an execution request ("No installed
@@ -862,8 +877,8 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
 
     hooks = _build_minimal_hooks(complete)
     # Production wiring: workflow_position is set, route_coordinator is NOT.
-    hooks.workflow_position= lambda: active_instance
-    assert hooks.route_coordinator is None
+    hooks.workflow.workflow_position= lambda: active_instance
+    assert hooks.workflow.route_coordinator is None
 
     result = await run_turn(mode_id="default", query="proceed with P0", hooks=hooks)
 
@@ -973,7 +988,7 @@ async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
         return _StubCompletion(content="resuming plan")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position = lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1069,7 +1084,7 @@ async def test_resume_in_flight_does_not_fire_for_real_query() -> None:
         return _StubCompletion(content="Summary of results.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position = lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1177,7 +1192,7 @@ async def test_resume_in_flight_skips_routing_entry_op_and_advances_plan() -> No
         return _StubCompletion(content="resuming plan")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position = lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1247,7 +1262,7 @@ async def test_plan_progress_rendered_when_plan_instance_active() -> None:
         return _StubCompletion(content="Drafted the markdown summary.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position= lambda: active_instance
 
     result = await run_turn(mode_id="markdown", query="write the summary", hooks=hooks)
 
@@ -1367,7 +1382,7 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
 
     coordinator = _StubCoordinator()
     hooks = _build_minimal_hooks(complete)
-    hooks.route_coordinator = coordinator
+    hooks.workflow.route_coordinator = coordinator
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1488,7 +1503,7 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position= lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1588,7 +1603,7 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
     def capture_position(updated: Any) -> None:
         persisted_positions.append(updated)
 
-    hooks.workflow_position_updater = capture_position
+    hooks.workflow.workflow_position_updater = capture_position
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1617,7 +1632,7 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
 async def test_run_turn_missing_complete_raises_not_implemented() -> None:
     """A search (action) mode with entry ops needs complete_fn, and the
     operation fails with an OperationExecutionError wrapping the
-    NotImplementedError when hooks.complete is missing."""
+    NotImplementedError when hooks.models.complete is missing."""
     from kernel.operations.registry import OperationExecutionError
 
     hooks = TurnHooks()  # no complete
@@ -1650,7 +1665,7 @@ async def test_run_turn_tool_loop_single_tool_call() -> None:
         return _StubCompletion(content="Here is your search result.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
@@ -1680,7 +1695,7 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
         )
 
     hooks = _build_minimal_hooks(infinite_tools)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -1726,7 +1741,7 @@ async def test_run_turn_max_tool_iterations_defaults_from_config(
         )
 
     hooks = _build_minimal_hooks(infinite_tools)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -1763,7 +1778,7 @@ async def test_run_turn_execution_policy_tightens_model_call_iterations() -> Non
         )
 
     hooks = _build_minimal_hooks(infinite_tools)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -1803,7 +1818,7 @@ async def test_run_turn_execution_policy_seeds_turn_budget_without_explicit_budg
         return _StubCompletion(content="Final response.")
 
     hooks = _build_minimal_hooks(budget_aware_complete)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -1850,7 +1865,7 @@ async def test_stuck_in_stage_cap_surfaces_diagnostic(
         )
 
     hooks = _build_minimal_hooks(loop_on_tool)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -1894,7 +1909,7 @@ async def test_run_turn_execution_policy_caps_specific_capability_calls() -> Non
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(repeat_then_finalize)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -2051,7 +2066,7 @@ async def test_run_turn_calls_on_turn_complete() -> None:
         )
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.on_turn_complete = on_complete
+    hooks.lifecycle.on_turn_complete = on_complete
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -2154,7 +2169,7 @@ async def test_run_turn_prefers_explicit_model_override() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
 
     result = await run_turn(
         mode_id="default",
@@ -2203,8 +2218,8 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.assemble_system_prompt = assemble_system
-    hooks.workflow_position = workflow_position
+    hooks.context.assemble_system_prompt = assemble_system
+    hooks.workflow.workflow_position = workflow_position
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
@@ -2263,8 +2278,8 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
         return _StubCompletion(content="Done reasoning.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.workflow_position = workflow_position
-    hooks.workflow_position_updater = workflow_position_updater
+    hooks.workflow.workflow_position = workflow_position
+    hooks.workflow.workflow_position_updater = workflow_position_updater
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
@@ -2301,7 +2316,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position = workflow_position
+    hooks.workflow.workflow_position = workflow_position
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
@@ -2360,22 +2375,22 @@ async def test_default_hooks_are_noops() -> None:
     hooks = TurnHooks()
 
     # Default resolve_model returns a stub
-    model = hooks.resolve_model("test") if hooks.resolve_model else None
-    if hooks.resolve_model:
+    model = hooks.models.resolve_model("test") if hooks.models.resolve_model else None
+    if hooks.models.resolve_model:
         assert model is not None
 
     # Default assemble_system_prompt
-    if hooks.assemble_system_prompt:
-        result = hooks.assemble_system_prompt("instruction", None)
+    if hooks.context.assemble_system_prompt:
+        result = hooks.context.assemble_system_prompt("instruction", None)
         assert result == "instruction"
 
     # Default assemble_user_context returns empty (accepts optional manifest)
-    if hooks.assemble_user_context:
-        result = hooks.assemble_user_context("m", "q", "b", None)
+    if hooks.context.assemble_user_context:
+        result = hooks.context.assemble_user_context("m", "q", "b", None)
         assert result == ""
 
     # Default mcp_tool_servers is an empty list
-    assert hooks.mcp_tool_servers == []
+    assert hooks.tools.mcp_tool_servers == []
 
 
 @pytest.mark.asyncio
@@ -2412,7 +2427,7 @@ async def test_run_turn_passes_capability_manifest_to_assemble_user_context() ->
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.assemble_user_context = assemble_user
+    hooks.context.assemble_user_context = assemble_user
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -2719,7 +2734,7 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
             pass
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.mcp_tool_pool = _StubPool()
+    hooks.tools.mcp_tool_pool = _StubPool()
     result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
 
     assert result.fork_results is not None
@@ -2940,7 +2955,7 @@ async def test_run_turn_emits_model_call_stage_events() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.on_stage = on_stage
+    hooks.lifecycle.on_stage = on_stage
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -2986,8 +3001,8 @@ async def test_run_turn_emits_tool_dispatch_stage_events() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execute_operation = _stub_execute_operation
-    hooks.on_stage = on_stage
+    hooks.operations.execute_operation = _stub_execute_operation
+    hooks.lifecycle.on_stage = on_stage
 
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
@@ -3034,7 +3049,7 @@ async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
         return _StubCompletion(content="Synthesized.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.on_stage = on_stage
+    hooks.lifecycle.on_stage = on_stage
 
     result = await run_turn(mode_id="default", query="fan out", hooks=hooks)
 
@@ -3071,7 +3086,7 @@ async def test_run_turn_on_stage_hook_failure_is_swallowed() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.on_stage = on_stage
+    hooks.lifecycle.on_stage = on_stage
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -5094,7 +5109,7 @@ async def test_handoff_entry_op_failure_blocks_turn() -> None:
         return OperationResult(output_text=f"Executed {operation_id}")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execute_operation = failing_entry_operation
+    hooks.operations.execute_operation = failing_entry_operation
 
     result = await run_turn(
         mode_id="default", query="search for agent frameworks and write a review", hooks=hooks
@@ -5176,7 +5191,7 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
         return OperationResult(output_text=f"Executed {operation_id}")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execute_operation = failing_plan_entry_operation
+    hooks.operations.execute_operation = failing_plan_entry_operation
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -5591,7 +5606,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.memory_recall_enabled = False
+    hooks.recall.enabled = False
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -5719,7 +5734,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.memory_recall_enabled = False
+    hooks.recall.enabled = False
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -5771,7 +5786,7 @@ async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
         )
 
     hooks = _build_minimal_hooks(yield_then_done)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
 
     result = await run_turn(
         mode_id="default",
@@ -5823,7 +5838,7 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(capture_and_finish)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
     result = await run_turn(
         mode_id="default",
         query="hello",
@@ -5866,7 +5881,7 @@ async def test_budget_briefing_disabled_when_config_off() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(capture_and_finish)
-    hooks.execute_operation = _stub_execute_operation
+    hooks.operations.execute_operation = _stub_execute_operation
     # Patch the kernel settings singleton to disable the briefing.
     original = kernel_settings.budget_briefing_enabled
     kernel_settings.budget_briefing_enabled = False

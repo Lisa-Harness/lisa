@@ -26,6 +26,17 @@ from kernel.model_router_discovery import (
 )
 from kernel.seams.protocols import RouterDecision, RouterRequest
 from kernel.turn_runner import ContextSeams, TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
@@ -69,7 +80,11 @@ def _make_stub_complete(response: str):
 
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
-    return TurnHooks(complete=complete_fn)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
 
 
 @pytest.mark.asyncio
@@ -95,7 +110,7 @@ async def test_router_is_consulted_per_iteration() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
     hooks.context_seams.model_router = _StubRouter()
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -122,7 +137,7 @@ async def test_router_returning_none_falls_back_to_static() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
     hooks.context_seams.model_router = _DecliningRouter()
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -147,7 +162,7 @@ async def test_router_exception_falls_back_gracefully() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
     hooks.context_seams.model_router = _CrashingRouter()
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -178,7 +193,7 @@ async def test_legacy_choose_still_works_without_router() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
     hooks.context_seams.model_policy = _PolicyWithChoose()
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -198,7 +213,7 @@ async def test_no_router_no_choose_uses_static_default() -> None:
         return SimpleNamespace(model_id=model_id, reasoning_model=False)
 
     hooks = _build_minimal_hooks(_make_stub_complete("Done."))
-    hooks.resolve_model = resolve_model
+    hooks.models.resolve_model = resolve_model
 
     result = await run_turn(
         mode_id="default", query="hello", hooks=hooks, preferred_model_id="default"

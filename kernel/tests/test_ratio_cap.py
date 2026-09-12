@@ -25,6 +25,17 @@ from kernel.models import (
     OperationResult,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -74,8 +85,12 @@ def _build_hooks_with_position(
     position,
 ) -> TurnHooks:
     """Build TurnHooks with a ``workflow_position`` callable returning ``position``."""
-    hooks = TurnHooks(complete=complete_fn)
-    hooks.workflow_position = lambda: position
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
+    hooks.workflow.workflow_position = lambda: position
     return hooks
 
 
@@ -86,8 +101,12 @@ def _build_hooks_with_position(
 async def test_no_position_uses_base_cap() -> None:
     """When no workflow_position hook is wired, the global cap stays at the
     base default (300). No scaling occurs."""
-    hooks = TurnHooks(complete=_make_stub_complete("Done."))
-    # No workflow_position wired → hooks.workflow_position is None.
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=_make_stub_complete("Done."),
+    ),
+)
+    # No workflow_position wired → hooks.workflow.workflow_position is None.
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -147,7 +166,7 @@ async def test_position_with_five_steps_scales_up() -> None:
             )
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
-    hooks.on_stage = _on_stage
+    hooks.lifecycle.on_stage = _on_stage
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -170,7 +189,7 @@ async def test_position_with_eight_steps_scales_to_600() -> None:
             )
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
-    hooks.on_stage = _on_stage
+    hooks.lifecycle.on_stage = _on_stage
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
@@ -197,7 +216,7 @@ async def test_execution_policy_tightens_after_scaling() -> None:
             )
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
-    hooks.on_stage = _on_stage
+    hooks.lifecycle.on_stage = _on_stage
 
     policy = ExecutionPolicy(max_model_calls=200)
 

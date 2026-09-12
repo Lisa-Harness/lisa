@@ -21,6 +21,11 @@ from kernel.models import (
 )
 from kernel.seams.protocols import GuardResult
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy, SliceTuning
+from kernel.turn_hooks import (
+    ContextHooks,
+    LifecycleHooks,
+    ModelHooks,
+)
 from kernel.turn_runner import (
     TurnHooks,
     TurnResult,
@@ -38,7 +43,12 @@ class _StubCompletion:
 
 
 def _build_hooks(complete_fn: Any, **overrides: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn, **overrides)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+    **overrides,
+)
 
 
 class _BlockingInputGuard:
@@ -208,8 +218,8 @@ async def test_output_guard_block_skips_post_turn_slice() -> None:
 
     hooks = _build_hooks(complete)
     hooks.context_seams.output_guard = guard
-    hooks.post_turn_slice = post_slice
-    hooks.slice_tuning = SliceTuning(post_turn_enabled=True)
+    hooks.lifecycle.post_turn_slice = post_slice
+    hooks.lifecycle.slice_tuning = SliceTuning(post_turn_enabled=True)
 
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
@@ -279,7 +289,11 @@ async def test_default_input_guard_allows_everything() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_returns_none_when_slot_not_wired() -> None:
     """_fire_slice returns None when the corresponding slot is None."""
-    hooks = TurnHooks(slice_tuning=SliceTuning(pre_turn_enabled=True))
+    hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
+        slice_tuning=SliceTuning(pre_turn_enabled=True),
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -293,7 +307,11 @@ async def test_fire_slice_returns_none_when_slot_not_wired() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_returns_none_when_tuning_is_none() -> None:
     """_fire_slice returns None when slice_tuning is None."""
-    hooks = TurnHooks(pre_turn_slice=lambda p: SliceOutcome())
+    hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
+        pre_turn_slice=lambda p: SliceOutcome(),
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -307,9 +325,11 @@ async def test_fire_slice_returns_none_when_tuning_is_none() -> None:
 async def test_fire_slice_returns_none_when_trigger_disabled() -> None:
     """_fire_slice returns None when the trigger is set to 'never'."""
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=lambda p: SliceOutcome(),
         slice_tuning=SliceTuning(pre_turn_enabled=False),
-    )
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -330,9 +350,11 @@ async def test_fire_slice_calls_slot_when_enabled() -> None:
         return SliceOutcome(work_items_completed=3, last_item="item_3")
 
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=my_slice,
         slice_tuning=SliceTuning(pre_turn_enabled=True),
-    )
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -353,9 +375,11 @@ async def test_fire_slice_catches_exception_and_returns_error_outcome() -> None:
         raise RuntimeError("slice exploded")
 
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=failing_slice,
         slice_tuning=SliceTuning(pre_turn_enabled=True),
-    )
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -376,9 +400,11 @@ async def test_fire_slice_coerces_non_slice_outcome() -> None:
         return "not a SliceOutcome"
 
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=bad_slice,
         slice_tuning=SliceTuning(pre_turn_enabled=True),
-    )
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -399,9 +425,11 @@ async def test_fire_slice_backfills_elapsed_ms() -> None:
         return SliceOutcome(work_items_completed=1, elapsed_ms=0)
 
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=my_slice,
         slice_tuning=SliceTuning(pre_turn_enabled=True),
-    )
+    ),
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -424,12 +452,15 @@ async def test_fire_slice_returns_none_when_budget_zero() -> None:
     # With a tuning that results in zero budget (base_budget_ms=0), the slice
     # should be short-circuited.
     hooks = TurnHooks(
+    lifecycle=LifecycleHooks(
         pre_turn_slice=my_slice,
         slice_tuning=SliceTuning(
             pre_turn_enabled=True, base_budget_ms=0, max_deferred_ms=0, hard_cap_ms=0
         ),
-        last_slice_finished_at=time.monotonic() - 1,  # some pressure
-    )
+        last_slice_finished_at=time.monotonic() - 1,
+    ),
+    # some pressure,
+)
     outcomes: list[SliceOutcome] = []
     result = await _fire_slice(
         hooks=hooks,
@@ -457,8 +488,8 @@ async def test_post_turn_slice_fires_after_response_committed() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(complete)
-    hooks.post_turn_slice = my_post_slice
-    hooks.slice_tuning = SliceTuning(post_turn_enabled=True)
+    hooks.lifecycle.post_turn_slice = my_post_slice
+    hooks.lifecycle.slice_tuning = SliceTuning(post_turn_enabled=True)
 
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
@@ -470,7 +501,7 @@ async def test_post_turn_slice_fires_after_response_committed() -> None:
 
 @pytest.mark.asyncio
 async def test_pre_turn_slice_updates_last_slice_finished_at() -> None:
-    """After the pre-turn slice runs, hooks.last_slice_finished_at is updated."""
+    """After the pre-turn slice runs, hooks.lifecycle.last_slice_finished_at is updated."""
 
     async def my_pre_slice(_policy: SlicePolicy) -> SliceOutcome:
         return SliceOutcome(work_items_completed=1)
@@ -479,11 +510,11 @@ async def test_pre_turn_slice_updates_last_slice_finished_at() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(complete)
-    hooks.pre_turn_slice = my_pre_slice
-    hooks.slice_tuning = SliceTuning(pre_turn_enabled=True)
-    hooks.last_slice_finished_at = None
+    hooks.lifecycle.pre_turn_slice = my_pre_slice
+    hooks.lifecycle.slice_tuning = SliceTuning(pre_turn_enabled=True)
+    hooks.lifecycle.last_slice_finished_at = None
 
     await run_turn(mode_id="default", query="test", hooks=hooks)
 
-    assert hooks.last_slice_finished_at is not None
-    assert hooks.last_slice_finished_at > 0
+    assert hooks.lifecycle.last_slice_finished_at is not None
+    assert hooks.lifecycle.last_slice_finished_at > 0

@@ -1762,28 +1762,28 @@ def test_build_turn_hooks_wires_complete_stream_for_text_mode(tmp_path: Path) ->
     """When streaming mode is text/hybrid, complete_stream is wired on the hooks."""
     runtime = _make_runtime(tmp_path, streaming="text:30")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
-    assert hooks.complete_stream is not None
+    assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_wires_complete_stream_for_hybrid_mode(tmp_path: Path) -> None:
     """Hybrid streaming also wires complete_stream."""
     runtime = _make_runtime(tmp_path, streaming="hybrid")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
-    assert hooks.complete_stream is not None
+    assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -> None:
     """Stage-only streaming does NOT wire complete_stream (stage uses on_stage, not chunks)."""
     runtime = _make_runtime(tmp_path, streaming="stage")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
-    assert hooks.complete_stream is None
+    assert hooks.models.complete_stream is None
 
 
 def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
     """With streaming disabled, complete_stream stays None (non-streaming path)."""
     runtime = _make_runtime(tmp_path, streaming="none")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
-    assert hooks.complete_stream is None
+    assert hooks.models.complete_stream is None
 
 
 @pytest.mark.asyncio

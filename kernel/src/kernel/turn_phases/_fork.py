@@ -163,7 +163,7 @@ async def _run_fork_child_turn(
 
         action_tool_ids = mode_completion_effects(
             target.mode_id,
-            mcp_pool=getattr(hooks, "mcp_tool_pool", None),
+            mcp_pool=hooks.tools.mcp_tool_pool,
         )
         outcome = classify_child_turn(
             child_result=child_result,

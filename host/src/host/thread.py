@@ -515,7 +515,7 @@ def append_thread_entry(
     between turn start and append).
 
     ``turn_input`` is the raw, unedited per-call model input captured at
-    the ``hooks.complete`` seam (one snapshot per model round-trip within
+    the ``hooks.models.complete`` seam (one snapshot per model round-trip within
     the turn) — the durable source ``/debug [N]`` reads back by turn index.
     ``None`` when the turn made no model call (host-command turns).
 

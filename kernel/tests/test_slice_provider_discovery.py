@@ -20,20 +20,35 @@ from kernel.slice_provider_discovery import (
     discover_slice_provider_factories,
 )
 from kernel.turn_runner import TurnHooks
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 
 def test_turn_hooks_defaults_for_slice_seams() -> None:
     """The seam fields default to None (no behavior change)."""
     hooks = TurnHooks()
-    assert hooks.last_context_snapshot is None
+    assert hooks.context.last_context_snapshot is None
 
 
 def test_turn_hooks_accepts_new_seam_fields() -> None:
     """The seam fields accept a snapshot."""
     sentinel: Any = object()
 
-    hooks = TurnHooks(last_context_snapshot=sentinel)
-    assert hooks.last_context_snapshot is sentinel
+    hooks = TurnHooks(
+    context=ContextHooks(
+        last_context_snapshot=sentinel,
+    ),
+)
+    assert hooks.context.last_context_snapshot is sentinel
 
 
 def test_slice_providers_entry_point_group_name() -> None:

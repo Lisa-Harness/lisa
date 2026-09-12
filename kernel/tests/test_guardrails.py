@@ -12,6 +12,17 @@ from kernel.context import PassThroughInputGuard, PassThroughOutputGuard
 from kernel.models import SurfaceContext
 from kernel.seams.protocols import GuardResult
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 # ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
@@ -46,7 +57,11 @@ def _make_stub_complete(response: str, captured: dict[str, Any] | None = None):
 
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
-    return TurnHooks(complete=complete_fn)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
 
 
 # ── Pass-through guard tests ──────────────────────────────────────────

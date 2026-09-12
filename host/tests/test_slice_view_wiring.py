@@ -76,4 +76,4 @@ def test_build_turn_hooks_assigns_execute_tool_on_view(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
     hooks = build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks is not None
-    assert hooks.execute_operation is not None
+    assert hooks.operations.execute_operation is not None

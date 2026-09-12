@@ -29,7 +29,19 @@ from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.token_usage import TOKEN_USAGE_TOPIC
-from kernel.turn_runner import ContextSeams, TurnHooks
+from kernel.turn_hooks import (
+    ContextHooks,
+    HostServiceHandles,
+    LifecycleHooks,
+    ModelHooks,
+    OperationHooks,
+    RecallHooks,
+    ToolHooks,
+    TurnHooks,
+    TurnIdentity,
+    WorkflowHooks,
+)
+from kernel.turn_runner import ContextSeams
 
 from host.context_assembly import (
     assemble_dynamic_user_context,
@@ -426,7 +438,7 @@ def build_turn_hooks(
             # Stash the mapper's ContextBudgetSnapshot on the runtime so
             # the returned TurnHooks.last_context_snapshot reflects the
             # most-recent context-mapper pass. Utilization-aware slice
-            # providers read this via hooks.last_context_snapshot.
+            # providers read this via hooks.context.last_context_snapshot.
             runtime.session.last_context_snapshot = snapshot
 
         return assemble_dynamic_user_context(
@@ -939,43 +951,71 @@ def build_turn_hooks(
         return seams
 
     return TurnHooks(
-        resolve_model=_resolve_model,
-        complete=None,
-        complete_stream=_complete_stream,
-        mcp_tool_pool=runtime.resources.mcp_tool_pool,
-        mcp_tool_servers=runtime.resources.mcp_cold_configs,
-        execute_operation=_execute_operation,
-        assemble_system_prompt=_assemble_system_prompt,
-        assemble_user_context=_assemble_user_context,
-        on_turn_complete=_on_turn_complete,
-        slice_tuning=slice_tuning,
-        pre_turn_slice=_pre_turn_slice_chained,
-        post_turn_slice=_post_turn_slice_chained,
-        explicit_slice=_explicit_slice_chained,
-        last_slice_finished_at=persisted_last_slice_finished_at,
-        state_provider=_state_provider,
-        pack_configuration_resolver=pack_configuration_resolver,
-        approval_service=approval_service,
-        recovery_service=getattr(runtime, "recovery_service", None),
-        code_change_artifact_store=runtime.services.code_change_artifact_store,
-        data_dir=str(runtime.paths.data_dir),
-        workspace_id=runtime.session_plan.manifest.name,
-        user_id=runtime.config.user_slug,
-        user_slug=runtime.config.user_slug,
-        user_name=runtime.config.user_slug,
-        principal_key=runtime.config.user_slug,
-        conversation_id=runtime.config.surface_id,
-        surface_type=runtime.config.surface_type,
-        surface_id=runtime.config.surface_id,
-        memory_scope=runtime.config.memory_scope,
-        session_plan_digest=runtime.session_plan.plan_digest,
-        memory_recall_enabled=runtime.config.memory_recall_enabled,
-        memory_recall_pre_turn_limit=runtime.config.memory_recall_pre_turn_limit,
-        memory_recall_min_query_chars=runtime.config.memory_recall_min_query_chars,
-        # Stash the latest ContextBudgetSnapshot here each turn via the
-        # _snapshot_sink wired into _assemble_user_context. Utilization-
-        # aware slice providers read this via hooks.last_context_snapshot.
-        last_context_snapshot=runtime.session.last_context_snapshot,
+        models=ModelHooks(
+            resolve_model=_resolve_model,
+            complete=None,
+            complete_stream=_complete_stream,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=runtime.resources.mcp_tool_pool,
+            mcp_tool_servers=runtime.resources.mcp_cold_configs,
+        ),
+        operations=OperationHooks(
+            execute_operation=_execute_operation,
+        ),
+        context=ContextHooks(
+            assemble_system_prompt=_assemble_system_prompt,
+            assemble_user_context=_assemble_user_context,
+            # Stash the latest ContextBudgetSnapshot here each turn via the
+            # _snapshot_sink wired into _assemble_user_context. Utilization-
+            # aware slice providers read this via hooks.context.last_context_snapshot.
+            last_context_snapshot=runtime.session.last_context_snapshot,
+        ),
+        lifecycle=LifecycleHooks(
+            on_turn_complete=_on_turn_complete,
+            slice_tuning=slice_tuning,
+            pre_turn_slice=_pre_turn_slice_chained,
+            post_turn_slice=_post_turn_slice_chained,
+            explicit_slice=_explicit_slice_chained,
+            last_slice_finished_at=persisted_last_slice_finished_at,
+            # Forward the kernel's fine-grained stage events to the transport so
+            # the CLI/web stage line can show model_call, tool_dispatch,
+            # and fork-child progress as it happens. The kernel's _emit_stage
+            # helper swallows hook failures, so a transport error never breaks
+            # the turn.
+            on_stage=_on_stage_event,
+            # ── Operator signal (pause/stop/terminate) ──────────────────────
+            # The transport sets ``runtime.session.operator_signal_value`` from a
+            # key binding; the kernel polls it once per iteration. ``None`` means
+            # the host does not expose operator signals (zero overhead); we
+            # always wire it so every transport can participate.
+            operator_signal=lambda: runtime.session.operator_signal_value,
+        ),
+        services=HostServiceHandles(
+            state_provider=_state_provider,
+            pack_configuration_resolver=pack_configuration_resolver,
+            approval_service=approval_service,
+            recovery_service=runtime.services.recovery_service,
+            code_change_artifact_store=runtime.services.code_change_artifact_store,
+            data_dir=str(runtime.paths.data_dir),
+        ),
+        identity=TurnIdentity(
+            workspace_id=runtime.session_plan.manifest.name,
+            user_id=runtime.config.user_slug,
+            user_slug=runtime.config.user_slug,
+            user_name=runtime.config.user_slug,
+            principal_key=runtime.config.user_slug,
+            conversation_id=runtime.config.surface_id,
+            surface_type=runtime.config.surface_type,
+            surface_id=runtime.config.surface_id,
+            memory_scope=runtime.config.memory_scope,
+            session_plan_digest=runtime.session_plan.plan_digest,
+        ),
+        recall=RecallHooks(
+            enabled=runtime.config.memory_recall_enabled,
+            limit=runtime.config.memory_recall_pre_turn_limit,
+            min_query_chars=runtime.config.memory_recall_min_query_chars,
+        ),
         # Wire the content registry into context_seams so the turn runner's
         # _build_minimal_context can resolve read_authored_text_fn for
         # operations that load authored prompts (e.g. synthesize_and_store_learning).
@@ -990,23 +1030,13 @@ def build_turn_hooks(
         # ``model_router`` stays ``None`` and the loop falls back to static
         # resolution — preserving today's behavior.
         context_seams=_wire_context_seams(),
-        # Forward the kernel's fine-grained stage events to the transport so
-        # the CLI/web stage line can show model_call, tool_dispatch,
-        # and fork-child progress as it happens. The kernel's _emit_stage
-        # helper swallows hook failures, so a transport error never breaks
-        # the turn.
-        on_stage=_on_stage_event,
         # ── Workflow view seam ───────────────────────────────────────
         # The kernel reads the workflow view (derived from the thread) via
         # this hook. The view is rebuilt on each call — a pure read from
         # the thread tail. No updater is needed: the thread is append-only
         # and the view is derived, never mutated.
-        workflow_position=lambda: _derive_view(runtime),
-        workflow_position_updater=None,
-        # ── Operator signal (pause/stop/terminate) ──────────────────────
-        # The transport sets ``runtime.session.operator_signal_value`` from a key
-        # binding; the kernel polls it once per iteration. ``None`` would
-        # mean the host does not expose operator signals (zero overhead);
-        # we always wire it so every transport can participate.
-        operator_signal=lambda: runtime.session.operator_signal_value,
+        workflow=WorkflowHooks(
+            workflow_position=lambda: _derive_view(runtime),
+            workflow_position_updater=None,
+        ),
     )

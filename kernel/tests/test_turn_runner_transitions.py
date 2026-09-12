@@ -60,7 +60,14 @@ def _transition_call(call_id: str, target_stage_id: str, **extra: Any) -> dict[s
 
 
 def _build_hooks(complete_fn: Any, **overrides: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn, memory_recall_enabled=False, **overrides)
+    # Flat hook overrides fold into the correct grouped sub-dataclass;
+    # recall defaults to off so ambient pre-turn recall stays silent.
+    from turn_hooks_fold import build_hooks
+
+    return build_hooks(
+        defaults={"models": {"complete": complete_fn}, "recall": {"enabled": False}},
+        **overrides,
+    )
 
 
 # ── Fork: _fork_child_budget ──────────────────────────────────────────
@@ -501,7 +508,7 @@ async def test_workflow_transition_without_session_returns_error() -> None:
     # Wire workflow_position as a callable returning None — the loop treats
     # the mode as workflow if mode_config.mode_kind == "workflow", so we
     # need to NOT wire workflow_position at all (it stays None).
-    # But is_workflow requires hooks.workflow_position is not None.
+    # But is_workflow requires hooks.workflow.workflow_position is not None.
     # So we wire a session that returns a valid session but the transition
     # target is invalid.
     session = WorkflowPosition(
@@ -509,7 +516,7 @@ async def test_workflow_transition_without_session_returns_error() -> None:
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
     )
-    hooks.workflow_position = lambda: session
+    hooks.workflow.workflow_position = lambda: session
 
     result = await run_turn(mode_id="ponder", query="analyze", hooks=hooks)
 
@@ -546,8 +553,8 @@ async def test_workflow_transition_passes_required_missing_inputs() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(two_step)
-    hooks.workflow_position = lambda: session
-    hooks.workflow_position_updater = lambda updated: None
+    hooks.workflow.workflow_position = lambda: session
+    hooks.workflow.workflow_position_updater = lambda updated: None
 
     result = await run_turn(mode_id="ponder", query="analyze", hooks=hooks)
 
@@ -583,7 +590,7 @@ async def test_workflow_transition_invalid_target_produces_error_output() -> Non
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
-    hooks.workflow_position = lambda: session
+    hooks.workflow.workflow_position = lambda: session
 
     result = await run_turn(mode_id="ponder", query="analyze", hooks=hooks)
 

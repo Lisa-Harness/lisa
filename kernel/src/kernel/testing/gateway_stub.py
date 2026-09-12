@@ -2,7 +2,7 @@
 
 The kernel's turn loop dispatches every model call through
 ``hooks.context_seams.provider_gateways.gateway_for(provider).complete(...)``
-— the legacy ``hooks.complete`` callable is no longer the production path.
+— the legacy ``hooks.models.complete`` callable is no longer the production path.
 Kernel/unit tests historically faked a ``complete`` function returning a
 ``_StubCompletion``-shaped object. This module bridges that existing fixture
 surface onto the gateway contract so tests exercise the real

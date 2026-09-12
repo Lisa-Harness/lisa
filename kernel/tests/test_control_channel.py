@@ -33,6 +33,17 @@ import pytest
 
 from kernel.models import WorkflowModeConfig
 from kernel.turn_runner import TurnHooks, _build_budget_briefing, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 from kernel.workflow_position import WorkflowPosition
 
 _KERNEL_ROOT = Path(__file__).resolve().parents[1]
@@ -297,13 +308,17 @@ async def test_chain_handoff_turn_has_no_synthesized_user_messages() -> None:
             )
         return _StubCompletion(content="Done.")
 
-    hooks = TurnHooks(complete=complete)
-    hooks.workflow_position = lambda: active[0]
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=complete,
+    ),
+)
+    hooks.workflow.workflow_position = lambda: active[0]
 
     def _updater(position: WorkflowPosition) -> None:
         active[0] = position
 
-    hooks.workflow_position_updater = _updater
+    hooks.workflow.workflow_position_updater = _updater
 
     catalog = _catalog_with_chain()
     with (

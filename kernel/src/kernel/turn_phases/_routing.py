@@ -88,10 +88,10 @@ def save_route_decision(
     the handoff (the durable ``WorkflowInstance`` is the authoritative chain
     state; the coordinator is the resume hint).
     """
-    if hooks.route_coordinator is None:
+    if hooks.workflow.route_coordinator is None:
         return
     try:
-        hooks.route_coordinator.save(
+        hooks.workflow.route_coordinator.save(
             CoordinatorRouteDecision(next_target=target_mode_id, reason=reason),
             {
                 "mode_id": target_mode_id,

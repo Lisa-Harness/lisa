@@ -9,7 +9,7 @@ Covers:
 - ``MCPToolPool.start`` with ``warm=True, required=False`` logs and proceeds
   with an empty tool list for the failed server.
 - ``MCPToolPool.restart_warm`` re-establishes a dropped warm session.
-- ``run_turn`` reuses ``hooks.mcp_tool_pool`` when set (no per-turn
+- ``run_turn`` reuses ``hooks.tools.mcp_tool_pool`` when set (no per-turn
   ``start``/``aclose`` on the host pool).
 
 These tests stub ``MCPToolPool._connect`` so no real subprocess is spawned.
@@ -30,6 +30,17 @@ from kernel.tools.mcp_client import (
     MCPToolPool,
 )
 from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -222,7 +233,7 @@ def test_pool_splits_warm_and_cold_configs() -> None:
 
 @pytest.mark.asyncio
 async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
-    """When ``hooks.mcp_tool_pool`` is set, run_turn must not start/aclose it."""
+    """When ``hooks.tools.mcp_tool_pool`` is set, run_turn must not start/aclose it."""
     # The shared conftest fixture handles all catalog wiring.
 
     async def stub_complete(**kwargs: Any) -> Any:
@@ -250,7 +261,14 @@ async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
 
     spy = _SpyPool([])
     spy._started = True  # host pre-starts the pool; run_turn must not re-start it
-    hooks = TurnHooks(complete=stub_complete, mcp_tool_pool=spy)
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=stub_complete,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=spy,
+    ),
+)
     await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert started == []  # run_turn did not start the host pool
     assert closed == []  # run_turn did not close the host pool

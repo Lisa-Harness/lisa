@@ -16,6 +16,17 @@ import pytest
 
 from kernel.models import WorkflowModeConfig
 from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 
@@ -28,7 +39,11 @@ class _StubCompletion:
 
 
 def _build_minimal_hooks(complete_fn: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
 
 
 def _mode_config(
@@ -123,7 +138,7 @@ async def test_chain_satisfied_hydrates_from_instance_completed_steps() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: instance
+    hooks.workflow.workflow_position= lambda: instance
     # No updater wired — we only test hydration here.
 
     catalog = _catalog_with_chain()
@@ -186,14 +201,14 @@ async def test_instance_advanced_on_successful_handoff() -> None:
         return _StubCompletion(content="Done writing.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow_position= lambda: instance
+    hooks.workflow.workflow_position= lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         updated_instances.append(updated)
         # Mutate in place so workflow_position() sees the advanced state.
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_position_updater = updater
+    hooks.workflow.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -284,13 +299,13 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
     # Mirror the host wiring: ``workflow_position`` returns the live active
     # ref (None at turn 1); the updater persists the advanced instance and
     # swaps the active ref in place.
-    hooks.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position= lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_position_updater = _wi_updater
+    hooks.workflow.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_chain()
     with (
@@ -342,13 +357,13 @@ async def test_adhoc_no_chain_attaches_no_steps() -> None:
         return _StubCompletion(content="Hello.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position= lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_position_updater = _wi_updater
+    hooks.workflow.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_chain()
     with (
@@ -404,13 +419,13 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position= lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_position_updater = _wi_updater
+    hooks.workflow.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_plan()
     reset_plan_reliability()

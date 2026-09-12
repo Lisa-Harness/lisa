@@ -32,6 +32,17 @@ from kernel.operations.declarative import execute_declarative_operation
 from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.registry import execute_tool
 from kernel.turn_runner import TurnHooks, execute_approved_invocation, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 
 class _Parameters(BaseModel):
@@ -83,14 +94,20 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
         mode_id="default",
         query="change the file",
         hooks=TurnHooks(
-            complete=complete,
-            approval_service=InMemoryApprovalService(),
-            workspace_id="workspace",
-            user_id="user",
-            user_slug="user",
-            surface_id="surface",
-            session_plan_digest="plan-a",
-        ),
+    models=ModelHooks(
+        complete=complete,
+    ),
+    services=HostServiceHandles(
+        approval_service=InMemoryApprovalService(),
+    ),
+    identity=TurnIdentity(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_id="surface",
+        session_plan_digest="plan-a",
+    ),
+),
     )
 
     assert result.pending_approval is not None
@@ -172,14 +189,20 @@ async def test_run_turn_pauses_when_operation_calls_effectful_tool(
         mode_id="default",
         query="change the file",
         hooks=TurnHooks(
-            complete=complete,
-            approval_service=InMemoryApprovalService(),
-            workspace_id="workspace",
-            user_id="user",
-            user_slug="user",
-            surface_id="surface",
-            session_plan_digest="plan-a",
-        ),
+    models=ModelHooks(
+        complete=complete,
+    ),
+    services=HostServiceHandles(
+        approval_service=InMemoryApprovalService(),
+    ),
+    identity=TurnIdentity(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_id="surface",
+        session_plan_digest="plan-a",
+    ),
+),
     )
 
     assert result.pending_approval is not None
@@ -392,13 +415,17 @@ async def test_execute_approved_invocation_consumes_the_real_registry_receipt(
     result = await execute_approved_invocation(
         invocation=invocation,
         hooks=TurnHooks(
-            approval_service=service,
-            workspace_id="workspace",
-            user_id="user",
-            user_slug="user",
-            surface_id="surface",
-            session_plan_digest="plan-a",
-        ),
+    services=HostServiceHandles(
+        approval_service=service,
+    ),
+    identity=TurnIdentity(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_id="surface",
+        session_plan_digest="plan-a",
+    ),
+),
     )
 
     assert result.output_text == "written"

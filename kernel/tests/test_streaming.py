@@ -27,6 +27,17 @@ from kernel.provider_contracts import (
     _aggregate_streamed_chunks,
 )
 from kernel.turn_runner import StreamedCompletionAdapter, TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
@@ -156,9 +167,11 @@ def _make_stub_complete(response: str):
 
 def _build_minimal_hooks(complete_fn=None, stream_fn=None) -> TurnHooks:
     return TurnHooks(
+    models=ModelHooks(
         complete=complete_fn,
         complete_stream=stream_fn,
-    )
+    ),
+)
 
 
 @pytest.mark.asyncio
@@ -294,6 +307,7 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
         return _StubCompletion(content="wrote it")
 
     hooks = TurnHooks(
+    models=ModelHooks(
         complete=complete_fn,
         complete_stream=stream_fn,
         resolve_model=lambda _mid: SimpleNamespace(
@@ -304,7 +318,8 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
             thinking_model=False,
             context_window=6000,
         ),
-    )
+    ),
+)
     # context_window 6000 caps the doubled budget at 6000 (not 8192).
     result = await run_turn(
         mode_id="default",

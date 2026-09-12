@@ -17,6 +17,17 @@ from kernel.approval import (
 from kernel.models import MemoryScope, ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.tools.registry import execute_tool
 from kernel.turn_runner import TurnHooks
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 from pydantic import BaseModel
 
 from host import HostConfig, HostRuntime, NullTransport
@@ -267,15 +278,19 @@ async def test_approve_consumes_receipt_through_real_registry(
         approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.services.approval_service,
-            workspace_id=runtime.session_plan.manifest.name,
-            user_id="user",
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-            memory_scope=runtime.config.memory_scope,
-            session_plan_digest=runtime.session_plan.plan_digest,
-        ),
+    services=HostServiceHandles(
+        approval_service=runtime.services.approval_service,
+    ),
+    identity=TurnIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
+    ),
+),
     )
     continuation_queries = _stub_continuation_turn(monkeypatch)
 
@@ -709,15 +724,19 @@ async def test_approve_settles_paired_stalled_recovery_record(
         approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.services.approval_service,
-            workspace_id=runtime.session_plan.manifest.name,
-            user_id="user",
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-            memory_scope=runtime.config.memory_scope,
-            session_plan_digest=runtime.session_plan.plan_digest,
-        ),
+    services=HostServiceHandles(
+        approval_service=runtime.services.approval_service,
+    ),
+    identity=TurnIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
+    ),
+),
     )
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
@@ -795,15 +814,19 @@ async def test_deny_settles_paired_stalled_recovery_record(
         approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.services.approval_service,
-            workspace_id=runtime.session_plan.manifest.name,
-            user_id="user",
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-            memory_scope=runtime.config.memory_scope,
-            session_plan_digest=runtime.session_plan.plan_digest,
-        ),
+    services=HostServiceHandles(
+        approval_service=runtime.services.approval_service,
+    ),
+    identity=TurnIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
+    ),
+),
     )
 
     result = await handle_message(runtime, f"/deny {invocation.request_id}", NullTransport())

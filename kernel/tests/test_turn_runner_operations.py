@@ -2,7 +2,7 @@
 
 Operations are advertised to the LLM directly from the in-process catalog
 (via ``build_operation_tool_schemas``) and dispatched through
-``hooks.execute_operation`` — not through an MCP subprocess. These tests
+``hooks.operations.execute_operation`` — not through an MCP subprocess. These tests
 verify that path.
 """
 
@@ -25,6 +25,17 @@ from kernel.operations.registry import (
 )
 from kernel.turn_phases._tool_schemas import _prune_model_tool_schemas
 from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
@@ -89,7 +100,7 @@ def test_build_operation_tool_schemas_filters_by_mode() -> None:
 @pytest.mark.asyncio
 async def test_operation_tool_call_dispatches_via_execute_operation() -> None:
     """When the model calls an operation by name, it dispatches through
-    hooks.execute_operation (not pool.call_tool).
+    hooks.operations.execute_operation (not pool.call_tool).
     """
     dispatched_operations: list[str] = []
 
@@ -116,14 +127,14 @@ async def test_operation_tool_call_dispatches_via_execute_operation() -> None:
             )
         return _StubCompletion(content="Memory stored successfully.")
 
+    # The Phase-1 pre-turn recall calls recall_memory through the same
+    # hook; this test asserts the model-driven dispatch list exactly, so
+    # ambient recall must stay off (same pattern as the tool-dispatch
+    # and transitions suite hooks builders).
     hooks = TurnHooks(
-        complete=two_step,
-        execute_operation=stub_execute_op,
-        # The Phase-1 pre-turn recall calls recall_memory through the same
-        # hook; this test asserts the model-driven dispatch list exactly, so
-        # ambient recall must stay off (same pattern as the tool-dispatch
-        # and transitions suite hooks builders).
-        memory_recall_enabled=False,
+        models=ModelHooks(complete=two_step),
+        operations=OperationHooks(execute_operation=stub_execute_op),
+        recall=RecallHooks(enabled=False),
     )
 
     result = await run_turn(
@@ -177,10 +188,16 @@ async def test_non_operation_tool_call_dispatches_via_pool() -> None:
         return OperationResult(output_text="should not be called")
 
     hooks = TurnHooks(
+    models=ModelHooks(
         complete=two_step,
-        execute_operation=stub_execute_op,
+    ),
+    tools=ToolHooks(
         mcp_tool_pool=_StubPool(),
-    )
+    ),
+    operations=OperationHooks(
+        execute_operation=stub_execute_op,
+    ),
+)
 
     result = await run_turn(mode_id="default", query="save a memory", hooks=hooks)
 
@@ -198,7 +215,11 @@ async def test_operation_schemas_appear_in_tools_sent_to_model() -> None:
         captured_tools.extend(tools)
         return _StubCompletion(content="Done.")
 
-    hooks = TurnHooks(complete=capture_then_respond)
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture_then_respond,
+    ),
+)
 
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
@@ -235,11 +256,11 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
             )
         return _StubCompletion(content="Handled error.")
 
+    # Off so ambient pre-turn recall does not add extra model calls.
     hooks = TurnHooks(
-        complete=two_step,
-        execute_operation=failing_execute_op,
-        # Off so ambient pre-turn recall does not add extra model calls.
-        memory_recall_enabled=False,
+        models=ModelHooks(complete=two_step),
+        operations=OperationHooks(execute_operation=failing_execute_op),
+        recall=RecallHooks(enabled=False),
     )
 
     result = await run_turn(mode_id="remember", query="test", hooks=hooks)
@@ -343,7 +364,14 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
         async def aclose(self) -> None:
             pass
 
-    hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture_then_respond,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
 
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
@@ -484,7 +512,14 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     original = default_mode.tools_authoritative
     default_mode.tools_authoritative = True
     try:
-        hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+        hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture_then_respond,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original
@@ -578,7 +613,14 @@ async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
     original_authoritative = default_mode.tools_authoritative
     default_mode.tools_authoritative = False
     try:
-        hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+        hooks = TurnHooks(
+    models=ModelHooks(
+        complete=capture_then_respond,
+    ),
+    tools=ToolHooks(
+        mcp_tool_pool=_StubPool(),
+    ),
+)
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original_authoritative

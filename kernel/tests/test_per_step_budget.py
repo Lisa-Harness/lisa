@@ -21,6 +21,17 @@ import pytest
 
 from kernel.models import WorkflowModeConfig
 from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_hooks import (
+    ModelHooks,
+    ContextHooks,
+    OperationHooks,
+    LifecycleHooks,
+    WorkflowHooks,
+    HostServiceHandles,
+    TurnIdentity,
+    RecallHooks,
+    ToolHooks,
+)
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 
@@ -33,7 +44,11 @@ class _StubCompletion:
 
 
 def _build_minimal_hooks(complete_fn: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn)
+    return TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+    ),
+)
 
 
 def _mode_config(
@@ -133,13 +148,13 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(loop_then_handoff)
-    hooks.workflow_position= lambda: instance
+    hooks.workflow.workflow_position= lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_position_updater = updater
+    hooks.workflow.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -259,13 +274,13 @@ async def test_step_counter_resets_on_handoff() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow_position= lambda: instance
+    hooks.workflow.workflow_position= lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_position_updater = updater
+    hooks.workflow.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -333,13 +348,13 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
         )
 
     hooks = _build_minimal_hooks(two_tools_then_text)
-    hooks.workflow_position= lambda: instance
+    hooks.workflow.workflow_position= lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_position_updater = updater
+    hooks.workflow.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -367,7 +382,7 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
 async def test_no_instance_per_step_cap_degrades_to_global() -> None:
     """No instance + per-step cap hit → existing fallback, no crash.
 
-    The per-step-cap intercept checks ``hooks.workflow_position is not
+    The per-step-cap intercept checks ``hooks.workflow.workflow_position is not
     None``; when no instance is wired, it falls through to the existing
     empty-content final completion. This is the no-compat-path guarantee.
     """
