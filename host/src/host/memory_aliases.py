@@ -45,12 +45,12 @@ def register_memory_aliases(
     Args:
         pool: The started :class:`~kernel.tools.mcp_client.MCPToolPool`.
         memory_config: The :class:`~kernel.mcp_launch.server_manifest.MemoryBackendConfig`
-            selected by capability-provider policy (``runtime.memory_config``).
+            selected by capability-provider policy (``runtime.services.memory_config``).
             May be ``None`` when no pack contributes a ``memory:`` section —
             in that case the first-party ``lisa-memory`` server is the
             default and its tool names are the generic aliases themselves.
         memory_config_pack_slug: The owning pack's slug
-            (``runtime.memory_config_pack_slug``). Pack-contributed servers
+            (``runtime.services.memory_config_pack_slug``). Pack-contributed servers
             are namespaced as ``<pack_slug>.<server_id>``; the alias pins
             dispatch to that namespaced id. ``None`` means the default
             backend is the bare first-party ``lisa-memory`` (registered in

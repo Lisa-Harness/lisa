@@ -3,7 +3,7 @@
 Covers ``handle_resume``:
 - Surfaces the ``yield_question`` when the thread tail has a yielded entry.
 - Returns the no-yield message when no yielded entry is present.
-- Stashes a ``/resume <reply>`` into ``runtime.pending_resume_message``.
+- Stashes a ``/resume <reply>`` into ``runtime.session.pending_resume_message``.
 """
 
 from __future__ import annotations
@@ -23,12 +23,25 @@ class _FakeService:
 
 
 class _FakeRuntime:
-    """Minimal runtime stub: thread_path + recovery_service + resume sink."""
+    """Minimal runtime stub mirroring the grouped HostRuntime surface."""
 
     def __init__(self, service: _FakeService) -> None:
-        self.recovery_service = service
-        self.thread_path = "thread"  # value is irrelevant; loader is mocked
-        self.pending_resume_message: str | None = None
+        self.paths = type(
+            "Paths",
+            (),
+            # value is irrelevant; loader is mocked
+            {"thread_path": "thread"},
+        )()
+        self.services = type(
+            "Services",
+            (),
+            {"recovery_service": service},
+        )()
+        self.session = type(
+            "Session",
+            (),
+            {"pending_resume_message": None},
+        )()
         self.session_plan = type(
             "Plan",
             (),
@@ -85,7 +98,7 @@ async def test_resume_surfaces_yield_question_when_present(
 
     assert "Resumed from turn 2" in result
     assert "Which option do you prefer?" in result
-    assert runtime.pending_resume_message is None
+    assert runtime.session.pending_resume_message is None
 
 
 # ── /resume with no yielded entry ─────────────────────────────────────
@@ -112,7 +125,7 @@ async def test_resume_returns_no_yield_message_when_absent(
     result = await handle_resume(runtime, "/resume", "/resume")
 
     assert result == "No yielded turn to resume."
-    assert runtime.pending_resume_message is None
+    assert runtime.session.pending_resume_message is None
 
 
 # ── /resume <reply> stashes the reply ─────────────────────────────────
@@ -123,7 +136,7 @@ async def test_resume_with_reply_sets_pending_resume_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``/resume <reply>`` stashes the reply in
-    ``runtime.pending_resume_message`` for the next turn to replay."""
+    ``runtime.session.pending_resume_message`` for the next turn to replay."""
     entries = [
         _entry(turn=1, yielded=True, yield_question="Pick A or B?"),
     ]
@@ -141,4 +154,4 @@ async def test_resume_with_reply_sets_pending_resume_message(
     result = await handle_resume(runtime, "/resume option A", "/resume option A")
 
     assert "Resumed from turn 1" in result
-    assert runtime.pending_resume_message == "option A"
+    assert runtime.session.pending_resume_message == "option A"

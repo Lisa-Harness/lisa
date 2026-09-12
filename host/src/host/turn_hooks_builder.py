@@ -113,7 +113,7 @@ class _SliceProviderHooksView:
 
     @property
     def last_context_snapshot(self) -> Any:
-        return self._runtime.last_context_snapshot
+        return self._runtime.session.last_context_snapshot
 
     def __getattr__(self, name: str) -> Any:
         # Fall back to runtime attributes for seams the factory may need
@@ -131,7 +131,7 @@ def _derive_view(runtime: HostRuntime) -> Any:
     from host.thread import load_recent_thread_entries  # noqa: PLC0415
     from kernel.workflow_view import derive_workflow_view  # noqa: PLC0415
 
-    entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=30)
+    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     return derive_workflow_view(entries)
 
 
@@ -158,7 +158,7 @@ def build_turn_hooks(
     pack_configuration_resolver = SessionPackConfigurationResolver(
         runtime.session_plan.manifest.resources.packs.configuration
     )
-    approval_service = runtime.approval_service
+    approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
     slice_config = runtime.config.slice_config
@@ -169,20 +169,20 @@ def build_turn_hooks(
     # compacted (the thread is lossless; sealing is storage management) and
     # distillation is owned by the memory pack's consolidation slice.
     file_state_provider = FileBackedStateProvider(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
     )
 
     # ── Model resolution ──────────────────────────────────────────
     def _resolve_model(model_id: str) -> StubModelDefinition:
-        if runtime.manifest is None:
-            runtime.manifest = load_manifest(
-                {}, data_dir=runtime.data_dir, path=runtime.models_path
+        if runtime.session.manifest is None:
+            runtime.session.manifest = load_manifest(
+                {}, data_dir=runtime.paths.data_dir, path=runtime.paths.models_path
             )
         return resolve_model(
             model_id,
-            runtime_state={"manifest": runtime.manifest},
-            data_dir=runtime.data_dir,
-            path=runtime.models_path,
+            runtime_state={"manifest": runtime.session.manifest},
+            data_dir=runtime.paths.data_dir,
+            path=runtime.paths.models_path,
         )
 
     # ── Extension item builder ──────────────────────────────────
@@ -194,7 +194,7 @@ def build_turn_hooks(
         load_disabled_pack_names,
     )
 
-    _disabled_packs = load_disabled_pack_names(runtime.data_dir)
+    _disabled_packs = load_disabled_pack_names(runtime.paths.data_dir)
     _item_builder = EntryPointExtensionItemBuilder(
         excluded_packs=_disabled_packs,
     )
@@ -214,20 +214,20 @@ def build_turn_hooks(
     # factories return None and model_router stays None — the turn loop falls
     # back to static resolution.
     def _discover_active_router() -> Any:
-        if runtime.manifest is None:
+        if runtime.session.manifest is None:
             # A missing models.yaml is a valid first-run state: degrade to
             # "no router" instead of aborting the turn. The turn path's
             # resolve_model raises its own actionable error only when a
             # model is actually needed. Non-router approval turns (e.g.
             # /approve building hooks) must not require a manifest at all.
-            if runtime.models_path is None or not runtime.models_path.exists():
+            if runtime.paths.models_path is None or not runtime.paths.models_path.exists():
                 logger.debug(
                     "model manifest not found at %s; router discovery skipped",
-                    runtime.models_path,
+                    runtime.paths.models_path,
                 )
                 return None
-            runtime.manifest = load_manifest(
-                {}, data_dir=runtime.data_dir, path=runtime.models_path
+            runtime.session.manifest = load_manifest(
+                {}, data_dir=runtime.paths.data_dir, path=runtime.paths.models_path
             )
         session_plan = getattr(runtime, "session_plan", None)
         for entry in discover_model_router_factories():
@@ -257,10 +257,10 @@ def build_turn_hooks(
                     # Factory-factory: call with 0 args to get the real
                     # ``(manifest, session_plan) -> ModelRouter | None`` factory.
                     factory = entry.factory()  # type: ignore[call-arg]
-                    router = factory(runtime.manifest, session_plan)  # type: ignore[misc]
+                    router = factory(runtime.session.manifest, session_plan)  # type: ignore[misc]
                 else:
                     # Direct factory: call with 2 args.
-                    router = entry.factory(runtime.manifest, session_plan)
+                    router = entry.factory(runtime.session.manifest, session_plan)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
                     "model router factory %r failed: %s",
@@ -379,7 +379,7 @@ def build_turn_hooks(
         from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
         progress = ""
-        thread_entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=30)
+        thread_entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
         view = derive_workflow_view(thread_entries)
         if view is not None:
             progress = render_workflow_progress(view)
@@ -391,7 +391,7 @@ def build_turn_hooks(
         # populate ``context_items`` — the single feed the
         # session-owned context mapper walks.
         state = build_unified_state(
-            state_snapshot=runtime.state_snapshot,
+            state_snapshot=runtime.session.state_snapshot,
             item_builder=_item_builder,
             runtime_context=_runtime_context,
         )
@@ -403,7 +403,7 @@ def build_turn_hooks(
 
         def _recent_thread_excerpt_builder(limit: int) -> str:
             return build_recent_thread_excerpt(
-                thread_path=runtime.thread_path,
+                thread_path=runtime.paths.thread_path,
                 limit=limit,
             )
 
@@ -411,7 +411,7 @@ def build_turn_hooks(
             from host.thread import build_thread_manifest  # noqa: PLC0415
 
             return build_thread_manifest(
-                thread_path=runtime.thread_path,
+                thread_path=runtime.paths.thread_path,
                 limit=30,
             )
 
@@ -427,7 +427,7 @@ def build_turn_hooks(
             # the returned TurnHooks.last_context_snapshot reflects the
             # most-recent context-mapper pass. Utilization-aware slice
             # providers read this via hooks.last_context_snapshot.
-            runtime.last_context_snapshot = snapshot
+            runtime.session.last_context_snapshot = snapshot
 
         return assemble_dynamic_user_context(
             mode_id,
@@ -464,7 +464,7 @@ def build_turn_hooks(
         # which call ``execute_tool("memory.list", {…})`` directly). Resolve
         # the argument dict from both shapes so the MCP server receives the
         # caller's parameters instead of an empty dict.
-        pool = runtime.mcp_tool_pool
+        pool = runtime.resources.mcp_tool_pool
         if pool is not None:
             try:
                 if isinstance(tool_ctx, dict):
@@ -645,7 +645,7 @@ def build_turn_hooks(
     # ── UnifiedState provider callable ─────────────────────────────
     def _state_provider() -> Any:
         return build_unified_state(
-            state_snapshot=runtime.state_snapshot,
+            state_snapshot=runtime.session.state_snapshot,
             item_builder=_item_builder,
             runtime_context=_runtime_context,
         )
@@ -656,16 +656,16 @@ def build_turn_hooks(
         raw = context.get("last_slice_finished_at")
         if isinstance(raw, (int, float)):
             persisted_last_slice_finished_at = float(raw)
-    if runtime.last_slice_finished_at is not None:
-        persisted_last_slice_finished_at = runtime.last_slice_finished_at
+    if runtime.session.last_slice_finished_at is not None:
+        persisted_last_slice_finished_at = runtime.session.last_slice_finished_at
 
     # ── Slice callables ────────────────────────────────────────────
     async def _introspect_fn() -> Any:
         """Gather a live introspection snapshot for the self-model operation."""
         return await gather_introspection(
-            mcp_pool=runtime.mcp_tool_pool,
-            log_path=runtime.host_log_path,
-            token_usage_path=runtime.token_usage_path,
+            mcp_pool=runtime.resources.mcp_tool_pool,
+            log_path=runtime.paths.host_log_path,
+            token_usage_path=runtime.paths.token_usage_path,
         )
 
     async def _run_self_model_slice() -> tuple[int, str, str]:
@@ -673,7 +673,7 @@ def build_turn_hooks(
 
         Returns ``(work_items, last_item, note)``. The self-model is no-LLM
         and typically completes in <50ms. The vibe is only written to
-        ``runtime.state_snapshot`` when ``operational_health`` is
+        ``runtime.session.state_snapshot`` when ``operational_health`` is
         ``degraded`` or ``struggling`` — healthy state leaves the vibe empty
         so the context mapper injects zero self-awareness tokens (ambient
         silence when nothing is wrong).
@@ -701,8 +701,8 @@ def build_turn_hooks(
         vibe = result.output_text.strip()
         if not vibe:
             return 0, "", ""
-        if runtime.state_snapshot is None:
-            runtime.state_snapshot = {}
+        if runtime.session.state_snapshot is None:
+            runtime.session.state_snapshot = {}
         # Emit the self-model vibe as a ContextItem record into the
         # single context_items — no arbitrary named bucket. The
         # mapper picks it up via context_candidates_from_items like every
@@ -726,10 +726,10 @@ def build_turn_hooks(
             tags=["self_model", health],
             metadata={"provenance": "system_observed", "operational_health": health},
         )
-        catalog = runtime.state_snapshot.setdefault("context_items", [])
+        catalog = runtime.session.state_snapshot.setdefault("context_items", [])
         if not isinstance(catalog, list):
             catalog = []
-            runtime.state_snapshot["context_items"] = catalog
+            runtime.session.state_snapshot["context_items"] = catalog
         # Replace any prior self-model evidence so only the freshest survives.
         catalog[:] = [
             e
@@ -748,7 +748,7 @@ def build_turn_hooks(
 
     async def _post_turn_slice(policy: Any) -> Any:
         outcome = await file_state_provider.slice(ctx=None, policy=policy)
-        runtime.last_slice_finished_at = __import__("time").monotonic()
+        runtime.session.last_slice_finished_at = __import__("time").monotonic()
         # Ambient self-awareness: run the deterministic self-model after file
         # compaction. Writes the vibe to state only when health is degraded or
         # struggling — healthy state produces no prompt tokens.
@@ -925,7 +925,7 @@ def build_turn_hooks(
             extension_item_builder=_item_builder,
         )
         bus = getattr(seams, "event_bus", None)
-        handler = runtime.token_usage_handler
+        handler = runtime.services.token_usage_handler
         if bus is not None and handler is not None and hasattr(bus, "subscribe"):
             try:
                 bus.subscribe(TOKEN_USAGE_TOPIC, handler.publish)
@@ -933,7 +933,7 @@ def build_turn_hooks(
                 logger.warning(
                     "token-usage telemetry subscribe failed; usage will not "
                     "be persisted to %s",
-                    runtime.token_usage_path,
+                    runtime.paths.token_usage_path,
                     exc_info=True,
                 )
         return seams
@@ -942,8 +942,8 @@ def build_turn_hooks(
         resolve_model=_resolve_model,
         complete=None,
         complete_stream=_complete_stream,
-        mcp_tool_pool=runtime.mcp_tool_pool,
-        mcp_tool_servers=runtime.mcp_cold_configs,
+        mcp_tool_pool=runtime.resources.mcp_tool_pool,
+        mcp_tool_servers=runtime.resources.mcp_cold_configs,
         execute_operation=_execute_operation,
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_user_context,
@@ -957,8 +957,8 @@ def build_turn_hooks(
         pack_configuration_resolver=pack_configuration_resolver,
         approval_service=approval_service,
         recovery_service=getattr(runtime, "recovery_service", None),
-        code_change_artifact_store=runtime.code_change_artifact_store,
-        data_dir=str(runtime.data_dir),
+        code_change_artifact_store=runtime.services.code_change_artifact_store,
+        data_dir=str(runtime.paths.data_dir),
         workspace_id=runtime.session_plan.manifest.name,
         user_id=runtime.config.user_slug,
         user_slug=runtime.config.user_slug,
@@ -975,7 +975,7 @@ def build_turn_hooks(
         # Stash the latest ContextBudgetSnapshot here each turn via the
         # _snapshot_sink wired into _assemble_user_context. Utilization-
         # aware slice providers read this via hooks.last_context_snapshot.
-        last_context_snapshot=runtime.last_context_snapshot,
+        last_context_snapshot=runtime.session.last_context_snapshot,
         # Wire the content registry into context_seams so the turn runner's
         # _build_minimal_context can resolve read_authored_text_fn for
         # operations that load authored prompts (e.g. synthesize_and_store_learning).
@@ -1004,9 +1004,9 @@ def build_turn_hooks(
         workflow_position=lambda: _derive_view(runtime),
         workflow_position_updater=None,
         # ── Operator signal (pause/stop/terminate) ──────────────────────
-        # The transport sets ``runtime.operator_signal_value`` from a key
+        # The transport sets ``runtime.session.operator_signal_value`` from a key
         # binding; the kernel polls it once per iteration. ``None`` would
         # mean the host does not expose operator signals (zero overhead);
         # we always wire it so every transport can participate.
-        operator_signal=lambda: runtime.operator_signal_value,
+        operator_signal=lambda: runtime.session.operator_signal_value,
     )

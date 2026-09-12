@@ -1,18 +1,28 @@
-"""HostRuntime — the typed runtime object that replaces ``_RUNTIME_STATE``.
+"""HostRuntime — the typed composition root that replaces ``_RUNTIME_STATE``.
 
-This is the mutable, stateful counterpart to the frozen ``HostConfig``. It
-owns:
-- Cached provider clients (Azure OpenAI, OpenAI, Anthropic, Ollama, Google).
-- The model manifest cache.
-- The MCP tool pool (warm + cold configs), with async ``start()``/``aclose()``
-  that **must** run inside the host's real event loop.
-- Session/token counters.
-- Thread/log paths.
-- Last-turn diagnostics.
+This is the mutable, stateful counterpart to the frozen ``HostConfig``.
+It is deliberately a **thin composition root**: it owns ``config``,
+``session_plan``, and ``execution_policy`` directly, and groups every other
+responsibility into one of five focused sub-objects so each call site names
+the domain it touches:
 
-Transport hosts construct a ``HostRuntime`` from a ``HostConfig``, call
-``await runtime.start()`` inside their event loop, execute turns via
-``handle_message``, and call ``await runtime.aclose()`` at shutdown.
+    runtime.paths.thread            # HostPaths — derived filesystem layout
+    runtime.providers.openai_client # ProviderRegistry — lazy SDK clients
+    runtime.resources.mcp_tool_pool # RuntimeResources — MCP pool lifecycle
+    runtime.session.current_mode_id # SessionState — routing/diagnostics state
+    runtime.services.approval_service # HostServices — durable service handles
+
+Async lifecycle::
+
+        runtime = HostRuntime(config)
+        await runtime.start()          # starts MCP pool in the host's loop
+        result = await handle_message(runtime, "/search test", transport)
+        await runtime.aclose()         # closes MCP pool in the same loop
+
+The two sub-object classes are defined in this module (not separate files)
+because ``RuntimeResources`` implements the runtime's async MCP lifecycle —
+keeping it beside the object that enters and exits its event loop makes the
+task/cancel-scope ownership rules easy to read end to end.
 """
 
 from __future__ import annotations
@@ -29,6 +39,9 @@ from kernel.session_plan import SessionPlan
 from host.config import HostConfig
 from host.execution_policy import resolve_execution_policy
 from host.operator_signal import OperatorSignal
+from host.providers import ProviderRegistry
+from host.runtime_paths import HostPaths
+from host.services import HostServices
 from host.session_context import compile_selected_session_plan
 
 logger = logging.getLogger(__name__)
@@ -125,84 +138,95 @@ class TurnContext:
     completion: dict[str, Any] | None = None
 
 
-class HostRuntime:
-    """Typed, mutable host runtime — the replacement for ``_RUNTIME_STATE``.
+# ── SessionState ────────────────────────────────────────────────────────
 
-    Constructed from a ``HostConfig``. Owns all mutable state that was
-    previously scattered across the ``_RUNTIME_STATE`` dict: cached provider
-    clients, manifest cache, MCP pool handles, token counters, thread/log
-    paths, and last-turn diagnostics.
 
-    Async lifecycle::
+class SessionState:
+    """Mutable routing, telemetry, and diagnostics state for one session.
 
-        runtime = HostRuntime(config)
-        await runtime.start()     # starts MCP pool in host's event loop
-        result = await handle_message(runtime, "/search test", transport)
-        await runtime.aclose()    # closes MCP pool in same loop
+    Everything here changes over the session's life: the active route mode,
+    the current workflow stage, the operator signal, the last slice/context
+    snapshot, token counters, the persisted state snapshot, and the restart
+    handshake. ``HostRuntime.session`` holds the single instance.
     """
 
-    def __init__(
-        self,
-        config: HostConfig,
-        *,
-        session_plan: SessionPlan | None = None,
-        in_process_mcp: bool = False,
-    ) -> None:
-        self.session_plan = session_plan or compile_selected_session_plan(
-            session_context=config.session_context,
-            data_dir=config.data_dir,
-            force_refresh=config.session_context_refresh,
-        )
-        source_matches_user_slug = (
-            bool(config.session_context) and config.user_slug == config.session_context
-        )
-        effective_user_slug = (
-            config.user_slug
-            if config.user_slug and not source_matches_user_slug
-            else self.session_plan.manifest.name
-        )
-        surface = self.session_plan.manifest.surface
-        self.config = replace(
-            config,
-            user_slug=effective_user_slug,
-            session_context=self.session_plan.source_uri,
-            surface_type=config.surface_type or surface.type,
-            surface_id=config.surface_id or surface.id,
-            memory_scope=config.memory_scope or surface.memory_scope,
-        )
-        self.execution_policy = resolve_execution_policy(
-            default_policy=self.config.execution_policy,
-            session_request=self.session_plan.manifest.execution,
-        )
+    def __init__(self) -> None:
+        # ── Route state ────────────────────────────────────────────────
+        self.current_mode_id: str = ""
+        self.current_stage_id: str = "-"
+        self.next_model_id: str = "-"
+        self.next_model_provider: str = "-"
 
-        # ── Cached provider clients ───────────────────────────────────
-        self._azure_client: Any = None
-        self._azure_responses_client: Any = None
-        self._openai_client: Any = None
-        self._anthropic_http_client: Any = None
-        self._ollama_client: Any = None
-        # OpenRouter (OpenAI-compatible) client. Built lazily by the
-        # gateway provider's OpenRouter client factory; None until used.
-        self._openrouter_client: Any = None
+        # ── Operator signal (pause/stop/terminate/interrupt/eof/suspend) ──
+        # The transport sets this when the operator presses the corresponding
+        # key binding. The turn loop polls it via ``TurnHooks.operator_signal``
+        # once per iteration. The host clears it at the start of each turn.
+        self.operator_signal_value: OperatorSignal = OperatorSignal.NONE
 
-        # ── Manifest cache ────────────────────────────────────────────
-        self._manifest: Any = None
-        # Resolved model-manifest path. When the session plan declares
-        # ``context.models.path``, this is the resolved absolute path;
-        # otherwise it falls back to ``config.resolved_models_path``
-        # (``data_dir / models.yaml``). All manifest loaders read this.
-        self._models_path_override: Path | None = self._resolve_models_path()
+        # ── Token counters ─────────────────────────────────────────────
+        self.tokens = TokenCounters()
+        if self.tokens.session_started_utc is None:
+            self.tokens.session_started_utc = datetime.now(UTC)
 
-        # ── MCP pool ──────────────────────────────────────────────────
+        # ── Manifest cache ──────────────────────────────────────────────
+        # Mutable: setup_framework seeds it, /models reload swaps it.
+        self.manifest: Any = None
+
+        # ── State snapshot ─────────────────────────────────────────────
+        self.state_snapshot: dict[str, Any] | None = None
+
+        # ── Slice ─────────────────────────────────────────────────────
+        self.last_slice_finished_at: float | None = None
+        # Latest ContextBudgetSnapshot produced by the context-mapper pass
+        # on this turn. Read by utilization-aware slice providers via
+        # ``TurnHooks.last_context_snapshot``.
+        self.last_context_snapshot: Any = None
+
+        # ── Last-turn diagnostics ─────────────────────────────────────
+        self.last_turn_context: TurnContext | None = None
+
+        # ── Restart state ─────────────────────────────────────────────
+        self.restart_required: bool = False
+        self.restart_reason: str = ""
+        # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
+        # var on startup (e.g. after ``/pack install`` restart) or set by the
+        # ``/resume <reply>`` command; the REPL replays it as the first turn,
+        # then clears it. ``None`` means no resume pending.
+        self.pending_resume_message: str | None = None
+
+    def set_last_turn_context(self, ctx: TurnContext) -> None:
+        self.last_turn_context = ctx
+
+    def request_restart(self, reason: str) -> None:
+        self.restart_required = True
+        self.restart_reason = reason
+
+
+# ── RuntimeResources — the MCP pool async lifecycle ─────────────────────
+
+
+class RuntimeResources:
+    """Owns the MCP tool pool and its async start/close orchestration.
+
+    This is the one async resource the runtime manages. The lifecycle is
+    subtle (anyio cancel-scope ownership, deferred start, cancellation-safe
+    teardown) — see ``host.instructions.md`` and ``debugging.md``. All of it
+    lives here so the mechanics are co-located and the orchestration reads
+    top to bottom. ``HostRuntime.resources`` holds the single instance.
+
+    The methods reference the owning ``HostRuntime`` (passed at construction)
+    for two wiring seam callbacks: the in-process MCP resolver choice and the
+    post-start alias registration that needs ``services.memory_config`` and
+    ``session.current_mode_id``.
+    """
+
+    def __init__(self, runtime: HostRuntime) -> None:
+        self._runtime = runtime
+        self._in_process_mcp: bool = runtime._in_process_mcp
         self._mcp_tool_pool: Any = None
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
         self._mcp_started: bool = False
-        # When True, first-party MCP servers run in-process via the MCP
-        # SDK's in-memory transport instead of subprocesses. The host
-        # injects a resolver into MCPToolPool so the kernel can connect
-        # to server instances without importing mcp_server directly.
-        self._in_process_mcp: bool = in_process_mcp
         self._mcp_start_task: asyncio.Task[None] | None = None
         """Background task started by start_pool_deferred(); awaited by
         ensure_pool_ready() before any pool read. When None, the pool
@@ -222,287 +246,7 @@ class HostRuntime:
         pool. The task then closes the pool's child AsyncExitStacks in its
         own task, where the anyio cancel scopes were entered."""
 
-        # ── Memory config (selected by capability provider policy) ───
-        self.memory_config: Any = None
-        self.memory_config_pack_slug: str | None = None
-
-        # ── Token counters ────────────────────────────────────────────
-        self.tokens = TokenCounters()
-        if self.tokens.session_started_utc is None:
-            self.tokens.session_started_utc = datetime.now(UTC)
-
-        # ── Runtime route state ───────────────────────────────────────
-        self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
-        self.current_stage_id: str = "-"
-        self.next_model_id: str = "-"
-        self.next_model_provider: str = "-"
-
-        # ── Operator signal (pause/stop/terminate/interrupt/eof/suspend) ──
-        # The transport sets this when the operator presses the corresponding
-        # key binding. The turn loop polls it via ``TurnHooks.operator_signal``
-        # once per iteration. The host clears it at the start of each turn.
-        self.operator_signal_value: OperatorSignal = OperatorSignal.NONE
-
-        # ── State snapshot ────────────────────────────────────────────
-        self._state_snapshot: dict[str, Any] | None = None
-
-        # ── Slice ─────────────────────────────────────────────────────
-        self.last_slice_finished_at: float | None = None
-        # Latest ContextBudgetSnapshot produced by the context-mapper pass
-        # on this turn. Mutated by the host's ``assemble_user_context``
-        # path; read by utilization-aware slice providers via
-        # ``TurnHooks.last_context_snapshot``.
-        self.last_context_snapshot: Any = None
-
-        # ── Last-turn diagnostics ─────────────────────────────────────
-        self.last_turn_context: TurnContext | None = None
-
-        # ── Restart state ─────────────────────────────────────────────
-        self.restart_required: bool = False
-        self.restart_reason: str = ""
-        # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
-        # var on startup (e.g. after ``/pack install`` restart) or set by the
-        # ``/resume <reply>`` command; the REPL replays it as the first turn,
-        # then clears it. ``None`` means no resume pending.
-        self.pending_resume_message: str | None = None
-
-        # ── Copilot customizations cache ──────────────────────────────
-        # Lazily discovered always-on + applyTo-scoped instructions +
-        # skills from .github/{instructions,skills} and .claude/ equivalents.
-        # None means "not yet discovered"; "" means "discovered, nothing
-        # found or discovery failed gracefully."
-        self._copilot_customizations_text: str | None = None
-
-        # ── Approval persistence ──────────────────────────────────────
-        from host.approvals import FileApprovalService
-        from host.code_artifacts import FileCodeChangeArtifactStore
-        from host.policy_service import PolicyApprovalService
-        from host.recovery import FileRecoveryService
-
-        # The policy service decorates the durable file store with the host
-        # policy engine (host/policy.py): it pre-decides each request (allow /
-        # ask / deny) before side effects, minting receipts for auto-approvals
-        # and prompting the operator only when policy demands it. The receipt
-        # contract on disk is unchanged — it is the same FileApprovalService.
-        self.approval_service = PolicyApprovalService(
-            FileApprovalService(self.data_dir / "approvals.json"),
-            data_dir=self.data_dir,
-        )
-        self.recovery_service = FileRecoveryService(self.data_dir / "recovery-items.json")
-        self.code_change_artifact_store = FileCodeChangeArtifactStore(
-            self.data_dir / "code-change-artifacts.json"
-        )
-
-        # ── Token usage handler ───────────────────────────────────────
-        # The durable JSONL appender for ``TokenUsageEvent`` payloads. The
-        # kernel records the normalized ``CompletionUsage`` from each provider
-        # gateway call here; ``introspect`` reads the resulting file to build
-        # the 24h token summary.
-        from kernel.token_usage import TokenUsageTelemetryHandler
-
-        self._token_usage_handler: Any = TokenUsageTelemetryHandler(self.token_usage_path)
-
-    @property
-    def token_usage_handler(self) -> Any:
-        """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
-        return self._token_usage_handler
-
-    @property
-    def start_mode_id(self) -> str:
-        """Return the plan-selected initial route mode."""
-
-        return self.session_plan.manifest.routing.start_mode
-
-    @property
-    def copilot_customizations_text(self) -> str:
-        """Lazily-discovered Copilot customizations for system-prompt injection.
-
-        Discovers always-on files (``copilot-instructions.md``,
-        ``AGENTS.md``, ``CLAUDE.md``), ``applyTo``-scoped instructions,
-        and skills from the coding workspace. Agents and prompts are
-        excluded — they are invocation-based and handled by host commands.
-
-        Returns the formatted Markdown block, or ``""`` if discovery
-        fails or no customizations are found (graceful degradation).
-        Cached after first access — files don't change mid-session.
-        """
-        if self._copilot_customizations_text is not None:
-            return self._copilot_customizations_text
-
-        try:
-            from sdk.content import discover_copilot_customizations
-
-            workspace_root = self._resolve_copilot_workspace_root()
-            bundle = discover_copilot_customizations(workspace_root)
-
-            parts: list[str] = []
-
-            # Always-on files (copilot-instructions.md, AGENTS.md, CLAUDE.md).
-            for f in bundle.always_on:
-                if f.body.strip():
-                    parts.append(f"## Project Instructions\n\n{f.body.strip()}")
-
-            # applyTo-scoped instructions.
-            for inst in bundle.instructions:
-                if inst.body.strip():
-                    apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
-                    parts.append(
-                        f"## Instruction: {inst.name} (applies to: {apply_label})\n\n{inst.body.strip()}"
-                    )
-
-            # Skills.
-            for skill in bundle.skills:
-                if skill.body.strip():
-                    parts.append(f"## Skill: {skill.name}\n\n{skill.body.strip()}")
-
-            self._copilot_customizations_text = "\n\n".join(parts)
-        except Exception:
-            logger.warning(
-                "Failed to discover Copilot customizations; continuing without them.",
-                exc_info=True,
-            )
-            self._copilot_customizations_text = ""
-
-        return self._copilot_customizations_text
-
-    def _resolve_copilot_workspace_root(self) -> Path:
-        """Resolve the workspace root for Copilot customization discovery.
-
-        Uses the coding pack's configured ``workspace_root`` if available;
-        otherwise falls back to the current working directory.
-        """
-        try:
-            pack_config = self.session_plan.manifest.resources.packs.configuration
-            coding_config = pack_config.get("lisa-pack-coding", {})
-            raw = coding_config.get("workspace_root")
-            if raw:
-                return Path(raw).expanduser().resolve()
-        except Exception:
-            pass
-        return Path.cwd()
-
-    def _resolve_models_path(self) -> Path | None:
-        """Resolve the model-manifest path override from the session plan.
-
-        Returns the resolved absolute path when ``context.models.path`` is
-        set on the session plan, or ``None`` to fall back to
-        ``config.resolved_models_path``. A session-relative path requires
-        ``session_plan.source_dir``; a missing file or wrong type raises a
-        startup ``ValueError``.
-        """
-        from host.model_runtime import resolve_session_manifest_path
-
-        session_source_dir: Path | None = None
-        if self.session_plan.source_dir:
-            session_source_dir = Path(self.session_plan.source_dir)
-        return resolve_session_manifest_path(
-            session_plan=self.session_plan,
-            session_source_dir=session_source_dir,
-            data_dir=self.config.data_dir,
-        )
-
-    # ── Path accessors ────────────────────────────────────────────────
-
-    @property
-    def data_dir(self) -> Path:
-        return self.config.data_dir
-
-    @property
-    def overlays_dir(self) -> Path:
-        return self.config.resolved_overlays_dir
-
-    @property
-    def thread_dir(self) -> Path:
-        return self.config.resolved_thread_dir
-
-    @property
-    def thread_path(self) -> Path | None:
-        """Base path for the per-user thread store (no file extension).
-
-        Derived paths (active segment, sealed segments, index, digest) are
-        computed by ``host.thread`` from this base. See
-        ``docs/SPEC/THREAD_STORE.md``.
-        """
-        if self.config.no_thread:
-            return None
-        user = self.config.user_slug
-        if not user:
-            return None
-        return self.thread_dir / user
-
-    @property
-    def log_path(self) -> Path | None:
-        return self.config.resolved_log_path
-
-    @property
-    def host_log_path(self) -> Path:
-        return self.config.resolved_host_log_path
-
-    @property
-    def token_usage_path(self) -> Path:
-        return self.data_dir / "token-usage.jsonl"
-
-    @property
-    def models_path(self) -> Path:
-        return self._models_path_override or self.config.resolved_models_path
-
-    @property
-    def models_proposal_path(self) -> Path:
-        return self.config.resolved_models_proposal_path
-
-    # ── Provider client accessors (lazy) ──────────────────────────────
-
-    @property
-    def azure_client(self) -> Any:
-        return self._azure_client
-
-    @azure_client.setter
-    def azure_client(self, value: Any) -> None:
-        self._azure_client = value
-
-    @property
-    def azure_responses_client(self) -> Any:
-        return self._azure_responses_client
-
-    @azure_responses_client.setter
-    def azure_responses_client(self, value: Any) -> None:
-        self._azure_responses_client = value
-
-    @property
-    def openai_client(self) -> Any:
-        return self._openai_client
-
-    @openai_client.setter
-    def openai_client(self, value: Any) -> None:
-        self._openai_client = value
-
-    @property
-    def anthropic_http_client(self) -> Any:
-        return self._anthropic_http_client
-
-    @anthropic_http_client.setter
-    def anthropic_http_client(self, value: Any) -> None:
-        self._anthropic_http_client = value
-
-    @property
-    def ollama_client(self) -> Any:
-        return self._ollama_client
-
-    @ollama_client.setter
-    def ollama_client(self, value: Any) -> None:
-        self._ollama_client = value
-
-    # ── Manifest cache ────────────────────────────────────────────────
-
-    @property
-    def manifest(self) -> Any:
-        return self._manifest
-
-    @manifest.setter
-    def manifest(self, value: Any) -> None:
-        self._manifest = value
-
-    # ── MCP pool ──────────────────────────────────────────────────────
+    # ── Accessors ─────────────────────────────────────────────────────
 
     @property
     def mcp_tool_pool(self) -> Any:
@@ -525,6 +269,8 @@ class HostRuntime:
         self._mcp_warm_configs = warm
         self._mcp_cold_configs = cold
 
+    # ── Lifecycle ─────────────────────────────────────────────────────
+
     async def start(self) -> None:
         """Start the MCP tool pool synchronously inside the host's loop.
 
@@ -540,9 +286,9 @@ class HostRuntime:
 
         Schedules :meth:`_start_pool_impl` as an :class:`asyncio.Task` so
         the host can render the prompt while warm servers spawn. Callers
-        that read :attr:`mcp_tool_pool` must ``await`` :meth:`ensure_pool_ready`
-        first. Idempotent: if a deferred start is already in flight,
-        returns the existing task.
+        that read :attr:`mcp_tool_pool` must ``await``
+        :meth:`ensure_pool_ready` first. Idempotent: if a deferred start is
+        already in flight, returns the existing task.
         """
         if self._mcp_start_task is not None and not self._mcp_start_task.done():
             return self._mcp_start_task
@@ -567,8 +313,7 @@ class HostRuntime:
         Call this before reading :attr:`mcp_tool_pool` when the host used
         :meth:`start_pool_deferred`. If the pool was started synchronously
         via :meth:`start`, this is a no-op. If no start was ever scheduled,
-        runs :meth:`start` inline (back-compat for hosts that never
-        deferred).
+        runs :meth:`start` inline (back-compat for hosts that never deferred).
 
         If the deferred start failed, the exception is raised once and
         cached — subsequent calls re-raise the cached exception so the
@@ -668,20 +413,20 @@ class HostRuntime:
             await self._mcp_close_signal.wait()
         except asyncio.CancelledError:
             logger.debug(
-                "HostRuntime: close-signal wait cancelled during deferred "
-                "teardown; proceeding to pool cleanup"
+                "RuntimeResources: close-signal wait cancelled during "
+                "deferred teardown; proceeding to pool cleanup"
             )
         if self._mcp_tool_pool is not None:
             try:
                 await self._mcp_tool_pool.aclose()
             except asyncio.CancelledError:
                 logger.debug(
-                    "HostRuntime: pool aclose cancelled during deferred "
+                    "RuntimeResources: pool aclose cancelled during deferred "
                     "teardown; subprocess cleanup best-effort"
                 )
             self._mcp_tool_pool = None
         self._mcp_started = False
-        logger.debug("HostRuntime: MCP pool closed (deferred teardown)")
+        logger.debug("RuntimeResources: MCP pool closed (deferred teardown)")
 
     async def _build_pool(self) -> None:
         """Construct and start the MCP pool (shared by sync and deferred)."""
@@ -689,7 +434,7 @@ class HostRuntime:
             return
 
         if not self._mcp_warm_configs:
-            logger.debug("HostRuntime.start: no warm configs; pool will be None")
+            logger.debug("RuntimeResources.start: no warm configs; pool will be None")
             self._mcp_started = True
             return
 
@@ -720,7 +465,7 @@ class HostRuntime:
             try:
                 await self._mcp_tool_pool.aclose()
             except Exception:  # pylint: disable=broad-except
-                logger.debug("HostRuntime: pool aclose after failed start", exc_info=True)
+                logger.debug("RuntimeResources: pool aclose after failed start", exc_info=True)
             self._mcp_tool_pool = None
             raise
         # Register ambient resolvers + the generic ``memory.*`` synthetic
@@ -736,12 +481,13 @@ class HostRuntime:
         # registered on any MCP server".
         from host.memory_aliases import register_memory_aliases  # noqa: PLC0415
 
+        rt = self._runtime
         register_memory_aliases(
             self._mcp_tool_pool,
-            memory_config=self.memory_config,
-            memory_config_pack_slug=self.memory_config_pack_slug,
-            user_slug=self.config.user_slug,
-            current_mode_id=self.current_mode_id,
+            memory_config=rt.services.memory_config,
+            memory_config_pack_slug=rt.services.memory_config_pack_slug,
+            user_slug=rt.config.user_slug,
+            current_mode_id=rt.session.current_mode_id,
             app_id="lisa-host",
         )
         # Register generic aliases declared in pack MCP manifests so the
@@ -752,18 +498,18 @@ class HostRuntime:
         register_mcp_aliases(self._mcp_tool_pool)
         self._mcp_started = True
         logger.info(
-            "HostRuntime: MCP pool started with %d warm server(s)",
+            "RuntimeResources: MCP pool started with %d warm server(s)",
             len(self._mcp_warm_configs),
         )
 
     async def aclose(self) -> None:
         """Close the MCP tool pool in the same event loop that started it.
 
-        Must be called from the same event loop that called ``start()``
-        or ``start_pool_deferred()``. If a deferred start is still in
-        flight, it is awaited first so the pool is fully constructed
-        before we close it. After this, the runtime is no longer usable
-        — construct a new one for a fresh session.
+        Must be called from the same event loop that called ``start()`` or
+        ``start_pool_deferred()``. If a deferred start is still in flight,
+        it is awaited first so the pool is fully constructed before we close
+        it. After this, the runtime is no longer usable — construct a new
+        one for a fresh session.
         """
         # Deferred-start path: the long-lived start task owns the anyio
         # cancel scopes (it entered the MCP stdio_client contexts). It must
@@ -782,7 +528,7 @@ class HostRuntime:
                     await self._mcp_started_event.wait()
                 except Exception:  # pylint: disable=broad-except
                     logger.debug(
-                        "HostRuntime: deferred build failed during aclose",
+                        "RuntimeResources: deferred build failed during aclose",
                         exc_info=True,
                     )
             self._mcp_close_signal.set()
@@ -801,7 +547,7 @@ class HostRuntime:
                 # will then cancel + await the start task, whose own handlers
                 # finish teardown. See deferred-start-owns-teardown.md.
                 logger.debug(
-                    "HostRuntime: aclose cancelled while awaiting "
+                    "RuntimeResources: aclose cancelled while awaiting "
                     "deferred start task teardown; suppressing (start task "
                     "finishes teardown best-effort)"
                 )
@@ -809,14 +555,14 @@ class HostRuntime:
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
                 logger.debug(
-                    "HostRuntime: deferred start task ended during aclose",
+                    "RuntimeResources: deferred start task ended during aclose",
                     exc_info=True,
                 )
             self._mcp_start_task = None
             self._mcp_start_exc = None
             self._mcp_started_event = None
             self._mcp_close_signal = None
-            logger.debug("HostRuntime: MCP pool closed (deferred)")
+            logger.debug("RuntimeResources: MCP pool closed (deferred)")
             return
         # Sync-start path (start() was called directly, or the deferred
         # task already finished): close the pool inline in this task, which
@@ -829,25 +575,201 @@ class HostRuntime:
         self._mcp_start_exc = None
         self._mcp_started_event = None
         self._mcp_close_signal = None
-        logger.debug("HostRuntime: MCP pool closed")
+        logger.debug("RuntimeResources: MCP pool closed")
 
-    # ── State snapshot ────────────────────────────────────────────────
+
+# ── HostRuntime — thin composition root ─────────────────────────────────
+
+
+class HostRuntime:
+    """Typed, mutable host runtime — the replacement for ``_RUNTIME_STATE``.
+
+    Constructed from a ``HostConfig``. Composed of five focused sub-objects
+    (see module docstring). ``config``, ``session_plan``, ``execution_policy``,
+    and the lazily-discovered Copilot-customizations cache are the only state
+    owned directly; everything else lives on ``paths``, ``providers``,
+    ``resources``, ``session``, or ``services``.
+    """
+
+    def __init__(
+        self,
+        config: HostConfig,
+        *,
+        session_plan: SessionPlan | None = None,
+        in_process_mcp: bool = False,
+    ) -> None:
+        self.session_plan = session_plan or compile_selected_session_plan(
+            session_context=config.session_context,
+            data_dir=config.data_dir,
+            force_refresh=config.session_context_refresh,
+        )
+        source_matches_user_slug = (
+            bool(config.session_context) and config.user_slug == config.session_context
+        )
+        effective_user_slug = (
+            config.user_slug
+            if config.user_slug and not source_matches_user_slug
+            else self.session_plan.manifest.name
+        )
+        surface = self.session_plan.manifest.surface
+        self.config = replace(
+            config,
+            user_slug=effective_user_slug,
+            session_context=self.session_plan.source_uri,
+            surface_type=config.surface_type or surface.type,
+            surface_id=config.surface_id or surface.id,
+            memory_scope=config.memory_scope or surface.memory_scope,
+        )
+        self.execution_policy = resolve_execution_policy(
+            default_policy=self.config.execution_policy,
+            session_request=self.session_plan.manifest.execution,
+        )
+
+        # The session-plan-declared model manifest path (context.models.path)
+        # when present; otherwise falls back to config.resolved_models_path.
+        self._models_path_override: Path | None = self._resolve_models_path()
+
+        # Whether first-party MCP servers run in-process via the MCP SDK's
+        # in-memory transport instead of subprocesses. Read by
+        # ``RuntimeResources`` so the host never imports ``mcp_server``.
+        self._in_process_mcp: bool = in_process_mcp
+
+        # ── Composed sub-objects ──────────────────────────────────────
+        self.paths = HostPaths.from_config(
+            self.config, models_path_override=self._models_path_override
+        )
+        self.providers = ProviderRegistry()
+        self.services = HostServices.build(self.paths.data_dir)
+        self.session = SessionState()
+        self.session.current_mode_id = self.session_plan.manifest.routing.start_mode
+        self.resources = RuntimeResources(self)
+
+        # ── Copilot customizations cache ──────────────────────────────
+        # Lazily discovered always-on + applyTo-scoped instructions +
+        # skills from .github/{instructions,skills} and .claude/ equivalents.
+        # None means "not yet discovered"; "" means "discovered, nothing
+        # found or discovery failed gracefully."
+        self._copilot_customizations_text: str | None = None
+
+        # Per-turn tally of policy auto-approvals; reset by handle_message
+        # before consulting a turn's pending approval. ``host.approval``
+        # increments it; capping here prevents a runaway auto-approve loop.
+        self._auto_approved_this_turn: int = 0
+
+    # ── Plan / config projections used across the host ────────────────
 
     @property
-    def state_snapshot(self) -> dict[str, Any] | None:
-        return self._state_snapshot
+    def start_mode_id(self) -> str:
+        """Return the plan-selected initial route mode."""
+        return self.session_plan.manifest.routing.start_mode
 
-    @state_snapshot.setter
-    def state_snapshot(self, value: dict[str, Any] | None) -> None:
-        self._state_snapshot = value
+    @property
+    def copilot_customizations_text(self) -> str:
+        """Lazily-discovered Copilot customizations for system-prompt injection.
 
-    # ── Diagnostics ───────────────────────────────────────────────────
+        Discovers always-on files (``copilot-instructions.md``, ``AGENTS.md``,
+        ``CLAUDE.md``), ``applyTo``-scoped instructions, and skills from the
+        coding workspace. Agents and prompts are excluded — they are
+        invocation-based and handled by host commands.
 
-    def set_last_turn_context(self, ctx: TurnContext) -> None:
-        self.last_turn_context = ctx
+        Returns the formatted Markdown block, or ``""`` if discovery fails or
+        no customizations are found (graceful degradation). Cached after
+        first access — files don't change mid-session.
+        """
+        if self._copilot_customizations_text is not None:
+            return self._copilot_customizations_text
 
-    # ── Restart ───────────────────────────────────────────────────────
+        try:
+            from sdk.content import discover_copilot_customizations
 
-    def request_restart(self, reason: str) -> None:
-        self.restart_required = True
-        self.restart_reason = reason
+            workspace_root = self._resolve_copilot_workspace_root()
+            bundle = discover_copilot_customizations(workspace_root)
+
+            parts: list[str] = []
+
+            for f in bundle.always_on:
+                if f.body.strip():
+                    parts.append(f"## Project Instructions\n\n{f.body.strip()}")
+
+            for inst in bundle.instructions:
+                if inst.body.strip():
+                    apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
+                    parts.append(
+                        f"## Instruction: {inst.name} (applies to: {apply_label})\n\n{inst.body.strip()}"
+                    )
+
+            for skill in bundle.skills:
+                if skill.body.strip():
+                    parts.append(f"## Skill: {skill.name}\n\n{skill.body.strip()}")
+
+            self._copilot_customizations_text = "\n\n".join(parts)
+        except Exception:
+            logger.warning(
+                "Failed to discover Copilot customizations; continuing without them.",
+                exc_info=True,
+            )
+            self._copilot_customizations_text = ""
+
+        return self._copilot_customizations_text
+
+    def _resolve_copilot_workspace_root(self) -> Path:
+        """Resolve the workspace root for Copilot customization discovery.
+
+        Uses the coding pack's configured ``workspace_root`` if available;
+        otherwise falls back to the current working directory.
+        """
+        try:
+            pack_config = self.session_plan.manifest.resources.packs.configuration
+            coding_config = pack_config.get("lisa-pack-coding", {})
+            raw = coding_config.get("workspace_root")
+            if raw:
+                return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+        return Path.cwd()
+
+    def _resolve_models_path(self) -> Path | None:
+        """Resolve the model-manifest path override from the session plan.
+
+        Returns the resolved absolute path when ``context.models.path`` is
+        set on the session plan, or ``None`` to fall back to
+        ``config.resolved_models_path``. A session-relative path requires
+        ``session_plan.source_dir``; a missing file or wrong type raises a
+        startup ``ValueError``.
+        """
+        from host.model_runtime import resolve_session_manifest_path
+
+        session_source_dir: Path | None = None
+        if self.session_plan.source_dir:
+            session_source_dir = Path(self.session_plan.source_dir)
+        return resolve_session_manifest_path(
+            session_plan=self.session_plan,
+            session_source_dir=session_source_dir,
+            data_dir=self.config.data_dir,
+        )
+
+    # ── Async lifecycle delegates ─────────────────────────────────────
+
+    async def start(self) -> None:
+        await self.resources.start()
+
+    def start_pool_deferred(self) -> asyncio.Task[None]:
+        return self.resources.start_pool_deferred()
+
+    async def ensure_pool_ready(self) -> None:
+        await self.resources.ensure_pool_ready()
+
+    async def aclose(self) -> None:
+        await self.resources.aclose()
+
+
+__all__ = [
+    "HostPaths",
+    "HostRuntime",
+    "HostServices",
+    "ProviderRegistry",
+    "RuntimeResources",
+    "SessionState",
+    "TokenCounters",
+    "TurnContext",
+]

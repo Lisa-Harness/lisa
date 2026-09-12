@@ -105,7 +105,7 @@ def _append_thread_entry(
 ) -> None:
     """Delegate to ``host.thread.append_thread_entry`` with runtime paths."""
     append_thread_entry(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         mode_id=mode_id,
         query=query,
@@ -117,7 +117,7 @@ def _append_thread_entry(
 def _set_turn_context(runtime: HostRuntime, **kwargs: Any) -> None:
     """Build a ``TurnContext`` and store it on the runtime."""
     ctx = TurnContext(**kwargs)
-    runtime.set_last_turn_context(ctx)
+    runtime.session.set_last_turn_context(ctx)
 
 
 def _resolve_int_env(env_var: str, default: int) -> int:
@@ -135,8 +135,8 @@ def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
     """Resolve one model identifier against the runtime's manifest cache."""
     return resolve_model(
         model_id,
-        runtime_state={"manifest": runtime.manifest},
-        data_dir=runtime.data_dir,
+        runtime_state={"manifest": runtime.session.manifest},
+        data_dir=runtime.paths.data_dir,
     )
 
 

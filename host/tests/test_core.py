@@ -124,9 +124,9 @@ class TestHostRuntime:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         assert runtime.config is config
-        assert runtime.mcp_started is False
-        assert runtime.mcp_tool_pool is None
-        assert runtime.tokens.session_turn_count == 0
+        assert runtime.resources.mcp_started is False
+        assert runtime.resources.mcp_tool_pool is None
+        assert runtime.session.tokens.session_turn_count == 0
         assert runtime.execution_policy.max_model_calls == 20
         assert runtime.execution_policy.max_capability_calls == 30
 
@@ -134,10 +134,10 @@ class TestHostRuntime:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test-user")
         runtime = HostRuntime(config)
-        assert runtime.data_dir == tmp_path
-        assert runtime.thread_dir == tmp_path / "threads"
-        assert runtime.thread_path == tmp_path / "threads" / "test-user"
-        assert runtime.token_usage_path == tmp_path / "token-usage.jsonl"
+        assert runtime.paths.data_dir == tmp_path
+        assert runtime.paths.thread_dir == tmp_path / "threads"
+        assert runtime.paths.thread_path == tmp_path / "threads" / "test-user"
+        assert runtime.paths.token_usage_path == tmp_path / "token-usage.jsonl"
 
     def test_thread_path_none_when_no_user(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -145,7 +145,7 @@ class TestHostRuntime:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        assert runtime.thread_path is None
+        assert runtime.paths.thread_path is None
 
     def test_thread_path_none_when_no_thread(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -153,17 +153,17 @@ class TestHostRuntime:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test", no_thread=True)
         runtime = HostRuntime(config)
-        assert runtime.thread_path is None
+        assert runtime.paths.thread_path is None
 
     @pytest.mark.asyncio
     async def test_start_aclose_no_warm_configs(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         await runtime.start()
-        assert runtime.mcp_started is True
-        assert runtime.mcp_tool_pool is None  # no warm configs
+        assert runtime.resources.mcp_started is True
+        assert runtime.resources.mcp_tool_pool is None  # no warm configs
         await runtime.aclose()
-        assert runtime.mcp_started is False
+        assert runtime.resources.mcp_started is False
 
     @pytest.mark.asyncio
     async def test_start_idempotent(self, tmp_path: Path) -> None:
@@ -171,7 +171,7 @@ class TestHostRuntime:
         runtime = HostRuntime(config)
         await runtime.start()
         await runtime.start()  # should not raise
-        assert runtime.mcp_started is True
+        assert runtime.resources.mcp_started is True
         await runtime.aclose()
 
     @pytest.mark.asyncio
@@ -179,7 +179,7 @@ class TestHostRuntime:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         await runtime.aclose()  # should not raise
-        assert runtime.mcp_started is False
+        assert runtime.resources.mcp_started is False
 
     @pytest.mark.asyncio
     async def test_deferred_start_then_aclose_owns_cancel_scope(self, tmp_path: Path) -> None:
@@ -205,7 +205,7 @@ class TestHostRuntime:
         from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 
         runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
-        runtime.set_mcp_configs(
+        runtime.resources.set_mcp_configs(
             warm=[
                 MCPClientConfig(
                     server_id="w",
@@ -262,8 +262,8 @@ class TestHostRuntime:
             task = runtime.start_pool_deferred()
             task.set_name("mcp-deferred-start")
             await runtime.ensure_pool_ready()
-            assert runtime.mcp_started is True
-            assert runtime.mcp_tool_pool is not None
+            assert runtime.resources.mcp_started is True
+            assert runtime.resources.mcp_tool_pool is not None
             caller_task = asyncio.current_task()
             assert caller_task is not task
             # aclose runs from a DIFFERENT task than the deferred-start task.
@@ -276,8 +276,8 @@ class TestHostRuntime:
             # callback recorded under the wrong task / not recorded at all).
             await runtime.aclose()
             assert task.done()
-            assert runtime.mcp_tool_pool is None
-            assert runtime.mcp_started is False
+            assert runtime.resources.mcp_tool_pool is None
+            assert runtime.resources.mcp_started is False
             # The teardown ran in the deferred-start task, not the caller.
             assert "w" in closed_by
             assert closed_by["w"] == "mcp-deferred-start"
@@ -285,31 +285,31 @@ class TestHostRuntime:
     def test_set_mcp_configs(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        runtime.set_mcp_configs(warm=["warm1"], cold=["cold1"])
-        assert runtime.mcp_warm_configs == ["warm1"]
-        assert runtime.mcp_cold_configs == ["cold1"]
+        runtime.resources.set_mcp_configs(warm=["warm1"], cold=["cold1"])
+        assert runtime.resources.mcp_warm_configs == ["warm1"]
+        assert runtime.resources.mcp_cold_configs == ["cold1"]
 
     def test_provider_client_setters(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        runtime.azure_client = "fake_azure"
-        assert runtime.azure_client == "fake_azure"
-        runtime.openai_client = "fake_openai"
-        assert runtime.openai_client == "fake_openai"
+        runtime.providers.azure_client = "fake_azure"
+        assert runtime.providers.azure_client == "fake_azure"
+        runtime.providers.openai_client = "fake_openai"
+        assert runtime.providers.openai_client == "fake_openai"
 
     def test_request_restart(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        runtime.request_restart("pack enable: lisa-pack-test")
-        assert runtime.restart_required is True
-        assert "pack enable" in runtime.restart_reason
+        runtime.session.request_restart("pack enable: lisa-pack-test")
+        assert runtime.session.restart_required is True
+        assert "pack enable" in runtime.session.restart_reason
 
     def test_state_snapshot(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        assert runtime.state_snapshot is None
-        runtime.state_snapshot = {"key": "value"}
-        assert runtime.state_snapshot == {"key": "value"}
+        assert runtime.session.state_snapshot is None
+        runtime.session.state_snapshot = {"key": "value"}
+        assert runtime.session.state_snapshot == {"key": "value"}
 
 
 # ── TokenCounters ───────────────────────────────────────────────────
@@ -510,7 +510,7 @@ class TestHandleMessage:
         assert "1 context item(s)" in result.text
         assert "state.json" in result.text
         assert captured["data_dir"] == tmp_path
-        assert runtime.current_mode_id == "intake"
+        assert runtime.session.current_mode_id == "intake"
 
     @pytest.mark.asyncio
     async def test_intake_command_failure(
@@ -584,9 +584,9 @@ class TestHandleMessage:
 
                 which = str(arguments.get("which") or "proposal").strip().lower()
                 if which == "active":
-                    path = runtime.models_path
+                    path = runtime.paths.models_path
                 else:
-                    path = runtime.models_proposal_path
+                    path = runtime.paths.models_proposal_path
 
                 if tool_id == "read_model_manifest":
                     if not path.is_file():
@@ -620,24 +620,24 @@ class TestHandleMessage:
                     is_error=False,
                 )
 
-        runtime._mcp_tool_pool = _FakeStoragePool()
-        runtime._mcp_started = True
+        runtime.resources._mcp_tool_pool = _FakeStoragePool()
+        runtime.resources._mcp_started = True
 
         discover_result = await handle_message(runtime, "/models discover")
         assert "proposal_written" in discover_result.text
         assert "presets" in discover_result.text
-        assert runtime.models_proposal_path.exists()
+        assert runtime.paths.models_proposal_path.exists()
 
         # Proposal should be minimal — no preset annotation comments.
         # Presets live in sdk/router/README.md, not the generated file.
-        proposal_content = runtime.models_proposal_path.read_text(encoding="utf-8")
+        proposal_content = runtime.paths.models_proposal_path.read_text(encoding="utf-8")
         assert "cost-conscious" not in proposal_content
         assert "preset" not in proposal_content.lower()
 
         apply_result = await handle_message(runtime, "/models apply")
         assert "Applied models proposal." in apply_result.text
-        assert runtime.models_path.exists()
+        assert runtime.paths.models_path.exists()
 
         # Active manifest should be comment-free (yaml.safe_load strips them).
-        active_content = runtime.models_path.read_text(encoding="utf-8")
+        active_content = runtime.paths.models_path.read_text(encoding="utf-8")
         assert "cost-conscious" not in active_content

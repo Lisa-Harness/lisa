@@ -175,7 +175,7 @@ def _openai_compatible_client_factory(runtime: HostRuntime, provider: str) -> Ca
 def _azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
     """Return the cached Azure chat-completions client."""
 
-    existing_client = runtime.azure_client
+    existing_client = runtime.providers.azure_client
     if isinstance(existing_client, AsyncAzureOpenAI):
         return existing_client
     endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
@@ -190,14 +190,14 @@ def _azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
         azure_endpoint=endpoint,
         api_key=api_key,
     )
-    runtime.azure_client = client
+    runtime.providers.azure_client = client
     return client
 
 
 def _azure_responses_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
     """Return the cached Azure Responses API client with its preview version."""
 
-    existing_client = runtime.azure_responses_client
+    existing_client = runtime.providers.azure_responses_client
     if isinstance(existing_client, AsyncAzureOpenAI):
         return existing_client
     endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
@@ -217,28 +217,28 @@ def _azure_responses_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
         azure_endpoint=endpoint,
         api_key=api_key,
     )
-    runtime.azure_responses_client = client
+    runtime.providers.azure_responses_client = client
     return client
 
 
 def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     """Return the cached public OpenAI client."""
 
-    existing_client = runtime.openai_client
+    existing_client = runtime.providers.openai_client
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     api_key = _env("LISA_OPENAI_API_KEY", "OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OpenAI is not configured. Set LISA_OPENAI_API_KEY (or OPENAI_API_KEY).")
     client = AsyncOpenAI(api_key=api_key)
-    runtime.openai_client = client
+    runtime.providers.openai_client = client
     return client
 
 
 def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     """Return the cached Ollama OpenAI-compatible client."""
 
-    existing_client = runtime.ollama_client
+    existing_client = runtime.providers.ollama_client
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
@@ -247,19 +247,19 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
         api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
         base_url=base_url,
     )
-    runtime.ollama_client = client
+    runtime.providers.ollama_client = client
     return client
 
 
 def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
     """Return the cached raw Anthropic HTTP client."""
 
-    existing_client = runtime.anthropic_http_client
+    existing_client = runtime.providers.anthropic_http_client
     if isinstance(existing_client, httpx.AsyncClient):
         return existing_client
     base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
     client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
-    runtime.anthropic_http_client = client
+    runtime.providers.anthropic_http_client = client
     return client
 
 
@@ -311,7 +311,7 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
             default_headers=default_headers or None,
         )
         with contextlib.suppress(AttributeError):
-            runtime._openrouter_client = client
+            runtime.providers.openrouter_client = client
         return client
 
     return _build

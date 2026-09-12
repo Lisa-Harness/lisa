@@ -11,7 +11,7 @@ The write path (append, seal, dictionary training) stays in
 ``host.thread``; this server is read-only.
 
 The server resolves the thread base path from ``--thread-dir`` and
-``--user-slug`` CLI args (the host's ``runtime.thread_path`` property
+``--user-slug`` CLI args (the host's ``runtime.paths.thread_path`` property
 produces ``thread_dir / user_slug``). No env-var path resolution.
 
 **Redaction**: the store is built with the ``ThreadRedactionPolicy``

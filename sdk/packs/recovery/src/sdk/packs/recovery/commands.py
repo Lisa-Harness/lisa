@@ -341,7 +341,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     Scans the thread tail for the most recent entry with ``yielded == True``.
     If found, surfaces the ``yield_question`` so the operator can answer it.
     If the operator provides ``/resume <reply>``, the reply is stashed in
-    ``runtime.pending_resume_message`` so the next turn replays it as the
+    ``runtime.session.pending_resume_message`` so the next turn replays it as the
     query — the same mechanism used by the CLI restart-resume path.
 
     Also surfaces any stalled recovery records (``state="stalled"`` with
@@ -352,7 +352,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
     entries = load_recent_thread_entries(
-        thread_path=runtime.thread_path, limit=30
+        thread_path=runtime.paths.thread_path, limit=30
     )
     yielded_entry: dict[str, Any] | None = None
     for entry in reversed(entries):
@@ -393,7 +393,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     parts = stripped.split(None, 1)
     user_reply = parts[1].strip() if len(parts) > 1 else ""
     if user_reply:
-        runtime.pending_resume_message = user_reply
+        runtime.session.pending_resume_message = user_reply
         return f"Resumed from turn {turn}. Your reply will be sent next.{stall_summary}"
 
     if question:

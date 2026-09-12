@@ -54,7 +54,7 @@ def build_test_runtime(
         models_yaml: Custom ``models.yaml`` content. When ``None``, writes a
             minimal default with one ``gemma3:latest`` model. When an empty
             string, skips writing the file (for tests that want no manifest).
-        manifest: When provided, sets ``runtime.manifest`` directly after
+        manifest: When provided, sets ``runtime.session.manifest`` directly after
             construction, bypassing the file load. Takes precedence over
             ``models_yaml``.
         setup_framework: When ``True``, runs ``host.mcp_pool.setup_framework``
@@ -77,7 +77,7 @@ def build_test_runtime(
     runtime = HostRuntime(config)
 
     if manifest is not None:
-        runtime.manifest = manifest
+        runtime.session.manifest = manifest
     else:
         # Seed a default provider selection for ``web_search`` so the
         # catalog subprocess can resolve the collision when multiple

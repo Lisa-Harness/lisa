@@ -300,7 +300,7 @@ def set_pack_enabled(
 
     _write_installed_packs_lock(runtime, lock)
     action = "enable" if enabled else "disable"
-    runtime.request_restart(reason=f"pack {action}: {resolved}")
+    runtime.session.request_restart(reason=f"pack {action}: {resolved}")
 
     if enabled:
         return (
@@ -705,7 +705,7 @@ def run_pack_install_sync(
 
     is_local = _is_local_pack_spec(normalized_spec)
     install_target = normalized_spec.strip().strip('"') if is_local else normalized_spec
-    packs_venv = _packs_venv_for(runtime.data_dir)
+    packs_venv = _packs_venv_for(runtime.paths.data_dir)
     ensured, ensure_err = _ensure_packs_venv_sync(packs_venv)
     if not ensured:
         return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
@@ -761,7 +761,7 @@ def run_pack_install_sync(
     _write_installed_packs_lock(runtime, lock)
 
     if request_restart:
-        runtime.request_restart(reason=f"pack install: {package_name}")
+        runtime.session.request_restart(reason=f"pack install: {package_name}")
     editable_label = " (editable)" if is_local and editable else ""
     return True, (
         f"Installed '{package_name}' from {source_kind} source{editable_label}. "
@@ -783,7 +783,7 @@ async def run_pack_uninstall(
     if not normalized:
         return False, "Usage: /pack uninstall <package-name>"
 
-    packs_venv = _packs_venv_for(runtime.data_dir)
+    packs_venv = _packs_venv_for(runtime.paths.data_dir)
     ensured, ensure_err = await _ensure_packs_venv(packs_venv)
     if not ensured:
         return False, f"Uninstall failed for '{normalized}'.\n{ensure_err}"
@@ -815,7 +815,7 @@ async def run_pack_uninstall(
     cleared = _clear_selected_provider_for_package(lock, normalized)
     _write_installed_packs_lock(runtime, lock)
 
-    runtime.request_restart(reason=f"pack uninstall: {normalized}")
+    runtime.session.request_restart(reason=f"pack uninstall: {normalized}")
     if cleared:
         cleared_text = ", ".join(sorted(cleared))
         return True, (
@@ -902,7 +902,7 @@ def run_pack_update_sync(
     if not ok:
         return False, details
     if request_restart:
-        runtime.request_restart(reason=f"pack update: {resolved}")
+        runtime.session.request_restart(reason=f"pack update: {resolved}")
     return True, details.replace(
         "Installed '", f"Updated '{resolved}' from '{source_ref}'. Installed '",
         1,
@@ -948,7 +948,7 @@ async def run_pack_update_all(runtime: HostRuntime) -> tuple[bool, str]:
         else:
             failed.append((package_name, details))
 
-    runtime.request_restart(reason=f"pack update-all: {len(updated)} pack(s)")
+    runtime.session.request_restart(reason=f"pack update-all: {len(updated)} pack(s)")
 
     lines: list[str] = []
     if updated:

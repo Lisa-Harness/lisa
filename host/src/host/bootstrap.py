@@ -137,9 +137,10 @@ def build_runtime(
     # framework defaults (union, deduplicated, order-stable) so a pack's
     # best-practice redactions augment the baseline rather than replacing
     # it.
+    from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
+
     from host.content_roots import discover_pack_redaction_patterns
     from host.thread import set_thread_redaction_policy as _set_thread_redaction
-    from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
     if config.thread_redaction_enabled:
         if config.thread_redaction_patterns:
@@ -161,8 +162,17 @@ def build_runtime(
     else:
         _set_thread_redaction(None)
 
+    # Register the built-in host-command vocabulary before any turn can be
+    # routed. Done here — once, in the composition root — rather than at
+    # ``handle_message`` import time so the kernel rule "registration must
+    # be side-effect-free on import" holds and tests do not trigger global
+    # registry mutation just by importing the dispatcher.
+    from host.host_commands import register_builtin_host_commands
+
+    register_builtin_host_commands()
+
     runtime = HostRuntime(config, in_process_mcp=in_process_mcp)
-    runtime.state_snapshot = load_state_snapshot(
+    runtime.session.state_snapshot = load_state_snapshot(
         explicit_path=state_snapshot_path,
         data_dir=config.data_dir,
     )
@@ -170,7 +180,7 @@ def build_runtime(
     setup_framework(runtime, discovery=discovery)
     configure_runtime(runtime)
     warm, cold = compile_mcp_configs(runtime, discovery=discovery)
-    runtime.set_mcp_configs(warm, cold)
+    runtime.resources.set_mcp_configs(warm, cold)
     return runtime
 
 

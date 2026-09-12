@@ -158,7 +158,7 @@ def test_host_runtime_models_path_uses_session_override(tmp_path: Path) -> None:
     session = _write_session(tmp_path, models_path="./roster.yaml")
     config = HostConfig.from_env(data_dir=str(tmp_path), session_context=str(session))
     runtime = HostRuntime(config)
-    assert runtime.models_path == roster.resolve()
+    assert runtime.paths.models_path == roster.resolve()
 
 
 def test_host_runtime_models_path_falls_back_to_data_dir(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ def test_host_runtime_models_path_falls_back_to_data_dir(tmp_path: Path) -> None
     session = _write_session(tmp_path, models_path=None)
     config = HostConfig.from_env(data_dir=str(tmp_path), session_context=str(session))
     runtime = HostRuntime(config)
-    assert runtime.models_path == (tmp_path / "models.yaml").resolve()
+    assert runtime.paths.models_path == (tmp_path / "models.yaml").resolve()
 
 
 def test_compile_selected_session_plan_threads_source_dir(tmp_path: Path) -> None:

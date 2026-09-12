@@ -112,7 +112,7 @@ def test_auto_install_noop_when_no_required(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path, required=[])
     installed = auto_install_required_packs(runtime)
     assert installed == []
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 def test_auto_install_noop_when_all_required_importable(
@@ -127,7 +127,7 @@ def test_auto_install_noop_when_all_required_importable(
     )
     installed = auto_install_required_packs(runtime)
     assert installed == []
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 def test_auto_install_installs_missing_required_pack(
@@ -164,7 +164,7 @@ def test_auto_install_installs_missing_required_pack(
     assert installed == ["lisa-pack-cloudflare"]
     assert call_log == ["git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0"]
     # The caller (discover_framework) requests the restart, not this function.
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 def test_auto_install_raises_on_install_failure(

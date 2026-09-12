@@ -15,7 +15,7 @@ Code) construct a runtime and call :func:`setup_framework` /
 :func:`compile_mcp_configs` during initialization.
 
 The compiled configs are stored on the runtime via
-``runtime.set_mcp_configs(warm, cold)``; pool creation/start/close lives
+``runtime.resources.set_mcp_configs(warm, cold)``; pool creation/start/close lives
 in the host's async lifecycle (``runtime.start()`` / ``runtime.aclose()``),
 never in this module.
 """
@@ -184,7 +184,7 @@ def discover_framework(
     # content roots (default-off). compile_mcp_configs skips seeding to
     # preserve its original standalone behavior (no side effects).
     if seed_lock:
-        seed_bundled_packs_lock(runtime.data_dir)
+        seed_bundled_packs_lock(runtime.paths.data_dir)
     # Auto-install any session-required packs that are not yet importable,
     # before content-root discovery runs. When at least one pack is installed,
     # request a restart: importlib.metadata entry points are cached per-
@@ -194,12 +194,12 @@ def discover_framework(
 
     installed_packs = auto_install_required_packs(runtime)
     if installed_packs:
-        runtime.request_restart(reason=f"auto-install: {', '.join(installed_packs)}")
+        runtime.session.request_restart(reason=f"auto-install: {', '.join(installed_packs)}")
     plan_packs = runtime.session_plan.manifest.resources.packs
     session_pack_include = (*plan_packs.include, *plan_packs.required)
     session_pack_exclude = plan_packs.exclude
     roots = sdk_content_roots(
-        runtime.data_dir,
+        runtime.paths.data_dir,
         host_manifest_path=manifest_path,
         always_on_packs=config.always_on_packs,
         session_pack_include=session_pack_include,
@@ -209,7 +209,7 @@ def discover_framework(
         manifest_path,
         always_on_packs=config.always_on_packs,
     )
-    disabled_packs = load_disabled_pack_names(runtime.data_dir)
+    disabled_packs = load_disabled_pack_names(runtime.paths.data_dir)
     disabled_packs.difference_update(
         normalize_pack_name(pack_name) for pack_name in session_pack_include
     )
@@ -219,7 +219,7 @@ def discover_framework(
         for pack_name in session_pack_exclude
         if normalize_pack_name(pack_name) not in host_mandatory_packs
     )
-    lock = load_installed_packs_lock(runtime.data_dir)
+    lock = load_installed_packs_lock(runtime.paths.data_dir)
     return _FrameworkDiscovery(
         roots=roots,
         disabled_packs=disabled_packs,
@@ -394,7 +394,7 @@ def setup_framework(
     Keeping construction side-effect-free means ``HostRuntime(config)`` is
     pure and ``setup_framework`` owns all kernel/world mutation.
     """
-    data_dir = runtime.data_dir
+    data_dir = runtime.paths.data_dir
 
     # ── Session routing vocabulary ────────────────────────────────────
     # Inject the session-authored sequential-connector list into the
@@ -422,7 +422,7 @@ def setup_framework(
         content_roots=roots,
         disabled_packs=disabled_packs,
         provider_selections=runtime.session_plan.manifest.providers,
-        overlays_dir=runtime.overlays_dir,
+        overlays_dir=runtime.paths.overlays_dir,
     )
     default_mcp_tool_ids = resolve_default_mcp_tool_ids(
         host_manifest_path=discovery.host_manifest_path,
@@ -501,13 +501,13 @@ def setup_framework(
     # are honored from the first turn and the turn path never does file
     # I/O to fetch it. Moved here from four scattered lazy-init blocks in
     # handle_message.py / _log.py / _render.py that each did
-    # ``if runtime.manifest is None: runtime.manifest = load_manifest(...)``.
-    # The ``/models reload`` command still reassigns ``runtime.manifest``
+    # ``if runtime.session.manifest is None: runtime.session.manifest = load_manifest(...)``.
+    # The ``/models reload`` command still reassigns ``runtime.session.manifest``
     # directly after re-reading from disk.
     #
     # A missing manifest is a valid first-run state: the user must be able
     # to launch the REPL and run ``/models discover`` to generate one, so we
-    # tolerate an absent file (``runtime.manifest`` stays ``None``) and let
+    # tolerate an absent file (``runtime.session.manifest`` stays ``None``) and let
     # the graceful-degradation paths handle it (``model_alias_for_mode`` →
     # ``"default"``, ``build_capability_snapshot`` → empty models, ``/models
     # show`` → "No active models manifest is available yet"). A
@@ -520,17 +520,18 @@ def setup_framework(
         load_manifest_or_none as _load_manifest_or_none,
     )
 
-    runtime.manifest = _load_manifest_or_none(data_dir=runtime.data_dir, path=runtime.models_path)
+    runtime.session.manifest = _load_manifest_or_none(data_dir=runtime.paths.data_dir, path=runtime.paths.models_path)
 
 
 def configure_runtime(runtime: HostRuntime) -> None:
     """Reset cached provider clients on the runtime."""
-    runtime.azure_client = None
-    runtime.azure_responses_client = None
-    runtime.openai_client = None
-    runtime.anthropic_http_client = None
-    runtime.ollama_client = None
-    runtime.google_client = None
+    runtime.providers.azure_client = None
+    runtime.providers.azure_responses_client = None
+    runtime.providers.openai_client = None
+    runtime.providers.anthropic_http_client = None
+    runtime.providers.ollama_client = None
+    runtime.providers.openrouter_client = None
+    runtime.providers.google_client = None
 
 
 # ── MCP tool server compilation ──────────────────────────────────────
@@ -592,7 +593,7 @@ def compile_mcp_configs(
     callers like tests).
     """
     config = runtime.config
-    data_dir = str(runtime.data_dir)
+    data_dir = str(runtime.paths.data_dir)
     workspace_root = str(FRAMEWORK_ROOT)
     if discovery is None:
         discovery = discover_framework(runtime, seed_lock=False)
@@ -787,8 +788,8 @@ def compile_mcp_configs(
                 selected_package,
             )
 
-    runtime.memory_config = memory_config
-    runtime.memory_config_pack_slug = memory_owner_slug
+    runtime.services.memory_config = memory_config
+    runtime.services.memory_config_pack_slug = memory_owner_slug
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
 

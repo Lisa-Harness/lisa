@@ -47,7 +47,7 @@ async def run_explicit_slice_command(
     """
     _, explicit_budget_ms = _resolve_slice_tuning()
     provider = FileBackedStateProvider(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
     )
     policy = SlicePolicy(
         mode=SliceMode.EXPLICIT,
@@ -56,7 +56,7 @@ async def run_explicit_slice_command(
     started = _time.monotonic()
     outcome: SliceOutcome = await provider.slice(ctx=None, policy=policy)
     elapsed_ms = (_time.monotonic() - started) * 1000.0
-    runtime.last_slice_finished_at = _time.monotonic()
+    runtime.session.last_slice_finished_at = _time.monotonic()
     timestamp_utc = datetime.now(UTC).isoformat()
     slice_data = {
         "budget_ms": explicit_budget_ms,
@@ -91,9 +91,9 @@ async def run_explicit_slice_command(
         query=message,
         response_text="",
     )
-    runtime.current_mode_id = "consolidate"
-    runtime.current_stage_id = "-"
-    runtime.next_model_id = "-"
+    runtime.session.current_mode_id = "consolidate"
+    runtime.session.current_stage_id = "-"
+    runtime.session.next_model_id = "-"
     if outcome.work_items_completed == 0:
         return (
             f"Slice ran in {elapsed_ms:.1f} ms with no work items. "
@@ -130,7 +130,7 @@ async def handle_intake_command(
 
     started = _time.monotonic()
     try:
-        state = await run_intake(data_dir=runtime.data_dir)
+        state = await run_intake(data_dir=runtime.paths.data_dir)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("Intake tick failed: %s", exc)
         return f"Intake tick failed: {exc}"
@@ -165,11 +165,11 @@ async def handle_intake_command(
         query=message,
         response_text="",
     )
-    runtime.current_mode_id = "intake"
-    runtime.current_stage_id = "-"
-    runtime.next_model_id = "-"
+    runtime.session.current_mode_id = "intake"
+    runtime.session.current_stage_id = "-"
+    runtime.session.next_model_id = "-"
 
-    state_path = runtime.data_dir / "state.json"
+    state_path = runtime.paths.data_dir / "state.json"
     return (
         f"Intake tick complete in {elapsed_ms:.1f} ms. "
         f"{len(state.context_items)} context item(s). "

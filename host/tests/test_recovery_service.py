@@ -102,7 +102,7 @@ async def test_mark_running_indeterminate_promotes_orphans(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_stalls_command_lists_open_recovery_items(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
-    record = await runtime.recovery_service.begin(
+    record = await runtime.services.recovery_service.begin(
         RecoveryRecord(
             identity=RecoveryIdentity(
                 workspace_id=runtime.session_plan.manifest.name,
@@ -120,7 +120,7 @@ async def test_stalls_command_lists_open_recovery_items(tmp_path: Path) -> None:
             retry_policy="confirm",
         )
     )
-    await runtime.recovery_service.settle(
+    await runtime.services.recovery_service.settle(
         record.work_item_id,
         RecoveryIdentity(
             workspace_id=runtime.session_plan.manifest.name,

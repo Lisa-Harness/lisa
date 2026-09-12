@@ -454,8 +454,8 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
         if not ok:
             return handle_simple_command(runtime, message, "pack", details)
         if resume_message:
-            runtime.request_restart(
-                reason=runtime.restart_reason or "pack install",
+            runtime.session.request_restart(
+                reason=runtime.session.restart_reason or "pack install",
             )
             os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
         return handle_simple_command(runtime, message, "pack", details)
@@ -465,8 +465,8 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
         if not ok:
             return handle_simple_command(runtime, message, "pack", details)
         if resume_message:
-            runtime.request_restart(
-                reason=runtime.restart_reason or "pack uninstall",
+            runtime.session.request_restart(
+                reason=runtime.session.restart_reason or "pack uninstall",
             )
             os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
         return handle_simple_command(runtime, message, "pack", details)
@@ -484,8 +484,8 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
             if not ok:
                 return handle_simple_command(runtime, message, "pack", details)
             if resume_message:
-                runtime.request_restart(
-                    reason=runtime.restart_reason or "pack update --all",
+                runtime.session.request_restart(
+                    reason=runtime.session.restart_reason or "pack update --all",
                 )
                 os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
             return handle_simple_command(runtime, message, "pack", details)
@@ -494,8 +494,8 @@ async def handle_pack_command(  # noqa: C901, PLR0911, PLR0912
         if not ok:
             return handle_simple_command(runtime, message, "pack", details)
         if resume_message:
-            runtime.request_restart(
-                reason=runtime.restart_reason or "pack update",
+            runtime.session.request_restart(
+                reason=runtime.session.restart_reason or "pack update",
             )
             os.environ["LISA_RESTART_RESUME_MESSAGE"] = resume_message
         return handle_simple_command(runtime, message, "pack", details)

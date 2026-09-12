@@ -63,7 +63,7 @@ def render_mcp_summary(runtime: HostRuntime) -> str:
     tool count, and last error reflect the current runtime state, not a
     stale snapshot.
     """
-    pool = runtime.mcp_tool_pool
+    pool = runtime.resources.mcp_tool_pool
     health = gather_mcp_pool_health(pool)
     if not health:
         return "No MCP servers are configured."
@@ -98,7 +98,7 @@ async def render_mcp_server_detail(runtime: HostRuntime, server_id: str) -> str:
     ``await pool.list_tools(allowed_server_ids={server_id})`` so their
     tools appear without a full pool warm-up.
     """
-    pool = runtime.mcp_tool_pool
+    pool = runtime.resources.mcp_tool_pool
     health_map = gather_mcp_pool_health(pool)
     h = health_map.get(server_id)
     if h is None:
@@ -146,7 +146,7 @@ async def _collect_server_tools(runtime: HostRuntime, server_id: str) -> list[MC
     the per-server index. Returns an empty list when the pool is absent or
     the server cannot be reached.
     """
-    pool = runtime.mcp_tool_pool
+    pool = runtime.resources.mcp_tool_pool
     if pool is None:
         return []
     tools_by_server = pool.tools_by_server()

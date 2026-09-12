@@ -94,7 +94,7 @@ def _installed_pack_names(runtime: HostRuntime) -> set[str]:
             return default_packs_venv()
 
         for root in discover_packs_venv_content_roots(
-            runtime.data_dir,
+            runtime.paths.data_dir,
             venv_path_resolver=_venv_resolver,
             site_packages_resolver=packs_venv_site_packages,
         ):
@@ -201,7 +201,7 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
 
     The caller owns restart semantics: if this returns a non-empty list,
     ``importlib.metadata`` may not see the new entry points in-process, so
-    the caller should call ``runtime.request_restart(...)`` and let the host
+    the caller should call ``runtime.session.request_restart(...)`` and let the host
     relaunch. On the second boot pass the packs are present, this function is
     a no-op, and discovery proceeds normally.
     """

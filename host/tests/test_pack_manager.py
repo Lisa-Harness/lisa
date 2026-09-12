@@ -90,15 +90,15 @@ async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
         lambda spec: (False, f"rejected:{spec}"),
     )
 
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, message = await commands.run_pack_install(runtime, "requests")
 
     assert ok is False
     assert message.startswith("rejected:")
-    assert runtime.restart_required is False
-    assert runtime.restart_reason == ""
+    assert runtime.session.restart_required is False
+    assert runtime.session.restart_reason == ""
 
 
 @pytest.mark.asyncio
@@ -120,15 +120,15 @@ async def test_run_pack_install_success_records_lock_and_restart(
     import subprocess as _subprocess
 
     monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_install(runtime, "lisa-pack-cloudflare==0.1.0")
 
     assert ok is True
     assert "Installed 'lisa-pack-cloudflare'" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack install: lisa-pack-cloudflare"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack install: lisa-pack-cloudflare"
 
     lock = _load_lock(runtime)
     assert isinstance(lock.get("packs"), list)
@@ -173,15 +173,15 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
     import subprocess as _subprocess
 
     monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_install(runtime, str(local_pack))
 
     assert ok is True
     assert "Installed 'lisa-pack-memory' from local source" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack install: lisa-pack-memory"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack install: lisa-pack-memory"
 
     lock = _load_lock(runtime)
     assert isinstance(lock.get("packs"), list)
@@ -224,15 +224,15 @@ async def test_run_pack_uninstall_success_updates_lock_and_restart(
             ]
         },
     )
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_uninstall(runtime, "lisa-pack-cloudflare")
 
     assert ok is True
     assert "Uninstalled 'lisa-pack-cloudflare'" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack uninstall: lisa-pack-cloudflare"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack uninstall: lisa-pack-cloudflare"
 
     lock = _load_lock(runtime)
     assert lock["packs"] == []
@@ -281,8 +281,8 @@ async def test_run_pack_update_reinstalls_from_recorded_source(
         },
     )
     monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update(runtime, "cloudflare")
 
@@ -290,8 +290,8 @@ async def test_run_pack_update_reinstalls_from_recorded_source(
     assert len(seen_specs) == 1
     assert seen_specs[0].startswith("git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0")
     assert "Updated 'lisa-pack-cloudflare'" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack update: lisa-pack-cloudflare"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack update: lisa-pack-cloudflare"
 
 
 @pytest.mark.asyncio
@@ -306,15 +306,15 @@ async def test_run_pack_update_rejects_unknown_pack(
         "run_pack_install_sync",
         lambda *a, **kw: pytest.fail("install core must not run for unknown packs"),
     )
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update(runtime, "lisa-pack-nowhere")
 
     assert ok is False
     assert "Unknown pack" in details
     assert "/pack list" in details
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 @pytest.mark.asyncio
@@ -342,14 +342,14 @@ async def test_run_pack_update_rejects_bundled_pack(
         "run_pack_install_sync",
         lambda *a, **kw: pytest.fail("install core must not run for bundled packs"),
     )
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update(runtime, "lisa-pack-core")
 
     assert ok is False
     assert "bundled" in details
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 @pytest.mark.asyncio
@@ -377,14 +377,14 @@ async def test_run_pack_update_propagates_install_failure(
         "run_pack_install_sync",
         lambda *a, **kw: (False, "Install failed for 'lisa-pack-cloudflare==0.1.0'.\nboom"),
     )
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update(runtime, "lisa-pack-cloudflare")
 
     assert ok is False
     assert "Install failed" in details
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 @pytest.mark.asyncio
@@ -430,8 +430,8 @@ async def test_run_pack_update_all_refreshes_runtime_packs_and_skips_bundled(
         },
     )
     monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update_all(runtime)
 
@@ -441,8 +441,8 @@ async def test_run_pack_update_all_refreshes_runtime_packs_and_skips_bundled(
         "lisa-pack-mem0==0.3.1",
     ]
     assert "Updated lisa-pack-cloudflare, lisa-pack-mem0" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack update-all: 2 pack(s)"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack update-all: 2 pack(s)"
 
 
 @pytest.mark.asyncio
@@ -469,14 +469,14 @@ async def test_run_pack_update_all_without_runtime_packs_is_noop(
         "run_pack_install_sync",
         lambda *a, **kw: pytest.fail("install core must not run with nothing to update"),
     )
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update_all(runtime)
 
     assert ok is True
     assert "No runtime-installed packs" in details
-    assert runtime.restart_required is False
+    assert runtime.session.restart_required is False
 
 
 @pytest.mark.asyncio
@@ -511,8 +511,8 @@ async def test_run_pack_update_all_reports_partial_failures(
         },
     )
     monkeypatch.setattr(commands._packs, "run_pack_install_sync", _fake_install_sync)
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
     ok, details = await commands.run_pack_update_all(runtime)
 
@@ -520,8 +520,8 @@ async def test_run_pack_update_all_reports_partial_failures(
     assert "Updated lisa-pack-cloudflare" in details
     assert "Update failed for 'lisa-pack-mem0'" in details
     assert "resolver boom" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack update-all: 1 pack(s)"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack update-all: 1 pack(s)"
 
 
 def test_validate_pack_spec_for_install_package_prefix_policy(
@@ -900,21 +900,21 @@ def test_request_and_consume_restart_resume_message(
 ) -> None:
     """Restart request + resume-message env-var round-trip.
 
-    In the new structure, ``runtime.request_restart(reason)`` sets the
+    In the new structure, ``runtime.session.request_restart(reason)`` sets the
     restart flag/reason, and the resume message is stored in the
     ``LISA_RESTART_RESUME_MESSAGE`` env var (read by the host on next
     launch). This test exercises the env-var half directly.
     """
     monkeypatch.delenv("LISA_RESTART_RESUME_MESSAGE", raising=False)
     runtime = _make_runtime(tmp_path)
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
 
-    runtime.request_restart(reason="pack install: lisa-pack-cloudflare")
+    runtime.session.request_restart(reason="pack install: lisa-pack-cloudflare")
     monkeypatch.setenv("LISA_RESTART_RESUME_MESSAGE", "check cloudflare status")
 
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack install: lisa-pack-cloudflare"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack install: lisa-pack-cloudflare"
     assert os.environ["LISA_RESTART_RESUME_MESSAGE"] == "check cloudflare status"
 
     # Simulate the next-launch consumption clearing the env var.
@@ -1082,7 +1082,7 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
 
     assert "memory.lisa-memory" in server_ids
     assert "memory.mem0" in server_ids
-    assert runtime.memory_config_pack_slug == "memory"
+    assert runtime.services.memory_config_pack_slug == "memory"
 
 
 def test_compile_mcp_configs_merges_user_manifest(
@@ -1169,8 +1169,8 @@ def test_set_pack_enabled_for_bundled_pack_records_lock_and_restart(
     bundled_root = tmp_path / "lisa_pack_cloudflare"
     bundled_root.mkdir(parents=True, exist_ok=True)
 
-    runtime.restart_required = False
-    runtime.restart_reason = ""
+    runtime.session.restart_required = False
+    runtime.session.restart_reason = ""
     monkeypatch.setattr(
         commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
     )
@@ -1180,8 +1180,8 @@ def test_set_pack_enabled_for_bundled_pack_records_lock_and_restart(
 
     assert ok is True
     assert "Enabled 'lisa-pack-cloudflare'" in details
-    assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack enable: lisa-pack-cloudflare"
+    assert runtime.session.restart_required is True
+    assert runtime.session.restart_reason == "pack enable: lisa-pack-cloudflare"
 
     lock = _load_lock(runtime)
     assert any(
@@ -1423,7 +1423,7 @@ def test_compile_mcp_configs_uses_session_plan_memory_provider(
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert runtime.memory_config_pack_slug == "mem0-pack"
+    assert runtime.services.memory_config_pack_slug == "mem0-pack"
 
 
 def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
@@ -1530,7 +1530,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert runtime.memory_config_pack_slug == "memory-pack"
+    assert runtime.services.memory_config_pack_slug == "memory-pack"
 
 
 # ---------------------------------------------------------------------------

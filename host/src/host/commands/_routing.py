@@ -91,10 +91,10 @@ def set_runtime_route_preview(
     if mode is not None and mode.mode_kind == "workflow":
         stage_id = str(mode.start_stage_id).strip() or "-"
     model_id, provider = predict_model(runtime, preferred_model_id)
-    runtime.current_mode_id = mode_id
-    runtime.current_stage_id = stage_id or "-"
-    runtime.next_model_id = model_id
-    runtime.next_model_provider = provider
+    runtime.session.current_mode_id = mode_id
+    runtime.session.current_stage_id = stage_id or "-"
+    runtime.session.next_model_id = model_id
+    runtime.session.next_model_provider = provider
     logger.debug(
         "route preview set: mode=%s stage=%s model=%s provider=%s",
         mode_id,

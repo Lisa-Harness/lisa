@@ -29,6 +29,7 @@ transcript filter can consult the registry without owning command vocabulary.
 
 Public surface
 --------------
+- :func:`register_builtin_host_commands`
 - :func:`register_host_command_prefix`
 - :func:`register_host_command_exact`
 - :func:`register_host_command_prefixes`
@@ -108,3 +109,66 @@ def is_host_command_query(query: str) -> bool:
     if stripped in _exact:
         return True
     return stripped.startswith(tuple(_prefixes)) if _prefixes else False
+
+
+# ── One-time builtin registration ────────────────────────────────────
+# Called from ``host.bootstrap.build_runtime`` exactly once per process.
+# Importing ``handle_message`` must not mutate this module — the kernel
+# rule "registration and operation discovery must be side-effect-free on
+# import" — so the dispatch layer's prefix list lives here, at the explicit
+# call site the composition root owns. ``/quit`` is CLI-only and never
+# appended to the thread.
+
+_builtin_done = False
+
+
+def register_builtin_host_commands() -> None:
+    """Register the built-in host-command vocabulary exactly once.
+
+    Registers the slash-command prefixes and bare-word aliases that
+    ``handle_message._dispatch_host_command`` intercepts, then discovers
+    pack-registered commands and registers their prefixes so the thread
+    excerpt builder strips them. Idempotent — safe to call from tests.
+    """
+    global _builtin_done  # noqa: PLW0603  # module-level one-time guard
+    if _builtin_done:
+        return
+    from kernel.host_command_discovery import discover_pack_host_commands  # noqa: PLC0415
+
+    register_host_command_prefixes(
+        (
+            "/help",
+            "/tokens",
+            "/settings",
+            "/consolidate",
+            "/slice",
+            "/intake",
+            "/pack",
+            "/models",
+            "/modes",
+            "/operations",
+            "/tools",
+            "/approve",
+            "/deny",
+            "/debug",
+            "/mcp",
+        )
+    )
+    register_host_command_exacts(
+        (
+            "help",
+            "tokens",
+            "settings",
+            "consolidate",
+            "slice",
+            "modes",
+            "operations",
+            "tools",
+            "mcp",
+        )
+    )
+    # Register pack-discovered command prefixes for transcript filtering.
+    for entry in discover_pack_host_commands():
+        for spec in entry.specs:
+            register_host_command_prefix(spec.prefix)
+    _builtin_done = True

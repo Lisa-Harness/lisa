@@ -39,7 +39,7 @@ def _identity(runtime: HostRuntime) -> ApprovalIdentity:
         surface_type=runtime.config.surface_type,
         surface_id=runtime.config.surface_id,
         memory_scope=runtime.config.memory_scope,
-        mode_id=runtime.current_mode_id,
+        mode_id=runtime.session.current_mode_id,
         session_plan_digest=runtime.session_plan.plan_digest,
     )
 
@@ -73,6 +73,15 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
         surface_id="surface",
         **config_kwargs,
     )
+
+
+async def _unused_route(
+    _runtime: HostRuntime,
+    message: str,
+    _transport: object,
+) -> HostCommandResult:  # pragma: no cover - never invoked in these tests
+    """Stand-in ``route_model_turn`` for resume-detection paths that no-op."""
+    raise AssertionError(f"route_model_turn must not be called here (got {message!r})")
 
 
 def _stub_continuation_turn(
@@ -125,7 +134,7 @@ async def test_approve_dispatches_only_the_saved_invocation(
         pack_config={"workspace_root": "."},
         safe_preview="apply the patch",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
     executed: list[str] = []
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
@@ -133,8 +142,8 @@ async def test_approve_dispatches_only_the_saved_invocation(
         executed.append(invocation.request_id)
         return ToolResult(output_text="patch applied")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
@@ -148,7 +157,7 @@ async def test_approve_dispatches_only_the_saved_invocation(
     assert "Do not call any tools" in continuation_queries[0]
     assert "do not start follow-up commands" in continuation_queries[0]
     assert result.text == "continuation synthesized"
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
 
@@ -161,7 +170,7 @@ async def test_policy_minted_receipt_executes_without_second_approval(
     """An auto-approved record executes its receipt without re-approving it."""
 
     runtime = _make_runtime(tmp_path)
-    runtime.approval_service = PolicyApprovalService(
+    runtime.services.approval_service = PolicyApprovalService(
         FileApprovalService(tmp_path / "approvals.json"),
         policy=PolicyDocument(allow=[PolicyRule(tool="bash_run")]),
         data_dir=tmp_path,
@@ -176,8 +185,8 @@ async def test_policy_minted_receipt_executes_without_second_approval(
         pack_config={},
         safe_preview="run a shell command",
     )
-    await runtime.approval_service.request(invocation)
-    record = await runtime.approval_service.get(invocation.request_id)
+    await runtime.services.approval_service.request(invocation)
+    record = await runtime.services.approval_service.get(invocation.request_id)
     assert record is not None and record.state == "approved" and record.receipt is not None
 
     async def must_not_reapprove(*_args: object, **_kwargs: object) -> object:
@@ -197,9 +206,9 @@ async def test_policy_minted_receipt_executes_without_second_approval(
         async def on_response(self, text: str, data: dict[str, object] | None = None) -> None:
             self.responses.append((text, data))
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(runtime.approval_service, "approve", must_not_reapprove)
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(runtime.services.approval_service, "approve", must_not_reapprove)
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     _stub_continuation_turn(monkeypatch)
     transport = _RecordingTransport()
 
@@ -243,22 +252,22 @@ async def test_approve_consumes_receipt_through_real_registry(
         surface_type="personal_dm",
         surface_id="surface",
         memory_scope=cast(MemoryScope, runtime.config.memory_scope),
-        mode_id=runtime.current_mode_id,
+        mode_id=runtime.session.current_mode_id,
         session_plan_digest=runtime.session_plan.plan_digest,
         parameters={"path": "src/a.py"},
-        approval_service=runtime.approval_service,
+        approval_service=runtime.services.approval_service,
     )
 
     with pytest.raises(ApprovalRequired) as required:
         await execute_tool("write_file", context)
     invocation = required.value.invocation
 
-    handle_message_module = importlib.import_module("host.handle_message")
+    approval_module = importlib.import_module("host.approval.orchestration")
     monkeypatch.setattr(
-        handle_message_module,
+        approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.approval_service,
+            approval_service=runtime.services.approval_service,
             workspace_id=runtime.session_plan.manifest.name,
             user_id="user",
             user_slug="user",
@@ -276,7 +285,7 @@ async def test_approve_consumes_receipt_through_real_registry(
     assert executed == ["src/a.py"]
     assert len(continuation_queries) == 1
     assert "file written" in continuation_queries[0]
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "consumed"
 
@@ -303,12 +312,12 @@ async def test_deny_marks_the_saved_invocation_unusable(tmp_path: Path) -> None:
         identity=identity,
         pack_config={},
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     result = await handle_message(runtime, f"/deny {invocation.request_id}", NullTransport())
 
     assert "Denied approval request" in result.text
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "denied"
 
@@ -339,7 +348,7 @@ async def test_affirmative_resume_approves_the_single_pending_request(
         pack_config={"workspace_root": "."},
         safe_preview="apply the patch",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
     executed: list[str] = []
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
@@ -347,8 +356,8 @@ async def test_affirmative_resume_approves_the_single_pending_request(
         executed.append(invocation.request_id)
         return ToolResult(output_text="patch applied")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, "proceed", NullTransport())
@@ -357,7 +366,7 @@ async def test_affirmative_resume_approves_the_single_pending_request(
     assert len(continuation_queries) == 1
     assert "patch applied" in continuation_queries[0]
     assert result.text == "continuation synthesized"
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
 
@@ -381,7 +390,7 @@ async def test_affirmative_resume_is_case_insensitive_and_phrase_scoped(
         pack_config={"workspace_root": "."},
         safe_preview="apply the patch",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
     executed: list[str] = []
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
@@ -389,8 +398,8 @@ async def test_affirmative_resume_is_case_insensitive_and_phrase_scoped(
         executed.append(invocation.request_id)
         return ToolResult(output_text="patch applied")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, "OK", NullTransport())
@@ -432,10 +441,10 @@ async def test_affirmative_resume_does_not_fire_with_multiple_pending(
         pack_config={"workspace_root": "."},
         safe_preview="clean up the worktree",
     )
-    await runtime.approval_service.request(first)
-    await runtime.approval_service.request(second)
+    await runtime.services.approval_service.request(first)
+    await runtime.services.approval_service.request(second)
 
-    pending = await runtime.approval_service.list_pending(identity)
+    pending = await runtime.services.approval_service.list_pending(identity)
     assert len(pending) == 2
 
     # The affirmative resume must not consume either; both stay pending.
@@ -443,14 +452,14 @@ async def test_affirmative_resume_does_not_fire_with_multiple_pending(
     # approval state is untouched (the model-turn path is exercised by the
     # turn-runner tests and is blocked here by the catalog collision in
     # the test environment).
-    from host.handle_message import _try_affirmative_approval_resume
+    from host.approval import try_affirmative_approval_resume as _try_affirmative_approval_resume
 
     resume_result = await _try_affirmative_approval_resume(
-        runtime, "proceed", "proceed", NullTransport()
+        runtime, "proceed", "proceed", NullTransport(), route_model_turn=_unused_route
     )
     assert resume_result is None
-    assert (await runtime.approval_service.get(first.request_id)).state == "pending"
-    assert (await runtime.approval_service.get(second.request_id)).state == "pending"
+    assert (await runtime.services.approval_service.get(first.request_id)).state == "pending"
+    assert (await runtime.services.approval_service.get(second.request_id)).state == "pending"
 
 
 @pytest.mark.asyncio
@@ -461,10 +470,10 @@ async def test_affirmative_resume_does_not_fire_without_pending(
 
     runtime = _make_runtime(tmp_path)
 
-    from host.handle_message import _try_affirmative_approval_resume
+    from host.approval import try_affirmative_approval_resume as _try_affirmative_approval_resume
 
     resume_result = await _try_affirmative_approval_resume(
-        runtime, "proceed", "proceed", NullTransport()
+        runtime, "proceed", "proceed", NullTransport(), route_model_turn=_unused_route
     )
     assert resume_result is None
 
@@ -487,18 +496,19 @@ async def test_non_affirmative_message_is_not_consumed_as_resume(
         pack_config={"workspace_root": "."},
         safe_preview="apply the patch",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
-    from host.handle_message import _try_affirmative_approval_resume
+    from host.approval import try_affirmative_approval_resume as _try_affirmative_approval_resume
 
     resume_result = await _try_affirmative_approval_resume(
         runtime,
         "can you explain what this will do?",
         "can you explain what this will do?",
         NullTransport(),
+        route_model_turn=_unused_route,
     )
     assert resume_result is None
-    assert (await runtime.approval_service.get(invocation.request_id)).state == "pending"
+    assert (await runtime.services.approval_service.get(invocation.request_id)).state == "pending"
 
 
 # ── Prefix-matching affirmative resume (option 2) ─────────────────────
@@ -532,9 +542,9 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
         pack_config={"workspace_root": "."},
         safe_preview="apply the patch",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
-    from host.handle_message import _is_affirmative_resume
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(
@@ -565,7 +575,7 @@ def test_affirmative_resume_exact_match_still_works() -> None:
         reset_routing_vocabulary,
     )
 
-    from host.handle_message import _is_affirmative_resume
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["proceed"])
@@ -584,7 +594,7 @@ def test_affirmative_resume_rejects_non_prefix_non_exact() -> None:
         reset_routing_vocabulary,
     )
 
-    from host.handle_message import _is_affirmative_resume
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["proceed", "continue", "go ahead"])
@@ -602,7 +612,7 @@ def test_affirmative_resume_uses_session_resume_phrases() -> None:
         reset_routing_vocabulary,
     )
 
-    from host.handle_message import _is_affirmative_resume
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["onward", "carry forward"])
@@ -653,7 +663,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
         pack_config={"workspace_root": "."},
         safe_preview="create an isolated coding worktree",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     # Simulate the model-turn path: it began a recovery record for the same
     # target, then settled it as ``stalled`` / ``blocks_workflow=True`` when
@@ -668,7 +678,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
         surface_id=runtime.config.surface_id,
         memory_scope=cast(MemoryScope, runtime.config.memory_scope),
     )
-    started = await runtime.recovery_service.begin(
+    started = await runtime.services.recovery_service.begin(
         RecoveryRecord(
             identity=recovery_identity,
             mode_id="coding",
@@ -680,7 +690,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
             retry_policy="confirm",
         )
     )
-    await runtime.recovery_service.settle(
+    await runtime.services.recovery_service.settle(
         started.work_item_id,
         recovery_identity,
         state="stalled",
@@ -692,14 +702,14 @@ async def test_approve_settles_paired_stalled_recovery_record(
         _ = hooks
         return ToolResult(output_text="worktree created")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     continuation_queries = _stub_continuation_turn(monkeypatch)
     monkeypatch.setattr(
-        handle_message_module,
+        approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.approval_service,
+            approval_service=runtime.services.approval_service,
             workspace_id=runtime.session_plan.manifest.name,
             user_id="user",
             user_slug="user",
@@ -717,7 +727,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
     assert "worktree created" in continuation_queries[0]
     # The paired stall must be cleared so subsequent turns route to the model
     # instead of re-yielding the zombie stall.
-    settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
+    settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "succeeded"
 
@@ -748,7 +758,7 @@ async def test_deny_settles_paired_stalled_recovery_record(
         pack_config={},
         safe_preview="create an isolated coding worktree",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     from kernel.recovery import RecoveryIdentity, RecoveryRecord
 
@@ -760,7 +770,7 @@ async def test_deny_settles_paired_stalled_recovery_record(
         surface_id=runtime.config.surface_id,
         memory_scope=cast(MemoryScope, runtime.config.memory_scope),
     )
-    started = await runtime.recovery_service.begin(
+    started = await runtime.services.recovery_service.begin(
         RecoveryRecord(
             identity=recovery_identity,
             mode_id="coding",
@@ -772,7 +782,7 @@ async def test_deny_settles_paired_stalled_recovery_record(
             retry_policy="confirm",
         )
     )
-    await runtime.recovery_service.settle(
+    await runtime.services.recovery_service.settle(
         started.work_item_id,
         recovery_identity,
         state="stalled",
@@ -780,12 +790,12 @@ async def test_deny_settles_paired_stalled_recovery_record(
         retry_policy="confirm",
     )
 
-    handle_message_module = importlib.import_module("host.handle_message")
+    approval_module = importlib.import_module("host.approval.orchestration")
     monkeypatch.setattr(
-        handle_message_module,
+        approval_module,
         "build_turn_hooks",
         lambda _runtime, **_kwargs: TurnHooks(
-            approval_service=runtime.approval_service,
+            approval_service=runtime.services.approval_service,
             workspace_id=runtime.session_plan.manifest.name,
             user_id="user",
             user_slug="user",
@@ -799,7 +809,7 @@ async def test_deny_settles_paired_stalled_recovery_record(
     result = await handle_message(runtime, f"/deny {invocation.request_id}", NullTransport())
 
     assert "Denied approval request" in result.text
-    settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
+    settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "cancelled"
 
@@ -832,7 +842,7 @@ def _shell_owner_identity(runtime: HostRuntime) -> ApprovalIdentity:
 def _reset_runtime_mode_to_start_mode(runtime: HostRuntime) -> None:
     """Simulate a fresh host process whose mode state reset to the start mode."""
 
-    runtime.current_mode_id = runtime.session_plan.manifest.routing.start_mode or "default"
+    runtime.session.current_mode_id = runtime.session_plan.manifest.routing.start_mode or "default"
 
 
 @pytest.mark.asyncio
@@ -862,14 +872,14 @@ async def test_approve_after_process_restart_matches_recorded_owner_identity(
         pack_config={},
         safe_preview="run a shell command",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     # Fresh process: the mode state reset to the start mode, so the live
     # identity rebuild diverges from the recorded owner exactly as observed.
     _reset_runtime_mode_to_start_mode(runtime)
     # lazy: the private helper is asserted against, not imported at module
     # scope like the public surface above.
-    from host.handle_message import _approval_identity as _host_approval_identity
+    from host.approval import approval_identity as _host_approval_identity
 
     assert _host_approval_identity(runtime).mode_id != "shell"
 
@@ -880,8 +890,8 @@ async def test_approve_after_process_restart_matches_recorded_owner_identity(
         executed.append(invocation.request_id)
         return ToolResult(output_text="hostname ok")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     continuation_queries = _stub_continuation_turn(monkeypatch)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
@@ -890,7 +900,7 @@ async def test_approve_after_process_restart_matches_recorded_owner_identity(
     assert len(continuation_queries) == 1
     assert "hostname ok" in continuation_queries[0]
     assert result.text == "continuation synthesized"
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
 
@@ -923,14 +933,14 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
         pack_config={},
         safe_preview="run a shell command",
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
         _ = hooks
         return ToolResult(output_text="root")
 
-    handle_message_module = importlib.import_module("host.handle_message")
-    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    approval_module = importlib.import_module("host.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
     _stub_continuation_turn(monkeypatch)
 
     await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
@@ -938,7 +948,7 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
     # lazy: reads back the appended entry after the approve turn ran
     from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
-    entries = load_recent_thread_entries(thread_path=runtime.thread_path, limit=5)
+    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=5)
     action_entries = [
         e for e in entries if e.get("provenance", {}).get("source") == "host-approved"
     ]
@@ -972,8 +982,8 @@ async def test_approve_reports_decision_state_for_already_denied_request(
         identity=identity,
         pack_config={},
     )
-    await runtime.approval_service.request(invocation)
-    assert await runtime.approval_service.deny(invocation.request_id, identity) is True
+    await runtime.services.approval_service.request(invocation)
+    assert await runtime.services.approval_service.deny(invocation.request_id, identity) is True
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
@@ -998,12 +1008,12 @@ async def test_approve_reports_expiry_for_expired_request(
         identity=identity,
         pack_config={},
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     # Backdate past the TTL so is_expired() fires inside approve().
     import json as _json  # noqa: PLC0415  # local to this one-off store backdate
 
-    store_path = Path(runtime.data_dir) / "approvals.json"
+    store_path = Path(runtime.paths.data_dir) / "approvals.json"
     payload = _json.loads(store_path.read_text())
     payload[invocation.request_id]["invocation"]["expires_at"] = "2020-01-01T00:00:00Z"
     store_path.write_text(_json.dumps(payload))
@@ -1040,11 +1050,11 @@ async def test_approve_rejects_cross_user_request_from_other_session(
         identity=other_owner,
         pack_config={},
     )
-    await runtime.approval_service.request(invocation)
+    await runtime.services.approval_service.request(invocation)
 
     result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
     assert "different session" in result.text
-    persisted = await runtime.approval_service.get(invocation.request_id)
+    persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "pending"

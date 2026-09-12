@@ -15,17 +15,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-# Importing handle_message triggers the registration of host-command
-# prefixes in the dynamic registry (host_commands.py). The tests below
-# verify both the registry and the transcript filter that depends on it.
-import host.handle_message  # noqa: F401
+# Registration of host-command prefixes is no longer an import side effect —
+# it is an explicit, idempotent call the composition root owns
+# (`host.bootstrap.build_runtime`). The tests below verify the registry and
+# the transcript filter, so they populate the registry the same way the
+# runtime does.
 from host.host_commands import (
     host_command_exact,
     host_command_prefixes,
     is_host_command_query,
+    register_builtin_host_commands,
     register_host_command_exact,
     register_host_command_prefix,
 )
+
+register_builtin_host_commands()
 from host.thread import (
     SegmentRecord,
     _read_index,
@@ -78,8 +82,8 @@ class TestIsHostCommandQuery:
         assert not is_host_command_query("")
         assert not is_host_command_query("   ")
 
-    def test_registry_populated_by_handle_message_import(self) -> None:
-        """The dispatch layer must register its prefixes on import."""
+    def test_registry_populated_by_bootstrap_registration(self) -> None:
+        """The composition root (bootstrap) must register the dispatch prefixes."""
         prefixes = host_command_prefixes()
         # All dispatch-table prefixes should be registered.
         assert "/help" in prefixes
@@ -92,7 +96,7 @@ class TestIsHostCommandQuery:
         assert "/models" in prefixes
         assert "/debug" in prefixes
 
-    def test_registry_exact_populated_by_handle_message_import(self) -> None:
+    def test_registry_exact_populated_by_bootstrap_registration(self) -> None:
         exact = host_command_exact()
         assert "help" in exact
         assert "tokens" in exact

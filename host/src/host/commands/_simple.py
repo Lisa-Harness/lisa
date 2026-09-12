@@ -62,9 +62,9 @@ def handle_simple_command(
         query=message,
         response_text=response_text,
     )
-    runtime.current_mode_id = mode_id
-    runtime.current_stage_id = "-"
-    runtime.next_model_id = "-"
+    runtime.session.current_mode_id = mode_id
+    runtime.session.current_stage_id = "-"
+    runtime.session.next_model_id = "-"
     return response_text
 
 

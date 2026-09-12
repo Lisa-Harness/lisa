@@ -29,8 +29,8 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
     # No warm/cold configs so _build_pool is a no-op, but the deferred
     # start-task lifecycle (started_event / close_signal / start_task) is
     # still exercised.
-    runtime._mcp_warm_configs = []
-    runtime._mcp_cold_configs = []
+    runtime.resources._mcp_warm_configs = []
+    runtime.resources._mcp_cold_configs = []
     return runtime
 
 
@@ -70,10 +70,10 @@ def test_aclose_clean_when_start_task_already_done(tmp_path: Path) -> None:
         await runtime.ensure_pool_ready()
         # Force the start task to complete by setting the close signal
         # and awaiting it before calling aclose.
-        assert runtime._mcp_close_signal is not None
-        runtime._mcp_close_signal.set()
-        assert runtime._mcp_start_task is not None
-        await runtime._mcp_start_task
+        assert runtime.resources._mcp_close_signal is not None
+        runtime.resources._mcp_close_signal.set()
+        assert runtime.resources._mcp_start_task is not None
+        await runtime.resources._mcp_start_task
         # Now aclose should be a no-op (task already done) and not raise.
         await runtime.aclose()
 

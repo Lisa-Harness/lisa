@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
     """Build a capability snapshot dict for diagnostics and help rendering."""
     catalog = get_workflow_catalog()
-    manifest = runtime.manifest
+    manifest = runtime.session.manifest
     operations = get_operation_catalog()
     tools = get_tool_catalog()
     supported_modes = [
@@ -118,12 +118,12 @@ def render_debug_turn(runtime: HostRuntime, arg: str) -> str:
             return "Usage: /debug [turn_number]"
         turn_index = int(arg)
     else:
-        turn_index = next_turn_index(thread_path=runtime.thread_path) - 1
+        turn_index = next_turn_index(thread_path=runtime.paths.thread_path) - 1
         if turn_index < 0:
             return "No completed turns yet."
 
     entries = load_thread_range(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
         start_turn=turn_index,
         end_turn=turn_index,
     )
@@ -174,12 +174,12 @@ def format_token_stats(runtime: HostRuntime) -> str:
     The lifetime section aggregates every persisted event across all
     sessions for this host's data directory.
     """
-    state = dataclasses.asdict(runtime.tokens)
+    state = dataclasses.asdict(runtime.session.tokens)
     lines = format_session_exit_summary_lines(
         state,
-        session_started_utc=runtime.tokens.session_started_utc,
+        session_started_utc=runtime.session.tokens.session_started_utc,
     )
-    lifetime_lines = _format_lifetime_token_usage(runtime.token_usage_path)
+    lifetime_lines = _format_lifetime_token_usage(runtime.paths.token_usage_path)
     if lifetime_lines:
         lines.extend(lifetime_lines)
     return "\n".join(lines)
@@ -356,7 +356,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
     catalog = get_workflow_catalog()
     lines: list[str] = ["Lisa Framework Host", ""]
     if runtime is not None:
-        mode_id = runtime.current_mode_id or "default"
+        mode_id = runtime.session.current_mode_id or "default"
         lines.append(f"User: {runtime.config.user_slug}  |  Mode: {mode_id}")
         lines.append("")
     lines.append("Supported commands:")

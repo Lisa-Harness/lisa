@@ -74,7 +74,7 @@ async def _read_manifest_text_from_storage(
 ) -> tuple[str | None, str | None]:
     """Read one manifest text via lisa-storage, returning ``(text, error)``."""
 
-    pool = runtime.mcp_tool_pool
+    pool = runtime.resources.mcp_tool_pool
     if pool is None:
         return None, "No storage pool available to read model manifests."
     result = await pool.call_tool(
@@ -98,7 +98,7 @@ async def _write_manifest_text_to_storage(
 ) -> str | None:
     """Write one manifest text via lisa-storage, returning an error string or ``None``."""
 
-    pool = runtime.mcp_tool_pool
+    pool = runtime.resources.mcp_tool_pool
     if pool is None:
         return "No storage pool available to write model manifests."
     result = await pool.call_tool(
@@ -125,8 +125,8 @@ async def _write_manifest_text_to_storage(
 def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -> str:
     """Render manifest details once a validated manifest object is available."""
 
-    active_path = active_manifest_path(data_dir=runtime.data_dir)
-    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+    active_path = active_manifest_path(data_dir=runtime.paths.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.paths.data_dir)
 
     lines = [
         "## Models",
@@ -146,10 +146,10 @@ def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -
 
 
 async def _render_models_manifest(runtime: HostRuntime) -> str:
-    active_path = active_manifest_path(data_dir=runtime.data_dir)
+    active_path = active_manifest_path(data_dir=runtime.paths.data_dir)
 
     try:
-        manifest = runtime.manifest
+        manifest = runtime.session.manifest
         if manifest is None:
             active_text, active_error = await _read_manifest_text_from_storage(
                 runtime, which="active"
@@ -172,8 +172,8 @@ async def _render_models_manifest(runtime: HostRuntime) -> str:
 
 
 def _models_help_text(runtime: HostRuntime) -> str:
-    active_path = active_manifest_path(data_dir=runtime.data_dir)
-    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+    active_path = active_manifest_path(data_dir=runtime.paths.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.paths.data_dir)
     return "\n".join(
         [
             "## /models",
@@ -346,7 +346,7 @@ async def _handle_models_apply(
         )
         if write_error is not None:
             raise ValueError(write_error)
-        runtime.manifest = manifest
+        runtime.session.manifest = manifest
         response_text = "\n".join(
             [
                 "Applied models proposal.",
@@ -375,8 +375,8 @@ async def handle_models_command(
     """
 
     subcommand, args = _parse_models_subcommand(stripped)
-    active_path = active_manifest_path(data_dir=runtime.data_dir)
-    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+    active_path = active_manifest_path(data_dir=runtime.paths.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.paths.data_dir)
 
     if subcommand in {"", "help"}:
         return handle_simple_command(runtime, message, "models", _models_help_text(runtime))
@@ -395,8 +395,8 @@ async def handle_models_command(
                 raise ValueError(active_error)
             if active_text is None:
                 raise ValueError("read_model_manifest returned empty output")
-            runtime.manifest = load_model_manifest_text(active_text)
-            response_text = _render_models_manifest_from_manifest(runtime, runtime.manifest)
+            runtime.session.manifest = load_model_manifest_text(active_text)
+            response_text = _render_models_manifest_from_manifest(runtime, runtime.session.manifest)
         except Exception as exc:  # pylint: disable=broad-except
             response_text = (
                 f"Failed to reload models from {active_path}: {exc}\n"

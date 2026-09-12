@@ -8,7 +8,7 @@ and use its typed accessors.
 
 Migration notes:
 - ``little_lisa.handle_message(msg)`` → ``handle_message(runtime, msg, transport)``
-- ``little_lisa._RUNTIME_STATE[...]`` → ``runtime.tokens.*``, ``runtime.last_turn_context``, etc.
+- ``little_lisa._RUNTIME_STATE[...]`` → ``runtime.session.tokens.*``, ``runtime.session.last_turn_context``, etc.
 - ``little_lisa._function_name(...)`` → ``from host.module import function_name; ...``
 - CLI-only render functions (``format_modes``, ``format_models``, ``_status_segments``)
   now live in ``hosts/cli/render.py`` and are skipped here.
@@ -104,7 +104,7 @@ def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
 
     monkeypatch.setattr(content_roots, "sdk_content_roots", lambda *a, **kw: [pack_root])
     config = mcp_pool.build_content_mcp_config(
-        data_dir=runtime.data_dir,
+        data_dir=runtime.paths.data_dir,
         content_roots=[pack_root],
         disabled_packs=set(),
         provider_selections=ProviderSelections(),
@@ -113,7 +113,7 @@ def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
     assert config.args is not None
     assert "--data-dir" in config.args
     data_dir_index = config.args.index("--data-dir")
-    assert config.args[data_dir_index + 1] == str(runtime.data_dir)
+    assert config.args[data_dir_index + 1] == str(runtime.paths.data_dir)
 
     assert config.env is not None
     roots_value = str(config.env.get("SDK_CONTENT_ROOTS", ""))
@@ -132,7 +132,7 @@ def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_conte
     runtime = _make_runtime(tmp_path)
     monkeypatch.setattr(content_roots, "sdk_content_roots", lambda *a, **kw: [])
     config = mcp_pool.build_content_mcp_config(
-        data_dir=runtime.data_dir,
+        data_dir=runtime.paths.data_dir,
         content_roots=[],
         disabled_packs=set(),
         provider_selections=ProviderSelections(),
@@ -141,7 +141,7 @@ def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_conte
     assert config.args is not None
     assert "--data-dir" in config.args
     data_dir_index = config.args.index("--data-dir")
-    assert config.args[data_dir_index + 1] == str(runtime.data_dir)
+    assert config.args[data_dir_index + 1] == str(runtime.paths.data_dir)
 
     assert config.env is not None
     assert str(config.env.get("SDK_CONTENT_ROOTS", "")) == ""
@@ -153,7 +153,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
     runtime = _make_runtime(tmp_path)
 
     config = mcp_pool.build_content_mcp_config(
-        data_dir=runtime.data_dir,
+        data_dir=runtime.paths.data_dir,
         content_roots=[],
         disabled_packs=set(),
         provider_selections=ProviderSelections(
@@ -363,7 +363,7 @@ async def test_debug_default_renders_previous_turn_calls_verbatim(tmp_path: Path
 
     runtime = _make_runtime(tmp_path)
     append_thread_entry(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         mode_id="default",
         query="hello",
@@ -400,7 +400,7 @@ async def test_debug_explicit_turn_index(tmp_path: Path) -> None:
 
     runtime = _make_runtime(tmp_path)
     append_thread_entry(
-        thread_path=runtime.thread_path,
+        thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         mode_id="default",
         query="hello",
@@ -519,7 +519,7 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="handle_message token counters now on runtime.tokens; needs deep migration"
+    reason="handle_message token counters now on runtime.session.tokens; needs deep migration"
 )
 async def test_handle_message_updates_runtime_token_counters(
     monkeypatch: pytest.MonkeyPatch,
@@ -594,7 +594,7 @@ def test_runtime_start_mode_initializes_current_mode(
     )
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
     runtime = HostRuntime(config)
-    assert runtime.current_mode_id == "research"
+    assert runtime.session.current_mode_id == "research"
 
 
 def test_runtime_no_start_mode_defaults_to_default(
@@ -604,7 +604,7 @@ def test_runtime_no_start_mode_defaults_to_default(
     monkeypatch.chdir(tmp_path)
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
     runtime = HostRuntime(config)
-    assert runtime.current_mode_id == "default"
+    assert runtime.session.current_mode_id == "default"
 
 
 @pytest.mark.asyncio
@@ -627,7 +627,7 @@ async def test_start_mode_default_goes_to_current_mode(
     runtime = _make_runtime(tmp_path, no_thread=True)
     # start_mode defaults to "default"; current_mode_id is seeded from it.
     assert runtime.start_mode_id == "default"
-    assert runtime.current_mode_id == "default"
+    assert runtime.session.current_mode_id == "default"
 
     execute_mock = AsyncMock(return_value="ok")
     transport = NullTransport()
@@ -685,7 +685,7 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
     )
     runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
     assert runtime.start_mode_id == "research"
-    assert runtime.current_mode_id == "research"
+    assert runtime.session.current_mode_id == "research"
 
     execute_mock = AsyncMock(return_value="ok")
     transport = NullTransport()
@@ -1049,7 +1049,7 @@ def test_apply_turn_usage_upgrades_old_schema_entries_in_place() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="/tokens now reads runtime.tokens via format_token_stats; needs runtime setup migration"
+    reason="/tokens now reads runtime.session.tokens via format_token_stats; needs runtime setup migration"
 )
 async def test_tokens_command_returns_detailed_stats() -> None:
     pass
@@ -1057,7 +1057,7 @@ async def test_tokens_command_returns_detailed_stats() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="mode token context now on runtime.last_turn_context; needs deep migration"
+    reason="mode token context now on runtime.session.last_turn_context; needs deep migration"
 )
 async def test_handle_message_surfaces_mode_token_context(
     monkeypatch: pytest.MonkeyPatch,
@@ -1168,12 +1168,12 @@ def test_load_manifest_or_none_invalid_present_manifest_raises(tmp_path: Path) -
         load_manifest_or_none(data_dir=tmp_path)
 
     runtime = _make_runtime(tmp_path)
-    assert runtime.models_path.exists()
+    assert runtime.paths.models_path.exists()
 
     mcp_pool.setup_framework(runtime)
 
-    assert runtime.manifest is not None
-    assert len(runtime.manifest.models) >= 1
+    assert runtime.session.manifest is not None
+    assert len(runtime.session.manifest.models) >= 1
 
 
 # ── Provider key verification ─────────────────────────────────────────
@@ -1396,18 +1396,18 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
         data_dir=str(tmp_path),
     )
     runtime = HostRuntime(config)
-    runtime.state_snapshot = _json.loads(snapshot_path.read_text(encoding="utf-8"))
+    runtime.session.state_snapshot = _json.loads(snapshot_path.read_text(encoding="utf-8"))
 
     assert config.user_slug == str(context_path)
     assert config.timezone == "UTC"
     assert config.timezone_source == "cli"
     assert config.effective_log_level == "debug"
-    assert isinstance(runtime.state_snapshot, dict)
+    assert isinstance(runtime.session.state_snapshot, dict)
     # The new segmented store uses a base path (no .jsonl extension).
     # thread_path = thread_dir / user_slug. When user_slug is an absolute
     # path, Path joining replaces the base, so thread_path resolves to the
     # absolute path of the context file (no extension).
-    assert runtime.thread_path == Path(str(context_path))
+    assert runtime.paths.thread_path == Path(str(context_path))
 
 
 def test_resolve_stream_enabled_prefers_explicit_flags() -> None:
@@ -1685,7 +1685,7 @@ def test_format_token_stats_appends_lifetime_section(tmp_path: Path) -> None:
             "cost_usd": 0.01,
         },
     ]
-    token_log = runtime.token_usage_path
+    token_log = runtime.paths.token_usage_path
     token_log.parent.mkdir(parents=True, exist_ok=True)
     token_log.write_text(
         "\n".join(json.dumps(rec) for rec in records) + "\n",
@@ -1710,7 +1710,7 @@ def test_format_token_stats_lifetime_absent_without_log(tmp_path: Path) -> None:
     from host.commands._render import format_token_stats
 
     runtime = _make_runtime(tmp_path)
-    assert not runtime.token_usage_path.exists()
+    assert not runtime.paths.token_usage_path.exists()
 
     output = format_token_stats(runtime)
 
@@ -1738,7 +1738,7 @@ async def test_settings_command_reports_effective_runtime_settings(tmp_path: Pat
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="handle_message manifest check now reads runtime.manifest; needs deep migration"
+    reason="handle_message manifest check now reads runtime.session.manifest; needs deep migration"
 )
 async def test_handle_message_requires_models_before_running_turn(
     monkeypatch: pytest.MonkeyPatch,

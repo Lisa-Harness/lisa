@@ -96,7 +96,7 @@ def test_in_process_rewrite_preserves_data_dir_args(
     # The compiled args must survive the rewrite so the pool's
     # _in_process_data_dir can read the host data dir out of them.
     assert "--data-dir" in cfg.args
-    assert cfg.args[cfg.args.index("--data-dir") + 1] == str(runtime.data_dir)
+    assert cfg.args[cfg.args.index("--data-dir") + 1] == str(runtime.paths.data_dir)
 
 
 def test_in_process_storage_connect_uses_host_data_dir(
@@ -145,7 +145,7 @@ def test_in_process_storage_connect_uses_host_data_dir(
 
     output = asyncio.run(_drive())
     assert _json.loads(output).get("ok") is True
-    landed = runtime.data_dir / "files" / "regression" / "sandbox-root.md"
+    landed = runtime.paths.data_dir / "files" / "regression" / "sandbox-root.md"
     assert landed.is_file(), f"write landed outside the sandbox: {output}"
     # And nothing escaped to the process cwd.
     assert not (Path(cwd_before) / "files" / "regression" / "sandbox-root.md").exists()
