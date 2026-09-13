@@ -122,7 +122,7 @@ class TurnContext:
     """Mutable per-turn diagnostic context.
 
     Passed through ``handle_message`` and updated by ``on_turn_complete``.
-    Transport hosts read this via ``runtime.last_turn_context`` for
+    Transport hosts read this via ``runtime.session.last_turn_context`` for
     ``/debug context`` rendering.
     """
 
@@ -193,6 +193,10 @@ class SessionState:
         # ``/resume <reply>`` command; the REPL replays it as the first turn,
         # then clears it. ``None`` means no resume pending.
         self.pending_resume_message: str | None = None
+
+        # Per-turn count of policy auto-approvals; the approval flow reads
+        # and increments it, and the dispatcher resets it at each turn start.
+        self.auto_approved_this_turn: int = 0
 
     def set_last_turn_context(self, ctx: TurnContext) -> None:
         self.last_turn_context = ctx

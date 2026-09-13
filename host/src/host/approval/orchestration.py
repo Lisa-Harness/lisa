@@ -288,7 +288,7 @@ async def maybe_auto_continue_approval(
 
     # Per-turn cap on unattended auto-approvals. Exceeding it falls back to the
     # prompt so the operator re-engages with a runaway approval loop.
-    used = int(getattr(runtime, "_auto_approved_this_turn", 0))
+    used = runtime.session.auto_approved_this_turn
     if used >= AUTO_APPROVE_TURN_CAP:
         logger.warning(
             "auto-approve cap (%d) reached; prompting for %s",
@@ -296,7 +296,7 @@ async def maybe_auto_continue_approval(
             invocation.target_id,
         )
         return None
-    runtime._auto_approved_this_turn = used + 1  # host-local counter
+    runtime.session.auto_approved_this_turn = used + 1
 
     logger.info(
         "auto-approving policy-contained action %s (receipt %s)",

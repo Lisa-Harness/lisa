@@ -606,7 +606,7 @@ async def _execute_mode_turn(
     # Reset the per-turn auto-approval cap counter before we consult
     # ``pending_approval`` — this turn's budget of unattended auto-continues
     # starts here (see ``host.approval.maybe_auto_continue_approval``).
-    runtime._auto_approved_this_turn = 0  # host-local counter
+    runtime.session.auto_approved_this_turn = 0
 
     # Clear the operator signal after the turn ends so the next turn starts
     # clean (the signal is one-shot; the transport re-sets it on the next

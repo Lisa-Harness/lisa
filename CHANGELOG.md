@@ -4,6 +4,49 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### God-object decomposition & structured subsystem packages (audit refactor)
+
+- **What:**
+  - **`HostRuntime` decomposition:** `host/src/host/runtime.py` is now a thin
+    composition root grouping state into five sub-objects: `HostPaths`
+    (`runtime_paths.py`), `ProviderRegistry` (`providers.py`), `HostServices`
+    (`services.py`), `SessionState`, and `RuntimeResources` (`runtime.py`,
+    which owns the async MCP pool lifecycle). All call sites now name their
+    domain explicitly (`runtime.session.manifest`, `runtime.paths.thread_path`,
+    `runtime.services.approval_service`).
+  - **`TurnHooks` grouping:** Grouped 40+ flat extension fields into cohesive
+    sub-dataclasses in `kernel/src/kernel/turn_hooks.py`: `ModelHooks`,
+    `ContextHooks`, `OperationHooks`, `LifecycleHooks`, `WorkflowHooks`,
+    `HostServiceHandles`, `TurnIdentity`, `RecallHooks`, and `ToolHooks`.
+    `TurnHooks` now composes these (e.g. `hooks.models.complete`,
+    `hooks.lifecycle.on_turn_complete`). Construction kwargs are grouped;
+    legacy test ergonomics fold via `kernel/tests/turn_hooks_fold.py`.
+  - **`kernel.turn_runner` package:** Split the 6,044-line `turn_runner.py`
+    into a package (`kernel/turn_runner/`) with satellites `_result.py`
+    (`TurnResult`), `_seams.py` (`ContextSeams`), `_streaming.py`
+    (`StreamedCompletionAdapter`), `_defaults.py` (default hook fallbacks),
+    and `_helpers.py` (slice dispatch, plan→step compilation). The engine
+    resides in `__init__.py` so `mock.patch("kernel.turn_runner.<name>")`
+    targets continue to intercept call-site reads.
+  - **`host.approval` package:** Extracted the approval subsystem (~600 lines)
+    from `handle_message.py` into `host/src/host/approval/` (`orchestration.py`
+    + `presentation.py`). `handle_message.py` shrunk from 1,600 to 871 lines
+    and now matches its documented three-phase pipeline. Import-time command
+    registration side effects removed; `host.bootstrap.build_runtime()` now
+    calls `register_builtin_host_commands()` explicitly.
+  - **`host.thread` package:** Split `host/src/host/thread.py` into a package:
+    `_store.py` (zstd-sealed persistence mechanics) + `_excerpt.py` (excerpt/manifest
+    prompt-injection reads), re-exported through `__init__.py`.
+  - **Layer fix:** Relocated `kernel/testing/runtime_factory.py` to
+    `host/src/host/testing/runtime_factory.py` (`host.testing`), resolving the
+    documented kernel→host layer inversion.
+  - **Type narrowing:** Narrowed `Any`-typed fields on the grouped hook
+    dataclasses and `HostServices` to real `Protocol`/dataclass types
+    (`ApprovalService`, `RecoveryService`, `StateProvider`, `RouteCoordinator`,
+    `TokenUsageTelemetryHandler`, etc.).
+
 ### Removed
 
 #### Compatibility re-exports from `kernel.turn_runner` & `declarative`
