@@ -1,1 +1,1 @@
-dev.sh
+pull.sh
