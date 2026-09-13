@@ -62,7 +62,7 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
     snapshot, model resolution) have at least one model. Mirrors the helper
     in test_core_services.py.
     """
-    from kernel.testing.runtime_factory import build_test_runtime
+    from host.testing import build_test_runtime
 
     models_yaml = "\n".join(
         [

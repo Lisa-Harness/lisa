@@ -10,10 +10,11 @@ module-global mutation, no MCP server subprocesses. Tests that need the
 workflow catalog, operation catalog, or content registry pass
 ``setup_framework=True``.
 
-Dependency direction: ``kernel.testing.runtime_factory`` ->
+Dependency direction: ``host.testing.runtime_factory`` ->
 ``host.config``, ``host.runtime``, ``host.model_runtime``,
 ``host.mcp_pool``. This module is test-only; it must not be imported by
-production code.
+production code. (Moved from ``kernel.testing`` to fix the kernel→host
+layer violation.)
 """
 
 from __future__ import annotations

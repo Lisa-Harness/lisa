@@ -31,7 +31,7 @@ import pytest
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
-from kernel.testing.runtime_factory import build_test_runtime
+from host.testing import build_test_runtime
 from kernel.tools.mcp_client import (
     MCPClientConfig,
     MCPConnectionError,

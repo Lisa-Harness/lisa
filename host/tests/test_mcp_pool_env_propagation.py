@@ -24,7 +24,7 @@ from host.runtime import HostRuntime
 def _make_runtime(
     tmp_path: Path, *, user_slug: str = "testing", no_thread: bool = False
 ) -> HostRuntime:
-    from kernel.testing.runtime_factory import build_test_runtime
+    from host.testing import build_test_runtime
 
     return build_test_runtime(
         tmp_path, models_yaml="", user_slug=user_slug, no_thread=no_thread

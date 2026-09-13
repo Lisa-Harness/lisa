@@ -17,7 +17,7 @@ from host.turn_hooks_builder import _SliceProviderHooksView, build_turn_hooks
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
-    from kernel.testing.runtime_factory import build_test_runtime
+    from host.testing import build_test_runtime
 
     return build_test_runtime(
         tmp_path,
@@ -41,7 +41,7 @@ def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:
     not callable. This test confirms the attribute is settable and
     resolves (not raising ``AttributeError`` via ``__getattr__``).
     """
-    from kernel.testing.runtime_factory import build_test_runtime
+    from host.testing import build_test_runtime
 
     runtime = build_test_runtime(
         tmp_path, user_slug="user", surface_type="dm", surface_id="s"

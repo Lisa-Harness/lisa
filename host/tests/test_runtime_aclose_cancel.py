@@ -23,7 +23,7 @@ from host.runtime import HostRuntime
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
     """Build a HostRuntime whose data_dir is tmp_path and no MCP configs."""
-    from kernel.testing.runtime_factory import build_test_runtime
+    from host.testing import build_test_runtime
 
     runtime = build_test_runtime(tmp_path, models_yaml="")
     # No warm/cold configs so _build_pool is a no-op, but the deferred

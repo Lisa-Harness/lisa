@@ -119,19 +119,15 @@ class _SliceProviderHooksView:
         runtime: HostRuntime,
     ) -> None:
         self._runtime = runtime
-        # Lazy: wire execute_operation when the factory asks for it via
-        # attribute access; the closure is defined later in build_turn_hooks
-        # but factories only invoke it at slice time, not at construction.
+        self.execute_operation: Any = None
+        self.execute_tool: Any = None
+        # ``build_turn_hooks`` assigns both dispatchers before any factory
+        # invocation; the slots make the surface explicit rather than a
+        # monkey-patch fallback (the previous ``__getattr__`` always raised).
 
     @property
     def last_context_snapshot(self) -> Any:
         return self._runtime.session.last_context_snapshot
-
-    def __getattr__(self, name: str) -> Any:
-        # Fall back to runtime attributes for seams the factory may need
-        # (e.g. execute_operation closure is set on this view explicitly
-        # once build_turn_hooks constructs it). Until then, raise.
-        raise AttributeError(f"_SliceProviderHooksView has no attribute {name!r}")
 
 
 def _derive_view(runtime: HostRuntime) -> Any:
