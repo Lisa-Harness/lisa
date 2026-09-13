@@ -22,11 +22,19 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from host.code_artifacts import FileCodeChangeArtifactStore
+
+    from kernel.approval import ApprovalService
     from kernel.capability_manifest import CapabilityManifest
     from kernel.context.models import ContextBudgetSnapshot
     from kernel.delegation import DelegationResult, DelegationSpec
-    from kernel.models import ForkResult, ForkSpec, OperationResult
+    from kernel.models import ForkResult, ForkSpec, IntrospectSnapshot, OperationResult
+    from kernel.pack_configuration import SessionPackConfigurationResolver
+    from kernel.recovery import RecoveryService
+    from kernel.seams.protocols import RouteCoordinator, StateProvider
+    from kernel.slice import SliceOutcome, SlicePolicy, SliceTuning
     from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+    from kernel.workflow_position import WorkflowPosition
 
 
 # ── ModelHooks ─────────────────────────────────────────────────────────
@@ -121,18 +129,18 @@ class LifecycleHooks:
 
     #: ``SliceTuning`` controlling the slice budget shape. ``None`` means
     #: "use defaults and disable all three triggers."
-    slice_tuning: Any = None
+    slice_tuning: SliceTuning | None = None
 
     #: Opportunistic slice fired before the model call. Receives a
     #: ``SlicePolicy`` (mode=PRE_TURN) and returns a ``SliceOutcome``.
-    pre_turn_slice: Callable[[Any], Awaitable[Any]] | None = None
+    pre_turn_slice: Callable[[SlicePolicy], Awaitable[SliceOutcome]] | None = None
 
     #: Opportunistic slice fired after the response is committed.
-    post_turn_slice: Callable[[Any], Awaitable[Any]] | None = None
+    post_turn_slice: Callable[[SlicePolicy], Awaitable[SliceOutcome]] | None = None
 
     #: Slice fired only when an operation or CLI command invokes it; the
     #: caller's budget is honored verbatim — pressure does not apply.
-    explicit_slice: Callable[[Any], Awaitable[Any]] | None = None
+    explicit_slice: Callable[[SlicePolicy], Awaitable[SliceOutcome]] | None = None
 
     #: Monotonic timestamp of the last completed slice; the framework's
     #: pressure math reads it. The host can coordinate multiple slices here.
@@ -154,7 +162,7 @@ class LifecycleHooks:
     #: live runtime (process memory, asyncio tasks, MCP pool health, token
     #: usage, log tail). Injected into ``OperationExecutionContext.host`` so
     #: self-model / reflect_self can read live state. Default: ``None``.
-    introspect: Any | None = None
+    introspect: Callable[[], Awaitable[IntrospectSnapshot]] | None = None
 
 
 # ── WorkflowHooks ───────────────────────────────────────────────────────
@@ -167,17 +175,17 @@ class WorkflowHooks:
     #: The turn loop reads the stage pointer to inject the current stage's
     #: ``instruction_body`` into the system prompt and feeds ``turn_count``
     #: to the lifecycle resolver. Default: ``None`` (no durable state).
-    workflow_position: Callable[[], Any] | None = None
+    workflow_position: Callable[[], WorkflowPosition | None] | None = None
 
     #: ``workflow_position_updater(position)`` persists an advanced
     #: ``WorkflowPosition`` after a successful ``transition_stage`` so the
     #: next turn's ``workflow_position`` hook returns it. Default: ``None``
     #: (advances apply in-process but are not persisted across turns).
-    workflow_position_updater: Callable[[Any], Any] | None = None
+    workflow_position_updater: Callable[[WorkflowPosition], None] | None = None
 
     #: Optional ``RouteCoordinator`` backend that persists the next handoff
     #: target across turns (consulted for ``proceed``-style continuations).
-    route_coordinator: Any | None = None
+    route_coordinator: RouteCoordinator | None = None
 
 
 # ── HostServiceHandles ──────────────────────────────────────────────────
@@ -186,20 +194,24 @@ class HostServiceHandles:
     """Host-owned durable service handles injected into operation/tool
     contexts so pack code can persist and recall without recomputing."""
 
-    #: Zero-arg callable returning the current session's ``UnifiedState``.
-    state_provider: Callable[[], Any] | None = None
+    #: ``state_provider()`` returns the current session's ``UnifiedState``
+    #: (or ``None``). Injected into ``OperationExecutionContext`` so operations
+    #: that need cached runtime state can read it.
+    state_provider: StateProvider | None = None
 
     #: Session-owned resolver for immutable, target-pack configuration.
-    pack_configuration_resolver: Any | None = None
+    pack_configuration_resolver: SessionPackConfigurationResolver | None = None
 
     #: Host-owned persistence + receipt service for exact-action approval.
-    approval_service: Any | None = None
+    approval_service: ApprovalService | None = None
 
     #: Host-owned durable service for interrupted dispatch work items.
-    recovery_service: Any | None = None
+    recovery_service: RecoveryService | None = None
 
     #: Host-owned store for pack-neutral local coding-workflow artifacts.
-    code_change_artifact_store: Any | None = None
+    #: Structural seam — annotated against the concrete host store so readers
+    #: see the real surface; the kernel never imports host types at runtime.
+    code_change_artifact_store: FileCodeChangeArtifactStore | None = None
 
     #: Canonical host data root, injected by the host and threaded into every
     #: operation/tool context. There is deliberately no fallback — a host

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kernel.token_usage import TokenUsageTelemetryHandler
+
 from host.approvals import FileApprovalService
 from host.code_artifacts import FileCodeChangeArtifactStore
 from host.policy_service import PolicyApprovalService
@@ -39,7 +41,7 @@ class HostServices:
     approval_service: PolicyApprovalService
     recovery_service: FileRecoveryService
     code_change_artifact_store: FileCodeChangeArtifactStore
-    token_usage_handler: Any
+    token_usage_handler: TokenUsageTelemetryHandler
     #: The resolved memory MCP server config selected by capability
     #: provider policy, plus the pack slug that won the capability.
     memory_config: Any = None
@@ -48,8 +50,6 @@ class HostServices:
     @classmethod
     def build(cls, data_dir: Path) -> HostServices:
         """Construct the service stack rooted at the host data directory."""
-        from kernel.token_usage import TokenUsageTelemetryHandler
-
         return cls(
             approval_service=PolicyApprovalService(
                 FileApprovalService(data_dir / "approvals.json"),
