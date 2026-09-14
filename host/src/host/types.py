@@ -56,9 +56,16 @@ class HostCommandResult:
     turn ended via an operator signal or a cap path that degrades to one. The
     transport reads it to decide whether to return the prompt (stop/terminate)
     or hold the turn open (pause). Empty string for normal turns.
+
+    ``yielded_question`` carries the model's question when the turn ended via
+    the ``yield`` terminal action (the model asked the user something instead
+    of producing a final answer). Non-empty means the turn did NOT complete —
+    one-shot hosts use this to fail fast (there is no interactive loop to
+    answer the question) while conversational hosts surface it inline.
     """
 
     text: str
     data: dict[str, Any] | None = None
     is_error: bool = False
     operator_exit: str = ""
+    yielded_question: str = ""

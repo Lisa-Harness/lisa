@@ -93,6 +93,19 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### Structural yield surface on `HostCommandResult`
+
+- **What:** `host.types.HostCommandResult` gains `yielded_question: str`, set
+  by `handle_message` from `result.yielded.question` when a turn ends in the
+  model's `yield` terminal action, with `data["yielded"]` mirroring the
+  question for panel transports. Covered by `host/tests/test_host_command_result_yield.py`.
+- **Why:** A yielded turn (the model asked the operator a question instead of
+  finishing) was previously indistinguishable from a completed answer at the
+  result boundary — the question prose flowed to transports as `text`. One-shot
+  hosts (the CLI `once` command) rely on the typed field to fail fast with a
+  dedicated exit code instead of writing the question into redirected output
+  as if it were the requested artifact.
+
 #### Turn decision telemetry (`turn.decision`) (Loop 7)
 
 - **What:** Added per-iteration structured `turn.decision` event publishing to

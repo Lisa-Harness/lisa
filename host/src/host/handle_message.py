@@ -812,6 +812,13 @@ async def _execute_mode_turn(
     return HostCommandResult(
         text=result.response_text,
         operator_exit=getattr(result, "operator_exit", ""),
+        # Surface the model's ask-the-user terminal action structurally: a
+        # non-empty question means the turn ended in a yield — the model
+        # asked the operator something instead of finishing. The question
+        # rides both the typed field (one-shot hosts exit non-zero) and
+        # ``data["yielded"]`` so panel transports can render it inline.
+        yielded_question=(result.yielded.question if result.yielded else ""),
+        data={"yielded": result.yielded.question} if result.yielded else None,
     )
 
 
