@@ -126,6 +126,7 @@ def _token_state_dict(runtime: HostRuntime) -> dict[str, Any]:
         "turn_total_tokens": t.turn_total_tokens,
         "turn_cached_tokens": t.turn_cached_tokens,
         "turn_reasoning_tokens": t.turn_reasoning_tokens,
+        "turn_cache_creation_tokens": t.turn_cache_creation_tokens,
         "turn_duration_ms": t.turn_duration_ms,
         "turn_latency_ms": t.turn_latency_ms,
         "session_prompt_tokens": t.session_prompt_tokens,
@@ -133,6 +134,7 @@ def _token_state_dict(runtime: HostRuntime) -> dict[str, Any]:
         "session_total_tokens": t.session_total_tokens,
         "session_cached_tokens": t.session_cached_tokens,
         "session_reasoning_tokens": t.session_reasoning_tokens,
+        "session_cache_creation_tokens": t.session_cache_creation_tokens,
         "session_duration_ms": t.session_duration_ms,
         "session_latency_ms": t.session_latency_ms,
         "session_token_ledger": t.session_token_ledger,
@@ -156,6 +158,9 @@ def _sync_token_state(runtime: HostRuntime, state: dict[str, Any]) -> None:
     t.turn_total_tokens = coerce_non_negative_int(state.get("turn_total_tokens", 0))
     t.turn_cached_tokens = coerce_non_negative_int(state.get("turn_cached_tokens", 0))
     t.turn_reasoning_tokens = coerce_non_negative_int(state.get("turn_reasoning_tokens", 0))
+    t.turn_cache_creation_tokens = coerce_non_negative_int(
+        state.get("turn_cache_creation_tokens", 0)
+    )
     t.turn_duration_ms = float(state.get("turn_duration_ms", 0.0) or 0.0)
     t.turn_latency_ms = coerce_non_negative_int(state.get("turn_latency_ms", 0))
     t.session_prompt_tokens = coerce_non_negative_int(state.get("session_prompt_tokens", 0))
@@ -163,6 +168,9 @@ def _sync_token_state(runtime: HostRuntime, state: dict[str, Any]) -> None:
     t.session_total_tokens = coerce_non_negative_int(state.get("session_total_tokens", 0))
     t.session_cached_tokens = coerce_non_negative_int(state.get("session_cached_tokens", 0))
     t.session_reasoning_tokens = coerce_non_negative_int(state.get("session_reasoning_tokens", 0))
+    t.session_cache_creation_tokens = coerce_non_negative_int(
+        state.get("session_cache_creation_tokens", 0)
+    )
     t.session_duration_ms = float(state.get("session_duration_ms", 0.0) or 0.0)
     t.session_latency_ms = coerce_non_negative_int(state.get("session_latency_ms", 0))
     t.session_token_ledger = state.get("session_token_ledger", t.session_token_ledger)

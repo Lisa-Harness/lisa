@@ -104,6 +104,7 @@ def ensure_usage_entry(entry: dict[str, Any]) -> dict[str, Any]:
     entry.setdefault("total_tokens", 0)
     entry.setdefault("cached_tokens", 0)
     entry.setdefault("reasoning_tokens", 0)
+    entry.setdefault("cache_creation_tokens", 0)
     entry.setdefault("duration_ms", 0.0)
     entry.setdefault("latency_ms", 0)
     return entry
@@ -234,6 +235,7 @@ def build_token_usage_event(
     total_tokens: int = 0,
     cached_tokens: int = 0,
     reasoning_tokens: int = 0,
+    cache_creation_tokens: int = 0,
     duration_ms: float = 0.0,
     latency_ms: int = 0,
     cost_usd: float = 0.0,
@@ -273,6 +275,7 @@ def build_token_usage_event(
         total_tokens=int(total_tokens or 0),
         cached_tokens=int(cached_tokens or 0),
         reasoning_tokens=int(reasoning_tokens or 0),
+        cache_creation_tokens=int(cache_creation_tokens or 0),
         duration_ms=float(duration_ms or 0.0),
         latency_ms=int(latency_ms or 0),
         cost_usd=float(cost_usd or 0.0),

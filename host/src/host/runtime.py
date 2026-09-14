@@ -81,6 +81,7 @@ class TokenCounters:
     turn_total_tokens: int = 0
     turn_cached_tokens: int = 0
     turn_reasoning_tokens: int = 0
+    turn_cache_creation_tokens: int = 0
     turn_duration_ms: float = 0.0
     turn_latency_ms: int = 0
 
@@ -90,6 +91,7 @@ class TokenCounters:
     session_total_tokens: int = 0
     session_cached_tokens: int = 0
     session_reasoning_tokens: int = 0
+    session_cache_creation_tokens: int = 0
     session_duration_ms: float = 0.0
     session_latency_ms: int = 0
     session_token_ledger: list[dict[str, Any]] = field(default_factory=list)
@@ -113,6 +115,7 @@ class TokenCounters:
         self.turn_total_tokens = 0
         self.turn_cached_tokens = 0
         self.turn_reasoning_tokens = 0
+        self.turn_cache_creation_tokens = 0
         self.turn_duration_ms = 0.0
         self.turn_latency_ms = 0
 

@@ -130,6 +130,10 @@ class StubCompletion:
 
     reasoning_tokens: int = 0
 
+    #: Provider-reported prompt-cache *creation/population* tokens (Anthropic).
+
+    cache_creation_tokens: int = 0
+
     duration_ms: float = 0.0
 
     finish_reason: str | None = None

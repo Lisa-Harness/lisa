@@ -63,7 +63,7 @@ __all__ = [
 class TurnUsage:
     """Per-turn token/latency counters extracted from a ``TurnResult``.
 
-    Frozen-slots dataclass so the 7 counters are accessed as attributes
+    Frozen-slots dataclass so the 8 counters are accessed as attributes
     (``turn.prompt``), not string-keyed dict lookups (``turn["prompt"]``).
     A typo in a field name is an ``AttributeError`` at the call site, not a
     silent ``None`` or ``KeyError``. Mirrors the fields on
@@ -75,6 +75,7 @@ class TurnUsage:
     total: int
     cached: int
     reasoning: int
+    cache_creation: int
     duration_ms: float
     latency_ms: int
 
@@ -90,6 +91,7 @@ def _new_usage_entry() -> dict[str, Any]:
         "total_tokens": 0,
         "cached_tokens": 0,
         "reasoning_tokens": 0,
+        "cache_creation_tokens": 0,
         "duration_ms": 0.0,
         "latency_ms": 0,
     }
@@ -103,6 +105,7 @@ def _accumulate_entry(
     total: int,
     cached: int,
     reasoning: int,
+    cache_creation: int,
     duration_ms: float,
     latency_ms: int,
 ) -> None:
@@ -112,6 +115,7 @@ def _accumulate_entry(
     entry["total_tokens"] += total
     entry["cached_tokens"] += cached
     entry["reasoning_tokens"] += reasoning
+    entry["cache_creation_tokens"] += cache_creation
     entry["duration_ms"] += duration_ms
     entry["latency_ms"] += latency_ms
 
@@ -126,6 +130,7 @@ def _accumulate_breakdown(
     total: int,
     cached: int,
     reasoning: int,
+    cache_creation: int,
     duration_ms: float,
     latency_ms: int,
 ) -> None:
@@ -139,6 +144,7 @@ def _accumulate_breakdown(
         total=total,
         cached=cached,
         reasoning=reasoning,
+        cache_creation=cache_creation,
         duration_ms=duration_ms,
         latency_ms=latency_ms,
     )
@@ -229,6 +235,7 @@ def _accumulate_per_model_breakdown(
             total=coerce_non_negative_int(entry.get("total_tokens", 0)),
             cached=coerce_non_negative_int(entry.get("cached_tokens", 0)),
             reasoning=coerce_non_negative_int(entry.get("reasoning_tokens", 0)),
+            cache_creation=coerce_non_negative_int(entry.get("cache_creation_tokens", 0)),
             duration_ms=coerce_non_negative_float(entry.get("duration_ms", 0.0)),
             latency_ms=coerce_non_negative_int(entry.get("latency_ms", 0)),
         )
@@ -250,6 +257,7 @@ def _accumulate_per_mode_breakdown(
             total=coerce_non_negative_int(entry.get("total_tokens", 0)),
             cached=coerce_non_negative_int(entry.get("cached_tokens", 0)),
             reasoning=coerce_non_negative_int(entry.get("reasoning_tokens", 0)),
+            cache_creation=coerce_non_negative_int(entry.get("cache_creation_tokens", 0)),
             duration_ms=coerce_non_negative_float(entry.get("duration_ms", 0.0)),
             latency_ms=coerce_non_negative_int(entry.get("latency_ms", 0)),
         )
@@ -268,6 +276,7 @@ def _extract_main_tokens(result: Any) -> TurnUsage:
         total=total,
         cached=coerce_non_negative_int(getattr(result, "cached_tokens", 0)),
         reasoning=coerce_non_negative_int(getattr(result, "reasoning_tokens", 0)),
+        cache_creation=coerce_non_negative_int(getattr(result, "cache_creation_tokens", 0)),
         duration_ms=coerce_non_negative_float(getattr(result, "duration_ms", 0.0)),
         latency_ms=coerce_non_negative_int(getattr(result, "latency_ms", 0)),
     )
@@ -280,6 +289,7 @@ def _set_turn_state(state: dict[str, Any], turn: TurnUsage) -> None:
     state["turn_total_tokens"] = turn.total
     state["turn_cached_tokens"] = turn.cached
     state["turn_reasoning_tokens"] = turn.reasoning
+    state["turn_cache_creation_tokens"] = turn.cache_creation
     state["turn_duration_ms"] = turn.duration_ms
     state["turn_latency_ms"] = turn.latency_ms
 
@@ -297,6 +307,10 @@ def _accumulate_session_state(state: dict[str, Any], turn: TurnUsage) -> None:
     )
     state["session_cached_tokens"] = (
         coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn.cached
+    )
+    state["session_cache_creation_tokens"] = (
+        coerce_non_negative_int(state.get("session_cache_creation_tokens", 0))
+        + turn.cache_creation
     )
     state["session_reasoning_tokens"] = (
         coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn.reasoning
@@ -355,6 +369,7 @@ def _record_main_ledger(
             "total_tokens": main.total,
             "cached_tokens": main.cached,
             "reasoning_tokens": main.reasoning,
+            "cache_creation_tokens": main.cache_creation,
             "duration_ms": main.duration_ms,
             "latency_ms": main.latency_ms,
         }
@@ -375,6 +390,7 @@ def _main_breakdown_kwargs(main: TurnUsage) -> dict[str, Any]:
         "total": main.total,
         "cached": main.cached,
         "reasoning": main.reasoning,
+        "cache_creation": main.cache_creation,
         "duration_ms": main.duration_ms,
         "latency_ms": main.latency_ms,
     }

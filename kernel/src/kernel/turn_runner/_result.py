@@ -35,6 +35,9 @@ class TurnResult:
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    #: Provider-reported prompt-cache *creation/population* tokens (Anthropic
+    #: ``cache_creation_input_tokens``). 0 when the provider does not report it.
+    cache_creation_tokens: int = 0
     duration_ms: float = 0.0
     latency_ms: int = 0
     slice_outcomes: list[SliceOutcome] = field(default_factory=list)

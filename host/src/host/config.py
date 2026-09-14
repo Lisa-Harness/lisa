@@ -46,6 +46,7 @@ LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_REFLECTION_
 LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV = "LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO"
+LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
 
 # ── Default values ────────────────────────────────────────────────────
 
@@ -393,6 +394,15 @@ class HostConfig:
     # ``LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS``.
     context_budget_operational_max_tokens: int = 800
 
+    # ── Prompt caching (provider wire-level) ────────────────────────
+    # When True (default), providers that support explicit prompt-cache
+    # breakpoints (Anthropic's ``cache_control``) mark the stable system
+    # prefix as cacheable while the dynamic tail (routing hints, lifecycle
+    # briefing) stays uncached. When False, requests fall back to legacy
+    # single-string system prompts — the immediate rollback switch.
+    # Override via ``LISA_PROMPT_CACHE_ENABLED`` (0/false/no/off).
+    prompt_cache_enabled: bool = True
+
     # ── Surface identity defaults ─────────────────────────────────────
     # Default scope values stamped onto every OperationExecutionContext
     # and TurnHooks when the host does not supply a more specific value.
@@ -554,6 +564,7 @@ class HostConfig:
         memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
 
         context_budget = _context_budget_overrides()
+        prompt_cache_enabled = _resolve_env_bool(LISA_PROMPT_CACHE_ENABLED_ENV, True)
 
         # ── User / session ─────────────────────────────────────────────
         # Session source compilation is intentionally deferred to HostRuntime
@@ -598,6 +609,7 @@ class HostConfig:
             thread_redaction_enabled=thread_redaction_enabled,
             thread_redaction_patterns=thread_redaction_patterns,
             memory_max_records=memory_max,
+            prompt_cache_enabled=prompt_cache_enabled,
             execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,
             surface_id=resolved_surface_id,

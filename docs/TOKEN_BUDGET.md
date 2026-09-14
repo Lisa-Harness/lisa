@@ -63,9 +63,15 @@ should be sized to the *natural* workload, not the waste.
    every iteration, so per-turn totals are dominated by context
    re-accumulation, not by model work.
 
-3. **No cross-turn persistence.** Each turn restarts context from scratch,
-   so a multi-step task re-reads the same material repeatedly across
-   handoffs.
+3. **Provider prefix-cache reuse was inert.** Each turn restarts context from
+   scratch at the *provider* layer even though the lossless thread store
+   persists history externally. With no explicit cache breakpoints and a
+   per-iteration system-prompt rewrite, a heavy turn re-billed the stable
+   prefix on every call.
+
+   → Now addressed: see "Prompt-cache strategy" below for the typed
+   segment + breakpoint design that reuses the stable prefix across turns
+   and iterations.
 
 ## Derived caps
 
@@ -128,3 +134,69 @@ true cost ceiling.
 - **Iterations:** `max_tool_iterations = 300` remains the per-turn runaway
   governor; `per_step_max_iterations / per_step_max_tool_calls` remain the
   per-step sub-budgets.
+
+## Prompt-cache strategy
+
+Manus/Anthropic's prompt-caching guidance plus the KV-cache literature point
+to one dominant lever for an agent like Lisa (97% prompt tokens): reuse the
+*stable* prefix across turns/iterations and keep dynamic content after the
+breakpoint. Lisa implements this through typed prompt segments rather than
+rolling back context management.
+
+### Segment model
+
+- `kernel.system_segments.SystemPromptSegments` splits the system prompt
+  into ordered typed segments.
+- **Stable** segments hold the harness, session instructions, Copilot
+  customizations, and mode/stage instructions — the cross-turn prefix.
+- **Ephemeral** segments carry the routing hint, handoff context, terminal
+  directives, and the per-iteration `## Turn Lifecycle` briefing. They are
+  replaced in place (keyed by name), never accumulate, and always render
+  after the stable prefix.
+- `flatten_system_prompt_segments` renders the legacy single string with
+  the historical `\n\n` join, so providers without explicit cache
+  controls get byte-identical prompts.
+
+### Wire behavior by provider
+
+- **Anthropic:** `sdk.providers.anthropic_gateway` emits the stable prefix as
+  system content blocks with an ephemeral `cache_control` breakpoint on the
+  final stable block; the dynamic tail stays uncached.
+- **OpenAI / Azure:** implicit prefix caching — no explicit breakpoints, but
+  tool schemas are canonically sorted by function name
+  (`kernel.turn_phases._tool_schemas`) so the same mode produces a
+  byte-identical tool payload across turns.
+- **Gemini:** implicit caching only; explicit Cached Content resources are a
+  separate follow-on (distinct lifecycle/TTL semantics).
+
+### Rollback
+
+`LISA_PROMPT_CACHE_ENABLED=false` flattens segments to the legacy
+single-string system prompt and drops the Anthropic cache breakpoint. The
+default is enabled.
+
+### Telemetry
+
+- `cached_tokens` — provider-reported cache *reads* (Anthropic/OpenAI/Google
+  already surface these).
+- `cache_creation_tokens` — prompt-cache *writes* (Anthropic
+  `cache_creation_input_tokens`). Tracked separately from
+  `reasoning_tokens`; earlier builds conflated the two.
+- `/tokens` lifetime view and the introspection 24h rollup report cache
+  reads, creations, and the read share: `cached / (prompt + cached)`
+  provider-reported, not a billing estimate.
+
+### Rollout evaluation checklist
+
+1. Baseline a workload with caching disabled (`LISA_PROMPT_CACHE_ENABLED=false`)
+   and record per-provider/per-model `cached_tokens`, `cache_creation_tokens`,
+   prompt tokens, and TTFT/latency where available.
+2. Re-run the same workload with caching on. Expected: large gain in
+   cache-read share on the stable prefix; cache-creation tokens appear once
+   per session then mostly zero until the cache expires.
+3. Watch quality gates, not just hit rate: iteration count, forced-final
+   rate, tool-call validity, workflow completion. Roll back via the env
+   toggle if any of those regress; retain the segment plumbing — it is
+   behavior-neutral when caching is off.
+4. Do not raise turn/iteration budgets to *spend* the cache headroom; the
+   savings should land on cost/latency, not longer burn.

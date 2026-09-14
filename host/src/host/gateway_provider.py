@@ -110,11 +110,17 @@ class HostGatewayProvider:
             if provider == "anthropic":
                 # AnthropicGateway holds the raw runtime-cached httpx client;
                 # auth (x-api-key) and anthropic-version are injected
-                # per-request by the gateway from these values.
+                # per-request by the gateway from these values. The host's
+                # prompt_cache_enabled toggle (``LISA_PROMPT_CACHE_ENABLED``)
+                # controls whether typed system segments get an ephemeral
+                # cache breakpoint on the stable prefix.
                 return gateway_cls(
                     client_factory=lambda: _anthropic_http_client_instance(runtime),
                     api_key=_env("LISA_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
                     api_version=_env("LISA_ANTHROPIC_VERSION") or "2023-06-01",
+                    prompt_cache_enabled=bool(
+                        getattr(runtime.config, "prompt_cache_enabled", True)
+                    ),
                 )
             if provider == "google":
                 # Native REST path (chosen over the legacy OpenAI-compat wire

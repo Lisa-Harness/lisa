@@ -216,6 +216,7 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
     first_at = ""
     last_at = ""
     model_totals: dict[str, dict[str, int]] = {}
+    cache_creation = 0
 
     for raw_line in lines:
         try:
@@ -230,12 +231,14 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
         rec_total = int(record.get("total_tokens") or 0)
         rec_cached = int(record.get("cached_tokens") or 0)
         rec_reasoning = int(record.get("reasoning_tokens") or 0)
+        rec_cache_creation = int(record.get("cache_creation_tokens") or 0)
         rec_cost = float(record.get("cost_usd") or 0.0)
         prompt += rec_prompt
         completion += rec_completion
         total += rec_total
         cached += rec_cached
         reasoning += rec_reasoning
+        cache_creation += rec_cache_creation
         cost += rec_cost
         emitted_at = str(record.get("emitted_at") or "")
         if emitted_at:
@@ -253,6 +256,7 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
                     "total_tokens": 0,
                     "cached_tokens": 0,
                     "reasoning_tokens": 0,
+                    "cache_creation_tokens": 0,
                 },
             )
             entry["prompt_tokens"] += rec_prompt
@@ -260,17 +264,26 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
             entry["total_tokens"] += rec_total
             entry["cached_tokens"] += rec_cached
             entry["reasoning_tokens"] += rec_reasoning
+            entry["cache_creation_tokens"] += rec_cache_creation
 
     if event_count == 0:
         return []
 
     billed = max(0, total - cached)
+    # Cache-read share: tokens served from cache as a fraction of everything
+    # the provider *input* (prompt + cache reads). Zero-denominator guard so
+    # an all-empty record set renders 0.0 rather than raising.
+    cache_read_share = (
+        cached / (prompt + cached) if (prompt + cached) > 0 else 0.0
+    )
     out: list[str] = [
         "",
         "### Lifetime (all sessions)",
         f"- Events: {event_count}",
         f"- Span: {first_at or 'n/a'} → {last_at or 'n/a'}",
         f"- Estimated cost: ${cost:.4f}",
+        f"- Prompt cache: {cached:,} read ({cache_read_share:.1%} of input), "
+        f"{cache_creation:,} created",
         "| Prompt | Completion | Total | Cached | Reasoning | Billed (total-cached) |",
         "| --- | --- | --- | --- | --- | --- |",
         f"| {prompt} | {completion} | {total} | {cached} | {reasoning} | {billed} |",

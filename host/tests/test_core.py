@@ -39,6 +39,18 @@ class TestHostConfig:
         config = HostConfig.from_env(debug=True)
         assert config.effective_log_level == "debug"
 
+    def test_prompt_cache_enabled_defaults_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Prompt caching defaults to enabled (no env var set)."""
+        monkeypatch.delenv("LISA_PROMPT_CACHE_ENABLED", raising=False)
+        config = HostConfig.from_env()
+        assert config.prompt_cache_enabled is True
+
+    def test_prompt_cache_enabled_disabled_by_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``LISA_PROMPT_CACHE_ENABLED=false`` is the immediate rollback switch."""
+        monkeypatch.setenv("LISA_PROMPT_CACHE_ENABLED", "false")
+        config = HostConfig.from_env()
+        assert config.prompt_cache_enabled is False
+
     def test_from_env_data_dir_resolved(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path / "custom_artifacts"))
         assert config.data_dir == (tmp_path / "custom_artifacts").resolve()

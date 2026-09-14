@@ -23,7 +23,54 @@ _log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnResult
 
+@dataclass(frozen=True, slots=True)
+class CompletionUsageSummary:
+    """Normalized per-completion usage, including cache sub-counters.
+
+    Returned by :func:`_extract_completion_usage` so new sub-counter fields
+    (e.g. ``cache_creation_tokens``) can be added by attribute rather than
+    widening a positional tuple that every call site must unpack.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    #: Provider-reported prompt-cache *creation/population* tokens
+    #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
+    cache_creation_tokens: int = 0
+    duration_ms: float = 0.0
+    latency_ms: int = 0
+
+    #: Legacy tuple layout — ``(prompt, completion, total, cached, reasoning,
+    #: duration_ms, latency_ms)``. Iterating/unpacking preserves the original
+    #: 7-field order so pre-summary tuple consumption keeps working; the new
+    #: ``cache_creation_tokens`` counter is read by attribute, not by index.
+    def __iter__(self) -> Any:
+        yield self.prompt_tokens
+        yield self.completion_tokens
+        yield self.total_tokens
+        yield self.cached_tokens
+        yield self.reasoning_tokens
+        yield self.duration_ms
+        yield self.latency_ms
+
+    def __getitem__(self, index: int) -> Any:
+        values = (
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+            self.cached_tokens,
+            self.reasoning_tokens,
+            self.duration_ms,
+            self.latency_ms,
+        )
+        return values[index]
+
+
 __all__ = [
+    "CompletionUsageSummary",
     "_CapabilityGateBlock",
     "_coerce_non_negative_float",
     "_coerce_non_negative_int",
@@ -202,18 +249,20 @@ def _coerce_non_negative_float(value: Any) -> float:
 
 def _extract_completion_usage(
     completion: Any,
-) -> tuple[int, int, int, int, int, float, int]:
+) -> CompletionUsageSummary:
     """Extract token, sub-counter, duration, and latency counts from one completion.
 
-    Returns a 7-tuple ``(prompt_tokens, completion_tokens, total_tokens,
-    cached_tokens, reasoning_tokens, duration_ms, latency_ms)``.
+    Returns a :class:`CompletionUsageSummary` carrying ``prompt_tokens``,
+    ``completion_tokens``, ``total_tokens``, ``cached_tokens``,
+    ``reasoning_tokens``, ``cache_creation_tokens``, ``duration_ms``, and
+    ``latency_ms``.
 
     The function reads both the flat attributes some hosts set on the
     completion object (``prompt_tokens`` etc.) and the nested ``usage``
     object the kernel gateways populate. Sub-counters (``cached_tokens``,
-    ``reasoning_tokens``) and ``duration_ms`` are read defensively so a
-    missing field never raises; they default to 0 when the provider did
-    not surface them.
+    ``reasoning_tokens``, ``cache_creation_tokens``) and ``duration_ms``
+    are read defensively so a missing field never raises; they default to
+    0 when the provider did not surface them.
     """
 
     prompt_tokens = _coerce_non_negative_int(getattr(completion, "prompt_tokens", 0))
@@ -221,6 +270,9 @@ def _extract_completion_usage(
     total_tokens = _coerce_non_negative_int(getattr(completion, "total_tokens", 0))
     cached_tokens = _coerce_non_negative_int(getattr(completion, "cached_tokens", 0))
     reasoning_tokens = _coerce_non_negative_int(getattr(completion, "reasoning_tokens", 0))
+    cache_creation_tokens = _coerce_non_negative_int(
+        getattr(completion, "cache_creation_tokens", 0)
+    )
     duration_ms = _coerce_non_negative_float(getattr(completion, "duration_ms", 0.0))
     latency_ms = _coerce_non_negative_int(getattr(completion, "latency_ms", 0))
 
@@ -230,6 +282,7 @@ def _extract_completion_usage(
     usage_total = 0
     usage_cached = 0
     usage_reasoning = 0
+    usage_cache_creation = 0
     if isinstance(usage, dict):
         usage_prompt = _coerce_non_negative_int(
             usage.get("prompt_tokens") or usage.get("input_tokens")
@@ -240,6 +293,9 @@ def _extract_completion_usage(
         usage_total = _coerce_non_negative_int(usage.get("total_tokens"))
         usage_cached = _coerce_non_negative_int(usage.get("cached_tokens"))
         usage_reasoning = _coerce_non_negative_int(usage.get("reasoning_tokens"))
+        usage_cache_creation = _coerce_non_negative_int(
+            usage.get("cache_creation_tokens") or usage.get("cache_creation_input_tokens")
+        )
     elif usage is not None:
         usage_prompt = _coerce_non_negative_int(
             getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
@@ -250,6 +306,10 @@ def _extract_completion_usage(
         usage_total = _coerce_non_negative_int(getattr(usage, "total_tokens", None))
         usage_cached = _coerce_non_negative_int(getattr(usage, "cached_tokens", None))
         usage_reasoning = _coerce_non_negative_int(getattr(usage, "reasoning_tokens", None))
+        usage_cache_creation = _coerce_non_negative_int(
+            getattr(usage, "cache_creation_tokens", None)
+            or getattr(usage, "cache_creation_input_tokens", None)
+        )
         if duration_ms <= 0.0:
             # Gateways can measure duration on the nested ``usage`` object
             # (``CompletionUsage.duration_ms``). Flat attrs take precedence;
@@ -262,9 +322,16 @@ def _extract_completion_usage(
     total_value = total_tokens or usage_total
     if total_value <= 0:
         total_value = prompt + completion_value
-    cached = cached_tokens or usage_cached
-    reasoning = reasoning_tokens or usage_reasoning
     if latency_ms <= 0 and duration_ms > 0.0:
         latency_ms = _coerce_non_negative_int(duration_ms)
 
-    return prompt, completion_value, total_value, cached, reasoning, duration_ms, latency_ms
+    return CompletionUsageSummary(
+        prompt_tokens=prompt,
+        completion_tokens=completion_value,
+        total_tokens=total_value,
+        cached_tokens=cached_tokens or usage_cached,
+        reasoning_tokens=reasoning_tokens or usage_reasoning,
+        cache_creation_tokens=cache_creation_tokens or usage_cache_creation,
+        duration_ms=duration_ms,
+        latency_ms=latency_ms,
+    )

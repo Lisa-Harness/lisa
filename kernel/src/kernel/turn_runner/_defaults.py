@@ -244,6 +244,7 @@ _USAGE_AGG_FIELDS: tuple[str, ...] = (
     "total_tokens",
     "cached_tokens",
     "reasoning_tokens",
+    "cache_creation_tokens",
     "duration_ms",
     "latency_ms",
 )

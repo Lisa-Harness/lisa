@@ -43,6 +43,7 @@ def _usage_from_result(result: Any) -> CompletionUsage | None:
         total_tokens=int(getattr(result, "total_tokens", 0)),
         cached_tokens=int(getattr(result, "cached_tokens", 0)),
         reasoning_tokens=int(getattr(result, "reasoning_tokens", 0)),
+        cache_creation_tokens=int(getattr(result, "cache_creation_tokens", 0)),
         duration_ms=float(getattr(result, "duration_ms", 0.0)),
     )
 
@@ -64,10 +65,15 @@ class StubGateway:
     ) -> None:
         self._complete_fn = complete_fn
         self._complete_stream_fn = complete_stream_fn
+        # Last-seen request lets tests assert the request the kernel sent
+        # (``system_prompt_segments``, ``messages``) without the fake having
+        # to add a kwarg to its signature (back-compat).
+        self.last_request: Any = None
 
     async def complete_stream(self, request: Any) -> AsyncIterator[StreamedChunk]:
         """Yield chunks from the test's streaming callable, when one is wired."""
 
+        self.last_request = request
         if self._complete_stream_fn is None:
             raise NotImplementedError("No streaming callable wired on the stub gateway")
         async for chunk in self._complete_stream_fn(
@@ -82,6 +88,7 @@ class StubGateway:
     async def complete(self, request: Any) -> CompletionResult:
         """Delegate to the test's ``complete`` callable and normalize to a result."""
 
+        self.last_request = request
         result = await self._complete_fn(
             messages=request.messages,
             model_def=request.model_def,
@@ -118,10 +125,15 @@ class StubGatewayProvider:
     ) -> None:
         self._complete_fn = complete_fn
         self._complete_stream_fn = complete_stream_fn
+        #: Most recent gateway handed out by ``gateway_for``. Lets a test
+        #: read the last completion request without re-plumbing its fake.
+        self.last_gateway: StubGateway | None = None
 
     def gateway_for(self, provider: str) -> StubGateway:
         _ = provider  # the fake resolves every provider to the same stub gateway
-        return StubGateway(self._complete_fn, self._complete_stream_fn)
+        gateway = StubGateway(self._complete_fn, self._complete_stream_fn)
+        self.last_gateway = gateway
+        return gateway
 
 
 __all__ = ["StubGateway", "StubGatewayProvider"]

@@ -535,6 +535,10 @@ class TokenUsageSummary(BaseModel):
     top_model_tokens: int = 0
     spike_at: str = ""  # ISO timestamp of the highest-cost event, or empty
     event_count: int = 0
+    #: Prompt-cache reads (tokens served from cache) observed in the window.
+    cached_tokens: int = 0
+    #: Prompt-cache writes (Anthropic cache_creation_input_tokens) observed.
+    cache_creation_tokens: int = 0
 
 
 class LogErrorEntry(BaseModel):
@@ -2425,6 +2429,9 @@ class TokenUsageEvent(BusEvent):
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    #: Provider-reported prompt-cache *creation/population* tokens
+    #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
+    cache_creation_tokens: int = 0
     cost_usd: float = 0.0
     duration_ms: float = 0.0
     time_cost_usd: float = 0.0

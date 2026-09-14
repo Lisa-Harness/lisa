@@ -710,13 +710,14 @@ def test_extract_completion_usage_from_flat_attributes() -> None:
         usage=None,
     )
     result = _extract_completion_usage(completion)
-    assert result[0] == 100  # prompt_tokens
-    assert result[1] == 50  # completion_tokens
-    assert result[2] == 150  # total_tokens
-    assert result[3] == 20  # cached_tokens
-    assert result[4] == 5  # reasoning_tokens
-    assert result[5] == 123.4  # duration_ms
-    assert result[6] == 200  # latency_ms
+    assert result.prompt_tokens == 100
+    assert result.completion_tokens == 50
+    assert result.total_tokens == 150
+    assert result.cached_tokens == 20
+    assert result.reasoning_tokens == 5
+    assert result.cache_creation_tokens == 0
+    assert result.duration_ms == 123.4
+    assert result.latency_ms == 200
 
 
 def test_extract_completion_usage_from_usage_dict() -> None:
@@ -740,11 +741,11 @@ def test_extract_completion_usage_from_usage_dict() -> None:
         },
     )
     result = _extract_completion_usage(completion)
-    assert result[0] == 200
-    assert result[1] == 80
-    assert result[2] == 280
-    assert result[3] == 10
-    assert result[4] == 3
+    assert result.prompt_tokens == 200
+    assert result.completion_tokens == 80
+    assert result.total_tokens == 280
+    assert result.cached_tokens == 10
+    assert result.reasoning_tokens == 3
 
 
 def test_extract_completion_usage_computes_total_when_missing() -> None:
@@ -809,6 +810,43 @@ def test_extract_completion_usage_handles_input_tokens_alias() -> None:
     assert result[0] == 150
     assert result[1] == 60
     assert result[2] == 210
+
+
+def test_extract_completion_usage_maps_cache_creation_alias_from_usage_dict() -> None:
+    """Anthropic's ``cache_creation_input_tokens`` maps to ``cache_creation_tokens``."""
+    from kernel.turn_phases._post_turn import _extract_completion_usage
+
+    completion = SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cached_tokens=0,
+        reasoning_tokens=0,
+        duration_ms=0.0,
+        latency_ms=0,
+        usage={"input_tokens": 150, "output_tokens": 60, "cache_creation_input_tokens": 120},
+    )
+    result = _extract_completion_usage(completion)
+    assert result.cache_creation_tokens == 120
+
+
+def test_extract_completion_usage_flat_cache_creation_wins_over_usage() -> None:
+    """Flat ``cache_creation_tokens`` take precedence over the usage alias."""
+    from kernel.turn_phases._post_turn import _extract_completion_usage
+
+    completion = SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cached_tokens=0,
+        reasoning_tokens=0,
+        cache_creation_tokens=8,
+        duration_ms=0.0,
+        latency_ms=0,
+        usage={"cache_creation_input_tokens": 90},
+    )
+    result = _extract_completion_usage(completion)
+    assert result.cache_creation_tokens == 8
 
 
 def test_extract_completion_usage_defaults_to_zero() -> None:

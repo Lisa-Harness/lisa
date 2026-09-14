@@ -79,15 +79,86 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("cache_read_input_tokens")
     )
-    if prompt_tokens == 0 and completion_tokens == 0:
-        return None
+    if (
+        prompt_tokens == 0
+        and completion_tokens == 0
+        and cache_creation == 0
+        and cache_read == 0
+    ):
+        # All counters zero/empty — no usage object on the wire (some partial
+        # events report nothing). Distinguishing that from a real zero-usage
+        # response keeps an empty ``usage`` from silently fabricating a 0/0.
+        if not any(
+            raw_usage.get(key) is not None
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+        ):
+            return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
         cached_tokens=cache_read,
-        reasoning_tokens=cache_creation,
+        # ``cache_creation_input_tokens`` reports tokens *written into* the
+        # prompt cache at the write rate. It is NOT reasoning output, so it
+        # must not be folded into ``reasoning_tokens`` (the pre-split
+        # conflation); it rides the dedicated counter instead.
+        cache_creation_tokens=cache_creation,
     )
+
+
+def _build_anthropic_system_blocks(
+    system_text: str,
+    segments: tuple[Any, ...],
+    *,
+    cache_enabled: bool,
+) -> str | list[dict[str, Any]]:
+    """Build the ``system`` parameter for one Anthropic Messages request.
+
+    When ``segments`` carries static/dynamic typing (the kernel's typed
+    prompt-segment contract) and ``cache_enabled`` is on, the stable prefix
+    is emitted as content blocks with an ephemeral ``cache_control`` marker
+    on the final stable block so Anthropic caches up to the dynamic tail.
+    Dynamic segments (routing hint, per-iteration lifecycle briefing) are
+    appended after the breakpoint without cache control.
+
+    When caching is disabled or no segments were supplied, fall back to the
+    legacy single-string ``system`` parameter — byte-identical behavior to
+    the pre-segmentation gateway.
+    """
+    if not segments:
+        return system_text
+    # The segment-flattened string is the canonical text whenever segments
+    # are present; it equals ``system_text`` when the caller also supplied
+    # the same content as system-role messages but is self-sufficient when
+    # they did not (the segment carrier IS the prompt source of truth).
+    flattened = "\n\n".join(
+        str(getattr(segment, "text", "") or "")
+        for segment in segments
+        if str(getattr(segment, "text", "") or "").strip()
+    )
+    blocks: list[dict[str, Any]] = []
+    last_stable_index = -1
+    for segment in segments:
+        text = str(getattr(segment, "text", "") or "")
+        if not text.strip():
+            continue
+        if getattr(segment, "is_stable", True):
+            last_stable_index = len(blocks)
+        blocks.append({"type": "text", "text": text})
+    if not blocks:
+        return system_text
+    if cache_enabled and last_stable_index >= 0:
+        blocks[last_stable_index]["cache_control"] = {"type": "ephemeral"}
+        return blocks
+    # Cache disabled, or no stable anchor: the wire shape falls back to the
+    # single ``system`` string — byte-identical to the pre-segmentation
+    # gateway — so billing/cache behavior is exactly preserved on rollback.
+    return flattened
 
 
 def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -237,6 +308,7 @@ class AnthropicGateway:
         api_key: str = "",
         api_version: str = "2023-06-01",
         event_emitter: ProviderEventEmitter | None = None,
+        prompt_cache_enabled: bool = True,
     ) -> None:
         """Construct the gateway.
 
@@ -245,11 +317,19 @@ class AnthropicGateway:
         injected per-request by this gateway — ``api_key`` (``x-api-key``) and
         ``api_version`` (``anthropic-version``) are NOT expected to be baked
         into the client's default headers.
+
+        ``prompt_cache_enabled`` controls whether typed system-prompt segments
+        are serialized with an ephemeral ``cache_control`` breakpoint on the
+        final stable block. When False, requests fall back to the legacy
+        single-string ``system`` parameter — byte-identical to the
+        pre-segmentation gateway; the knob exists as the immediate rollback
+        for the host's ``LISA_PROMPT_CACHE_ENABLED`` opt-out.
         """
         self._client_factory = client_factory
         self._api_key = api_key.strip()
         self._api_version = api_version.strip() or "2023-06-01"
         self._event_emitter = event_emitter
+        self._prompt_cache_enabled = prompt_cache_enabled
 
     def _headers(self) -> dict[str, str]:
         """Build the per-request auth/version headers."""
@@ -281,8 +361,16 @@ class AnthropicGateway:
             "max_tokens": request.max_tokens,
             "messages": anthropic_messages,
         }
-        if system_text:
-            payload["system"] = system_text
+        _system = _build_anthropic_system_blocks(
+            system_text,
+            getattr(request, "system_prompt_segments", ()) or (),
+            cache_enabled=self._prompt_cache_enabled,
+        )
+        if isinstance(_system, str):
+            if _system:
+                payload["system"] = _system
+        else:
+            payload["system"] = _system
         if request.temperature:
             payload["temperature"] = request.temperature
         if request.tools:
@@ -408,8 +496,16 @@ class AnthropicGateway:
             "messages": anthropic_messages,
             "stream": True,
         }
-        if system_text:
-            payload["system"] = system_text
+        _system = _build_anthropic_system_blocks(
+            system_text,
+            getattr(request, "system_prompt_segments", ()) or (),
+            cache_enabled=self._prompt_cache_enabled,
+        )
+        if isinstance(_system, str):
+            if _system:
+                payload["system"] = _system
+        else:
+            payload["system"] = _system
         if request.temperature:
             payload["temperature"] = request.temperature
         if request.tools:

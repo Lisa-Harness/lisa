@@ -334,6 +334,50 @@ def test_prune_stats_track_all_categories() -> None:
     assert stats["dropped_disallowed"] == 1
 
 
+def test_prune_sorts_output_schemas_by_function_name() -> None:
+    """The final prune pass emits schemas in canonical name order.
+
+    Canonical wire order makes the same mode's tool payload byte-identical
+    across turns even when catalog/MCP registration order varies, which is
+    what provider-side implicit prefix caching keys on.
+    """
+    mode_config = _make_mode_config(tools_authoritative=False)
+    schemas = [
+        _make_tool_schema("zeta_tool"),
+        _make_tool_schema("alpha_tool"),
+        _make_tool_schema("mid_tool"),
+    ]
+    pruned, _ = _prune_model_tool_schemas(
+        tool_schemas=schemas,
+        mode_config=mode_config,
+        allow_transition_stage=False,
+    )
+    names = [_tool_schema_name(s) for s in pruned]
+    assert names == ["alpha_tool", "mid_tool", "zeta_tool"]
+
+
+def test_prune_sort_keeps_first_seen_duplicate_semantics() -> None:
+    """Sort must run after first-seen duplicate resolution, not before.
+
+    If the sort raced ahead of dedup, a duplicate pair with different
+    descriptions could flip which schema survives; sorting after dedup
+    keeps first-registered description semantics.
+    """
+    mode_config = _make_mode_config(tools_authoritative=False)
+    first = _make_tool_schema("dup_tool", description="original")
+    first["function"]["description"] = "first description"
+    second = _make_tool_schema("dup_tool", description="duplicate")
+    second["function"]["description"] = "second description"
+    pruned, stats = _prune_model_tool_schemas(
+        tool_schemas=[first, second],
+        mode_config=mode_config,
+        allow_transition_stage=False,
+    )
+    assert len(pruned) == 1
+    assert pruned[0]["function"]["description"] == "first description"
+    assert stats["dropped_duplicate"] == 1
+
+
 def test_prune_respects_mode_allowlist_for_mcp_tools() -> None:
     """MCP tools not in the allowed_tool_ids list are dropped."""
     mode_config = _make_mode_config(

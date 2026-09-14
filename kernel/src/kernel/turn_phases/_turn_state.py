@@ -83,6 +83,8 @@ class _TurnState:
     total_tokens: int = 0
     total_cached_tokens: int = 0
     total_reasoning_tokens: int = 0
+    #: Provider-reported prompt-cache *creation/population* tokens (Anthropic).
+    total_cache_creation_tokens: int = 0
     total_duration_ms: float = 0.0
     total_latency_ms: int = 0
     total_tool_calls: int = 0
@@ -485,6 +487,7 @@ def record_model_usage(
     rt: int,
     d: float,
     lat: int,
+    cc: int = 0,
     mode_id: str = "",
 ) -> None:
     """Merge one completion's counters into the per-model accumulator.
@@ -504,6 +507,7 @@ def record_model_usage(
     entry["total_tokens"] = entry.get("total_tokens", 0) + t
     entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct
     entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
+    entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cc
     entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
     entry["latency_ms"] = entry.get("latency_ms", 0) + lat
 
@@ -515,6 +519,7 @@ def record_model_usage(
         mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t
         mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct
         mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt
+        mode_entry["cache_creation_tokens"] = mode_entry.get("cache_creation_tokens", 0) + cc
         mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d
         mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat
 
@@ -546,6 +551,9 @@ def merge_child_usage(
         target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
         target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
         target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["cache_creation_tokens"] = target.get("cache_creation_tokens", 0) + _int(
+            entry.get("cache_creation_tokens", 0)
+        )
         target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
         target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
     for entry in per_mode_usage or []:
@@ -556,6 +564,9 @@ def merge_child_usage(
         target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
         target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
         target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["cache_creation_tokens"] = target.get("cache_creation_tokens", 0) + _int(
+            entry.get("cache_creation_tokens", 0)
+        )
         target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
         target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
 

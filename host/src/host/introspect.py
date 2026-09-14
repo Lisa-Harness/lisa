@@ -250,6 +250,8 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
     total_cost = 0.0
     total_tokens = 0
     billed_tokens = 0
+    cached_tokens = 0
+    cache_creation_tokens = 0
     model_totals: dict[str, int] = {}
     spike_cost = 0.0
     spike_at = ""
@@ -266,11 +268,14 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
         cost = float(record.get("cost_usd") or 0.0)
         tokens = int(record.get("total_tokens") or 0)
         cached = int(record.get("cached_tokens") or 0)
+        cache_created = int(record.get("cache_creation_tokens") or 0)
         total_cost += cost
         total_tokens += tokens
         # Billed view = provider-reported total minus cache-hit tokens,
         # which the provider meter bills at a much lower rate (or excludes).
         billed_tokens += max(0, tokens - cached)
+        cached_tokens += cached
+        cache_creation_tokens += cache_created
         model_id = str(record.get("model_id") or "")
         if model_id:
             model_totals[model_id] = model_totals.get(model_id, 0) + tokens
@@ -291,6 +296,8 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
         top_model_tokens=top_model_tokens,
         spike_at=spike_at,
         event_count=event_count,
+        cached_tokens=cached_tokens,
+        cache_creation_tokens=cache_creation_tokens,
     )
 
 

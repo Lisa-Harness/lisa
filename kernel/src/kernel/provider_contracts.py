@@ -33,6 +33,37 @@ class ModelDescriptor(Protocol):
     thinking_model: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SystemPromptSegment:
+    """One ordered slice of the assembled system prompt, typed by cache intent.
+
+    ``stable`` segments form the cross-turn prefix that providers can cache;
+    ``ephemeral`` segments (routing hints, lifecycle briefings, handoff
+    context) sit after the stable prefix and are expected to change turn to
+    turn. The producer (kernel turn runner) owns ordering; the provider
+    gateway owns whether/how to express the boundary on the wire.
+    """
+
+    text: str
+    stability: str = "stable"  #: ``"stable"`` or ``"ephemeral"``
+
+    @property
+    def is_stable(self) -> bool:
+        return self.stability == "stable"
+
+
+def flatten_system_prompt_segments(
+    segments: tuple["SystemPromptSegment", ...],
+) -> str:
+    """Render segments back to the legacy single system-prompt string.
+
+    Joining with the historical ``\\n\\n`` separator preserves byte-for-byte
+    equivalence with the pre-segmentation single-string prompt for providers
+    that do not use the block boundary (OpenAI-family, Gemini).
+    """
+    return "\n\n".join(s.text for s in segments if s.text.strip())
+
+
 @dataclass(slots=True)
 class CompletionRequest:
     """One normalized completion request sent through a provider gateway."""
@@ -43,6 +74,12 @@ class CompletionRequest:
     temperature: float
     tools: list[dict[str, Any]] | None = None
     response_format: Any | None = None
+    #: Ordered system-prompt segments with cache-intent typing. When empty
+    #: (the default), callers fall back to flattening the ``"system"`` role
+    #: messages out of ``messages`` — historical behavior. When non-empty,
+    #: the producer guarantees the segment texts, joined with ``\\n\\n``, are
+    #: byte-identical to those system-role contents.
+    system_prompt_segments: tuple[SystemPromptSegment, ...] = ()
 
 
 @dataclass(slots=True)
@@ -52,8 +89,14 @@ class CompletionUsage:
     Fields are optional because not every provider surfaces every counter.
     ``prompt_tokens`` and ``completion_tokens`` are the canonical pair used
     for cost math; ``total_tokens`` falls out as the sum when the provider
-    does not report it directly. ``cached_tokens`` and ``reasoning_tokens``
-    cover the common sub-counters that vendors bill separately.
+    does not report it directly. ``cached_tokens`` is the provider-reported
+    prompt-cache *read* count (tokens served from cache); ``reasoning_tokens``
+    is reasoning output/effort.
+
+    ``cache_creation_tokens`` is the provider-reported prompt-cache
+    *creation/population* count — tokens paid at the write rate, not the
+    read rate. Only Anthropic surfaces it today; it defaults to 0 for
+    providers that do not report it.
 
     ``duration_ms`` captures wall-clock time spent on the provider call.
     Some providers (notably Ollama when billing local GPU time) charge by
@@ -66,6 +109,7 @@ class CompletionUsage:
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    cache_creation_tokens: int = 0
     duration_ms: float = 0.0
 
 

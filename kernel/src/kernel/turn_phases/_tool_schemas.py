@@ -213,6 +213,14 @@ def _prune_model_tool_schemas(
             continue
         pruned.append(schema)
 
+    # Canonical wire order: sort by function name so the same mode advertises
+    # a byte-identical tool payload across turns regardless of catalog /
+    # MCP-list registration order. Duplicate resolution already kept the
+    # FIRST-seen schema, so the sort cannot reorder duplicates — it only
+    # orders distinct, surviving names. This is the cross-turn prompt-prefix
+    # stability providers need for implicit prefix caching.
+    pruned.sort(key=_tool_schema_name)
+
     stats = {
         "input_count": len(tool_schemas),
         "output_count": len(pruned),

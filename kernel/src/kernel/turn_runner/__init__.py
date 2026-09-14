@@ -65,51 +65,6 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
-from kernel.turn_hooks import TurnHooks
-from kernel.turn_phases._child_turn import classify_child_turn
-from kernel.turn_phases._completion_contract import (
-    AcceptTurn,
-    BlockNoVerifiedWrite,
-    ChatReadFootnote,
-    ChatSoftAccept,
-    PreexistingFailureBlock,
-    SurfaceProseWithFootnote,
-    resolve_completion_contract,
-)
-from kernel.turn_phases._dispatch import dispatch_capability
-from kernel.turn_phases._entry import execute_entry_phase
-from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
-from kernel.turn_phases._lifecycle import (
-    ContinueAction as _ContinueAction,
-    FinishAction as _FinishAction,
-    LifecycleResolverSettings as _LRS,
-    PauseAction as _PauseAction,
-    StopAction as _StopAction,
-    TerminateAction as _TerminateAction,
-    TransitionAction as _TransitionAction,
-    _TurnStateView as _TSV,
-    resolve_lifecycle_action as _resolve_lifecycle,
-)
-from kernel.turn_phases._post_turn import (
-    _extract_completion_usage,
-    _to_tool_context,
-    _validate_model_capabilities,
-)
-from kernel.turn_phases._routing import RoutingContext, apply_routing
-from kernel.turn_phases._routing_hint import (
-    _compute_capability_routing_hint,
-    _compute_fork_targets,
-    _detect_query_intents,
-    _format_remaining_steps,
-    emit_transition_hint,
-)
-from kernel.turn_phases._tool_schemas import (
-    _TRANSITION_TOOL_NAME,
-    _YIELD_TOOL_NAME,
-    _rebuild_tool_schemas_for_mode,
-    _tool_schema_name,
-    build_tool_surface,
-)
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
     get_routing_targets,
@@ -174,12 +129,79 @@ from kernel.slice import (
     build_policy_for_trigger,
     resolve_mode_for_trigger,
 )
-from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
-from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
+from kernel.system_segments import (
+    N_HANDOFF_CONTEXT,
+    N_LIFECYCLE_BRIEFING,
+    N_ROUTING_HINT,
+    SystemPromptSegments,
+)
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
+from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
+from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
     openai_tool_call_to_mcp,
+)
+from kernel.turn_hooks import TurnHooks
+from kernel.turn_phases._child_turn import classify_child_turn
+from kernel.turn_phases._completion_contract import (
+    AcceptTurn,
+    BlockNoVerifiedWrite,
+    ChatReadFootnote,
+    ChatSoftAccept,
+    PreexistingFailureBlock,
+    SurfaceProseWithFootnote,
+    resolve_completion_contract,
+)
+from kernel.turn_phases._dispatch import dispatch_capability
+from kernel.turn_phases._entry import execute_entry_phase
+from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
+from kernel.turn_phases._lifecycle import (
+    ContinueAction as _ContinueAction,
+)
+from kernel.turn_phases._lifecycle import (
+    FinishAction as _FinishAction,
+)
+from kernel.turn_phases._lifecycle import (
+    LifecycleResolverSettings as _LRS,
+)
+from kernel.turn_phases._lifecycle import (
+    PauseAction as _PauseAction,
+)
+from kernel.turn_phases._lifecycle import (
+    StopAction as _StopAction,
+)
+from kernel.turn_phases._lifecycle import (
+    TerminateAction as _TerminateAction,
+)
+from kernel.turn_phases._lifecycle import (
+    TransitionAction as _TransitionAction,
+)
+from kernel.turn_phases._lifecycle import (
+    _TurnStateView as _TSV,
+)
+from kernel.turn_phases._lifecycle import (
+    resolve_lifecycle_action as _resolve_lifecycle,
+)
+from kernel.turn_phases._post_turn import (
+    _extract_completion_usage,
+    _to_tool_context,
+    _validate_model_capabilities,
+)
+from kernel.turn_phases._routing import RoutingContext, apply_routing
+from kernel.turn_phases._routing_hint import (
+    _compute_capability_routing_hint,
+    _compute_fork_targets,
+    _detect_query_intents,
+    _format_remaining_steps,
+    emit_transition_hint,
+)
+from kernel.turn_phases._tool_schemas import (
+    _TRANSITION_TOOL_NAME,
+    _YIELD_TOOL_NAME,
+    _rebuild_tool_schemas_for_mode,
+    _tool_schema_name,
+    build_tool_surface,
 )
 from kernel.workflow_position import WorkflowStep, _step_id_for
 
@@ -190,10 +212,7 @@ logger = logging.getLogger(__name__)
 # The engine imports these back so ``kernel.turn_runner`` keeps its historical
 # module namespace: ``mock.patch("kernel.turn_runner.<name>")`` and
 # ``from kernel.turn_runner import <name>`` both resolve.
-from ._result import TurnResult  # noqa: F401
-from ._seams import ContextSeams  # noqa: F401
-from ._streaming import StreamedCompletionAdapter  # noqa: F401
-from ._defaults import (  # noqa: F401
+from ._defaults import (
     _aggregate_child_usage,
     _build_recovery_identity,
     _coordinator_routing_hint,
@@ -209,12 +228,15 @@ from ._defaults import (  # noqa: F401
     _looks_like_continuation_query,
     _noop_complete,
 )
-from ._helpers import (  # noqa: F401
-    _StubModelDef,
+from ._helpers import (
     _extract_pre_turn_briefing,
     _fire_slice,
     _plan_steps_to_workflow_steps,
+    _StubModelDef,
 )
+from ._result import TurnResult
+from ._seams import ContextSeams
+from ._streaming import StreamedCompletionAdapter
 
 # ── Stalled-write rescue: announcement detection ───────────────────────────
 # Prose that ANNOUNCES a write in future/present-continuous tense while the
@@ -1597,6 +1619,11 @@ async def _run_turn_inner(
                 if _step is not None:
                     _state.chain_satisfied.update(_step.satisfies_intents)
 
+    # Seed the typed prompt-segment registry from the stable harness +
+    # session + customization + mode + stage base assembled above. Any
+    # routing hint below lands as an ephemeral segment on top of it.
+    _sys_segments = SystemPromptSegments.from_base(system_prompt)
+
     # Unified FSM routing: capability-manifest-aware proactive hint injection.
     # Compare the manifest against the user's query — if the current mode
     # lacks tools the query seems to need, inject a routing hint into the
@@ -1662,7 +1689,13 @@ async def _run_turn_inner(
             len(routing_hint),
             routing_hint[:200],
         )
+        # Dynamic segments (routing hint, per-iteration lifecycle briefing) are
+        # registered alongside the stable base on ``_sys_segments``; the flattened
+        # prompt remains byte-identical to the pre-segmenting single string.
+        # The hint goes ONLY into the dynamic segment — not also into the stable
+        # base string — so the flattened output carries it exactly once.
         system_prompt = system_prompt + "\n\n" + routing_hint
+        _sys_segments.set_dynamic(N_ROUTING_HINT, routing_hint)
         # ── Forced-action enforcer: precompute the deterministic routing
         # decision (Phase 5: one enforcer). When the routing hint encodes
         # the routing — a ``fork:<csv>`` fan-out or any single-handoff
@@ -1769,15 +1802,15 @@ async def _run_turn_inner(
             _log.warning("pre-turn memory recall failed: %s", exc)
 
     # ── Phase 2: Tool loop ────────────────────────────────────────────
-    # Save the base system prompt (without any budget briefing) so the
-    # per-iteration budget briefing can be swapped in/out without
-    # accumulating stale copies. The briefing is appended to the base
-    # prompt each iteration; the base is the stable contract (mode
-    # instruction, stage instruction, routing hint).
-    _base_system_prompt = system_prompt
-    _budget_briefing_marker = "\n\n## Turn Lifecycle\n\n"
-    _sub_turn_contract_marker = "\n\n## Sub-Turn Contract\n\n"
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    # The segment registry was seeded from the stable base (harness + session
+    # + customizations + mode + stage) before the routing-hint block; the hint
+    # and any per-iteration lifecycle briefing live as keyed dynamic segments on
+    # it. ``messages[0].content`` is always produced by ``_sys_segments.flatten()``
+    # so the rendered prompt stays byte-identical to the historical single
+    # string while the stable prefix is never rewritten per-iteration.
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _sys_segments.flatten()}
+    ]
 
     # Build user message
     user_parts: list[str] = []
@@ -1928,6 +1961,7 @@ async def _run_turn_inner(
         rt: int,
         d: float,
         lat: int,
+        cc: int = 0,
     ) -> None:
         """Merge one completion's counters into the per-model accumulator.
 
@@ -1935,7 +1969,7 @@ async def _run_turn_inner(
         ``mode_id`` so the host can attribute tokens to the mode that
         actually ran the completion (not the entry mode)."""
         _record_model_usage_fn(
-            _state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, d=d, lat=lat, mode_id=mode_id
+            _state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, cc=cc, d=d, lat=lat, mode_id=mode_id
         )
 
     def _budget_forces_final() -> bool:
@@ -2373,27 +2407,11 @@ async def _run_turn_inner(
                 budget_exhausted=budget_exhausted,
                 guidance=tuple(_guidance_lines),
             )
-            # Strip any previous briefing (by marker) and append the
-            # fresh one. The base prompt is the stable contract; the
-            # briefing is the per-iteration delta. The marker includes
-            # the leading ``\n\n`` separator so the split cleanly
-            # separates the base from the briefing.
-            _current_sys = str(messages[0].get("content", ""))
-            # Strip any previous briefing (by marker) and append the
-            # fresh one. The base prompt is the stable contract; the
-            # briefing is the per-iteration delta. Strip the sub-turn
-            # contract first (it precedes the lifecycle block), then the
-            # lifecycle block. Both markers include the leading ``\n\n``
-            # separator so the split cleanly separates the base from the
-            # briefing.
-            if _sub_turn_contract_marker in _current_sys:
-                _current_sys = _current_sys.split(_sub_turn_contract_marker, 1)[0]
-            if _budget_briefing_marker in _current_sys:
-                _current_sys = _current_sys.split(_budget_briefing_marker, 1)[0]
-            if _briefing:
-                messages[0]["content"] = _current_sys + "\n\n" + _briefing
-            else:
-                messages[0]["content"] = _current_sys
+            # Replace the per-iteration lifecycle briefing segment. The stable
+            # base is never rewritten; when the briefing is empty the segment is
+            # cleared so the flattened prompt matches the pre-segment string.
+            _sys_segments.set_dynamic(N_LIFECYCLE_BRIEFING, _briefing)
+            messages[0]["content"] = _sys_segments.flatten()
 
         effective_model_def = _resolve_iteration_model(_state.iteration)
         # ── Router terminal actions ──────────────────────────────────
@@ -2545,6 +2563,13 @@ async def _run_turn_inner(
                 max_tokens=4096,
                 temperature=0.4,
                 tools=effective_tools,
+                # Carry the typed segment view alongside ``messages`` so the
+                # provider gateway can express the stable-vs-dynamic boundary
+                # on the wire (Anthropic ``cache_control`` on the stable
+                # prefix). Gateways that do not consume segments fall back to
+                # flattening the system message from ``messages``, which is
+                # byte-identical to the segment-flattened text.
+                system_prompt_segments=_sys_segments.as_segments_copy(),
             )
 
             _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
@@ -2595,6 +2620,7 @@ async def _run_turn_inner(
                             temperature=completion_request.temperature,
                             tools=completion_request.tools,
                             response_format=completion_request.response_format,
+                            system_prompt_segments=completion_request.system_prompt_segments,
                         )
                         _retry_started = time.perf_counter()
                         _retry_chunks: list[StreamedChunk] = []
@@ -2622,20 +2648,21 @@ async def _run_turn_inner(
                 completion = await _gateway.complete(completion_request)
                 if completion.duration_ms <= 0.0:
                     completion.duration_ms = (time.perf_counter() - _complete_started) * 1000.0
-        (
-            prompt_tokens,
-            completion_tokens,
-            completion_total_tokens,
-            cached_tokens,
-            reasoning_tokens,
-            duration_ms,
-            latency_ms,
-        ) = _extract_completion_usage(completion)
+        usage = _extract_completion_usage(completion)
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
+        completion_total_tokens = usage.total_tokens
+        cached_tokens = usage.cached_tokens
+        reasoning_tokens = usage.reasoning_tokens
+        cache_creation_tokens = usage.cache_creation_tokens
+        duration_ms = usage.duration_ms
+        latency_ms = usage.latency_ms
         _state.total_prompt_tokens += prompt_tokens
         _state.total_completion_tokens += completion_tokens
         _state.total_tokens += completion_total_tokens
         _state.total_cached_tokens += cached_tokens
         _state.total_reasoning_tokens += reasoning_tokens
+        _state.total_cache_creation_tokens += cache_creation_tokens
         _state.total_duration_ms += duration_ms
         _state.total_latency_ms += latency_ms
         _record_model_usage(
@@ -2645,6 +2672,7 @@ async def _run_turn_inner(
             t=completion_total_tokens,
             ct=cached_tokens,
             rt=reasoning_tokens,
+            cc=cache_creation_tokens,
             d=duration_ms,
             lat=latency_ms,
         )
@@ -2663,6 +2691,7 @@ async def _run_turn_inner(
                 total_tokens=completion_total_tokens,
                 cached_tokens=cached_tokens,
                 reasoning_tokens=reasoning_tokens,
+                cache_creation_tokens=cache_creation_tokens,
                 duration_ms=duration_ms,
                 latency_ms=latency_ms,
                 request_id=str(getattr(completion, "request_id", "") or ""),
@@ -3601,11 +3630,25 @@ async def _run_turn_inner(
                             if target_mode_config is None:
                                 tool_output = f"Target mode '{target_stage}' not found."
                             else:
-                                # Swap system prompt
+                                # Swap system prompt: replace the entire
+                                # stable base for the post-handoff mode. The
+                                # routing hint for the new mode is re-added
+                                # below as a dynamic segment.
                                 target_mode_instruction = get_mode_system_intro(target_stage)
+                                _new_base = assemble_system(target_mode_instruction, None)
+                                _sys_segments.clear_dynamic(N_ROUTING_HINT)
+                                _sys_segments.clear_dynamic(N_HANDOFF_CONTEXT)
+                                if _new_base.strip():
+                                    _sys_segments.replace_base(_new_base)
+                                else:
+                                    # Pre-segment behavior allowed an empty
+                                    # target prompt (bare mode with no intro);
+                                    # preserve it by clearing the stable segment
+                                    # rather than raising mid-turn.
+                                    _sys_segments.clear_base()
                                 messages[0] = {
                                     "role": "system",
-                                    "content": assemble_system(target_mode_instruction, None),
+                                    "content": _new_base,
                                 }
                                 # ── Structured handoff context ───────────────
                                 # Give the receiving mode awareness of its
@@ -3708,9 +3751,13 @@ async def _run_turn_inner(
                                     if cp:
                                         handoff_context += f"\n## Provided Context\n{cp}\n"
                                     handoff_context += f"\n{next_directive}"
-                                    messages[0]["content"] = (
-                                        str(messages[0].get("content", "")) + handoff_context
+                                    # Route handoff context through segments
+                                    # so the stable base stays untouched and
+                                    # this per-turn content is replaceable.
+                                    _sys_segments.set_dynamic(
+                                        N_HANDOFF_CONTEXT, handoff_context
                                     )
+                                    messages[0]["content"] = _sys_segments.flatten()
                                 except Exception as ctx_exc:  # pylint: disable=broad-except
                                     _log.warning(
                                         "failed to build handoff context for mode=%s: %s",
@@ -4423,25 +4470,18 @@ async def _run_turn_inner(
                                             len(post_handoff_hint),
                                             post_handoff_hint[:200],
                                         )
-                                        # Append to the system prompt so the
-                                        # forced-fork/forced-plan enforcers key
-                                        # off the new hint. Strip any per-iteration
-                                        # budget briefing first (by marker) so the
-                                        # hint lands on the base prompt; the next
-                                        # iteration's briefing injection will
-                                        # append after the hint.
-                                        _pre_hint_sys = str(messages[0].get("content", ""))
-                                        if _sub_turn_contract_marker in _pre_hint_sys:
-                                            _pre_hint_sys = _pre_hint_sys.split(
-                                                _sub_turn_contract_marker, 1
-                                            )[0]
-                                        if _budget_briefing_marker in _pre_hint_sys:
-                                            _pre_hint_sys = _pre_hint_sys.split(
-                                                _budget_briefing_marker, 1
-                                            )[0]
-                                        messages[0]["content"] = (
-                                            _pre_hint_sys + "\n\n" + post_handoff_hint
+                                        # The lifecycle briefing is already a
+                                        # keyed segment (``N_LIFECYCLE_BRIEFING``),
+                                        # so it is replaced by the next iteration's
+                                        # briefing automatically — no marker
+                                        # splitting needed here. Just append the
+                                        # post-handoff hint as a fresh dynamic
+                                        # segment named after the new mode's
+                                        # residual chain direction.
+                                        _sys_segments.set_dynamic(
+                                            N_ROUTING_HINT, post_handoff_hint
                                         )
+                                        messages[0]["content"] = _sys_segments.flatten()
                                         routing_hint = post_handoff_hint
                                         # Phase 7 (one control channel):
                                         # the chain-advance directive rides
@@ -4918,33 +4958,36 @@ async def _run_turn_inner(
                 if final_content.strip():
                     content = final_content.strip()
                     final_usage = _extract_completion_usage(final_completion)
-                    final_reasoning_tokens = final_usage[4]
-                    _state.total_prompt_tokens += final_usage[0]
-                    _state.total_completion_tokens += final_usage[1]
-                    _state.total_tokens += final_usage[2]
-                    _state.total_duration_ms += final_usage[5]
+                    final_reasoning_tokens = final_usage.reasoning_tokens
+                    _state.total_prompt_tokens += final_usage.prompt_tokens
+                    _state.total_completion_tokens += final_usage.completion_tokens
+                    _state.total_tokens += final_usage.total_tokens
+                    _state.total_cache_creation_tokens += final_usage.cache_creation_tokens
+                    _state.total_duration_ms += final_usage.duration_ms
                     _record_model_usage(
                         effective_model_def,
-                        p=final_usage[0],
-                        c=final_usage[1],
-                        t=final_usage[2],
-                        ct=final_usage[3],
-                        rt=final_usage[4],
-                        d=final_usage[5],
-                        lat=final_usage[6],
+                        p=final_usage.prompt_tokens,
+                        c=final_usage.completion_tokens,
+                        t=final_usage.total_tokens,
+                        ct=final_usage.cached_tokens,
+                        rt=final_usage.reasoning_tokens,
+                        cc=final_usage.cache_creation_tokens,
+                        d=final_usage.duration_ms,
+                        lat=final_usage.latency_ms,
                     )
                     _publish_token_usage_fn(
                         hooks.context_seams.event_bus,
                         _build_token_usage_event_fn(
                             provider=str(getattr(effective_model_def, "provider", "") or ""),
                             model_id=str(getattr(effective_model_def, "model_id", "") or ""),
-                            prompt_tokens=final_usage[0],
-                            completion_tokens=final_usage[1],
-                            total_tokens=final_usage[2],
-                            cached_tokens=final_usage[3],
-                            reasoning_tokens=final_usage[4],
-                            duration_ms=final_usage[5],
-                            latency_ms=final_usage[6],
+                            prompt_tokens=final_usage.prompt_tokens,
+                            completion_tokens=final_usage.completion_tokens,
+                            total_tokens=final_usage.total_tokens,
+                            cached_tokens=final_usage.cached_tokens,
+                            reasoning_tokens=final_usage.reasoning_tokens,
+                            cache_creation_tokens=final_usage.cache_creation_tokens,
+                            duration_ms=final_usage.duration_ms,
+                            latency_ms=final_usage.latency_ms,
                             request_id=str(getattr(final_completion, "request_id", "") or ""),
                             mode_id=mode_id,
                             call_site="forced_final",
@@ -4983,6 +5026,8 @@ async def _run_turn_inner(
                     )
                     + "\n\nProvide a closing summary for this workflow."
                 )
+                if terminal_prompt.strip():
+                    _sys_segments.replace_base(terminal_prompt)
                 messages[0] = {"role": "system", "content": terminal_prompt}
                 try:
                     final_completion = await complete(
@@ -4996,32 +5041,35 @@ async def _run_turn_inner(
                     if final_content.strip():
                         content = final_content.strip()
                         terminal_usage = _extract_completion_usage(final_completion)
-                        _state.total_prompt_tokens += terminal_usage[0]
-                        _state.total_completion_tokens += terminal_usage[1]
-                        _state.total_tokens += terminal_usage[2]
-                        _state.total_duration_ms += terminal_usage[5]
+                        _state.total_prompt_tokens += terminal_usage.prompt_tokens
+                        _state.total_completion_tokens += terminal_usage.completion_tokens
+                        _state.total_tokens += terminal_usage.total_tokens
+                        _state.total_cache_creation_tokens += terminal_usage.cache_creation_tokens
+                        _state.total_duration_ms += terminal_usage.duration_ms
                         _record_model_usage(
                             effective_model_def,
-                            p=terminal_usage[0],
-                            c=terminal_usage[1],
-                            t=terminal_usage[2],
-                            ct=terminal_usage[3],
-                            rt=terminal_usage[4],
-                            d=terminal_usage[5],
-                            lat=terminal_usage[6],
+                            p=terminal_usage.prompt_tokens,
+                            c=terminal_usage.completion_tokens,
+                            t=terminal_usage.total_tokens,
+                            ct=terminal_usage.cached_tokens,
+                            rt=terminal_usage.reasoning_tokens,
+                            cc=terminal_usage.cache_creation_tokens,
+                            d=terminal_usage.duration_ms,
+                            lat=terminal_usage.latency_ms,
                         )
                         _publish_token_usage_fn(
                             hooks.context_seams.event_bus,
                             _build_token_usage_event_fn(
                                 provider=str(getattr(effective_model_def, "provider", "") or ""),
                                 model_id=str(getattr(effective_model_def, "model_id", "") or ""),
-                                prompt_tokens=terminal_usage[0],
-                                completion_tokens=terminal_usage[1],
-                                total_tokens=terminal_usage[2],
-                                cached_tokens=terminal_usage[3],
-                                reasoning_tokens=terminal_usage[4],
-                                duration_ms=terminal_usage[5],
-                                latency_ms=terminal_usage[6],
+                                prompt_tokens=terminal_usage.prompt_tokens,
+                                completion_tokens=terminal_usage.completion_tokens,
+                                total_tokens=terminal_usage.total_tokens,
+                                cached_tokens=terminal_usage.cached_tokens,
+                                reasoning_tokens=terminal_usage.reasoning_tokens,
+                                cache_creation_tokens=terminal_usage.cache_creation_tokens,
+                                duration_ms=terminal_usage.duration_ms,
+                                latency_ms=terminal_usage.latency_ms,
                                 request_id=str(getattr(final_completion, "request_id", "") or ""),
                                 mode_id=mode_id,
                                 call_site="terminal_stage",
@@ -5208,6 +5256,7 @@ async def _run_turn_inner(
         total_tokens=_state.total_tokens,
         cached_tokens=_state.total_cached_tokens,
         reasoning_tokens=_state.total_reasoning_tokens,
+        cache_creation_tokens=_state.total_cache_creation_tokens,
         duration_ms=_state.total_duration_ms,
         latency_ms=_state.total_latency_ms,
         slice_outcomes=slice_outcomes,

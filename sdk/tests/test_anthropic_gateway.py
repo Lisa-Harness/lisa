@@ -111,6 +111,129 @@ class _StubHttpClient:
         return _StubHttpResponse(self._payload)
 
 
+# ── Usage extraction: cache sub-counters ─────────────────────────────
+
+
+def test_anthropic_usage_maps_cache_creation_to_dedicated_counter() -> None:
+    """cache_creation_input_tokens rides ``cache_creation_tokens``, not reasoning."""
+    from sdk.providers.anthropic_gateway import extract_anthropic_usage
+
+    usage = extract_anthropic_usage(
+        {
+            "usage": {
+                "input_tokens": 200,
+                "output_tokens": 40,
+                "cache_creation_input_tokens": 150,
+                "cache_read_input_tokens": 800,
+            }
+        }
+    )
+    assert usage is not None
+    assert usage.cache_creation_tokens == 150
+    assert usage.cached_tokens == 800
+    # Cache creation is a write-rate cost, not reasoning output.
+    assert usage.reasoning_tokens == 0
+
+
+# ── Cache-aware system prompt segmentation ────────────────────────────
+
+
+def _segmented_request() -> CompletionRequest:
+    """Build a request carrying typed stable/ephemeral prompt segments."""
+    from kernel.provider_contracts import SystemPromptSegment
+
+    return CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="Stable harness + mode", stability="stable"),
+            SystemPromptSegment(text="SESSION body", stability="stable"),
+            SystemPromptSegment(text="## Routing Hint\n\nhand off", stability="ephemeral"),
+            SystemPromptSegment(text="iter 2/50", stability="ephemeral"),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_segments_emit_system_blocks_with_ephemeral_cache_breakpoint() -> None:
+    """Stable prefix gets one cache_control block; dynamics stay uncached."""
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    await gateway.complete(_segmented_request())
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert [block["text"] for block in system] == [
+        "Stable harness + mode",
+        "SESSION body",
+        "## Routing Hint\n\nhand off",
+        "iter 2/50",
+    ]
+    # Only the LAST stable block carries the breakpoint — the boundary.
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system[0]
+    assert "cache_control" not in system[2]
+    assert "cache_control" not in system[3]
+
+
+@pytest.mark.asyncio
+async def test_segments_without_ephemeral_tail_cache_the_single_stable_block() -> None:
+    """Pure-stable payloads put the breakpoint on the final stable block."""
+    from kernel.provider_contracts import SystemPromptSegment
+
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="Stable only", stability="stable"),
+        ),
+    )
+    await gateway.complete(request)
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_prompt_cache_disabled_flattens_to_legacy_system_string() -> None:
+    """With the host opt-out, segments flatten to the pre-segments string."""
+    captured: dict[str, Any] = {}
+    client = _StubHttpClient(_response([_text_block("ok")]), captured)
+    gateway = AnthropicGateway(
+        client_factory=lambda: client,
+        api_key="test-key",
+        api_version="2023-06-01",
+        prompt_cache_enabled=False,
+    )
+    await gateway.complete(_segmented_request())
+    system = captured["json"]["system"]
+    # Legacy string form; byte-identical to joining with the canonical "\n\n".
+    assert isinstance(system, str)
+    assert "Stable harness + mode" in system
+    assert "## Routing Hint" in system
+    assert "iter 2/50" in system
+
+
+@pytest.mark.asyncio
+async def test_no_segments_keeps_legacy_string_system_only() -> None:
+    """A request without segment metadata keeps the single-string system payload."""
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = _request(
+        [
+            {"role": "system", "content": "Only the legacy system string"},
+            {"role": "user", "content": "hi"},
+        ]
+    )
+    await gateway.complete(request)
+    assert captured["json"]["system"] == "Only the legacy system string"
+
+
 def _gateway(
     payload: dict[str, Any],
     captured: dict[str, Any],
