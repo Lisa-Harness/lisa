@@ -22,18 +22,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kernel.models import MemoryWriteRequest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
-
-from kernel.models import MemoryWriteRequest
+from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
 from sdk.memory.store import SqliteMemoryStore
 
 from mcp_server.memory.embeddings import HttpEmbeddingProvider, resolve_embedding_config
@@ -92,6 +93,7 @@ class _MemoryConfig:
     data_dir: Path = Path()
     embedding_provider: HttpEmbeddingProvider | None = None
     embedding_dimension: int = 1536
+    backup_keep: int = DEFAULT_KEEP_BACKUPS
 
 
 _cfg = _MemoryConfig()
@@ -424,6 +426,10 @@ def _init(args: Any) -> None:
     provider, dimension = resolve_embedding_config(args)
     _cfg.embedding_provider = provider
     _cfg.embedding_dimension = dimension
+    _cfg.backup_keep = args.backup_keep
+    # Point-in-time backup before the store opens the DB: dump memory.db to a
+    # timestamped SQL file under <data_dir>/backups/ and prune beyond keep.
+    backup_memory_db(data_dir=_cfg.data_dir, keep=_cfg.backup_keep)
     # Also populate the test seam so the server is usable immediately after
     # init (the lifespan only runs during a real stdio session).
     set_deps_for_test(
@@ -459,6 +465,28 @@ def _add_memory_args(parser: Any) -> None:
             "is set. Also settable via LISA_EMBEDDING_ENDPOINT."
         ),
     )
+    parser.add_argument(
+        "--backup-keep",
+        type=int,
+        default=_backup_keep_default(),
+        help=(
+            "Number of timestamped memory.db dumps to retain under "
+            "<data-dir>/backups/ (default 10). Also settable via "
+            "LISA_MEMORY_BACKUP_KEEP."
+        ),
+    )
+
+
+def _backup_keep_default() -> int:
+    """Resolve the backup retention count from env, defaulting to 10."""
+    raw = os.getenv("LISA_MEMORY_BACKUP_KEEP", "").strip()
+    if not raw:
+        return DEFAULT_KEEP_BACKUPS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("invalid LISA_MEMORY_BACKUP_KEEP %r; using %d", raw, DEFAULT_KEEP_BACKUPS)
+        return DEFAULT_KEEP_BACKUPS
 
 
 def main() -> None:
