@@ -20,6 +20,11 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+try:  # optional: required only when the DB contains a vec0 virtual table.
+    import sqlite_vec as _sqlite_vec
+except Exception:  # pragma: no cover - import-time guard  # pylint: disable=broad-except
+    _sqlite_vec = None  # type: ignore[assignment]
+
 __all__ = [
     "backup_memory_db",
     "default_backup_dir",
@@ -64,6 +69,25 @@ def _unique_backup_path(backup_dir: Path, timestamp: str) -> Path:
     return candidate
 
 
+def _load_vec_extension(conn: sqlite3.Connection) -> bool:
+    """Load the ``sqlite-vec`` extension into ``conn``; return True if loaded.
+
+    Mirrors :meth:`SqliteMemoryStore._load_vec_extension` so the snapshot
+    connection can read ``vec0`` virtual tables. Fails soft: when the wheel
+    is missing or the SQLite build blocks extension loading, returns False
+    and the dump proceeds extension-less (a DB with a vec0 table will then
+    raise from ``iterdump``).
+    """
+    if _sqlite_vec is None:
+        return False
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension(_sqlite_vec.loadable_path())
+        return True
+    except Exception:  # pragma: no cover - depends on build  # pylint: disable=broad-except
+        return False
+
+
 def _dump_snapshot(db_path: Path, target: Path) -> None:
     """Write a consistent ``.dump`` SQL snapshot of ``db_path`` to ``target``.
 
@@ -71,11 +95,18 @@ def _dump_snapshot(db_path: Path, target: Path) -> None:
     SQLite backup API so the dump reflects one point in time even if the
     source store is mid-write. The snapshot is then serialized with
     ``iterdump`` — byte-compatible with the ``sqlite3 .dump`` shell.
+    The sqlite-vec extension is loaded into both connections when
+    available so databases containing ``vec0`` virtual tables (created by
+    ``SqliteMemoryStore``) dump cleanly.
     """
     source = sqlite3.connect(str(db_path))
     try:
+        _load_vec_extension(source)
         snapshot = sqlite3.connect(":memory:")
         try:
+            # The snapshot needs vec0 too: iterdump reads the virtual table's
+            # schema through the snapshot connection.
+            _load_vec_extension(snapshot)
             source.backup(snapshot)
             dump_text = "\n".join(snapshot.iterdump())
         finally:

@@ -94,3 +94,48 @@ async def test_backup_respects_custom_paths(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.parent == backup_dir
+
+
+@pytest.mark.asyncio
+async def test_backup_handles_vec0_virtual_table(tmp_path: Path) -> None:
+    """Regression: memory.db contains a vec0 virtual table (sqlite-vec).
+
+    Without the extension loaded into the dump connections, ``iterdump``
+    raises ``no such module: vec0`` and the memory server fails to boot.
+    The dump must succeed and the SQL must restore (with the extension
+    loaded) to the same row set.
+    """
+    pytest.importorskip("sqlite_vec")
+
+    import sqlite_vec
+
+    db_path = tmp_path / "memory.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension(sqlite_vec.loadable_path())
+        conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT)")
+        conn.execute("INSERT INTO memories (content) VALUES ('note-vec')")
+        conn.execute("CREATE VIRTUAL TABLE memory_vec USING vec0(embedding float[4])")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = backup_memory_db(data_dir=tmp_path)
+
+    assert result is not None
+    dump = _read_dump(result)
+    assert "CREATE VIRTUAL TABLE memory_vec" in dump
+    assert "note-vec" in dump
+
+    # Restore the dump into a fresh DB (with the extension loaded) and
+    # confirm the plain-table rows survive.
+    restored = sqlite3.connect(":memory:")
+    try:
+        restored.enable_load_extension(True)
+        restored.load_extension(sqlite_vec.loadable_path())
+        restored.executescript(dump)
+        rows = restored.execute("SELECT content FROM memories").fetchall()
+        assert rows == [("note-vec",)]
+    finally:
+        restored.close()
