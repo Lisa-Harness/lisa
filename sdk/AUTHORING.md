@@ -344,6 +344,7 @@ uv run lisa once "/my_mode test query"
 
 ## Pre-merge checklist
 
+- `packstest.catalog.validate_pack(<pack-path>)` passes from source (entry points load, every tool/operation YAML parses, all implementation modules import in-process).
 - `operation_id` is unique across all packs you intend to load simultaneously.
 - `description` is a non-empty one-line summary.
 - Every entry in `tool_ids` is registered in the tool catalog.
@@ -362,3 +363,5 @@ uv run lisa once "/my_mode test query"
 | `OperationExecutionError: … is not allowed for mode 'Y'` | Mode doesn't bind the operation and `mode_allowlist` doesn't include it | Add operation to `allowed_operation_ids` in the mode's `_mode.md` |
 | `OperationExecutionError: cannot call undeclared tool 'X'` | Declarative operation called a tool not in `tool_ids` | Add the tool to `tool_ids` in the front matter |
 | `CatalogCollisionError: duplicate operation_id 'X'` | Two packs define the same `operation_id` | Use `LISA_SESSION_PROVIDER_SELECTIONS` or rename one operation |
+| `validate_pack`: `module … not importable` | Tool/operation module missing or unimportable from the content root | Add the missing `__init__.py` (every package level) or fix the `module_path` |
+| `validate_pack`: `provider id unresolved` | Tool YAML has no `pack_id`/provider and the content root has no readable `pyproject.toml` | Set `tool_provider_id`/`pack_id` in the YAML; keep the distribution `pyproject.toml` at the pack root |

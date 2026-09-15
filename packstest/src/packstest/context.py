@@ -19,10 +19,10 @@ from kernel.testing.stubs import NullEventBus, StaticStateProvider
 from packstest.store import MemoryWorkProductStore
 
 __all__ = [
-    "ToolContextFactory",
-    "make_workspace",
-    "make_context",
     "DEFAULT_IDENTITY",
+    "ToolContextFactory",
+    "make_context",
+    "make_workspace",
 ]
 
 DEFAULT_IDENTITY = {

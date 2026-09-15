@@ -65,9 +65,15 @@ class MemoryWorkProductStore:
         return artifact
 
     def make_artifact(self, **overrides: Any) -> WorkProduct:
-        """Build an artifact owned by the harness's default identity."""
+        """Build an artifact owned by the harness's default identity.
 
-        from packstest.context import DEFAULT_IDENTITY
+        Reads the default identity lazily: ``context`` imports this module,
+        so a top-level import here would be a cycle.
+        """
+
+        from packstest.context import (  # noqa: PLC0415  # lazy: breaks cycle with packstest.context
+            DEFAULT_IDENTITY,
+        )
 
         fields = {
             "workspace_id": DEFAULT_IDENTITY["workspace_id"],

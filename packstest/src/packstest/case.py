@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -19,7 +19,7 @@ from packstest.context import ToolContextFactory
 from packstest.report import Trajectory
 from packstest.runner import Scenario, run_scenario
 
-__all__ = ["Case", "run_case", "CASE_MARKER"]
+__all__ = ["CASE_MARKER", "Case", "run_case"]
 
 CASE_MARKER = "eval"
 
@@ -62,9 +62,7 @@ async def run_case(
             f"tool sequence mismatch: {trajectory.tool_ids} != {case.expect_tool_ids}"
         )
     if case.expect_no_errors:
-        assert trajectory.all_errors_absent(), (
-            f"unexpected tool error: {trajectory.first_error()}"
-        )
+        assert trajectory.all_errors_absent(), f"unexpected tool error: {trajectory.first_error()}"
     for extra in case.assertions:
         extra(trajectory)
     if out_dir is not None:

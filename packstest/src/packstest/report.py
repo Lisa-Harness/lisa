@@ -10,10 +10,10 @@ regressions diffable across runs.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dataclasses import dataclass
 from kernel.models import ToolResult
 
 __all__ = ["ToolRun", "Trajectory", "write_trajectory"]
@@ -26,7 +26,6 @@ class ToolRun:
     tool_id: str
     result: ToolResult
     error: str = ""
-
 
 
 class Trajectory:

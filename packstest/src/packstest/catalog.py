@@ -30,17 +30,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from sdk.content import build_tool_catalog_json, resolve_tool_roots
 
 __all__ = [
     "PackIssue",
     "PackValidationReport",
-    "load_pack_content_root",
-    "build_tool_catalog",
     "activate_tool",
-    "validate_pack",
+    "build_tool_catalog",
+    "load_pack_content_root",
     "load_pack_entry_points",
+    "validate_pack",
 ]
 
 logger = logging.getLogger(__name__)
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 class PackIssue:
     """One validation finding; ``severity`` gates pass/fail."""
 
-    __slots__ = ("severity", "check", "detail")
+    __slots__ = ("check", "detail", "severity")
 
     def __init__(self, severity: str, check: str, detail: str) -> None:
         self.severity = severity
@@ -155,7 +154,7 @@ def _importable(module_path: str) -> bool:
         return False
     try:
         importlib.import_module(module_path)
-    except Exception:  # noqa: BLE001  # pylint: disable=broad-except
+    except Exception:  # pylint: disable=broad-except
         logger.debug("import failed for %s", module_path, exc_info=True)
         return False
     return True
@@ -202,7 +201,7 @@ def load_pack_entry_points(pack_path: Path) -> dict[str, Any]:
                 module = importlib.import_module(module_name)
                 callable_obj = getattr(module, attr)
                 results.setdefault(group, {})[name] = callable_obj()
-            except Exception:  # noqa: BLE001  # pylint: disable=broad-except
+            except Exception:  # pylint: disable=broad-except
                 logger.warning("entry point %s:%s failed to load", group, name, exc_info=True)
                 results.setdefault(group, {})[name] = None
     return results
@@ -222,6 +221,43 @@ def _ensure_source_importable(pack_path: Path) -> list[Path]:
             sys.path.insert(0, resolved)
             added.append(candidate)
     return added
+
+
+def _validate_tool_entry(
+    tool_id: str,
+    tool_dict: dict[str, Any],
+    seen: set[str],
+) -> list[PackIssue]:
+    """Validate one cataloged tool against the production contracts."""
+
+    issues: list[PackIssue] = []
+    if tool_id in seen:
+        issues.append(PackIssue("error", "tool-id", f"duplicate tool_id {tool_id!r}"))
+        return issues
+    seen.add(tool_id)
+
+    issues.extend(check_tool_yaml_schema(tool_id, tool_dict))
+
+    module_path = str(tool_dict.get("module_path", ""))
+    if not _importable(module_path):
+        issues.append(
+            PackIssue("error", "tool-import", f"{tool_id}: module {module_path!r} not importable")
+        )
+        return issues
+    if not hasattr(importlib.import_module(module_path), "execute"):
+        issues.append(PackIssue("error", "tool-execute", f"{tool_id}: module lacks execute()"))
+    if not tool_dict.get("tool_provider_id"):
+        issues.append(PackIssue("error", "tool-provider", f"{tool_id}: provider id unresolved"))
+
+    # Validate against the real EffectKind contract, not a hardcoded set.
+    from typing import get_args  # noqa: PLC0415  # stdlib, no cycle risk
+
+    from kernel.approval import EffectKind  # noqa: PLC0415  # lazy: optional import
+
+    effect = str(tool_dict.get("effect", "write"))
+    if effect not in set(get_args(EffectKind)):
+        issues.append(PackIssue("error", "tool-effect", f"{tool_id}: unknown effect {effect!r}"))
+    return issues
 
 
 def validate_pack(pack_path: Path, *, ensure_importable: bool = True) -> PackValidationReport:
@@ -253,9 +289,13 @@ def validate_pack(pack_path: Path, *, ensure_importable: bool = True) -> PackVal
     )
 
     if not dist_name:
-        report.issues.append(PackIssue("error", "distribution", "pyproject.toml has no [project] name"))
+        report.issues.append(
+            PackIssue("error", "distribution", "pyproject.toml has no [project] name")
+        )
 
-    content_subdirs = [d for d in ("tools", "modes", "operations", "content") if (root / d).is_dir()]
+    content_subdirs = [
+        d for d in ("tools", "modes", "operations", "content") if (root / d).is_dir()
+    ]
     if not content_subdirs:
         report.issues.append(
             PackIssue("warning", "content-root", f"no content subdirs found under {root}")
@@ -271,34 +311,7 @@ def validate_pack(pack_path: Path, *, ensure_importable: bool = True) -> PackVal
 
     seen: set[str] = set()
     for tool_id, tool_dict in sorted(catalog.items()):
-        if tool_id in seen:
-            report.issues.append(PackIssue("error", "tool-id", f"duplicate tool_id {tool_id!r}"))
-            continue
-        seen.add(tool_id)
-        module_path = str(tool_dict.get("module_path", ""))
-        if not _importable(module_path):
-            report.issues.append(
-                PackIssue("error", "tool-import", f"{tool_id}: module {module_path!r} not importable")
-            )
-            continue
-        if not hasattr(importlib.import_module(module_path), "execute"):
-            report.issues.append(
-                PackIssue("error", "tool-execute", f"{tool_id}: module lacks execute()")
-            )
-        if not tool_dict.get("tool_provider_id"):
-            report.issues.append(
-                PackIssue("error", "tool-provider", f"{tool_id}: provider id unresolved")
-            )
-        # Validate against the real EffectKind contract, not a hardcoded set.
-        from kernel.approval import EffectKind  # noqa: PLC0415  # lazy: optional import
-
-        from typing import get_args  # noqa: PLC0415  # stdlib, no cycle risk
-
-        effect = str(tool_dict.get("effect", "write"))
-        if effect not in set(get_args(EffectKind)):
-            report.issues.append(
-                PackIssue("error", "tool-effect", f"{tool_id}: unknown effect {effect!r}")
-            )
+        report.issues.extend(_validate_tool_entry(tool_id, tool_dict, seen))
     report.tools = catalog
     return report
 

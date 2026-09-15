@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from packstest.catalog import (
     build_tool_catalog,
     load_pack_content_root,
@@ -18,7 +17,6 @@ from packstest.catalog import (
 )
 from packstest.context import ToolContextFactory, make_context
 from packstest.git import git_repo
-from packstest.runner import run_tool
 from packstest.store import MemoryWorkProductStore
 
 
@@ -101,21 +99,21 @@ def test_validate_pack_passes_synthetic_pack(synthetic_pack: Path) -> None:
 def test_run_tool_executes_in_process(synthetic_pack: Path, tmp_path: Path) -> None:
     """run_tool dispatches through the real ToolExecutionContext contract."""
 
-    import asyncio  # noqa: PLC0415  # stdlib, no cycle risk
+    import asyncio  # stdlib, no cycle risk
 
     factory = ToolContextFactory(
         root=tmp_path,
         pack_config={"workspace_root": str(tmp_path)},
     )
-    outcome = asyncio.run(
-        _invoke(synthetic_pack, "synthetic_hello", factory, {"name": "harness"})
-    )
+    outcome = asyncio.run(_invoke(synthetic_pack, "synthetic_hello", factory, {"name": "harness"}))
     assert outcome.result.output_text == "hello harness"
     assert outcome.result.error == ""
 
 
-async def _invoke(pack_path: Path, tool_id: str, factory: ToolContextFactory, parameters: dict) -> object:
-    from packstest.runner import run_tool as _run_tool  # noqa: PLC0415  # lazy: avoid import cycle
+async def _invoke(
+    pack_path: Path, tool_id: str, factory: ToolContextFactory, parameters: dict
+) -> object:
+    from packstest.runner import run_tool as _run_tool  # lazy: avoid import cycle
 
     return await _run_tool(pack_path, tool_id, factory, parameters)
 
@@ -133,9 +131,6 @@ def test_make_context_stamps_identity_and_store(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_memory_store_roundtrip(tmp_path: Path) -> None:
     """The store double satisfies save/get/delete round-trips."""
-
-    from packstest.store import MemoryWorkProductStore  # noqa: PLC0415
-    from sdk.workproducts import WorkProduct  # noqa: PLC0415
 
     store = MemoryWorkProductStore()
     artifact = store.make_artifact(source_root=str(tmp_path))

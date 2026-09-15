@@ -93,6 +93,25 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### `packstest` in-process pack test/eval harness
+
+- **What:** New workspace member `packstest` (`lisa-packstest`) for testing
+  content packs in-process, from source, in seconds — no install step, no
+  catalog MCP subprocess, no model calls. Modules: `context`
+  (`ToolContextFactory`), `store` (`MemoryWorkProductStore` double),
+  `catalog` (`validate_pack`/`build_tool_catalog` via the real SDK scanners),
+  `runner` (`run_tool`/`run_scenario`), `report` (`Trajectory`), `git`
+  (offline repo fixture), and `case` (declarative evals under the `eval`
+  marker). See `packstest/README.md`.
+- **Why:** The production pack route (entry points → catalog subprocess →
+  host wiring) is too slow for the edit-test-fix loop and surfaces failures
+  as opaque turn errors. The harness activates a pack directly from its
+  checkout and drives tools through the real contracts; failing evals name
+  the exact tool and error. The coding pack's evals
+  (`tests/evals/` in `lisa-pack-coding`) are the reference usage.
+- **Baseline:** Harness self-tests in `packstest/tests/`; evals use the
+  deterministic `eval` marker (no model calls, tmp-dir I/O only).
+
 #### Structural yield surface on `HostCommandResult`
 
 - **What:** `host.types.HostCommandResult` gains `yielded_question: str`, set

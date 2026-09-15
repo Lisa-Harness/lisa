@@ -16,4 +16,4 @@ Boundary: imports ``kernel`` and ``sdk`` only, never hosts or packs.
 
 from __future__ import annotations
 
-__all__ = ["context", "case", "catalog", "git", "report", "runner", "store"]
+__all__ = ["case", "catalog", "context", "git", "report", "runner", "store"]

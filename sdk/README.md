@@ -480,14 +480,17 @@ Keep imports limited to `kernel`, `sdk`, and package-local modules. Add import-b
 
 ## Testing Checklist
 
-1. Import the package without private app modules.
-2. Load the mode catalog and operation catalog.
-3. Validate operation allowlists against discovered modes.
-4. Run deterministic unit tests without live APIs.
-5. Run the CLI host for one command path when practical.
-6. Add opt-in live tests only for integrations that need them.
-7. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a host.
-8. Add import-boundary tests.
+1. Run `packstest.catalog.validate_pack` over the pack from source (structure: entry points, tool/operation YAMLs, importable modules).
+2. Import the package without private app modules.
+3. Load the mode catalog and operation catalog.
+4. Validate operation allowlists against discovered modes.
+5. Run deterministic unit tests without live APIs; drive tools in-process via `packstest.runner.run_tool`.
+6. Run the CLI host for one command path when practical.
+7. Add opt-in live tests only for integrations that need them.
+8. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a host.
+9. Add import-boundary tests.
+
+The `packstest` harness (`packstest/README.md`) activates packs in-process from source — no install step, no catalog subprocess, no model calls. Eval files live in the pack under `tests/evals/` with the `eval` marker.
 
 Focused local checks from `lisa_framework/`:
 
@@ -498,12 +501,13 @@ uv run lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
 uv run ruff check sdk mcp_server hosts
 ```
 
-Run extension tests without live API calls by default. External packs live in sibling checkouts (`../lisa-packs/` and `../lisa-packs-wip/`), not under `sdk/packs/`:
+Run extension tests without live API calls by default. External packs live in sibling checkouts (`../lisa-packs/` and `../lisa-packs-wip/`), not under `sdk/packs/`. Verify them with the `packstest` harness first (validate + in-process evals, no install step — see `packstest/README.md`), then the pack's own suite:
 
 ```powershell
-uv run pytest ../lisa-packs-wip/github/tests -m "not live"
-uv run pytest ../lisa-packs-wip/cloudflare/tests -m "not live"
-uv run pytest ../lisa-packs-wip/stripe/tests -m "not live"
+uv run pytest ../lisa-packs-wip/coding/lisa_packs/coding/tests -m "not live" -q
+uv run pytest ../lisa-packs-wip/github/tests -m "not live" -q
+uv run pytest ../lisa-packs-wip/cloudflare/tests -m "not live" -q
+uv run pytest ../lisa-packs-wip/stripe/tests -m "not live" -q
 ```
 
 Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.

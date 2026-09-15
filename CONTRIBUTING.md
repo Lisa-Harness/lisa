@@ -34,6 +34,23 @@ uv run pytest -m "not live" --tb=short -v
 uv run lisa verify
 ```
 
+### Pack changes
+
+When changing a content pack (bundled under `sdk/packs/` or external sibling
+checkouts like `../lisa-packs-wip/`), verify with the `packstest` harness
+first — it activates the pack in-process from source, with no install step:
+
+```powershell
+# Structure: entry points, tool YAMLs, importable modules, provider ids
+uv run python -c "from pathlib import Path; from packstest.catalog import validate_pack; print(validate_pack(Path('../lisa-packs-wip/<pack>')).summary())"
+
+# Behavior + deterministic evals in the pack's own suite
+uv run pytest ../lisa-packs-wip/<pack>/lisa_packs/<pack>/tests -m "not live" -q
+```
+
+See [`packstest/README.md`](packstest/README.md) for driving tools and writing
+eval cases.
+
 ## Pull Request Checklist
 
 - [ ] `ruff format --check` passes for touched files.
@@ -57,6 +74,7 @@ uv run lisa verify
 | `lisa-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
 | `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
+| `lisa-packstest` | `packstest/` | In-process pack test/eval harness (see `packstest/README.md`) |
 | `lisa-host-runtime` | `host/` | Transport-neutral host runtime |
 | `lisa-host-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
 | `lisa-host` | `../lisa-hosts/packaging/lisa-host/` | Meta-package (`uv tool install lisa-host`) |

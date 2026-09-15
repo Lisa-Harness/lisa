@@ -19,11 +19,11 @@ from typing import Any
 
 from kernel.models import ToolResult
 
-from packstest.context import ToolContextFactory
 from packstest.catalog import activate_tool, build_tool_catalog
+from packstest.context import ToolContextFactory
 from packstest.report import ToolRun, Trajectory
 
-__all__ = ["ToolRun", "Scenario", "run_tool", "run_scenario"]
+__all__ = ["Scenario", "ToolRun", "run_scenario", "run_tool"]
 
 
 async def run_tool(
@@ -69,7 +69,7 @@ async def run_tool(
     # tool is visible in the trajectory instead of aborting the scenario.
     try:
         result = await execute(ctx)
-    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
         result = ToolResult(
             tool_id=tool_id,
             error=f"{type(exc).__name__}: {exc}",
@@ -121,5 +121,5 @@ def _absorb_shared(shared: dict[str, Any], output_json: dict[str, Any]) -> None:
     """Copy whitelisted result keys into ``shared`` for later steps."""
 
     for key in ("artifact_id", "branch", "commit_sha", "pushed_sha", "worktree_path"):
-        if key in output_json and output_json[key]:
+        if output_json.get(key):
             shared[key] = output_json[key]

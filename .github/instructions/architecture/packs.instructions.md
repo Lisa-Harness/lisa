@@ -18,7 +18,7 @@ description: Architecture boundaries for the packs layer.
 - A routable mode's `satisfies_intents` normally matches its `routing_intent_tags`; otherwise the handoff gap cannot shrink.
 - Keep `__init__.py` at every package level so catalog module-path inference remains importable.
 - Duplicate tool IDs require an explicit provider selection. Treat this catalog error as an environment configuration issue before diagnosing unrelated turn failures.
-- External sibling packs install as wheel copies. Re-run `uv sync --extra ext` after editing their source before testing the installed package.
+- Verify pack changes with the `packstest` harness first (`validate_pack`, `run_tool`, evals under the `eval` marker — see `packstest/README.md` and the Pack Testing instruction); it activates the pack in-process from source with no install step. The installed-wheel route (`uv sync --extra ext` after editing sibling-pack source) is for final release validation, not the iteration loop.
 
 ## Provider, storage, and authored-content rules
 
