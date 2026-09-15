@@ -12,6 +12,7 @@ dependencies = [
     "lisa-pack-introspect",
     "lisa-pack-recovery",
     "lisa-host-runtime",
+    "lisa-packstest",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,7 @@ members = [
     "sdk/packs/memory",
     "sdk/packs/recovery",
     "host",
+    "packstest",
 ]
 
 [tool.uv.sources]
@@ -51,6 +53,7 @@ lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-recovery = { workspace = true }
 lisa-host-runtime = { workspace = true }
+lisa-packstest = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -58,6 +61,7 @@ pythonpath = [
     "sdk/src",
     "mcp_server/src",
     "host/src",
+    "packstest/src",
     "sdk/packs/core/src",
     "sdk/packs/introspect/src",
     "sdk/packs/memory/src",
@@ -74,6 +78,7 @@ testpaths = [
     "mcp_server/src/mcp_server/memory/tests",
     "mcp_server/src/mcp_server/thread/tests",
     "host/tests",
+    "packstest/tests",
 ]
 addopts = "--import-mode=importlib"
 consider_namespace_packages = true
