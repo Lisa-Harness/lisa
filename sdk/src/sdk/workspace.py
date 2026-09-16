@@ -25,6 +25,7 @@ Strictness contract (one policy, two caller intents):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 __all__ = ["WorkspaceRootError", "resolve_workspace_root"]
@@ -39,10 +40,11 @@ class WorkspaceRootError(ValueError):
 def _read_configured_root(pack_config: object) -> str:
     """Read the raw ``workspace_root`` string from pack configuration.
 
-    Accepts either a mapping (the common session pack-config shape) or a typed
-    config object exposing a ``workspace_root`` attribute.
+    Accepts any :class:`Mapping` (the common session pack-config shape, which
+    the kernel freezes into ``MappingProxyType``) or a typed config object
+    exposing a ``workspace_root`` attribute.
     """
-    if isinstance(pack_config, dict):
+    if isinstance(pack_config, Mapping):
         return str(pack_config.get(_WORKSPACE_ROOT_KEY, "") or "")
     return str(getattr(pack_config, _WORKSPACE_ROOT_KEY, "") or "")
 
@@ -89,15 +91,11 @@ def resolve_workspace_root(
 
     if require_git:
         if not raw:
-            raise WorkspaceRootError(
-                "workspace_root is not configured for this session."
-            )
+            raise WorkspaceRootError("workspace_root is not configured for this session.")
         if configured is None:
             raise WorkspaceRootError(f"workspace_root is not a directory: {raw}")
         if not (configured / ".git").exists():
-            raise WorkspaceRootError(
-                f"workspace_root is not a Git worktree: {configured}"
-            )
+            raise WorkspaceRootError(f"workspace_root is not a Git worktree: {configured}")
         return configured
 
     # Lenient: configured root if it is a directory, else the process CWD, then
