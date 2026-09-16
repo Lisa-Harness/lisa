@@ -22,6 +22,7 @@ it calls the real loaders wherever possible so the harness cannot drift.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -200,11 +201,48 @@ def load_pack_entry_points(pack_path: Path) -> dict[str, Any]:
                 module_name, _, attr = target.partition(":")
                 module = importlib.import_module(module_name)
                 callable_obj = getattr(module, attr)
-                results.setdefault(group, {})[name] = callable_obj()
+                results.setdefault(group, {})[name] = _probe_entry_callable(callable_obj)
             except Exception:  # pylint: disable=broad-except
                 logger.warning("entry point %s:%s failed to load", group, name, exc_info=True)
                 results.setdefault(group, {})[name] = None
     return results
+
+
+def _probe_entry_callable(callable_obj: Any) -> Any:
+    """Invoke an entry-point callable in a load-time-safe way.
+
+    Entry points come in several calling conventions:
+
+    - Zero-arg factories (``get_content_root()``) and classes with
+      all-default ``__init__`` — callable with no arguments.
+    - Two-arg contracts such as ``build_context_items(runtime_context,
+      state)`` — the framework only ever calls these with arguments at
+      item-build time, so requiring a no-arg probe call would flag every
+      valid builder as broken. For these, a successful load is proven by
+      calling with stub positional arguments.
+    """
+
+    try:
+        return callable_obj()
+    except TypeError:
+        # Zero-arg invocation rejected — inspect the signature and retry
+        # with ``None`` placeholders for required parameters so factory
+        # contracts like ``build_context_items(runtime_context, state)``
+        # are validated for loadability rather than arg-count strictness.
+        try:
+            sig = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            raise
+        required = [
+            param
+            for param in sig.parameters.values()
+            if param.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            and param.default is inspect.Parameter.empty
+        ]
+        if not required:
+            raise
+        return callable_obj(*([None] * len(required)))
 
 
 def _ensure_source_importable(pack_path: Path) -> list[Path]:
