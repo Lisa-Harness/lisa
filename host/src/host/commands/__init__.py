@@ -129,6 +129,10 @@ from host.commands._packs import (
     run_pack_update_all,
     set_pack_enabled,
 )
+from host.commands._policy import (
+    handle_policy_command,
+    render_policy_document,
+)
 from host.commands._render import (
     build_capability_snapshot,
     format_help,
@@ -209,6 +213,7 @@ __all__ = [
     "handle_mcp_command",
     "handle_models_command",
     "handle_pack_command",
+    "handle_policy_command",
     "handle_simple_command",
     "installed_pack_roots_by_name",
     "mode_support_gap",
@@ -228,6 +233,7 @@ __all__ = [
     "render_modes_list",
     "render_operations_list",
     "render_pack_list",
+    "render_policy_document",
     "render_runtime_settings",
     "render_tools_list",
     "resolve_pack_name",

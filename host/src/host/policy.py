@@ -59,6 +59,7 @@ __all__ = [
     "read_containment",
     "remember_allow_prefix",
     "sandbox_session_key",
+    "write_policy",
 ]
 
 #: The policy file lives beside the other durable host state.
@@ -238,6 +239,19 @@ def remember_allow_prefix(data_dir: Path, *, tool: str, command_prefix: str) -> 
         doc.allow.append(rule)
     _write_policy(path, doc)
     logger.info("policy: remembered allow rule %s", rule.describe())
+    return path
+
+
+def write_policy(data_dir: Path, doc: PolicyDocument) -> Path:
+    """Persist ``doc`` as ``<data_dir>/policy.yaml`` with the standard header.
+
+    The public write behind the ``/policy`` command's mode/bare edits: load,
+    mutate, write back — preserving whatever rule lists the document already
+    carries. Returns the path written.
+    """
+    path = Path(data_dir) / DEFAULT_POLICY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_policy(path, doc)
     return path
 
 

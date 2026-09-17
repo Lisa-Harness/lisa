@@ -70,6 +70,7 @@ from host.commands import (
     handle_mcp_command,
     handle_models_command,
     handle_pack_command,
+    handle_policy_command,
     handle_simple_command,
     mode_support_gap,
     preferred_model_id_for_route,
@@ -344,6 +345,10 @@ async def _dispatch_host_command(
     elif lowered in {"/settings", "settings"}:
         response_text = handle_simple_command(
             runtime, message, "settings", render_runtime_settings(runtime)
+        )
+    elif lowered == "/policy" or lowered.startswith("/policy "):
+        response_text = handle_simple_command(
+            runtime, message, "policy", handle_policy_command(runtime, stripped, message)
         )
     elif lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         response_text = await run_explicit_slice_command(runtime, message=message)
