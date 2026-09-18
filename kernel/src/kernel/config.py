@@ -169,6 +169,19 @@ class Settings(BaseSettings):
     # per-step iteration budget. Override via ``PER_STEP_MAX_TOOL_CALLS``.
     per_step_max_tool_calls: int = 150
 
+    # ── Turn runner: completion budgets ──────────────────────────────────
+    # Per-iteration completion token budget for turn-loop model calls.
+    # Reasoning-capable models (``reasoning_model``/``thinking_model``
+    # flags, or a ``reasoning`` capability) bill their chain-of-thought
+    # against this budget on some providers (Ollama), so a small value
+    # starves the visible answer or the tool-call payload:
+    # ``finish_reason=length`` with empty content, or reasoning leaking
+    # into ``content`` (the 2026-09-02 empty-turn and 2026-09-17
+    # meta-analysis incidents). 8192 gives reasoning headroom while
+    # bounded far below any model context. Override via
+    # ``TURN_COMPLETION_MAX_TOKENS``.
+    turn_completion_max_tokens: int = 8192
+
     # ── Turn runner: guard caps ───────────────────────────────────────────
     # Caps for the correction-nudge and loop-backstop guards in
     # ``kernel.turn_runner`` and the lifecycle resolver. Each was a
@@ -378,6 +391,7 @@ class Settings(BaseSettings):
         "delegate_max_depth",
         "per_step_max_iterations",
         "per_step_max_tool_calls",
+        "turn_completion_max_tokens",
         "forced_action_non_compliant_cap",
         "stage_nudge_threshold",
         "stage_nudge_cap",

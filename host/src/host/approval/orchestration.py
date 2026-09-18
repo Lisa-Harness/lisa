@@ -396,7 +396,9 @@ async def _record_and_continue_after_approval(
         "Report the result to the operator in plain prose. Do not call any "
         "tools in this turn — do not re-run the approved action and do not "
         "start follow-up commands; the operator is watching and can ask for "
-        "more work explicitly."
+        "more work explicitly. End your report with the single most likely "
+        "next step as one short prose sentence (no tool calls, no question) "
+        "so the operator can say \"go\" or redirect."
     )
     runtime.session.current_mode_id = owner_mode
     routed = await route_model_turn(runtime, continuation_query, transport)

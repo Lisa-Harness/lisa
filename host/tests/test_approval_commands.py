@@ -167,6 +167,10 @@ async def test_approve_dispatches_only_the_saved_invocation(
     # new effectful action (the double-approve friction on tumbleweed3).
     assert "Do not call any tools" in continuation_queries[0]
     assert "do not start follow-up commands" in continuation_queries[0]
+    # Ambition contract: the report ends with a proposed next step so the
+    # synthesis turn stays useful without re-inviting approvals (the 2026-09-17
+    # "shell session ready / what next" passivity pattern).
+    assert "next step" in continuation_queries[0]
     assert result.text == "continuation synthesized"
     persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None

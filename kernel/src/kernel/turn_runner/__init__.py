@@ -256,6 +256,51 @@ _STALLED_WRITE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# ── Reasoning-aware completion budget ─────────────────────────────────────
+# Some providers (Ollama) bill a reasoning model's chain-of-thought against
+# the per-call ``max_tokens`` budget, so a small budget starves the visible
+# answer or the tool-call payload: ``finish_reason=length`` with empty
+# content, or truncated reasoning surfacing AS content (the 2026-09-02
+# empty-turn and 2026-09-17 meta-analysis incidents). Reasoning-capable
+# models therefore get the configured budget (default 8192, env-tunable via
+# ``TURN_COMPLETION_MAX_TOKENS``); plain models keep the leaner legacy
+# budget. OpenAI-style providers bill reasoning separately, so the leaner
+# budget costs nothing there — the flag-based bump is the conservative
+# cross-provider choice. Bounded by the model's context window when known.
+_REASONING_CAPABILITY_MARKER = "reasoning"
+
+#: Legacy lean per-iteration completion budget for non-reasoning models.
+#: Reasoning-capable models get ``settings.turn_completion_max_tokens``
+#: (default 8192) instead; see ``_turn_completion_max_tokens``.
+_LEGACY_TURN_COMPLETION_MAX_TOKENS = 4096
+
+
+def _turn_completion_max_tokens(model_def: Any) -> int:
+    """Return the per-iteration completion budget for a model definition.
+
+    Reasoning-capable models (``reasoning_model``/``thinking_model`` flags
+    or a ``reasoning`` capability string) get ``settings.turn_completion_max_tokens``
+    (default 8192); everything else keeps the legacy 4096. Always bounded by
+    the model's ``context_window`` when the manifest declares one.
+    """
+    budget = int(getattr(_kernel_settings, "turn_completion_max_tokens", 0) or 0)
+    if budget <= 0:
+        budget = _LEGACY_TURN_COMPLETION_MAX_TOKENS
+    flags_reasoning = bool(
+        getattr(model_def, "reasoning_model", False) or getattr(model_def, "thinking_model", False)
+    )
+    caps_reasoning = _REASONING_CAPABILITY_MARKER in {
+        str(cap).lower() for cap in (getattr(model_def, "capabilities", ()) or ())
+    }
+    if not (flags_reasoning or caps_reasoning):
+        # Never exceed the legacy budget for plain models, even when the
+        # configured reasoning budget is lower.
+        return min(_LEGACY_TURN_COMPLETION_MAX_TOKENS, budget)
+    cap_window = int(getattr(model_def, "context_window", 0) or 0)
+    if cap_window > 0:
+        return min(budget, cap_window)
+    return budget
+
 
 def _synthesized_call_missing_all_required(
     tool_name: str,
@@ -302,9 +347,9 @@ def _synthesized_call_missing_all_required(
     if not model_fields:
         return False
     required_names = [
-        name
-        for name, field in model_fields.items()
-        if getattr(field, "is_required", lambda: False)()
+        field_name
+        for field_name, model_field in model_fields.items()
+        if getattr(model_field, "is_required", lambda: False)()
     ]
     if not required_names:
         return False
@@ -2351,6 +2396,53 @@ async def _run_turn_inner(
                 action_list=_action_list,
             )
 
+        # ── Read-loop nudge (reciprocal of the write-nudge) ─────────────
+        # The 2026-08-27 read-receipt fix correctly exempted read-only
+        # turns from the write-nudge (read-only work is honest), but that
+        # left NO guard for a pure-read loop that never converges: the
+        # 2026-09-04 executor fetch_page burn (30 calls, cap-pause) and
+        # the 2026-09-17 researcher web_search burn (15 iterations, zero
+        # synthesis) both ran to the stage cap with only read receipts.
+        # This nudge fires once at the stage threshold for turns with
+        # read/execute receipts and zero write attempts, telling the
+        # model to synthesize what it has and land it (or hand off).
+        # Transport: same one-shot briefing channel as the write-nudge.
+        _read_loop_nudge_text = ""
+        _read_receipts = any(r.effect in ("read", "execute") for r in _state.effect_receipts)
+        _write_attempts = any(
+            bare_tool_name(n) in _state.action_tool_ids or n in _state.action_tool_ids
+            for n in _state.called_tool_names
+        )
+        if (
+            _turns_in_stage >= _kernel_settings.stage_nudge_threshold
+            and not _state.read_loop_nudge_fired
+            and not _state.write_nudge_fired
+            and _read_receipts
+            and not _write_attempts
+            and not any(
+                r.capability_id in _state.action_tool_ids
+                for r in _state.effect_receipts
+                if r.effect in ("write", "external_write")
+            )
+            and _pending_yield is None
+        ):
+            _state.read_loop_nudge_fired = True
+            _log.info(
+                "read-loop nudge (mode=%s iteration=%d turns_in_stage=%d "
+                "read_receipts=True zero_writes); nudging to synthesize and land",
+                mode_id,
+                _state.iteration,
+                _turns_in_stage,
+            )
+            _read_loop_nudge_text = (
+                "READ-LOOP BUDGET WARNING. You have spent many iterations on "
+                "read-only calls without landing your findings. Synthesize "
+                "what you have now: call your mode's write/document tool "
+                "with the evidence collected so far, or hand off to the "
+                "mode that can. Do not issue more of the same read calls "
+                "without a new, specific reason."
+            )
+
         # Determine effective_tools from the budget/yield state.
         if _pending_yield is not None:
             effective_tools = None
@@ -2386,6 +2478,8 @@ async def _run_turn_inner(
             _guidance_lines.append(_lifecycle_action.nudge)
         if _midpoint_nudge_text:
             _guidance_lines.append(_midpoint_nudge_text)
+        if _read_loop_nudge_text:
+            _guidance_lines.append(_read_loop_nudge_text)
         if _chain_advance_guidance:
             _guidance_lines.append(_chain_advance_guidance)
         if _stalled_write_guidance:
@@ -2560,7 +2654,12 @@ async def _run_turn_inner(
             completion_request = CompletionRequest(
                 messages=messages,
                 model_def=effective_model_def,
-                max_tokens=4096,
+                # Reasoning-aware budget: reasoning models bill their
+                # chain-of-thought against ``max_tokens`` on some providers,
+                # so the lean legacy 4096 starves the visible answer or the
+                # tool-call payload (2026-09-02 empty-turn + 2026-09-17
+                # meta-analysis incidents). See _turn_completion_max_tokens.
+                max_tokens=_turn_completion_max_tokens(effective_model_def),
                 temperature=0.4,
                 tools=effective_tools,
                 # Carry the typed segment view alongside ``messages`` so the
@@ -4947,7 +5046,7 @@ async def _run_turn_inner(
                 final_completion = await complete(
                     messages=messages,
                     model_def=effective_model_def,
-                    max_tokens=4096,
+                    max_tokens=_turn_completion_max_tokens(effective_model_def),
                     temperature=0.4,
                     tools=None,
                 )
@@ -5033,7 +5132,7 @@ async def _run_turn_inner(
                     final_completion = await complete(
                         messages=messages,
                         model_def=effective_model_def,
-                        max_tokens=4096,
+                        max_tokens=_turn_completion_max_tokens(effective_model_def),
                         temperature=0.4,
                         tools=None,
                     )

@@ -346,6 +346,17 @@ class _TurnState:
     lifecycle briefing and must not repeat: a model that genuinely
     declines to write gets nudged once, then the turn is accepted
     honestly. Reset to False only by a fresh ``_TurnState``."""
+    read_loop_nudge_fired: bool = False
+    """One-shot guard for the read-loop nudge — the reciprocal of
+    ``write_nudge_fired`` for read-heavy turns. The 2026-08-27
+    read-receipt fix exempted turns with read receipts from the
+    midpoint write-nudge (correct: read-only work is honest), which
+    left NO guard for a pure-read loop that never converges (the
+    2026-09-04 executor fetch_page burn and the 2026-09-17 researcher
+    web_search burn: 15 same-tool iterations, zero synthesis, paused at
+    the stage cap). This nudge fires once at the stage threshold for
+    turns with read/execute receipts and zero write attempts, telling
+    the model to synthesize what it has and land it or yield."""
     consecutive_tool_errors: int = 0
     """Count of trailing dispatches to the same tool that returned an
     error (``ToolResult.error`` non-empty, ``OperationResult`` not
