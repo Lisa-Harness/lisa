@@ -184,6 +184,12 @@ def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, An
     ``response_text`` are redacted at projection time — the raw store
     entry is never mutated, and harness-authored budget/cap prose never
     reaches the model through this tool.
+
+    Entries stamped ``content_source == "reasoning_tail"`` carry the model's
+    FULL reasoning under ``reasoning_text`` (the thread log is exhaustive
+    at rest). Playback bounds that field to a short excerpt and applies
+    the same redaction policy — the raw thinking never reaches the model
+    or UI verbatim through this tool.
     """
     response = str(entry.get("response_text") or "")
     query = str(entry.get("query") or "")
@@ -197,7 +203,7 @@ def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, An
     receipt_caps = [
         str(r.get("capability_id") or "") for r in receipts if isinstance(r, dict)
     ]
-    return {
+    result = {
         "turn": entry.get("turn"),
         "mode_id": entry.get("mode_id"),
         "query": query,
@@ -206,6 +212,20 @@ def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, An
         "transitioned_to": entry.get("transitioned_to"),
         "receipt_capability_ids": receipt_caps,
     }
+    content_source = str(entry.get("content_source") or "")
+    reasoning = str(entry.get("reasoning_text") or "")
+    if content_source and reasoning:
+        # Playback bound: quote at most 800 chars of the reasoning tail and
+        # redact it under the same policy as the response. The store keeps
+        # the full text; this projection is what playback surfaces see.
+        reasoning_max_chars = 800
+        if len(reasoning) > reasoning_max_chars:
+            reasoning = "…" + reasoning[-reasoning_max_chars:]
+        if redaction is not None:
+            reasoning = redaction.redact(reasoning)
+        result["content_source"] = content_source
+        result["reasoning_excerpt"] = reasoning
+    return result
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

@@ -187,6 +187,9 @@ def build_turn_completed_payload(
         "iteration_count": coerce_int(getattr(result, "iteration_count", 0)),
         "blocked": bool(getattr(result, "blocked", False)),
         "block_origin": str(getattr(result, "block_origin", "") or ""),
+        # "" (normal answer) or "reasoning_tail" (no visible answer; the
+        # response is a labeled quote of the tail of the model's reasoning).
+        "content_source": str(getattr(result, "content_source", "") or ""),
     }
 
 

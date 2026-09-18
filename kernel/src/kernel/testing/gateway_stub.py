@@ -106,6 +106,10 @@ class StubGateway:
             tool_calls=list(getattr(result, "tool_calls", None) or []),
             usage=_usage_from_result(result),
             reasoning_content=str(getattr(result, "reasoning_content", "") or ""),
+            # Preserved so completion diagnostics (and the reasoning-tail
+            # caveat's truncation clause) can distinguish a budget-starved
+            # ``length`` stop from a clean one — real gateways set this.
+            finish_reason=getattr(result, "finish_reason", None),
         )
 
 

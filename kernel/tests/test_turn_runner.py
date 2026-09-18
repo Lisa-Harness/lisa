@@ -53,6 +53,9 @@ class _StubCompletion:
     finish_reason: str | None = None
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    #: Aggregated reasoning text (reasoning models) — read by the
+    #: tail-quote display sites via ``reasoning_tail_excerpt``.
+    reasoning_content: str = ""
 
 
 def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None = None):
@@ -2041,6 +2044,78 @@ async def test_natural_completion_with_content_logs_no_warning(
         rec for rec in caplog.records
         if "natural completion returned empty content" in rec.getMessage()
     ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_completion_surfaces_labeled_tail_quote() -> None:
+    """A reasoning model that returns no visible content surfaces a short
+    labeled quote of its reasoning tail — NOT the raw thinking presented as
+    the answer (the 2026-09-18 rambling relapse).
+
+    The turn result carries the ``reasoning_tail`` content-source marker and
+    the FULL reasoning on ``reasoning_text`` so the thread log stays
+    exhaustive at rest; only the surfaced response is bounded.
+    """
+
+    async def reasoning_only(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            reasoning_content=(
+                "let me consider the options\nmore deliberation here\n"
+                "I think the user probably wants option B"
+            ),
+            finish_reason="length",
+        )
+
+    hooks = _build_minimal_hooks(reasoning_only)
+    result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    # The caveat labels itself as thinking, not a response.
+    assert "no visible answer" in result.response_text
+    assert "not a response" in result.response_text
+    # The tail (not the head) of the reasoning is quoted.
+    assert "option B" in result.response_text
+    assert result.response_text.count("\n") <= len(result.response_text.split("\n"))
+    # Raw reasoning is NOT presented verbatim as the whole answer.
+    assert not result.response_text.startswith("let me consider")
+    # Marker + full reasoning ride the result for thread persistence.
+    assert result.content_source == "reasoning_tail"
+    assert result.reasoning_text == (
+        "let me consider the options\nmore deliberation here\n"
+        "I think the user probably wants option B"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_completion_truncation_clause_on_length() -> None:
+    """``finish_reason=length`` adds the budget-consumption clause so the
+    user knows WHY there was no visible answer."""
+
+    async def reasoning_only(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            reasoning_content="pondering endlessly",
+            finish_reason="length",
+        )
+
+    hooks = _build_minimal_hooks(reasoning_only)
+    result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert "consumed the completion budget" in result.response_text
+    assert result.content_source == "reasoning_tail"
+
+
+@pytest.mark.asyncio
+async def test_normal_completion_has_no_reasoning_tail_marker() -> None:
+    """A normal visible answer keeps the default empty content_source and
+    empty reasoning_text — the marker only fires on the degraded path."""
+
+    hooks = _build_minimal_hooks(_make_stub_complete("Plain answer."))
+    result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert result.response_text == "Plain answer."
+    assert result.content_source == ""
+    assert result.reasoning_text == ""
 
 
 @pytest.mark.asyncio

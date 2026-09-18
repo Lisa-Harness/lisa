@@ -43,17 +43,23 @@ def _write_active_entry(
     query: str = "",
     response_text: str = "",
     mode_id: str = "default",
+    content_source: str = "",
+    reasoning_text: str = "",
 ) -> None:
     """Append one entry to the active segment (``.current.jsonl``)."""
     from sdk.thread._backend import _segment_paths  # noqa: PLC0415
 
     paths = _segment_paths(thread_path)
     paths.current.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
+    entry: dict[str, object] = {
         "mode_id": mode_id,
         "query": query,
         "response_text": response_text,
     }
+    if content_source:
+        entry["content_source"] = content_source
+    if reasoning_text:
+        entry["reasoning_text"] = reasoning_text
     with paths.current.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -225,6 +231,53 @@ async def test_thread_read_range_returns_entries(
     assert len(data) == 2
     assert data[0]["query"] == "q0"
     assert data[1]["query"] == "q1"
+
+
+@pytest.mark.asyncio
+async def test_thread_read_range_bounds_reasoning_text_playback(
+    thread_deps: None,
+    tmp_path: Path,
+) -> None:
+    """``reasoning_tail`` entries play back a bounded, labeled reasoning
+    excerpt — the FULL raw thinking stored at rest never reaches the model
+    verbatim through this tool (the thread log stays exhaustive; playback
+    is bounded)."""
+    from mcp_server.thread.server import mcp
+
+    long_reasoning = "".join(
+        f"deliberation step {i} with substantial padding text. " for i in range(200)
+    )
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="q0",
+        response_text="*The model produced no visible answer — only internal "
+        "reasoning. Tail of its thinking, not a response:*\n\n> …the tail",
+        content_source="reasoning_tail",
+        reasoning_text=long_reasoning,
+    )
+    _write_active_entry(thread_path, query="q1", response_text="a1")
+
+    result = await mcp.call_tool(
+        "thread_read_range",
+        {"start_turn": 0, "end_turn": 999},
+    )
+    data = json.loads(_tool_text(result))
+    assert data[0]["content_source"] == "reasoning_tail"
+    excerpt = data[0]["reasoning_excerpt"]
+    # Bounded: at most 800 chars (plus the ellipsis prefix).
+    assert len(excerpt) <= 801
+    # Tail, not head: the excerpt ends with the reasoning's own tail.
+    assert excerpt.endswith("deliberation step 199 with substantial padding text. ")
+    # A normal entry carries neither marker nor excerpt.
+    assert "content_source" not in data[1]
+    assert "reasoning_excerpt" not in data[1]
+
+    # The raw store keeps the FULL reasoning — exhaustive at rest.
+    from sdk.thread import ThreadStore
+
+    raw = ThreadStore(thread_path).load_recent(limit=5)
+    assert raw[0]["reasoning_text"] == long_reasoning
 
 
 @pytest.mark.asyncio

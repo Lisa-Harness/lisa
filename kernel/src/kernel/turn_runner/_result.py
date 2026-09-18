@@ -17,6 +17,19 @@ class TurnResult:
     """Result of one call to `run_turn()`."""
 
     response_text: str
+    #: How ``response_text`` was produced. ``""`` (the default) means a
+    #: normal model answer. ``"reasoning_tail"`` means the model returned no
+    #: visible content and the surfaced text is a labeled quote of the tail
+    #: of its reasoning — the thread entry additionally records the full
+    #: reasoning under ``reasoning_text`` (exhaustive at rest), and playback
+    #: surfaces apply redaction/bounds to that field independently.
+    content_source: str = ""
+    #: The FULL raw reasoning text behind ``response_text`` when
+    #: ``content_source == "reasoning_tail"`` (empty otherwise). The thread
+    #: log is exhaustive by design, so the complete thinking is persisted
+    #: here at rest; playback surfaces apply redaction and bounds to this
+    #: field independently of what the user saw.
+    reasoning_text: str = ""
     tool_call_count: int = 0
     called_tool_names: set[str] = field(default_factory=set)
     """Names of every tool actually dispatched this turn. Used by the

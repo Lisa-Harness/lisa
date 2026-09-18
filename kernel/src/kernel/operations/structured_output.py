@@ -34,8 +34,21 @@ __all__ = [
     "json_only_instruction",
     "json_only_retry_messages",
     "parse_structured_payload",
+    "reasoning_tail_excerpt",
     "run_structured_completion_with_retry",
 ]
+
+#: Default cap on the quoted reasoning tail (characters). Reasoning trails
+#: end closest to the intended answer, so the tail — not the head — is the
+#: most informative excerpt; 800 chars keeps the quote readable without
+#: flooding the user with a wall of thought.
+REASONING_TAIL_MAX_CHARS = 800
+
+#: Marker a caller stamps on the turn result / thread entry when the
+#: surfaced content is a reasoning-tail quote, not a model answer. Playback
+#: surfaces read this to apply redaction and bounds independently of the
+#: exhaustive-at-rest thread log.
+REASONING_TAIL_CONTENT_SOURCE = "reasoning_tail"
 
 
 def completion_content(completion: Any) -> str:
@@ -82,6 +95,85 @@ def completion_content(completion: Any) -> str:
     if isinstance(reasoning, str) and reasoning.strip():
         return reasoning
     return ""
+
+
+def reasoning_tail_excerpt(
+    completion: Any,
+    max_chars: int = REASONING_TAIL_MAX_CHARS,
+) -> tuple[str, str]:
+    """Return ``(visible_content, caveat_block)`` for one completion.
+
+    The turn loop's *user-facing* display sites use this instead of
+    ``completion_content``: when the model produced visible text, it is
+    returned unchanged and the caveat is empty. When the visible answer is
+    empty but reasoning exists (a reasoning model that burned its
+    completion budget on thinking — the 2026-09-02 glm/Ollama incident
+    and its 2026-09-18 rambling relapse), the caveat block quotes the
+    TAIL of the reasoning with an explicit "this is thinking, not an
+    answer" label instead of presenting raw thought as the response.
+
+    The fold inside ``completion_content`` stays untouched: parsers rely on
+    it (gpt-5.x/glm/kimi legitimately put the real answer in
+    ``reasoning_content``), and the in-turn message history keeps the full
+    reasoning. Only what is surfaced to the user is bounded here; the
+    thread log stays exhaustive by recording the full reasoning under a
+    separate ``reasoning_text`` field.
+
+    ``finish_reason == "length"`` adds a truncation clause — it means
+    reasoning consumed the completion budget before any visible text.
+
+    Returns ``("", "")`` only when the completion has neither visible
+    content nor reasoning (a genuine provider-empty response; callers
+    keep their existing empty-completion handling for that case).
+    """
+    if isinstance(completion, str):  # bare-string stubs
+        return (completion, "")
+    content = getattr(completion, "content", "")
+    if not isinstance(content, str):
+        content = str(content or "")
+    if content.strip():
+        return (content.strip(), "")
+    reasoning = getattr(completion, "reasoning_content", None)
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        # Ollama's OpenAI-compatible endpoint names the field ``reasoning``.
+        reasoning = getattr(completion, "reasoning", None)
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return ("", "")
+    finish_reason = getattr(completion, "finish_reason", None)
+    truncation_clause = (
+        " — reasoning consumed the completion budget before any visible text"
+        if finish_reason == "length"
+        else ""
+    )
+    tail = _clip_tail(reasoning.strip(), max_chars)
+    caveat = (
+        f"*The model produced no visible answer{truncation_clause} — only "
+        f"internal reasoning. Tail of its thinking, not a response:*\n\n"
+        f"> {tail}"
+    )
+    return ("", caveat)
+
+
+def _clip_tail(text: str, max_chars: int) -> str:
+    """Return the last ``max_chars`` of ``text`` at a clean boundary.
+
+    Backs off to the nearest sentence/word boundary so the quote does not
+    end mid-word, and prefixes an ellipsis when text was clipped. Newlines
+    inside the quoted span collapse to ``" | "`` so the quote stays a
+    single readable line.
+    """
+    if len(text) <= max_chars:
+        clipped = text
+        prefix = ""
+    else:
+        clipped = text[-max_chars:]
+        prefix = "… "
+        for sep in (". ", ".\n", "\n", " "):
+            idx = clipped.find(sep)
+            if idx >= 0 and len(clipped) - (idx + len(sep)) > max_chars // 4:
+                clipped = clipped[idx + len(sep) :]
+                break
+    return prefix + clipped.strip().replace("\n", " | ")
 
 
 def extract_json_object(text: str) -> str:

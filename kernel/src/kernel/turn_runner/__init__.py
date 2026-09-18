@@ -101,7 +101,11 @@ from kernel.operations.registry import (
     get_operation_catalog,
     mode_completion_effects,
 )
-from kernel.operations.structured_output import completion_content
+from kernel.operations.structured_output import (
+    REASONING_TAIL_CONTENT_SOURCE,
+    completion_content,
+    reasoning_tail_excerpt,
+)
 from kernel.provider_contracts import (
     CompletionRequest,
     StreamedChunk,
@@ -1959,6 +1963,19 @@ async def _run_turn_inner(
     )
 
     content = ""
+    # ── Content-source marker ───────────────────────────────────────────
+    # ``""`` (normal answer) until a user-facing extraction site surfaces
+    # a reasoning-tail quote because the model returned no visible text.
+    # Stamped onto ``TurnResult`` and the thread entry so playback surfaces
+    # can distinguish a quoted-thinking excerpt from a model answer and
+    # apply redaction/bounds to the full reasoning independently (the
+    # thread log itself stays exhaustive at rest).
+    _content_source: str = ""
+    # ── Full-reasoning accumulator ──────────────────────────────────────
+    # Captures the complete reasoning text of the completion whose tail is
+    # quoted in the surfaced caveat, so the thread entry can persist it
+    # (exhaustive at rest) while playback redacts/bounds it.
+    _turn_reasoning_text: str = ""
     # ── Pre-handoff text accumulator ───────────────────────────────────
     # When a forced transition is synthesized (the model returned text but
     # no tool calls while a routing decision was pending), the model's
@@ -2959,13 +2976,24 @@ async def _run_turn_inner(
                 _state.forced_work_tool = ""
                 _synthesized_forced = True
 
-            # Use the canonical extractor so reasoning models (gpt-5.x,
-            # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
-            # while leaving ``content`` empty still produce visible output.
-            # Reading ``completion.content`` raw was the 2026-07-30 zero-output
-            # bug: the turn loop saw empty content, forced a final no-tools
-            # completion that also read only ``.content``, and stayed empty.
-            content = completion_content(completion).strip()
+            # Use the tail-quote extractor at this user-facing site so a
+            # reasoning model that burned its budget on thinking surfaces a
+            # short labeled quote of the tail of its reasoning instead of a
+            # wall of raw thought presented as the answer (the 2026-09-18
+            # rambling relapse). ``completion_content`` stays the canonical
+            # fold for parsers and the in-turn history recording above —
+            # only what is surfaced to the user is bounded here.
+            _visible_text, _tail_caveat = reasoning_tail_excerpt(completion)
+            content = _visible_text or _tail_caveat
+            if _tail_caveat:
+                _content_source = REASONING_TAIL_CONTENT_SOURCE
+                # Keep the FULL reasoning for the thread entry (exhaustive
+                # at rest); the caveat quotes only its tail.
+                _turn_reasoning_text = str(
+                    getattr(completion, "reasoning_content", "")
+                    or getattr(completion, "reasoning", "")
+                    or ""
+                )
 
             if not _synthesized_forced:
                 # ── Unified turn lifecycle: apply pending yield ──────────
@@ -4892,9 +4920,20 @@ async def _run_turn_inner(
 
         if not tools_dispatched:
             # No tool calls were dispatched — model returned text. Use the
-            # canonical extractor so reasoning models that put the answer in
-            # ``reasoning_content`` (empty ``content``) still surface it.
-            content = completion_content(completion).strip()
+            # tail-quote extractor at this user-facing site so a reasoning
+            # model that burned its budget on thinking surfaces a short
+            # labeled quote instead of raw thought presented as the answer
+            # (the 2026-09-18 rambling relapse). ``completion_content``
+            # stays the canonical fold for parsers and in-turn history.
+            _visible_text, _tail_caveat = reasoning_tail_excerpt(completion)
+            content = _visible_text or _tail_caveat
+            if _tail_caveat:
+                _content_source = REASONING_TAIL_CONTENT_SOURCE
+                _turn_reasoning_text = str(
+                    getattr(completion, "reasoning_content", "")
+                    or getattr(completion, "reasoning", "")
+                    or ""
+                )
             if not content:
                 # Empty final completion with zero tool calls: the provider
                 # produced nothing usable (provider-empty response, all
@@ -5074,6 +5113,7 @@ async def _run_turn_inner(
             # model synthesizes its findings into a coherent response instead
             # of the generic "did not produce a final response" fallback.
             final_reasoning_tokens = 0
+            final_tail_caveat = ""
             try:
                 final_completion = await complete(
                     messages=messages,
@@ -5082,12 +5122,15 @@ async def _run_turn_inner(
                     temperature=0.4,
                     tools=None,
                 )
-                # Canonical extractor: a reasoning model may put the synthesis
-                # in ``reasoning_content``; reading only ``.content`` here would
-                # repeat the zero-output bug on the final forced completion.
-                final_content = completion_content(final_completion)
-                if final_content.strip():
-                    content = final_content.strip()
+                # Tail-quote extractor at this user-facing site: a reasoning
+                # model that burned its budget on the forced final call
+                # surfaces a labeled quote of its thinking tail instead of
+                # raw thought presented as the answer. ``completion_content``
+                # remains the canonical fold for parsers/history.
+                final_visible, final_tail_caveat = reasoning_tail_excerpt(final_completion)
+                if final_visible:
+                    content = final_visible
+                    _content_source = ""
                     final_usage = _extract_completion_usage(final_completion)
                     final_reasoning_tokens = final_usage.reasoning_tokens
                     _state.total_prompt_tokens += final_usage.prompt_tokens
@@ -5138,7 +5181,10 @@ async def _run_turn_inner(
                     )
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("_state.iteration-cap final completion failed: %s", exc)
-            content = content or "The model did not produce a final response."
+            if not content:
+                content = "The model did not produce a final response."
+            elif _content_source == REASONING_TAIL_CONTENT_SOURCE and final_tail_caveat:
+                content = final_tail_caveat
 
     # Terminal-stage handling: if the turn ended parked on a terminal
     # stage, force one final no-tools completion using the
@@ -5390,6 +5436,12 @@ async def _run_turn_inner(
 
     return TurnResult(
         response_text=content,
+        content_source=_content_source,
+        # Exhaustive-at-rest: when the surfaced content is a reasoning-tail
+        # quote, attach the FULL reasoning so the thread log keeps it. The
+        # host persists this as ``reasoning_text`` on the thread entry;
+        # playback surfaces redact/bound it independently.
+        reasoning_text=_turn_reasoning_text if _content_source else "",
         tool_call_count=_state.total_tool_calls,
         called_tool_names=set(_state.called_tool_names),
         effect_receipts=list(_state.effect_receipts),

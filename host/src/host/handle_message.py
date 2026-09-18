@@ -701,6 +701,12 @@ async def _execute_mode_turn(
             "query": query or message,
             "response_preview": result.response_text[:240],
             "response_chars": len(result.response_text),
+            # How the response was produced: "" (normal answer) or
+            # "reasoning_tail" (no visible answer; the surfaced text is a
+            # labeled quote of the tail of the model's reasoning). The full
+            # reasoning rides the thread entry's ``reasoning_text`` so the
+            # exhaustive log keeps it; playback surfaces bound/redact it.
+            "content_source": str(getattr(result, "content_source", "") or ""),
             "tool_call_count": coerce_non_negative_int(result.tool_call_count),
             "iteration_count": coerce_non_negative_int(result.iteration_count),
             "prompt_tokens": coerce_non_negative_int(result.prompt_tokens),
@@ -760,6 +766,8 @@ async def _execute_mode_turn(
         mode_id=mode.mode_id,
         query=query or message,
         response_text=result.response_text,
+        content_source=str(getattr(result, "content_source", "") or ""),
+        reasoning_text=str(getattr(result, "reasoning_text", "") or ""),
         provenance=provenance,
         effect_receipts=receipts,
         handoff_to=result.handoff_to or "",

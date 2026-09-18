@@ -136,6 +136,8 @@ def append_thread_entry(
     mode_id: str,
     query: str,
     response_text: str,
+    content_source: str = "",
+    reasoning_text: str = "",
     provenance: dict[str, Any] | None = None,
     effect_receipts: list[dict[str, Any]] | None = None,
     handoff_to: str = "",
@@ -193,6 +195,14 @@ def append_thread_entry(
         entry["turn_input"] = turn_input
     if memory_ids:
         entry["memory_ids"] = memory_ids
+    if content_source:
+        # "reasoning_tail": ``response_text`` is a labeled quote of the
+        # tail of the model's reasoning (no visible answer was produced).
+        # The FULL reasoning rides ``reasoning_text`` so the log stays
+        # exhaustive at rest; playback surfaces redact/bound that field.
+        entry["content_source"] = content_source
+    if reasoning_text:
+        entry["reasoning_text"] = reasoning_text
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:
