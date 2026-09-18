@@ -41,6 +41,7 @@ LISA_PACKS_VENV_ENV = "LISA_PACKS_VENV"
 # ── Defaults ─────────────────────────────────────────────────────────
 
 _PACKS_VENV_DIR_NAME = "venv"
+_PROFILES_SUBDIR_NAME = "profiles"
 
 
 def _repo_root_from_module() -> Path:
@@ -129,13 +130,42 @@ def packs_venv_for(data_dir: Path) -> Path:
          is honored consistently across pack install/uninstall and the
          rest of the host.
 
+    When ``data_dir`` is a **profile** (``<base>/profiles/<name>`` — see
+    :func:`host.config.profile_data_dir`), the venv stays shared with the
+    profile's base data dir (``<base>/venv``) instead of a per-profile
+    duplicate: packs are installed once and discovered from every
+    profile. A profile that wants its own venv sets ``LISA_PACKS_VENV``.
+
     Use :func:`default_packs_venv` for the startup-time resolution that
-    also consults ``LISA_DATA_DIR`` and the platform default data dir.
+    also consults ``LISA_DATA_DIR``, ``LISA_PROFILE``, and the platform
+    default data dir.
     """
     override = os.getenv(LISA_PACKS_VENV_ENV, "").strip()
     if override:
         return Path(override).expanduser()
+    base = profile_base_data_dir(data_dir)
+    if base is not None:
+        return base / _PACKS_VENV_DIR_NAME
     return data_dir / _PACKS_VENV_DIR_NAME
+
+
+def profile_base_data_dir(data_dir: Path) -> Path | None:
+    """Return the profile's base data dir when ``data_dir`` is a profile.
+
+    A profile data dir has the shape ``<base>/profiles/<name>``. When
+    ``data_dir`` matches that shape, return ``<base>``; otherwise return
+    ``None``. The detection is structural (parent dir is named
+    ``profiles/``), not identity-based, so it works for any base —
+    ``~/.lisa/profiles/taxes`` → ``~/.lisa``, a custom
+    ``LISA_DATA_DIR=/srv/lisa`` → ``/srv/lisa/profiles/x`` → ``/srv/lisa``.
+    ``..`` and other escapes are impossible because
+    :func:`host.config.profile_data_dir` validates names to a single
+    path segment.
+    """
+    data_dir = Path(data_dir).resolve()
+    if data_dir.parent.name != _PROFILES_SUBDIR_NAME:
+        return None
+    return data_dir.parent.parent
 
 
 def default_packs_venv() -> Path:
@@ -146,7 +176,10 @@ def default_packs_venv() -> Path:
       2. ``LISA_DATA_DIR`` — the packs venv is ``<data_dir>/venv``.
          A relative value is resolved against the current working
          directory, matching ``HostConfig.from_env``'s ``.resolve()``.
-      3. ``~/.lisa/venv`` — the default data dir.
+      3. ``LISA_PROFILE`` — the packs venv is the BASE data dir's venv
+         (``<base>/venv``), shared with the profile. See
+         :func:`packs_venv_for` for the profile/base rules.
+      4. ``~/.lisa/venv`` — the default data dir.
 
     A trailing path separator on ``LISA_DATA_DIR`` (e.g. ``artifacts/``) is
     handled correctly by :class:`pathlib.Path`.
@@ -161,6 +194,22 @@ def default_packs_venv() -> Path:
     data_dir_env = os.getenv("LISA_DATA_DIR", "").strip()
     if data_dir_env:
         return Path(data_dir_env).expanduser().resolve() / _PACKS_VENV_DIR_NAME
+    profile_env = os.getenv("LISA_PROFILE", "").strip()
+    if profile_env:
+        # Invalid names fall through to the platform default: the CLI
+        # surfaces the validation error from HostConfig.from_env; this
+        # startup-time resolver must not crash before the error panel.
+        try:
+            from host.config import profile_data_dir  # noqa: PLC0415
+
+            profile = profile_data_dir(profile_env)
+        except ValueError:
+            pass
+        else:
+            base = profile_base_data_dir(profile)
+            if base is not None:
+                return base / _PACKS_VENV_DIR_NAME
+            return profile / _PACKS_VENV_DIR_NAME
     from host.config import default_data_dir  # noqa: PLC0415
 
     return default_data_dir() / _PACKS_VENV_DIR_NAME

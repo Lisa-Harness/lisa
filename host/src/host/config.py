@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,6 +29,7 @@ LISA_TIMEZONE_ENV = "LISA_TIMEZONE"
 LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
 LISA_LOG_DEBUG_ENV = "LISA_LOG_DEBUG"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
+LISA_PROFILE_ENV = "LISA_PROFILE"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
 LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
@@ -55,6 +57,7 @@ _DEFAULT_THREAD_SEGMENT_TURNS = 256
 _DEFAULT_MEMORY_MAX_RECORDS = 200
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
+_PROFILES_SUBDIR_NAME = "profiles"
 
 
 def default_data_dir() -> Path:
@@ -67,6 +70,39 @@ def default_data_dir() -> Path:
     Windows).
     """
     return Path.home() / _DEFAULT_DATA_DIR_NAME
+
+
+def profile_data_dir(profile: str, *, base_dir: Path | None = None) -> Path:
+    """Return the data directory for a named profile.
+
+    A profile is a named sub-workspace rooted at
+    ``<base_dir>/profiles/<name>`` (default base: ``~/.lisa``). It isolates
+    everything derived from ``data_dir`` — threads, memory, models.yaml,
+    policy, approvals, session context, files — while the packs venv stays
+    shared with the base data dir (see :func:`host.paths.packs_venv_for`).
+
+    ``LISA_DATA_DIR`` (explicit) still wins over ``LISA_PROFILE``; use the
+    profile when the user did not pin an explicit data dir. The name must
+    be a single path-safe segment (letters, digits, ``-``, ``_``, ``.``) —
+    ``..`` and separators are rejected so a profile name can never escape
+    the profiles/ root.
+
+    The directory is not created here; hosts create it lazily like any
+    other data dir (``ensure_data_dir`` MCP specs, ``resolve_data_dir``).
+    """
+    name = profile.strip()
+    if not name:
+        raise ValueError("LISA_PROFILE must not be empty")
+    if not _PROFILE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid profile name {name!r}: use letters, digits, '-', '_', '.' "
+            "(single path segment, no separators)"
+        )
+    base = base_dir if base_dir is not None else default_data_dir()
+    return (base / _PROFILES_SUBDIR_NAME / name).resolve()
+
+
+_PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _resolve_env(name: str, default: str = "") -> str:
@@ -521,10 +557,19 @@ class HostConfig:
         resolved_log_level = _log_level_override(log_level)
 
         # ── Data dir ──────────────────────────────────────────────────
+        # Precedence: explicit CLI arg > LISA_DATA_DIR > LISA_PROFILE >
+        # platform default (~/.lisa). A profile resolves to
+        # <default_data_dir>/profiles/<name> and isolates all data-dir
+        # derived state while sharing the base packs venv.
+        raw_data_dir = data_dir.strip()
+        if not raw_data_dir:
+            raw_data_dir = _resolve_env(LISA_DATA_DIR_ENV)
+        if not raw_data_dir:
+            raw_profile = _resolve_env(LISA_PROFILE_ENV)
+            if raw_profile:
+                raw_data_dir = str(profile_data_dir(raw_profile))
         resolved_data_dir = (
-            Path(data_dir.strip() or _resolve_env(LISA_DATA_DIR_ENV) or str(default_data_dir()))
-            .expanduser()
-            .resolve()
+            Path(raw_data_dir or str(default_data_dir())).expanduser().resolve()
         )
 
         # ── Overlays dir ──────────────────────────────────────────────
