@@ -6046,3 +6046,73 @@ async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
                 assert "## User Query" in str(msg.get("content", "")), (
                     f"synthesized user message in turn loop: {msg!r}"
                 )
+
+
+def test_short_keyword_requires_word_boundary() -> None:
+    """Short (≤3 char) and numeric routing keywords only match on word
+    boundaries — a bare-substring match inside incidental text must not
+    fire (the 2026-09-16 incident: ``gl`` matched inside "sin``gl``e-entry
+    uid map" and ``940`` matched inside the file size "673``940``", routing
+    benign queries into ``finances`` four times).
+    """
+    from kernel.turn_phases._routing_hint import _keyword_matches
+
+    # Embedded inside a larger word → no match.
+    assert not _keyword_matches("gl", "single-entry uid map")
+    assert not _keyword_matches("940", "673940 aug 11 mod")
+    # Space/punctuation-delimited → genuine match.
+    assert _keyword_matches("gl", "check the gl entries")
+    assert _keyword_matches("gl", "gl: reconcile the accounts")
+    assert _keyword_matches("gl", "gl")
+    assert _keyword_matches("940", "form 940")
+    assert _keyword_matches("940", "schedule the 940 filing")
+    # Long non-numeric keywords keep bare-substring semantics.
+    assert _keyword_matches("ledger", "subledger reconciliation")
+
+
+def test_partial_coverage_tie_breaks_by_earliest_keyword_position() -> None:
+    """When the best partial coverage is a tie among several targets (each
+    covering exactly one gap intent), the tie-break must follow the
+    earliest gap-intent keyword position in the query — not
+    ``routing_targets`` declaration order (the 2026-09-16 incident:
+    ``finances`` declared 4th beat ``shell`` on a 1-intent tie because it
+    precedes ``shell`` in the target list).
+    """
+    from kernel.turn_phases._routing_hint import _best_partial_coverage_target
+
+    catalog = {
+        "finances": _mode_config(
+            mode_id="finances",
+            routing_intent_tags=["finances"],
+            routing_intent_keywords={"finances": ["cashflow"]},
+        ),
+        "shell": _mode_config(
+            mode_id="shell",
+            routing_intent_tags=["shell"],
+            routing_intent_keywords={"shell": ["sandbox"]},
+        ),
+    }
+    # "sandbox" (shell) appears earlier in the query than "cashflow"
+    # (finances) even though finances is declared first in routing_targets.
+    target = _best_partial_coverage_target(
+        query="inspect the sandbox setup, then the cashflow",
+        routing_targets=["finances", "shell"],
+        catalog=catalog,
+        gap_intents={"finances", "shell"},
+    )
+    assert target == "shell", f"earliest keyword must win, got {target!r}"
+
+    # A strict winner still routes over a tied pair: one target covering 2
+    # gap intents beats the other's 1.
+    catalog["broad"] = _mode_config(
+        mode_id="broad",
+        routing_intent_tags=["finances", "shell"],
+        routing_intent_keywords={},
+    )
+    target = _best_partial_coverage_target(
+        query="inspect the sandbox and the cashflow",
+        routing_targets=["finances", "shell", "broad"],
+        catalog=catalog,
+        gap_intents={"finances", "shell", "other"},
+    )
+    assert target == "broad", f"strict winner must route, got {target!r}"

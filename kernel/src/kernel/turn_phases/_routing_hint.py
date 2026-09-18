@@ -201,7 +201,7 @@ def _detect_query_intents(
             # to the kernel.
             for tag, keywords in mode_config.routing_intent_keywords.items():
                 for keyword in keywords:
-                    if keyword in query_lower:
+                    if _keyword_matches(keyword, query_lower):
                         matched_tags.add(tag)
                         break
             # Also check the command_pattern — a query that explicitly names
@@ -237,6 +237,50 @@ def _detect_query_intents(
         len(routing_targets),
     )
     return detected
+
+
+_keyword_guard_max_len = 3
+
+
+def _keyword_matches(keyword: str, query_lower: str) -> bool:
+    """Return True when ``keyword`` occurs in ``query_lower``.
+
+    Long (4+ chars, non-numeric) keywords keep the historic bare-substring
+    semantics — multi-word phrases like "chart of accounts" are unlikely
+    to occur inside a larger token.
+
+    Short (≤3 chars) or purely-numeric keywords must instead match on a
+    word boundary. A bare-substring match on these fires inside incidental
+    text and routes the user into an unrelated mode (the 2026-09-16
+    incident: ``gl`` matched inside "sin``gl``e-entry uid map" and ``940``
+    matched inside the file size "673``940``", routing benign sandbox/
+    tool-output queries into ``finances`` four times). The boundary rule
+    is generic so no pack has to remember to avoid short tokens.
+
+    The boundary check is a neighbor test (start-of-string, end-of-string,
+    or adjacent non-alphanumeric) rather than a ``\b`` regex: pack keywords
+    are arbitrary text and would need escaping, and ``\b`` treats a
+    digit-to-digit transition as non-boundary anyway — "form 940" matches
+    (space-delimited, a genuine request) while "673940" does not.
+    """
+    if not keyword:
+        return False
+    if len(keyword) > _keyword_guard_max_len and not keyword.isdigit():
+        return keyword in query_lower
+    # Short/numeric keyword: require boundary-ish neighbors at the match.
+    start = query_lower.find(keyword)
+    while start != -1:
+        before_ok = start == 0 or not (
+            query_lower[start - 1].isalnum() and keyword[0].isalnum()
+        )
+        end = start + len(keyword)
+        after_ok = end == len(query_lower) or not (
+            query_lower[end].isalnum() and keyword[-1].isalnum()
+        )
+        if before_ok and after_ok:
+            return True
+        start = query_lower.find(keyword, start + 1)
+    return False
 
 
 def _tool_effect(
@@ -400,8 +444,9 @@ def _single_handoff_target_for_gap(
     if chained is not None:
         return chained
     # Partial coverage: pick the target covering the most residual gap
-    # intents (deterministic tie-break by routing_targets order).
+    # intents (ties broken by earliest keyword position in the query).
     return _best_partial_coverage_target(
+        query=query,
         routing_targets=routing_targets,
         catalog=catalog,
         gap_intents=gap_intents,
@@ -448,19 +493,27 @@ def _chained_handoff_target(
 
 def _best_partial_coverage_target(
     *,
+    query: str,
     routing_targets: list[str],
     catalog: Any,
     gap_intents: set[str],
 ) -> str | None:
     """Return the target covering the most residual gap intents.
 
-    Deterministic tie-break by ``routing_targets`` order so the helper is
-    stable across calls. Returns ``None`` when no target covers any gap
+    Ties are broken by the earliest gap-intent keyword position in the
+    query (the first step of the implied chain) rather than by
+    ``routing_targets`` declaration order — declaration order is arbitrary
+    from the user's perspective and biased picks toward modes that happen
+    to be declared early (the 2026-09-16 incident: a 1-intent tie between
+    ``finances`` (declared 4th) and ``shell``/``explainer`` routed benign
+    queries into ``finances``). When a tied candidate matched only via
+    fast-path patterns (no keyword positions), list order is the final
+    deterministic fallback. Returns ``None`` when no target covers any gap
     intent. Extracted from ``_single_handoff_target_for_gap`` to keep that
     function under the McCabe complexity / branch caps.
     """
-    best_target: str | None = None
     best_overlap = 0
+    candidates: list[str] = []
     for target_id in routing_targets:
         t_cfg = catalog.get(target_id)
         if t_cfg is None:
@@ -468,8 +521,34 @@ def _best_partial_coverage_target(
         overlap = len(set(t_cfg.routing_intent_tags) & gap_intents)
         if overlap > best_overlap:
             best_overlap = overlap
-            best_target = target_id
-    return best_target
+            candidates = [target_id]
+        elif overlap == best_overlap and overlap > 0:
+            candidates.append(target_id)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    chained = _first_target_for_earliest_intent(
+        query=query,
+        routing_targets=candidates,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+    if chained is not None:
+        _log.info(
+            "routing hint: partial-coverage tie among targets=%s; earliest-keyword tie-break -> %s (gap=%s)",
+            candidates,
+            chained,
+            sorted(gap_intents),
+        )
+        return chained
+    _log.info(
+        "routing hint: partial-coverage tie among targets=%s with no keyword positions; list-order fallback -> %s (gap=%s)",
+        candidates,
+        candidates[0],
+        sorted(gap_intents),
+    )
+    return candidates[0]
 
 
 def _format_remaining_steps(remaining_steps: list[str]) -> str:
@@ -985,6 +1064,7 @@ def _compute_capability_routing_hint(
     # 2026-08-11 root cause — keyword buckets keyed by tags not in
     # routing_intent_tags — is caught at catalog load).
     partial_target = _best_partial_coverage_target(
+        query=query,
         routing_targets=routing_targets,
         catalog=catalog,
         gap_intents=gap_intents,
