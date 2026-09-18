@@ -209,14 +209,13 @@ thread realignment (hard cutover, no compat shims).
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `LISA_THREAD_DIR` | `<data_dir>/threads` | Thread directory |
-| `LISA_THREAD_MAX_ENTRIES` | `50` | Recent-N window for context injection |
 | `LISA_THREAD_SEGMENT_TURNS` | `256` | Seal threshold — active segment is sealed when it reaches this many entries |
 
-`LISA_THREAD_MAX_ENTRIES` (50) and `LISA_THREAD_SEGMENT_TURNS` (256) are
-independent: the former controls how many recent turns enter the model's
-context, the latter controls how often the active segment is sealed.
-Context injection is unchanged (last 50 turns) while the store scales to
-near-infinite history.
+`LISA_THREAD_SEGMENT_TURNS` (256) controls how often the active segment
+is sealed. There is no configurable recent-N context window: context
+injection uses small fixed windows (the recent-conversation excerpt is
+3 turns; turn hooks read the last 30 entries), and the store scales to
+near-infinite history regardless.
 
 ## Scaling notes
 

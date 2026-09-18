@@ -606,6 +606,7 @@ async def _execute_mode_turn(
         append_thread_entry(
             thread_path=runtime.paths.thread_path,
             user_slug=runtime.config.user_slug,
+            segment_turns=runtime.config.thread_segment_turns,
             mode_id=mode.mode_id,
             query=query or message,
             response_text=response_text,
@@ -763,6 +764,7 @@ async def _execute_mode_turn(
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
         mode_id=mode.mode_id,
         query=query or message,
         response_text=result.response_text,
@@ -861,6 +863,7 @@ def _handle_unsupported_mode(
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
         mode_id=mode.mode_id,
         query=query,
         response_text=response_text,

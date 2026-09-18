@@ -365,6 +365,7 @@ async def _record_and_continue_after_approval(
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
         mode_id=owner_mode,
         query=f"/approve {invocation.request_id}",
         response_text=action_text,

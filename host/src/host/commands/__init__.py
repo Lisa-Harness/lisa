@@ -343,12 +343,6 @@ def _import_probe_status() -> object:
     return ProbeStatus
 
 
-def _import_resolve_slice_tuning() -> object:
-    from host.lisa_config import _resolve_slice_tuning  # noqa: PLC0415
-
-    return _resolve_slice_tuning
-
-
 def _import_file_backed_state_provider() -> object:
     from host.state_provider import FileBackedStateProvider  # noqa: PLC0415
 
@@ -380,7 +374,6 @@ _LAZY_IMPORTS: dict[str, Callable[[], object]] = {
     "FileBackedStateProvider": _import_file_backed_state_provider,
     "ProbeStatus": _import_probe_status,
     "StubModelDefinition": _import_stub_model_definition,
-    "_resolve_slice_tuning": _import_resolve_slice_tuning,
     "_router_preset_annotations": _import_router_preset_annotations,
     "active_manifest_path": _import_active_manifest_path,
     "append_thread_entry": _import_append_thread_entry,

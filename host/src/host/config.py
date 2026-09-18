@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kernel.execution_policy import ExecutionPolicy
+from sdk.layout import CONFIG_DIR, DATA_DIR, LOGS_DIR, STATE_DIR
 
 from host.execution_policy import default_interactive_execution_policy
-from sdk.layout import CONFIG_DIR, DATA_DIR, LOGS_DIR, STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,9 @@ LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
 LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
 LISA_SLICE_EXPLICIT_ENV = "LISA_SLICE_EXPLICIT"
 LISA_SLICE_BUDGET_MS_ENV = "LISA_SLICE_BUDGET_MS"
-LISA_THREAD_MAX_ENTRIES_ENV = "LISA_THREAD_MAX_ENTRIES"
 LISA_THREAD_SEGMENT_TURNS_ENV = "LISA_THREAD_SEGMENT_TURNS"
 LISA_THREAD_REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
 LISA_THREAD_REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
-LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 LISA_CONTEXT_BUDGET_ENABLED_ENV = "LISA_CONTEXT_BUDGET_ENABLED"
 LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS"
@@ -53,9 +51,7 @@ LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
 
 # ── Default values ────────────────────────────────────────────────────
 
-_DEFAULT_THREAD_MAX_ENTRIES = 50
 _DEFAULT_THREAD_SEGMENT_TURNS = 256
-_DEFAULT_MEMORY_MAX_RECORDS = 200
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
 _PROFILES_SUBDIR_NAME = "profiles"
@@ -338,10 +334,9 @@ class HostConfig:
     slice_config: SliceConfig = field(default_factory=SliceConfig)
 
     # ── Limits ─────────────────────────────────────────────────────────
-    thread_max_entries: int = _DEFAULT_THREAD_MAX_ENTRIES
     # Turn threshold at which the active thread segment is sealed to a
-    # compressed sidecar. Independent of ``thread_max_entries`` (the
-    # recent-N window injected into context). See ``host/thread.py`` and
+    # compressed sidecar. Honoured by every ``append_thread_entry`` call
+    # site with a runtime in scope. See ``host/thread.py`` and
     # ``docs/SPEC/THREAD_STORE.md``.
     thread_segment_turns: int = _DEFAULT_THREAD_SEGMENT_TURNS
     # ── Thread redaction ─────────────────────────────────────────────
@@ -355,7 +350,6 @@ class HostConfig:
     # — empty means defaults only; ``none`` disables all patterns).
     thread_redaction_enabled: bool = True
     thread_redaction_patterns: tuple[str, ...] = ()  # empty = defaults only
-    memory_max_records: int = _DEFAULT_MEMORY_MAX_RECORDS
 
     # ── Memory recall (pre-turn injection) ─────────────────────────────
     memory_recall_enabled: bool = True
@@ -601,13 +595,11 @@ class HostConfig:
         slice_values = _slice_overrides()
 
         # ── Limits ─────────────────────────────────────────────────────
-        thread_max = _resolve_env_int(LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES)
         thread_segment_turns = _resolve_env_int(
             LISA_THREAD_SEGMENT_TURNS_ENV, _DEFAULT_THREAD_SEGMENT_TURNS
         )
-        # ── Thread redaction config ────────────────────────────────
+        # ── Thread redaction config ────────────────
         thread_redaction_enabled, thread_redaction_patterns = _thread_redaction_env()
-        memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
 
         context_budget = _context_budget_overrides()
         prompt_cache_enabled = _resolve_env_bool(LISA_PROMPT_CACHE_ENABLED_ENV, True)
@@ -650,11 +642,9 @@ class HostConfig:
                 explicit_enabled=slice_values.explicit_enabled,
                 explicit_budget_ms=slice_values.explicit_budget_ms,
             ),
-            thread_max_entries=thread_max,
             thread_segment_turns=thread_segment_turns,
             thread_redaction_enabled=thread_redaction_enabled,
             thread_redaction_patterns=thread_redaction_patterns,
-            memory_max_records=memory_max,
             prompt_cache_enabled=prompt_cache_enabled,
             execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,

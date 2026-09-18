@@ -37,17 +37,6 @@ logger = logging.getLogger(__name__)
 
 LISA_TIMEZONE_ENV = "LISA_TIMEZONE"
 LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
-LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
-LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
-LISA_SLICE_EXPLICIT_ENV = "LISA_SLICE_EXPLICIT"
-LISA_SLICE_BUDGET_MS_ENV = "LISA_SLICE_BUDGET_MS"
-LISA_THREAD_MAX_ENTRIES_ENV = "LISA_THREAD_MAX_ENTRIES"
-LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
-
-# ── Default values ────────────────────────────────────────────────────
-
-_DEFAULT_THREAD_MAX_ENTRIES = 50
-_DEFAULT_MEMORY_MAX_RECORDS = 200
 
 # ── Lookup tables ─────────────────────────────────────────────────────
 
@@ -424,40 +413,6 @@ def _normalize_slice_flag(value: str) -> bool | None:
         return False
     logger.debug("unrecognised slice flag value %r", value)
     return None
-
-
-def _resolve_slice_tuning() -> tuple[dict[str, object], int]:
-    """Resolve the host slice tuning from env vars.
-
-    Returns a tuple of ``(tuning_dict, explicit_budget_ms)``. The tuning dict
-    feeds directly into :meth:`SliceTuning.from_mapping`. The explicit
-    budget is the wall-clock ceiling for the explicit-slice escape hatch
-    (e.g. the ``/consolidate`` command); pre/post slices use the pressure
-    curve and ignore this number.
-    """
-    tuning: dict[str, object] = {}
-    pre = _normalize_slice_flag(os.getenv(LISA_SLICE_PRE_TURN_ENV, ""))
-    if pre is not None:
-        tuning["pre_turn_enabled"] = pre
-    post = _normalize_slice_flag(os.getenv(LISA_SLICE_POST_TURN_ENV, ""))
-    if post is not None:
-        tuning["post_turn_enabled"] = post
-    explicit = _normalize_slice_flag(os.getenv(LISA_SLICE_EXPLICIT_ENV, ""))
-    if explicit is not None:
-        tuning["explicit_enabled"] = explicit
-    raw_budget = os.getenv(LISA_SLICE_BUDGET_MS_ENV, "").strip()
-    explicit_budget_ms = 2000  # safe default for an explicit user-initiated slice
-    if raw_budget:
-        try:
-            explicit_budget_ms = max(50, min(int(raw_budget), 30_000))
-        except ValueError:
-            logger.warning(
-                "invalid %s value %r; using default %d ms",
-                LISA_SLICE_BUDGET_MS_ENV,
-                raw_budget,
-                explicit_budget_ms,
-            )
-    return tuning, explicit_budget_ms
 
 
 # ── Session-context helpers ───────────────────────────────────────────

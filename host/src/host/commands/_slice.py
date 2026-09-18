@@ -5,8 +5,8 @@ slice and the one-shot intake tick. Both set turn context and
 append thread entries to keep the local thread consistent with model turns.
 
 Dependency direction: ``_slice`` → ``_log``, ``host.state_provider``,
-``host.lisa_config``, ``host.intake`` (lazy). No imports from
-``_render``/``_packs``/``_lists``/``_models``.
+``host.intake`` (lazy). No imports from ``_render``/``_packs``/``_lists``/
+``_models``/``host.lisa_config``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from host.commands._log import (
     _append_turn_log,
     _set_turn_context,
 )
-from host.lisa_config import _resolve_slice_tuning
 from host.runtime import HostRuntime
 from host.state_provider import FileBackedStateProvider
 
@@ -43,9 +42,10 @@ async def run_explicit_slice_command(
     slices are disabled (or whose state provider has no work to do).
     Calling ``/consolidate`` (or ``/slice``) invokes the same slice
     machinery the kernel uses, but with a one-shot user-controlled
-    budget read from the ``LISA_SLICE_BUDGET_MS`` env var.
+    budget resolved once at host startup from the ``LISA_SLICE_BUDGET_MS``
+    env var into ``HostConfig.slice_config.explicit_budget_ms``.
     """
-    _, explicit_budget_ms = _resolve_slice_tuning()
+    explicit_budget_ms = runtime.config.slice_config.explicit_budget_ms
     provider = FileBackedStateProvider(
         thread_path=runtime.paths.thread_path,
     )

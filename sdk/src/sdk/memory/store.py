@@ -482,8 +482,9 @@ class SqliteMemoryStore:
         """Count memories for a surface, optionally filtered by kind and status.
 
         Used by the consolidation slice to compute episodic pressure
-        (episodic-active count / ``memory_max_records``) without pulling
-        rows. Defaults to ``status='active'`` to match ``list_memories``.
+        (episodic-active count / the consolidation tuning's
+        ``max_records``) without pulling rows. Defaults to
+        ``status='active'`` to match ``list_memories``.
         """
         assert self._conn is not None
         where = (

@@ -78,6 +78,21 @@ class TestHostConfig:
         assert config.slice_config.pre_turn_enabled is True
         assert config.slice_config.explicit_budget_ms == 5000
 
+    def test_thread_segment_turns_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LISA_THREAD_SEGMENT_TURNS flows into thread_segment_turns.
+
+        Pinned because ``thread_segment_turns`` is the only thread-store
+        knob HostConfig still owns: it is read by every
+        ``append_thread_entry`` call site with a runtime in scope
+        (see ``handle_message``, ``approval.orchestration``, and the
+        ``_log._append_thread_entry`` wrapper).
+        """
+        config = HostConfig.from_env()
+        assert config.thread_segment_turns == 256
+        monkeypatch.setenv("LISA_THREAD_SEGMENT_TURNS", "64")
+        config = HostConfig.from_env()
+        assert config.thread_segment_turns == 64
+
     def test_env_timezone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """LISA_TIMEZONE env var should resolve correctly."""
         monkeypatch.setenv("LISA_TIMEZONE", "Europe/London")
