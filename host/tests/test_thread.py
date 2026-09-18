@@ -53,6 +53,8 @@ class TestIsHostCommandQuery:
         assert is_host_command_query("/tokens")
         assert is_host_command_query("/settings")
         assert is_host_command_query("/debug context")
+        assert is_host_command_query("/last")
+        assert is_host_command_query("/last 3")
         assert is_host_command_query("/consolidate")
         assert is_host_command_query("/intake")
         assert is_host_command_query("/models show")
@@ -75,6 +77,7 @@ class TestIsHostCommandQuery:
         assert not is_host_command_query("tell me about your context")
         assert not is_host_command_query("what is /pack?")
         assert not is_host_command_query("explain /help to me")
+        assert not is_host_command_query("last")
         assert not is_host_command_query("/quit")
         assert not is_host_command_query("")
 
@@ -95,6 +98,7 @@ class TestIsHostCommandQuery:
         assert "/pack" in prefixes
         assert "/models" in prefixes
         assert "/debug" in prefixes
+        assert "/last" in prefixes
 
     def test_registry_exact_populated_by_bootstrap_registration(self) -> None:
         exact = host_command_exact()

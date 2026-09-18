@@ -432,6 +432,132 @@ async def test_debug_bad_argument_usage_error(tmp_path: Path) -> None:
     assert "Usage: /debug [turn_number]" in output.text
 
 
+# ── /last ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_last_no_prior_turns(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+    output = await handle_message(runtime, "/last", transport)
+
+    assert "No completed turns yet." in output.text
+
+
+@pytest.mark.asyncio
+async def test_last_replays_previous_model_response_verbatim(tmp_path: Path) -> None:
+    from host.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="hello",
+        response_text="hi there",
+        turn=0,
+    )
+    transport = NullTransport()
+    # This "/last" invocation is turn 1; default target is turn 0.
+    output = await handle_message(runtime, "/last", transport)
+
+    assert output.text == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_last_skips_host_command_turns(tmp_path: Path) -> None:
+    from host.host_commands import register_builtin_host_commands
+    from host.thread import append_thread_entry
+
+    # The skip walk consults the host-command registry, which the
+    # composition root (bootstrap) populates in production; the test
+    # factory bypasses bootstrap, so register the builtins here (idempotent).
+    register_builtin_host_commands()
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="hello",
+        response_text="model answer",
+        turn=0,
+    )
+    transport = NullTransport()
+    # A host-command turn lands on the thread between the model turn and
+    # the /last replay; the default walk must skip it and find turn 0.
+    output = await handle_message(runtime, "/settings", transport)
+    assert "## Runtime Settings" in output.text
+    output = await handle_message(runtime, "/last", transport)
+
+    assert output.text == "model answer"
+
+
+@pytest.mark.asyncio
+async def test_last_twice_returns_same_response(tmp_path: Path) -> None:
+    from host.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="hello",
+        response_text="model answer",
+        turn=0,
+    )
+    transport = NullTransport()
+    first = await handle_message(runtime, "/last", transport)
+    second = await handle_message(runtime, "/last", transport)
+
+    assert first.text == "model answer"
+    assert second.text == "model answer"
+
+
+@pytest.mark.asyncio
+async def test_last_explicit_turn_index(tmp_path: Path) -> None:
+    from host.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="first question",
+        response_text="first answer",
+        turn=0,
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="second question",
+        response_text="second answer",
+        turn=1,
+    )
+    transport = NullTransport()
+    output = await handle_message(runtime, "/last 1", transport)
+
+    assert output.text == "second answer"
+
+
+@pytest.mark.asyncio
+async def test_last_unknown_turn_index(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+    output = await handle_message(runtime, "/last 42", transport)
+
+    assert "Turn 42 not found in the thread log." in output.text
+
+
+@pytest.mark.asyncio
+async def test_last_bad_argument_usage_error(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+    output = await handle_message(runtime, "/last abc", transport)
+
+    assert "Usage: /last [turn_number]" in output.text
+
+
 # ── System prompt assembly ────────────────────────────────────────────
 
 

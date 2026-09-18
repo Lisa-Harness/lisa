@@ -23,6 +23,7 @@ from kernel.tools.registry import get_tool_catalog
 
 from host.commands._log import _last_capability_manifest
 from host.commands._routing import mode_support_gap
+from host.host_commands import is_host_command_query
 from host.runtime import HostRuntime
 from host.thread import load_thread_range, next_turn_index
 from host.token_accounting import format_session_exit_summary_lines
@@ -150,6 +151,64 @@ def render_debug_turn(runtime: HostRuntime, arg: str) -> str:
     header.append(json.dumps(turn_input["calls"], indent=2, ensure_ascii=False))
     header.append("```")
     return "\n".join(header)
+
+
+# How many prior entries the default (no-argument) /last walk scans before
+# giving up with the friendly message. Host-command turns (``/settings``,
+# a previous ``/last``, ...) are skipped, so consecutive shortcut use still
+# finds the last model response without unbounded segment reads.
+_LAST_LOOKBACK = 8
+
+
+def _last_explicit_turn_text(runtime: HostRuntime, turn_index: int) -> str:
+    """Return turn ``turn_index``'s response text, verbatim, or a diagnostic."""
+    entries = load_thread_range(
+        thread_path=runtime.paths.thread_path,
+        start_turn=turn_index,
+        end_turn=turn_index,
+    )
+    if not entries:
+        return f"Turn {turn_index} not found in the thread log."
+    response_text = str(entries[0].get("response_text") or "")
+    if not response_text:
+        return f"Turn {turn_index} has no response text."
+    return response_text
+
+
+def render_last_turn(runtime: HostRuntime, arg: str) -> str:
+    """Return a previous turn's response text, verbatim (no chrome).
+
+    ``arg`` is the stripped argument after ``/last`` — empty for the default
+    (the previous model turn's response) or a non-negative integer turn
+    index. Reads the durable thread directly (the same source of truth as
+    :func:`render_debug_turn`), so replay works identically after a restart.
+
+    The default walk skips host-command turns and empty responses so
+    ``/last`` after ``/settings`` (or another ``/last``) still replays the
+    last *model* response. An explicit index replays that exact turn's
+    response — explicit intent beats the heuristic.
+    """
+    arg = arg.strip()
+    if arg:
+        if not arg.isdigit():
+            return "Usage: /last [turn_number]"
+        return _last_explicit_turn_text(runtime, int(arg))
+
+    next_turn = next_turn_index(thread_path=runtime.paths.thread_path)
+    if next_turn <= 0:
+        return "No completed turns yet."
+    entries = load_thread_range(
+        thread_path=runtime.paths.thread_path,
+        start_turn=max(0, next_turn - _LAST_LOOKBACK),
+        end_turn=next_turn - 1,
+    )
+    for entry in reversed(entries):
+        if is_host_command_query(str(entry.get("query") or "")):
+            continue
+        response_text = str(entry.get("response_text") or "")
+        if response_text:
+            return response_text
+    return "No prior model response in the recent window."
 
 
 def render_runtime_settings(runtime: HostRuntime) -> str:
@@ -408,6 +467,8 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "policy (the decision dial and rules behind approval prompts).",
             "- /tokens — session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self — local diagnostics.",
+            "- /last [N] — reprint a previous response verbatim (default: the last "
+            "model turn; no model call).",
             "- /consolidate (or /slice) — explicit memory-consolidation slice.",
             "- /intake — one intake tick (collect signals, process, write state) in-process.",
             "- /quit — exit the interactive console loop.",
@@ -490,8 +551,18 @@ def _builtin_command_help(topic: str, runtime: HostRuntime) -> str | None:
         return _mcp_command_help_text()
     if topic in {"modes", "operations", "tools"}:
         return _inventory_command_help_text(topic)
-    if topic in {"help", "settings", "tokens", "debug", "consolidate",
-                 "slice", "intake", "quit", "policy"}:
+    if topic in {
+        "help",
+        "settings",
+        "tokens",
+        "debug",
+        "last",
+        "consolidate",
+        "slice",
+        "intake",
+        "quit",
+        "policy",
+    }:
         return _host_shortcut_help_text(topic)
     return None
 
@@ -637,6 +708,13 @@ def _host_shortcut_help_text(topic: str) -> str:
             "## /debug\n\n"
             "Show the complete, unedited raw model input for turn N "
             "(default: the previous turn): `/debug [N]`."
+        ),
+        "last": (
+            "## /last\n\n"
+            "Reprint a previous response, verbatim. `/last` → the previous "
+            "model turn's response (host-command turns are skipped); "
+            "`/last N` → turn N's response. Reads the durable thread — no "
+            "model call, no context cost, works after restart."
         ),
         "consolidate": (
             "## /consolidate (or /slice)\n\n"

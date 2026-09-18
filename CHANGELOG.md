@@ -4,6 +4,24 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### `/last` — verbatim replay of a previous response
+
+- **What:** New host command `/last [N]` reprints a previous turn's response
+  text byte-for-byte: no header, no metadata, no model call. The default
+  (bare `/last`) walks back over the durable thread (skipping host-command
+  turns and empty responses) to the last model response; `/last N` replays
+  turn `N`'s response, mirroring `/debug [N]`'s addressing. Reads go through
+  the same `ThreadStore.load_thread_range` / `next_turn_index` path `/debug`
+  uses, so replay works identically after a restart. Registering `/last` as a
+  host-command prefix also strips those entries from the model's transcript
+  excerpt and thread search — a replay never costs future context.
+- **Why:** Terminal scroll/clear loses long responses, and re-asking the
+  model costs tokens and mutates the answer. The thread entry's
+  `response_text` is already the exact string the model produced, so
+  reprinting it is free and lossless.
+
 ### Changed
 
 #### God-object decomposition & structured subsystem packages (audit refactor)

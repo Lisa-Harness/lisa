@@ -67,6 +67,7 @@ from host.commands import (
     handle_debug_command,
     handle_help_command,
     handle_intake_command,
+    handle_last_command,
     handle_mcp_command,
     handle_models_command,
     handle_pack_command,
@@ -388,6 +389,8 @@ async def _dispatch_host_command(
             transport=transport,
             route_model_turn=_route_model_turn,
         )
+    elif lowered.startswith("/last"):
+        response_text = handle_last_command(runtime, stripped, message)
     elif lowered.startswith("/debug"):
         response_text = handle_debug_command(runtime, stripped, message)
 

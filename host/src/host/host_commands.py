@@ -151,6 +151,7 @@ def register_builtin_host_commands() -> None:
             "/approve",
             "/deny",
             "/debug",
+            "/last",
             "/mcp",
         )
     )

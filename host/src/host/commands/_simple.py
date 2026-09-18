@@ -24,6 +24,7 @@ from host.commands._render import (
     render_capability_help,
     render_command_help,
     render_debug_turn,
+    render_last_turn,
 )
 from host.runtime import HostRuntime
 
@@ -110,3 +111,14 @@ def handle_debug_command(
     arg = stripped[6:].strip()
     response_text = render_debug_turn(runtime, arg)
     return handle_simple_command(runtime, message, "debug", response_text)
+
+
+def handle_last_command(
+    runtime: HostRuntime,
+    stripped: str,
+    message: str,
+) -> str:
+    """Handle ``/last [N]``: reprint a previous response, verbatim."""
+    arg = stripped[5:].strip()
+    response_text = render_last_turn(runtime, arg)
+    return handle_simple_command(runtime, message, "last", response_text)

@@ -140,6 +140,7 @@ from host.commands._render import (
     render_capability_help,
     render_command_help,
     render_debug_turn,
+    render_last_turn,
     render_runtime_settings,
 )
 from host.commands._routing import (
@@ -154,6 +155,7 @@ from host.commands._routing import (
 from host.commands._simple import (
     handle_debug_command,
     handle_help_command,
+    handle_last_command,
     handle_simple_command,
 )
 from host.commands._slice import (
@@ -210,6 +212,7 @@ __all__ = [
     "handle_debug_command",
     "handle_help_command",
     "handle_intake_command",
+    "handle_last_command",
     "handle_mcp_command",
     "handle_models_command",
     "handle_pack_command",
@@ -228,6 +231,7 @@ __all__ = [
     "render_capability_help",
     "render_command_help",
     "render_debug_turn",
+    "render_last_turn",
     "render_mcp_server_detail",
     "render_mcp_summary",
     "render_modes_list",
