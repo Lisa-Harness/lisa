@@ -7,7 +7,7 @@ registries target, so it drops into the host at exactly one seam:
 
     # host/runtime.py
     self.approval_service = PolicyApprovalService(
-        FileApprovalService(self.data_dir / "approvals.json"),
+        FileApprovalService(self.paths.state_dir / "approvals.json"),
         policy=load_policy(self.data_dir),
         data_dir=self.data_dir,
     )

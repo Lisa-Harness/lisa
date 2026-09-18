@@ -169,7 +169,9 @@ async def handle_intake_command(
     runtime.session.current_stage_id = "-"
     runtime.session.next_model_id = "-"
 
-    state_path = runtime.paths.data_dir / "state.json"
+    from sdk.layout import STATE_DIR  # noqa: PLC0415
+
+    state_path = runtime.paths.data_dir / STATE_DIR / "state.json"
     return (
         f"Intake tick complete in {elapsed_ms:.1f} ms. "
         f"{len(state.context_items)} context item(s). "

@@ -33,7 +33,9 @@ def _record(*, target_id: str) -> RecoveryRecord:
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
-    (tmp_path / "models.yaml").write_text(
+    manifest_dir = tmp_path / "config"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "models.yaml").write_text(
         "\n".join(
             [
                 "version: 1",
@@ -57,7 +59,7 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
 
 @pytest.mark.asyncio
 async def test_file_recovery_service_begin_and_list_open(tmp_path: Path) -> None:
-    service = FileRecoveryService(tmp_path / "recovery-items.json")
+    service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
 
     record = await service.begin(_record(target_id="op_a"))
     assert record.state == "running"
@@ -69,7 +71,7 @@ async def test_file_recovery_service_begin_and_list_open(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_file_recovery_service_settle_succeeded_removes_from_open(tmp_path: Path) -> None:
-    service = FileRecoveryService(tmp_path / "recovery-items.json")
+    service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
     record = await service.begin(_record(target_id="op_b"))
 
     settled = await service.settle(
@@ -87,7 +89,7 @@ async def test_file_recovery_service_settle_succeeded_removes_from_open(tmp_path
 
 @pytest.mark.asyncio
 async def test_mark_running_indeterminate_promotes_orphans(tmp_path: Path) -> None:
-    service = FileRecoveryService(tmp_path / "recovery-items.json")
+    service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
     record = await service.begin(_record(target_id="op_c"))
 
     changed = await service.mark_running_indeterminate(_identity())

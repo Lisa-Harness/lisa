@@ -42,7 +42,7 @@ def _identity() -> object:
 
 
 def _make_service(tmp_path: Path, policy: PolicyDocument | None) -> PolicyApprovalService:
-    store = FileApprovalService(tmp_path / "approvals.json")
+    store = FileApprovalService(tmp_path / "state" / "approvals.json")
     return PolicyApprovalService(store, policy=policy, data_dir=tmp_path)
 
 
@@ -61,7 +61,7 @@ def _bash_invocation(command: str, *, identity: object | None = None) -> object:
 
 def _write_containment(tmp_path: Path, identity: object, state: str) -> None:
     key = sandbox_session_key(identity)
-    path = tmp_path / "sandbox-facts" / f"{key}.json"
+    path = tmp_path / "run" / key / "sandbox-facts.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(__import__("json").dumps({"containment": state}), encoding="utf-8")
 
@@ -144,7 +144,7 @@ async def test_deny_leaves_no_pending_record(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_passthrough_methods_delegate(tmp_path: Path) -> None:
     """approve/deny/consume/get/list_pending behave exactly like the store."""
-    store = FileApprovalService(tmp_path / "approvals.json")
+    store = FileApprovalService(tmp_path / "state" / "approvals.json")
     service = PolicyApprovalService(store, policy=PolicyDocument(mode=PolicyMode.ASK), data_dir=tmp_path)
     invocation = _bash_invocation("ls")
     await service.request(invocation)

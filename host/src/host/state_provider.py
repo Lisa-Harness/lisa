@@ -139,7 +139,9 @@ def load_state_snapshot(
         file_path = Path(configured).expanduser()
         source = "explicit"
     else:
-        file_path = data_dir / "state.json"
+        from sdk.layout import STATE_DIR  # noqa: PLC0415
+
+        file_path = data_dir / STATE_DIR / "state.json"
         source = "default"
 
     if not file_path.exists():

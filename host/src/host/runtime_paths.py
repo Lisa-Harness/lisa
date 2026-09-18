@@ -15,6 +15,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sdk.layout import (
+    CACHE_DIR,
+    CONFIG_DIR,
+    DATA_DIR,
+    LOGS_DIR,
+    STATE_DIR,
+)
+
 from host.config import HostConfig
 
 
@@ -36,6 +44,40 @@ class HostPaths:
     token_usage_path: Path
     models_path: Path
     models_proposal_path: Path
+
+    # ── Category directories (sdk.layout naming) ────────────────────
+    @property
+    def config_dir(self) -> Path:
+        """Hand-editable + resolved configuration (models.yaml, policy)."""
+        return self.data_dir / CONFIG_DIR
+
+    @property
+    def state_dir(self) -> Path:
+        """Machine-written, small, back-up-able state (approvals, lock)."""
+        return self.data_dir / STATE_DIR
+
+    @property
+    def durable_dir(self) -> Path:
+        """Large durable storage (memory.db, threads/, files/)."""
+        return self.data_dir / DATA_DIR
+
+    @property
+    def cache_dir(self) -> Path:
+        """rm-safe caches (fetch/, session_context_cache/, layers/)."""
+        return self.data_dir / CACHE_DIR
+
+    @property
+    def logs_dir(self) -> Path:
+        """Append-only logs (host.jsonl, mcp/, token-usage)."""
+        return self.data_dir / LOGS_DIR
+
+    def run_dir(self, session_key: str) -> Path:
+        """Per-session execution state root (``run/<session_key>``).
+
+        The bash/bwrap packs keep jobs, scratch, profile files, sandbox
+        facts, and per-session logs inside this one gc-able tree.
+        """
+        return self.data_dir / "run" / session_key
 
     @classmethod
     def from_config(
@@ -60,7 +102,7 @@ class HostPaths:
             thread_path=thread_path,
             log_path=config.resolved_log_path,
             host_log_path=config.resolved_host_log_path,
-            token_usage_path=config.data_dir / "token-usage.jsonl",
+            token_usage_path=config.data_dir / LOGS_DIR / "token-usage.jsonl",
             models_path=models_path_override or config.resolved_models_path,
             models_proposal_path=config.resolved_models_proposal_path,
         )

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from kernel.token_usage import TokenUsageTelemetryHandler
+from sdk.layout import LOGS_DIR, STATE_DIR
 
 from host.approvals import FileApprovalService
 from host.code_artifacts import FileCodeChangeArtifactStore
@@ -52,15 +53,17 @@ class HostServices:
         """Construct the service stack rooted at the host data directory."""
         return cls(
             approval_service=PolicyApprovalService(
-                FileApprovalService(data_dir / "approvals.json"),
+                FileApprovalService(data_dir / STATE_DIR / "approvals.json"),
                 data_dir=data_dir,
             ),
-            recovery_service=FileRecoveryService(data_dir / "recovery-items.json"),
+            recovery_service=FileRecoveryService(
+                data_dir / STATE_DIR / "recovery-items.json"
+            ),
             code_change_artifact_store=FileCodeChangeArtifactStore(
-                data_dir / "code-change-artifacts.json"
+                data_dir / STATE_DIR / "code-change-artifacts.json"
             ),
             token_usage_handler=TokenUsageTelemetryHandler(
-                data_dir / "token-usage.jsonl"
+                data_dir / LOGS_DIR / "token-usage.jsonl"
             ),
         )
 

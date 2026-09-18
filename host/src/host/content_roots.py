@@ -166,7 +166,9 @@ def load_pack_policy_dict(host_manifest_path: Path, *, warning_subject: str) -> 
 
 def runtime_pack_lock_path(data_dir: Path) -> Path:
     """Return the path to the installed pack provenance lock file."""
-    return data_dir / _PACK_LOCK_FILE_NAME
+    from sdk.layout import STATE_DIR  # noqa: PLC0415
+
+    return data_dir / STATE_DIR / _PACK_LOCK_FILE_NAME
 
 
 def save_installed_packs_lock(data_dir: Path, payload: dict[str, Any]) -> None:

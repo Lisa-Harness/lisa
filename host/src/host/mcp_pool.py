@@ -982,7 +982,9 @@ def _resolve_user_manifest_path(config: HostConfig) -> Path | None:
     """
     if config.mcp_manifest_path is not None:
         return config.mcp_manifest_path
-    default_user_path = config.data_dir / "mcp_servers.yaml"
+    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+
+    default_user_path = config.data_dir / CONFIG_DIR / "mcp_servers.yaml"
     if default_user_path.exists():
         return default_user_path
     return None

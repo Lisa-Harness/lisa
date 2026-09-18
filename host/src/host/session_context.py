@@ -120,7 +120,9 @@ def resolve_session_context_source(
         )
 
     checked_paths: set[Path] = set()
-    for root in (Path.cwd(), data_dir):
+    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+
+    for root in (Path.cwd(), data_dir / CONFIG_DIR):
         candidate = (root / "session_context.md").resolve()
         if candidate in checked_paths:
             continue

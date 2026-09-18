@@ -5,7 +5,7 @@ primitive. The fetcher owns SSRF validation, the L1/L2 cache, conditional-GET,
 and stale-fallback. This module owns only the session-context-specific
 **policy translation** (env getters → :class:`FetchPolicy` / ctor args) and
 the legacy ``Path`` return contract: the fetched body is written to
-``data_dir / "session_context_cache" / "<hash>.md"`` so existing callers in
+``data_dir / "cache" / "session_context_cache" / "<hash>.md"`` so existing callers in
 :mod:`host.session_context` and the meta-inspecting tests keep working.
 
 Env getters stay here (in the adapter, not the primitive) per the design:
@@ -69,14 +69,18 @@ def session_context_fetch_timeout() -> float:
 
 def _cache_path_for(url: str, data_dir: Path) -> Path:
     """Return the deterministic cache .md file path for a URL."""
-    cache_dir = data_dir / "session_context_cache"
+    from sdk.layout import CACHE_DIR  # noqa: PLC0415
+
+    cache_dir = data_dir / CACHE_DIR / "session_context_cache"
     hashed = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:16]
     return cache_dir / f"{hashed}.md"
 
 
 def _cache_meta_path(url: str, data_dir: Path) -> Path:
     """Return the deterministic cache .meta.json file path for a URL."""
-    cache_dir = data_dir / "session_context_cache"
+    from sdk.layout import CACHE_DIR  # noqa: PLC0415
+
+    cache_dir = data_dir / CACHE_DIR / "session_context_cache"
     hashed = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:16]
     return cache_dir / f"{hashed}.meta.json"
 
@@ -92,7 +96,7 @@ def fetch_session_context_url(
 
     Delegates to :class:`sdk.content.ContentFetcher` for SSRF validation,
     L1/L2 caching, conditional-GET, and stale-fallback. The fetched body is
-    written to the legacy ``data_dir / "session_context_cache" / "<hash>.md"``
+    written to the ``data_dir / "cache" / "session_context_cache" / "<hash>.md"``
     path (and a sibling ``.meta.json``) so callers that expect a ``Path``
     and the meta-inspecting tests keep working.
 

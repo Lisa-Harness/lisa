@@ -18,6 +18,7 @@ from pathlib import Path
 from kernel.execution_policy import ExecutionPolicy
 
 from host.execution_policy import default_interactive_execution_policy
+from sdk.layout import CONFIG_DIR, DATA_DIR, LOGS_DIR, STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -479,12 +480,12 @@ class HostConfig:
 
     @property
     def resolved_overlays_dir(self) -> Path:
-        """Return the resolved overlays directory, defaulting to ``<data_dir>/overlays``."""
-        return self.overlays_dir or (self.data_dir / "overlays")
+        """Return the resolved overlays directory, defaulting to ``<data_dir>/config/overlays``."""
+        return self.overlays_dir or (self.data_dir / CONFIG_DIR / "overlays")
 
     @property
     def resolved_thread_dir(self) -> Path:
-        return self.thread_dir or (self.data_dir / "threads")
+        return self.thread_dir or (self.data_dir / DATA_DIR / "threads")
 
     @property
     def resolved_log_path(self) -> Path | None:
@@ -492,15 +493,15 @@ class HostConfig:
 
     @property
     def resolved_host_log_path(self) -> Path:
-        return self.host_log_path or (self.data_dir / "host.jsonl")
+        return self.host_log_path or (self.data_dir / LOGS_DIR / "host.jsonl")
 
     @property
     def resolved_models_path(self) -> Path:
-        return self.data_dir / "models.yaml"
+        return self.data_dir / CONFIG_DIR / "models.yaml"
 
     @property
     def resolved_models_proposal_path(self) -> Path:
-        return self.data_dir / "models.proposed.yaml"
+        return self.data_dir / STATE_DIR / "models.proposed.yaml"
 
     @property
     def effective_log_level(self) -> str:

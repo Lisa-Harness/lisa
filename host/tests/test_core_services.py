@@ -671,18 +671,7 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
         "---\n# body\n",
         encoding="utf-8",
     )
-    (tmp_path / "models.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "models:",
-                "  - model_id: gemma3:latest",
-                "    provider: ollama",
-                "    designations: [default]",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    _write_manifest(tmp_path)
     runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
     assert runtime.start_mode_id == "research"
     assert runtime.session.current_mode_id == "research"
@@ -1068,8 +1057,29 @@ async def test_handle_message_surfaces_mode_token_context(
 # ── Model resolution ───────────────────────────────────────────────────
 
 
+def _write_manifest(tmp_path: Path, content: str | None = None) -> Path:
+    """Write a models.yaml under tmp_path/config (the canonical location)."""
+    manifest_dir = tmp_path / "config"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    path = manifest_dir / "models.yaml"
+    if content is None:
+        content = "\n".join(
+            [
+                "version: 1",
+                "mode_models: {default: gemma3:latest}",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [default]",
+            ]
+        )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> None:
-    (tmp_path / "models.yaml").write_text(
+    _write_manifest(
+        tmp_path,
         "\n".join(
             [
                 "version: 1",
@@ -1083,7 +1093,6 @@ def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> 
                 "    reasoning_model: true",
             ]
         ),
-        encoding="utf-8",
     )
 
     default_model = resolve_model("default", runtime_state={}, data_dir=tmp_path)
@@ -1096,7 +1105,8 @@ def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> 
 
 
 def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
-    (tmp_path / "models.yaml").write_text(
+    _write_manifest(
+        tmp_path,
         "\n".join(
             [
                 "version: 1",
@@ -1106,7 +1116,6 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
                 "    provider: ollama",
             ]
         ),
-        encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="not in the host's manifest"):
@@ -1136,7 +1145,8 @@ def test_load_manifest_or_none_loads_present_manifest(tmp_path: Path) -> None:
     """A present manifest is still loaded (and pre-loaded at startup)."""
     from host.model_runtime import load_manifest_or_none
 
-    (tmp_path / "models.yaml").write_text(
+    _write_manifest(
+        tmp_path,
         "\n".join(
             [
                 "version: 1",
@@ -1146,7 +1156,6 @@ def test_load_manifest_or_none_loads_present_manifest(tmp_path: Path) -> None:
                 "    provider: ollama",
             ]
         ),
-        encoding="utf-8",
     )
 
     manifest = load_manifest_or_none(data_dir=tmp_path)
@@ -1159,10 +1168,7 @@ def test_load_manifest_or_none_invalid_present_manifest_raises(tmp_path: Path) -
     """A present-but-invalid manifest fails loudly (not silently ignored)."""
     from host.model_runtime import load_manifest_or_none
 
-    (tmp_path / "models.yaml").write_text(
-        "version: 1\nmodels: []\n",
-        encoding="utf-8",
-    )
+    _write_manifest(tmp_path, "version: 1\nmodels: []\n")
 
     with pytest.raises(ValueError, match="'mode_models' mapping"):
         load_manifest_or_none(data_dir=tmp_path)

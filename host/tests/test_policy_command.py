@@ -71,10 +71,12 @@ def test_render_policy_document_defaults(tmp_path: Path) -> None:
 
 
 def _write_doc(tmp_path: Path, doc: PolicyDocument) -> None:
-    """Serialize a PolicyDocument to policy.yaml (mode as its string value)."""
+    """Serialize a PolicyDocument to config/policy.yaml (mode as its string value)."""
     payload = doc.model_dump()
     payload["mode"] = doc.mode.value
-    (tmp_path / "policy.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+    path = tmp_path / "config" / "policy.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
 
 def test_render_policy_document_reflects_file(tmp_path: Path) -> None:
@@ -112,7 +114,7 @@ def test_policy_mode_unknown_is_rejected_without_write(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
     reply = handle_policy_command(runtime, "/policy mode banana", "/policy mode banana")  # type: ignore[arg-type]
     assert "Unknown mode" in reply
-    assert not (tmp_path / "policy.yaml").exists()
+    assert not (tmp_path / "config" / "policy.yaml").exists()
 
 
 # ── Bare toggle ───────────────────────────────────────────────────────
@@ -130,7 +132,7 @@ def test_policy_bare_bad_input_reports_current(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
     reply = handle_policy_command(runtime, "/policy bare", "/policy bare")  # type: ignore[arg-type]
     assert "currently true" in reply
-    assert not (tmp_path / "policy.yaml").exists()
+    assert not (tmp_path / "config" / "policy.yaml").exists()
 
 
 # ── Unknown / usage ───────────────────────────────────────────────────

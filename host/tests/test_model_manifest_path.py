@@ -3,7 +3,7 @@
 Verifies that ``context.models.path`` in a session plan:
 - resolves a session-relative path against the session source directory,
 - resolves an absolute path directly,
-- falls back to ``data_dir/models.yaml`` when omitted,
+- falls back to ``data_dir/config/models.yaml`` when omitted,
 - rejects missing files and wrong extensions at host boot.
 """
 
@@ -74,14 +74,14 @@ def test_resolve_session_manifest_path_falls_back_when_plan_is_none() -> None:
 
 
 def test_resolve_session_manifest_path_falls_back_when_models_is_none() -> None:
-    """Session plan without context.models → data_dir/models.yaml."""
+    """Session plan without context.models → data_dir/config/models.yaml."""
     plan = _MockPlan(models=None)
     resolved = resolve_session_manifest_path(
         session_plan=plan,
         session_source_dir=None,
         data_dir=Path("C:/data"),
     )
-    assert resolved == Path("C:/data/models.yaml")
+    assert resolved == Path("C:/data/config/models.yaml")
 
 
 def test_resolve_session_manifest_path_resolves_session_relative(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ def test_host_runtime_models_path_falls_back_to_data_dir(tmp_path: Path) -> None
     session = _write_session(tmp_path, models_path=None)
     config = HostConfig.from_env(data_dir=str(tmp_path), session_context=str(session))
     runtime = HostRuntime(config)
-    assert runtime.paths.models_path == (tmp_path / "models.yaml").resolve()
+    assert runtime.paths.models_path == (tmp_path / "config" / "models.yaml").resolve()
 
 
 def test_compile_selected_session_plan_threads_source_dir(tmp_path: Path) -> None:

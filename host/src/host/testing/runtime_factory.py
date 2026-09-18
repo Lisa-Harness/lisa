@@ -69,7 +69,11 @@ def build_test_runtime(
         A ``HostRuntime`` ready for test assertions.
     """
     if models_yaml != "":
-        (tmp_path / "models.yaml").write_text(
+        from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+
+        manifest_dir = tmp_path / CONFIG_DIR
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "models.yaml").write_text(
             models_yaml or _DEFAULT_MODELS_YAML,
             encoding="utf-8",
         )

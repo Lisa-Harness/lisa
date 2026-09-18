@@ -68,8 +68,10 @@ def _identity(workspace: str = "workspace", user: str = "user", plan: str = "pla
 def _write_containment(
     data_dir: Path, identity: object, state: str, reasons: list[str] | None = None
 ) -> Path:
+    from sdk.layout import RUN_DIR
+
     key = sandbox_session_key(identity)
-    path = data_dir / "sandbox-facts" / f"{key}.json"
+    path = data_dir / RUN_DIR / key / "sandbox-facts.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict = {"containment": state}
     if reasons:
@@ -343,15 +345,24 @@ def test_load_policy_missing_file_returns_ask_default(tmp_path: Path) -> None:
     assert doc.allow == [] and doc.ask == [] and doc.deny == []
 
 
+def _write_raw_policy(data_dir: Path, text: str) -> Path:
+    """Write raw text as config/policy.yaml for fail-closed tests."""
+    path = data_dir / "config" / "policy.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def test_load_policy_round_trip(tmp_path: Path) -> None:
     doc = PolicyDocument(
         mode=PolicyMode.TRUST,
         allow=[PolicyRule(tool="bash_run", command_prefix="git status")],
         deny=[PolicyRule(effect="external_write")],
     )
-    path = tmp_path / "policy.yaml"
+    path = tmp_path / "config" / "policy.yaml"
     import yaml
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(doc.model_dump(mode="json")), encoding="utf-8")
     loaded = load_policy(tmp_path)
     assert loaded.mode == PolicyMode.TRUST
@@ -360,13 +371,13 @@ def test_load_policy_round_trip(tmp_path: Path) -> None:
 
 
 def test_load_policy_corrupt_fails_closed_to_ask(tmp_path: Path) -> None:
-    (tmp_path / "policy.yaml").write_text("{: not valid", encoding="utf-8")
+    _write_raw_policy(tmp_path, "{: not valid")
     doc = load_policy(tmp_path)
     assert doc.mode == PolicyMode.ASK
 
 
 def test_load_policy_non_mapping_fails_closed(tmp_path: Path) -> None:
-    (tmp_path / "policy.yaml").write_text("- a\n- list\n", encoding="utf-8")
+    _write_raw_policy(tmp_path, "- a\n- list\n")
     doc = load_policy(tmp_path)
     assert doc.mode == PolicyMode.ASK
 

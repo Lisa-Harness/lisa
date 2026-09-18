@@ -192,14 +192,21 @@ class PolicyDecision:
 # ── Loading ─────────────────────────────────────────────────────────────
 
 
+def _policy_path(data_dir: Path) -> Path:
+    """Return the policy.yaml path under the config category."""
+    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+
+    return Path(data_dir) / CONFIG_DIR / DEFAULT_POLICY_PATH
+
+
 def load_policy(data_dir: Path) -> PolicyDocument:
-    """Load ``<data_dir>/policy.yaml``, failing closed to the ask-mode default.
+    """Load ``<data_dir>/config/policy.yaml``, failing closed to the ask-mode default.
 
     Never raises: a missing, unreadable, or invalid file resolves to the
     default document (``mode: ask``, ``sandbox_downgrade: true``, no rules),
     so the safe behavior — prompt — is the behavior on any error.
     """
-    path = Path(data_dir) / DEFAULT_POLICY_PATH
+    path = _policy_path(data_dir)
     try:
         if not path.is_file():
             return PolicyDocument()
@@ -230,7 +237,7 @@ def remember_allow_prefix(data_dir: Path, *, tool: str, command_prefix: str) -> 
     the ``allow`` block, preserving whatever is already there. Returns the
     path written.
     """
-    path = Path(data_dir) / DEFAULT_POLICY_PATH
+    path = _policy_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = load_policy(data_dir)
     prefix = command_prefix.strip()
@@ -249,7 +256,7 @@ def write_policy(data_dir: Path, doc: PolicyDocument) -> Path:
     mutate, write back — preserving whatever rule lists the document already
     carries. Returns the path written.
     """
-    path = Path(data_dir) / DEFAULT_POLICY_PATH
+    path = _policy_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_policy(path, doc)
     return path
@@ -316,7 +323,9 @@ def read_containment(data_dir: Path, identity: Any) -> dict[str, str]:
     ``degraded`` carries a ``reasons`` list the transport can surface.
     """
     key = sandbox_session_key(identity)
-    path = Path(data_dir) / "sandbox-facts" / f"{key}.json"
+    from sdk.layout import RUN_DIR  # noqa: PLC0415
+
+    path = Path(data_dir) / RUN_DIR / key / "sandbox-facts.json"
     try:
         if not path.is_file():
             return {"containment": "unknown"}

@@ -403,8 +403,10 @@ async def run_intake(*, data_dir: Path) -> UnifiedState:
     state = _merge_results(collections, processed)
 
     # 4. Write to disk
-    state_path = data_dir / _DEFAULT_STATE_FILE
-    data_dir.mkdir(parents=True, exist_ok=True)
+    from sdk.layout import STATE_DIR  # noqa: PLC0415
+
+    state_path = data_dir / STATE_DIR / _DEFAULT_STATE_FILE
+    state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
     logger.info("State written to %s", state_path)
 
