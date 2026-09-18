@@ -1959,6 +1959,18 @@ async def _run_turn_inner(
     )
 
     content = ""
+    # ── Pre-handoff text accumulator ───────────────────────────────────
+    # When a forced transition is synthesized (the model returned text but
+    # no tool calls while a routing decision was pending), the model's
+    # visible text from that iteration is captured here. Without this, the
+    # next iteration in the target mode overwrites ``content`` and the
+    # pre-transition text is silently lost (the 2026-09-17 incident: the
+    # model generated a full command list in default mode, the kernel
+    # forced a transition to shell, and the shell-mode iteration produced
+    # only a summary referencing "the commands above" — the commands
+    # themselves were discarded). Prepend to the final content so the
+    # user sees the complete answer.
+    _pre_handoff_text: str = ""
     transitioned_to: str | None = None
     handoff_to: str | None = None
     fork_results: list[ForkChildResult] | None = None
@@ -2894,6 +2906,26 @@ async def _run_turn_inner(
                 tool_calls = [synth_call]
                 _state.forced_action = None
                 _synthesized_forced = True
+                # Capture the model's visible text before the forced
+                # transition overwrites ``content`` on the next iteration.
+                # Only capture for transition handoffs (not forks — fork
+                # children produce their own responses), only when the
+                # model actually produced visible text, only from the
+                # FIRST forced transition in the turn (subsequent forced
+                # transitions in a chained-routing sequence are
+                # intermediate steps where the model's text is typically
+                # a routing acknowledgment, not substantive content), and
+                # NOT when fork results are present (the post-fork
+                # synthesis is the model's final answer, not pre-handoff
+                # content that needs to be preserved separately).
+                if (
+                    _fa.kind == "transition"
+                    and not _pre_handoff_text
+                    and not _state.fork_results
+                ):
+                    _pre_iteration_text = completion_content(completion).strip()
+                    if _pre_iteration_text:
+                        _pre_handoff_text = _pre_iteration_text
             elif _state.forced_work_tool:
                 # ── Do-the-work backstop (empty-completion path) ──────
                 # A guidance-needing model returned no tool calls on a
@@ -5332,6 +5364,18 @@ async def _run_turn_inner(
                         content = f"{content}\n\n{_progress}"
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("render_workflow_progress failed: %s", exc)
+
+    # ── Pre-handoff text prepend ──────────────────────────────────────
+    # If a forced transition was synthesized mid-turn and the model had
+    # produced visible text before the handoff, that text was captured in
+    # ``_pre_handoff_text``. Prepend it to the final content so the user
+    # sees the complete answer (the pre-handoff text + the post-handoff
+    # mode's response). Without this the pre-handoff text is silently
+    # discarded when the next iteration overwrites ``content``.
+    if _pre_handoff_text and content:
+        content = f"{_pre_handoff_text}\n\n{content}"
+    elif _pre_handoff_text:
+        content = _pre_handoff_text
 
     # ── Plan prefix (in-loop planner handoff) ─────────────────────────
     # The Phase-1 planner path stages the rendered plan block on

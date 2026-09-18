@@ -5756,6 +5756,101 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
 
 
 @pytest.mark.asyncio
+async def test_forced_transition_preserves_pre_handoff_text() -> None:
+    """When the model produces visible text but no tool calls and the
+    kernel synthesizes a forced transition, the pre-handoff text must
+    appear in the final response alongside the post-handoff mode's text.
+
+    Regression for the 2026-09-17 incident: the model in ``default`` mode
+    generated a full list of shell commands as its text response. Because
+    the routing hint detected a ``shell`` intent, the kernel synthesized a
+    forced transition to ``shell`` mode. The shell-mode iteration produced
+    only a summary referencing "the commands above". The pre-handoff text
+    (the command list) was silently discarded when ``content`` was
+    overwritten on the next iteration — Lisa thought she gave the answer
+    but the user never saw it.
+    """
+    from unittest.mock import patch
+
+    default_cfg = _mode_config(mode_id="default")
+    shell_cfg = _mode_config(
+        mode_id="shell",
+        satisfies_intents=["shell"],
+        routing_intent_tags=["shell"],
+        routing_intent_keywords={"shell": ["shell"]},
+    )
+    patched_catalog = {
+        "default": default_cfg,
+        "shell": shell_cfg,
+    }
+
+    shell_reached = False
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal shell_reached
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        msgs = str([m.get("content", "") for m in kwargs["messages"]])
+        # In shell mode (reached after the forced handoff): return a summary.
+        if "Handed off to mode: shell" in msgs or (
+            "`shell`" in sys_content and "shell" in sys_content
+            and "Handoff Context" in sys_content
+        ):
+            shell_reached = True
+            return _StubCompletion(
+                content="The commands above are ready to run on your host shell."
+            )
+        # In default mode: the model produces the command list as text
+        # but does NOT call transition_stage — the kernel must force the
+        # handoff AND preserve this text.
+        return _StubCompletion(
+            content="#1 — ps aux | grep zeek\n#2 — zeekctl status\n#3 — cat log"
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.recall.enabled = False
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="give me some shell commands to interrogate zeek",
+            hooks=hooks,
+        )
+
+    # The kernel forced the default→shell handoff.
+    assert shell_reached, "shell mode was never reached — the forced-transition enforcer did not fire"
+    # The pre-handoff text (the command list) must survive in the response.
+    assert "#1" in result.response_text, (
+        "pre-handoff model text was lost — the command list from the "
+        "default-mode iteration should appear in the final response"
+    )
+    assert "ps aux" in result.response_text, (
+        "pre-handoff model text was lost — the command list from the "
+        "default-mode iteration should appear in the final response"
+    )
+    # The post-handoff text (the summary) should also be present.
+    assert "ready to run" in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
     """When the model calls the ``yield`` tool, the turn terminates with
     the question as the response text and ``_yielded`` stamps the turn.
