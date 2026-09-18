@@ -444,7 +444,7 @@ class ModelManifestRef(_StrictSessionModel):
     context file's directory by the host boot path) or absolute. The compiler
     validates non-emptiness only; the host boot path resolves the path and
     checks existence. When absent, the host falls back to
-    ``data_dir / models.yaml``.
+    ``data_dir / config / models.yaml``.
     """
 
     path: str = Field(min_length=1)

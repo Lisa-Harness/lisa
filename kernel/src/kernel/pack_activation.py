@@ -19,6 +19,8 @@ import os
 import re
 from pathlib import Path
 
+from sdk.layout import STATE_DIR as _STATE_DIR
+
 logger = logging.getLogger(__name__)
 
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
@@ -51,7 +53,7 @@ def load_disabled_pack_names(data_dir: Path) -> set[str]:
     Returns:
         A set of normalized pack names (e.g. ``{"lisa-pack-cloudflare"}``).
     """
-    lock_path = data_dir / _PACK_LOCK_FILE_NAME
+    lock_path = data_dir / _STATE_DIR / _PACK_LOCK_FILE_NAME
     if not lock_path.exists():
         return set()
 

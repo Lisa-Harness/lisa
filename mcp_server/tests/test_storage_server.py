@@ -363,7 +363,7 @@ async def test_deny_filters_list_files(storage_with_deny: Path) -> None:
 
     # Write a normal file and a denied file directly to disk, then confirm
     # list_files drops the denied one.
-    files_root = storage_with_deny / "files"
+    files_root = storage_with_deny / "data" / "files"
     files_root.mkdir(parents=True, exist_ok=True)
     (files_root / "keep.txt").write_text("ok", encoding="utf-8")
     (files_root / "secret.db").write_text("no", encoding="utf-8")

@@ -11,6 +11,7 @@ from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
 
 
 def _make_db(path: Path, rows: int = 2) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     try:
         conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT)")
@@ -30,18 +31,18 @@ def _read_dump(path: Path) -> str:
 async def test_backup_skips_when_db_missing(tmp_path: Path) -> None:
     result = backup_memory_db(data_dir=tmp_path)
     assert result is None
-    assert not (tmp_path / "backups").exists()
+    assert not (tmp_path / "data" / "backups").exists()
 
 
 @pytest.mark.asyncio
 async def test_backup_writes_timestamped_dump(tmp_path: Path) -> None:
-    db_path = tmp_path / "memory.db"
+    db_path = tmp_path / "data" / "memory.db"
     _make_db(db_path)
 
     result = backup_memory_db(data_dir=tmp_path)
 
     assert result is not None
-    assert result.parent == tmp_path / "backups"
+    assert result.parent == tmp_path / "data" / "backups"
     assert result.name.startswith("memory-")
     assert result.suffix == ".sql"
     dump = _read_dump(result)
@@ -52,9 +53,9 @@ async def test_backup_writes_timestamped_dump(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_backup_prunes_to_keep(tmp_path: Path) -> None:
-    db_path = tmp_path / "memory.db"
+    db_path = tmp_path / "data" / "memory.db"
     _make_db(db_path)
-    backup_dir = tmp_path / "backups"
+    backup_dir = tmp_path / "data" / "backups"
 
     keep = 3
     produced: list[Path] = []
@@ -72,13 +73,13 @@ async def test_backup_prunes_to_keep(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_backup_default_keep_is_ten(tmp_path: Path) -> None:
-    db_path = tmp_path / "memory.db"
+    db_path = tmp_path / "data" / "memory.db"
     _make_db(db_path)
 
     for _ in range(DEFAULT_KEEP_BACKUPS + 3):
         backup_memory_db(data_dir=tmp_path)
 
-    remaining = sorted((tmp_path / "backups").glob("memory-*.sql"))
+    remaining = sorted((tmp_path / "data" / "backups").glob("memory-*.sql"))
     assert len(remaining) == DEFAULT_KEEP_BACKUPS
 
 
@@ -109,7 +110,9 @@ async def test_backup_handles_vec0_virtual_table(tmp_path: Path) -> None:
 
     import sqlite_vec
 
-    db_path = tmp_path / "memory.db"
+    db_path = tmp_path / "data" / "memory.db"
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     try:
         conn.enable_load_extension(True)

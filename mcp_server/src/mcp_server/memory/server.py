@@ -34,6 +34,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
+from sdk.layout import DATA_DIR
 from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
 from sdk.memory.store import SqliteMemoryStore
 
@@ -114,7 +115,7 @@ async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
     """
     deps = MemoryDeps(
         store=SqliteMemoryStore(
-            db_path=_cfg.data_dir / "memory.db",
+            db_path=_cfg.data_dir / DATA_DIR / "memory.db",
             embedding_provider=_cfg.embedding_provider,
             embedding_dimension=_cfg.embedding_dimension,
         )
@@ -138,7 +139,7 @@ def init_store(data_dir: Path) -> None:
     set_deps_for_test(
         MemoryDeps(
             store=SqliteMemoryStore(
-                db_path=data_dir / "memory.db",
+                db_path=data_dir / DATA_DIR / "memory.db",
                 embedding_provider=_cfg.embedding_provider,
                 embedding_dimension=_cfg.embedding_dimension,
             )
@@ -435,7 +436,7 @@ def _init(args: Any) -> None:
     set_deps_for_test(
         MemoryDeps(
             store=SqliteMemoryStore(
-                db_path=_cfg.data_dir / "memory.db",
+                db_path=_cfg.data_dir / DATA_DIR / "memory.db",
                 embedding_provider=_cfg.embedding_provider,
                 embedding_dimension=_cfg.embedding_dimension,
             )

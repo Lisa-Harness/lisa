@@ -26,9 +26,9 @@ except Exception:  # pragma: no cover - import-time guard  # pylint: disable=bro
     _sqlite_vec = None  # type: ignore[assignment]
 
 __all__ = [
+    "DEFAULT_KEEP_BACKUPS",
     "backup_memory_db",
     "default_backup_dir",
-    "DEFAULT_KEEP_BACKUPS",
 ]
 
 logger = logging.getLogger(__name__)
@@ -46,13 +46,17 @@ _BACKUP_NAME_RE = re.compile(
 
 def default_backup_dir(data_dir: Path) -> Path:
     """Return the default backup directory for a memory data dir."""
-    return Path(data_dir) / "backups"
+    from sdk.layout import DATA_DIR  # noqa: PLC0415
+
+    return Path(data_dir) / DATA_DIR / "backups"
 
 
 def _resolved_db_path(data_dir: Path, db_path: Path | None) -> Path:
     if db_path is not None:
         return Path(db_path)
-    return Path(data_dir) / "memory.db"
+    from sdk.layout import DATA_DIR  # noqa: PLC0415
+
+    return Path(data_dir) / DATA_DIR / "memory.db"
 
 
 def _timestamp() -> str:

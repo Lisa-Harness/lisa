@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sdk.content import is_safe_relative_path
+from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
 
 __all__ = ["PathRejected", "StorageBackend"]
 
@@ -81,7 +82,7 @@ class StorageBackend:
         self._readonly: bool = readonly
         self._deny_globs: tuple[str, ...] = tuple(deny_globs)
         if not readonly:
-            (data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
+            (data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
         # One-time migration: the legacy ``checkpoints/`` directory was
         # removed in Phase 5 of the checkpoint teardown. Best-effort rmtree;
         # failures (permissions, missing dir) are logged and ignored.
@@ -112,22 +113,22 @@ class StorageBackend:
 
     def files_root(self) -> Path:
         """Return the files sandbox root."""
-        return self._data_dir / _FILES_SUBDIR
+        return self._data_dir / DATA_DIR / _FILES_SUBDIR
 
     def manifest_path(self, which: str) -> Path:
         """Return the path to the active or proposed model manifest.
 
-        Manifests are first-class framework artifacts, so they live
-        directly under ``data_dir`` — not under the ``files/`` sandbox.
+        Manifests are first-class framework artifacts, so they live under
+        the data dir's category dirs — not under the ``files/`` sandbox.
         The ``which`` argument selects the active manifest (``"active"``
-        → ``models.yaml``) or the proposal (``"proposal"`` →
-        ``models.proposed.yaml``).
+        → ``config/models.yaml``) or the proposal (``"proposal"`` →
+        ``state/models.proposed.yaml``).
         """
         normalized = which.strip().lower()
         if normalized == "active":
-            return self._data_dir / "models.yaml"
+            return self._data_dir / CONFIG_DIR / "models.yaml"
         if normalized == "proposal":
-            return self._data_dir / "models.proposed.yaml"
+            return self._data_dir / STATE_DIR / "models.proposed.yaml"
         raise ValueError(f"manifest kind must be 'active' or 'proposal', got {which!r}")
 
     # ── Policy ─────────────────────────────────────────────────────────────

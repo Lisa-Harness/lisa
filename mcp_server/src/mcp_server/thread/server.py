@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from sdk.layout import DATA_DIR
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
@@ -359,7 +360,7 @@ def init_thread(
     Kept as a thin back-compat shim for tests that call ``init_thread``
     directly.
     """
-    resolved_thread_dir = Path(thread_dir) if thread_dir else data_dir / "threads"
+    resolved_thread_dir = Path(thread_dir) if thread_dir else data_dir / DATA_DIR / "threads"
     _cfg.thread_dir = resolved_thread_dir
     _cfg.user_slug = user_slug
     base = resolved_thread_dir / user_slug if user_slug else resolved_thread_dir
@@ -372,7 +373,7 @@ def _init(args: Any) -> None:
     data_dir = Path(args.data_dir)
     thread_dir = getattr(args, "thread_dir", "") or ""
     user_slug = getattr(args, "user_slug", "") or ""
-    _cfg.thread_dir = Path(thread_dir) if thread_dir else data_dir / "threads"
+    _cfg.thread_dir = Path(thread_dir) if thread_dir else data_dir / DATA_DIR / "threads"
     _cfg.user_slug = user_slug
     base = _cfg.thread_dir / user_slug if user_slug else _cfg.thread_dir
     store, policy = _build_thread_store(base)

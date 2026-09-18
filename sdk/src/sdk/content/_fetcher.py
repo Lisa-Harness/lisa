@@ -39,6 +39,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from sdk.layout import CACHE_DIR
+
 try:
     from diskcache import Cache as _DiskCache
 except ImportError:  # pragma: no cover - diskcache is a hard dep of lisa-sdk
@@ -74,7 +76,7 @@ _DEFAULT_PRIVATE_IP_BLOCKS: tuple[str, ...] = (
     "fe80::/10",
 )
 
-_L2_CACHE_SUBDIR = Path("fetch")
+_L2_CACHE_SUBDIR = Path(CACHE_DIR) / "fetch"
 
 
 # ── Policy + result models ──────────────────────────────────────────────────

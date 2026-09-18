@@ -17,13 +17,15 @@ def test_load_disabled_pack_names_missing_file_returns_empty(tmp_path: Path) -> 
 
 
 def test_load_disabled_pack_names_corrupt_json_returns_empty(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("{not valid json", encoding="utf-8")
     assert load_disabled_pack_names(tmp_path) == set()
 
 
 def test_load_disabled_pack_names_all_enabled_returns_empty(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(
         json.dumps(
             {
@@ -39,7 +41,8 @@ def test_load_disabled_pack_names_all_enabled_returns_empty(tmp_path: Path) -> N
 
 
 def test_load_disabled_pack_names_returns_disabled_only(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(
         json.dumps(
             {
@@ -58,7 +61,8 @@ def test_load_disabled_pack_names_returns_disabled_only(tmp_path: Path) -> None:
 
 def test_load_disabled_pack_names_defaults_enabled_true(tmp_path: Path) -> None:
     """Packs without an explicit 'enabled' field default to enabled."""
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(
         json.dumps(
             {
@@ -73,7 +77,8 @@ def test_load_disabled_pack_names_defaults_enabled_true(tmp_path: Path) -> None:
 
 
 def test_load_disabled_pack_names_normalizes_names(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(
         json.dumps(
             {
@@ -89,13 +94,15 @@ def test_load_disabled_pack_names_normalizes_names(tmp_path: Path) -> None:
 
 
 def test_load_disabled_pack_names_empty_packs_list(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(json.dumps({"packs": []}), encoding="utf-8")
     assert load_disabled_pack_names(tmp_path) == set()
 
 
 def test_load_disabled_pack_names_non_dict_top_level(tmp_path: Path) -> None:
-    lock = tmp_path / "installed-packs.json"
+    lock = tmp_path / "state" / "installed-packs.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(json.dumps([]), encoding="utf-8")
     assert load_disabled_pack_names(tmp_path) == set()
 

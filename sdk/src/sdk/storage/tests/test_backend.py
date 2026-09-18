@@ -27,7 +27,7 @@ def _backend(
 
 def _readonly_backend(tmp_path: Path) -> StorageBackend:
     # Pre-create the files dir so reads don't error on a missing root.
-    (tmp_path / "files").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "files").mkdir(parents=True, exist_ok=True)
     return StorageBackend(tmp_path, readonly=True)
 
 
@@ -36,12 +36,12 @@ def _readonly_backend(tmp_path: Path) -> StorageBackend:
 
 def test_init_creates_subdirs(tmp_path: Path) -> None:
     StorageBackend(tmp_path)
-    assert (tmp_path / "files").is_dir()
+    assert (tmp_path / "data" / "files").is_dir()
 
 
 def test_init_readonly_does_not_create_subdirs(tmp_path: Path) -> None:
     StorageBackend(tmp_path, readonly=True)
-    assert not (tmp_path / "files").exists()
+    assert not (tmp_path / "data" / "files").exists()
 
 
 def test_init_deletes_legacy_checkpoints_dir(tmp_path: Path) -> None:
@@ -64,10 +64,10 @@ def test_init_deletes_legacy_checkpoints_dir(tmp_path: Path) -> None:
 
 def test_roots_and_manifest_path(tmp_path: Path) -> None:
     b = StorageBackend(tmp_path)
-    assert b.files_root() == tmp_path / "files"
-    assert b.manifest_path("active") == tmp_path / "models.yaml"
-    assert b.manifest_path("proposal") == tmp_path / "models.proposed.yaml"
-    assert b.manifest_path("  Proposal  ") == tmp_path / "models.proposed.yaml"
+    assert b.files_root() == tmp_path / "data" / "files"
+    assert b.manifest_path("active") == tmp_path / "config" / "models.yaml"
+    assert b.manifest_path("proposal") == tmp_path / "state" / "models.proposed.yaml"
+    assert b.manifest_path("  Proposal  ") == tmp_path / "state" / "models.proposed.yaml"
 
 
 def test_manifest_path_rejects_unknown(tmp_path: Path) -> None:
