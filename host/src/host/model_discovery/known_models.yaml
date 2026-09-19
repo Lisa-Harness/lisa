@@ -64,7 +64,43 @@ azure_openai:gpt-chat-latest:
 
 ollama:glm-5.2:cloud:
   display_name: Glm 5.2:Cloud
-  capabilities: [text, tools, structured_output, code]
+  capabilities: [text, tools, structured_output, code, reasoning]
+  cost_tier: standard
+  latency_tier: medium
+
+# glm-5.3 family + deepseek-v4.x (Ollama cloud): reasoning models. The
+# ``reasoning`` capability is REQUIRED here — these models bill their
+# chain-of-thought against the completion budget, so the kernel's
+# reasoning-aware budget (Settings.turn_completion_max_tokens) must apply
+# (the 2026-09-19 narration-loop incident: a manifest that dropped the
+# capability silently demoted glm-5.3-flash:cloud to the lean 4096 legacy
+# budget and every turn truncated mid-tool-call). The ``reasoning_model``
+# FLAG is deliberately NOT set: it would switch the gateway to
+# ``max_completion_tokens``, which Ollama accepts but silently ignores
+# (probed live: cap=50 → 254 tokens, finish=stop) — losing all budget
+# enforcement. The capability alone drives both the budget and the
+# ``'"reasoning" in route.required_capabilities'`` router rule.
+ollama:glm-5.3:cloud:
+  display_name: Glm 5.3:Cloud
+  capabilities: [text, tools, structured_output, code, reasoning]
+  cost_tier: standard
+  latency_tier: medium
+
+ollama:glm-5.3-flash:cloud:
+  display_name: Glm 5.3 Flash:Cloud
+  capabilities: [text, tools, structured_output, code, reasoning]
+  cost_tier: standard
+  latency_tier: medium
+
+ollama:deepseek-v4.1-flash:cloud:
+  display_name: Deepseek V4.1 Flash:Cloud
+  capabilities: [text, tools, structured_output, vision, reasoning]
+  cost_tier: standard
+  latency_tier: medium
+
+ollama:deepseek-v4-flash:cloud:
+  display_name: Deepseek V4 Flash:Cloud
+  capabilities: [text, tools, structured_output, reasoning]
   cost_tier: standard
   latency_tier: medium
 

@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     # per-step iteration budget. Override via ``PER_STEP_MAX_TOOL_CALLS``.
     per_step_max_tool_calls: int = 150
 
-    # ── Turn runner: completion budgets ──────────────────────────────────
+    # ── Turn runner: completion budgets ──────────────────────────────
     # Per-iteration completion token budget for turn-loop model calls.
     # Reasoning-capable models (``reasoning_model``/``thinking_model``
     # flags, or a ``reasoning`` capability) bill their chain-of-thought
@@ -177,10 +177,18 @@ class Settings(BaseSettings):
     # starves the visible answer or the tool-call payload:
     # ``finish_reason=length`` with empty content, or reasoning leaking
     # into ``content`` (the 2026-09-02 empty-turn and 2026-09-17
-    # meta-analysis incidents). 8192 gives reasoning headroom while
-    # bounded far below any model context. Override via
-    # ``TURN_COMPLETION_MAX_TOKENS``.
-    turn_completion_max_tokens: int = 8192
+    # meta-analysis incidents). The 2026-09-19 narration-loop incident
+    # showed 8192 still truncates a single completion that must hold
+    # deliberation PLUS an artifact-sized tool-call payload (an expanded
+    # config and a multi-KB report script): every turn died mid-write
+    # across three different models. 16384 fits deliberation (~1-3K) +
+    # payload (~5-10K) with headroom, and completion spend is ~3% of
+    # baseline cost (docs/TOKEN_BUDGET.md: 97% is prompt re-send), so
+    # the raise is cost-negligible. Both the streaming and non-streaming
+    # turn-loop paths rescue a ``finish_reason=length`` truncation with
+    # one retry at 2x, context-window-capped, bounding the pathological
+    # case at 32768. Override via ``TURN_COMPLETION_MAX_TOKENS``.
+    turn_completion_max_tokens: int = 16384
 
     # ── Turn runner: guard caps ───────────────────────────────────────────
     # Caps for the correction-nudge and loop-backstop guards in

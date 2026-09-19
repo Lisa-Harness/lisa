@@ -266,16 +266,22 @@ _STALLED_WRITE_PATTERNS = re.compile(
 # answer or the tool-call payload: ``finish_reason=length`` with empty
 # content, or truncated reasoning surfacing AS content (the 2026-09-02
 # empty-turn and 2026-09-17 meta-analysis incidents). Reasoning-capable
-# models therefore get the configured budget (default 8192, env-tunable via
-# ``TURN_COMPLETION_MAX_TOKENS``); plain models keep the leaner legacy
-# budget. OpenAI-style providers bill reasoning separately, so the leaner
-# budget costs nothing there — the flag-based bump is the conservative
-# cross-provider choice. Bounded by the model's context window when known.
+# models therefore get the configured budget (default 16384, env-tunable
+# via ``TURN_COMPLETION_MAX_TOKENS``); plain models keep the leaner legacy
+# budget. The 2026-09-19 narration-loop incident raised the default from
+# 8192: a single completion that must hold deliberation PLUS an
+# artifact-sized write payload (expanded config + multi-KB script)
+# still truncated mid-tool-call across three different models. Both
+# turn-loop paths (streaming and non-streaming) now also rescue a
+# ``finish_reason=length`` truncation with one 2x retry. OpenAI-style
+# providers bill reasoning separately, so the leaner budget costs nothing
+# there — the flag-based bump is the conservative cross-provider choice.
+# Bounded by the model's context window when known.
 _REASONING_CAPABILITY_MARKER = "reasoning"
 
 #: Legacy lean per-iteration completion budget for non-reasoning models.
 #: Reasoning-capable models get ``settings.turn_completion_max_tokens``
-#: (default 8192) instead; see ``_turn_completion_max_tokens``.
+#: (default 16384) instead; see ``_turn_completion_max_tokens``.
 _LEGACY_TURN_COMPLETION_MAX_TOKENS = 4096
 
 
@@ -2774,6 +2780,54 @@ async def _run_turn_inner(
                         completion.duration_ms = _stream_ms
             else:
                 completion = await _gateway.complete(completion_request)
+                # Truncated-completion rescue (non-streaming path): mirrors
+                # the streaming rescue above. A completion that stopped at
+                # ``length`` while tools were offered was cut mid-generation —
+                # quite possibly mid tool-call payload (the 2026-09-19
+                # narration-loop incident: `lisa once` runs streaming="none",
+                # so its turn-loop completions took this path; Ollama bills a
+                # reasoning model's chain-of-thought against max_tokens, the
+                # deliberation + multi-KB write payload exceeded the budget,
+                # and the truncated narration half was accepted as the final
+                # answer while the announced write never dispatched). Retry
+                # once with a doubled budget (bounded by the model's context
+                # window) before accepting the truncated completion as final.
+                if (
+                    getattr(completion, "finish_reason", None) == "length"
+                    and effective_tools
+                ):
+                    _base_max_tokens = int(completion_request.max_tokens or 0)
+                    _retry_max_tokens = _base_max_tokens * 2
+                    _cap_window = int(
+                        getattr(effective_model_def, "context_window", 0) or 0
+                    )
+                    if _cap_window > 0:
+                        _retry_max_tokens = min(_retry_max_tokens, _cap_window)
+                    if _retry_max_tokens > _base_max_tokens:
+                        _log.warning(
+                            "non-streaming completion truncated with tools "
+                            "offered; retrying once with higher max_tokens "
+                            "(mode=%s, model=%s, from=%d, to=%d)",
+                            mode_id,
+                            getattr(effective_model_def, "model_id", ""),
+                            _base_max_tokens,
+                            _retry_max_tokens,
+                        )
+                        _retry_request = CompletionRequest(
+                            messages=completion_request.messages,
+                            model_def=completion_request.model_def,
+                            max_tokens=_retry_max_tokens,
+                            temperature=completion_request.temperature,
+                            tools=completion_request.tools,
+                            response_format=completion_request.response_format,
+                            system_prompt_segments=completion_request.system_prompt_segments,
+                        )
+                        _retry_started = time.perf_counter()
+                        completion = await _gateway.complete(_retry_request)
+                        if completion.duration_ms <= 0.0:
+                            completion.duration_ms = (
+                                time.perf_counter() - _retry_started
+                            ) * 1000.0
                 if completion.duration_ms <= 0.0:
                     completion.duration_ms = (time.perf_counter() - _complete_started) * 1000.0
         usage = _extract_completion_usage(completion)

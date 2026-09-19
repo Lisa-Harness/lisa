@@ -52,4 +52,17 @@ def _factory(
     return LisaRouter(manifest)
 
 
-__all__ = ["get_router_factory"]
+def validate_router_rules(manifest: ModelManifest) -> list[str]:
+    """Compile every router rule's ``when`` expression; return error strings.
+
+    Thin re-export so hosts can lint a manifest's router block without
+    importing the router internals (``from sdk.router import
+    validate_router_rules``). Empty list = valid (or no router block).
+    """
+
+    from sdk.router.router import validate_router_rules as _validate
+
+    return _validate(manifest)
+
+
+__all__ = ["get_router_factory", "validate_router_rules"]

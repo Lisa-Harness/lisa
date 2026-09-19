@@ -642,6 +642,45 @@ def extract_openai_content(response: Any) -> str:
     return ""
 
 
+def _derive_openai_truncated(finish_reason: str | None) -> bool | None:
+    """Derive the normalized truncation flag from an OpenAI finish reason.
+
+    ``length`` means the generation hit the token limit mid-payload — the
+    authoritative truncation signal. ``stop``/``tool_calls`` are clean
+    terminations. Anything else (provider-specific reasons, missing) is
+    unknown: ``None``, not ``False`` — callers treat ``None`` as "no
+    information" (a single safety-net continuation, not a clean stop).
+    Mirrors ``_derive_anthropic_truncated`` / Bedrock's
+    ``_derive_bedrock_truncated`` so every gateway honors the same contract.
+    """
+    if finish_reason == "length":
+        return True
+    if finish_reason in {"stop", "tool_calls"}:
+        return False
+    return None
+
+
+def extract_openai_finish_reason(response: Any) -> tuple[str | None, bool | None]:
+    """Extract ``(finish_reason, truncated)`` from an OpenAI-compatible response.
+
+    Reads ``choices[0].finish_reason`` via ``getattr`` so stubbed and real
+    responses both work. The 2026-09-19 narration-loop incident: the
+    OpenAI-compatible ``complete()`` never surfaced ``finish_reason`` or
+    ``truncated``, so a ``finish_reason='length'`` truncation cut a
+    response mid-tool-call and the kernel saw only the narration half —
+    no guard could fire. Bedrock/Google/Anthropic gateways already
+    populated both fields; this brings the gateway serving
+    openai/ollama/openrouter (the primary deployment path) onto the same
+    contract.
+    """
+    choices = getattr(response, "choices", [])
+    if not choices:
+        return (None, None)
+    raw = getattr(choices[0], "finish_reason", None)
+    finish_reason = str(raw).strip().lower() if raw else None
+    return (finish_reason, _derive_openai_truncated(finish_reason))
+
+
 def extract_responses_content(response: Any) -> str:
     """Extract text content from one OpenAI Responses API response."""
 
@@ -1135,6 +1174,15 @@ class AzureOpenAIGateway:
                 "request_id": request_id,
             }
         )
+        # Chat-completions responses carry choices[0].finish_reason — the
+        # same shape the OpenAI-compatible gateway reads. Responses-API
+        # responses use ``status`` instead; left None (unknown) here — the
+        # conservative choice — until a truncation contract for that
+        # branch is needed. (2026-09-19 narration-loop incident.)
+        if _uses_openai_responses_api(request.model_def):
+            finish_reason, truncated = None, None
+        else:
+            finish_reason, truncated = extract_openai_finish_reason(response)
         return CompletionResult(
             content=content,
             provider=request.model_def.provider,
@@ -1143,6 +1191,8 @@ class AzureOpenAIGateway:
             request_id=request_id,
             tool_calls=tool_calls,
             usage=usage,
+            finish_reason=finish_reason,
+            truncated=truncated,
         )
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
@@ -1230,6 +1280,12 @@ class OpenAICompatibleGateway:
                 "request_id": request_id,
             }
         )
+        # Surface the provider termination signal so the kernel can see
+        # truncation (finish_reason='length') on the non-streaming path —
+        # the 2026-09-19 narration-loop incident: a length-truncated
+        # response cut mid-tool-call was indistinguishable from a natural
+        # narration-only completion without these fields.
+        finish_reason, truncated = extract_openai_finish_reason(response)
         return CompletionResult(
             content=normalize_structured_content(
                 extract_openai_content(response), request.response_format
@@ -1242,6 +1298,8 @@ class OpenAICompatibleGateway:
                 extract_openai_tool_calls(response), name_map
             ),
             usage=extract_openai_completion_usage(response),
+            finish_reason=finish_reason,
+            truncated=truncated,
         )
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:

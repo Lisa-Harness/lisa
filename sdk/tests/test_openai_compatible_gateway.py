@@ -330,3 +330,83 @@ class TestOllamaReasoningFieldFallback:
         chunks = [chunk async for chunk in gateway.complete_stream(_request())]
         assert chunks[0].reasoning_content == "thinking..."
         assert chunks[1].finish_reason == "length"
+
+
+# ── Truncation signals on the non-streaming path ────────────────────
+
+
+def _completion_response(finish_reason: str | None) -> SimpleNamespace:
+    """Build a chat-completions response stub with a finish_reason.
+
+    The real SDK response carries ``choices[0].finish_reason``; stubs read
+    the same attribute path via ``getattr``.
+    """
+    message = SimpleNamespace(content="Partial answer, cut mid-")
+    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice], id="chat-1", usage=None)
+
+
+class TestCompleteFinishReasonAndTruncated:
+    """``complete()`` must surface ``finish_reason``/``truncated``.
+
+    The 2026-09-19 narration-loop incident: the OpenAI-compatible
+    ``complete()`` (serving openai/ollama/openrouter) constructed
+    ``CompletionResult`` without either field, so a ``finish_reason='length'``
+    truncation that cut a response mid-tool-call was invisible to the
+    kernel — no truncation guard could fire. Bedrock/Google/Anthropic
+    gateways already populate both fields; this is the same contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_length_truncation_surfaces_finish_reason_and_flag(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(_completion_response("length"), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason == "length"
+        assert result.truncated is True
+
+    @pytest.mark.asyncio
+    async def test_clean_stop_surfaces_false_not_none(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(_completion_response("stop"), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason == "stop"
+        assert result.truncated is False
+
+    @pytest.mark.asyncio
+    async def test_tool_calls_finish_surfaces_false(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(_completion_response("tool_calls"), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason == "tool_calls"
+        assert result.truncated is False
+
+    @pytest.mark.asyncio
+    async def test_absent_finish_reason_is_unknown_none(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(_completion_response(None), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason is None
+        assert result.truncated is None
+
+    @pytest.mark.asyncio
+    async def test_empty_choices_surfaces_nothing(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(SimpleNamespace(choices=[], id="chat-1"), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason is None
+        assert result.truncated is None
+
+    @pytest.mark.asyncio
+    async def test_provider_specific_reason_is_unknown_none(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubClient(_completion_response("content_filter"), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(_request())
+        assert result.finish_reason == "content_filter"
+        assert result.truncated is None

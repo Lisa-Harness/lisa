@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -668,3 +669,123 @@ class TestHandleMessage:
         # Active manifest should be comment-free (yaml.safe_load strips them).
         active_content = runtime.paths.models_path.read_text(encoding="utf-8")
         assert "cost-conscious" not in active_content
+
+    @pytest.mark.asyncio
+    async def test_models_apply_refuses_broken_router_cel(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """/models apply refuses a proposal whose router rules do not compile.
+
+        The 2026-09-19 incident: a hand-edited proposal carried a CEL list
+        literal with a trailing comma before ``]``. The apply wrote it to
+        the active manifest; the router then failed to compile on every
+        turn (per-turn warning, silent static-resolution fallback) while
+        the operator believed routing was active. Apply must fail fast and
+        name the broken rule; the active manifest must be untouched.
+        """
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+
+        class _FakeStoragePool:
+            async def call_tool(
+                self,
+                tool_id: str,
+                arguments: dict[str, object],
+                *,
+                server_id: str | None = None,
+            ) -> object:
+                if server_id != "lisa-storage":
+                    return SimpleNamespace(
+                        output_text=f"Unknown MCP server '{server_id}'.",
+                        is_error=True,
+                    )
+
+                which = str(arguments.get("which") or "proposal").strip().lower()
+                if which == "active":
+                    path = runtime.paths.models_path
+                else:
+                    path = runtime.paths.models_proposal_path
+
+                if tool_id == "read_model_manifest":
+                    if not path.is_file():
+                        return SimpleNamespace(
+                            output_text=json.dumps(
+                                {"error": f"manifest not found: {which} ({path.name})"}
+                            ),
+                            is_error=False,
+                        )
+                    return SimpleNamespace(
+                        output_text=path.read_text(encoding="utf-8"), is_error=False
+                    )
+
+                if tool_id == "write_model_manifest":
+                    content = str(arguments.get("content") or "")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content, encoding="utf-8")
+                    return SimpleNamespace(
+                        output_text=json.dumps(
+                            {
+                                "ok": True,
+                                "which": which,
+                                "bytes": len(content.encode("utf-8")),
+                            }
+                        ),
+                        is_error=False,
+                    )
+
+                return SimpleNamespace(
+                    output_text=json.dumps({"error": f"unsupported tool: {tool_id}"}),
+                    is_error=False,
+                )
+
+        runtime.resources._mcp_tool_pool = _FakeStoragePool()
+        runtime.resources._mcp_started = True
+
+        # Seed the proposal directly with the incident's broken rule: a
+        # trailing comma inside the CEL list literal is a parse error.
+        broken_proposal = (
+            "# generated-by: lisa /models discover\n"
+            "version: 1\n"
+            "mode_models: {default: glm-5.3:cloud}\n"
+            "router:\n"
+            "  backend: lisa-router\n"
+            "  rules:\n"
+            "    - when: >-\n"
+            "        route.operation_id in [\n"
+            '          "markdown_forge_document",\n'
+            "        ]\n"
+            "      use: gpt-5.6-terra\n"
+            "models:\n"
+            "- model_id: glm-5.3:cloud\n"
+            "  provider: ollama\n"
+            "  display_name: Glm 5.3:Cloud\n"
+            "  capabilities: [text]\n"
+            "- model_id: gpt-5.6-terra\n"
+            "  provider: openai\n"
+            "  display_name: GPT 5.6 Terra\n"
+            "  capabilities: [text]\n"
+        )
+        runtime.paths.models_proposal_path.parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        runtime.paths.models_proposal_path.write_text(broken_proposal, encoding="utf-8")
+
+        apply_result = await handle_message(runtime, "/models apply")
+
+        # Apply refuses with the CEL error naming the broken rule…
+        assert "Failed to apply proposal" in apply_result.text
+        assert "router rules do not compile" in apply_result.text
+        assert "router rule 1" in apply_result.text
+        # …and the active manifest was NOT written.
+        assert not runtime.paths.models_path.exists()
+
+        # A fixed rule applies cleanly.
+        fixed_proposal = broken_proposal.replace(
+            '"markdown_forge_document",\n        ]',
+            '"markdown_forge_document"\n        ]',
+        )
+        runtime.paths.models_proposal_path.write_text(fixed_proposal, encoding="utf-8")
+        apply_result = await handle_message(runtime, "/models apply")
+        assert "Applied models proposal." in apply_result.text
+        assert runtime.paths.models_path.exists()

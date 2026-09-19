@@ -107,6 +107,27 @@ day with five max-intensity turns; 15M is the comfortable working target.
   a turn makes**, which is exactly what `max_tool_iterations` and the
   `per_step_*` caps control — not the token rail.
 
+### Per-call completion budget (updated 2026-09-19)
+
+The turn loop's per-call completion budget (`turn_completion_max_tokens`)
+is a **latency and runaway-generation guard**, not a spend control —
+completion tokens are ~3% of baseline spend (97% is prompt re-send, per
+the table above). Two properties keep it from becoming a silent failure:
+
+- **Reasoning models default to 16384** (was 8192; plain models keep the
+  legacy 4096). The 2026-09-19 narration-loop incident: a single
+  completion that must hold deliberation *plus* an artifact-sized
+  tool-call payload (expanded config + multi-KB report script) truncated
+  at 8192 mid-tool-call across three different models — the visible
+  "response" was the truncated narration half, and no guard fired. The
+  raise is cost-negligible: the 97%-prompt baseline means completion
+  headroom barely moves daily spend.
+- **Truncation is visible and self-heals once.** All gateways now
+  populate `finish_reason`/`truncated` on `CompletionResult`, and both
+  turn-loop paths (streaming and non-streaming) retry a
+  `finish_reason=length` truncation once at 2× budget, capped by the
+  model's context window. The pathological bound is 32768.
+
 ## Accounting caveat (open decision)
 
 Two coherent ways to wire the per-turn budget; the **daily 15M is the same

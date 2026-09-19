@@ -131,6 +131,37 @@ class LisaRouter(ModelRouter):
         return None
 
 
+def validate_router_rules(manifest: ModelManifest) -> list[str]:
+    """Compile every router rule's ``when`` expression and return the errors.
+
+    Returns an empty list when the manifest has no router block or every
+    rule compiles cleanly. Each error string names the 1-based rule index
+    and the underlying CEL error so an operator can fix the exact rule
+    (the 2026-09-19 incident: a proposal with a trailing comma inside the
+    CEL list literal applied cleanly because apply never compiled the
+    rules — the router then failed at runtime on every turn, silently
+    dead, while each turn logged a compile warning).
+
+    Shared by ``/models apply`` (fail-fast validation) and usable by any
+    host that wants to lint a manifest before activating it. Compile-only:
+    no evaluation, no ``choose`` semantics, no router construction.
+    """
+    if manifest.router is None:
+        return []
+    env = celpy.Environment()
+    errors: list[str] = []
+    for index, rule in enumerate(manifest.router.rules, start=1):
+        try:
+            ast = env.compile(rule.when)
+            env.program(ast)
+        except Exception as exc:  # pylint: disable=broad-except
+            errors.append(
+                f"router rule {index} ({rule.use or rule.finish or rule.transition_to}): "
+                f"failed to compile CEL expression {rule.when!r}: {exc}"
+            )
+    return errors
+
+
 def _truthy(value: Any) -> bool:
     """Coerce a CEL result to a Python bool, tolerating celpy's bool types."""
     if isinstance(value, bool):

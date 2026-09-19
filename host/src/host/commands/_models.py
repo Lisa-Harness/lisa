@@ -332,6 +332,25 @@ async def _handle_models_apply(
 
     try:
         manifest = load_model_manifest_text(proposal_text)
+        # Fail-fast CEL validation (the 2026-09-19 incident): a proposal
+        # whose router rules do not compile — e.g. a trailing comma inside
+        # a CEL list literal — applied cleanly, the active manifest then
+        # killed the router on EVERY turn (runtime logs "model router
+        # factory 'lisa-sdk' failed" per turn and silently falls back to
+        # static resolution). Compile every rule here and refuse the
+        # apply until they parse; the response names each broken rule so
+        # the operator can fix the exact line.
+        from sdk.router import validate_router_rules
+
+        router_errors = validate_router_rules(manifest)
+        if router_errors:
+            response_text = (
+                "Failed to apply proposal from "
+                f"{proposal_path}: router rules do not compile.\n"
+                + "\n".join(f"- {error}" for error in router_errors)
+                + "\nFix the CEL expressions in the proposal and retry /models apply."
+            )
+            return handle_simple_command(runtime, message, "models", response_text)
         # Re-emit via yaml.safe_load + render_manifest_yaml to strip
         # YAML comments (hand-edits) from the active manifest. The
         # proposal is already minimal — no preset annotations are

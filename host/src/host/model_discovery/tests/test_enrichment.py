@@ -353,3 +353,42 @@ class TestKnownModelsRegistry:
         # A registry entry with empty values should not wipe provider data.
         registry_entry = load_known_models().get("openai:gpt-5.4", {})
         assert registry_entry.get("cost_tier") == "frontier"  # non-empty
+
+    def test_ollama_cloud_reasoning_models_keep_reasoning_capability(self) -> None:
+        """Registry pins ``reasoning`` on Ollama cloud reasoning models.
+
+        The 2026-09-19 narration-loop incident: a discovered manifest
+        dropped the ``reasoning`` capability from glm-5.3-flash:cloud, which
+        silently demoted it to the lean 4096 legacy completion budget (the
+        capability drives ``_turn_completion_max_tokens``), and every turn
+        truncated mid-tool-call. The registry override must restore the
+        capability even though the substring heuristic does not flag
+        these model ids as reasoning models.
+        """
+        for model_id in (
+            "glm-5.3:cloud",
+            "glm-5.3-flash:cloud",
+            "deepseek-v4.1-flash:cloud",
+            "deepseek-v4-flash:cloud",
+        ):
+            enrichment = apply_known_override(
+                "ollama",
+                model_id,
+                {"capabilities": ("text", "tools", "structured_output")},
+            )
+            assert "reasoning" in enrichment["capabilities"], model_id
+
+    def test_ollama_cloud_reasoning_models_flag_stays_false(self) -> None:
+        """The registry must NOT set ``reasoning_model`` for Ollama models.
+
+        The flag switches the OpenAI-compatible gateway to
+        ``max_completion_tokens``, which Ollama accepts but silently
+        ignores (probed live: cap=50 → 254 completion tokens,
+        finish=stop) — losing all budget enforcement. The capability-only
+        override keeps the wire on ``max_tokens`` while still driving the
+        reasoning-aware completion budget.
+        """
+        for model_id in ("glm-5.3:cloud", "glm-5.3-flash:cloud"):
+            registry_entry = load_known_models().get(f"ollama:{model_id}", {})
+            assert "reasoning_model" not in registry_entry, model_id
+            assert registry_entry.get("thinking_model") is None, model_id

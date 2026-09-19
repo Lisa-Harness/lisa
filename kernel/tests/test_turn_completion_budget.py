@@ -2,10 +2,13 @@
 
 Reasoning-capable models (``reasoning_model``/``thinking_model`` flags or a
 ``reasoning`` capability string) get ``Settings.turn_completion_max_tokens``
-(default 8192) instead of the lean legacy 4096: some providers (Ollama) bill
+(default 16384) instead of the lean legacy 4096: some providers (Ollama) bill
 chain-of-thought against ``max_tokens``, so the lean budget starves the
 visible answer or the tool-call payload (the 2026-09-02 empty-turn and
-2026-09-17 meta-analysis incidents). Non-reasoning models keep 4096.
+2026-09-17 meta-analysis incidents). The 2026-09-19 narration-loop incident
+raised the default from 8192: a completion holding deliberation PLUS an
+artifact-sized write payload still truncated mid-tool-call. Non-reasoning
+models keep 4096.
 """
 
 from __future__ import annotations
@@ -31,24 +34,24 @@ def _model(**overrides: object) -> SimpleNamespace:
 
 
 def test_reasoning_capability_gets_reasoning_budget() -> None:
-    """A model with the ``reasoning`` capability gets the 8192 budget."""
+    """A model with the ``reasoning`` capability gets the 16384 budget."""
 
     model = _model(capabilities=("reasoning", "tools", "text"), context_window=131072)
-    assert _turn_completion_max_tokens(model) == 8192
+    assert _turn_completion_max_tokens(model) == 16384
 
 
 def test_reasoning_model_flag_gets_reasoning_budget() -> None:
     """The ``reasoning_model`` manifest flag drives the budget bump."""
 
     model = _model(reasoning_model=True)
-    assert _turn_completion_max_tokens(model) == 8192
+    assert _turn_completion_max_tokens(model) == 16384
 
 
 def test_thinking_model_flag_gets_reasoning_budget() -> None:
     """The ``thinking_model`` manifest flag drives the budget bump."""
 
     model = _model(thinking_model=True)
-    assert _turn_completion_max_tokens(model) == 8192
+    assert _turn_completion_max_tokens(model) == 16384
 
 
 def test_plain_model_keeps_legacy_budget() -> None:
@@ -93,3 +96,15 @@ def test_lower_configured_budget_applies_to_both_model_kinds() -> None:
         assert _turn_completion_max_tokens(_model(reasoning_model=True)) == 2048
     finally:
         object.__setattr__(tr._kernel_settings, "turn_completion_max_tokens", original)
+
+
+def test_reasoning_budget_capped_by_context_window() -> None:
+    """A reasoning model with a small context window gets the window, not 16384.
+
+    The 16384 default is only safe when the model's context window allows
+    it. A reasoning model with ``context_window=8192`` (e.g. a small
+    local deployment) must get 8192 — never more than its window.
+    """
+
+    model = _model(capabilities=("reasoning",), context_window=8192)
+    assert _turn_completion_max_tokens(model) == 8192

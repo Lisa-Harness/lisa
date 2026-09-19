@@ -254,7 +254,18 @@ async def test_turn_runner_rescues_truncated_stream_with_tools_offered() -> None
         return _StubCompletion(content="wrote it")
 
     hooks = _build_minimal_hooks(complete_fn, stream_fn)
-    result = await run_turn(mode_id="default", query="write the scripts", hooks=hooks)
+    # The query text must NOT trigger the routing-hint forced transition
+    # (a "write"-intent gap arms a forced handoff that synthesizes a
+    # transition dispatch and consumes a third model call the stubs do
+    # not provide). This test pins the rescue contract, not routing —
+    # suppress the hint through the documented kernel seam.
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(
+            mode_id="default", query="write the scripts", hooks=hooks
+        )
 
     # The retry fired with a doubled budget…
     assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
@@ -321,11 +332,160 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
     ),
 )
     # context_window 6000 caps the doubled budget at 6000 (not 8192).
-    result = await run_turn(
-        mode_id="default",
-        query="write the scripts",
-        hooks=hooks,
-    )
+    # Suppress the routing hint (same seam as the rescue test above) so
+    # the forced transition cannot consume a third stubbed stream call.
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="write the scripts",
+            hooks=hooks,
+        )
 
     assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
     assert "partial" in result.response_text
+
+
+# ── Truncated-completion rescue (non-streaming path) ──────────────────
+# The 2026-09-19 narration-loop incident: `lisa once` defaults to
+# streaming="none", so its turn-loop completions take the
+# `_gateway.complete()` path. A `finish_reason='length'` truncation cut
+# the response mid-tool-call and the narration half was accepted as the
+# final answer. These tests pin the same rescue contract as the streaming
+# tests above, but on the non-streaming path.
+
+
+@dataclass(frozen=True, slots=True)
+class _RescueStubCompletion:
+    """Stub completion carrying the provider truncation signals.
+
+    Mirrors ``CompletionResult``: ``finish_reason`` drives the rescue,
+    ``tool_calls`` drives the dispatch path.
+    """
+
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+    finish_reason: str | None = None
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rescues_truncated_completion_with_tools_offered() -> None:
+    """A non-streaming completion that stops at ``length`` while tools
+    were offered is retried once with a doubled budget instead of being
+    accepted as a truncated narration-only final completion."""
+
+    calls: list[int] = []
+    completions = [
+        # First call: narration, truncated mid-tool-call payload.
+        _RescueStubCompletion(
+            content="Let me write the config and the report script now.",
+            finish_reason="length",
+        ),
+        # Retry (doubled budget): the payload fits — the model lands its
+        # answer cleanly (same shape as the streaming twin: the retried
+        # generation produces the full completion).
+        _RescueStubCompletion(
+            content="wrote it",
+            finish_reason="stop",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(
+            mode_id="default", query="write the scripts", hooks=hooks
+        )
+
+    # The retry fired with a doubled budget…
+    assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
+    # …and the retried completion's answer is surfaced, not the truncated
+    # narration half.
+    assert "wrote it" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_truncated_completion_without_tools_is_not_retried() -> None:
+    """``finish_reason='length'`` with NO tools offered is a natural
+    completion, not a lost tool call — no rescue retry on the
+    non-streaming path either."""
+
+    calls: list[int] = []
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        return _RescueStubCompletion(
+            content="A plain answer that ran long.",
+            finish_reason="length",
+        )
+
+    async def empty_tool_surface(_mode_config: Any, **_kwargs: Any):
+        return ([], {"input_count": 0, "output_count": 0, "dropped_duplicate": 0,
+                     "dropped_disallowed": 0, "dropped_invalid": 0})
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    # Strip the tool surface so this exercises the genuinely
+    # tools-offered=False path (the ambient catalog loads memory/yield
+    # tools otherwise — same note as the streaming twin above).
+    with patch("kernel.turn_runner.build_tool_surface", empty_tool_surface):
+        result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert calls == [4096], "no retry should fire when tools were not offered"
+    assert "plain answer" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> None:
+    """The non-streaming rescue retry budget is bounded by the model's
+    context window."""
+
+    calls: list[int] = []
+    completions = [
+        _RescueStubCompletion(content="partial", finish_reason="length"),
+        _RescueStubCompletion(content="complete answer", finish_reason="stop"),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = TurnHooks(
+    models=ModelHooks(
+        complete=complete_fn,
+        resolve_model=lambda _mid: SimpleNamespace(
+            provider="test",
+            model_id="small-model",
+            display_name="Small Model",
+            reasoning_model=False,
+            thinking_model=False,
+            context_window=6000,
+        ),
+    ),
+)
+    # context_window 6000 caps the doubled budget at 6000 (not 8192).
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="write the scripts",
+            hooks=hooks,
+        )
+
+    assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
+    assert "complete answer" in result.response_text
