@@ -33,7 +33,7 @@ Key principles:
 | --- | --- |
 | `models.py` | All runtime-neutral Pydantic contracts: surface context, operation/tool execution, workflow FSM, fork fan-out (`ForkTarget`/`ForkChildResult`), delegation, memory, unified state, context evidence, anomaly alerts, capability manifest, introspection snapshots, token usage events, call ledger, and approval contracts. |
 | `provider_core.py` | Provider gateway abstractions: `AzureOpenAIGateway`, `AnthropicGateway`, `GoogleGeminiGateway`, `BedrockGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, streaming support, message normalization, and usage extraction. |
-| `extension_runtime.py` | Minimal extension runtime surface (stripped down 2026-07-11): `ExtensionRuntimeContext` for host services injection, `ExtensionAnomalyDetector` callable shape, and `ExtensionContextItemBuilder` callable shape. The bottom half is now `kernel.intake.contracts.ProcessingLoop`. |
+| `extension_runtime.py` | Minimal extension runtime surface: `ExtensionRuntimeContext` for host services injection and the `ExtensionContextItemBuilder` callable shape. The bottom half is `kernel.intake.contracts.ProcessingLoop`. |
 
 ### Discovery & Configuration
 

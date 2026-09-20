@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kernel.models import AnomalyAlert, ContextItem, UnifiedState
+from kernel.models import ContextItem, UnifiedState
 from kernel.seams.protocols import StateProvider
 
 
@@ -18,10 +18,8 @@ class ExtensionRuntimeContext:
     http_client: Any = None
     event_bus: Any = None
     openai_client: Any = None
-    complete_with_profile: Callable[..., Awaitable[str]] | None = None
 
 
-ExtensionAnomalyDetector = Callable[[UnifiedState], Awaitable[list[AnomalyAlert]]]
 ExtensionContextItemBuilder = Callable[
     [ExtensionRuntimeContext, UnifiedState],
     "list[ContextItem]",
@@ -29,7 +27,6 @@ ExtensionContextItemBuilder = Callable[
 
 
 __all__ = [
-    "ExtensionAnomalyDetector",
     "ExtensionContextItemBuilder",
     "ExtensionRuntimeContext",
 ]

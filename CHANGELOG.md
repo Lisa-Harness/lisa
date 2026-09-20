@@ -91,6 +91,56 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### `extension_runtime` cleanup: dead symbols removed, `context_items` endpoint enforced
+
+- **What:** Trimmed `kernel/src/kernel/extension_runtime.py` to its live
+  surface: removed the `ExtensionAnomalyDetector` callable alias (the
+  anomaly-detection role moved to `kernel.intake.contracts.ProcessingLoop`;
+  no producer or consumer existed anywhere) and the never-read
+  `ExtensionRuntimeContext.complete_with_profile` field. Removed the stale
+  `known_orphan=True` flag on the `lisa.extensions.context_items` entry in
+  `kernel/src/kernel/testing/endpoint_registry.py` — the wip signal packs
+  (cloudflare/github/stripe) had already migrated to the renamed group, so
+  the flag was suppressing the producer test for a live endpoint
+  (`test_endpoint_registry.py` now runs the producer assertion instead of
+  skipping it). Updated the `extension_runtime.py` row in
+  `kernel/README.md` accordingly. Also fixed the pack-scoped context
+  boundary in `host/src/host/context_assembly.py`: the session-mapper call
+  now derives `active_packs` from the active mode's
+  `mode_provider_id` + `context_item_packs` front-matter, so
+  pack-contributed `ContextItem` records are admitted in their own mode
+  instead of being silently gated as `inactive_pack` (the omission made the
+  entire `context_items` extension surface inert in production hosts).
+- **Why:** Pre-release dead-surface audit: the kernel exports must all be
+  live public API, and a registry flag describing a superseded migration
+  state (`context_evidence` → `context_items`) was masking both the
+  endpoint's producer test and the fact that no host had ever passed
+  `active_packs` to the mapper.
+- **Packs:** The wip signal packs in `../lisa-packs-wip` (cloudflare,
+  github, stripe) were made current in the same pass: their processing
+  loops and status operations were reading the deleted
+  `UnifiedState.signal_snapshots` attribute (an `AttributeError` at
+  runtime) and now resolve snapshots the same way the headroom reference
+  pack does — typed `ProcessContext.collections` first, intake signal-item
+  round-trip fallback second; their `context_items.py` builders got the
+  missing `datetime` import fixed (latent `NameError`); cloudflare's
+  `_mode.md` uses the live `context_item_packs` key instead of the dead
+  `context_evidence_packs` (its own evidence was being excluded from its
+  own mode); stale pre-rename nested `pyproject.toml`s declaring the dead
+  `lisa.extensions.context_evidence` entry-point group were removed, along
+  with the stale `build/`/`egg-info` litter; each pack gained
+  `tests/test_processing.py` locking the migrated snapshot-resolution
+  channels in place.
+- **Removal:** `ExtensionAnomalyDetector` (type alias) and
+  `ExtensionRuntimeContext.complete_with_profile` (field) are gone from
+  `kernel/src/kernel/extension_runtime.py` — no producer, consumer, or
+  entry-point group referenced either symbol in the framework, the public
+  pack repo, or the wip pack repos. Hard-cutover contract: no shims or
+  deprecated aliases. `AnomalyAlert` itself is live (intake/processing
+  pipeline) and stays.
+
+### Changed
+
 #### God-object decomposition & structured subsystem packages (audit refactor)
 
 - **What:**

@@ -578,12 +578,21 @@ def assemble_dynamic_user_context(
         if snapshot_sink is not None:
             snapshot_sink(snapshot)
 
+    # Pack-scoped item boundary: a mode sees extension items from its own
+    # provider pack plus any packs it explicitly allows via
+    # ``context_item_packs`` in its ``_mode.md`` front-matter. Without this
+    # the mapper gates every pack-tagged item as ``inactive_pack`` and the
+    # ranked context silently drops all extension contributions.
+    active_packs: frozenset[str] = frozenset()
+    if mode is not None:
+        active_packs = frozenset({mode.mode_provider_id, *mode.context_item_packs} - {""})
     packet_markdown = build_brokered_context_markdown(
         mode_id=mode_id,
         query=query,
         state=state,
         context_plan=context_plan,
         model_context_window_tokens=model_context_window_tokens,
+        active_packs=active_packs,
         snapshot_sink=_capture_snapshot,
     )
     if packet_markdown:

@@ -75,14 +75,6 @@ REGISTRY: list[Endpoint] = [
             "a ``list[ContextItem]``. The session-owned context mapper "
             "merges these into ranked, lane-ordered context for each turn."
         ),
-        # Known orphan (2026-09-06): the consumer is live (host wiring builds
-        # EntryPointExtensionItemBuilder), but no pack declares this group —
-        # the would-be producers in packs-wip (cloudflare/github/stripe) still
-        # declare the pre-rename ``lisa.extensions.context_evidence`` group
-        # and emit the deleted ``ContextEvidence`` model. The endpoint stays
-        # registered for pack authors; re-pointing those packs is pack-repo
-        # work, not kernel work.
-        known_orphan=True,
     ),
     Endpoint(
         group="lisa.extensions.host_commands",
