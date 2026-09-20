@@ -199,6 +199,27 @@ servers:
     assert specs[0].data_dir_arg == "--data-dir"
 
 
+def test_load_manifest_workspace_root_arg(tmp_path: Path) -> None:
+    """workspace_root_arg: null opts out; default is --workspace-root."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: optout
+    runtime_kind: binary
+    command_path: /usr/bin/tool
+    workspace_root_arg: null
+  - server_id: default
+    runtime_kind: python
+    module: custom.server
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert specs[0].workspace_root_arg is None
+    assert specs[1].workspace_root_arg == "--workspace-root"
+
+
 def test_load_manifest_invalid_runtime_kind_raises(tmp_path: Path) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(

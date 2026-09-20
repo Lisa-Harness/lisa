@@ -327,6 +327,19 @@ class MCPServerSpec:
     workspace_root: str | None = None
     """Resolved workspace root. Passed as --workspace-root when set."""
 
+    workspace_root_arg: str | None = "--workspace-root"
+    """How to inject the workspace root into the server's CLI.
+
+    - ``"--workspace-root"`` (default): pass as ``--workspace-root <path>``
+      (first-party contract; the shared parser in ``mcp_server.config.cli``
+      accepts it).
+    - any other flag string: pass as that flag + the resolved path.
+    - ``None``: do not inject a workspace-root flag at all. Used for
+      third-party servers whose own CLI does not know this flag (the flag is
+      injected before the server's own subcommand, so an unknown option is
+      a hard parse error that kills the subprocess).
+    """
+
     readonly: bool = False
     """When True, passes --readonly to servers that support it."""
 

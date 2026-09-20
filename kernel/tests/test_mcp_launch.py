@@ -374,6 +374,52 @@ def test_compile_registry_injects_workspace_root() -> None:
     assert any("--workspace-root" in c.args for c in configs)
 
 
+def test_compile_mcp_config_null_workspace_root_arg_omits_injection() -> None:
+    """workspace_root_arg=None opts a third-party server out of the flag.
+
+    The flag is injected before the server's own subcommand, so a CLI that
+    does not accept it dies at parse time (headroom incident, 2026-09-20).
+    """
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        workspace_root="/ws",
+        workspace_root_arg=None,
+    )
+    config = compile_mcp_config(spec)
+    assert "--workspace-root" not in config.args
+    assert "/ws" not in config.args
+
+
+def test_compile_mcp_config_custom_workspace_root_arg() -> None:
+    """workspace_root_arg overrides the injected flag name."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        workspace_root="/ws",
+        workspace_root_arg="--project-root",
+    )
+    config = compile_mcp_config(spec)
+    assert "--project-root" in config.args
+    assert "/ws" in config.args
+    assert "--workspace-root" not in config.args
+
+
+def test_compile_mcp_config_workspace_root_arg_defaults_inject() -> None:
+    """Default workspace_root_arg keeps first-party behavior unchanged."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        workspace_root="/ws",
+    )
+    config = compile_mcp_config(spec)
+    assert "--workspace-root" in config.args
+    assert "/ws" in config.args
+
+
 # ── data-dir adaptation ─────────────────────────────────────────────────────
 
 

@@ -359,6 +359,10 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     # own storage); default "--data-dir" preserves the first-party contract.
     data_dir_arg_raw = entry.get("data_dir_arg", "--data-dir")
     data_dir_arg = None if data_dir_arg_raw is None else str(data_dir_arg_raw)
+    workspace_root_arg_raw = entry.get("workspace_root_arg", "--workspace-root")
+    workspace_root_arg = (
+        None if workspace_root_arg_raw is None else str(workspace_root_arg_raw)
+    )
     data_dir_subdir = entry.get("data_dir_subdir")
     if data_dir_subdir is not None:
         data_dir_subdir = str(data_dir_subdir)
@@ -418,6 +422,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         cli_args=cli_args,
         data_dir_arg=data_dir_arg,
         data_dir_subdir=data_dir_subdir,
+        workspace_root_arg=workspace_root_arg,
         ensure_data_dir=ensure_data_dir,
         env_policy=EnvPolicy(inherit_parent=True, forced_overrides=forced),
         cwd_policy=cwd_policy,

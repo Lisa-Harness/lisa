@@ -160,8 +160,8 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     cli_args: list[str] = []
     if spec.data_dir_arg is not None and resolved_data_dir is not None:
         cli_args.extend([spec.data_dir_arg, resolved_data_dir])
-    if spec.workspace_root:
-        cli_args.extend(["--workspace-root", spec.workspace_root])
+    if spec.workspace_root and spec.workspace_root_arg is not None:
+        cli_args.extend([spec.workspace_root_arg, spec.workspace_root])
     if spec.readonly:
         cli_args.append("--readonly")
     cli_args.extend(spec.cli_args)
