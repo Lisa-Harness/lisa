@@ -1050,6 +1050,7 @@ name = "lisa-host-runtime"
 version = "0.1.0"
 source = { editable = "host" }
 dependencies = [
+    { name = "cel-python" },
     { name = "httpx" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
@@ -1074,6 +1075,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cel-python", specifier = ">=0.5.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },

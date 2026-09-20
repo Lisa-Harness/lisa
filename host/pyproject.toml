@@ -18,6 +18,7 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-recovery",
+    "cel-python>=0.5.0",
     "openai>=1.30.0",
     "pyyaml>=6.0",
     "httpx>=0.27.0",

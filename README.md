@@ -139,6 +139,10 @@ artifacts under the data directory (`artifacts/` by default, or the path in
   they require.
 - **Thread store** — append-only JSONL under the data dir. `lisa-pack-memory`
   is bundled and enabled by default.
+- **Approval policy** — `config/policy.yaml` decides which actions need
+  operator approval: the `ask`/`trust`/`plan` dial, sandbox auto-approval, and
+  allow/ask/deny rules. See
+  [`docs/POLICY_GUIDE.md`](docs/POLICY_GUIDE.md) for the authoring reference.
 
 ## Commands
 

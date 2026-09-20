@@ -463,7 +463,8 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "- /tools — list internal (pack-discovered) tools with limits and timeouts.",
             "- /mcp [server_id] — MCP server health summary, or per-server tool detail.",
             "- /settings — effective profile/timezone/debug/log-level runtime settings.",
-            "- /policy [mode ask|trust|plan | bare on|off] — show or change the approval "
+            "- /policy [mode ask|trust|plan | bare on|off | rule add|remove|list] — "
+            "show or change the approval "
             "policy (the decision dial and rules behind approval prompts).",
             "- /tokens — session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self — local diagnostics.",
@@ -669,33 +670,26 @@ def _host_shortcut_help_text(topic: str) -> str:
             "Show the effective runtime settings: profile, timezone, debug level, "
             "log level, and resolved paths."
         ),
+
         "policy": (
             "## /policy\n\n"
             "Show or change the approval policy. Bare /policy renders the active "
-            "document: the mode dial, sandbox downgrade, bare-mode guard, and the "
-            "allow/ask/deny rule lists.\n\n"
+            "document: the mode dial, sandbox downgrade, bare-mode guard, the "
+            "allow/ask/deny rule lists, and any load errors.\n\n"
             "- /policy mode ask|trust|plan — set the fallback dial. trust "
             "auto-allows write/execute actions (external_write still prompts, "
             "and the bare-mode guard still prompts unsandboxed execute); plan "
             "denies every effectful action; ask prompts for anything not settled "
             "by a rule or the sandbox.\n"
             "- /policy bare on|off — toggle bare_requires_approval: when on, an "
-            "execute action outside the sandbox always prompts even under trust.\n\n"
-            "Changes take effect immediately — the engine re-reads policy.yaml "
-            "on every approval request."
-        ),
-        "policy": (
-            "## /policy\n\n"
-            "Show or change the approval policy. Bare /policy renders the active "
-            "document: the mode dial, sandbox downgrade, bare-mode guard, and the "
-            "allow/ask/deny rule lists.\n\n"
-            "- /policy mode ask|trust|plan — set the fallback dial. trust "
-            "auto-allows write/execute actions (external_write still prompts, "
-            "and the bare-mode guard still prompts unsandboxed execute); plan "
-            "denies every effectful action; ask prompts for anything not settled "
-            "by a rule or the sandbox.\n"
-            "- /policy bare on|off — toggle bare_requires_approval: when on, an "
-            "execute action outside the sandbox always prompts even under trust.\n\n"
+            "execute action outside the sandbox always prompts even under trust.\n"
+            "- /policy rule add <allow|ask|deny> [--tool T] [--effect E] "
+            "[--pack P] [--prefix PX] [--when EXPR] — append a rule. The when "
+            "expression is a CEL boolean over action.* (tool, effect, pack, "
+            "command, argv, parameters), identity.*, and containment; it is "
+            "compile-checked before the write.\n"
+            "- /policy rule remove <list>:<n> — drop a rule by its address.\n"
+            "- /policy rule list — render the rules with their addresses.\n\n"
             "Changes take effect immediately — the engine re-reads policy.yaml "
             "on every approval request."
         ),
