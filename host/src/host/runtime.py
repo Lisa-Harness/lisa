@@ -191,11 +191,7 @@ class SessionState:
         # ── Restart state ─────────────────────────────────────────────
         self.restart_required: bool = False
         self.restart_reason: str = ""
-        # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
-        # var on startup (e.g. after ``/pack install`` restart) or set by the
-        # ``/resume <reply>`` command; the REPL replays it as the first turn,
-        # then clears it. ``None`` means no resume pending.
-        self.pending_resume_message: str | None = None
+
 
         # Per-turn count of policy auto-approvals; the approval flow reads
         # and increments it, and the dispatcher resets it at each turn start.
@@ -608,7 +604,6 @@ class HostRuntime:
         self.session_plan = session_plan or compile_selected_session_plan(
             session_context=config.session_context,
             data_dir=config.data_dir,
-            force_refresh=config.session_context_refresh,
         )
         source_matches_user_slug = (
             bool(config.session_context) and config.user_slug == config.session_context

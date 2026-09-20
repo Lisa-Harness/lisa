@@ -475,21 +475,14 @@ Provider IDs are normalized: `lisa-pack-brave`, `brave`, and `brave_pack` all ma
 
 ## Resolution and Loading
 
-The host resolves a session context source at startup via `host.session_context.resolve_session_context_source`:
+The host resolves a session context source at startup via `host.session_context.resolve_session_context_source` — from local disk only:
 
-1. **Auto-discovery** (empty `--session-context`):
-   - `LISA_SESSION_CONTEXT_PATH` env var (highest auto-discovery precedence) — an explicit `.md` path overriding the cwd/data-dir scan.
-   - `./session_context.md` in the current working directory.
-   - `<data-dir>/session_context.md`.
-   - Bundled default: `sdk/packs/core/sessions/default.md`.
-2. **Explicit local path**: a literal `.md` file path.
-3. **Data-dir slug**: `<data-dir>/<slug>.md`.
-4. **Registry slug**: fetched from `LISA_SESSION_CONTEXT_REGISTRY_URL` (default `https://raw.githubusercontent.com/lisa-framework/sessions/main`).
-5. **Direct URL**: `https://...` fetched and cached.
+1. **Explicit path** (`--session-context <file>.md`): must exist and be a Markdown file; a missing file is an error, not a fallthrough.
+2. **`LISA_SESSION_CONTEXT_PATH` env var**: an explicit `.md` path. When set, the file must exist — a configured-but-missing path raises instead of silently falling back.
+3. **`<data-dir>/config/session_context.md`** when authored.
+4. **Bundled default**: `sdk/packs/core/sessions/default.md`.
 
-Remote fetches are cached in `<data-dir>/session_context_cache/` with conditional GET. Use `--session-context-refresh` to force a re-fetch.
-
-For private contexts, pass auth via `LISA_SESSION_CONTEXT_TOKEN` or `LISA_SESSION_CONTEXT_AUTH_HEADER`. Restrict allowed hosts via `LISA_SESSION_CONTEXT_ALLOWED_HOSTS` (default `github.com, raw.githubusercontent.com`). HTTP is blocked unless `LISA_SESSION_CONTEXT_ALLOW_HTTP=1`.
+There is no remote fetch, registry, or slug resolution: the session plan is a local authored artifact, read from disk on every startup.
 
 ---
 

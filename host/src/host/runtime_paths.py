@@ -63,7 +63,7 @@ class HostPaths:
 
     @property
     def cache_dir(self) -> Path:
-        """rm-safe caches (fetch/, session_context_cache/, layers/)."""
+        """rm-safe caches (fetch/, layers/)."""
         return self.data_dir / CACHE_DIR
 
     @property

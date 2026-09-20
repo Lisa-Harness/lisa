@@ -324,7 +324,6 @@ class HostConfig:
     timezone_source: str = "default"
     user_slug: str = ""
     session_context: str = ""
-    session_context_refresh: bool = False
     no_thread: bool = False
 
     # ── Streaming (transport hint) ─────────────────────────────────────
@@ -526,7 +525,6 @@ class HostConfig:
         no_thread: bool = False,
         timezone: str = "",
         session_context: str = "",
-        session_context_refresh: bool = False,
         execution_policy: ExecutionPolicy | None = None,
         user_slug: str = "",
         state_snapshot: str = "",
@@ -633,7 +631,6 @@ class HostConfig:
             timezone_source=tz_source,
             user_slug=resolved_user_slug,
             session_context=resolved_session_context,
-            session_context_refresh=session_context_refresh,
             no_thread=no_thread,
             streaming=StreamingConfig(mode=stream_mode, char_delay_ms=stream_delay),
             slice_config=SliceConfig(

@@ -657,8 +657,8 @@ def test_runtime_compiles_session_plan_surface_and_start_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """HostRuntime compiles the auto-discovered strict v2 session once."""
-    monkeypatch.chdir(tmp_path)
-    ctx = tmp_path / "session_context.md"
+    ctx = tmp_path / "config" / "session_context.md"
+    ctx.parent.mkdir(parents=True, exist_ok=True)
     ctx.write_text(
         "---\n"
         "schema_version: 2\n"
@@ -686,8 +686,8 @@ def test_runtime_session_plan_exposes_pack_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Session pack selection lives in the compiled plan, not HostConfig."""
-    monkeypatch.chdir(tmp_path)
-    ctx = tmp_path / "session_context.md"
+    ctx = tmp_path / "config" / "session_context.md"
+    ctx.parent.mkdir(parents=True, exist_ok=True)
     ctx.write_text(
         "---\n"
         "schema_version: 2\n"
@@ -707,8 +707,8 @@ def test_runtime_start_mode_initializes_current_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """HostRuntime.current_mode_id is seeded from start_mode when set."""
-    monkeypatch.chdir(tmp_path)
-    ctx = tmp_path / "session_context.md"
+    ctx = tmp_path / "config" / "session_context.md"
+    ctx.parent.mkdir(parents=True, exist_ok=True)
     ctx.write_text(
         "---\n"
         "schema_version: 2\n"
@@ -786,8 +786,8 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
 
     from host.callbacks import NullTransport
 
-    monkeypatch.chdir(tmp_path)
-    ctx = tmp_path / "session_context.md"
+    ctx = tmp_path / "config" / "session_context.md"
+    ctx.parent.mkdir(parents=True, exist_ok=True)
     ctx.write_text(
         "---\n"
         "schema_version: 2\n"

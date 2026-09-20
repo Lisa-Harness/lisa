@@ -1,7 +1,7 @@
 """Transport-neutral session context resolution and compilation.
 
-This module resolves a session-context reference (path, slug, or auto) into
-a strict v2 :class:`~kernel.session_plan.SessionPlan` via
+This module resolves a session-context reference into a strict v2
+:class:`~kernel.session_plan.SessionPlan` via
 :func:`compile_selected_session_plan`. The v2 compiler is the single
 session-identity path — there is no legacy ``user_contexts/`` resolution,
 no old-style ``extract_session_context_controls``, and no dynamic
@@ -11,10 +11,14 @@ providers, routing, context lanes/sources, history) come from the compiled
 
 Resolution order (see :func:`resolve_session_context_source`):
 
-1. Explicit local file, remote URL, or registry slug.
-2. ``LISA_SESSION_CONTEXT_PATH`` env var (highest auto-discovery precedence).
-3. Auto-discover ``session_context.md`` in cwd or the data directory.
+1. Explicit local ``.md`` file path (CLI arg).
+2. ``LISA_SESSION_CONTEXT_PATH`` env var (must point at an existing file).
+3. ``<data_dir>/config/session_context.md``.
 4. Bundled core default session.
+
+There is no remote fetch, registry, slug resolution, or disk cache: the
+session plan is a local authored artifact, resolved from disk on every
+startup.
 
 Dependency direction
 --------------------
@@ -26,7 +30,6 @@ Public surface
 - :func:`compile_selected_session_plan`
 - :func:`resolve_session_context_source`
 - :func:`bundled_default_session_path`
-- :func:`session_context_registry_url`
 - :func:`extract_front_matter_thread_name`
 - :class:`SessionContextSource`
 - :class:`ReplayControls` (transitional — used by context_assembly)
@@ -36,7 +39,6 @@ from __future__ import annotations
 
 import logging
 import os
-import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +46,6 @@ from pathlib import Path
 from kernel.ipsar_fsm import parse_front_matter
 from kernel.session_plan import SessionPlan, compile_session_plan
 
-from host.session_context_fetch import fetch_session_context_url
 from host.session_from_resolver import resolve_session_from_directives
 
 logger = logging.getLogger(__name__)
@@ -87,23 +88,30 @@ def resolve_session_context_source(
     *,
     session_context: str,
     data_dir: Path,
-    force_refresh: bool = False,
 ) -> SessionContextSource:
-    """Resolve one strict session source without legacy registry or directory rules.
+    """Resolve one strict session source — local file only.
 
-    Explicit local files, remote URLs, and registry slugs take precedence.
-    Next, ``LISA_SESSION_CONTEXT_PATH`` (when set) overrides auto-discovery.
-    Otherwise, an authored ``session_context.md`` in the working directory or
-    data directory wins over the bundled core default.
+    Resolution order:
+
+    1. Explicit ``.md`` file path (CLI arg). Must exist and be a Markdown
+       file; a directory or non-.md path raises ``ValueError``.
+    2. ``LISA_SESSION_CONTEXT_PATH`` (when set). An explicit env override
+       whose file must exist — a missing file raises instead of silently
+       falling through, so a configured-but-broken environment is loud.
+    3. ``<data_dir>/config/session_context.md`` when authored.
+    4. The bundled core default session.
     """
-
     requested = session_context.strip()
     if requested:
-        return _resolve_explicit_session_context_source(
-            requested,
-            data_dir=data_dir,
-            force_refresh=force_refresh,
-        )
+        explicit_path = Path(requested).expanduser()
+        if explicit_path.is_dir() or (explicit_path.exists() and explicit_path.suffix.lower() != ".md"):
+            raise ValueError("Session context path must be a Markdown file.")
+        if explicit_path.is_file():
+            return _read_session_source(
+                source_uri=str(explicit_path.resolve()),
+                path=explicit_path,
+            )
+        raise ValueError(f"Session context file not found: {explicit_path}")
 
     env_path = os.getenv(LISA_SESSION_CONTEXT_PATH_ENV, "").strip()
     if env_path:
@@ -113,22 +121,15 @@ def resolve_session_context_source(
                 source_uri=str(env_candidate.resolve()),
                 path=env_candidate,
             )
-        logger.warning(
-            "%s='%s' is not a file; falling back to auto-discovery.",
-            LISA_SESSION_CONTEXT_PATH_ENV,
-            env_path,
+        raise FileNotFoundError(
+            f"{LISA_SESSION_CONTEXT_PATH_ENV}='{env_path}' is not an existing file."
         )
 
-    checked_paths: set[Path] = set()
     from sdk.layout import CONFIG_DIR  # noqa: PLC0415
 
-    for root in (Path.cwd(), data_dir / CONFIG_DIR):
-        candidate = (root / "session_context.md").resolve()
-        if candidate in checked_paths:
-            continue
-        checked_paths.add(candidate)
-        if candidate.is_file():
-            return _read_session_source(source_uri=str(candidate), path=candidate)
+    candidate = (data_dir / CONFIG_DIR / "session_context.md").resolve()
+    if candidate.is_file():
+        return _read_session_source(source_uri=str(candidate), path=candidate)
 
     default_path = bundled_default_session_path()
     if not default_path.is_file():
@@ -136,58 +137,10 @@ def resolve_session_context_source(
     return _read_session_source(source_uri=str(default_path.resolve()), path=default_path)
 
 
-def _resolve_explicit_session_context_source(
-    requested: str,
-    *,
-    data_dir: Path,
-    force_refresh: bool,
-) -> SessionContextSource:
-    """Resolve an explicitly requested local file, URL, artifact, or registry slug."""
-
-    remote = urllib.parse.urlparse(requested)
-    if remote.scheme in {"http", "https"}:
-        cached_path = fetch_session_context_url(
-            requested,
-            data_dir=data_dir,
-            force_refresh=force_refresh,
-        )
-        return _read_session_source(source_uri=requested, path=cached_path)
-
-    explicit_path = Path(requested).expanduser()
-    if explicit_path.exists():
-        if explicit_path.is_dir() or explicit_path.suffix.lower() != ".md":
-            raise ValueError("Session context file path must be a Markdown file.")
-        return _read_session_source(
-            source_uri=str(explicit_path.resolve()),
-            path=explicit_path,
-        )
-
-    artifact_name = requested if requested.lower().endswith(".md") else f"{requested}.md"
-    artifact_path = data_dir / artifact_name
-    if artifact_path.is_file():
-        return _read_session_source(
-            source_uri=str(artifact_path.resolve()),
-            path=artifact_path,
-        )
-
-    registry_slug = requested[:-3] if requested.lower().endswith(".md") else requested
-    registry_uri = f"{session_context_registry_url()}/{registry_slug}.md"
-    try:
-        cached_path = fetch_session_context_url(
-            registry_uri,
-            data_dir=data_dir,
-            force_refresh=force_refresh,
-        )
-    except ValueError as exc:
-        raise ValueError(f"Session context '{requested}' was not found.") from exc
-    return _read_session_source(source_uri=registry_uri, path=cached_path)
-
-
 def compile_selected_session_plan(
     *,
     session_context: str,
     data_dir: Path,
-    force_refresh: bool = False,
 ) -> SessionPlan:
     """Resolve and strictly compile the one session plan for a host runtime.
 
@@ -201,7 +154,6 @@ def compile_selected_session_plan(
     source = resolve_session_context_source(
         session_context=session_context,
         data_dir=data_dir,
-        force_refresh=force_refresh,
     )
     resolved_text = resolve_session_from_directives(
         text=source.text,
@@ -275,17 +227,6 @@ class ReplayControls:
 
 
 # ── Helpers used by the v2 resolution path ──────────────────────────
-
-
-LISA_SESSION_CONTEXT_REGISTRY_URL_ENV = "LISA_SESSION_CONTEXT_REGISTRY_URL"
-
-
-def session_context_registry_url() -> str:
-    """Return the registry URL for remote authored session contexts."""
-    configured = os.getenv(LISA_SESSION_CONTEXT_REGISTRY_URL_ENV, "").strip()
-    if configured:
-        return configured.rstrip("/")
-    return "https://raw.githubusercontent.com/lisa-framework/sessions/main"
 
 
 def extract_front_matter_thread_name(path: Path) -> str | None:
