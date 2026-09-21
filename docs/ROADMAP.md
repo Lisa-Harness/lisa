@@ -204,13 +204,14 @@ addressed before any new feature work.
 
 - (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - WhatsApp / Telegram / Signal hosts. Each is a thin transport adapter over
-  `host`, implementing `TransportCallbacks`. The architecture is ready
-  (see `../hosts/README.md`) — only the transport adapter needs writing.
+  `host`, implementing `TransportCallbacks`. The architecture is ready (see
+  `docs/BOUNDARIES.md`) — only the transport adapter needs writing.
 
 ### 3.4 Stuck-session detection improvements
 
 - **From `docs/ROUTING_RFC_HANDOFF.md` §enhancement 3.**
-- The `_STAGE_NUDGE_CAP` (6 turns in the same stage) is a blunt instrument.
+- The stuck-in-stage guards (`stage_nudge_threshold` / `stage_nudge_cap` in
+  `kernel.config.Settings`, defaults 7 / 10) are a blunt instrument.
   Consider smarter progress detection: has the model made any tool calls?
   Has it produced any non-empty text? Has it changed stage at all?
 

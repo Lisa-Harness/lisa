@@ -321,8 +321,13 @@ current workflow mode's FSM:
 1. `apply_transition()` validates the transition against `allowed_next_stages`.
 2. `workflow_session_updater` persists the new `stage_id`.
 3. If the new stage is terminal, the loop forces one final no-tools completion.
-4. A stuck-session guard nudges after `_STAGE_NUDGE_THRESHOLD` (4) turns and
-   forces completion after `_STAGE_NUDGE_CAP` (6).
+4. A stuck-session guard injects a soft nudge after `stage_nudge_threshold`
+   (default 7) turns in the same stage without advancing, and pauses the
+   turn (or terminates for action modes with no yield escape) at
+   `stage_nudge_cap` (default 10). Both are `kernel.config.Settings` fields
+   (override via `STAGE_NUDGE_THRESHOLD` / `STAGE_NUDGE_CAP`), enforced by
+   the lifecycle resolver (`kernel/turn_phases/_lifecycle.py`) — not module
+   constants. Caps pause/terminate; they never silently truncate.
 
 ---
 
@@ -686,11 +691,15 @@ runtime. Stage files starting with `_` are skipped.
 Because routing uses the same `transition_stage` interception as workflow
 stage advancement, all existing guardrails apply automatically:
 
-- **`_STAGE_NUDGE_CAP`** (6) — if the model ping-pongs between modes without
-  making progress, the loop forces a final response.
+- **`stage_nudge_threshold` / `stage_nudge_cap`** (defaults 7 / 10,
+  `kernel.config.Settings`; override via `STAGE_NUDGE_THRESHOLD` /
+  `STAGE_NUDGE_CAP`) — the lifecycle resolver injects a soft nudge at the
+  threshold; the cap pauses the turn (terminates for action modes with no
+  yield escape). Caps pause/terminate, never silently truncate. See
+  `kernel/turn_phases/_lifecycle.py` (`resolve_lifecycle_action`).
 - **`TurnBudget`** — tool calls, tokens, and wall time are tracked across
-  mode switches within the same turn. A budget-exhausted turn forces a final
-  no-tools completion regardless of which mode it's in.
+  mode switches within the same turn. A budget-exhausted turn pauses (or
+  terminates for action modes) regardless of which mode it's in.
 - **`max_tool_iterations`** — the global iteration cap still applies; mode
   switches don't reset it.
 

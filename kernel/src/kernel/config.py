@@ -213,17 +213,18 @@ class Settings(BaseSettings):
     # Stuck-in-stage nudge threshold. After this many consecutive
     # iterations in the same stage without a ``transition_stage``, the
     # loop injects a nudge into the next prompt telling the model it is
-    # stalled and what to do about it. 4 gives a normal step (2–3
-    # productive iterations) room before the kernel starts pushing.
+    # stalled and what to do about it. 7 gives a normal step (2–3
+    # productive iterations) plus room for longer steps (4–6 productive
+    # iterations) before the kernel starts pushing.
     # Override via ``STAGE_NUDGE_THRESHOLD``.
-    stage_nudge_threshold: int = 4
+    stage_nudge_threshold: int = 7
     # Stuck-in-stage hard cap. At this many consecutive non-transitioning
-    # iterations in the same stage the loop stops nudging and forces a
-    # final no-tools completion, so the turn ends with an answer instead
-    # of burning the remaining iteration budget in place. Must be greater
-    # than ``stage_nudge_threshold`` — nudges fire between the threshold
-    # and this cap. Override via ``STAGE_NUDGE_CAP``.
-    stage_nudge_cap: int = 9
+    # iterations in the same stage the resolver pauses the turn (or
+    # terminates for action modes with no yield escape) so the operator can
+    # resume with a fresh budget — caps never silently truncate the turn.
+    # Must be greater than ``stage_nudge_threshold`` — nudges fire between
+    # the threshold and this cap. Override via ``STAGE_NUDGE_CAP``.
+    stage_nudge_cap: int = 10
     # Write-nudge lead time, in iterations before the stuck-stage cap.
     # For a mode that carries write-contract obligations
     # (``action_tool_ids``), the parent turn fires one last "land your

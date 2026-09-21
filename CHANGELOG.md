@@ -91,6 +91,49 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### Tuned stuck-in-stage guard defaults (`stage_nudge_threshold` 4 → 7, `stage_nudge_cap` 9 → 10)
+
+- **What:** Retuned the lifecycle resolver's stuck-in-stage defaults in
+  `kernel.config.Settings`: the soft nudge now fires at 7 consecutive
+  non-transitioning iterations (was 4) and the turn pauses/terminates at 10
+  (was 9). Updated every doc stating the defaults (`docs/ROUTER_DESIGN.md`
+  §4 and §8, `docs/ROADMAP.md` §3.4, the guard docstrings in
+  `kernel/config.py` and the budget-briefing comment in
+  `kernel/turn_runner/__init__.py`) and the `.env`-prefix test that pins
+  the cap default (`kernel/tests/test_config_env_prefix.py`).
+- **Why:** The 4-iteration nudge fired during productive multi-iteration
+  steps, pushing models that were still making progress; 7 leaves room for
+  4–6 productive iterations before the kernel starts pushing, while the cap
+  stays only 3 iterations beyond the threshold so the graded escalation
+  (nudge → pause) keeps its shape. Both values remain overridable via
+  `STAGE_NUDGE_THRESHOLD` / `STAGE_NUDGE_CAP` (or `LISA_`-prefixed shell
+  env).
+
+#### Documentation: router terminal actions vs. kernel lifecycle guards
+
+- **What:** `sdk/router/README.md` gains a "Relationship to kernel lifecycle
+  guards" section. The CEL terminal actions (`finish:` / `transition_to:`)
+  are optional deployment config; the kernel's stuck-in-stage guards are
+  framework invariants whose counter (durable cross-turn stage occupancy)
+  is invisible to CEL bindings and whose graded response (nudge at
+  `stage_nudge_threshold` → pause/terminate at `stage_nudge_cap`) a `finish`
+  rule cannot express. The lifecycle resolver ranks a router decision above
+  every kernel cap (only operator signals outrank it), so a matching
+  `finish` preempts the guards and the guards remain the backstop when no
+  rule matches or evaluation errors. Corrected stale guard references in
+  `docs/ROUTER_DESIGN.md` and `docs/ROADMAP.md`: the module constants
+  `_STAGE_NUDGE_THRESHOLD` (4) / `_STAGE_NUDGE_CAP` (6) no longer exist —
+  they are `kernel.config.Settings` fields (`stage_nudge_threshold: 4`,
+  `stage_nudge_cap: 9`, overridable via `STAGE_NUDGE_THRESHOLD` /
+  `STAGE_NUDGE_CAP`), and cap expiry pauses/terminates rather than forcing
+  a silent final completion. Fixed the contradicting "forces a final
+  no-tools completion" comment on `Settings.stage_nudge_cap` to match the
+  resolver's pause/terminate semantics.
+- **Why:** The stage-nudge machinery and the router's CEL terminal actions
+  overlap on paper (`tool_calls_so_far >= N` vs. a stage-stall counter);
+  no doc explained why both exist, and the guard docs still described
+  pre-resolver constants and truncate semantics.
+
 #### `extension_runtime` cleanup: dead symbols removed, `context_items` endpoint enforced
 
 - **What:** Trimmed `kernel/src/kernel/extension_runtime.py` to its live

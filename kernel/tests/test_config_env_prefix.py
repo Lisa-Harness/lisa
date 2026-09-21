@@ -105,8 +105,8 @@ def test_env_file_lisa_prefix_ignored(tmp_path: Path, monkeypatch: pytest.Monkey
 
     (tmp_path / ".env").write_text("LISA_STAGE_NUDGE_CAP=99\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    # Default 9 — the prefixed .env entry is ignored.
-    assert Settings().stage_nudge_cap == 9
+    # Default 10 — the prefixed .env entry is ignored.
+    assert Settings().stage_nudge_cap == 10
 
 
 def test_env_file_does_not_shadow_bare_env(

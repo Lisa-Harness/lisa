@@ -516,7 +516,7 @@ def _build_budget_briefing(
     # ── Stage budget (the per-mode ceiling that actually fires) ────────
     # ``stage_nudge_cap`` is the real bound on iterations in one mode
     # before the harness pauses the turn. The global ``max_tool_iterations``
-    # (300) is never reached in practice; the stage cap (default 9) is.
+    # (300) is never reached in practice; the stage cap (default 10) is.
     # Without surfacing it, the model sees only ``iter 3/300`` and has no
     # way to reconcile that with prior cap-fire messages in the thread
     # ("stuck in explainer for 6 iterations (cap)"). The format is

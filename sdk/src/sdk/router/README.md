@@ -214,6 +214,38 @@ This is **not replaced**. It becomes the router's input default:
 Remove the `router:` block (or set `backend: ""`) and you're back to pure
 static selection — no code path changes.
 
+### Relationship to kernel lifecycle guards
+
+The router's terminal actions (`finish` / `transition_to`) and the kernel's
+built-in turn guards (`stage_nudge_threshold` / `stage_nudge_cap`,
+`TurnBudget`, `max_tool_iterations`) are complementary layers, not
+alternatives:
+
+- **The router is optional deployment config.** It runs only when a backend
+  is wired (`router.backend` non-empty) and only evaluates rules the
+  deployment authored. The kernel guards are framework invariants that hold
+  for every deployment, including no-router hosts and vendor ML backends
+  that know nothing about Lisa lifecycle.
+- **Counters differ.** CEL rules see per-turn state only
+  (`turn.tool_calls_so_far`, `turn.iteration`); `RouterRequest` carries no
+  workflow position. The stuck-in-stage guard counts durable, cross-turn
+  stage occupancy (`turns_in_stage` in `kernel/turn_phases/_lifecycle.py`),
+  which no CEL binding exposes — a model stalled across several turns with
+  few tool calls per turn is invisible to any `tool_calls_so_far` rule.
+- **Graded vs. terminal.** The guards escalate: a soft nudge at
+  `stage_nudge_threshold`, a pause/terminate at `stage_nudge_cap`. A CEL
+  `finish` is one hard cliff authored per deployment — it can end a turn,
+  not rescue it.
+- **Authority layering.** The lifecycle resolver
+  (`resolve_lifecycle_action`) ranks a router decision above every kernel
+  cap; only an operator pause/stop/terminate signal outranks it. A matching
+  `finish` preempts the guards. When no rule matches — or a rule's
+  evaluation errors (a non-fatal skip) — the guards fire as usual.
+
+Rule of thumb: author `finish` rules for deployment-specific budget policy;
+leave the kernel guards enabled as the framework-wide backstop. They are
+defense-in-depth, not duplication.
+
 ### Operation-scoped model selection
 
 The router is also consulted when an **operation** executes (not just the
