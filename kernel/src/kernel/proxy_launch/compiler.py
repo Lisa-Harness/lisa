@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,6 +14,8 @@ from kernel.proxy_launch.policy import (
     ProxyServerRegistry,
     ProxyServerSpec,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["ProxyClientConfig", "compile_proxy_config", "compile_proxy_registry"]
 
@@ -39,7 +42,14 @@ class ProxyClientConfig:
 
 def _compile_command(  # noqa: C901, PLR0911, PLR0912
     spec: ProxyServerSpec,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str]] | None:
+    """Build (command, args) for one runtime kind.
+
+    Returns ``None`` for a BINARY spec whose ``command_path`` is empty —
+    the optional third-party binary is not installed (e.g. an unexpanded
+    ``${SOME_BIN}`` env reference), so the caller skips the proxy instead
+    of spawning.
+    """
     if spec.runtime_kind is RuntimeKind.PYTHON:
         if not spec.module:
             raise ValueError(f"PYTHON runtime requires 'module' for proxy '{spec.proxy_id}'")
@@ -72,8 +82,14 @@ def _compile_command(  # noqa: C901, PLR0911, PLR0912
             raise ValueError(f"NPX runtime requires 'npx_package' for proxy '{spec.proxy_id}'")
         return "npx", ["-y", spec.npx_package]
     if spec.runtime_kind is RuntimeKind.BINARY:
+        # An empty command_path means the binary is not installed. Pack
+        # manifests routinely point BINARY proxies at an opt-in third-party
+        # binary via ``command_path: ${SOME_BIN}`` and expect an unset var
+        # to degrade to "this proxy is absent" (the headroom pack contract).
+        # Raising here aborts the WHOLE startup for what is an optional
+        # capability, so signal a skip instead.
         if not spec.command_path:
-            raise ValueError(f"BINARY runtime requires 'command_path' for proxy '{spec.proxy_id}'")
+            return None
         return spec.command_path, []
     raise ValueError(
         f"Proxy '{spec.proxy_id}' does not support runtime_kind={spec.runtime_kind.value!r}"
@@ -84,7 +100,7 @@ def compile_proxy_config(
     spec: ProxyServerSpec,
     *,
     provider_base_urls: dict[str, str] | None = None,
-) -> ProxyClientConfig:
+) -> ProxyClientConfig | None:
     """Compile a resolved proxy spec into a local process config.
 
     Launch options are compiled from the spec's global ``cli_args`` / ``env``
@@ -94,8 +110,21 @@ def compile_proxy_config(
     the providers' *direct* endpoints, never proxy routes, so a proxy cannot
     be configured to forward to itself. Two overlays writing the same env
     key with different resolved values is a declaration conflict and raises.
+
+    Returns ``None`` when the proxy cannot spawn because its optional binary
+    is not installed (a BINARY spec whose ``command_path`` is empty after
+    ``${VAR}`` expansion). Callers must filter ``None`` —
+    :func:`compile_proxy_registry` does this and logs a warning.
     """
-    command, base_args = _compile_command(spec)
+    resolved_command = _compile_command(spec)
+    if resolved_command is None:
+        logger.warning(
+            "Skipping proxy %r: runtime_kind=binary with empty command_path "
+            "(optional binary not installed; check its ${VAR} env reference)",
+            spec.proxy_id,
+        )
+        return None
+    command, base_args = resolved_command
     env = compile_env(spec.env_policy)
     if spec.port_env:
         env[spec.port_env] = str(spec.port)
@@ -164,11 +193,21 @@ def compile_proxy_registry(
     workspace_root: str | None = None,
     provider_base_urls: dict[str, str] | None = None,
 ) -> list[ProxyClientConfig]:
-    """Compile every approved proxy after host runtime paths are resolved."""
-    return [
-        compile_proxy_config(
+    """Compile every approved proxy after host runtime paths are resolved.
+
+    A non-required proxy whose launch spec does not resolve (typically a
+    ``${VAR}`` command_path expanding to empty because the optional tool is
+    not installed) is skipped rather than aborting the whole compile — the
+    proxy pool already treats a non-required proxy that fails to start as a
+    warning, and an opt-in pack should never brick host startup for an
+    operator who has not installed its external tool.
+    """
+    configs: list[ProxyClientConfig] = []
+    for spec in registry.all_specs():
+        config = compile_proxy_config(
             replace(spec, workspace_root=workspace_root),
             provider_base_urls=provider_base_urls,
         )
-        for spec in registry.all_specs()
-    ]
+        if config is not None:
+            configs.append(config)
+    return configs

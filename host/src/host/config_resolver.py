@@ -174,6 +174,12 @@ def _normalize_timezone_name(value: str) -> str | None:
     - IANA keys containing ``/`` (e.g. ``America/New_York``)
     - The canonical ``UTC`` constant
     - POSIX aliases resolved via :func:`_resolve_timezone_alias`
+    - POSIX tz strings that this interpreter's tzdata can resolve
+      (e.g. ``EST5EDT``). This keeps the host's own export round-trippable:
+      the alias path resolves ``EDT`` → ``EST5EDT``, and
+      ``compile_mcp_configs`` re-exports that value as ``LISA_TIMEZONE`` —
+      without this fallback every subprocess start re-validates it and
+      fails (the 2026-09-21 drill-down startup error).
 
     Note: ``/``-containing values are accepted without a ZoneInfo lookup
     because the target runtime may have different tzdata availability.
@@ -186,9 +192,15 @@ def _normalize_timezone_name(value: str) -> str | None:
         return resolved_alias
     if configured == "UTC":
         return configured
-    if "/" not in configured:
-        return None
     if any(char.isspace() for char in configured):
+        return None
+    if "/" in configured:
+        return configured
+    # '/'-less key: accept it only when the local tzdata can actually load
+    # it, so garbage abbreviations are still rejected.
+    try:
+        ZoneInfo(configured)
+    except (ZoneInfoNotFoundError, ValueError):
         return None
     return configured
 

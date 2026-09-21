@@ -12,6 +12,7 @@ resolved ``data_dir`` (and optional ``workspace_root``) becomes a concrete
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from dataclasses import replace
@@ -29,6 +30,8 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 if TYPE_CHECKING:
     from kernel.mcp_launch.policy import MCPServerRegistry
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "compile_command",
@@ -66,11 +69,14 @@ def compile_cwd(policy: CwdPolicy, *, workspace_root: str | None = None) -> str 
     return None
 
 
-def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     """Build (command, args) for one runtime kind.
 
     Returns the base command and args before standard CLI contract args
-    are appended.
+    are appended. Returns ``None`` for a BINARY spec whose
+    ``command_path`` is empty — the optional third-party binary is not
+    installed (e.g. an unexpanded ``${SOME_BIN}`` env reference), so the
+    caller skips the entry instead of spawning.
     """
     if spec.runtime_kind == RuntimeKind.PYTHON:
         if not spec.module:
@@ -111,10 +117,14 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
         return "npx", ["-y", spec.npx_package]
 
     if spec.runtime_kind == RuntimeKind.BINARY:
+        # An empty command_path means the binary is not installed. Pack
+        # manifests routinely point BINARY servers/proxies at an opt-in
+        # third-party binary via ``command_path: ${SOME_BIN}`` and expect an
+        # unset var to degrade to "this server is absent" (the headroom
+        # pack contract). Raising here aborts the WHOLE startup for what is
+        # an optional capability, so signal a skip instead.
         if not spec.command_path:
-            raise ValueError(
-                f"BINARY runtime requires 'command_path' for server '{spec.server_id}'"
-            )
+            return None
         return spec.command_path, []
 
     if spec.runtime_kind == RuntimeKind.HTTP:
@@ -131,11 +141,16 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
     raise ValueError(f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'")
 
 
-def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
+def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
     """Compile one approved MCPServerSpec into a concrete MCPClientConfig.
 
     This is the only function that produces MCPClientConfig entries for
     MCPToolPool. The host calls this after registry approval.
+
+    Returns ``None`` when the spec cannot spawn a subprocess because its
+    optional binary is not installed (a BINARY spec whose ``command_path``
+    is empty after ``${VAR}`` expansion). Callers must filter ``None`` —
+    :func:`compile_registry` does this and logs a warning.
     """
     if spec.runtime_kind is RuntimeKind.HTTP:
         _validate_http_auth(spec)
@@ -150,7 +165,15 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     else:
         resolved_data_dir = None
 
-    command, base_args = compile_command(spec)
+    resolved_command = compile_command(spec)
+    if resolved_command is None:
+        logger.warning(
+            "Skipping MCP server %r: runtime_kind=binary with empty command_path "
+            "(optional binary not installed; check its ${VAR} env reference)",
+            spec.server_id,
+        )
+        return None
+    command, base_args = resolved_command
 
     # Build standard CLI contract args. data-dir is injected only when the
     # spec names a flag for it (data_dir_arg is not None) and a data dir was
@@ -261,10 +284,21 @@ def compile_registry(
     data_dir: str,
     workspace_root: str | None = None,
 ) -> list[MCPClientConfig]:
-    """Compile all approved server specs from a registry into MCPClientConfig entries."""
+    """Compile all approved server specs from a registry into MCPClientConfig entries.
+
+    A non-required server whose launch spec does not resolve (typically a
+    ``${VAR}`` command_path expanding to empty because the optional tool is
+    not installed) is skipped with a warning rather than aborting the compile.
+    This mirrors the documented contract on optional servers ("unset -> cold
+    connect fails cleanly") and the proxy pool's existing behavior for
+    non-required proxies, so an opt-in pack can never brick host startup for
+    an operator who has not installed its external tool.
+    """
     configs: list[MCPClientConfig] = []
     for spec in registry.all_specs():
         # Inject host-provided args (slots dataclass — use replace, not __dict__)
         resolved_spec = replace(spec, data_dir=data_dir, workspace_root=workspace_root)
-        configs.append(compile_mcp_config(resolved_spec))
+        config = compile_mcp_config(resolved_spec)
+        if config is not None:
+            configs.append(config)
     return configs

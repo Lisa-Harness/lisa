@@ -128,6 +128,43 @@ def test_compile_command_binary() -> None:
     assert args == []
 
 
+def test_compile_command_binary_missing_returns_none() -> None:
+    """An empty BINARY command_path means the optional binary is not installed.
+
+    Pack manifests point servers at opt-in third-party binaries via
+    ``command_path: ${VAR}``; an unset var expands to "" and the pack
+    contract says the server degrades to absent, not "startup failed"
+    (the 2026-09-21 headroom incident: ``lisa mcp`` could not start at all).
+    """
+    spec = MCPServerSpec(server_id="h", runtime_kind=RuntimeKind.BINARY, command_path="")
+    assert compile_command(spec) is None
+
+
+def test_compile_mcp_config_missing_binary_returns_none() -> None:
+    """compile_mcp_config signals a skip for a missing optional binary."""
+    spec = MCPServerSpec(server_id="h", runtime_kind=RuntimeKind.BINARY, command_path="")
+    assert compile_mcp_config(spec) is None
+
+
+def test_compile_registry_skips_missing_binary() -> None:
+    """compile_registry filters servers whose binary is not installed.
+
+    A missing optional binary must not abort the whole compile: the healthy
+    servers still land in the result and the missing one is warned about.
+    """
+    registry = MCPServerRegistry()
+    registry.register(
+        MCPServerSpec(server_id="h", runtime_kind=RuntimeKind.BINARY, command_path="")
+    )
+    registry.register(
+        MCPServerSpec(server_id="ok", runtime_kind=RuntimeKind.PYTHON, module="ok.server")
+    )
+
+    configs = compile_registry(registry, data_dir="/data")
+
+    assert [config.server_id for config in configs] == ["ok"]
+
+
 def test_compile_command_node() -> None:
     spec = MCPServerSpec(
         server_id="t",

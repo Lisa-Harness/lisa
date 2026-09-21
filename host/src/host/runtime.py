@@ -618,10 +618,17 @@ class RuntimeResources:
         # Sync-start path (start() was called directly, or the deferred
         # task already finished): close the pool inline in this task, which
         # is the same task that entered the MCP anyio cancel scopes.
+        # Teardown mirrors the build order in reverse (proxy pool was
+        # started BEFORE the MCP pool): kill proxy processes first. Closing
+        # the MCP pool first then the proxy pool hangs the loop (2026-09-21
+        # headroom incident: the mcp command's runtime.aclose() never
+        # returned after cold stdio sessions + warm proxies both ran in the
+        # same task — the loop sat idle in select with no pending callbacks).
+        # Proxy-first teardown is verified to complete cleanly.
+        await self._close_proxy_pool()
         if self._mcp_tool_pool is not None:
             await self._mcp_tool_pool.aclose()
             self._mcp_tool_pool = None
-        await self._close_proxy_pool()
         self._mcp_started = False
         self._mcp_start_task = None
         self._mcp_start_exc = None

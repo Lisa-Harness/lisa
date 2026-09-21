@@ -207,6 +207,26 @@ proxies:
         load_proxy_server_manifest(manifest)
 
 
+def test_compile_proxy_config_missing_binary_returns_none() -> None:
+    """An empty BINARY command_path means the optional binary is not installed.
+
+    Pack manifests point proxies at opt-in third-party binaries via
+    ``command_path: ${VAR}``; an unset var expands to "" and the pack
+    contract says the proxy degrades to absent, not "startup failed"
+    (the 2026-09-21 headroom incident: ``lisa mcp`` could not start at all).
+    """
+    spec = ProxyServerSpec(
+        proxy_id="headroom",
+        runtime_kind=RuntimeKind.BINARY,
+        command_path="",  # e.g. ${HEADROOM_MCP_BIN} unset
+        protocol=ProxyProtocol.OPENAI,
+        providers=("ollama",),
+        port=18787,
+    )
+
+    assert compile_proxy_config(spec) is None
+
+
 def test_compile_proxy_config_injects_listen_port_env() -> None:
     spec = ProxyServerSpec(
         proxy_id="headroom",
@@ -321,6 +341,42 @@ def test_compile_proxy_config_requires_provider_base_url_for_source() -> None:
 
     with pytest.raises(ValueError, match="no direct base URL available"):
         compile_proxy_config(spec)
+
+
+def test_compile_proxy_registry_skips_missing_binary() -> None:
+    """compile_proxy_registry filters proxies whose binary is not installed.
+
+    A missing optional binary must not abort the whole compile: the healthy
+    proxies still land in the result and the missing one is warned about.
+    """
+    from kernel.proxy_launch.compiler import compile_proxy_registry
+    from kernel.proxy_launch.policy import ProxyServerRegistry
+
+    registry = ProxyServerRegistry()
+    registry.register(
+        ProxyServerSpec(
+            proxy_id="absent",
+            runtime_kind=RuntimeKind.BINARY,
+            command_path="",  # e.g. ${HEADROOM_MCP_BIN} unset
+            protocol=ProxyProtocol.OPENAI,
+            providers=("ollama",),
+            port=18787,
+        )
+    )
+    registry.register(
+        ProxyServerSpec(
+            proxy_id="present",
+            runtime_kind=RuntimeKind.BINARY,
+            command_path="/opt/headroom",
+            protocol=ProxyProtocol.OPENAI,
+            providers=("ollama",),
+            port=18788,
+        )
+    )
+
+    configs = compile_proxy_registry(registry)
+
+    assert [config.proxy_id for config in configs] == ["present"]
 
 
 @pytest.mark.asyncio
