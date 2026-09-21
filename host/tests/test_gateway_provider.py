@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from host.gateway_provider import HostGatewayProvider
+import pytest
+from kernel.proxy_launch.pool import ProxyRoute
+
+from host.config import HostConfig
+from host.gateway_provider import HostGatewayProvider, _ollama_client_instance
+from host.runtime import HostRuntime
 
 
 class _CapturingBedrockGateway:
@@ -51,3 +56,23 @@ def test_aws_gateway_uses_standard_aws_fallbacks(monkeypatch: Any) -> None:
         "aws_secret_access_key": "aws-secret",
         "aws_session_token": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_ollama_client_uses_ready_openai_proxy_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.setenv("LISA_OLLAMA_HOST", "http://direct-ollama:11434")
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_routes["ollama"] = ProxyRoute(
+        proxy_id="headroom",
+        protocol="openai",
+        base_url="http://127.0.0.1:18787/v1",
+    )
+
+    client = _ollama_client_instance(runtime)
+    try:
+        assert str(client.base_url) == "http://127.0.0.1:18787/v1/"
+    finally:
+        await client.close()

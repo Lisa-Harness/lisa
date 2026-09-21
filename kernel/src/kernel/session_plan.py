@@ -142,6 +142,7 @@ class SessionResources(_StrictSessionModel):
     operations: ResourceSelection = Field(default_factory=ResourceSelection)
     tools: ResourceSelection = Field(default_factory=ResourceSelection)
     servers: ResourceSelection = Field(default_factory=ResourceSelection)
+    proxies: ResourceSelection = Field(default_factory=ResourceSelection)
     signals: ResourceSelection = Field(default_factory=ResourceSelection)
     intake: ResourceSelection = Field(default_factory=ResourceSelection)
     models: ResourceSelection = Field(default_factory=ResourceSelection)

@@ -209,7 +209,7 @@ class SessionState:
 
 
 class RuntimeResources:
-    """Owns the MCP tool pool and its async start/close orchestration.
+    """Owns MCP and provider-proxy resources and their async lifecycle.
 
     This is the one async resource the runtime manages. The lifecycle is
     subtle (anyio cancel-scope ownership, deferred start, cancellation-safe
@@ -229,6 +229,9 @@ class RuntimeResources:
         self._mcp_tool_pool: Any = None
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
+        self._proxy_configs: list[Any] = []
+        self._proxy_pool: Any = None
+        self._proxy_routes: dict[str, Any] = {}
         self._mcp_started: bool = False
         self._mcp_start_task: asyncio.Task[None] | None = None
         """Background task started by start_pool_deferred(); awaited by
@@ -271,6 +274,17 @@ class RuntimeResources:
         """Set compiled MCP server configs (sync — no pool creation)."""
         self._mcp_warm_configs = warm
         self._mcp_cold_configs = cold
+
+    def set_proxy_configs(self, configs: list[Any]) -> None:
+        """Set compiled provider proxy configs (sync — no process creation)."""
+        self._proxy_configs = configs
+
+    def proxy_route_for(self, provider: str, protocol: str) -> Any | None:
+        """Return the ready compatible proxy route for a provider gateway."""
+        route = self._proxy_routes.get(provider.strip().lower())
+        if route is None or route.protocol != protocol:
+            return None
+        return route
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -377,7 +391,11 @@ class RuntimeResources:
         ``ensure_pool_ready`` blocked on the event.
         """
         try:
+            await self._build_proxy_pool()
             await self._build_pool()
+        except BaseException:
+            await self._close_proxy_pool()
+            raise
         finally:
             # On the deferred path the started event MUST be set whether or
             # not the build succeeded — otherwise ensure_pool_ready blocks
@@ -428,8 +446,38 @@ class RuntimeResources:
                     "teardown; subprocess cleanup best-effort"
                 )
             self._mcp_tool_pool = None
+        await self._close_proxy_pool()
         self._mcp_started = False
         logger.debug("RuntimeResources: MCP pool closed (deferred teardown)")
+
+    async def _build_proxy_pool(self) -> None:
+        """Start provider proxies before lazy gateway construction begins."""
+        if not self._proxy_configs:
+            self._proxy_routes = {}
+            return
+        from kernel.proxy_launch.pool import (  # noqa: PLC0415  # lazy: defers proxy launch startup cost
+            ProxyPool,
+        )
+
+        self._proxy_pool = ProxyPool(self._proxy_configs)
+        try:
+            await self._proxy_pool.start()
+        except BaseException:
+            await self._proxy_pool.aclose()
+            self._proxy_pool = None
+            raise
+        self._proxy_routes = self._proxy_pool.routes
+        logger.info(
+            "RuntimeResources: provider proxies ready for %d provider(s)",
+            len(self._proxy_routes),
+        )
+
+    async def _close_proxy_pool(self) -> None:
+        """Close host-owned proxy processes and discard their provider routes."""
+        if self._proxy_pool is not None:
+            await self._proxy_pool.aclose()
+            self._proxy_pool = None
+        self._proxy_routes = {}
 
     async def _build_pool(self) -> None:
         """Construct and start the MCP pool (shared by sync and deferred)."""
@@ -573,6 +621,7 @@ class RuntimeResources:
         if self._mcp_tool_pool is not None:
             await self._mcp_tool_pool.aclose()
             self._mcp_tool_pool = None
+        await self._close_proxy_pool()
         self._mcp_started = False
         self._mcp_start_task = None
         self._mcp_start_exc = None

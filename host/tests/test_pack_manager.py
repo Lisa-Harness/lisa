@@ -983,6 +983,74 @@ def test_compile_mcp_configs_namespaces_pack_server_ids(
     assert "pack-b.shared-server" in server_ids
 
 
+def test_compile_proxy_configs_honors_session_include_and_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    runtime.session_plan = compile_session_plan(
+        text=(
+            "---\n"
+            "schema_version: 2\n"
+            "name: proxy-selection\n"
+            "surface:\n"
+            "  type: personal_dm\n"
+            "  id: host-console\n"
+            "  memory_scope: testing\n"
+            "resources:\n"
+            "  proxies:\n"
+            "    include: [pack-a.selected]\n"
+            "    required: [pack-b.required]\n"
+            "---\n"
+            "# Proxy selection\n"
+        ),
+        source_uri="workspace:session_context.md",
+    )
+    pack_a_root = tmp_path / "pack-a"
+    pack_b_root = tmp_path / "pack-b"
+    pack_a_root.mkdir()
+    pack_b_root.mkdir()
+    for root, proxy_id in (
+        (pack_a_root, "selected"),
+        (pack_a_root, "not-selected"),
+        (pack_b_root, "required"),
+    ):
+        manifest = root / "mcp_servers.yaml"
+        if manifest.exists():
+            existing = manifest.read_text(encoding="utf-8")
+        else:
+            existing = "version: 1\nproxies:\n"
+        port = (
+            "18787"
+            if proxy_id == "selected"
+            else "18788"
+            if proxy_id == "not-selected"
+            else "18789"
+        )
+        manifest.write_text(
+            existing
+            + "  - proxy_id: "
+            + proxy_id
+            + "\n    runtime_kind: binary\n    command_path: /bin/true\n"
+            + "    protocol: openai\n    providers: [ollama]\n    port: "
+            + port
+            + "\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        mcp_pool,
+        "sdk_content_roots",
+        lambda *args, **kwargs: [pack_a_root, pack_b_root],
+    )
+
+    configs = mcp_pool.compile_proxy_configs(runtime)
+
+    configs_by_id = {config.proxy_id: config for config in configs}
+    assert set(configs_by_id) == {"pack-a.selected", "pack-b.required"}
+    assert configs_by_id["pack-b.required"].required is True
+
+
 def test_compile_mcp_configs_applies_pack_server_exclusions(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

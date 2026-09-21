@@ -236,7 +236,10 @@ def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     api_key = _env("LISA_OPENAI_API_KEY", "OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OpenAI is not configured. Set LISA_OPENAI_API_KEY (or OPENAI_API_KEY).")
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=_proxy_base_url(runtime, "openai", "https://api.openai.com/v1/"),
+    )
     runtime.providers.openai_client = client
     return client
 
@@ -248,7 +251,8 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
-    base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    direct_base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    base_url = _proxy_base_url(runtime, "ollama", direct_base_url)
     client = AsyncOpenAI(
         api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
         base_url=base_url,
@@ -263,7 +267,9 @@ def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
     existing_client = runtime.providers.anthropic_http_client
     if isinstance(existing_client, httpx.AsyncClient):
         return existing_client
-    base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    direct_base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    route = runtime.resources.proxy_route_for("anthropic", "anthropic")
+    base_url = route.base_url if route is not None else direct_base_url
     client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
     runtime.providers.anthropic_http_client = client
     return client
@@ -278,6 +284,14 @@ def _normalize_ollama_host_to_base_url(host: str) -> str:
     if not normalized.startswith(("http://", "https://")):
         normalized = f"http://{normalized}"
     return f"{normalized}/" if normalized.endswith("/v1") else f"{normalized}/v1/"
+
+
+def _proxy_base_url(runtime: HostRuntime, provider: str, direct_base_url: str) -> str:
+    """Return a ready OpenAI-wire proxy route or the provider's direct URL."""
+    route = runtime.resources.proxy_route_for(provider, "openai")
+    if route is None:
+        return direct_base_url
+    return f"{route.base_url.rstrip('/')}/"
 
 
 def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
@@ -300,10 +314,11 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
                 f"OpenRouter is not configured. Set {LISA_OPENROUTER_API_KEY_ENV} "
                 "(or OPENROUTER_API_KEY)."
             )
-        base_url = (
+        direct_base_url = (
             _env(LISA_OPENROUTER_BASE_URL_ENV, "OPENROUTER_BASE_URL")
             or _OPENROUTER_DEFAULT_BASE_URL
         )
+        base_url = _proxy_base_url(runtime, "openrouter", direct_base_url)
         default_headers: dict[str, str] = {}
         referer = _env(LISA_OPENROUTER_REFERER_ENV, "OPENROUTER_REFERER")
         title = _env(LISA_OPENROUTER_TITLE_ENV, "OPENROUTER_TITLE")

@@ -88,6 +88,7 @@ def build_runtime(
     # the mcp_pool symbols pull in ``kernel.ipsar_fsm`` + ``openai``.
     from host.mcp_pool import (
         compile_mcp_configs,
+        compile_proxy_configs,
         configure_runtime,
         discover_framework,
         setup_framework,
@@ -179,6 +180,7 @@ def build_runtime(
     configure_runtime(runtime)
     warm, cold = compile_mcp_configs(runtime, discovery=discovery)
     runtime.resources.set_mcp_configs(warm, cold)
+    runtime.resources.set_proxy_configs(compile_proxy_configs(runtime, discovery=discovery))
     return runtime
 
 

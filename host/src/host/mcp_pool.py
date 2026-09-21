@@ -38,6 +38,9 @@ from kernel.mcp_launch.server_manifest import (
     load_mcp_server_manifest,
 )
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from kernel.proxy_launch.compiler import ProxyClientConfig, compile_proxy_registry
+from kernel.proxy_launch.manifest import ProxyServerManifestError, load_proxy_server_manifest
+from kernel.proxy_launch.policy import ProxyServerRegistry
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
 
@@ -823,6 +826,75 @@ def compile_mcp_configs(
     warm = [c for c in compiled if c.warm]
     cold = [c for c in compiled if not c.warm]
     return warm, cold
+
+
+def compile_proxy_configs(  # noqa: C901
+    runtime: HostRuntime,
+    *,
+    discovery: _FrameworkDiscovery | None = None,
+) -> list[ProxyClientConfig]:
+    """Compile provider proxies declared by the host, user, and active packs.
+
+    Proxy declarations share ``mcp_servers.yaml`` with MCP declarations, but
+    they are a separate resource kind: they have no model-facing tools and are
+    consumed only by provider client construction after readiness succeeds.
+    """
+    if discovery is None:
+        discovery = discover_framework(runtime, seed_lock=False)
+    workspace_root = str(FRAMEWORK_ROOT)
+    os.environ["FRAMEWORK_ROOT"] = workspace_root
+    registry = ProxyServerRegistry()
+    plan_proxies = runtime.session_plan.manifest.resources.proxies
+    included = {entry.strip().lower() for entry in plan_proxies.include if entry.strip()}
+    excluded = {entry.strip().lower() for entry in plan_proxies.exclude if entry.strip()}
+    required = {entry.strip().lower() for entry in plan_proxies.required if entry.strip()}
+
+    def add(spec: Any, *, proxy_id: str) -> None:
+        normalized = proxy_id.lower()
+        declared = spec.proxy_id.lower()
+        selected = not included or normalized in included or declared in included
+        if not selected and normalized not in required and declared not in required:
+            logger.info("Proxy not included by session policy: %s", proxy_id)
+            return
+        if normalized in excluded or declared in excluded:
+            logger.info("Proxy excluded by session policy: %s", proxy_id)
+            return
+        registry.register(
+            dataclasses.replace(
+                spec,
+                proxy_id=proxy_id,
+                required=(
+                    spec.required or normalized in required or declared in required
+                ),
+            )
+        )
+
+    def load(path: Path, *, source: str) -> list[Any]:
+        try:
+            return load_proxy_server_manifest(path)
+        except ProxyServerManifestError:
+            logger.warning("Skipping invalid %s proxy manifest at %s", source, path, exc_info=True)
+            return []
+
+    for spec in load(discovery.host_manifest_path, source="host"):
+        add(spec, proxy_id=spec.proxy_id)
+    if discovery.user_manifest_path is not None and discovery.user_manifest_path.exists():
+        for spec in load(discovery.user_manifest_path, source="user"):
+            add(spec, proxy_id=spec.proxy_id)
+
+    used_pack_slugs: set[str] = set()
+    for root in discovery.roots:
+        manifest_path = root / "mcp_servers.yaml"
+        if not manifest_path.exists():
+            continue
+        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
+        for spec in load(manifest_path, source="pack"):
+            add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
+
+    return compile_proxy_registry(
+        registry,
+        workspace_root=workspace_root,
+    )
 
 
 # ── Pack slug + policy helpers ───────────────────────────────────────
