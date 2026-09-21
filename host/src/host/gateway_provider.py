@@ -25,6 +25,11 @@ from typing import Any, Protocol
 import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
+from host.provider_endpoints import (
+    OPENAI_DEFAULT_BASE_URL,
+    OPENROUTER_DEFAULT_BASE_URL,
+    normalize_ollama_host_to_base_url,
+)
 from host.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,6 @@ LISA_OPENROUTER_API_KEY_ENV = "LISA_OPENROUTER_API_KEY"
 LISA_OPENROUTER_BASE_URL_ENV = "LISA_OPENROUTER_BASE_URL"
 LISA_OPENROUTER_REFERER_ENV = "LISA_OPENROUTER_REFERER"
 LISA_OPENROUTER_TITLE_ENV = "LISA_OPENROUTER_TITLE"
-_OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class _GatewayClassProvider(Protocol):
@@ -238,7 +242,7 @@ def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
         raise ValueError("OpenAI is not configured. Set LISA_OPENAI_API_KEY (or OPENAI_API_KEY).")
     client = AsyncOpenAI(
         api_key=api_key,
-        base_url=_proxy_base_url(runtime, "openai", "https://api.openai.com/v1/"),
+        base_url=_proxy_base_url(runtime, "openai", OPENAI_DEFAULT_BASE_URL),
     )
     runtime.providers.openai_client = client
     return client
@@ -251,7 +255,7 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
-    direct_base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    direct_base_url = normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
     base_url = _proxy_base_url(runtime, "ollama", direct_base_url)
     client = AsyncOpenAI(
         api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
@@ -276,14 +280,9 @@ def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
 
 
 def _normalize_ollama_host_to_base_url(host: str) -> str:
-    """Normalize an Ollama host value to an OpenAI-compatible base URL."""
+    """Back-compat re-export; the implementation moved to provider_endpoints."""
 
-    normalized = host.strip().rstrip("/")
-    if not normalized:
-        return ""
-    if not normalized.startswith(("http://", "https://")):
-        normalized = f"http://{normalized}"
-    return f"{normalized}/" if normalized.endswith("/v1") else f"{normalized}/v1/"
+    return normalize_ollama_host_to_base_url(host)
 
 
 def _proxy_base_url(runtime: HostRuntime, provider: str, direct_base_url: str) -> str:
@@ -316,7 +315,7 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
             )
         direct_base_url = (
             _env(LISA_OPENROUTER_BASE_URL_ENV, "OPENROUTER_BASE_URL")
-            or _OPENROUTER_DEFAULT_BASE_URL
+            or OPENROUTER_DEFAULT_BASE_URL
         )
         base_url = _proxy_base_url(runtime, "openrouter", direct_base_url)
         default_headers: dict[str, str] = {}

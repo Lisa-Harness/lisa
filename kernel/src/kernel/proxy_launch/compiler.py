@@ -8,7 +8,11 @@ from pathlib import Path
 
 from kernel.mcp_launch.compiler import compile_cwd, compile_env
 from kernel.mcp_launch.policy import RuntimeKind
-from kernel.proxy_launch.policy import ProxyServerRegistry, ProxyServerSpec
+from kernel.proxy_launch.policy import (
+    ProviderValueSource,
+    ProxyServerRegistry,
+    ProxyServerSpec,
+)
 
 __all__ = ["ProxyClientConfig", "compile_proxy_config", "compile_proxy_registry"]
 
@@ -76,17 +80,45 @@ def _compile_command(  # noqa: C901, PLR0911, PLR0912
     )
 
 
-def compile_proxy_config(spec: ProxyServerSpec) -> ProxyClientConfig:
-    """Compile a resolved proxy spec into a local process config."""
+def compile_proxy_config(
+    spec: ProxyServerSpec,
+    *,
+    provider_base_urls: dict[str, str] | None = None,
+) -> ProxyClientConfig:
+    """Compile a resolved proxy spec into a local process config.
+
+    Launch options are compiled from the spec's global ``cli_args`` / ``env``
+    first and then each provider overlay in ``providers`` order, so provider
+    switches land after global ones. ``ProviderValueSource.DIRECT_BASE_URL``
+    env references resolve through ``provider_base_urls`` — the host supplies
+    the providers' *direct* endpoints, never proxy routes, so a proxy cannot
+    be configured to forward to itself. Two overlays writing the same env
+    key with different resolved values is a declaration conflict and raises.
+    """
     command, base_args = _compile_command(spec)
     env = compile_env(spec.env_policy)
     if spec.port_env:
         env[spec.port_env] = str(spec.port)
+    merged_args = [*base_args, *spec.cli_args]
+    for provider in spec.providers:
+        overlay = spec.provider_options.get(provider)
+        if overlay is None:
+            continue
+        merged_args.extend(overlay.cli_args)
+        for key, value in overlay.env.items():
+            resolved = _resolve_env_value(spec, provider, key, value, provider_base_urls)
+            previous = env.get(key)
+            if previous is not None and previous != resolved:
+                raise ValueError(
+                    f"Proxy '{spec.proxy_id}': env '{key}' receives conflicting values "
+                    f"across providers ({previous!r} vs {resolved!r}); split into separate proxies"
+                )
+            env[key] = resolved
     base_url = f"http://127.0.0.1:{spec.port}{spec.base_path}"
     return ProxyClientConfig(
         proxy_id=spec.proxy_id,
         command=command,
-        args=[*base_args, *spec.cli_args],
+        args=merged_args,
         env=env,
         cwd=compile_cwd(spec.cwd_policy, workspace_root=spec.workspace_root),
         protocol=spec.protocol.value,
@@ -101,13 +133,42 @@ def compile_proxy_config(spec: ProxyServerSpec) -> ProxyClientConfig:
     )
 
 
+def _resolve_env_value(
+    spec: ProxyServerSpec,
+    provider: str,
+    key: str,
+    value: str | ProviderValueSource,
+    provider_base_urls: dict[str, str] | None,
+) -> str:
+    """Resolve one overlay env value to the literal string a child process sees."""
+    if not isinstance(value, ProviderValueSource):
+        return value
+    if value is not ProviderValueSource.DIRECT_BASE_URL:
+        raise ValueError(
+            f"Proxy '{spec.proxy_id}': unsupported env source {value.value!r} for "
+            f"provider_overrides.{provider}.env.{key}"
+        )
+    base_urls = provider_base_urls or {}
+    resolved = base_urls.get(provider)
+    if not resolved:
+        raise ValueError(
+            f"Proxy '{spec.proxy_id}': no direct base URL available for provider "
+            f"'{provider}' (provider_overrides.{provider}.env.{key})"
+        )
+    return resolved
+
+
 def compile_proxy_registry(
     registry: ProxyServerRegistry,
     *,
     workspace_root: str | None = None,
+    provider_base_urls: dict[str, str] | None = None,
 ) -> list[ProxyClientConfig]:
     """Compile every approved proxy after host runtime paths are resolved."""
     return [
-        compile_proxy_config(replace(spec, workspace_root=workspace_root))
+        compile_proxy_config(
+            replace(spec, workspace_root=workspace_root),
+            provider_base_urls=provider_base_urls,
+        )
         for spec in registry.all_specs()
     ]

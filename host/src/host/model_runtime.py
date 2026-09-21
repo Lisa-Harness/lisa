@@ -74,6 +74,24 @@ class StubModelDefinition:
 
     JSON-bound work. Default 0.0 for backward compatibility."""
 
+    base_url: str = ""
+
+    """Direct (non-proxy) endpoint this model's provider serves, forwarded
+
+    from ``ManifestModelEntry.base_url``. The host's direct-endpoint resolver
+
+    uses it when every model for a provider agrees on one endpoint; proxy
+
+    child processes receive it via ``value_from: direct_base_url``."""
+
+
+    base_url_env: str = ""
+
+    """Environment variable holding the model's direct endpoint, forwarded
+
+    from ``ManifestModelEntry.base_url_env``. Resolution happens in the
+
+    host's provider-endpoints module at use time, not here."""
 
 @dataclass(frozen=True, slots=True)
 class StubCompletion:
@@ -385,4 +403,6 @@ def resolve_model(
         completion_api=resolved.completion_api,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,
+        base_url=getattr(resolved, "base_url", ""),
+        base_url_env=getattr(resolved, "base_url_env", ""),
     )

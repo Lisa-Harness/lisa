@@ -8,10 +8,18 @@ from enum import StrEnum
 from kernel.mcp_launch.policy import CwdPolicy, EnvPolicy, RuntimeKind
 
 __all__ = [
+    "ProviderProxyOptions",
+    "ProviderValueSource",
     "ProxyProtocol",
     "ProxyServerRegistry",
     "ProxyServerSpec",
 ]
+
+
+class ProviderValueSource(StrEnum):
+    """Host-resolved reference a provider overlay may inject."""
+
+    DIRECT_BASE_URL = "direct_base_url"
 
 
 class ProxyProtocol(StrEnum):
@@ -19,6 +27,21 @@ class ProxyProtocol(StrEnum):
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProxyOptions:
+    """Provider-specific launch options layered onto a proxy's global ones.
+
+    The host compiles a proxy by applying the global ``cli_args`` / ``env``
+    first and then each provider overlay in the spec's ``providers`` order.
+    ``env`` values are either literal strings or a ``ProviderValueSource``
+    the host resolves to the provider's direct endpoint (never a proxy
+    route, so a proxy can never be wired to forward to itself).
+    """
+
+    cli_args: tuple[str, ...] = ()
+    env: dict[str, str | ProviderValueSource] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +71,7 @@ class ProxyServerSpec:
     npx_package: str | None = None
     uv_directory: str | None = None
     cli_args: list[str] = field(default_factory=list)
+    provider_options: dict[str, ProviderProxyOptions] = field(default_factory=dict)
 
     env_policy: EnvPolicy = field(default_factory=EnvPolicy)
     cwd_policy: CwdPolicy = field(default_factory=CwdPolicy)

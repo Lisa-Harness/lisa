@@ -54,6 +54,7 @@ from host.content_roots import (
     sdk_content_roots,
     seed_bundled_packs_lock,
 )
+from host.provider_endpoints import direct_provider_base_urls
 from host.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -891,9 +892,15 @@ def compile_proxy_configs(  # noqa: C901
         for spec in load(manifest_path, source="pack"):
             add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
 
+    providers = sorted(
+        {provider for spec in registry.all_specs() for provider in spec.providers}
+    )
+    provider_base_urls = direct_provider_base_urls(runtime, providers)
+
     return compile_proxy_registry(
         registry,
         workspace_root=workspace_root,
+        provider_base_urls=provider_base_urls,
     )
 
 

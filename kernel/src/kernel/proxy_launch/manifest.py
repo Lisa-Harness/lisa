@@ -9,7 +9,12 @@ import yaml
 
 from kernel.mcp_launch.policy import EnvPolicy, RuntimeKind
 from kernel.mcp_launch.server_manifest import _expand_env_value, _parse_cwd_policy
-from kernel.proxy_launch.policy import ProxyProtocol, ProxyServerSpec
+from kernel.proxy_launch.policy import (
+    ProviderProxyOptions,
+    ProviderValueSource,
+    ProxyProtocol,
+    ProxyServerSpec,
+)
 
 __all__ = ["ProxyServerManifestError", "load_proxy_server_manifest"]
 
@@ -111,6 +116,9 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
     cli_args_raw = entry.get("cli_args") or []
     if not isinstance(cli_args_raw, list):
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'cli_args' must be a list")
+    provider_options = _parse_provider_overrides(
+        entry.get("provider_overrides"), providers, index, proxy_id, path
+    )
     env_raw = entry.get("env") or {}
     if not isinstance(env_raw, dict):
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'env' must be a mapping")
@@ -157,6 +165,7 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
             _expand_env_value(entry.get("uv_directory")) if entry.get("uv_directory") else None
         ),
         cli_args=[_expand_env_value(item) for item in cli_args_raw],
+        provider_options=provider_options,
         env_policy=EnvPolicy(inherit_parent=True, forced_overrides=forced),
         cwd_policy=cwd_policy,
         readiness_path=readiness_path,
@@ -165,3 +174,107 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
         warm=bool(entry.get("warm", True)),
         required=bool(entry.get("required", False)),
     )
+
+
+def _parse_provider_overrides(
+    raw_overrides: Any,
+    providers: tuple[str, ...],
+    index: int,
+    proxy_id: str,
+    path: Path,
+) -> dict[str, ProviderProxyOptions]:
+    """Parse the optional per-provider launch overlay mapping.
+
+    Keys must be a subset of the entry's declared ``providers``. Each value
+    carries optional ``cli_args`` (literal strings) and ``env`` entries whose
+    values are literal strings or a single-key ``value_from: direct_base_url``
+    reference the host resolves to the provider's direct endpoint.
+    """
+    if raw_overrides is None:
+        return {}
+    if not isinstance(raw_overrides, dict):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': 'provider_overrides' must be a mapping"
+        )
+    allowed = set(providers)
+    options: dict[str, ProviderProxyOptions] = {}
+    for raw_provider, raw_body in raw_overrides.items():
+        provider = str(raw_provider or "").strip().lower()
+        if not provider:
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': provider_overrides keys must be non-empty"
+            )
+        if provider not in allowed:
+            declared = ", ".join(providers)
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': provider_overrides key '{provider}' "
+                f"is not among declared providers: {declared}"
+            )
+        if not isinstance(raw_body, dict):
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': provider_overrides.{provider} must be a mapping"
+            )
+        cli_args = _parse_override_cli_args(raw_body.get("cli_args"), index, proxy_id, provider)
+        env = _parse_override_env(raw_body.get("env"), index, proxy_id, provider)
+        if not cli_args and not env:
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': provider_overrides.{provider} is empty"
+            )
+        options[provider] = ProviderProxyOptions(cli_args=cli_args, env=env)
+    return options
+
+
+def _parse_override_cli_args(
+    raw_cli_args: Any,
+    index: int,
+    proxy_id: str,
+    provider: str,
+) -> tuple[str, ...]:
+    if raw_cli_args is None:
+        return ()
+    if not isinstance(raw_cli_args, list) or not all(
+        isinstance(item, str) for item in raw_cli_args
+    ):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': provider_overrides.{provider}.cli_args must be a list"
+        )
+    return tuple(_expand_env_value(item) for item in raw_cli_args if str(item).strip())
+
+
+def _parse_override_env(
+    raw_env: Any,
+    index: int,
+    proxy_id: str,
+    provider: str,
+) -> dict[str, str | ProviderValueSource]:
+    if raw_env is None:
+        return {}
+    if not isinstance(raw_env, dict):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': provider_overrides.{provider}.env must be a mapping"
+        )
+    env: dict[str, str | ProviderValueSource] = {}
+    for raw_key, raw_value in raw_env.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': provider_overrides.{provider}.env keys "
+                "must be non-empty"
+            )
+        if isinstance(raw_value, dict):
+            if set(raw_value) != {"value_from"}:
+                raise ProxyServerManifestError(
+                    f"proxies[{index}] '{proxy_id}': provider_overrides.{provider}.env.{key} "
+                    "must be exactly 'value_from: <source>'"
+                )
+            try:
+                env[key] = ProviderValueSource(str(raw_value["value_from"]))
+            except ValueError as exc:
+                valid = ", ".join(source.value for source in ProviderValueSource)
+                raise ProxyServerManifestError(
+                    f"proxies[{index}] '{proxy_id}': unknown value_from for "
+                    f"provider_overrides.{provider}.env.{key} (valid: {valid})"
+                ) from exc
+            continue
+        env[key] = _expand_env_value(raw_value)
+    return env
