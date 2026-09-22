@@ -16,21 +16,24 @@ warn-only stage — any failure blocks. Run all steps from the repo root.
 
 ```powershell
 # 1. Format check (deterministic; idempotent)
-uv run ruff format --check kernel sdk mcp_server hosts
+uv run ruff format --check .
 
 # 2. Lint (complexity + style + import ordering)
-uv run ruff check kernel sdk mcp_server hosts
+uv run ruff check .
 
-# 3. Type check (strict, all public packages)
-uv run mypy kernel sdk mcp_server
+# 3. Direct I/O policy (allowlist)
+uv run python scripts/check_direct_io_policy.py
 
-# 4. Dead code check
-uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
+# 4. Type check (strict, all public packages)
+uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
-# 5. Tests (no live API calls)
+# 5. Dead code check
+uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
+
+# 6. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
-# 6. Smoke test
+# 7. Smoke test
 uv run lisa verify
 ```
 
