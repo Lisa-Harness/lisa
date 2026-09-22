@@ -21,9 +21,10 @@ from pydantic_settings import (
 
 # Shell (global) env vars for ``kernel.config.Settings`` accept an optional
 # ``LISA_`` prefix. ``LISA_STAGE_NUDGE_CAP`` and ``STAGE_NUDGE_CAP`` are both
-# honored; ``LISA_`` is never *required*. ``.env`` files keep the bare
-# unprefixed names — only the live environment is prefix-aware. See
-# ``docs/python-BCP.md`` (env-var conventions) for rationale.
+# honored; ``LISA_`` is never *required*. Settings load from the live
+# environment only — ``.env`` file handling is owned by the host/CLI
+# transport layer, which exports values into ``os.environ`` before config
+# resolution. See ``docs/python-BCP.md`` (env-var conventions) for rationale.
 _LISA_ENV_PREFIX = "LISA_"
 
 
@@ -58,11 +59,12 @@ class _KnownSettingFilteringSource(PydanticBaseSettingsSource):
 class Settings(BaseSettings):
     """Settings needed by `kernel/**` only."""
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        populate_by_name=True,
-    )
+    # Live environment only: no ``env_file`` here. ``.env`` loading is a
+    # host/CLI responsibility (the transport exports values into
+    # ``os.environ`` before config resolution — see ``sdk.layout``), so a
+    # CWD-relative second reader here would disagree with the host's
+    # data-dir-anchored search order.
+    model_config = SettingsConfigDict(populate_by_name=True)
 
     @classmethod
     def settings_customise_sources(
@@ -77,14 +79,14 @@ class Settings(BaseSettings):
         # Shell env: honor both bare (``STAGE_NUDGE_CAP``) and
         # ``LISA_``-prefixed (``LISA_STAGE_NUDGE_CAP``) names. The bare
         # source wins so an explicit unprefixed value is never shadowed by
-        # a stray prefixed one. ``.env`` files keep the bare unprefixed
-        # names (``env_prefix=""``).
+        # a stray prefixed one. ``dotenv_settings`` is deliberately unused:
+        # the kernel reads no ``.env`` file of its own (see model_config).
+        del dotenv_settings
         _lisa_env = EnvSettingsSource(cls, env_prefix=_LISA_ENV_PREFIX)
         return (
             init_settings,
             _KnownSettingFilteringSource(env_settings),
             _KnownSettingFilteringSource(_lisa_env),
-            _KnownSettingFilteringSource(dotenv_settings),
             file_secret_settings,
         )
 

@@ -1,19 +1,17 @@
 """``kernel.config.Settings`` optional ``LISA_`` env-var prefix.
 
 Shell (global) env vars accept an optional ``LISA_`` prefix
-(``LISA_STAGE_NUDGE_CAP`` and ``STAGE_NUDGE_CAP`` are both honored);
-``.env`` files keep the bare unprefixed names only.
+(``LISA_STAGE_NUDGE_CAP`` and ``STAGE_NUDGE_CAP`` are both honored).
+Settings load from the live environment only — ``.env`` file handling is
+owned by the host/CLI transport layer, not the kernel.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
-
 from kernel.config import Settings
-
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -87,34 +85,3 @@ def test_lisa_prefix_works_for_bool_field() -> None:
         assert Settings().budget_briefing_enabled is False
     finally:
         del os.environ["LISA_BUDGET_BRIEFING_ENABLED"]
-
-
-# ── .env files: bare names only ────────────────────────────────────────
-
-
-def test_env_file_bare_name_honored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``.env`` files use bare unprefixed names."""
-
-    (tmp_path / ".env").write_text("STAGE_NUDGE_CAP=5\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    assert Settings().stage_nudge_cap == 5
-
-
-def test_env_file_lisa_prefix_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``LISA_``-prefixed keys in ``.env`` are NOT honored (bare-only)."""
-
-    (tmp_path / ".env").write_text("LISA_STAGE_NUDGE_CAP=99\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    # Default 10 — the prefixed .env entry is ignored.
-    assert Settings().stage_nudge_cap == 10
-
-
-def test_env_file_does_not_shadow_bare_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Bare shell env beats a .env file (standard pydantic precedence)."""
-
-    (tmp_path / ".env").write_text("STAGE_NUDGE_CAP=5\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("STAGE_NUDGE_CAP", "8")
-    assert Settings().stage_nudge_cap == 8

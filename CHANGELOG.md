@@ -4,6 +4,26 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Kernel `Settings` no longer reads `<cwd>/.env`
+
+- **What:** `kernel.config.Settings` dropped `env_file=".env"` from its
+  `SettingsConfigDict`; kernel tunables now load from the live environment
+  only — bare names (`STAGE_NUDGE_CAP`) and `LISA_`-prefixed names
+  (`LISA_STAGE_NUDGE_CAP`), bare winning, as before. Precedence is
+  init args > bare shell env > `LISA_`-prefixed shell env > file secrets.
+- **Why:** `.env` file ownership is the host/CLI transport layer's contract
+  (`sdk.layout`: the data-dir `.env` is a contract, not data). The CLI's
+  python-dotenv loader exports values into `os.environ` before config
+  resolution, so in the shipped runtime the kernel's own CWD-relative dotenv
+  source was inert for the machine-level `~/.lisa/.env` and disagreed with
+  the CLI's four-candidate search order. Standalone `Settings()` callers in
+  a CWD holding a `.env` lose that read — the deliberate narrowing.
+- **Tests:** `kernel/tests/test_config_env_prefix.py` drops the three
+  `.env`-file tests; the bare-vs-`LISA_`-prefix shell-env tests are
+  unchanged and still pass.
+
 ### Added
 
 #### CEL `when` expressions for policy rules + `/policy rule` management
