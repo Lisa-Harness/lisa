@@ -318,7 +318,7 @@ Synthetic tools (host-owned aliases like `memory.search`) are registered on the 
 
 For natural-language turns (non-slash-commands), the host resolves the mode through `ipsar.parse_route` — a pure-regex matcher. It iterates each mode's `command_pattern` and returns the first match as `(mode_id, query)`; when no pattern matches it falls back unconditionally to `("default", text)`. There is no verifier model and no model-bounded routing retry here.
 
-Per-iteration model selection (a separate concern from mode routing) is handled by the CEL-based model router discovered via `lisa.extensions.model_routers`; see `../sdk/router/README.md` and `../docs/ROUTER_DESIGN.md`.
+Per-iteration model selection (a separate concern from mode routing) is handled by the CEL-based model router discovered via `lisa.extensions.model_routers`; see `sdk/src/sdk/router/README.md` and `../docs/ROUTER_DESIGN.md`.
 
 ```mermaid
 flowchart TD
@@ -686,5 +686,7 @@ checklist see [`../sdk/AUTHORING.md`](../sdk/AUTHORING.md).
 ## Further Reading
 
 - [`docs/BOUNDARIES.md`](../docs/BOUNDARIES.md) — public/private boundary definition
-- [`sdk/README.md`](../sdk/README.md) — how to create modes, operations, content packs, signal connectors, and processing loops
-- [`hosts/README.md`](../hosts/README.md) — reference host usage and configuration
+- [`sdk/README.md`](../sdk/README.md) — the SDK's role in the architecture and its module map
+- [`docs/PACK_AUTHORING_GUIDE.md`](../docs/PACK_AUTHORING_GUIDE.md) — how to create modes, operations, content packs, signal connectors, and processing loops
+- [`host/`](../host/) — transport-neutral runtime; CLI host usage lives in [`lisa-host-cli`](https://github.com/Lisa-Framework/lisa-host-cli) and `../lisa-hosts/` docs
+- [`packstest/README.md`](../packstest/README.md) — in-process pack test/eval harness for verifying pack changes

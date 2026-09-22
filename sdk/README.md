@@ -1,513 +1,72 @@
-# Pack Authoring Guide
+# SDK
 
-Packs add modes, operations, tools, authored content, signal connectors, and processing loops without changing host code. The framework discovers packs through `lisa.extensions.content_roots` entry points or through host-injected content roots.
+`lisa-sdk` (`sdk`) is the reusable content-discovery, customization-parsing, and repository-facing helper layer of the Lisa Framework. It sits between the runtime-neutral `kernel` and the concrete runtime that packs compose: the kernel owns contracts and the turn loop, the SDK owns the catalog scanners, model router, provider gateways, and the memory/thread/guard/storage/fetch primitives that first-party MCP servers expose.
 
-## Packs vs. Extensions
+## Design Philosophy
 
-Packs and extensions serve different architectural roles:
+The SDK holds **domain logic for everything the first-party MCP servers expose**, plus the pluggable runtime backends (providers, routers) that hosts discover through entry points. `mcp_server` stays a thin transport facade over these modules.
 
-- **Packs** own *workflow* and *personality*: `_mode.md` routing, allowed operations, prompt templates, curated session contexts, and host commands.
-- **Extensions** own *ambient telemetry*: background data collection (`SignalCollector`) and post-collection processing (`ProcessingLoop`). They run in the bottom half (a one-shot process triggered by a systemd timer or cron), pulling ambient state (e.g. GitHub PRs, Stripe billing) without waiting for a user query.
-- **MCP Servers** own *actions* and *storage*: client-invoked tools, file access, search, and memory.
+Key principles:
 
-A single pack can provide all three: modes, operations, and signal connectors. The `lisa-pack-cloudflare`, `lisa-pack-github`, and `lisa-pack-stripe` packs do exactly that.
+- **Generic and dependency-light**: SDK abstractions must work for any host. The SDK may import from `kernel`, never from hosts.
+- **Import-safe public helpers**: no registration, environment reads, or I/O at module import time. Resolved configuration is accepted explicitly.
+- **Server boundary**: file I/O goes through the storage sandbox (relative paths only, deny-glob policy); SSRF protections and the response-size ceiling in the fetch primitive are non-bypassable. Environment translation belongs in host or tool adapters, not in the primitives.
+- **Namespace package**: `sdk` is a PEP 420 namespace shared with the bundled packs under `sdk/packs/`, which ship their own wheels. The `sdk` content root is exported from [`src/sdk/_content_root.py`](src/sdk/_content_root.py).
 
-## Pack Locations
+## Module Map
 
-Packs live in one of two places depending on whether they are bundled with the framework or maintained as an external dependency:
+### Catalog, Content & Context
 
-| Location | Packages | Import namespace | When to use |
-| --- | --- | --- | --- |
-| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-recovery` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
-| `../lisa-packs/<name>` (public repo: `github.com/Lisa-Framework/lisa-packs`) and `../lisa-packs-wip/<name>` (private repo: `github.com/Lisa-Framework/packs-wip`) | `lisa-pack-brave`, `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`, `lisa-pack-stripe` | `lisa_packs.<name>` | External integration packs maintained in separate repos; public subset in lisa-packs, WIP subset in packs-wip |
-
-The framework `pyproject.toml` consumes external packs via path dependencies (public: `{ path = "../lisa-packs/<name>" }`, WIP: `{ path = "../lisa-packs-wip/<name>" }`). Bundled packs are uv workspace members. Public packs are runtime deps; WIP packs are gated behind the `wip` optional-dependency extra. Both are installed editable in the venv and discovered through entry points at runtime. See `../lisa-packs/docs/PROMOTION_GUIDE.md` for the private -> WIP -> public lifecycle.
-
-## Pack Shape
-
-A pack normally contains:
-
-```plaintext
-sdk/packs/example/
-  __init__.py
-  pyproject.toml
-  modes/
-    example/
-      _mode.md
-      ask.md
-      answer.md
-  operations/
-    example_operation.yml
-    example_operation.py
-  content/
-    prompts/
-      example.md
-  tests/
-    test_import_boundaries.py
-    test_catalog.py
-```
-
-A pack can provide only modes, only operations, only content, or any combination of those.
-
-## Mode Files
-
-Every mode folder needs an `_mode.md` file with YAML front matter:
-
-```markdown
----
-mode_id: example
-start_stage_id: ask
-mode_kind: workflow
-require_query: true
-command_pattern: "^(?:/)?example(?:[\\s,:;]+(?P<query>.+))?$"
-allowed_operation_ids: []
-description: "Example workflow mode."
----
-
-# Example Mode
-
-Mode-level instructions go here.
-```
-
-Use `mode_kind: chat` for normal conversational modes, `mode_kind: workflow` for finite-state modes, and `mode_kind: action` for one-shot commands.
-
-Optional routing metadata can also be authored in `_mode.md` front matter:
-
-```markdown
----
-routable: true
-priority: 20
-fast_path_patterns:
-  - "^search\\b"
-routing_intent_tags: [research]
-routing_intent_keywords:
-  research:
-    - latest
-    - news
-satisfies_intents: [research]
----
-```
-
-- Use `fast_path_patterns` only for high-precision regex candidates suitable for verifier confirmation.
-- `routing_intent_tags` declares the intents a mode **covers** when routing **to** it (e.g. `search` covers `research`, `markdown` covers `write`). The proactive routing hint generator uses this to pick a single-handoff target or a `fork:` fan-out.
-- `routing_intent_keywords` maps each intent tag to the broad substring keywords that signal that specific intent in a user query (case-insensitive substring match, not anchored regex).
-- `satisfies_intents` is the symmetric counterpart: the intents a mode **handles in-place** when it is the **current** mode, so the hint generator knows not to suggest a handoff for them. Author the same intent-tag vocabulary you use in `routing_intent_tags`. Default empty means every detected intent is a gap → a handoff hint is offered (the safe direction for modes that have not opted in, e.g. `default`). **Author this for every mode with a non-trivial tool surface** — otherwise the kernel will offer handoffs for intents your mode can already handle. For example, `coding/_mode.md` should declare `satisfies_intents: [coding]` (explicitly **not** `write` or `learn`), so a "write a markdown document" request from coding mode triggers a handoff to `markdown` rather than falling back to `coding_create_worktree`. The kernel never names tool IDs or hardcodes mode-specific intent semantics — the pack makes the claim and the kernel believes it. **Chaining**: after a mid-turn handoff the kernel recomputes the hint against the new mode's `satisfies_intents`, so the remaining unfulfilled intents drive the *next* handoff. This lets an ad-hoc multi-step workflow (e.g. search → coding → markdown) chain one handoff per intent: each mode satisfies its intent, the gap shrinks, and the next hint names the next target. Author `satisfies_intents` for *every* routable action/chat mode (`search: [research]`, `markdown: [write]`, `learn: [learn]`, ...) so the gap shrinks correctly per step; without it the gap stays full and the kernel re-offers the same handoff or suggests a redundant fork.
-- `required_capabilities` declares the `ModelCapability` strings (`tools`, `code`, `reasoning`, ...) the resolved model **must** declare for the mode to run safely. The turn runner validates the resolved model's `ManifestModelEntry.capabilities` against this list **before** the tool loop starts. When a model router is wired and the model is missing a required capability, the turn returns a clear user-facing block instead of letting a weak model reach for write-effect tools it cannot use reliably (e.g. `gemma4:cloud` calling `coding_create_worktree` for a "write a roadmap" request). When no router is wired the gate is advisory (no block) — a host without a router has no escalation path. Default empty means no capability gate (every model is admitted, backward compatible). Pair this with a router rule like `required_capabilities includes "code" → gpt-5.3-codex` so the router escalates to a capable model; the gate is the safety net behind the router. Author the same `ModelCapability` vocabulary used in `models.yaml`.
-
-### Extension Front Matter (`extra_front_matter`)
-
-The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindings, workshop config). Every other key in `_mode.md` front matter is **extension data** the kernel does not interpret: it is collected into `WorkflowModeConfig.extra_front_matter` and passed through untouched. Hosts and packs read `extra_front_matter` directly to pick up app-owned concepts like `lenses` (mode perspectives) without the kernel ever naming or curating them.
-
-```markdown
----
-mode_id: ponder
-lenses: [lens.conversation, lens.reflection, lens.founder_journal]
-...
----
-```
-
-The kernel never validates or allowlists extension keys — it only knows what it owns and protects. Adding a new app-owned front-matter key requires no kernel change.
-
-### Front-Matter Overrides (`_overrides.yaml`)
-
-Apps that need to manage extension front matter (or a small set of kernel-owned but overridable fields) without editing pack-owned `_mode.md` files can place an `_overrides.yaml` file beside the `_mode.md`:
-
-```plaintext
-sdk/packs/example/modes/example/
-  _mode.md
-  _overrides.yaml
-```
-
-```yaml
-# _overrides.yaml
-lenses: [lens.conversation, lens.reflection]
-description: "Overridden description for the app's deployment."
-```
-
-Overrides are deep-merged on top of the `_mode.md` front matter at load time. The boundary is a **denylist**, not an allowlist: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config). Attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched — the kernel does not name, interpret, or allowlist those keys.
-
-Kernel-owned keys that overrides may **not** touch include: `mode_id`, `start_stage_id`, `mode_kind`, `command_pattern`, `require_query`, `entry_operation_ids`, `pre_turn_operation_ids`, `post_turn_operation_ids`, `allowed_operation_ids`, `allowed_tool_ids`, `tools_authoritative`, `accept_default_capabilities`, `excluded_operation_ids`, `excluded_tool_ids`, `routable`, `priority`, `fast_path_patterns`, `routing_intent_tags`, `routing_intent_keywords`, `satisfies_intents`, `workshop_panels`, `workshop_budget`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file`, `workshop_rendering`, `default_intent_bridges`, `artifact_type`.
-
-### Exportable and default-available capabilities
-
-Operations and tools declare two visibility flags in their YAML front matter:
-
-- **`exportable`** (default `false`) — when `true`, the capability may be referenced by modes in other packs. When `false`, it is private to its owning pack; a foreign mode referencing it is rejected at startup by `validate_export_boundaries`.
-- **`default_available`** (default `false`) — when `true`, the SDK catalog loader auto-merges the capability id into every mode's effective `allowed_operation_ids` / `allowed_tool_ids` (unless the mode opts out). Lets a pack ship ambient capabilities (e.g. `recall_memory`) without forcing every mode author to re-list them.
-
-```yaml
-# operation YAML
-operation_id: recall_memory
-exportable: true
-default_available: true
-```
-
-```yaml
-# tool YAML (.tool.yml)
-tool_id: web_search
-exportable: true
-# default_available omitted — modes opt in via allowed_tool_ids
-```
-
-Modes opt out of the ambient merge via `accept_default_capabilities: false` (disables all defaults) or `excluded_operation_ids` / `excluded_tool_ids` (subtracts specific ids). The kernel distinguishes the authored allowlists from the merged effective ones so that `mode_completion_effects` (`kernel/operations/registry.py`) checks only the authored set plus `mode_allowlist`-admitted capabilities.
-
-#### MCP-native ambient tools
-
-MCP-native tools (discovered at runtime from server subprocesses) have no pack `.tool.yml`, so they cannot declare `default_available` in front matter. Instead, the host manifest (`mcp_servers.yaml`) declares ambient MCP-native tools per server:
-
-```yaml
-# host/mcp_servers.yaml
-- server_id: lisa-storage
-  runtime_kind: venv_bin
-  venv_dir: "${FRAMEWORK_ROOT}"
-  default_available_tools:
-    - read_file      # bare name; merged as lisa-storage.read_file
-```
-
-The host resolves these into namespaced ids (`server_id.tool`, or `<pack_slug>.<server_id>.tool` for pack-contributed servers) and passes them to the catalog server via the `LISA_DEFAULT_MCP_TOOLS` env var. The SDK catalog loader unions them into every mode's `allowed_tool_ids` with the same opt-out / idempotent semantics as pack `default_available: true` tools. The turn-runner's existing MCP-tool filter (which keys on namespaced ids) then admits them with no further change.
-
-Kernel-owned keys that overrides **may** replace (read into typed fields but not security-sensitive): `description`, `default_model`.
-
-List values from overrides replace (not concatenate) list values from the base front matter, so extension sets stay deterministic.
-
-## Operations
-
-Operations are the behavior layer between modes and tools. A pack contributes
-operations as colocated YAML + Python pairs (runtime) or as `.operation.md` Markdown
-files (declarative). The Hello World example below shows the minimal shape; the mode
-front matter decides when operations are invoked.
-
-- For the conceptual model, lifecycle hooks, and the operation-vs-tool distinction
-  see the Operations section in [`../kernel/README.md`](../kernel/README.md#operations).
-- For the full metadata reference, examples with tool calls, response models, and the
-  testing checklist see [`AUTHORING.md`](AUTHORING.md).
-
-## Content Rules
-
-Authored text should live under `content/` and be loaded by host-provided readers. Avoid hard-coded absolute paths. Keep pack content generic unless the pack is explicitly private.
-
-### Curated Session Contexts
-
-Packs can provide customized reference contexts via `content/user_contexts/<pack_name>_optimal.md` (or any other descriptive name). Since these files are loaded through the registry during `--session-context` resolution, users can quickly invoke your curated context.
-
-By including a curated context, pack authors can natively inject "Instructions", "You (Lisa)", and role configuration that best utilize their tools! Pack-supplied session contexts are resolved as explicit local files via `--session-context <path>`. The session context front matter must conform to the v2 strict schema (see the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md)).
-
-### Inheritable Pack Sessions (`sessions/`)
-
-A pack can ship session files that user sessions inherit block-by-block via the `from:` and `body:` directives (see the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md#inheritance-via-from-and-body)). Place these under `<pack_root>/sessions/<name>.md`. For example, `lisa-pack-core` ships `sessions/default.md`, which a user session can pull from:
-
-```yaml
-# user's session_context.md
-routing:
-  from: { pack: lisa-pack-core, session: default }
-```
-
-Convention rules:
-
-- A pack session file is a strict v2 session manifest (`schema_version: 2`) with a non-empty Markdown body. It is compiled through the same strict `SessionManifestV2` schema as a user session.
-- **Pack sessions are leaves.** They cannot themselves use `from:` or `body:` — the strict schema's `extra="forbid"` rejects them. Inheritance is one level: user → pack, never pack → pack.
-- A pack session does **not** need to declare `resources.packs.required` (it is not a runnable session on its own); it only needs to carry the blocks a user session might want to inherit.
-- The `pack` reference in a user's `from:` accepts the full distribution ID (`lisa-pack-core`) or the bare slug (`core`). The pack must be installed (discoverable via content roots) at the time the user session is compiled.
-
-## Hello World Pack
-
-The fastest end-to-end path is a local external pack folder. The CLI host discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
-
-Create this folder outside the framework repo (example path shown):
-
-```plaintext
-C:\Code\lisa-pack-hello-world\
-  __init__.py
-  modes/
-    hello/
-      _mode.md
-  operations/
-    hello_operation.py
-    hello_operation.yml
-```
-
-`C:\Code\lisa-pack-hello-world\__init__.py`
-
-```python
-"""Hello world pack."""
-```
-
-`C:\Code\lisa-pack-hello-world\modes\hello\_mode.md`
-
-```markdown
----
-mode_id: hello
-start_stage_id: hello
-mode_kind: action
-require_query: false
-command_pattern: '^(?:/)?hello(?:[\s,:;]+(?P<query>.+))?$'
-entry_operation_ids: [hello_operation]
-allowed_operation_ids: [hello_operation]
-description: "Hello world action mode."
----
-
-# Hello
-```
-
-`C:\Code\lisa-pack-hello-world\operations\hello_operation.yml`
-
-```yaml
-operation_id: hello_operation
-description: Say hello from a custom pack.
-mode_allowlist: [hello]
-timeout_seconds: 30
-```
-
-`C:\Code\lisa-pack-hello-world\operations\hello_operation.py`
-
-```python
-from kernel.models import OperationExecutionContext, OperationResult
-
-
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    return OperationResult(output_text=f"Hello from custom pack: {ctx.query or 'hello'}")
-```
-
-From `lisa_framework/` on Windows:
-
-```powershell
-$env:SDK_CONTENT_ROOTS = "C:\Code\lisa-pack-hello-world"
-uv run lisa modes
-uv run lisa once "/hello framework"
-```
-
-Expected outcome:
-
-- `modes` shows `hello` under supported modes.
-- `/hello framework` prints `Hello from custom pack: framework`.
-
-Use single quotes around regex-based `command_pattern` values in YAML front matter so backslashes like `\s` are not treated as YAML escape sequences.
-
-## Installed Pack Discovery
-
-For a packaged pack, export the content root from `__init__.py` and register it as an entry point. The framework kernel uses the same mechanism for installed public packs and extensions.
-
-```python
-from pathlib import Path
-
-
-def get_content_root() -> Path:
-    return Path(__file__).parent
-```
-
-```toml
-[project.entry-points."lisa.extensions.content_roots"]
-hello_world = "sdk.packs.hello_world:get_content_root"
-```
-
-## Extension Entry Points
-
-Packs register extensions through entry-point groups in `pyproject.toml`. The active groups are:
-
-| Entry-point group | Purpose |
+| Module | Responsibility |
 | --- | --- |
-| `lisa.extensions.content_roots` | Declare the pack's content root for mode/operation/tool discovery |
-| `lisa.extensions.signal_connectors` | Register `SignalCollector` subclasses for background data collection |
-| `lisa.extensions.processing_loops` | Register `ProcessingLoop` implementations for post-collection analysis |
-| `lisa.extensions.host_commands` | Register slash-command handlers (`/resume`, `/stalls`, etc.) |
-| `lisa.extensions.context_items` | Register context-item builders for prompt injection |
+| `content/` | Content catalog and authored-text reading: mode/operation/tool catalog JSON builders, content-root resolution, `ContentReader`, path safety, Copilot customization discovery/parsing (applyTo globbing). Powers the `lisa-content` and `lisa-catalog` MCP servers. |
+| `context/` | Query-aware context brokerage: re-exports kernel context helpers and owns entry-point-aware extension item-builder registration. Powers the `lisa-context` MCP server. |
+| `config.py` | Public runtime `Settings` (pydantic-settings) for packs/extensions — deliberately narrower than root app config, with owned-source filtering so packs only consume env keys they declare. |
+| `pack_settings.py` | `OwnedSettingsSource` / `build_owned_settings_sources`; importable by external packs without depending on `sdk_packs`. |
+| `layout.py` | Single source of truth for the canonical data-dir categories (`config/`, `state/`, `data/`, `cache/`, `logs/`, `run/`) shared by host, kernel, sdk, mcp_server, and packs. |
 
-Hosts decide which groups they discover and how often extension outputs are collected.
+### State & Memory Primitives
 
-## Signal Connectors
+| Module | Responsibility |
+| --- | --- |
+| `memory/` | SQLite-backed memory store library (vec0 embeddings, backups). The `lisa-memory` MCP server wraps it. |
+| `thread/` | Lossless, segmented conversation-thread store (`ThreadStore`): three-tier layout (active/sealed segments + sparse index) with zstd sidecars and redaction policy. Owns the read path; the write path stays in `host.thread`. |
+| `storage/` | Sandboxed file I/O: `StorageBackend` owns the files sandbox, deny-glob policy, and model-manifest read/write. The `lisa-storage` MCP server wraps it. |
+| `workproducts.py` | Typed, pack-neutral `WorkProduct` contract plus `WorkProductStore` protocol — durable, approvable units of work shared across packs (cross-pack imports are forbidden, so the contract sits on neutral SDK ground). The host injects the file-based implementation. |
 
-A signal connector is a stateless, repeatable monitor for an external system. Each connector:
+### Safety & Fetch
 
-- Defines what configuration is required (env vars or settings)
-- Implements `collect()` to fetch fresh data from the external system
-- Returns a typed Pydantic snapshot
-- Provides fallback snapshots for misconfiguration or errors
+| Module | Responsibility |
+| --- | --- |
+| `guard/` | Content-safety validation backends: `GuardBackend` protocol, default `PassthroughGuardBackend`, result formatting, blocked-check audit logging. The `lisa-guard` MCP server owns transport. |
+| `mcp_host/` | Pure config construction for first-party MCP servers (`build_content_mcp_config`, `build_catalog_mcp_config`). Pool lifecycle is deliberately host-owned because anyio cancel scopes bind to the host's event loop. |
 
-Signal connectors are invoked by the bottom-half process (`lisa intake`), not by the turn loop. The top half reads the resulting `UnifiedState` via the host's state provider.
+### Pluggable Runtime Backends
 
-### Hello World Signal Connector
+| Module | Responsibility |
+| --- | --- |
+| `providers/` | Reference `ProviderGatewayProvider` implementations for OpenAI, Azure OpenAI, Anthropic, Google Gemini, and AWS Bedrock, registered via `lisa.extensions.provider_gateways`. Explicitly not a pack — a pluggable runtime backend. |
+| `router/` | The built-in `lisa-router`: a pure-Python CEL/rules engine that selects a model per turn-loop iteration from the manifest's `router.rules` block with zero model calls, registered via `lisa.extensions.model_routers`. See [`src/sdk/router/README.md`](src/sdk/router/README.md). |
 
-A minimal signal connector package:
+### Shared Infrastructure
 
-```plaintext
-C:\Code\lisa-pack-hello-world\
-  __init__.py
-  connector.py
-  models.py
-  pyproject.toml
+| Module | Responsibility |
+| --- | --- |
+| `logging_setup.py` | Shared stdlib-logging infrastructure for all hosts and first-party MCP servers: `JSONFormatter`, `RateLimitFilter`, `configure_logging`, `emit_structured_event`. Stdlib-only so subprocesses need not import the kernel. |
+| `workspace.py` | Single shared `resolve_workspace_root` with explicit strictness (`require_git` knob) so packs no longer derive the user's project root independently. |
+
+## Bundled Packs
+
+The `sdk/packs/` subtree contains the bundled reference packs — `core`, `memory`, `introspect`, `recovery` — which ship as their own distributions and are excluded from the `lisa-sdk` wheel. For pack structure, mode front matter, operations, signal connectors, and the testing workflow, see:
+
+- [docs/PACK_AUTHORING_GUIDE.md](../docs/PACK_AUTHORING_GUIDE.md) — pack anatomy, mode files, extension entry points, and the hello-world walkthrough.
+- [AUTHORING.md](AUTHORING.md) — the operation authoring deep-dive (runtime vs. declarative, metadata fields, the `execute(ctx)` contract).
+- The [lisa-packs](https://github.com/Lisa-Framework/lisa-packs) repo — the public external packs, their installation, and the per-pack submodule workflow for authoring real integration packs.
+
+## Testing
+
+```bash
+cd sdk && uv run pytest
 ```
 
-`models.py`
-
-```python
-from pydantic import BaseModel
-
-
-class HelloWorldSnapshot(BaseModel):
-    collected_at: str
-    status: str = "ok"
-    message: str = "hello world"
-```
-
-`connector.py`
-
-```python
-import httpx
-
-from kernel.intake.connectors import SignalCollector
-
-from .models import HelloWorldSnapshot
-
-
-class HelloWorldSignalCollector(SignalCollector[HelloWorldSnapshot]):
-    collector_id = "hello_world"
-    display_name = "Hello World"
-
-    async def collect(
-        self,
-        client: httpx.AsyncClient,
-        collected_at: str,
-    ) -> HelloWorldSnapshot:
-        del client
-        return HelloWorldSnapshot(collected_at=collected_at, status="ok", message="hello world")
-
-    def build_unconfigured_snapshot(self, collected_at: str) -> HelloWorldSnapshot:
-        return HelloWorldSnapshot(
-            collected_at=collected_at,
-            status="unconfigured",
-            message="missing configuration",
-        )
-
-    def build_error_snapshot(self, collected_at: str) -> HelloWorldSnapshot:
-        return HelloWorldSnapshot(
-            collected_at=collected_at,
-            status="error",
-            message="connector failed",
-        )
-```
-
-`pyproject.toml`
-
-```toml
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["sdk.packs.hello_world*"]
-
-[project]
-name = "lisa-pack-hello-world"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = ["lisa-kernel", "httpx>=0.27.0"]
-
-[project.entry-points."lisa.extensions.signal_connectors"]
-hello_world = "sdk.packs.hello_world.connector:HelloWorldSignalCollector"
-```
-
-Validate through the public extension harness:
-
-```powershell
-uv pip install -e "C:\Code\lisa-pack-hello-world"
-uv run python -c "from kernel.testing.extension_harness import list_extension_entries; print([entry.model_dump() for entry in list_extension_entries() if entry.entry_id == 'hello_world'])"
-uv run python -c "from kernel.testing.extension_harness import build_collector_contract_preview, load_signal_collector; connector = load_signal_collector('hello_world'); print(build_collector_contract_preview(connector))"
-```
-
-Those commands prove entry-point discovery and contract shape without relying on a live external API.
-
-## Processing Loops
-
-A processing loop runs after signal collection and produces a `ProcessedState` that the bottom half merges into `UnifiedState`. Common uses:
-
-- Anomaly detection (examine snapshots, emit `active_alerts`)
-- Trend analysis (examine snapshots, emit `intel_collections`)
-- State derivation (examine snapshots, emit `signal_snapshots`)
-
-```python
-from kernel.intake.contracts import ProcessContext, ProcessedState, ProcessingLoop
-
-
-class HelloWorldLoop:
-    loop_id = "hello_world_loop"
-
-    async def process(self, ctx: ProcessContext) -> ProcessedState:
-        return ProcessedState(
-            loop_id=self.loop_id,
-            metadata={"greeting": "hello from processing loop"},
-        )
-```
-
-Register in `pyproject.toml`:
-
-```toml
-[project.entry-points."lisa.extensions.processing_loops"]
-hello_world_loop = "sdk.packs.hello_world.loop:HelloWorldLoop"
-```
-
-## Host Commands
-
-Packs can register slash commands that the host dispatch layer consults after its own built-in commands. Each command is a `HostCommandSpec` with a prefix, handler, and help text.
-
-```python
-from kernel.host_commands import HostCommandSpec
-
-
-async def handle_hello(runtime, stripped: str, message: str) -> str:
-    return f"Hello from pack: {stripped or 'world'}"
-
-
-hello_command = HostCommandSpec(
-    prefix="/hello-pack",
-    handler=handle_hello,
-    help_text="Say hello from a custom pack.",
-)
-```
-
-Register in `pyproject.toml`:
-
-```toml
-[project.entry-points."lisa.extensions.host_commands"]
-hello_world = "sdk.packs.hello_world.commands:hello_command"
-```
-
-## Host Boundary
-
-Packs and extensions should return typed snapshots, contribution fragments, or evidence records. They should not send chat messages, choose proactive recipients, own production storage, or import private host code. A host scheduler or runtime adapter owns those responsibilities.
-
-Keep imports limited to `kernel`, `sdk`, and package-local modules. Add import-boundary tests to verify no private app imports.
-
-## Testing Checklist
-
-1. Run `packstest.catalog.validate_pack` over the pack from source (structure: entry points, tool/operation YAMLs, importable modules).
-2. Import the package without private app modules.
-3. Load the mode catalog and operation catalog.
-4. Validate operation allowlists against discovered modes.
-5. Run deterministic unit tests without live APIs; drive tools in-process via `packstest.runner.run_tool`.
-6. Run the CLI host for one command path when practical.
-7. Add opt-in live tests only for integrations that need them.
-8. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a host.
-9. Add import-boundary tests.
-
-The `packstest` harness (`packstest/README.md`) activates packs in-process from source — no install step, no catalog subprocess, no model calls. Eval files live in the pack under `tests/evals/` with the `eval` marker.
-
-Focused local checks from `lisa_framework/`:
-
-```powershell
-uv run lisa modes
-uv run lisa once "/markdown Draft a quick checklist"
-uv run lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
-uv run ruff check sdk mcp_server hosts
-```
-
-Run extension tests without live API calls by default. External packs live in sibling checkouts (`../lisa-packs/` and `../lisa-packs-wip/`), not under `sdk/packs/`. Verify them with the `packstest` harness first (validate + in-process evals, no install step — see `packstest/README.md`), then the pack's own suite:
-
-```powershell
-uv run pytest ../lisa-packs-wip/coding/lisa_packs/coding/tests -m "not live" -q
-uv run pytest ../lisa-packs-wip/github/tests -m "not live" -q
-uv run pytest ../lisa-packs-wip/cloudflare/tests -m "not live" -q
-uv run pytest ../lisa-packs-wip/stripe/tests -m "not live" -q
-```
-
-Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.
+Markers: `live` (hits real external signal or provider APIs), `integration` (multi-module in-process; may require Azurite on localhost:10000), `eval` (deterministic agent regression evals — no model calls, no I/O). Pack validation itself belongs to the `packstest` harness; see [`../packstest/README.md`](../packstest/README.md).

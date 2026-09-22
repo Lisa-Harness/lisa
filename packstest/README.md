@@ -31,7 +31,7 @@ names the exact tool and error instead of surfacing a mysterious turn failure.
 uv run python -c "
 from pathlib import Path
 from packstest.catalog import validate_pack
-report = validate_pack(Path('../lisa-packs-wip/<pack>'))
+report = validate_pack(Path('../lisa-packs/markdown'))
 print(report.summary())
 "
 ```
@@ -50,20 +50,15 @@ from pathlib import Path
 
 from packstest.catalog import build_tool_catalog
 from packstest.context import ToolContextFactory
-from packstest.git import git_repo
 from packstest.runner import run_tool
 
-PACK = Path("../lisa-packs-wip/coding")
+PACK = Path("../lisa-packs/markdown")
 
 
 async def main() -> None:
-    repo = await git_repo(tmp)  # throwaway repo + bare remote
-    factory = ToolContextFactory(
-        root=repo.root,
-        pack_config={"workspace_root": str(repo.root)},
-    )
+    factory = ToolContextFactory(root=tmp_path)
     catalog = build_tool_catalog(PACK)
-    run = await run_tool(catalog, "coding_create_worktree", factory, {"summary": "probe"})
+    run = await run_tool(catalog, "markdown_generate", factory, {"markdown": "# Hi\n"})
     assert run.result.error == ""
 
 
@@ -107,19 +102,18 @@ Assert on outcomes and state transitions, not prose:
 @pytest.mark.eval
 @pytest.mark.asyncio
 async def test_full_chain(tmp_path) -> None:
-    repo = await git_repo(tmp_path)
-    factory = ToolContextFactory(root=repo.root, pack_config=_config(repo.root))
+    factory = ToolContextFactory(root=tmp_path)
     catalog = build_tool_catalog(PACK_PATH)
     trajectory = Trajectory(name="chain")
 
-    run = await run_tool(catalog, "coding_create_worktree", factory, {"summary": "x"})
-    artifact_id = run.result.output_json["artifact_id"]
+    run = await run_tool(catalog, "markdown_generate", factory, {"markdown": "# Hi\n"})
+    outline = run.result.output_json
     trajectory.record(run)
 
-    # ... subsequent steps, threading artifact_id ...
+    # ... subsequent steps, threading derived values ...
 
     assert trajectory.all_errors_absent(), trajectory.first_error()
-    assert trajectory.tool_ids == ["coding_create_worktree", "coding_status", ...]
+    assert trajectory.tool_ids == ["markdown_generate", ...]
 ```
 
 ## Fidelity rules (keep the harness honest)

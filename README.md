@@ -4,18 +4,32 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 
-Lisa is a runtime-neutral framework for building **agent hosts** and
-**mode/operation packs**. The kernel defines the contracts — mode routing,
-workflow state machines, the operation registry, tool and storage protocols —
-without taking a position on transport, storage backend, or model provider.
-The SDK ships author-facing helpers, a set of reference packs, and a CEL-based
-model router. A transport-neutral host runtime wires a starter subset, and a
-collection of first-party MCP servers expose Lisa's surface-scoped tools over
-stdio.
+Lisa is a portable framework for building *modal* agent hosts and *packs*,
+that contain the modes, operations, tools, proxies, and servers they use.
+It's built to be extremely composable and connectable.
 
-This workspace contains the **public framework packages**. It is intentionally
-separate from the private production Lisa Teams bot app. The terminal CLI host
-lives in the sibling [`lisa-hosts/cli`][lisa-host-cli] repository.
+The [kernel](kernel) defines the turn loop,
+model context,
+agent mode switching/routing,
+operations, and tool calling.
+It also launches and/or intermediates MCP servers and model providers and proxies.
+It does that by managing packs.
+
+Packs contain any combination of content, i.e., prompts,
+agent modes, operations, tools, MCP servers and proxies.
+E.g., the *core* pack contains system-prompt and a minimal *session_context*.
+
+The [host](host) loads packs to make modes, operations, and tools available.
+It also bootstraps first- and third-party the MCP servers.
+It uses the SDK to interact with the kernel, packs and servers.
+
+The [sdk](sdk) contains the core, memory, introspect, and recovery packs.
+It helps the host make use of the built-in servers in [mcp_server](mcp_server).
+It also contains the CEL-based model router the host offers.
+There is also a `packstest` harness verifies content packs in-process,
+from source, with no model calls.
+
+The [`lisa-host-cli`][lisa-host-cli] contains the runnable CLI tool.
 
 ## Table of contents
 
@@ -37,29 +51,64 @@ lives in the sibling [`lisa-hosts/cli`][lisa-host-cli] repository.
 
 ## Architecture
 
-Lisa is layered so that reusable mechanics live in packages with no transport
-or production dependencies. Each layer owns a single responsibility and is
-forbidden from reaching into the one above it.
+Lisa is based on the classic kernel + SDK = host architecture.
+The idea is to abstract the core behavior in the kernel,
+a basic structure in the (still abstract) host runtime,
+and a concrete but completely composable runtime via packs.
 
-| Layer | Responsibility | Must not own |
-| --- | --- | --- |
-| `kernel` | Runtime-neutral contracts, mode catalog loading, workflow state (`ipsar`), the operation registry, tool and storage protocols, per-iteration model-router discovery, the slice (pressure-driven housekeeping) contract | Host transport SDKs, production deployment, proprietary app behavior |
-| `sdk` | Author-facing helpers for rendering, integration contracts, pack composition, and the CEL-based model router | Private app imports, private model policy, production storage |
-| `sdk/packs` | Bundled reference packs with modes, operations, authored content, and pack-registered slash commands | Private product strategy, market-intel workflows |
-| `host` | Transport-neutral runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence | Production chat transport, durable memory, production-grade model policy |
-| `mcp_server` | First-party MCP servers that expose Lisa's surface-scoped tools over stdio | Transport, host wiring |
+```mermaid
+flowchart TB
+    T["Your transport<br/>CLI · chat · headless scheduler"] -->|"implements TransportCallbacks"| HOST
+    subgraph HOST["host — abstract runtime"]
+        HM["handle_message dispatch · commands · MCP pool ·<br/>approval policy · model discovery · thread store"]
+    end
+    subgraph CORE["context, tools, and loop"]
+        K["kernel — turn loop · routing + workflow FSMs ·<br/>operation/tool registries · contracts"]
+        S["sdk — catalog scanners · CEL model router ·<br/>memory/thread/guard/storage/fetch primitives"]
+        P["sdk/packs — core · memory · introspect · recovery"]
+    end
+    subgraph MCPS["mcp_server — first-party MCP servers (stdio)"]
+        M["lisa-catalog · lisa-content · lisa-context · lisa-memory ·<br/>lisa-guard · lisa-storage · lisa-thread · lisa-fetch"]
+    end
+    HARN["packstest — in-process pack test/eval harness (dev only)"]
+
+    HOST -->|"wires TurnHooks + ContextSeams"| K
+    HOST -->|"thread read path · content roots"| S
+    P --> S
+    S --> K
+    P -.->|"lazy: host.thread reads"| HOST
+    HOST -->|"compiles pool, spawns servers"| M
+    K -.->|"catalog + content · external tools over MCP"| M
+    HARN -.-> K
+    HARN -.-> S
+```
+
+Arrows point from a package to what it depends on; dashed edges are lazy or
+infrastructural seams rather than whole-layer import dependencies.
+
+| Package | Owns | Depends on | Must not own |
+| --- | --- | --- | --- |
+| `kernel` | The turn loop (`turn_runner`, `turn_phases`), mode routing and workflow FSMs (`ipsar`, `ipsar_fsm`), the operation and tool registries, the capability manifest, session-plan contracts and their compiler, approval and recovery contracts, the slicing system, and entry-point discovery for content roots, host commands, routers, slice providers, and provider gateways | Nothing in-repo | Host transports, production deployment, model policy, proprietary app behavior |
+| `sdk` | Content discovery, tool cataloging, model routing (`lisa-router`), provider gateways, the SQLite memory store, the thread read/storage/fetch primitives | `kernel` | Host wiring, private model policy, production storage |
+| `sdk/packs` | Bundled reference packs — `core`, `memory`, `introspect`, `recovery` — contributing modes, operations, tools, authored content, slice providers, and pack-registered slash commands; the memory pack also provides the default memory MCP backend | `kernel`, `sdk` (bundled packs may lazily import `host.thread`) | Product strategy, private app behavior, cross-pack imports |
+| `host` | Abstract runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), `handle_message` dispatch and host commands, MCP pool compilation and launch policy, the approval policy engine (`config/policy.yaml`), model discovery, context assembly, the thread store write path, recovery records, and pack management | `kernel`, `sdk`, the bundled packs, `mcp_server` (launch config) | Chat transport, durable memory backends, production-grade model policy |
+| `mcp_server` | First-party MCP servers exposing Lisa's surface-scoped tools over stdio — thin facades; domain logic stays in the SDK | `kernel`, `sdk` | Transport, host wiring, cross-server imports |
+| `packstest` | The in-process pack test/eval harness: `validate_pack` structure checks, `run_tool`/`run_scenario` behavior driving, diffable `Trajectory` reports, offline git fixtures, and deterministic `eval` cases | `kernel`, `sdk` only | Anything at runtime — pack repos consume it as the dev dependency `lisa-packstest` |
+
+### What a host injects
 
 A real host injects concrete implementations for the runtime seams the
 framework leaves open: model completion and resolution callbacks, tool catalog
 and execution callbacks, blob/object storage (via the `lisa-storage` MCP
-server), memory store/recall when memory operations are enabled, browser
-automation when surf operations are enabled, the transport adapter, and any
-scheduler for signal connector polling. The framework keeps these as protocols
-and callbacks so pack authors can build reusable behavior without depending
-on any production host.
+server), memory store/recall when memory operations are enabled,
+the transport adapter, and scheduling for signal connector polling.
 
-See [`docs/BOUNDARIES.md`](docs/BOUNDARIES.md) for the full public/private
-boundary and the host layer architecture.
+### The packstest harness
+
+`packstest` (`lisa-packstest`) is a dev-only harness for pack authors. It is
+not part of any runtime: it imports `kernel` and `sdk` only, and pack
+repositories consume it as a dev dependency.
+See [`packstest/README.md`](packstest/README.md) for the full API.
 
 ## Repository layout
 
@@ -68,16 +117,17 @@ packages together.
 
 ```text
 .
-├── kernel/              # Runtime-neutral contracts, FSM engine, operation registry
-├── sdk/                 # Author-facing helpers and integration contracts
+├── kernel/              # Runtime-neutral engine: turn loop, routing FSMs, registries
+├── sdk/                 # Author-facing helpers, catalog scanners, CEL model router
 │   ├── packs/           # Bundled reference packs
 │   │   ├── core/        #   baseline mode (default) and shared assets
-│   │   ├── memory/      #   memory-backed learning operations
+│   │   ├── memory/      #   memory-backed learning operations + slice provider
 │   │   ├── introspect/  #   operational self-model and reflective assessment
 │   │   └── recovery/    #   thread-based /resume and recovery records
-│   └── router/          # CEL-based model router and runtime support
+│   └── router/          # CEL-based model router (lisa-router) and runtime support
 ├── host/                # Transport-neutral host runtime
-├── mcp_server/          # First-party MCP servers (context, content, catalog, ...)
+├── mcp_server/          # First-party MCP servers (catalog, content, context, ...)
+├── packstest/           # In-process pack test/eval harness (dev-only)
 ├── artifacts/           # Generated manifests, thread store, token usage, overlays
 ├── docs/                # Architecture and design documents
 └── scripts/             # Repo-local tooling
@@ -85,7 +135,7 @@ packages together.
 
 ## Installation
 
-Lisa requires **Python 3.11 or newer** and is managed with [uv][uv]. Clone the
+Lisa requires **Python 3.11 or newer** and is managed with `uv`. Clone the
 repo and sync the workspace, including the development extras:
 
 ```sh
@@ -114,8 +164,7 @@ uv run lisa verify        # smoke-check the installed runtime
 uv run lisa modes         # list available modes
 uv run lisa models discover
 uv run lisa models apply
-uv run lisa once "summarize the current thread state"
-uv run lisa               # enter interactive mode
+uv run lisa prompt "what are our next steps?"
 ```
 
 The first `lisa models discover` / `lisa models apply` cycle generates and
@@ -156,9 +205,7 @@ register their own through the `lisa.extensions.host_commands` entry point.
 | `lisa models` | Show the active model manifest |
 | `lisa models discover` | Probe providers and propose a manifest |
 | `lisa models apply` | Activate the proposed manifest |
-| `lisa once "<prompt>"` | Run a single turn and exit |
-| `lisa` | Enter interactive mode |
-| `/resume [reply]` | Resume from the most recent yielded thread entry |
+| `lisa prompt "<prompt>"` | Execute the next turn with a prompt |
 
 Pack-registered commands (for example `/search`, `/markdown`, `/discuss`,
 `/help`) are added through `SDK_CONTENT_ROOTS` and the bundled packs.
@@ -176,6 +223,7 @@ Lisa's surface-scoped tools over stdio. Each is an independent entry point:
 | `lisa-memory` | `mcp_server.memory.server:main` | Surface-scoped memory store/recall |
 | `lisa-guard` | `mcp_server.guard.server:main` | Privacy and scope guardrails |
 | `lisa-storage` | `mcp_server.storage.server:main` | Blob/object storage |
+| `lisa-fetch` | `mcp_server.fetch.server:main` | Fetch-and-cache remote http(s) content |
 | `lisa-thread` | `mcp_server.thread.server:main` | Append-only thread store |
 
 ## Packs
@@ -194,8 +242,7 @@ reference packs:
 
 External integration packs live in the public
 [`lisa-packs`][lisa-packs] repo (`brave`, `cloudservers`, `letta`, `markdown`,
-`mem0`, `okf`, `personas`, `search`, `serper`, `tavily`) and the WIP
-[`packs-wip`][packs-wip] repo, all under the
+`mem0`, `okf`, `personas`, `search`, `serper`, `tavily`), under the
 `lisa_packs.*` namespace.
 
 ## Model providers
@@ -236,16 +283,19 @@ warn-only stage. Run all checks from the repo root:
 
 ```powershell
 # Format check
-uv run ruff format --check kernel sdk mcp_server hosts
+uv run ruff format --check .
 
 # Lint
-uv run ruff check kernel sdk mcp_server hosts
+uv run ruff check .
 
-# Type check
-uv run mypy kernel sdk mcp_server
+# Direct I/O policy (allowlist)
+uv run python scripts/check_direct_io_policy.py
+
+# Type check (all public packages)
+uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
 # Dead code check
-uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
+uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
 
 # Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
@@ -260,14 +310,18 @@ Focused sanity checks:
 uv run python -c "import kernel, sdk; print(kernel.__file__); print(sdk.__file__)"
 uv run lisa modes
 uv run lisa models
-uv run pytest --import-mode=importlib kernel/tests sdk/tests hosts -m "not live" -v --tb=short
-uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
+uv run pytest kernel/tests sdk/tests host/tests -m "not live" -q --tb=short
+uv run --extra dev ruff check --select F,I kernel sdk mcp_server host
 ```
 
 Tests marked `live` hit real external signal or provider APIs and are skipped
 by default; `integration` tests are multi-module in-process and may require
 local services; `eval` tests are deterministic agent regression evals with no
 model calls or I/O.
+
+Pack changes are verified with the in-process `packstest` harness before any
+installed-package route — see [The packstest harness](#the-packstest-harness)
+and [`packstest/README.md`](packstest/README.md).
 
 ## Contributing
 
