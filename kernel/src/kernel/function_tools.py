@@ -197,6 +197,17 @@ def build_strict_openai_function_tool(
     (`additionalProperties: True`) or union shapes (`anyOf`/`oneOf`),
     both of which strict mode rejects. Incompatible schemas fall back to
     JSON mode (`strict=False`) so the model can still call the tool.
+
+    The all-properties-``required`` rewrite is a strict-mode artifact: it
+    tells the model every field (including optional ones) must be present.
+    That is correct under ``strict=True`` (the API then ignores unset
+    optional fields), but under the ``strict=False`` fallback it actively
+    misleads weaker models into *fabricating* values for optional fields —
+    observed in production as ``overrides: ""`` and both ``command`` AND
+    ``commands`` supplied to ``bash_run``. So the strict rewrite only
+    ships when the tool actually runs in strict mode; JSON-mode tools keep
+    pydantic's honest ``required`` (only genuinely-required fields) and
+    their ``default`` annotations.
     """
 
     model = parameters_schema or _EmptyToolParameters
@@ -214,5 +225,9 @@ def build_strict_openai_function_tool(
 
     if _strict_incompatible(tool["function"].get("parameters", {})):
         tool["function"]["strict"] = False
+        # Re-emit the schema from the raw pydantic model so optional fields
+        # are not marked required and None defaults are preserved (see
+        # docstring: the all-required rewrite misleads JSON-mode callers).
+        tool["function"]["parameters"] = model.model_json_schema()
 
     return tool

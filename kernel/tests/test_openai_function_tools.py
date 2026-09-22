@@ -104,3 +104,41 @@ def test_arbitrary_keys_disables_strict() -> None:
         name="arbitrary", description="d", parameters_schema=_ArbitraryKeys
     )
     assert _is_strict(tool) is False
+
+
+class _OptionalOverrides(BaseModel):
+    """Mirrors bash_run: optional field + additionalProperties-true dict.
+
+    The JSON-mode fallback must NOT ship the strict-mode all-required
+    rewrite — a model told every field is required fabricates values for
+    optional ones (production: ``overrides: ""`` and both ``command`` AND
+    ``commands`` sent to bash_run).
+    """
+
+    command: str | None = None
+    commands: list[str] | None = None
+    overrides: dict = {}
+
+
+def test_json_mode_fallback_keeps_optional_fields_optional() -> None:
+    tool = build_strict_openai_function_tool(
+        name="bash_run", description="d", parameters_schema=_OptionalOverrides
+    )
+    assert _is_strict(tool) is False
+    required = tool["function"]["parameters"].get("required", [])
+    assert "overrides" not in required
+    assert "command" not in required
+    assert "commands" not in required
+
+
+def test_strict_mode_still_marks_all_properties_required() -> None:
+    class _AllRequired(BaseModel):
+        """Top-level anyOf keeps strict mode; strict rewrite must apply."""
+
+        name: str | None = None
+
+    tool = build_strict_openai_function_tool(
+        name="strictreq", description="d", parameters_schema=_AllRequired
+    )
+    assert _is_strict(tool) is True
+    assert set(tool["function"]["parameters"]["required"]) == {"name"}
