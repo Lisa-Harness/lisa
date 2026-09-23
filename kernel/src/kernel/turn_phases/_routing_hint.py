@@ -17,6 +17,29 @@ from kernel.models import CapabilityManifest, WorkflowModeConfig
 _log = logging.getLogger(__name__)
 
 
+# Host-synthesized approval-continuation prefix (host/approval/orchestration.py).
+# These turns are REPORTS, not fresh instructions: the blob embeds the
+# approved action's OUTPUT (arbitrary file contents, command stdout) plus a
+# "do not call any tools" contract. Intent-scanning that output fires
+# whatever keywords happen to appear in tool data — the 2026-09-23 incident:
+# a bash inventory of the finances sandbox matched bookkeeping/finances/
+# taxes/explain keywords inside the continuation and the kernel escalated to
+# planner, bouncing the report turn through two unwanted modes. The
+# residual candidate noted after the 2026-09-16 misroute fix; implemented
+# here at the single choke point every intent scan passes through.
+_APPROVAL_CONTINUATION_PREFIX = "the approved action `"
+
+
+def _is_host_synthesized_continuation(query: str) -> bool:
+    """True for host-generated approval/tool-result continuation queries.
+
+    Matched on the exact host template prefix (lowercased) so genuine user
+    text quoting an approval ("the approved action you ran earlier...")
+    without the backtick-templated form still gets normal intent scanning.
+    """
+    return query.lower().startswith(_APPROVAL_CONTINUATION_PREFIX)
+
+
 def get_workflow_catalog() -> dict[str, Any]:
     """Return the workflow catalog for patchability.
 
@@ -149,6 +172,16 @@ def _detect_query_intents(
         return set()
     catalog = get_workflow_catalog()
     query_lower = query.lower()
+
+    # Host-synthesized continuation guard: the approval continuation embeds
+    # tool OUTPUT and carries its own "report, do not act" contract; intent
+    # keywords inside that output are noise, not requests. Scan nothing.
+    if _is_host_synthesized_continuation(query):
+        _log.info(
+            "query intent detection: host-synthesized continuation query; "
+            "skipping intent scan"
+        )
+        return set()
 
     # Intent-polarity guard: detect topic-abandonment discourse markers.
     # When present, a target whose keywords/patterns also match the query

@@ -452,6 +452,16 @@ def build_operation_tool_schemas(
     in the operation's own ``mode_allowlist`` are advertised. The default
     fallback (operations with no ``mode_allowlist`` are allowed everywhere)
     is suppressed.
+
+    An operation without a ``Parameters`` model still advertises with an
+    empty-arguments schema (``build_strict_openai_function_tool`` falls
+    back to its internal empty-parameter model). Skipping such operations
+    here — while the completion contract (``mode_completion_effects``)
+    still requires them — was the 2026-09-23 finances incident: every
+    finances op was mode-bound and invocable but silently invisible to the
+    model, which then degraded to hand-building work with whatever tools
+    it COULD see. Advertisement and the completion contract must not
+    diverge on schema-less operations.
     """
     catalog = get_operation_catalog()
     schemas: list[dict[str, Any]] = []
@@ -468,8 +478,6 @@ def build_operation_tool_schemas(
             definition=definition,
             mode_id=mode_id,
         ):
-            continue
-        if definition.parameters_schema is None:
             continue
         schemas.append(
             build_strict_openai_function_tool(

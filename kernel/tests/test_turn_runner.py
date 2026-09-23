@@ -3653,6 +3653,89 @@ def test_detect_query_intents_fast_path_attributes_all_tags() -> None:
     assert detected == {"read", "write", "execute"}
 
 
+def test_detect_query_intents_skips_host_synthesized_continuation() -> None:
+    """Host-synthesized approval continuations embed tool OUTPUT, not
+    instructions. Intent-scanning that output fires whatever keywords the
+    data happens to contain and routes the report turn through unrelated
+    modes.
+
+    Regression for the 2026-09-23 incident: the approval continuation for
+    a bash inventory of the finances sandbox contained the words
+    "bookkeeping", "finances", "taxes", "general ledger" IN THE TOOL
+    OUTPUT; the kernel detected those intents, computed a 4-intent gap in
+    shell mode, and escalated the report turn to planner — bouncing it
+    through two unwanted modes instead of reporting and stopping.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    finances_cfg = _mode_config(
+        mode_id="finances",
+        routing_intent_tags=["finances", "bookkeeping", "taxes"],
+        routing_intent_keywords={
+            "finances": ["general ledger"],
+            "bookkeeping": ["import transactions"],
+            "taxes": ["tax workpaper"],
+        },
+    )
+    patched_catalog = {"finances": finances_cfg}
+
+    continuation_query = (
+        "The approved action `bash_run` executed successfully "
+        "(approval 9c83ca10df274d03b) and returned this output:\n\n"
+        "total 32\ndrwx------ ledgers sources rules\n"
+        "... import transactions ... general ledger ... tax workpaper ...\n\n"
+        "Report the result to the operator in plain prose. Do not call any "
+        "tools in this turn."
+    )
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query=continuation_query,
+            routing_targets=["finances"],
+        )
+
+    # The continuation is a REPORT: zero intents, no planner escalation.
+    assert detected == set()
+
+
+def test_detect_query_intents_still_scans_genuine_user_text() -> None:
+    """The continuation guard must not over-suppress: a genuine user query
+    that merely MENTIONS an approval (without the host's backtick template)
+    still gets normal intent scanning."""
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    finances_cfg = _mode_config(
+        mode_id="finances",
+        routing_intent_tags=["finances", "bookkeeping", "taxes"],
+        routing_intent_keywords={
+            "finances": ["general ledger"],
+            "bookkeeping": ["import transactions"],
+            "taxes": ["tax workpaper"],
+        },
+    )
+    patched_catalog = {"finances": finances_cfg}
+
+    user_query = "thanks — now that the approved action finished, please import transactions for 2024"
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query=user_query,
+            routing_targets=["finances"],
+        )
+
+    assert "bookkeeping" in detected
+
+
 def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     """A query whose gap mixes a producer intent (research/reasoning) with
     a consumer intent (write/coding) must NOT fork — the consumer needs
