@@ -526,6 +526,15 @@ def build_turn_hooks(
     # failure observed 2026-08-25. The turn's own gateways are the correct
     # completion path for a learning distilled from that turn.
     _auto_capture_provider_gateways = _discover_active_provider_gateways()
+    # Same snapshot discipline for the model router: resolve once at hook-build
+    # time so the post-turn auto-capture context sees the same operation-scoped
+    # routing rules the turn loop itself used. ``_wire_context_seams`` resolves
+    # its own instance lazily (seams are assembled after hook construction);
+    # reusing that lazy path here would re-run pack discovery per hook build,
+    # so resolve eagerly next to the gateway snapshot. Router discovery degrades
+    # to ``None`` when no router pack/manifest is present — auto-capture then
+    # falls back to the operation's authored model, same as before.
+    _auto_capture_model_router = _discover_active_router()
 
     async def _on_turn_complete(
         mode_id: str,
@@ -579,6 +588,17 @@ def build_turn_hooks(
                         mode_id=mode_id,
                         query=query,
                         response=response_text,
+                        # Pack config + router: parity with the turn-runner
+                        # operation dispatch (``_build_entry_ctx`` /
+                        # approval-resume ``common`` context). Without the
+                        # resolver, ``synthesize_and_store_learning`` fell
+                        # back to the 512-token module default instead of
+                        # the session's ``memory_distill_max_tokens``; without
+                        # the router, an operation-scoped rule (e.g.
+                        # finances-profile routing of learning distills)
+                        # never applied on the auto-capture path.
+                        pack_configuration_resolver=pack_configuration_resolver,
+                        model_router=_auto_capture_model_router,
                         host=build_callable_host(
                             gateway_provider_fn=_auto_capture_provider_gateways,
                             resolve_model_fn=_resolve_model,

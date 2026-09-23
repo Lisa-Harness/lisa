@@ -19,6 +19,7 @@ operation execution context. They are intentionally host-agnostic: the host's
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -245,7 +246,15 @@ def parse_structured_payload(
 
 
 def json_only_instruction(response_format_model: type[BaseModel]) -> str:
-    """Return a compact JSON-only instruction for response-format fallbacks."""
+    """Return a compact JSON-only instruction for response-format fallbacks.
+
+    The instruction embeds the schema's JSON shape, not just its key names:
+    reasoning-heavy models (the 2026-09-23 finances-profile distill failures)
+    answered the bare key-list variant with analysis prose or wrapped each
+    array element in an object (``{"facts": [{"fact": ...}]}``), both of which
+    fail validation. An inline example derived from the schema pins the
+    expected element types.
+    """
 
     schema = response_format_model.model_json_schema()
     properties = schema.get("properties") or {}
@@ -253,7 +262,8 @@ def json_only_instruction(response_format_model: type[BaseModel]) -> str:
     key_list = ", ".join(keys) if keys else "the declared schema"
     return (
         "Return one JSON object only. Do not wrap it in markdown fences or prose. "
-        f"Populate these top-level keys: {key_list}."
+        f"Populate these top-level keys: {key_list}. "
+        f"Match this JSON shape: {json.dumps(schema, separators=(', ', ': '))}"
     )
 
 

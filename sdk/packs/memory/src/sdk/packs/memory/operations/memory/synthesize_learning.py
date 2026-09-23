@@ -278,7 +278,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             raw = await ctx.host.complete(
                 messages=attempt_messages,
                 model_def=model_def,
-                max_tokens=distill_max_tokens,
+                # Escalate the budget on the retry, mirroring the kernel's
+                # truncation-rescue pattern (finish_reason=length → one retry
+                # at 2×): on reasoning models served via Ollama the visible
+                # JSON shares the completion budget with reasoning tokens,
+                # so the first attempt's budget can truncate the array
+                # mid-fact (the 2026-09-23 finances-profile incidents) —
+                # re-issuing the SAME budget with a JSON-only nudge just
+                # reproduces the truncation.
+                max_tokens=distill_max_tokens * (2 if attempt_idx else 1),
                 temperature=0.1,
                 # First attempt asks for native structured output; the retry
                 # clears response_format so strict hosts don't re-reject and

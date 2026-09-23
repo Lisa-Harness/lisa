@@ -121,6 +121,44 @@ async def test_execute_retries_then_succeeds_when_first_attempt_truncated_json()
 
 
 @pytest.mark.asyncio
+async def test_execute_escalates_max_tokens_on_retry() -> None:
+    """The retry re-issues the completion at 2x the first attempt's budget.
+
+    The 2026-09-23 finances-profile incidents: on reasoning models served via
+    Ollama, reasoning tokens bill against ``max_tokens``, so the first
+    attempt's budget can truncate the JSON array mid-fact — and re-issuing
+    the SAME budget with a JSON-only nudge just reproduces the truncation.
+    The retry must escalate (mirroring the kernel's finish=length rescue),
+    not merely rephrase.
+    """
+    calls: list[dict[str, Any]] = []
+
+    async def complete_fn(**kwargs: Any) -> SimpleNamespace:
+        calls.append(dict(kwargs))
+        # First attempt truncates; retry (with the raised budget) succeeds.
+        if kwargs.get("response_format") is not None:
+            return _completion('{"facts": ["fact that got cut')
+        return _completion('{"facts": ["fact one", "fact two"]}')
+
+    async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
+        return OperationResult(output_text='{"ok": true}')
+
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the rundown",
+        execute_tool_fn=_execute_tool,
+    )
+
+    result = await execute(ctx)
+
+    assert len(calls) == 2, "distillation must retry exactly once"
+    assert calls[1]["max_tokens"] == calls[0]["max_tokens"] * 2, (
+        "retry must escalate the token budget (2x), not reuse the truncated attempt's"
+    )
+    assert "Learning stored" in result.output_text
+
+
+@pytest.mark.asyncio
 async def test_execute_raises_when_both_attempts_fail() -> None:
     """When both the first attempt and the JSON-only retry fail, the
     operation surfaces the failure rather than silently persisting nothing
