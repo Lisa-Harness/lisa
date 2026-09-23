@@ -154,6 +154,25 @@ async def execute_entry_phase(
         from kernel.turn_runner import TurnResult  # noqa: PLC0415
 
         entry_text = (result.output_text or "").strip()
+        # Detect the query-discard hazard: a work entry op replaces the
+        # ENTIRE turn result, so any operator instruction in the query is
+        # dropped before a model call. That contract is right when the
+        # op's output genuinely IS the answer (web_search), but binding a
+        # prewarm/status snapshot as a work entry op silently swallows
+        # user commands (the 2026-09-06 shell/sandbox_facts and
+        # 2026-09-23 finances/finances_status incidents). Surface a loud
+        # diagnostic so pack-side misbindings are visible in the host log
+        # instead of manifesting as "the model did nothing."
+        _entry_ops = ", ".join(mode_config.entry_operation_ids)
+        _log.warning(
+            "entry-op turn short-circuit: mode=%s entry_ops=[%s] discarded "
+            "operator query %r before any model call — work entry ops end "
+            "the turn with their own output; prewarm/status ops must use "
+            "pre_turn_operation_ids",
+            mode_id,
+            _entry_ops,
+            (query or "")[:120],
+        )
         return EntryPhaseResult(
             early_return=TurnResult(
                 response_text=entry_text,

@@ -22,11 +22,13 @@ from typing import Any
 
 __all__ = [
     "anthropic_tool_use_to_mcp",
+    "is_truncated_tool_arguments",
     "json_escaped_string_decode",
     "looks_like_json_escaped_text",
     "mcp_tool_to_anthropic_tool",
     "mcp_tool_to_openai_function",
     "openai_tool_call_to_mcp",
+    "TRUNCATED_TOOL_ARGUMENTS",
 ]
 
 # A leaked escaped rendering of a document hides its line breaks either as
@@ -45,6 +47,20 @@ _MIN_NEWLINE_ESCAPES = 3
 # generous headroom; a pathological payload simply fails the repair and
 # dispatches unmodified.
 _MAX_DECODE_PASSES = 3
+
+#: Sentinel argument dict marking a tool call whose JSON arguments failed
+#: to parse — the signature of a completion cut mid-payload
+#: (``finish_reason='length'`` during a multi-KB ``write_file`` call).
+#: The turn loop converts this into an explicit tool error instead of
+#: dispatching the tool with empty/partial parameters (the 2026-09-23
+#: finances ledger-truncation incident).
+TRUNCATED_TOOL_ARGUMENTS: dict[str, Any] = {"__truncated_arguments__": True}
+
+
+def is_truncated_tool_arguments(arguments: Any) -> bool:
+    """Return True when ``arguments`` carries the truncated-payload sentinel."""
+
+    return isinstance(arguments, dict) and bool(arguments.get("__truncated_arguments__"))
 
 
 def looks_like_json_escaped_text(value: str) -> bool:
@@ -174,6 +190,15 @@ def openai_tool_call_to_mcp(tool_call: dict[str, Any]) -> tuple[str, dict[str, A
     the literal file content. Repair is value-conditional, never blanket
     decoding: a string with real newlines, or without the long escape-run
     signature, passes through byte-for-byte.
+
+    A JSON string that fails to parse marks the call as
+    :data:`TRUNCATED_TOOL_ARGUMENTS` in the returned dict instead of
+    dispatching ``{}`` — the 2026-09-23 finances incident: a
+    ``finish_reason='length'`` completion cut the arguments mid-payload,
+    the empty-args dispatch wrote a truncated ledger with ``ok: true``, and
+    every write receipt confirmed success for a fragment. Callers check
+    the sentinel and surface a tool error so the model re-issues the call
+    rather than the tool silently executing with missing parameters.
     """
 
     function = tool_call.get("function")
@@ -184,13 +209,18 @@ def openai_tool_call_to_mcp(tool_call: dict[str, Any]) -> tuple[str, dict[str, A
         name = str(tool_call.get("name", ""))
         raw_args = tool_call.get("arguments", "{}")
     if isinstance(raw_args, str):
+        if not raw_args.strip():
+            # A model-issued call with an explicitly empty argument string is
+            # a legitimate "no parameters" call; only an unparseable
+            # non-empty string indicates a cut payload.
+            return name, {}
         try:
             parsed = json.loads(raw_args)
             if not isinstance(parsed, dict):
                 return name, {}
             return name, _repair_escaped_string_args(parsed)
         except json.JSONDecodeError:
-            return name, {}
+            return name, dict(TRUNCATED_TOOL_ARGUMENTS)
     if isinstance(raw_args, dict):
         return name, _repair_escaped_string_args(raw_args)
     return name, {}

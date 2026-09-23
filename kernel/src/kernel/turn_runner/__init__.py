@@ -144,6 +144,7 @@ from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
+    is_truncated_tool_arguments,
     openai_tool_call_to_mcp,
 )
 from kernel.turn_hooks import TurnHooks
@@ -157,7 +158,7 @@ from kernel.turn_phases._completion_contract import (
     SurfaceProseWithFootnote,
     resolve_completion_contract,
 )
-from kernel.turn_phases._dispatch import dispatch_capability
+from kernel.turn_phases._dispatch import _track_consecutive_errors, dispatch_capability
 from kernel.turn_phases._entry import execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
 from kernel.turn_phases._lifecycle import (
@@ -3290,6 +3291,56 @@ async def _run_turn_inner(
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
+
+            # ── Truncated-arguments guard ─────────────────────────────
+            # A completion cut mid-payload (``finish_reason='length'``
+            # during a multi-KB ``write_file`` call) leaves the arguments
+            # JSON unparseable. Before this guard the translator returned
+            # ``{}`` and the tool DISPATCHED ANYWAY — the 2026-09-23
+            # finances incident: truncated ledger writes landed with
+            # ``ok: true`` receipts and no error anywhere in the loop.
+            # Refuse the dispatch and feed an explicit tool error back so
+            # the model re-issues the call (typically in smaller chunks)
+            # instead of the tool silently executing missing parameters.
+            if is_truncated_tool_arguments(tool_arguments):
+                _log.warning(
+                    "tool call %r had unparseable (length-cut) arguments; "
+                    "refusing dispatch and returning an error to the model "
+                    "(mode=%s, iteration=%d)",
+                    tool_name,
+                    mode_id,
+                    _state.iteration,
+                )
+                _state.total_tool_calls += 1
+                _state.step_tool_calls += 1
+                _state.called_tool_names.add(tool_name)
+                ledger.record(tool_name)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": (
+                            "Tool execution failed: the arguments for this call "
+                            "were truncated mid-payload (the completion hit its "
+                            "token limit before the arguments finished). The "
+                            "tool was NOT executed — nothing was written. "
+                            "Re-issue the call, splitting large payloads into "
+                            "smaller chunks."
+                        ),
+                    }
+                )
+                _track_consecutive_errors(
+                    tool_name=tool_name,
+                    dispatched_effect="write",
+                    dispatched_succeeded=False,
+                    op_result=None,
+                    tool_result=None,
+                    mcp_result=None,
+                    state=_state,
+                )
+                tools_dispatched = True
+                continue
 
             # ── Synthesized-call required-params guard ─────────────────
             # A kernel-synthesized call (forced-action enforcer or

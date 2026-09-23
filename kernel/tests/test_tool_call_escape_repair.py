@@ -15,6 +15,7 @@ import json
 import pytest
 
 from kernel.tools.schema_translator import (
+    is_truncated_tool_arguments,
     json_escaped_string_decode,
     looks_like_json_escaped_text,
     openai_tool_call_to_mcp,
@@ -139,7 +140,11 @@ class TestOpenAIToolCallToMCP:
         _, args = openai_tool_call_to_mcp(_tool_call(params))
         assert args == params
 
-    def test_malformed_arguments_json_returns_empty_and_not_crash(self) -> None:
+    def test_malformed_arguments_json_marks_truncated(self) -> None:
+        # The 2026-09-23 finances incident: a length-cut completion left the
+        # arguments unparseable and the tool dispatched with {} — writing a
+        # truncated ledger with ok:true. The translator must now mark the
+        # payload as truncated so the turn loop refuses the dispatch.
         tool_call = {
             "id": "call_test",
             "type": "function",
@@ -147,7 +152,39 @@ class TestOpenAIToolCallToMCP:
         }
         name, args = openai_tool_call_to_mcp(tool_call)
         assert name == "x"
+        assert is_truncated_tool_arguments(args)
+
+    def test_length_cut_write_payload_marks_truncated(self) -> None:
+        # Exact incident shape: write_file arguments cut mid-content-string
+        # when the completion hit its token limit.
+        cut = '{"path": "ledgers/2024.beancount", "content": "2024-01-02 open Assets:GL1000'
+        tool_call = {
+            "id": "call_test",
+            "type": "function",
+            "function": {"name": "lisa-storage.write_file", "arguments": cut},
+        }
+        name, args = openai_tool_call_to_mcp(tool_call)
+        assert name == "lisa-storage.write_file"
+        assert is_truncated_tool_arguments(args)
+        # And the sentinel must NOT carry any path/content keys a caller
+        # could mistake for real arguments.
+        assert "path" not in args and "content" not in args
+
+    def test_empty_argument_string_is_legitimate_no_params(self) -> None:
+        # An explicitly empty string is a real "no parameters" call, not a
+        # truncation; it must stay {} and not carry the sentinel.
+        tool_call = {
+            "id": "call_test",
+            "type": "function",
+            "function": {"name": "list_files", "arguments": ""},
+        }
+        _, args = openai_tool_call_to_mcp(tool_call)
         assert args == {}
+        assert not is_truncated_tool_arguments(args)
+
+    def test_valid_arguments_never_carry_sentinel(self) -> None:
+        _, args = openai_tool_call_to_mcp(_tool_call({"path": "a.md", "content": "hello"}))
+        assert not is_truncated_tool_arguments(args)
 
 
 @pytest.mark.parametrize(
