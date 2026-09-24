@@ -1,5 +1,5 @@
 [project]
-name = "lisa-framework-workspace"
+name = "lisa-framework"
 version = "0.1.0"
 description = "Workspace for the public Lisa framework packages and examples"
 requires-python = ">=3.11"

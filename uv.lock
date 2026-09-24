@@ -11,7 +11,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "lisa-framework-workspace",
+    "lisa-framework",
     "lisa-host-runtime",
     "lisa-kernel",
     "lisa-mcp-servers",
@@ -994,7 +994,7 @@ wheels = [
 ]
 
 [[package]]
-name = "lisa-framework-workspace"
+name = "lisa-framework"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

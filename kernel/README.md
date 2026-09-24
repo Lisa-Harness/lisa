@@ -1,20 +1,13 @@
 # Kernel Architecture
 
-`lisa-kernel` is the runtime-neutral engine at the center of the Lisa Framework.
-
-## Design Philosophy
-
-The kernel is **runtime-neutral** by design. It owns all contracts, abstractions, and core built-ins. It imports nothing from host apps, SDK extensions, or private packages. Hosts inject concrete implementations through protocols and callbacks.
-
-Key principles:
-
-- **Contracts over implementations**: The kernel defines Pydantic models, protocols, and dataclasses. Hosts provide the concrete wiring (model completion, tool execution, MCP backend policy). Packs provide behavior such as memory recall and synthesis workflows.
-- **No compat or migration layers**: When a pattern changes, old code goes away. No shim layers, no dual-path code.
-- **Externalize aggressively**: Defaults minimally; configurability is essential. If a feature requires host-specific logic, it should be a callback or protocol seam, not an `if` statement in the kernel code.
+`lisa-kernel` is an abstract representation of a modal agent host or *harness*.
+It contains the tool-enabled turn loop at the heart of the Lisa Framework.
+It defines the *mode*, *operation*, and *tool* contracts.
+The `lisa-host-runtime` hosts the kernel and loads packs containing concrete implementations.
 
 ## Module Map
 
-### Core Engine
+### Turn Loop
 
 | Module | Responsibility |
 | --- | --- |

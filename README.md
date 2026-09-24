@@ -14,19 +14,15 @@ agent mode switching/routing,
 operations, and tool calling.
 It also launches and/or intermediates MCP servers and model providers and proxies.
 It does that by managing packs.
-
 Packs contain any combination of content, i.e., prompts,
-agent modes, operations, tools, MCP servers and proxies.
-E.g., the *core* pack contains system-prompt and a minimal *session_context*.
+agent modes, operations, tools, MCP servers and proxies,
+e.g., the *core* pack contains system-prompt and a minimal *session_context*.
 
-The [host](host) loads packs to make modes, operations, and tools available.
-It also bootstraps first- and third-party the MCP servers.
-It uses the SDK to interact with the kernel, packs and servers.
-
+The [host](host) loads packs and registers their modes, operations, and tools in the kernel.
+It also bootstraps [first-](mcp_server) and third-party MCP servers and proxies.
 The [sdk](sdk) contains the core, memory, introspect, and recovery packs.
-It helps the host make use of the built-in servers in [mcp_server](mcp_server).
-It also contains the CEL-based model router the host offers.
-There is also a `packstest` harness verifies content packs in-process,
+It also contains the CEL-based [model router](sdk/src/sdk/router/) the host uses.
+There is also the `packstest` harness that verifies content packs in-process,
 from source, with no model calls.
 
 The [`lisa-host-cli`][lisa-host-cli] contains the runnable CLI tool.
