@@ -47,6 +47,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
@@ -5439,6 +5440,592 @@ def _inject_iteration_briefing(
     return stalled_write_guidance
 
 
+@dataclass(frozen=True, slots=True)
+class _ModeHandoff:
+    """The outcome of one intercepted mode handoff (Case B).
+
+    ``action`` is the loop control: ``"break"`` leaves the dispatch loop
+    (every Case-B path does — success, loop-guard, entry/plan failure).
+    """
+
+    action: str
+    mode_id: str
+    mode_config: Any
+    ctx: Any
+    tool_schemas: list[dict[str, Any]]
+    capability_manifest: Any
+    routing_hint: str
+    chain_advance_guidance: str
+    pending_yield: YieldAction | None
+    handoff_to: str | None
+    content: str
+
+
+async def _intercept_mode_handoff(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    ledger: Any,
+    execution_policy: ExecutionPolicy | None,
+    routing_ctx: RoutingContext,
+    preferred_model_id: str | None,
+    suppress_routing_hint: bool,
+    yield_policy_override: YieldPolicy | None,
+    hint_override_limit: int,
+    max_handoffs_per_turn: int,
+    max_tool_iterations: int,
+    mode_id: str,
+    mode_config: Any,
+    query: str,
+    ctx: Any,
+    messages: list[dict[str, Any]],
+    capability_manifest: Any,
+    routing_hint: str,
+    chain_advance_guidance: str,
+    pending_yield: YieldAction | None,
+    handoff_to: str | None,
+    content: str,
+    target_stage: str,
+    rationale: str,
+    delegated_goal: str,
+    context_payload: str,
+    tool_calls: list[dict[str, Any]],
+    tool_call: dict[str, Any],
+    tool_name: str,
+    tool_call_id: str,
+    assemble_system: Callable[[str, str | None], str],
+    build_entry_ctx: Callable[..., Any],
+    sys_segments: SystemPromptSegments,
+    tool_schemas: list[dict[str, Any]],
+    emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    tool_dispatch_started: float,
+    log: logging.Logger,
+) -> _ModeHandoff:
+    """Execute one intercepted mode handoff (Case B) and its guards.
+
+    Runs the hint-override/loop-guard tracking, delegates the mode switch to
+    ``_execute_mid_turn_handoff`` (prompt swap, handoff context, surface
+    rebuild, entry ops, chained-hint recompute), and surfaces the
+    entry-failure / plan-failure deterministic messages. A REJECTED handoff
+    (not routable, target mode missing) returns ``handoff_to`` unchanged —
+    the caller's already-stamped value must survive.
+    """
+
+    # ── Case B: mode handoff (routing FSM) ────────────────
+    # The forced-fork / forced-transition enforcer state
+    # and per-step counters are reset by ``apply_routing``
+    # below — one applier owns that bookkeeping for every
+    # handoff origin (Phase 3). Override tracking and the
+    # max-handoff loop guard live in
+    # ``_track_handoff_and_guard_loops``.
+    _loop_guard_output = _track_handoff_and_guard_loops(
+        state=state,
+        mode_id=mode_id,
+        target_stage=target_stage,
+        routing_hint=routing_hint,
+        hint_override_limit=hint_override_limit,
+        max_handoffs_per_turn=max_handoffs_per_turn,
+        log=log,
+    )
+    if _loop_guard_output:
+        tool_output = _loop_guard_output
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": tool_output,
+            }
+        )
+        content = tool_output
+        return _ModeHandoff(
+            action="break",
+            mode_id=mode_id,
+            mode_config=mode_config,
+            ctx=ctx,
+            tool_schemas=tool_schemas,
+            capability_manifest=capability_manifest,
+            routing_hint=routing_hint,
+            chain_advance_guidance=chain_advance_guidance,
+            pending_yield=pending_yield,
+            handoff_to=handoff_to,
+            content=content,
+        )
+    # Initialize the post-handoff hint to empty for every
+    # handoff path. The chained-hint recomputation below
+    # (inside the target-mode-found ``else`` branch)
+    # overwrites this when the new mode leaves a residual
+    # intent gap. Branches that reject the handoff (not
+    # routable, target mode missing) leave it empty so the
+    # post-tool-output nudge at the ``if post_handoff_hint``
+    # check below is skipped. Without this initialization
+    # those reject branches reach that check with an
+    # unbound local → ``UnboundLocalError`` (logged as
+    # "Tool 'transition_stage' failed in turn runner").
+    # ── Case B body ────────────────────────
+    # The mode-switch execution lives in
+    # ``_execute_mid_turn_handoff`` (prompt swap,
+    # handoff context, surface rebuild, entry ops, ctx
+    # patch, mid-turn pre-turn ops, chained-hint
+    # recomputation). A REJECTED handoff (not routable,
+    # target mode missing) returns ``handoff_to=None``
+    # and must NOT clobber the caller's already-stamped
+    # ``handoff_to`` — the pre-extraction inline code
+    # only assigned it on the success path.
+    (
+        mode_id,
+        mode_config,
+        ctx,
+        tool_output,
+        tool_schemas,
+        capability_manifest,
+        routing_hint,
+        chain_advance_guidance,
+        pending_yield,
+        _helper_handoff_to,
+        _,  # entry_output — the loop does not render it
+    ) = await _execute_mid_turn_handoff(
+        state=state,
+        hooks=hooks,
+        mode_id=mode_id,
+        query=query,
+        target_stage=target_stage,
+        rationale=rationale,
+        delegated_goal=delegated_goal,
+        context_payload=context_payload,
+        ledger=ledger,
+        execution_policy=execution_policy,
+        routing_ctx=routing_ctx,
+        pool=pool,
+        preferred_model_id=preferred_model_id,
+        suppress_routing_hint=suppress_routing_hint,
+        capability_manifest=capability_manifest,
+        routing_hint=routing_hint,
+        chain_advance_guidance=chain_advance_guidance,
+        pending_yield=pending_yield,
+        yield_policy_override=yield_policy_override,
+        hint_override_limit=hint_override_limit,
+        max_handoffs_per_turn=max_handoffs_per_turn,
+        ctx=ctx,
+        build_entry_ctx=build_entry_ctx,
+        sys_segments=sys_segments,
+        messages=messages,
+        assemble_system=assemble_system,
+        log=log,
+    )
+    # Preserve an already-stamped handoff across a
+    # rejected re-handoff (self-handoff to a mode whose
+    # routing targets exclude it): the inline pre-
+    # extraction code never touched ``handoff_to`` on
+    # the reject path, so the extraction must not
+    # clobber it with the helper's None either.
+    if _helper_handoff_to is not None:
+        handoff_to = _helper_handoff_to
+    await emit_stage(
+        "tool_dispatch_complete",
+        {
+            "tool": tool_name,
+            "tool_kind": "transition",
+            "state.iteration": state.iteration,
+            "tool_calls_so_far": state.total_tool_calls,
+            "max_tool_calls": max_tool_iterations,
+            "ok": True,
+            "transition": "handoff",
+            "handoff_to": target_stage,
+            "max_handoffs": max_handoffs_per_turn,
+            "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
+        },
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": tool_output,
+        }
+    )
+    # Phase 7 (one control channel): when a
+    # post-handoff hint exists (the chain is not yet
+    # complete), the chain-advance directive rides the
+    # per-iteration lifecycle briefing
+    # (``chain_advance_guidance``, set above) instead
+    # of a synthesized ``user`` message — the briefing
+    # is rebuilt before the next model call, so the
+    # model sees the directive at the same point it
+    # used to see the escalation message.
+    # If the entry operation for this handoff target
+    # failed, do NOT ``continue`` into the data-less
+    # mode. The model would have nothing to work on and
+    # would drift into an unrelated action mode. Break
+    # the loop with a deterministic failure so the user
+    # sees the provider failure and re-issues.
+    if state.entry_failed:
+        content = (
+            f"The `{state.entry_failed_mode}` mode's entry "
+            f"operation failed ({state.entry_failed_reason}). "
+            f"Reconfigure the failed provider and re-issue the "
+            f"request."
+        )
+        return _ModeHandoff(
+            action="break",
+            mode_id=mode_id,
+            mode_config=mode_config,
+            ctx=ctx,
+            tool_schemas=tool_schemas,
+            capability_manifest=capability_manifest,
+            routing_hint=routing_hint,
+            chain_advance_guidance=chain_advance_guidance,
+            pending_yield=pending_yield,
+            handoff_to=handoff_to,
+            content=content,
+        )
+    if state.plan_failed:
+        # The planner (e.g. ``plan``) returned no
+        # routing target. Surface a structured recovery
+        # prompt instead of continuing in the data-less
+        # planner mode (the 2026-07-30 bounce).
+        content = (
+            f"I attempted to plan this request in "
+            f"`{state.plan_failed_mode}` mode but could "
+            f"not produce a routing decision (reason: "
+            f"{state.plan_failed_reason}). This is often "
+            f"a sign of a complex or ambiguous multi-step "
+            f"request.\n\n"
+            f"You can:\n"
+            f"  1. Rephrase the request with explicit "
+            f"sequential steps "
+            f'(e.g. "search for X, then write a markdown '
+            f'report").\n'
+            f"  2. Name the target mode directly (e.g. "
+            f"`/markdown ...`, `/ponder ...`) to bypass "
+            f"planning.\n"
+            f"  3. Ask me to discuss it first "
+            f"(`/discuss ...`) so I can clarify what you "
+            f"want before committing to a workflow."
+        )
+        return _ModeHandoff(
+            action="break",
+            mode_id=mode_id,
+            mode_config=mode_config,
+            ctx=ctx,
+            tool_schemas=tool_schemas,
+            capability_manifest=capability_manifest,
+            routing_hint=routing_hint,
+            chain_advance_guidance=chain_advance_guidance,
+            pending_yield=pending_yield,
+            handoff_to=handoff_to,
+            content=content,
+        )
+    if tool_call != tool_calls[-1]:
+        log.warning(
+            "Model batched %d trailing tool call(s) after transition_stage. "
+            "Breaking the dispatch loop to cleanly boot the new mode.",
+            len(tool_calls) - tool_calls.index(tool_call) - 1,
+        )
+    return _ModeHandoff(
+        action="break",
+        mode_id=mode_id,
+        mode_config=mode_config,
+        ctx=ctx,
+        tool_schemas=tool_schemas,
+        capability_manifest=capability_manifest,
+        routing_hint=routing_hint,
+        chain_advance_guidance=chain_advance_guidance,
+        pending_yield=pending_yield,
+        handoff_to=handoff_to,
+        content=content,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _TransitionIntercept:
+    """The outcome of intercepting one ``transition_stage`` tool call.
+
+    ``action`` is the loop control the caller must apply: ``"break"`` leaves
+    the tool-calls dispatch loop, ``"continue"`` skips to the next tool
+    call. Every interception path resolves the call — the helper never
+    returns ``"proceed"``.
+    """
+
+    action: str
+    mode_id: str
+    mode_config: Any
+    ctx: Any
+    tool_schemas: list[dict[str, Any]]
+    capability_manifest: Any
+    routing_hint: str
+    chain_advance_guidance: str
+    pending_yield: YieldAction | None
+    handoff_to: str | None
+    transitioned_to: str | None
+    content: str
+    pre_handoff_text: str
+
+
+async def _intercept_transition_stage(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    ledger: Any,
+    execution_policy: ExecutionPolicy | None,
+    routing_ctx: RoutingContext,
+    preferred_model_id: str | None,
+    suppress_routing_hint: bool,
+    yield_policy_override: YieldPolicy | None,
+    hint_override_limit: int,
+    max_handoffs_per_turn: int,
+    max_tool_iterations: int,
+    mode_id: str,
+    mode_config: Any,
+    query: str,
+    ctx: Any,
+    messages: list[dict[str, Any]],
+    capability_manifest: Any,
+    routing_hint: str,
+    chain_advance_guidance: str,
+    pending_yield: YieldAction | None,
+    handoff_to: str | None,
+    transitioned_to: str | None,
+    content: str,
+    pre_handoff_text: str,
+    tool_calls: list[dict[str, Any]],
+    tool_call: dict[str, Any],
+    tool_name: str,
+    tool_arguments: Any,
+    tool_call_id: str,
+    assemble_system: Callable[[str, str | None], str],
+    build_entry_ctx: Callable[..., Any],
+    sys_segments: SystemPromptSegments,
+    tool_schemas: list[dict[str, Any]],
+    emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    tool_dispatch_started: float,
+    log: logging.Logger,
+) -> _TransitionIntercept:
+    """Intercept one ``transition_stage`` call: validate, advance, or reject.
+
+    Unified FSM routing (see docs/ROUTING_RFC_HANDOFF.md):
+    ``transition_stage`` handles two target kinds — a routable ``mode_id``
+    (mid-turn mode switch / handoff, Case B below) and a workflow stage (the
+    intra-mode stage-advance path). Parallel fan-out is owned by the ``fork``
+    operation, not via transition_stage.
+
+    A rejected handoff (not routable / target mode missing) returns
+    ``handoff_to`` unchanged — the caller's already-stamped value must
+    survive (the pre-extraction inline code never assigned it on the
+    reject path).
+    """
+
+    def _ret(action: str) -> _TransitionIntercept:
+        return _TransitionIntercept(
+            action=action,
+            mode_id=mode_id,
+            mode_config=mode_config,
+            ctx=ctx,
+            tool_schemas=tool_schemas,
+            capability_manifest=capability_manifest,
+            routing_hint=routing_hint,
+            chain_advance_guidance=chain_advance_guidance,
+            pending_yield=pending_yield,
+            handoff_to=handoff_to,
+            transitioned_to=transitioned_to,
+            content=content,
+            pre_handoff_text=pre_handoff_text,
+        )
+
+    target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
+    rationale = str(tool_arguments.get("rationale") or "").strip()
+    delegated_goal = str(tool_arguments.get("delegated_goal") or "").strip()
+    context_payload = str(tool_arguments.get("context_payload") or "").strip()
+    if not target_stage:
+        tool_output = "transition_stage requires target_stage_id."
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": tool_output,
+            }
+        )
+        await emit_stage(
+            "tool_dispatch_complete",
+            {
+                "tool": tool_name,
+                "tool_kind": "transition",
+                "state.iteration": state.iteration,
+                "tool_calls_so_far": state.total_tool_calls,
+                "ok": False,
+                "transition": "invalid",
+                "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
+            },
+        )
+        return _ret("continue")
+    # ── Guard: don't route a research/review intent into an
+    # action mode after a search entry op failed this turn.
+    # Once ``state.entry_failed`` is set, the research
+    # backend is known dead. Letting the model hand off to
+    # ``coding`` lets it author a tangible-but-wrong artifact
+    # (the 2026-07-25 ``crew/`` directory) as the "answer" to
+    # a research question. Reject the handoff and force the
+    # model to surface the failure instead.
+    if state.entry_failed and target_stage == "coding":
+        tool_output = (
+            "Cannot route to `coding` mode: the search/research "
+            f"backend failed this turn ({state.entry_failed_mode}: "
+            f"{state.entry_failed_reason}). A research/review "
+            "request must not be answered by authoring artifacts. "
+            "Report the search failure to the user and suggest "
+            "re-issuing once the provider is reconfigured."
+        )
+        log.warning(
+            "rejected coding handoff after entry failure (failed_mode=%s)",
+            state.entry_failed_mode,
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": tool_output,
+            }
+        )
+        return _ret("continue")
+
+    # ── Unified target resolution (Phase 6c) ──────────
+    # One resolution order for every mode kind: the target
+    # resolves against the current mode's stage graph first
+    # (intra-mode stage advance, validated against the
+    # current stage's allowed_next_stages), then against
+    # routable mode ids (inter-mode handoff). Both advance
+    # the same WorkflowPosition. Stage ids shadow mode ids
+    # within their own mode (ponder's ``exit`` wins over a
+    # hypothetical ``exit`` mode).
+    if mode_config is not None and target_stage in mode_config.stages:
+        # Intra-mode stage transition. The transition target
+        # is recorded on the TurnResult (``transitioned_to``)
+        # and written to the thread; the WorkflowView derives
+        # the stage from it on the next turn. No mutable
+        # position is updated here.
+        transitioned_to = target_stage
+        tool_output = f"Transitioned to stage: {target_stage}." + (
+            f" Rationale: {rationale}" if rationale else ""
+        )
+        await emit_stage(
+            "tool_dispatch_complete",
+            {
+                "tool": tool_name,
+                "tool_kind": "transition",
+                "state.iteration": state.iteration,
+                "tool_calls_so_far": state.total_tool_calls,
+                "ok": transitioned_to is not None,
+                "transition": "workflow_stage",
+                "transitioned_to": transitioned_to,
+                "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
+            },
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": tool_output,
+            }
+        )
+        if tool_call != tool_calls[-1]:
+            log.warning(
+                "Model batched %d trailing tool call(s) after stage transition. "
+                "Breaking the dispatch loop to cleanly boot the new stage.",
+                len(tool_calls) - tool_calls.index(tool_call) - 1,
+            )
+        return _ret("break")
+
+    # ── Case B: mode handoff (routing FSM) ────────────────
+    # The handoff execution, its loop guard, and the entry/plan failure
+    # surfaces live in ``_intercept_mode_handoff``.
+    if is_routable_mode(target_stage):
+        _mh = await _intercept_mode_handoff(
+            state=state,
+            hooks=hooks,
+            pool=pool,
+            ledger=ledger,
+            execution_policy=execution_policy,
+            routing_ctx=routing_ctx,
+            preferred_model_id=preferred_model_id,
+            suppress_routing_hint=suppress_routing_hint,
+            yield_policy_override=yield_policy_override,
+            hint_override_limit=hint_override_limit,
+            max_handoffs_per_turn=max_handoffs_per_turn,
+            max_tool_iterations=max_tool_iterations,
+            mode_id=mode_id,
+            mode_config=mode_config,
+            query=query,
+            ctx=ctx,
+            messages=messages,
+            capability_manifest=capability_manifest,
+            routing_hint=routing_hint,
+            chain_advance_guidance=chain_advance_guidance,
+            pending_yield=pending_yield,
+            handoff_to=handoff_to,
+            content=content,
+            target_stage=target_stage,
+            rationale=rationale,
+            delegated_goal=delegated_goal,
+            context_payload=context_payload,
+            tool_calls=tool_calls,
+            tool_call=tool_call,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            assemble_system=assemble_system,
+            build_entry_ctx=build_entry_ctx,
+            sys_segments=sys_segments,
+            tool_schemas=tool_schemas,
+            emit_stage=emit_stage,
+            tool_dispatch_started=tool_dispatch_started,
+            log=log,
+        )
+        mode_id = _mh.mode_id
+        mode_config = _mh.mode_config
+        ctx = _mh.ctx
+        tool_schemas = _mh.tool_schemas
+        capability_manifest = _mh.capability_manifest
+        routing_hint = _mh.routing_hint
+        chain_advance_guidance = _mh.chain_advance_guidance
+        if _mh.pending_yield is not None:
+            pending_yield = _mh.pending_yield
+        if _mh.handoff_to is not None:
+            handoff_to = _mh.handoff_to
+        content = _mh.content
+        return _ret(_mh.action)
+
+    tool_output = (
+        f"Unknown transition target: '{target_stage}'. "
+        f"It is not a stage in mode '{mode_id}' or a routable mode."
+    )
+    await emit_stage(
+        "tool_dispatch_complete",
+        {
+            "tool": tool_name,
+            "tool_kind": "transition",
+            "state.iteration": state.iteration,
+            "tool_calls_so_far": state.total_tool_calls,
+            "ok": False,
+            "transition": "unknown",
+            "transitioned_to": transitioned_to,
+            "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
+        },
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": tool_output,
+        }
+    )
+    return _ret("continue")
+
+
 async def _run_turn_inner(
     *,
     mode_id: str,
@@ -6471,323 +7058,65 @@ async def _run_turn_inner(
                 #   2. workflow stage — existing apply_stage_transition path
                 # Parallel fan-out is owned by the ``fork`` operation
                 # (dispatched as a tool below, not via transition_stage).
+                # The full interception lives in ``_intercept_transition_stage``;
+                # it returns the loop action plus the updated loop locals.
                 if tool_name == _TRANSITION_TOOL_NAME:
-                    target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
-                    rationale = str(tool_arguments.get("rationale") or "").strip()
-                    delegated_goal = str(tool_arguments.get("delegated_goal") or "").strip()
-                    context_payload = str(tool_arguments.get("context_payload") or "").strip()
-                    if not target_stage:
-                        tool_output = "transition_stage requires target_stage_id."
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": tool_output,
-                            }
-                        )
-                        await _emit_stage(
-                            "tool_dispatch_complete",
-                            {
-                                "tool": tool_name,
-                                "tool_kind": "transition",
-                                "_state.iteration": _state.iteration,
-                                "tool_calls_so_far": _state.total_tool_calls,
-                                "ok": False,
-                                "transition": "invalid",
-                                "duration_ms": int(
-                                    (time.monotonic() - _tool_dispatch_started) * 1000
-                                ),
-                            },
-                        )
-                        continue
-                    # ── Guard: don't route a research/review intent into an
-                    # action mode after a search entry op failed this turn.
-                    # Once ``_state.entry_failed`` is set, the research
-                    # backend is known dead. Letting the model hand off to
-                    # ``coding`` lets it author a tangible-but-wrong artifact
-                    # (the 2026-07-25 ``crew/`` directory) as the "answer" to
-                    # a research question. Reject the handoff and force the
-                    # model to surface the failure instead.
-                    if _state.entry_failed and target_stage == "coding":
-                        tool_output = (
-                            "Cannot route to `coding` mode: the search/research "
-                            f"backend failed this turn ({_state.entry_failed_mode}: "
-                            f"{_state.entry_failed_reason}). A research/review "
-                            "request must not be answered by authoring artifacts. "
-                            "Report the search failure to the user and suggest "
-                            "re-issuing once the provider is reconfigured."
-                        )
-                        _log.warning(
-                            "rejected coding handoff after entry failure (failed_mode=%s)",
-                            _state.entry_failed_mode,
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": tool_output,
-                            }
-                        )
-                        continue
-
-                    # ── Unified target resolution (Phase 6c) ──────────
-                    # One resolution order for every mode kind: the target
-                    # resolves against the current mode's stage graph first
-                    # (intra-mode stage advance, validated against the
-                    # current stage's allowed_next_stages), then against
-                    # routable mode ids (inter-mode handoff). Both advance
-                    # the same WorkflowPosition. Stage ids shadow mode ids
-                    # within their own mode (ponder's ``exit`` wins over a
-                    # hypothetical ``exit`` mode).
-                    if mode_config is not None and target_stage in mode_config.stages:
-                        # Intra-mode stage transition. The transition target
-                        # is recorded on the TurnResult (``transitioned_to``)
-                        # and written to the thread; the WorkflowView derives
-                        # the stage from it on the next turn. No mutable
-                        # position is updated here.
-                        transitioned_to = target_stage
-                        tool_output = f"Transitioned to stage: {target_stage}." + (
-                            f" Rationale: {rationale}" if rationale else ""
-                        )
-                        await _emit_stage(
-                            "tool_dispatch_complete",
-                            {
-                                "tool": tool_name,
-                                "tool_kind": "transition",
-                                "_state.iteration": _state.iteration,
-                                "tool_calls_so_far": _state.total_tool_calls,
-                                "ok": transitioned_to is not None,
-                                "transition": "workflow_stage",
-                                "transitioned_to": transitioned_to,
-                                "duration_ms": int(
-                                    (time.monotonic() - _tool_dispatch_started) * 1000
-                                ),
-                            },
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": tool_output,
-                            }
-                        )
-                        if tool_call != tool_calls[-1]:
-                            _log.warning(
-                                "Model batched %d trailing tool call(s) after stage transition. "
-                                "Breaking the dispatch loop to cleanly boot the new stage.",
-                                len(tool_calls) - tool_calls.index(tool_call) - 1,
-                            )
+                    _ti = await _intercept_transition_stage(
+                        state=_state,
+                        hooks=hooks,
+                        pool=pool,
+                        ledger=ledger,
+                        execution_policy=execution_policy,
+                        routing_ctx=_routing_ctx,
+                        preferred_model_id=preferred_model_id,
+                        suppress_routing_hint=suppress_routing_hint,
+                        yield_policy_override=_yield_policy_override,
+                        hint_override_limit=_hint_override_limit,
+                        max_handoffs_per_turn=_max_handoffs_per_turn,
+                        max_tool_iterations=max_tool_iterations,
+                        mode_id=mode_id,
+                        mode_config=mode_config,
+                        query=query,
+                        ctx=ctx,
+                        messages=messages,
+                        capability_manifest=capability_manifest,
+                        routing_hint=routing_hint,
+                        chain_advance_guidance=_chain_advance_guidance,
+                        pending_yield=_pending_yield,
+                        handoff_to=handoff_to,
+                        transitioned_to=transitioned_to,
+                        content=content,
+                        pre_handoff_text=_pre_handoff_text,
+                        tool_calls=tool_calls,
+                        tool_call=tool_call,
+                        tool_name=tool_name,
+                        tool_arguments=tool_arguments,
+                        tool_call_id=tool_call_id,
+                        assemble_system=assemble_system,
+                        build_entry_ctx=_build_entry_ctx,
+                        sys_segments=_sys_segments,
+                        tool_schemas=tool_schemas,
+                        emit_stage=_emit_stage,
+                        tool_dispatch_started=_tool_dispatch_started,
+                        log=_log,
+                    )
+                    mode_id = _ti.mode_id
+                    mode_config = _ti.mode_config
+                    ctx = _ti.ctx
+                    tool_schemas = _ti.tool_schemas
+                    capability_manifest = _ti.capability_manifest
+                    routing_hint = _ti.routing_hint
+                    _chain_advance_guidance = _ti.chain_advance_guidance
+                    if _ti.pending_yield is not None:
+                        _pending_yield = _ti.pending_yield
+                    if _ti.handoff_to is not None:
+                        handoff_to = _ti.handoff_to
+                    transitioned_to = _ti.transitioned_to
+                    content = _ti.content
+                    _pre_handoff_text = _ti.pre_handoff_text
+                    if _ti.action == "break":
                         break
-
-                    # ── Case B: mode handoff (routing FSM) ────────────────
-                    if is_routable_mode(target_stage):
-                        # The forced-fork / forced-transition enforcer state
-                        # and per-step counters are reset by ``apply_routing``
-                        # below — one applier owns that bookkeeping for every
-                        # handoff origin (Phase 3). Override tracking and the
-                        # max-handoff loop guard live in
-                        # ``_track_handoff_and_guard_loops``.
-                        _loop_guard_output = _track_handoff_and_guard_loops(
-                            state=_state,
-                            mode_id=mode_id,
-                            target_stage=target_stage,
-                            routing_hint=routing_hint,
-                            hint_override_limit=_hint_override_limit,
-                            max_handoffs_per_turn=_max_handoffs_per_turn,
-                            log=_log,
-                        )
-                        if _loop_guard_output:
-                            tool_output = _loop_guard_output
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "name": tool_name,
-                                    "content": tool_output,
-                                }
-                            )
-                            content = tool_output
-                            break
-                        # Initialize the post-handoff hint to empty for every
-                        # handoff path. The chained-hint recomputation below
-                        # (inside the target-mode-found ``else`` branch)
-                        # overwrites this when the new mode leaves a residual
-                        # intent gap. Branches that reject the handoff (not
-                        # routable, target mode missing) leave it empty so the
-                        # post-tool-output nudge at the ``if post_handoff_hint``
-                        # check below is skipped. Without this initialization
-                        # those reject branches reach that check with an
-                        # unbound local → ``UnboundLocalError`` (logged as
-                        # "Tool 'transition_stage' failed in turn runner").
-                        # ── Case B body ────────────────────────
-                        # The mode-switch execution lives in
-                        # ``_execute_mid_turn_handoff`` (prompt swap,
-                        # handoff context, surface rebuild, entry ops, ctx
-                        # patch, mid-turn pre-turn ops, chained-hint
-                        # recomputation). A REJECTED handoff (not routable,
-                        # target mode missing) returns ``handoff_to=None``
-                        # and must NOT clobber the caller's already-stamped
-                        # ``handoff_to`` — the pre-extraction inline code
-                        # only assigned it on the success path.
-                        (
-                            mode_id,
-                            mode_config,
-                            ctx,
-                            tool_output,
-                            tool_schemas,
-                            capability_manifest,
-                            routing_hint,
-                            _chain_advance_guidance,
-                            _pending_yield,
-                            _helper_handoff_to,
-                            _,  # entry_output — the loop does not render it
-                        ) = await _execute_mid_turn_handoff(
-                            state=_state,
-                            hooks=hooks,
-                            mode_id=mode_id,
-                            query=query,
-                            target_stage=target_stage,
-                            rationale=rationale,
-                            delegated_goal=delegated_goal,
-                            context_payload=context_payload,
-                            ledger=ledger,
-                            execution_policy=execution_policy,
-                            routing_ctx=_routing_ctx,
-                            pool=pool,
-                            preferred_model_id=preferred_model_id,
-                            suppress_routing_hint=suppress_routing_hint,
-                            capability_manifest=capability_manifest,
-                            routing_hint=routing_hint,
-                            chain_advance_guidance=_chain_advance_guidance,
-                            pending_yield=_pending_yield,
-                            yield_policy_override=_yield_policy_override,
-                            hint_override_limit=_hint_override_limit,
-                            max_handoffs_per_turn=_max_handoffs_per_turn,
-                            ctx=ctx,
-                            build_entry_ctx=_build_entry_ctx,
-                            sys_segments=_sys_segments,
-                            messages=messages,
-                            assemble_system=assemble_system,
-                            log=_log,
-                        )
-                        # Preserve an already-stamped handoff across a
-                        # rejected re-handoff (self-handoff to a mode whose
-                        # routing targets exclude it): the inline pre-
-                        # extraction code never touched ``handoff_to`` on
-                        # the reject path, so the extraction must not
-                        # clobber it with the helper's None either.
-                        if _helper_handoff_to is not None:
-                            handoff_to = _helper_handoff_to
-                        await _emit_stage(
-                            "tool_dispatch_complete",
-                            {
-                                "tool": tool_name,
-                                "tool_kind": "transition",
-                                "_state.iteration": _state.iteration,
-                                "tool_calls_so_far": _state.total_tool_calls,
-                                "max_tool_calls": max_tool_iterations,
-                                "ok": True,
-                                "transition": "handoff",
-                                "handoff_to": target_stage,
-                                "max_handoffs": _max_handoffs_per_turn,
-                                "duration_ms": int(
-                                    (time.monotonic() - _tool_dispatch_started) * 1000
-                                ),
-                            },
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": tool_output,
-                            }
-                        )
-                        # Phase 7 (one control channel): when a
-                        # post-handoff hint exists (the chain is not yet
-                        # complete), the chain-advance directive rides the
-                        # per-iteration lifecycle briefing
-                        # (``_chain_advance_guidance``, set above) instead
-                        # of a synthesized ``user`` message — the briefing
-                        # is rebuilt before the next model call, so the
-                        # model sees the directive at the same point it
-                        # used to see the escalation message.
-                        # If the entry operation for this handoff target
-                        # failed, do NOT ``continue`` into the data-less
-                        # mode. The model would have nothing to work on and
-                        # would drift into an unrelated action mode. Break
-                        # the loop with a deterministic failure so the user
-                        # sees the provider failure and re-issues.
-                        if _state.entry_failed:
-                            content = (
-                                f"The `{_state.entry_failed_mode}` mode's entry "
-                                f"operation failed ({_state.entry_failed_reason}). "
-                                f"Reconfigure the failed provider and re-issue the "
-                                f"request."
-                            )
-                            break
-                        if _state.plan_failed:
-                            # The planner (e.g. ``plan``) returned no
-                            # routing target. Surface a structured recovery
-                            # prompt instead of continuing in the data-less
-                            # planner mode (the 2026-07-30 bounce).
-                            content = (
-                                f"I attempted to plan this request in "
-                                f"`{_state.plan_failed_mode}` mode but could "
-                                f"not produce a routing decision (reason: "
-                                f"{_state.plan_failed_reason}). This is often "
-                                f"a sign of a complex or ambiguous multi-step "
-                                f"request.\n\n"
-                                f"You can:\n"
-                                f"  1. Rephrase the request with explicit "
-                                f"sequential steps "
-                                f'(e.g. "search for X, then write a markdown '
-                                f'report").\n'
-                                f"  2. Name the target mode directly (e.g. "
-                                f"`/markdown ...`, `/ponder ...`) to bypass "
-                                f"planning.\n"
-                                f"  3. Ask me to discuss it first "
-                                f"(`/discuss ...`) so I can clarify what you "
-                                f"want before committing to a workflow."
-                            )
-                            break
-                        if tool_call != tool_calls[-1]:
-                            _log.warning(
-                                "Model batched %d trailing tool call(s) after transition_stage. "
-                                "Breaking the dispatch loop to cleanly boot the new mode.",
-                                len(tool_calls) - tool_calls.index(tool_call) - 1,
-                            )
-                        break
-                    tool_output = (
-                        f"Unknown transition target: '{target_stage}'. "
-                        f"It is not a stage in mode '{mode_id}' or a routable mode."
-                    )
-                    await _emit_stage(
-                        "tool_dispatch_complete",
-                        {
-                            "tool": tool_name,
-                            "tool_kind": "transition",
-                            "_state.iteration": _state.iteration,
-                            "tool_calls_so_far": _state.total_tool_calls,
-                            "ok": False,
-                            "transition": "unknown",
-                            "transitioned_to": transitioned_to,
-                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                        },
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": tool_output,
-                        }
-                    )
                     continue
-
                 # Capability dispatch (operation, pack tool, or MCP tool)
                 _outcome = await dispatch_capability(
                     tool_name=tool_name,
