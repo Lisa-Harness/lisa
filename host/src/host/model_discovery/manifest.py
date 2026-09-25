@@ -465,7 +465,8 @@ def _router_preset_annotations(
     lines.extend(
         _preset_block(
             "cost-conscious",
-            "Cheap default, escalate to reasoning model only on code or when the turn drags, downgrade to default early on tool-heavy turns.",
+            "Cheap default, escalate to reasoning model only on code or when the "
+            "turn drags, downgrade to default early on tool-heavy turns.",
             "tight token budgets, dev/test, high-volume simple turns.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
@@ -498,7 +499,8 @@ def _router_preset_annotations(
     lines.extend(
         _preset_block(
             "coding-focused",
-            "Code model for code turns, reasoning model for synthesis, code model when nothing else matches.",
+            "Code model for code turns, reasoning model for synthesis, code model "
+            "when nothing else matches.",
             "software engineering work, agentic coding, repo Q&A.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},

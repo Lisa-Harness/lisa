@@ -375,7 +375,8 @@ async def test_recall_returns_empty_when_no_records(tmp_path: Path) -> None:
 async def test_recall_returns_empty_when_no_token_overlap(
     tmp_path: Path,
 ) -> None:
-    """When a non-empty query matches nothing, empty string is returned and access_count is not bumped."""
+    """When a non-empty query matches nothing, empty string is returned and
+    access_count is not bumped."""
     store = _store(tmp_path)
     r1 = await store.record_memory(_write(content="unrelated content one"))
     r2 = await store.record_memory(_write(content="unrelated content two"))

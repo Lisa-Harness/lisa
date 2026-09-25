@@ -267,7 +267,8 @@ def _detect_query_intents(
         if abandonment_markers and any(marker in query_lower for marker in abandonment_markers):
             abandoned_targets.add(target_id)
             _log.info(
-                "query intent detection: target=%s matched but suppressed (topic-abandonment marker present)",
+                "query intent detection: target=%s matched but suppressed "
+                "(topic-abandonment marker present)",
                 target_id,
             )
             continue
@@ -579,14 +580,16 @@ def _best_partial_coverage_target(
     )
     if chained is not None:
         _log.info(
-            "routing hint: partial-coverage tie among targets=%s; earliest-keyword tie-break -> %s (gap=%s)",
+            "routing hint: partial-coverage tie among targets=%s; "
+            "earliest-keyword tie-break -> %s (gap=%s)",
             candidates,
             chained,
             sorted(gap_intents),
         )
         return chained
     _log.info(
-        "routing hint: partial-coverage tie among targets=%s with no keyword positions; list-order fallback -> %s (gap=%s)",
+        "routing hint: partial-coverage tie among targets=%s with no keyword "
+        "positions; list-order fallback -> %s (gap=%s)",
         candidates,
         candidates[0],
         sorted(gap_intents),
@@ -1020,7 +1023,8 @@ def _compute_capability_routing_hint(
             )
             if first_target:
                 _log.info(
-                    "routing hint: sequential multi-intent chain; routing to first target=%s (gap=%s)",
+                    "routing hint: sequential multi-intent chain; routing to "
+                    "first target=%s (gap=%s)",
                     first_target,
                     sorted(gap_intents),
                 )

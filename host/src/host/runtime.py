@@ -752,7 +752,8 @@ class HostRuntime:
                 if inst.body.strip():
                     apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
                     parts.append(
-                        f"## Instruction: {inst.name} (applies to: {apply_label})\n\n{inst.body.strip()}"
+                        f"## Instruction: {inst.name} (applies to: {apply_label})"
+                        f"\n\n{inst.body.strip()}"
                     )
 
             for skill in bundle.skills:

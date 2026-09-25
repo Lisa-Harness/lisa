@@ -2311,7 +2311,8 @@ async def _run_turn_inner(
                 _state.step_iteration = 0
                 _state.step_tool_calls = 0
                 _log.info(
-                    "turn lifecycle: resolver forced transition target=%s (mode=%s, iteration=%d, reason=%s)",
+                    "turn lifecycle: resolver forced transition target=%s "
+                    "(mode=%s, iteration=%d, reason=%s)",
                     _lifecycle_action.target_mode_id,
                     mode_id,
                     _state.iteration,
@@ -3192,7 +3193,8 @@ async def _run_turn_inner(
                     continue
 
                 _log.debug(
-                    "turn loop: natural completion (mode=%s, iteration=%d, no tool calls, no pending yield)",
+                    "turn loop: natural completion (mode=%s, iteration=%d, "
+                    "no tool calls, no pending yield)",
                     mode_id,
                     _state.iteration,
                 )
@@ -4147,6 +4149,17 @@ async def _run_turn_inner(
                                             # next turn. No mutable position
                                             # is persisted.
                                             if hooks.workflow.route_coordinator is not None:
+                                                _identity = hooks.identity
+                                                _route_metadata = {
+                                                    "mode_id": _planned_next,
+                                                    "query": query,
+                                                    "surface_id": _identity.surface_id,
+                                                    "conversation_id": _identity.conversation_id,
+                                                    "user_id": _identity.user_id,
+                                                    "session_plan_digest": (
+                                                        _identity.session_plan_digest
+                                                    ),
+                                                }
                                                 try:
                                                     hooks.workflow.route_coordinator.save(
                                                         CoordinatorRouteDecision(
@@ -4155,17 +4168,11 @@ async def _run_turn_inner(
                                                                 entry_result.output_json.get(
                                                                     "rationale"
                                                                 )
-                                                                or f"planned handoff from {target_stage}"
+                                                                or f"planned handoff "
+                                                                f"from {target_stage}"
                                                             ),
                                                         ),
-                                                        {
-                                                            "mode_id": _planned_next,
-                                                            "query": query,
-                                                            "surface_id": hooks.identity.surface_id,
-                                                            "conversation_id": hooks.identity.conversation_id,
-                                                            "user_id": hooks.identity.user_id,
-                                                            "session_plan_digest": hooks.identity.session_plan_digest,
-                                                        },
+                                                        _route_metadata,
                                                     )
                                                 except Exception as coord_exc:  # pylint: disable=broad-except
                                                     _log.warning(

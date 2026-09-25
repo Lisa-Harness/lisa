@@ -8,7 +8,8 @@ and use its typed accessors.
 
 Migration notes:
 - ``little_lisa.handle_message(msg)`` → ``handle_message(runtime, msg, transport)``
-- ``little_lisa._RUNTIME_STATE[...]`` → ``runtime.session.tokens.*``, ``runtime.session.last_turn_context``, etc.
+- ``little_lisa._RUNTIME_STATE[...]`` → ``runtime.session.tokens.*``,
+  ``runtime.session.last_turn_context``, etc.
 - ``little_lisa._function_name(...)`` → ``from host.module import function_name; ...``
 - CLI-only render functions (``format_modes``, ``format_models``, ``_status_segments``)
   now live in ``hosts/cli/render.py`` and are skipped here.
@@ -1164,7 +1165,10 @@ def test_apply_turn_usage_upgrades_old_schema_entries_in_place() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    reason="/tokens now reads runtime.session.tokens via format_token_stats; needs runtime setup migration"
+    reason=(
+        "/tokens now reads runtime.session.tokens via format_token_stats; "
+        "needs runtime setup migration"
+    )
 )
 async def test_tokens_command_returns_detailed_stats() -> None:
     pass

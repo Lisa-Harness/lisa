@@ -657,12 +657,14 @@ def load_catalog_from_disk(
             for idx, raw_kw in enumerate(keywords):
                 if not isinstance(raw_kw, str):
                     raise WorkflowValidationError(
-                        f"routing_intent_keywords[{tag_str}][{idx}] must be a string in {mode_config_path}"
+                        f"routing_intent_keywords[{tag_str}][{idx}] must be a "
+                        f"string in {mode_config_path}"
                     )
                 kw = raw_kw.strip().lower()
                 if not kw:
                     raise WorkflowValidationError(
-                        f"routing_intent_keywords[{tag_str}][{idx}] cannot be empty in {mode_config_path}"
+                        f"routing_intent_keywords[{tag_str}][{idx}] cannot be "
+                        f"empty in {mode_config_path}"
                     )
                 kw_list.append(kw)
             routing_intent_keywords[tag_str] = kw_list

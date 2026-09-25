@@ -145,7 +145,8 @@ def _wrap_declarative_tool_executor(
     async def _execute_allowed_tool(tool_id: str, ctx: Any) -> Any:
         if tool_id not in allowed_tool_ids:
             raise OperationExecutionError(
-                f"Declarative operation '{definition.operation_id}' cannot call undeclared tool '{tool_id}'."
+                f"Declarative operation '{definition.operation_id}' cannot call "
+                f"undeclared tool '{tool_id}'."
             )
         return await execute_tool_fn(tool_id, ctx)
 
@@ -199,7 +200,8 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
             )
         if definition.timeout_seconds < 0:
             raise OperationValidationError(
-                f"Operation '{operation_id}' has invalid timeout_seconds={definition.timeout_seconds}."
+                f"Operation '{operation_id}' has invalid "
+                f"timeout_seconds={definition.timeout_seconds}."
             )
         if definition.execution_kind == "prompt":
             if not definition.instruction_markdown_path.strip():
@@ -212,7 +214,8 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
                 )
             if definition.completion_max_tokens < 1:
                 raise OperationValidationError(
-                    f"Declarative operation '{operation_id}' has invalid completion_max_tokens={definition.completion_max_tokens}."
+                    f"Declarative operation '{operation_id}' has invalid "
+                    f"completion_max_tokens={definition.completion_max_tokens}."
                 )
         if tool_catalog is not None:
             for tool_id in definition.tool_ids:

@@ -184,7 +184,9 @@ async def test_instance_advanced_on_successful_handoff() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "markdown", "rationale": "code done"}',
+                            "arguments": (
+                                '{"target_stage_id": "markdown", "rationale": "code done"}'
+                            ),
                         },
                     }
                 ],

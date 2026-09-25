@@ -101,7 +101,7 @@ def _pack_host_commands() -> list[Any]:
     and caches the result. Pack commands are consulted after built-in host
     commands in ``_dispatch_host_command``.
     """
-    global _pack_command_cache
+    global _pack_command_cache  # noqa: PLW0603 — module-level cache seam
     if _pack_command_cache is not None:
         return _pack_command_cache
     from kernel.host_command_discovery import discover_pack_host_commands

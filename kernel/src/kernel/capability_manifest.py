@@ -110,7 +110,10 @@ def compile_capability_manifest(
         constraints.append(
             CapabilityConstraint(
                 constraint_type="mode",
-                description=f"Mode '{mode_id}' is authoritative: only listed tools/operations are advertised.",
+                description=(
+                    f"Mode '{mode_id}' is authoritative: only listed "
+                    f"tools/operations are advertised."
+                ),
                 value="tools_authoritative",
             )
         )
@@ -192,7 +195,8 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
         "",
         f"- mode: {mode_id or 'default'}",
         f"- available_tools: {len(manifest.entries)} "
-        f"(operations: {operations}, pack_tools: {pack_tool_count}, mcp: {mcp_count}, workflow: {workflow})",
+        f"(operations: {operations}, pack_tools: {pack_tool_count}, "
+        f"mcp: {mcp_count}, workflow: {workflow})",
         f"- tools_authoritative: {'yes' if tools_authoritative else 'no'}",
     ]
 
@@ -212,7 +216,8 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
         if horizon_parts:
             lines.append(
                 f"- total_capability_horizon: {', '.join(horizon_parts)} "
-                f"(available in other modes; only the {len(manifest.entries)} listed below are callable this turn)"
+                f"(available in other modes; only the {len(manifest.entries)} "
+                f"listed below are callable this turn)"
             )
 
     # Inactive capabilities are intentionally NOT listed in the model-facing

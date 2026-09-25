@@ -25,7 +25,10 @@ class TestAssembleSystemPromptWithCopilotCustomizations:
             stage_instruction=None,
             content_loader=_fake_content_loader,
             session_instruction="SESSION INSTRUCTION",
-            copilot_customizations="## Project Instructions\n\nAlways-on rules.\n\n## Instruction: Python (applies to: **/*.py)\n\nFollow PEP 8.",
+            copilot_customizations=(
+                "## Project Instructions\n\nAlways-on rules.\n\n"
+                "## Instruction: Python (applies to: **/*.py)\n\nFollow PEP 8."
+            ),
         )
 
         # Order: base prompt → session → copilot → mode

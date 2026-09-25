@@ -66,7 +66,7 @@ def set_thread_redaction_policy(policy: ThreadRedactionPolicy | None) -> None:
     Called once at host startup from ``host.bootstrap`` (or equivalent)
     after ``HostConfig`` is resolved. Pass ``None`` to disable redaction.
     """
-    global _thread_redaction
+    global _thread_redaction  # noqa: PLW0603 — module-level singleton seam
     _thread_redaction = policy
 
 

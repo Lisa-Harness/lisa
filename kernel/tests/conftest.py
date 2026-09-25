@@ -44,7 +44,7 @@ def _bridge_turnhooks_complete_to_gateway() -> Any:
     during each test.
     """
 
-    global _ORIGINAL_TURNHOOKS_INIT  # pylint: disable=global-statement
+    global _ORIGINAL_TURNHOOKS_INIT  # noqa: PLW0603 — conftest snapshot/restore seam
 
     from kernel.testing.gateway_stub import StubGatewayProvider
     from kernel.turn_runner import ContextSeams, TurnHooks

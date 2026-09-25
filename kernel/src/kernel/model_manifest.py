@@ -213,7 +213,8 @@ def load_model_manifest_from_text(
             raw_payload = yaml.safe_load(raw_text)
         else:
             raise ValueError(
-                f"Model manifest source_format must be 'yaml', 'yml', 'json', or 'auto'. Got: {source_format}"
+                f"Model manifest source_format must be 'yaml', 'yml', 'json', or "
+                f"'auto'. Got: {source_format}"
             )
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
         raise ValueError(

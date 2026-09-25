@@ -196,7 +196,8 @@ def register_routing_vocabulary(
     lists and passing them here; the kernel never reads the session plan
     directly.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
+    global _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
     _sequential_connectors = _normalize_connectors(sequential_connectors) or None
     _producer_intents = _normalize_intent_roles(producer_intents)
     _consumer_intents = _normalize_intent_roles(consumer_intents)
@@ -273,7 +274,8 @@ def reset_routing_vocabulary() -> None:
     Primarily for tests that construct a ``TurnHooks`` without a host boot
     path and need a clean slate. Production code never calls this.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
+    global _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
     _sequential_connectors = None
     _producer_intents = None
     _consumer_intents = None

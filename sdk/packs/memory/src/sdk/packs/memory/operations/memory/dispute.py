@@ -32,7 +32,9 @@ class Parameters(BaseModel):
     )
     search_query: str = Field(
         default="",
-        description="Find the record to dispute by searching memory content. Provide this OR memory_id.",
+        description=(
+            "Find the record to dispute by searching memory content. Provide this OR memory_id."
+        ),
     )
     correction: str = Field(
         ...,
@@ -40,7 +42,9 @@ class Parameters(BaseModel):
     )
     reason: str = Field(
         default="user_correction",
-        description="Why the record is being disputed (e.g. 'user_correction', 'outdated', 'inaccurate').",
+        description=(
+            "Why the record is being disputed (e.g. 'user_correction', 'outdated', 'inaccurate')."
+        ),
     )
 
 

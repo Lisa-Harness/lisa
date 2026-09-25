@@ -123,7 +123,7 @@ def get_fetcher(data_dir: Path | None = None) -> ContentFetcher:
     is no fallback — callers that cannot supply one must raise instead of
     guessing a CWD-relative path.
     """
-    global _fetcher
+    global _fetcher  # noqa: PLW0603 — module-level singleton seam
     if _fetcher is None:
         if data_dir is None:
             raise RuntimeError(
@@ -139,7 +139,7 @@ def get_fetcher(data_dir: Path | None = None) -> ContentFetcher:
 
 def reset_fetcher() -> None:
     """Reset the module-level fetcher (for test isolation)."""
-    global _fetcher
+    global _fetcher  # noqa: PLW0603 — module-level singleton seam
     _fetcher = None
 
 

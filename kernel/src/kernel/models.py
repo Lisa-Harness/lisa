@@ -1464,11 +1464,16 @@ class WorkflowTransitionRequest(BaseModel):
     )
     delegated_goal: str = Field(
         default="",
-        description="A clear, scoped objective for the new mode to achieve (if handing off to a mode).",
+        description=(
+            "A clear, scoped objective for the new mode to achieve (if handing off to a mode)."
+        ),
     )
     context_payload: str = Field(
         default="",
-        description="Data, findings, or state the new mode needs to begin its work (if handing off to a mode).",
+        description=(
+            "Data, findings, or state the new mode needs to begin its work "
+            "(if handing off to a mode)."
+        ),
     )
 
 

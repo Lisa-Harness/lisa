@@ -1709,7 +1709,9 @@ async def test_stalled_write_rescue_directs_announced_write_to_dispatch() -> Non
                     "id": "call_write",
                     "function": {
                         "name": "write_file",
-                        "arguments": '{"path": "zeek/log-mining.py", "content": "#!/usr/bin/env python3"}',
+                        "arguments": (
+                            '{"path": "zeek/log-mining.py", "content": "#!/usr/bin/env python3"}'
+                        ),
                     },
                 }
             ],

@@ -58,14 +58,14 @@ _extension_item_builder: ExtensionItemBuilder = NoOpExtensionItemBuilder()
 def set_extension_item_builder(builder: ExtensionItemBuilder) -> None:
     """Override the module-level extension-item builder."""
 
-    global _extension_item_builder
+    global _extension_item_builder  # noqa: PLW0603 — module-level singleton seam
     _extension_item_builder = builder
 
 
 def reset_extension_item_builder() -> None:
     """Reset the extension-item builder to the NoOp default (for tests)."""
 
-    global _extension_item_builder
+    global _extension_item_builder  # noqa: PLW0603 — module-level singleton seam
     _extension_item_builder = NoOpExtensionItemBuilder()
 
 

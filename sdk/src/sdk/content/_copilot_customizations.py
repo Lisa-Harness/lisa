@@ -124,7 +124,8 @@ class SkillFile:
 
 @dataclass(frozen=True, slots=True)
 class CopilotInstructionsFile:
-    """An always-on instructions file (``copilot-instructions.md``, ``AGENTS.md``, ``CLAUDE.md``)."""
+    """An always-on instructions file (``copilot-instructions.md``,
+    ``AGENTS.md``, ``CLAUDE.md``)."""
 
     path: str
     body: str

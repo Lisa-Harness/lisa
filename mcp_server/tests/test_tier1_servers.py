@@ -434,7 +434,10 @@ async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
     mode_dir = root / "modes" / "good_mode"
     mode_dir.mkdir(parents=True, exist_ok=True)
     (mode_dir / "_mode.md").write_text(
-        '---\nmode_id: good_mode\nmode_kind: chat\nstart_stage_id: ""\ndescription: "ok"\n---\n# Good\n',
+        (
+            '---\nmode_id: good_mode\nmode_kind: chat\nstart_stage_id: ""\n'
+            'description: "ok"\n---\n# Good\n'
+        ),
         encoding="utf-8",
     )
 

@@ -709,7 +709,11 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
             "rationale": "Provides document drafting",
         },
     ]
-    plan_block = "## Plan\n\n1. **search** — Search for the latest rust async runtime news\n   _Provides web_search_\n2. **markdown** — Draft a markdown summary\n   _Provides document drafting_\n"
+    plan_block = (
+        "## Plan\n\n1. **search** — Search for the latest rust async runtime news"
+        "\n   _Provides web_search_\n"
+        "2. **markdown** — Draft a markdown summary\n   _Provides document drafting_\n"
+    )
 
     async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
         return OperationResult(
@@ -2362,7 +2366,9 @@ async def test_run_turn_omits_empty_structured_pre_turn_briefing(
     ) -> OperationResult:
         _ = (mode_id, ctx, ledger)
         return OperationResult(
-            output_text='{"briefing_points": [], "output_text": "", "source_kind": "", "source_urls": []}',
+            output_text=(
+                '{"briefing_points": [], "output_text": "", "source_kind": "", "source_urls": []}'
+            ),
             output_json={
                 "briefing_points": [],
                 "output_text": "",
@@ -2534,7 +2540,9 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "reason", "rationale": "enough evidence"}',
+                            "arguments": (
+                                '{"target_stage_id": "reason", "rationale": "enough evidence"}'
+                            ),
                         },
                     }
                 ],
@@ -2731,7 +2739,10 @@ async def test_run_turn_mode_handoff_via_transition_stage() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "markdown", "rationale": "user wants to write a doc"}',
+                            "arguments": (
+                                '{"target_stage_id": "markdown", '
+                                '"rationale": "user wants to write a doc"}'
+                            ),
                         },
                     }
                 ],
@@ -2768,7 +2779,9 @@ async def test_run_turn_fork_transition_basic() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "default"}, {"mode_id": "default"}]}',
+                            "arguments": (
+                                '{"targets": [{"mode_id": "default"}, {"mode_id": "default"}]}'
+                            ),
                         },
                     }
                 ],
@@ -2813,7 +2826,9 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
                         "id": "call_1",
                         "function": {
                             "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
+                            "arguments": (
+                                '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}'
+                            ),
                         },
                     }
                 ],
@@ -3305,7 +3320,9 @@ async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
+                            "arguments": (
+                                '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}'
+                            ),
                         },
                     }
                 ],
@@ -4685,7 +4702,10 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     with _patched_hint_catalog(catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default",
-            query="get a better understanding of the latest frameworks and agent building tools on the market today and do a SWOT based on it",
+            query=(
+                "get a better understanding of the latest frameworks and agent building tools "
+                "on the market today and do a SWOT based on it"
+            ),
             capability_manifest=_empty_manifest(),
             routing_targets=["search", "ponder", "markdown", "coding"],
         )
@@ -4783,7 +4803,10 @@ def test_routing_hint_suppresses_target_on_topic_abandonment_marker() -> None:
         ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
-                query="TBH, the whole cloudservers thing was a bit of a side quest. So lets just rewind",
+                query=(
+                    "TBH, the whole cloudservers thing was a bit of a side quest. "
+                    "So lets just rewind"
+                ),
                 capability_manifest=_empty_manifest(),
                 routing_targets=["cloudservers"],
                 mode_config=default_cfg,
@@ -5757,7 +5780,9 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}',
+                            "arguments": (
+                                '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}'
+                            ),
                         },
                     }
                 ],

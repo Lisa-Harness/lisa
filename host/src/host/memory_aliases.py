@@ -103,7 +103,8 @@ def _register_memory_synthetic_tools(
     """Register the generic ``memory.*`` synthetic aliases on a started pool.
 
     Only the five generic aliases (``memory.add`` / ``memory.search`` /
-    ``memory.list`` / ``memory.get`` / ``memory.delete``) are registered. They route through the pool to the
+    ``memory.list`` / ``memory.get`` / ``memory.delete``) are registered. They
+    route through the pool to the
     default memory backend selected by capability-provider policy.
 
     Per-backend explicit surfaces (``mem0.add``, ``lisa_memory.add``, …)
@@ -406,7 +407,8 @@ def _memory_schemas() -> tuple[
     dict[str, Any],
     dict[str, Any],
 ]:
-    """Return the (add, search, list, get, delete, retire, count) input schemas shared by all surfaces.
+    """Return the (add, search, list, get, delete, retire, count) input schemas
+    shared by all surfaces.
 
     These are the model-facing schemas for the generic ``memory.*`` aliases.
     ``user_slug`` is intentionally ABSENT from every schema: it is an ambient

@@ -1019,7 +1019,8 @@ def _load_operations_from_root(
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
                 logger.info(
-                    "Skipping legacy Python operation '%s' because prompt entrypoint takes precedence.",
+                    "Skipping legacy Python operation '%s' because prompt "
+                    "entrypoint takes precedence.",
                     py_path,
                 )
                 continue

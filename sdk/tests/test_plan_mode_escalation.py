@@ -674,7 +674,8 @@ def test_plan_workflow_retries_when_first_call_raises_unsupported() -> None:
         # response_format cleared and return valid JSON.
         if call_count["n"] == 1:
             raise RuntimeError(
-                "Error code: 400 - {'error': {'message': 'The requested operation is unsupported.'}}"
+                "Error code: 400 - {'error': {'message': "
+                "'The requested operation is unsupported.'}}"
             )
         return _FakeCompletion(json.dumps(payload))
 

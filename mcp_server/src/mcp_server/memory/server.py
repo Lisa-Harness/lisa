@@ -13,7 +13,8 @@ Owns the SQLite-backed memory store (extracted from the former
 
 This is the default backend behind the generic ``memory.add`` /
 ``memory.search`` / ``memory.list`` / ``memory.get`` / ``memory.delete`` /
-``memory.retire`` / ``memory.count`` synthetic aliases. Mem0 (or any other HTTP/stdio memory server) serves the
+``memory.retire`` / ``memory.count`` synthetic aliases. Mem0 (or any other
+HTTP/stdio memory server) serves the
 same five operations and more via the MCP tool pool; modes that want Mem0's
 full surface declare the server's tools directly.
 """

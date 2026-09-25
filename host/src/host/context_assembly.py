@@ -46,6 +46,7 @@ from kernel.models import (
     WorkflowModeConfig,
 )
 from kernel.session_plan import ContextPlan
+
 # MissingAuthoredContentError is intentionally imported but not used in this
 # module: tests patch it as host.context_assembly.MissingAuthoredContentError.
 from sdk.content import MissingAuthoredContentError, require_authored_text  # noqa: F401
@@ -196,7 +197,10 @@ def handoff_note(
 ) -> str:
     """Produce a human-readable handoff reason for the turn context."""
     if mode_id == "default" and not raw_message.lstrip().startswith("/"):
-        return "natural-language intent routed to default model (mid-turn handoff via transition_stage)"
+        return (
+            "natural-language intent routed to default model "
+            "(mid-turn handoff via transition_stage)"
+        )
     if raw_message.lstrip().startswith("/"):
         return f"explicit command route handoff to {preferred_model_id} model selection"
     return "default routing handoff"
@@ -808,5 +812,6 @@ def _build_diagnostic_reflection_block(
         f"- replay_effective_reflection_max_tokens: {effective_reflection_max_tokens}\n"
         f"- replay_query_chars: {len(query.strip())}\n"
         f"- replay_thread_manifest_present: {'true' if thread_manifest_present else 'false'}\n"
-        f"- replay_recent_conversation_present: {'true' if recent_conversation_present else 'false'}"
+        f"- replay_recent_conversation_present: "
+        f"{'true' if recent_conversation_present else 'false'}"
     )

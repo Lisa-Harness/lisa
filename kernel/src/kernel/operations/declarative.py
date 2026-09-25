@@ -102,7 +102,8 @@ def _stringify_tool_result(result: ToolResult | str) -> str:
         # structured payload (output_json). The model needs both: the
         # summary line plus the full data, otherwise it sees e.g.
         # "Listed 5 entries." with no entry content.
-        return f"{result.output_text.strip()}\n{json.dumps(result.output_json, indent=2, sort_keys=True)}"
+        rendered_json = json.dumps(result.output_json, indent=2, sort_keys=True)
+        return f"{result.output_text.strip()}\n{rendered_json}"
     if result.output_text.strip():
         return result.output_text
     if result.output_json:
@@ -245,7 +246,8 @@ async def execute_declarative_operation(
     model_def = ctx.host.resolve_model(preferred_model_id)
     if model_def is None:
         raise RuntimeError(
-            f"Declarative operation '{operation_id}' could not resolve model '{preferred_model_id}'."
+            f"Declarative operation '{operation_id}' could not resolve model "
+            f"'{preferred_model_id}'."
         )
 
     messages: list[dict[str, Any]] = [

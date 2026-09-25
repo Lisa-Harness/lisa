@@ -41,7 +41,7 @@ _content_registry: ContentRegistry | None = None
 def set_content_registry(registry: ContentRegistry) -> None:
     """Override the module-level content registry and invalidate caches."""
 
-    global _content_registry
+    global _content_registry  # noqa: PLW0603 — module-level singleton seam
     _content_registry = registry
     read_sub_turn_contract.cache_clear()
     read_sub_turn_budget_exhausted_tail.cache_clear()

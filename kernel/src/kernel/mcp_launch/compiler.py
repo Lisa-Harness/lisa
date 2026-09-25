@@ -107,7 +107,8 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     if spec.runtime_kind == RuntimeKind.NODE:
         if not spec.command_path or not spec.script_path:
             raise ValueError(
-                f"NODE runtime requires 'command_path' and 'script_path' for server '{spec.server_id}'"
+                f"NODE runtime requires 'command_path' and 'script_path' for "
+                f"server '{spec.server_id}'"
             )
         return spec.command_path, [spec.script_path]
 
