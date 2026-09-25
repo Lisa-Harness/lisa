@@ -16,7 +16,7 @@ These tests stub MCPToolPool._connect so no real subprocess is spawned.
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from kernel.tools.mcp_client import (
@@ -244,7 +244,7 @@ async def test_mcp_alias_tool_redirects_to_server_tool(monkeypatch: pytest.Monke
     # Inject a fake session so call_tool's MCP path doesn't hit a subprocess.
 
     class _FakeResult:
-        content = [type("C", (), {"text": "server:real_search"})()]
+        content: ClassVar[list[Any]] = [type("C", (), {"text": "server:real_search"})()]
         is_error = False
 
     class _FakeSession:
@@ -327,7 +327,7 @@ async def test_call_tool_scoped_routes_to_named_server(monkeypatch: pytest.Monke
     seen: list[str] = []
 
     class _FakeResult:
-        content = [type("C", (), {"text": "ok"})()]
+        content: ClassVar[list[Any]] = [type("C", (), {"text": "ok"})()]
         is_error = False
 
     class _FakeSession:
@@ -379,7 +379,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
     started: list[str] = []
 
     class _FakeResult:
-        content = [type("C", (), {"text": "stored"})()]
+        content: ClassVar[list[Any]] = [type("C", (), {"text": "stored"})()]
         is_error = False
 
     class _FakeSession:
@@ -485,7 +485,7 @@ async def test_mcp_alias_tool_target_server_id_routes_scoped(
     routed: list[str] = []
 
     class _FakeResult:
-        content = [type("C", (), {"text": "cloud:added"})()]
+        content: ClassVar[list[Any]] = [type("C", (), {"text": "cloud:added"})()]
         is_error = False
 
     class _FakeSession:

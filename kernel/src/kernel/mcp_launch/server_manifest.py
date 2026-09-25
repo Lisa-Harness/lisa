@@ -654,8 +654,8 @@ def _parse_proxy_policy(raw: Any, server_id: str, index: int, path: Path) -> Pro
             f"servers[{index}] '{server_id}': 'proxy_policy.ambient' must be a mapping"
         )
     ambient: dict[str, AmbientSource] = {}
-    for native_field, source_str in ambient_raw.items():
-        source_str = str(source_str or "").strip()
+    for native_field, source_raw in ambient_raw.items():
+        source_str = str(source_raw or "").strip()
         try:
             ambient[str(native_field)] = AmbientSource(source_str)
         except ValueError as exc:

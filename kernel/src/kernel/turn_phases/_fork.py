@@ -30,6 +30,8 @@ from kernel.models import (
 from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.mcp_client import MCPToolPool
 
+_log = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnHooks
 

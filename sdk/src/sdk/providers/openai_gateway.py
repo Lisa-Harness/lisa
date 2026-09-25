@@ -218,9 +218,11 @@ def normalize_openai_messages(
     normalized_messages: ChatMessages = []
     for message in messages:
         normalized_message = dict(message)
-        if str(normalized_message.get("role", "") or "") == "assistant":
-            if normalized_message.get("content") is None:
-                normalized_message["content"] = ""
+        if (
+            str(normalized_message.get("role", "") or "") == "assistant"
+            and normalized_message.get("content") is None
+        ):
+            normalized_message["content"] = ""
         raw_tool_calls = normalized_message.get("tool_calls")
         if isinstance(raw_tool_calls, list):
             pruned = [

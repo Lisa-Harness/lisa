@@ -40,8 +40,10 @@ def redact_parameters(parameters: dict[str, Any]) -> dict[str, str]:
             out[key] = "[redacted]"
             continue
         if isinstance(value, (list, tuple)):
-            value = " ".join(str(v) for v in value)
-        text = str(value)
+            joined = " ".join(str(v) for v in value)
+            text = joined
+        else:
+            text = str(value)
         out[key] = text if len(text) <= 200 else text[:199] + "…"
     return out
 

@@ -232,13 +232,15 @@ class ContentFetcher:
         self,
         data_dir: Path,
         *,
-        default_policy: FetchPolicy = FetchPolicy(),
+        default_policy: FetchPolicy | None = None,
         allowed_hosts: set[str] | None = None,
         allow_http: bool = False,
         private_ip_blocks: tuple[str, ...] = _DEFAULT_PRIVATE_IP_BLOCKS,
     ) -> None:
         self._data_dir: Path = Path(data_dir)
-        self._default_policy: FetchPolicy = default_policy
+        self._default_policy: FetchPolicy = (
+            default_policy if default_policy is not None else FetchPolicy()
+        )
         self._allowed_hosts: set[str] | None = (
             {h.lower() for h in allowed_hosts} if allowed_hosts is not None else None
         )

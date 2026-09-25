@@ -10,7 +10,7 @@ rather than accumulating or rewriting the stable prefix.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from kernel.provider_contracts import flatten_system_prompt_segments
@@ -32,7 +32,7 @@ class _StubCompletion:
 async def _stub_execute_operation(*_: Any, **__: Any) -> Any:
     class _R:
         output_text = ""
-        output_json: dict[str, Any] = {}
+        output_json: ClassVar[dict[str, Any]] = {}
 
     return _R()
 

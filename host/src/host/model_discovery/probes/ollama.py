@@ -123,9 +123,9 @@ def _enrich_ollama_model(
         capabilities = sorted(show_caps | {"structured_output"})
         if "text" not in capabilities and "embedding" not in capabilities:
             capabilities.append("text")
-    if family in {"clip", "llava"} or "vision" in model_id.lower():
-        if "vision" not in capabilities:
-            capabilities.append("vision")
+    vision_family = family in {"clip", "llava"} or "vision" in model_id.lower()
+    if vision_family and "vision" not in capabilities:
+        capabilities.append("vision")
     # Ollama tags carry no capability metadata beyond family/size, so the
     # ``code`` capability is derived from the model-id heuristic — same as
     # ``reasoning`` (which ``_model`` appends). Ollama exposes no ``code``

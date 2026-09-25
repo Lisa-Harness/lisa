@@ -30,7 +30,10 @@ from host.host_commands import (
 )
 
 register_builtin_host_commands()
-from host.thread import (
+
+# E402: the registration call above must run before importing the thread
+# helpers that depend on the registered command table.
+from host.thread import (  # noqa: E402
     _read_index,
     _segment_paths,
     append_thread_entry,

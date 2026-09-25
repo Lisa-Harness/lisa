@@ -115,13 +115,12 @@ class AzureOpenAIProbe(ProviderProbe):
             model_id = str(row.get("id") or row.get("model") or "").strip()
             if not model_id:
                 continue
-            # On the catalog fallback, only list models that support chat
-            # completions (the deployments list already filters to deployed
-            # models).
             capabilities = row.get("capabilities")
-            if isinstance(capabilities, dict):
-                if not capabilities.get("chat_completion", False):
-                    continue
+            if isinstance(capabilities, dict) and not capabilities.get("chat_completion", False):
+                # On the catalog fallback, only list models that support
+                # chat completions (the deployments list already filters
+                # to deployed models).
+                continue
             models.append(_enrich_azure_model(model_id, row))
         return tuple(models) if models else None
 

@@ -246,10 +246,13 @@ def _venv_python_dir(venv_path: Path) -> str:
     lib_dir = venv_path / "lib"
     if lib_dir.is_dir():
         for child in sorted(lib_dir.iterdir()):
-            if child.is_dir() and child.name.startswith("python"):
-                # python3.11, python3.13, etc. — first match wins.
-                if child.name[6:].replace(".", "").isdigit():
-                    return child.name
+            # python3.11, python3.13, etc. — first match wins.
+            if (
+                child.is_dir()
+                and child.name.startswith("python")
+                and child.name[6:].replace(".", "").isdigit()
+            ):
+                return child.name
     return f"python{sys.version_info.major}.{sys.version_info.minor}"
 
 

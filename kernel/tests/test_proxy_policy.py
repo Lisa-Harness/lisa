@@ -79,13 +79,14 @@ def _patch_refresh_with_proxy(
             for name, description, input_schema in server_tools.get(config.server_id, []):
                 # Apply proxy policy schema stripping (mirrors real _refresh_tool_index)
                 policy = getattr(config, "proxy_policy", None)
+                effective_schema = input_schema
                 if policy is not None and getattr(policy, "ambient", None):
-                    input_schema = self._strip_ambient_from_schema(input_schema, policy)
+                    effective_schema = self._strip_ambient_from_schema(input_schema, policy)
                 bare_spec = MCPToolSpec(
                     server_id=config.server_id,
                     name=name,
                     description=description,
-                    input_schema=input_schema,
+                    input_schema=effective_schema,
                 )
                 server_index[name] = bare_spec
                 namespaced = namespaced_tool_name(config.server_id, name)

@@ -84,7 +84,7 @@ class TestValidateRequiredContent:
                 return ""
             return "content"
 
-        with pytest.raises(MissingAuthoredContentError, match="b.md"):
+        with pytest.raises(MissingAuthoredContentError, match=r"b\.md"):
             validate_required_content(loader, ["a.md", "b.md", "c.md"])
 
     def test_empty_paths_iterable_passes(self) -> None:

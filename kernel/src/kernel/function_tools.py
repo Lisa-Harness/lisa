@@ -39,9 +39,9 @@ def _has_union_items(schema: Any) -> bool:
     strict mode.
     """
     if isinstance(schema, dict):
-        if "items" in schema and isinstance(schema["items"], dict):
-            if "anyOf" in schema["items"] or "oneOf" in schema["items"]:
-                return True
+        items = schema.get("items")
+        if isinstance(items, dict) and ("anyOf" in items or "oneOf" in items):
+            return True
         return any(_has_union_items(v) for v in schema.values())
     if isinstance(schema, list):
         return any(_has_union_items(item) for item in schema)

@@ -43,6 +43,7 @@ for repo in REPOS:
             [PY, str(WORKER_FILE), str(pack_dir)],
             capture_output=True,
             text=True,
+            check=False,
         )
         print(f"\n===== {pack_dir.name}  ({repo.name}) rc={proc.returncode}")
         out = (proc.stdout + proc.stderr).strip()

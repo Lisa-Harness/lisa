@@ -18,6 +18,7 @@ Public API (leading underscores removed)::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import platform
 from collections.abc import Callable
@@ -300,12 +301,10 @@ def build_session_mapped_context_markdown(
     # silently degrading to empty context.
     result = ContextMapper().map(request)
     if snapshot_sink is not None:
-        try:
+        # The snapshot sink is observational only; its failure must
+        # never change the rendered context the model receives.
+        with contextlib.suppress(Exception):
             snapshot_sink(result.trace.budget)
-        except Exception:  # pylint: disable=broad-except
-            # The snapshot sink is observational only; its failure must
-            # never change the rendered context the model receives.
-            pass
     logger.debug(
         "context map: candidates=%d window=%d rendered=%d chars",
         len(candidates),

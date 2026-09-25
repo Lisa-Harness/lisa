@@ -39,14 +39,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 # Import coercion helpers from kernel
 from kernel.token_usage import (
     coerce_non_negative_float,
     coerce_non_negative_int,
     ensure_usage_entry,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "TurnUsage",

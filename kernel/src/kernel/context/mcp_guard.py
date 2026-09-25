@@ -75,20 +75,22 @@ class MCPInputGuard:
         query: str,
         surface: SurfaceContext,
     ) -> GuardResult:
-        async with stdio_client(self._params) as (read, write_stream):
-            async with ClientSession(read, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "validate_input",
-                    arguments={
-                        "query": query,
-                        "surface_type": surface.surface_type,
-                        "surface_id": surface.surface_id,
-                        "memory_scope": surface.memory_scope,
-                        "thread_owner_id": surface.thread_owner_id,
-                    },
-                )
-                return _parse_guard_response(_extract_text(result))
+        async with (
+            stdio_client(self._params) as (read, write_stream),
+            ClientSession(read, write_stream) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool(
+                "validate_input",
+                arguments={
+                    "query": query,
+                    "surface_type": surface.surface_type,
+                    "surface_id": surface.surface_id,
+                    "memory_scope": surface.memory_scope,
+                    "thread_owner_id": surface.thread_owner_id,
+                },
+            )
+            return _parse_guard_response(_extract_text(result))
 
 
 class MCPOutputGuard:
@@ -111,17 +113,19 @@ class MCPOutputGuard:
         text: str,
         surface: SurfaceContext,
     ) -> GuardResult:
-        async with stdio_client(self._params) as (read, write_stream):
-            async with ClientSession(read, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "validate_output",
-                    arguments={
-                        "text": text,
-                        "surface_type": surface.surface_type,
-                        "surface_id": surface.surface_id,
-                        "memory_scope": surface.memory_scope,
-                        "thread_owner_id": surface.thread_owner_id,
-                    },
-                )
-                return _parse_guard_response(_extract_text(result))
+        async with (
+            stdio_client(self._params) as (read, write_stream),
+            ClientSession(read, write_stream) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool(
+                "validate_output",
+                arguments={
+                    "text": text,
+                    "surface_type": surface.surface_type,
+                    "surface_id": surface.surface_id,
+                    "memory_scope": surface.memory_scope,
+                    "thread_owner_id": surface.thread_owner_id,
+                },
+            )
+            return _parse_guard_response(_extract_text(result))

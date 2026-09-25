@@ -35,8 +35,6 @@ Called by: kernel.ipsar_fsm (lifecycle target dispatch)
 
 from __future__ import annotations
 
-from typing import Union
-
 from kernel.models import OperationDefinition, ToolDefinition
 
 __all__ = [
@@ -47,7 +45,7 @@ __all__ = [
     "resolve_tool_definition",
 ]
 
-CapabilityDefinition = Union[OperationDefinition, ToolDefinition]
+CapabilityDefinition = OperationDefinition | ToolDefinition
 
 
 def resolve_operation_definition(

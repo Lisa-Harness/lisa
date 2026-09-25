@@ -18,7 +18,7 @@ The retry-with-backoff sleeps are patched to zero to keep the suite fast.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -231,7 +231,7 @@ async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
     async def stub_complete(**kwargs: Any) -> Any:
         class _R:
             content = "ok"
-            tool_calls: list[dict[str, Any]] = []
+            tool_calls: ClassVar[list[dict[str, Any]]] = []
 
         return _R()
 

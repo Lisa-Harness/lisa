@@ -78,20 +78,23 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("cache_read_input_tokens")
     )
-    if prompt_tokens == 0 and completion_tokens == 0 and cache_creation == 0 and cache_read == 0:
-        # All counters zero/empty — no usage object on the wire (some partial
-        # events report nothing). Distinguishing that from a real zero-usage
-        # response keeps an empty ``usage`` from silently fabricating a 0/0.
-        if not any(
-            raw_usage.get(key) is not None
-            for key in (
-                "input_tokens",
-                "output_tokens",
-                "cache_creation_input_tokens",
-                "cache_read_input_tokens",
-            )
-        ):
-            return None
+    all_zero = (
+        prompt_tokens == 0 and completion_tokens == 0 and cache_creation == 0 and cache_read == 0
+    )
+    usage_keys_present = isinstance(raw_usage, dict) and any(
+        raw_usage.get(key) is not None
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+    # All counters zero/empty with no usage keys on the wire (some partial
+    # events report nothing) — return None so an empty ``usage`` does not
+    # silently fabricate a 0/0 completion record.
+    if all_zero and not usage_keys_present:
+        return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -522,8 +525,8 @@ class AnthropicGateway:
                 "POST", "/v1/messages", json=payload, headers=self._headers()
             ) as response:
                 response.raise_for_status()
-                async for line in response.aiter_lines():
-                    line = line.strip()
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
                     if not line.startswith("data:"):
                         continue
                     data_text = line[len("data:") :].strip()

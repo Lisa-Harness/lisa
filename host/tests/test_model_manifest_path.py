@@ -128,7 +128,7 @@ def test_resolve_session_manifest_path_rejects_wrong_extension(tmp_path: Path) -
     bad.write_text("x", encoding="utf-8")
     plan = _MockPlan(models=_MockModels("./roster.txt"))
     plan.source_dir = str(tmp_path)
-    with pytest.raises(ValueError, match=".yaml"):
+    with pytest.raises(ValueError, match=r"\.yaml"):
         resolve_session_manifest_path(
             session_plan=plan,
             session_source_dir=tmp_path,

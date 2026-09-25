@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from host.config_resolver import parse_streaming_option, resolve_timezone
@@ -518,7 +519,7 @@ class TestHandleMessage:
         captured: dict[str, Path] = {}
 
         class _StubState:
-            context_items: list[object] = []
+            context_items: ClassVar[list[object]] = []
 
         async def _fake_run_intake(*, data_dir: Path) -> _StubState:
             captured["data_dir"] = data_dir

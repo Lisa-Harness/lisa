@@ -299,7 +299,7 @@ async def test_context_broker_context_malformed_state_raises(context_setup: None
     }
     # MCPServer wraps tool errors; the call should raise rather than return
     # an empty-state response.
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="state"):
         await mcp.call_tool("broker_context", payload)
 
 

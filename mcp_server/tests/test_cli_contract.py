@@ -34,6 +34,7 @@ def _run_server(module: str, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
 
 

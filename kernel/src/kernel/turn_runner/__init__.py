@@ -189,9 +189,6 @@ from kernel.turn_phases._tool_schemas import (
     build_tool_surface,
 )
 
-logger = logging.getLogger(__name__)
-
-
 # ── Package satellites (split from the former single-file turn_runner) ────
 # The engine imports these back so ``kernel.turn_runner`` keeps its historical
 # module namespace: ``mock.patch("kernel.turn_runner.<name>")`` and
@@ -221,6 +218,8 @@ from ._helpers import (
 from ._result import TurnResult
 from ._seams import ContextSeams
 from ._streaming import StreamedCompletionAdapter
+
+logger = logging.getLogger(__name__)
 
 # ── Stalled-write rescue: announcement detection ───────────────────────────
 # Prose that ANNOUNCES a write in future/present-continuous tense while the
@@ -2301,26 +2300,25 @@ async def _run_turn_inner(
             # Fall through to the model call — the yield is applied after
             # the model produces its completion (the existing break path).
 
-        if isinstance(_lifecycle_action, _TransitionAction):
-            if _lifecycle_action.forced:
-                # Forced transition (per-step budget, forced-fork/plan
-                # enforcer): set ``pending_planned_handoff`` so the
-                # existing synthesis block below builds the tool call.
-                _state.pending_planned_handoff = _lifecycle_action.target_mode_id
-                # Reset per-step counters for the new step.
-                _state.step_iteration = 0
-                _state.step_tool_calls = 0
-                _log.info(
-                    "turn lifecycle: resolver forced transition target=%s "
-                    "(mode=%s, iteration=%d, reason=%s)",
-                    _lifecycle_action.target_mode_id,
-                    mode_id,
-                    _state.iteration,
-                    _lifecycle_action.rationale,
-                )
-                # Clear the forced-action enforcer state so it does not
-                # re-fire after the forced transition is applied.
-                _state.forced_action = None
+        if isinstance(_lifecycle_action, _TransitionAction) and _lifecycle_action.forced:
+            # Forced transition (per-step budget, forced-fork/plan
+            # enforcer): set ``pending_planned_handoff`` so the
+            # existing synthesis block below builds the tool call.
+            _state.pending_planned_handoff = _lifecycle_action.target_mode_id
+            # Reset per-step counters for the new step.
+            _state.step_iteration = 0
+            _state.step_tool_calls = 0
+            _log.info(
+                "turn lifecycle: resolver forced transition target=%s "
+                "(mode=%s, iteration=%d, reason=%s)",
+                _lifecycle_action.target_mode_id,
+                mode_id,
+                _state.iteration,
+                _lifecycle_action.rationale,
+            )
+            # Clear the forced-action enforcer state so it does not
+            # re-fire after the forced transition is applied.
+            _state.forced_action = None
             # Non-forced transitions (router transition_to) are handled
             # below in the router terminal-actions block (they need the
             # workflow session side effect).

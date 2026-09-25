@@ -69,9 +69,12 @@ def _build_in_process_tool_schemas(
     for tool_id, definition in catalog.items():
         if allowed_tool_ids is not None and tool_id not in allowed_tool_ids:
             continue
-        if definition.mode_allowlist is not None and mode_config:
-            if mode_config.mode_id not in definition.mode_allowlist:
-                continue
+        if (
+            definition.mode_allowlist is not None
+            and mode_config
+            and mode_config.mode_id not in definition.mode_allowlist
+        ):
+            continue
         schemas.append(
             build_strict_openai_function_tool(
                 name=tool_id,

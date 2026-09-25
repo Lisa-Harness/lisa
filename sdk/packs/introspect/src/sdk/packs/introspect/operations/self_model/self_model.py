@@ -435,8 +435,7 @@ def _build_known_unknown_entries(
     unsupported_modes: dict[str, str], now_iso: str
 ) -> list[SelfKnowledgeEntry]:
     entries: list[SelfKnowledgeEntry] = []
-    idx = 0
-    for mode_id, gap in sorted(unsupported_modes.items()):
+    for idx, (mode_id, gap) in enumerate(sorted(unsupported_modes.items())):
         entries.append(
             SelfKnowledgeEntry(
                 entry_id=_make_entry_id("known_unknown", idx),
@@ -449,5 +448,4 @@ def _build_known_unknown_entries(
                 updated_at=now_iso,
             )
         )
-        idx += 1
     return entries

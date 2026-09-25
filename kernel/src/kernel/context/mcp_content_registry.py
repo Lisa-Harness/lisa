@@ -43,11 +43,13 @@ class MCPContentRegistry:
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
         async def _run() -> str:
-            async with stdio_client(self._params) as (read, write_stream):
-                async with ClientSession(read, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool, arguments=arguments)
-                    return _extract_text(result)
+            async with (
+                stdio_client(self._params) as (read, write_stream),
+                ClientSession(read, write_stream) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(tool, arguments=arguments)
+                return _extract_text(result)
 
         # Check for a running event loop BEFORE constructing the coroutine
         # to avoid the "coroutine was never awaited" RuntimeWarning.

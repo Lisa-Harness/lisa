@@ -419,12 +419,10 @@ class ThreadStore:
         total = len(entries)
         for offset, entry in enumerate(entries):
             stored_turn = entry.get("turn")
-            if isinstance(stored_turn, int):
-                turn = str(stored_turn)
-            else:
-                # 1-based ordinal within the manifest window; the total
-                # suffix disambiguates the window from the global sequence.
-                turn = f"{offset + 1}/{total}"
+            # 1-based ordinal within the manifest window (when the stored
+            # entry lacks a ``turn`` field); the total suffix disambiguates
+            # the window from the global sequence.
+            turn = str(stored_turn) if isinstance(stored_turn, int) else f"{offset + 1}/{total}"
             mode_id = str(entry.get("mode_id") or "-")
             query = str(entry.get("query") or "").strip()
             if self._redaction is not None:

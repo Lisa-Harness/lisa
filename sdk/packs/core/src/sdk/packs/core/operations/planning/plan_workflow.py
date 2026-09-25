@@ -578,7 +578,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # then fails to produce any receipt, which is the honest signal.
     from kernel.operations.registry import mode_completion_effects
 
-    for step in parsed.steps:
+    for idx, step in enumerate(parsed.steps):
         if not step.write_capability:
             continue
         try:
@@ -593,7 +593,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 step.write_capability,
                 sorted(allowed),
             )
-            step = step.model_copy(update={"write_capability": None})
+            parsed.steps[idx] = step.model_copy(update={"write_capability": None})
 
     normalized_target = parsed.steps[0].mode_id if parsed.steps else parsed.target_stage_id or ""
 

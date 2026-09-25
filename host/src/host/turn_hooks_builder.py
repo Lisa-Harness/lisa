@@ -659,7 +659,7 @@ def build_turn_hooks(
                         # operation id as ``"Operation '<id>' failed: ..."``;
                         # extract it for the structured log.
                         # lazy: stdlib import avoids top-level re cost on the success path
-                        import re  # noqa: PLC0415
+                        import re
 
                         m = re.search(r"Operation '([^']+)'", detail)
                         if m:

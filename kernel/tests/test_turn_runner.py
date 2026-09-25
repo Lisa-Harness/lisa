@@ -4602,8 +4602,8 @@ def _hint_catalog(
     """
     modes: list[str] = []
     for entry in mode_ids:
-        for piece in entry.replace("fork:", "").split(","):
-            piece = piece.strip()
+        for raw_piece in entry.replace("fork:", "").split(","):
+            piece = raw_piece.strip()
             if piece and piece not in modes:
                 modes.append(piece)
     catalog: dict[str, WorkflowModeConfig] = {"default": _mode_config(mode_id="default")}

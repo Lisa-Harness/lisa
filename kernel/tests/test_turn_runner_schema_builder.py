@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from kernel.models import YieldPolicy
@@ -464,7 +464,7 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
 
     # Stub MCP pool: no tools (we only care about transition_stage).
     class _EmptyPool:
-        configs: list[Any] = []
+        configs: ClassVar[list[Any]] = []
 
         async def list_tools(self, **_: Any) -> list[Any]:
             return []
@@ -508,7 +508,7 @@ async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_t
     )
 
     class _EmptyPool:
-        configs: list[Any] = []
+        configs: ClassVar[list[Any]] = []
 
         async def list_tools(self, **_: Any) -> list[Any]:
             return []

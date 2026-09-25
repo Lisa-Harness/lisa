@@ -495,7 +495,7 @@ servers: []
 """,
         encoding="utf-8",
     )
-    with pytest.raises(Exception, match="not in memory.backends"):
+    with pytest.raises(Exception, match=r"not in memory.backends"):
         load_mcp_server_manifest(manifest)
 
 
