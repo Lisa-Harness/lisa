@@ -13,7 +13,7 @@ description = "Lisa recovery pack - operator commands for interrupted dispatch w
 requires-python = ">=3.11"
 
 dependencies = [
-    "lisa-kernel",
+    "lisa-harness-kernel",
 ]
 
 [project.optional-dependencies]

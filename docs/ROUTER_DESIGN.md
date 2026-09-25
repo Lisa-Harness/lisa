@@ -1,6 +1,6 @@
 # Router Design
 
-This document is the consolidated reference for the Lisa Framework's routing
+This document is the consolidated reference for the Lisa Harness's routing
 system. It covers the turn-time dispatch contract, the unified FSM routing
 mechanism (mode handoff via `transition_stage`), the interaction with staged
 workflow modes, the session-context controls that gate routing, and the

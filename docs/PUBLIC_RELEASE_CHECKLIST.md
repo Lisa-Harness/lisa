@@ -1,7 +1,7 @@
-# Lisa framework — public-release checklist
+# Lisa Harness — public-release checklist
 
 > Generated 2026-09-22 from a live readiness audit of the working tree.
-> Governs flipping `github.com/Lisa-Framework/lisa` to **public** and cutting
+> Governs flipping `github.com/Lisa-Harness/lisa` to **public** and cutting
 > the first tagged release (`v0.1.0`). Long-form detail stays in
 > [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md); this file is the follow-by-hand
 > tracker. Check items off as they land.
@@ -100,7 +100,7 @@ Legend: ✅ verified done · ⚠️ needs attention · ❌ missing/broken
 
 ## 6. Deferred / out-of-scope (noted, not blocking)
 
-- `lisa-host-cli` distribution checklist — lives at `../lisa-hosts/docs/RELEASE_CHECKLIST.md`.
+- `lisa-harness-cli` distribution checklist — lives at `../lisa-hosts/docs/RELEASE_CHECKLIST.md`.
 - lisa-packs registry §4 per-pack audits (READMEs, licenses, version tags).
 - `docs/research/` GAP/SWOT superseded banners (already flagged in RELEASE_CHECKLIST).
 

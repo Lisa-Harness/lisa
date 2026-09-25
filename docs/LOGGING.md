@@ -1,6 +1,6 @@
 # Logging Standards for Lisa
 
-This is the canonical logging contract for the Lisa framework. Every production Python module must follow these rules.
+This is the canonical logging contract for the Lisa Harness. Every production Python module must follow these rules.
 
 ## Module-level logger
 

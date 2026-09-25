@@ -194,7 +194,7 @@ resources:
     required: [lisa-pack-core, lisa-pack-cloudflare, lisa-pack-brave]
     auto_install:
       lisa-pack-cloudflare:
-        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0
+        source: git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0
         pin: v0.2.0
       lisa-pack-brave:
         source: ../lisa-packs/brave
@@ -211,7 +211,7 @@ These three fields have distinct responsibilities; they are not interchangeable:
 | `include` | No. | **Yes** — restricts catalog activation to the listed packs (no include = all installed/enabled packs active). | N/A. |
 | `auto_install` | No — does not decide *whether* a pack is installed, only *how*. | No. | Overrides the git-root fallback for the named pack with an explicit source/editable flag. |
 
-The host installs **every missing `required` pack** regardless of whether it has an `auto_install` entry. `auto_install` only customizes the source and method (local path vs git ref, editable vs not). A `required` pack with no `auto_install` key falls back to the git-root template (`git+https://github.com/lisa-framework/lisa-pack-<name>@main`), which may fail if the pack is private or depends on unpublished packages.
+The host installs **every missing `required` pack** regardless of whether it has an `auto_install` entry. `auto_install` only customizes the source and method (local path vs git ref, editable vs not). A `required` pack with no `auto_install` key falls back to the git-root template (`git+https://github.com/Lisa-Harness/lisa-pack-<name>@main`), which may fail if the pack is private or depends on unpublished packages.
 
 #### Suppressing auto-install (operator-managed installs)
 

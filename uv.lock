@@ -11,16 +11,16 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "lisa-framework",
-    "lisa-host-runtime",
-    "lisa-kernel",
-    "lisa-mcp-servers",
+    "lisa-harness",
+    "lisa-harness-kernel",
+    "lisa-harness-mcp-servers",
+    "lisa-harness-packstest",
+    "lisa-harness-runtime",
+    "lisa-harness-sdk",
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-memory",
     "lisa-pack-recovery",
-    "lisa-packstest",
-    "lisa-sdk",
 ]
 
 [[package]]
@@ -994,19 +994,19 @@ wheels = [
 ]
 
 [[package]]
-name = "lisa-framework"
+name = "lisa-harness"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "lisa-host-runtime" },
-    { name = "lisa-kernel" },
-    { name = "lisa-mcp-servers" },
+    { name = "lisa-harness-kernel" },
+    { name = "lisa-harness-mcp-servers" },
+    { name = "lisa-harness-packstest" },
+    { name = "lisa-harness-runtime" },
+    { name = "lisa-harness-sdk" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
     { name = "lisa-pack-recovery" },
-    { name = "lisa-packstest" },
-    { name = "lisa-sdk" },
 ]
 
 [package.optional-dependencies]
@@ -1025,15 +1025,15 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
-    { name = "lisa-host-runtime", editable = "host" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-mcp-servers", editable = "mcp_server" },
+    { name = "lisa-harness-kernel", editable = "kernel" },
+    { name = "lisa-harness-mcp-servers", editable = "mcp_server" },
+    { name = "lisa-harness-packstest", editable = "packstest" },
+    { name = "lisa-harness-runtime", editable = "host" },
+    { name = "lisa-harness-sdk", editable = "sdk" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
     { name = "lisa-pack-recovery", editable = "sdk/packs/recovery" },
-    { name = "lisa-packstest", editable = "packstest" },
-    { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
@@ -1046,57 +1046,7 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-host-runtime"
-version = "0.1.0"
-source = { editable = "host" }
-dependencies = [
-    { name = "cel-python" },
-    { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-mcp-servers" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-introspect" },
-    { name = "lisa-pack-memory" },
-    { name = "lisa-pack-recovery" },
-    { name = "lisa-sdk" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "zstandard" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cel-python", specifier = ">=0.5.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-mcp-servers", editable = "mcp_server" },
-    { name = "lisa-pack-core", editable = "sdk/packs/core" },
-    { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
-    { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
-    { name = "lisa-pack-recovery", editable = "sdk/packs/recovery" },
-    { name = "lisa-sdk", editable = "sdk" },
-    { name = "openai", specifier = ">=1.30.0" },
-    { name = "pydantic", specifier = ">=2.7.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "zstandard", specifier = ">=0.23.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-kernel"
+name = "lisa-harness-kernel"
 version = "0.1.0"
 source = { editable = "kernel" }
 dependencies = [
@@ -1144,12 +1094,12 @@ requires-dist = [
 provides-extras = ["dev", "memory"]
 
 [[package]]
-name = "lisa-mcp-servers"
+name = "lisa-harness-mcp-servers"
 version = "0.1.0"
 source = { editable = "mcp_server" }
 dependencies = [
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
+    { name = "lisa-harness-kernel" },
+    { name = "lisa-harness-sdk" },
     { name = "mcp" },
     { name = "pydantic" },
 ]
@@ -1164,8 +1114,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
+    { name = "lisa-harness-kernel", editable = "kernel" },
+    { name = "lisa-harness-sdk", editable = "sdk" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -1174,6 +1124,128 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-harness-packstest"
+version = "0.1.0"
+source = { editable = "packstest" }
+dependencies = [
+    { name = "lisa-harness-kernel" },
+    { name = "lisa-harness-sdk" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-harness-kernel", editable = "kernel" },
+    { name = "lisa-harness-sdk", editable = "sdk" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-harness-runtime"
+version = "0.1.0"
+source = { editable = "host" }
+dependencies = [
+    { name = "cel-python" },
+    { name = "httpx" },
+    { name = "lisa-harness-kernel" },
+    { name = "lisa-harness-mcp-servers" },
+    { name = "lisa-harness-sdk" },
+    { name = "lisa-pack-core" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "zstandard" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cel-python", specifier = ">=0.5.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "lisa-harness-kernel", editable = "kernel" },
+    { name = "lisa-harness-mcp-servers", editable = "mcp_server" },
+    { name = "lisa-harness-sdk", editable = "sdk" },
+    { name = "lisa-pack-core", editable = "sdk/packs/core" },
+    { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
+    { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
+    { name = "lisa-pack-recovery", editable = "sdk/packs/recovery" },
+    { name = "openai", specifier = ">=1.30.0" },
+    { name = "pydantic", specifier = ">=2.7.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "zstandard", specifier = ">=0.23.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-harness-sdk"
+version = "0.1.0"
+source = { editable = "sdk" }
+dependencies = [
+    { name = "cel-python" },
+    { name = "diskcache" },
+    { name = "httpx" },
+    { name = "lisa-harness-kernel" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "sqlite-vec" },
+    { name = "wcmatch" },
+]
+
+[package.optional-dependencies]
+bedrock = [
+    { name = "boto3" },
+]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.34" },
+    { name = "cel-python", specifier = ">=0.5.0" },
+    { name = "diskcache", specifier = ">=5.6" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "lisa-harness-kernel", editable = "kernel" },
+    { name = "openai", specifier = ">=1.59.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+    { name = "sqlite-vec", specifier = ">=0.1.9" },
+    { name = "wcmatch", specifier = ">=8.5" },
+]
+provides-extras = ["bedrock", "dev"]
 
 [[package]]
 name = "lisa-pack-core"
@@ -1202,7 +1274,7 @@ name = "lisa-pack-introspect"
 version = "0.1.0"
 source = { editable = "sdk/packs/introspect" }
 dependencies = [
-    { name = "lisa-kernel" },
+    { name = "lisa-harness-kernel" },
 ]
 
 [package.optional-dependencies]
@@ -1214,7 +1286,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lisa-kernel" },
+    { name = "lisa-harness-kernel" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
@@ -1246,7 +1318,7 @@ name = "lisa-pack-recovery"
 version = "0.1.0"
 source = { editable = "sdk/packs/recovery" }
 dependencies = [
-    { name = "lisa-kernel" },
+    { name = "lisa-harness-kernel" },
 ]
 
 [package.optional-dependencies]
@@ -1258,84 +1330,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lisa-kernel" },
+    { name = "lisa-harness-kernel" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-packstest"
-version = "0.1.0"
-source = { editable = "packstest" }
-dependencies = [
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-sdk"
-version = "0.1.0"
-source = { editable = "sdk" }
-dependencies = [
-    { name = "cel-python" },
-    { name = "diskcache" },
-    { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "sqlite-vec" },
-    { name = "wcmatch" },
-]
-
-[package.optional-dependencies]
-bedrock = [
-    { name = "boto3" },
-]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.34" },
-    { name = "cel-python", specifier = ">=0.5.0" },
-    { name = "diskcache", specifier = ">=5.6" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "openai", specifier = ">=1.59.0" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-    { name = "sqlite-vec", specifier = ">=0.1.9" },
-    { name = "wcmatch", specifier = ">=8.5" },
-]
-provides-extras = ["bedrock", "dev"]
 
 [[package]]
 name = "markdown-it-py"

@@ -37,7 +37,7 @@ def build_parser(server_name: str, *, supports_readonly: bool = False) -> argpar
     """
     parser = argparse.ArgumentParser(
         prog=server_name,
-        description=f"{server_name} — Lisa Framework MCP server",
+        description=f"{server_name} — Lisa Harness MCP server",
     )
     parser.add_argument(
         "--data-dir",

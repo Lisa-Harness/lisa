@@ -1,4 +1,4 @@
-"""host — transport-neutral host runtime for Lisa framework hosts.
+"""host — transport-neutral host runtime for Lisa Harness hosts.
 
 This package owns the shared runtime that ``hosts/cli``
 builds on. It wires the kernel's ``TurnHooks`` with

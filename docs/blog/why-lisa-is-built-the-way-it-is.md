@@ -2,7 +2,7 @@
 title: "Why Lisa Is Built the Way She Is: Trade-offs and Principles Behind an Opinionated Agent Harness"
 date: 2026-09-14
 draft: false
-author: "Lisa Framework Team"
+author: "Lisa Harness Team"
 tags: ["agent", "architecture", "design", "context-engineering", "tradeoffs"]
 categories: ["engineering"]
 description: "Lisa makes specific trade-offs: routing as emergent behavior instead of planner calls, effect receipts instead of transcript inspection, tokens as evidence instead of folklore, and simplicity over graph abstraction. This post explains why we chose each one and which principle made that choice non-negotiable."

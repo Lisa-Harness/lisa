@@ -619,7 +619,7 @@ def test_normalize_pack_install_spec_expands_bare_pack_name(
     monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
 
     result = commands._normalize_pack_install_spec("lisa-pack-brave")
-    assert result == "git+https://github.com/Lisa-framework/lisa-pack-brave@main"
+    assert result == "git+https://github.com/Lisa-Harness/lisa-pack-brave@main"
 
 
 def test_normalize_pack_install_spec_bare_name_respects_custom_root(
@@ -795,8 +795,8 @@ async def test_seed_packs_venv_tool_mode_uses_direct_url_requirements(
     def _fake_seed_requirements() -> list[str]:
         """Tool-mode style: pinned git direct requirements (no leading -e)."""
         return [
-            "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=kernel",
-            "lisa-sdk @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=sdk",
+            "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git@abc123#subdirectory=kernel",
+            "lisa-harness-sdk @ git+https://github.com/Lisa-Harness/lisa.git@abc123#subdirectory=sdk",
         ]
 
     monkeypatch.setattr(commands._packs, "framework_seed_requirements", _fake_seed_requirements)
@@ -811,11 +811,11 @@ async def test_seed_packs_venv_tool_mode_uses_direct_url_requirements(
     # Git direct requirements pass through verbatim — no -e prefix.
     assert "-e" not in args
     assert (
-        "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=kernel"
+        "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git@abc123#subdirectory=kernel"
         in args
     )
     assert (
-        "lisa-sdk @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=sdk"
+        "lisa-harness-sdk @ git+https://github.com/Lisa-Harness/lisa.git@abc123#subdirectory=sdk"
         in args
     )
 
@@ -1839,8 +1839,8 @@ def test_seed_bundled_packs_lock_excludes_lisa_sdk(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The ``lisa-sdk`` umbrella package is never seeded into the lock."""
-    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-sdk")
+    """The ``lisa-harness-sdk`` umbrella package is never seeded into the lock."""
+    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-harness-sdk")
     cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
     monkeypatch.setattr(
         content_roots,
@@ -1853,7 +1853,7 @@ def test_seed_bundled_packs_lock_excludes_lisa_sdk(
     assert written is True
     lock = content_roots.load_installed_packs_lock(tmp_path)
     by_name = {entry["package_name"]: entry for entry in lock["packs"]}
-    assert "lisa-sdk" not in by_name
+    assert "lisa-harness-sdk" not in by_name
     assert set(by_name) == {"lisa-pack-cloudflare"}
 
 
@@ -1861,16 +1861,16 @@ def test_render_pack_list_excludes_lisa_sdk(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """``lisa-sdk`` never appears in the ``/pack list`` output, even if a stale
+    """``lisa-harness-sdk`` never appears in the ``/pack list`` output, even if a stale
     lock entry still references it."""
     runtime = _make_runtime(tmp_path)
-    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-sdk")
+    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-harness-sdk")
     cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
     monkeypatch.setattr(
         commands,
         "installed_pack_roots_by_name",
         lambda: {
-            "lisa-sdk": sdk_root,
+            "lisa-harness-sdk": sdk_root,
             "lisa-pack-cloudflare": cloudflare_root,
         },
     )
@@ -1884,7 +1884,7 @@ def test_render_pack_list_excludes_lisa_sdk(
         {
             "packs": [
                 {
-                    "package_name": "lisa-sdk",
+                    "package_name": "lisa-harness-sdk",
                     "enabled": True,
                     "source_kind": "bundled",
                     "source_ref": "bundled",
@@ -1903,7 +1903,7 @@ def test_render_pack_list_excludes_lisa_sdk(
 
     rendered = commands.render_pack_list(runtime)
 
-    assert "lisa-sdk" not in rendered
+    assert "lisa-harness-sdk" not in rendered
     assert "lisa-pack-cloudflare" in rendered
 
 

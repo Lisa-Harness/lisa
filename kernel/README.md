@@ -1,9 +1,9 @@
 # Kernel Architecture
 
-`lisa-kernel` is an abstract representation of a modal agent host or *harness*.
-It contains the tool-enabled turn loop at the heart of the Lisa Framework.
+`lisa-harness-kernel` is an abstract representation of a modal agent host or *harness*.
+It contains the tool-enabled turn loop at the heart of the Lisa Harness.
 It defines the *mode*, *operation*, and *tool* contracts.
-The `lisa-host-runtime` hosts the kernel and loads packs containing concrete implementations.
+The `lisa-harness-runtime` hosts the kernel and loads packs containing concrete implementations.
 
 ## Module Map
 
@@ -427,7 +427,7 @@ Import-boundary tests across all packages (`sdk/tests/test_import_boundaries.py`
 
 ## Operations
 
-Operations are the **behavior layer** of the Lisa framework. They sit between modes
+Operations are the **behavior layer** of the Lisa Harness. They sit between modes
 (which own routing and personality) and tools (which are low-level atomic capabilities).
 An operation is a reusable, mode-gated, timeout-bounded unit of work that the kernel
 can schedule automatically or offer to the model as a callable.
@@ -681,5 +681,5 @@ checklist see [`../sdk/AUTHORING.md`](../sdk/AUTHORING.md).
 - [`docs/BOUNDARIES.md`](../docs/BOUNDARIES.md) — public/private boundary definition
 - [`sdk/README.md`](../sdk/README.md) — the SDK's role in the architecture and its module map
 - [`docs/PACK_AUTHORING_GUIDE.md`](../docs/PACK_AUTHORING_GUIDE.md) — how to create modes, operations, content packs, signal connectors, and processing loops
-- [`host/`](../host/) — transport-neutral runtime; CLI host usage lives in [`lisa-host-cli`](https://github.com/Lisa-Framework/lisa-host-cli) and `../lisa-hosts/` docs
+- [`host/`](../host/) — transport-neutral runtime; CLI host usage lives in [`lisa-harness-cli`](https://github.com/Lisa-Harness/lisa-host-cli) and `../lisa-hosts/` docs
 - [`packstest/README.md`](../packstest/README.md) — in-process pack test/eval harness for verifying pack changes

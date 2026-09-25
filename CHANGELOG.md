@@ -1,10 +1,32 @@
 # Changelog
 
-All notable changes to the Lisa Framework will be documented in this file.
+All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
 ### Changed
+
+#### Distribution rename: `lisa-*` → `lisa-harness-*`; brand → Lisa Harness
+
+- **What:** The framework distributions are renamed to match the
+  `Lisa-Harness` GitHub org: `lisa-kernel` → `lisa-harness-kernel`,
+  `lisa-sdk` → `lisa-harness-sdk`, `lisa-mcp-servers` →
+  `lisa-harness-mcp-servers`, `lisa-host-runtime` → `lisa-harness-runtime`,
+  and `lisa-packstest` → `lisa-harness-packstest`. The workspace root is
+  now `lisa-harness`. The `lisa-pack-*` ecosystem names are unchanged.
+  Import packages (`kernel`, `sdk`, `host`, `mcp_server`, `packstest`),
+  entry-point groups (`lisa.extensions.*`), the `lisa` command, and the
+  `~/.lisa` data dir are all unchanged — only distribution names, the
+  bare-pack git-root default (`github.com/Lisa-Harness/`), and docs
+  branding ("Lisa Harness") move.
+- **Why:** The project is renamed to Lisa Harness ahead of the first
+  PyPI publish; old names `lisa-sdk` and `lisa-framework` collide with
+  unrelated PyPI projects, so the rename also unblocks publishing.
+  Renaming pre-publish is the only cheap window — PyPI names are forever.
+- **Tests:** `test_paths_framework_root.py`, `test_pack_manager.py`,
+  `test_pack_autoinstall.py`, and `test_session_plan.py` updated for the
+  new names; `EXCLUDED_PACK_NAMES` now excludes `lisa-harness-sdk` from
+  pack lists.
 
 #### Kernel `Settings` no longer reads `<cwd>/.env`
 

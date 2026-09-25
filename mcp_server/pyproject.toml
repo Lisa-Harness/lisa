@@ -6,18 +6,18 @@ build-backend = "hatchling.build"
 packages = ["src/mcp_server"]
 
 [tool.uv.sources]
-lisa-kernel = { workspace = true }
-lisa-sdk = { workspace = true }
+lisa-harness-kernel = { workspace = true }
+lisa-harness-sdk = { workspace = true }
 
 [project]
-name = "lisa-mcp-servers"
+name = "lisa-harness-mcp-servers"
 version = "0.1.0"
 description = "Lisa first-party MCP servers — context, memory, guard, content, catalog, storage, thread, and shared CLI config"
 requires-python = ">=3.11"
 
 dependencies = [
-    "lisa-kernel",
-    "lisa-sdk",
+    "lisa-harness-kernel",
+    "lisa-harness-sdk",
     "mcp>=2.0.0",
     "pydantic>=2.13.4",
 ]

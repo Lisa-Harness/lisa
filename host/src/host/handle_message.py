@@ -1,4 +1,4 @@
-"""Transport-neutral message dispatcher for Lisa framework hosts.
+"""Transport-neutral message dispatcher for Lisa Harness hosts.
 
 This is the core ``handle_message`` entry point that all transport hosts
 (cli, web) call to execute one user turn. It:

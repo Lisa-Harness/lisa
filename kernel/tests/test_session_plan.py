@@ -291,7 +291,7 @@ def test_compile_session_plan_accepts_auto_install_for_required_pack() -> None:
             "    required: [lisa-pack-core, lisa-pack-cloudflare]\n"
             "    auto_install:\n"
             "      lisa-pack-cloudflare:\n"
-            "        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0\n"
+            "        source: git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0\n"
             "        pin: v0.2.0\n"
         )
     )
@@ -311,7 +311,7 @@ def test_compile_session_plan_rejects_auto_install_key_not_in_required() -> None
             "    required: [lisa-pack-core]\n"
             "    auto_install:\n"
             "      lisa-pack-cloudflare:\n"
-            "        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0\n"
+            "        source: git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0\n"
         )
     )
     with pytest.raises(SessionPlanError, match="auto_install keys must also appear in required"):

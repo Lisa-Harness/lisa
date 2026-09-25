@@ -9,16 +9,16 @@ packages = ["src/sdk"]
 exclude = ["src/sdk/packs"]
 
 [tool.uv.sources]
-lisa-kernel = { workspace = true }
+lisa-harness-kernel = { workspace = true }
 
 [project]
-name = "lisa-sdk"
+name = "lisa-harness-sdk"
 version = "0.1.0"
 description = "Lisa SDK — reusable operations, modes, signal connector shims, and domain models for Lisa-powered bots"
 requires-python = ">=3.11"
 
 dependencies = [
-    "lisa-kernel",
+    "lisa-harness-kernel",
     "httpx>=0.27.0",
     "openai>=1.59.0",
     "pydantic>=2.13.4",

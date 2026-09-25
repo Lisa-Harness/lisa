@@ -16,7 +16,7 @@ This is **not** a pack — it ships no modes, operations, or authored content.
 It is a pluggable runtime backend for the kernel's model-selection seam,
 kin to ``kernel.model_router_discovery`` (which owns the discovery contract).
 It lives in the SDK tree at ``sdk/router`` (import path ``sdk.router``) and
-is wired into ``lisa-sdk``'s entry points.
+is wired into ``lisa-harness-sdk``'s entry points.
 """
 
 from __future__ import annotations

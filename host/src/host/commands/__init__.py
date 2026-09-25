@@ -1,4 +1,4 @@
-"""Transport-neutral host command dispatch for Lisa framework hosts.
+"""Transport-neutral host command dispatch for Lisa Harness hosts.
 
 This package consolidates the slash-command handlers that do not require the
 model: ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``

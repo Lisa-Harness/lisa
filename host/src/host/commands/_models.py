@@ -336,7 +336,7 @@ async def _handle_models_apply(
         # whose router rules do not compile — e.g. a trailing comma inside
         # a CEL list literal — applied cleanly, the active manifest then
         # killed the router on EVERY turn (runtime logs "model router
-        # factory 'lisa-sdk' failed" per turn and silently falls back to
+        # factory 'lisa-harness-sdk' failed" per turn and silently falls back to
         # static resolution). Compile every rule here and refuse the
         # apply until they parse; the response names each broken rule so
         # the operator can fix the exact line.

@@ -1,6 +1,6 @@
 # Operation Authoring Guide
 
-This guide walks through creating operations for the Lisa framework. For the conceptual
+This guide walks through creating operations for the Lisa Harness. For the conceptual
 overview and lifecycle details see the Operations section in [`../kernel/README.md`](../kernel/README.md#operations).
 
 ## Choose your operation kind

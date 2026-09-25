@@ -1,4 +1,4 @@
-"""HostConfig — typed, frozen configuration for a Lisa framework host.
+"""HostConfig — typed, frozen configuration for a Lisa Harness host.
 
 This replaces the config-reading parts of the old ``_RUNTIME_STATE`` dict.
 It is constructed once at host startup (from CLI args, env vars, or direct
@@ -290,7 +290,7 @@ class StreamingConfig:
 
 @dataclass(frozen=True, slots=True)
 class HostConfig:
-    """Typed, frozen configuration for a Lisa framework host.
+    """Typed, frozen configuration for a Lisa Harness host.
 
     Constructed once at startup from CLI args, env vars, or direct kwargs.
     Passed to ``HostRuntime`` which uses it to wire the kernel turn loop.

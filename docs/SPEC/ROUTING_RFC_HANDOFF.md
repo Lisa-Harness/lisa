@@ -11,7 +11,7 @@
 
 Status: Draft
 Date: 2026-07-16
-Author: Lisa Framework
+Author: Lisa Harness
 
 ## Problem
 

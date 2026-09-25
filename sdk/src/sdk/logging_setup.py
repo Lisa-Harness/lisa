@@ -1,4 +1,4 @@
-"""Shared logging infrastructure for the Lisa framework.
+"""Shared logging infrastructure for the Lisa Harness.
 
 This module is the single source of truth for stdlib ``logging``
 configuration across all hosts (CLI, web) and the first-party MCP
@@ -36,7 +36,7 @@ file rotation, stderr defaults, env-var parsing, the uncaught-exception
 hook — is runtime/host concern, not a kernel contract. The kernel
 contract forbids importing from higher layers; the SDK contract permits
 importing from the kernel, and ``mcp_server``/``hosts`` already depend on
-``lisa-sdk``.
+``lisa-harness-sdk``.
 """
 
 from __future__ import annotations

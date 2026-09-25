@@ -27,10 +27,11 @@ _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
 #: Package names that register a ``lisa.extensions.content_roots`` entry point
-#: but are *not* packs — they are umbrella/meta packages (e.g. ``lisa-sdk``)
-#: that host the real bundled packs under ``sdk/packs/*``. Listing them in
-#: ``/pack list`` is misleading, so discovery and seeding skip them.
-EXCLUDED_PACK_NAMES: frozenset[str] = frozenset({"lisa-sdk"})
+#: but are *not* packs — they are umbrella/meta packages (e.g.
+#: ``lisa-harness-sdk``) that host the real bundled packs under ``sdk/packs/*``.
+#: Listing them in ``/pack list`` is misleading, so discovery and seeding skip
+#: them.
+EXCLUDED_PACK_NAMES: frozenset[str] = frozenset({"lisa-harness-sdk"})
 
 
 def normalize_pack_name(raw: str) -> str:

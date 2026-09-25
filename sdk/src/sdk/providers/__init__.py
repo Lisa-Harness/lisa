@@ -8,7 +8,7 @@ This is **not** a pack — it ships no modes, operations, or authored content.
 It is a pluggable runtime backend for the kernel's provider-gateway seam,
 kin to ``sdk/router`` (which owns the model-selection seam). It lives in
 the SDK tree at ``sdk/providers`` (import path ``sdk.providers``) and is
-wired into ``lisa-sdk``'s entry points.
+wired into ``lisa-harness-sdk``'s entry points.
 """
 
 from __future__ import annotations

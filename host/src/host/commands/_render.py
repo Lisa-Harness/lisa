@@ -426,7 +426,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
     reflect what is actually installed at startup.
     """
     catalog = get_workflow_catalog()
-    lines: list[str] = ["Lisa Framework Host", ""]
+    lines: list[str] = ["Lisa Harness Host", ""]
     if runtime is not None:
         mode_id = runtime.session.current_mode_id or "default"
         lines.append(f"User: {runtime.config.user_slug}  |  Mode: {mode_id}")

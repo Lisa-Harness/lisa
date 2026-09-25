@@ -1,8 +1,8 @@
 # Host Runtime
 
-`lisa-host-runtime` is an abstract host runtime for the Lisa framework kernel.
+`lisa-harness-runtime` is an abstract host runtime for the Lisa Harness kernel.
 It offers a transport-neutral but otherwise near complete runtime.
-[`lisa-host-cli`][lisa-host-cli] builds on it to create a concrete running host.
+[`lisa-harness-cli`][lisa-host-cli] builds on it to create a concrete running host.
 
 ## Design Philosophy
 
@@ -124,4 +124,4 @@ Test through `HostConfig` and `HostRuntime` with injected fakes (via `host/testi
 
 Architecture boundaries for this package are defined in [.github/instructions/architecture/host.instructions.md](../.github/instructions/architecture/host.instructions.md).
 
-[lisa-host-cli]: https://github.com/Lisa-Framework/lisa-host-cli
+[lisa-host-cli]: https://github.com/Lisa-Harness/lisa-host-cli

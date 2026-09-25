@@ -82,11 +82,11 @@ _PLACEHOLDER_SOURCE_REFS = frozenset({"package", "git", "local"})
 _FRAMEWORK_ROOT = _framework_root()
 
 # Default git root template for expanding bare pack names (e.g.
-# ``lisa-pack-brave`` → ``git+https://github.com/Lisa-framework/lisa-pack-brave@main``).
+# ``lisa-pack-brave`` → ``git+https://github.com/Lisa-Harness/lisa-pack-brave@main``).
 # The ``{pack}`` placeholder is replaced with the bare package name. Set
 # ``LISA_PACK_GIT_ROOT`` to override with a custom template or to empty ("")
 # to disable expansion and fall back to PyPI resolution for bare names.
-_DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-framework/{pack}@main"
+_DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-Harness/{pack}@main"
 
 
 # ── Lock-file I/O ────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ def pack_git_root_template() -> str:
     """Return the git root template for expanding bare pack names.
 
     Reads ``LISA_PACK_GIT_ROOT`` (default:
-    ``git+https://github.com/Lisa-framework/{pack}@main``). The ``{pack}``
+    ``git+https://github.com/Lisa-Harness/{pack}@main``). The ``{pack}``
     placeholder is replaced with the bare package name at expansion time.
     Set the env var to an empty string to disable bare-name expansion.
     """
@@ -481,10 +481,10 @@ async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
     """Seed the packs venv with editable installs of framework packages.
 
     External packs (installed from git or PyPI) declare dependencies on
-    ``lisa-kernel``, ``lisa-sdk``, ``lisa-mcp-servers``, and any bundled
+    ``lisa-harness-kernel``, ``lisa-harness-sdk``, ``lisa-harness-mcp-servers``, and any bundled
     ``lisa-pack-*`` — all workspace packages that are **not** published to
     PyPI. Without seeding, ``uv pip install`` fails:
-    *"lisa-kernel was not found in the package registry"*.
+    *"lisa-harness-kernel was not found in the package registry"*.
 
     This installs the framework packages as editable ``-e`` installs from
     their source directories so the packs venv can resolve those dependencies.
@@ -510,7 +510,7 @@ def _seed_packs_venv_with_framework_sync(packs_venv: Path) -> tuple[bool, str]:
       ``git+`` requirements reconstructed from each framework package's
       PEP 610 ``direct_url.json``. The tool venv has no framework source
       tree, so without this the seed list would be empty and external pack
-      installs would fail with "lisa-kernel was not found in the package
+      installs would fail with "lisa-harness-kernel was not found in the package
       registry".
     """
     import subprocess
@@ -633,12 +633,12 @@ def _normalize_pack_install_spec(spec: str) -> str:
     1. Bare ``https://``/``http://`` GitHub-style URLs are rewritten to the
        ``git+https://`` form that :func:`_is_git_pack_spec` and uv both
        expect. This lets users paste a plain repo URL (e.g.
-       ``https://github.com/Lisa-Framework/lisa-pack-brave``) instead
+       ``https://github.com/Lisa-Harness/lisa-pack-brave``) instead
        of having to remember the ``git+`` prefix.
     2. Bare pack names matching the allowed prefix (e.g.
        ``lisa-pack-brave``) are expanded to a ``git+`` URL using
        :func:`pack_git_root_template` (default:
-       ``git+https://github.com/Lisa-framework/{pack}@main``). This is a
+       ``git+https://github.com/Lisa-Harness/{pack}@main``). This is a
        shorthand so users can type just the pack name for framework packs
        instead of a full git URL. Set ``LISA_PACK_GIT_ROOT`` to override the
        template or to empty to disable expansion.

@@ -1,6 +1,6 @@
 # Model Router
 
-The Lisa Framework supports a pluggable model-router mechanism that selects
+The Lisa Harness supports a pluggable model-router mechanism that selects
 a model **per turn-loop iteration** based on turn state, rather than pinning
 one model for the entire turn. This is layered on top of the existing static
 `mode_models` resolution — it does not replace it.
@@ -523,7 +523,7 @@ backend (e.g. `lisa-pack-aoi-router`).
 
 ### Built-in: `lisa-router`
 
-- **Module**: `sdk/router/` (part of the `lisa-sdk` distribution)
+- **Module**: `sdk/router/` (part of the `lisa-harness-sdk` distribution)
 - **Dependency**: `cel-python>=0.5.0` (declared in `sdk/pyproject.toml`)
 - **Entry points** (declared in `sdk/pyproject.toml`):
   - `lisa.extensions.model_routers` → `sdk.router:get_router_factory`

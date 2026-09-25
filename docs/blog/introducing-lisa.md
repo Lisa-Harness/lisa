@@ -2,7 +2,7 @@
 title: "Introducing Lisa: An Opinionated Agent Harness Built for the Agent Loop, Not Against It"
 date: 2026-09-14
 draft: false
-author: "Lisa Framework Team"
+author: "Lisa Harness Team"
 tags: ["agent", "framework", "llm", "mcp", "context-engineering"]
 categories: ["announcement"]
 description: "Lisa is a runtime-neutral framework for building agent hosts and mode/operation packs. We built her explicitly to solve the failure modes the 2025-2026 agent-harness research surfaced—hallucinated success, read-loop burns, context decay—and to stay simple while the field converges on complexity."
@@ -86,7 +86,7 @@ If you have ever shipped an agent that claimed success it never performed, or wa
 ## Try it
 
 ```sh
-git clone https://github.com/Lisa-Framework/lisa.git
+git clone https://github.com/Lisa-Harness/lisa.git
 cd lisa
 uv sync --extra dev
 uv run lisa verify
@@ -96,4 +96,4 @@ uv run lisa once "summarize the current thread state"
 uv run lisa
 ```
 
-The CLI host lives in the sibling `lisa-hosts/cli` repository and installs with `uv tool install lisa-host-cli`.
+The CLI host lives in the sibling `lisa-hosts/cli` repository and installs with `uv tool install lisa-harness-cli`.

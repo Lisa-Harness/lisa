@@ -1,4 +1,4 @@
-# Contributing to Lisa Framework
+# Contributing to Lisa Harness
 
 Thank you for your interest in contributing.
 
@@ -74,12 +74,12 @@ eval cases.
 
 | Package | Path | Description |
 | --- | --- | --- |
-| `lisa-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
-| `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
+| `lisa-harness-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
+| `lisa-harness-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
-| `lisa-packstest` | `packstest/` | In-process pack test/eval harness (see `packstest/README.md`) |
-| `lisa-host-runtime` | `host/` | Transport-neutral host runtime |
-| `lisa-host-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
+| `lisa-harness-packstest` | `packstest/` | In-process pack test/eval harness (see `packstest/README.md`) |
+| `lisa-harness-runtime` | `host/` | Transport-neutral host runtime |
+| `lisa-harness-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
 | `lisa-host` | `../lisa-hosts/packaging/lisa-host/` | Meta-package (`uv tool install lisa-host`) |
 
 ## Commit Conventions

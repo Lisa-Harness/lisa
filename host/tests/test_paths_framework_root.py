@@ -6,7 +6,7 @@ a fixed ``parents[1]`` from ``<repo>/host/paths.py``. After the tree moved to
 ``<repo>/host/src``, which is not a repo checkout — so ``framework_root()``
 fell back to tool mode (``sys.prefix``), the packs venv seeding found no
 framework member directories, and external pack installs failed with
-"lisa-kernel was not found in the package registry".
+"lisa-harness-kernel was not found in the package registry".
 """
 
 from __future__ import annotations
@@ -68,43 +68,45 @@ def test_repo_root_falls_back_to_nearest_dir_without_marker(tmp_path: Path) -> N
 def test_direct_url_git_payload_yields_pinned_requirement() -> None:
     """Git-sourced install: commit pin + subdirectory in the requirement."""
     payload = {
-        "url": "https://github.com/Lisa-Framework/lisa.git",
+        "url": "https://github.com/Lisa-Harness/lisa.git",
         "vcs_info": {"vcs": "git", "commit_id": "abc123"},
         "subdirectory": "kernel",
     }
     assert (
-        _requirement_from_direct_url("lisa-kernel", payload)
-        == "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git@abc123#subdirectory=kernel"
+        _requirement_from_direct_url("lisa-harness-kernel", payload)
+        == "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git@abc123#subdirectory=kernel"
     )
 
 
 def test_direct_url_git_without_commit_has_no_pin() -> None:
     """Missing commit_id still yields a usable (unpinned) git requirement."""
     payload = {
-        "url": "https://github.com/Lisa-Framework/lisa.git",
+        "url": "https://github.com/Lisa-Harness/lisa.git",
         "vcs_info": {"vcs": "git"},
         "subdirectory": "kernel",
     }
-    requirement = _requirement_from_direct_url("lisa-kernel", payload)
-    assert requirement == "lisa-kernel @ git+https://github.com/Lisa-Framework/lisa.git#subdirectory=kernel"
+    requirement = _requirement_from_direct_url("lisa-harness-kernel", payload)
+    assert requirement == "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git#subdirectory=kernel"
 
 
 def test_direct_url_local_dir_yields_path() -> None:
     """Local-directory install (--source local): the recorded path is returned."""
     payload = {"url": "file:///opt/lisa/kernel", "dir_info": {"editable": False}}
-    assert _requirement_from_direct_url("lisa-kernel", payload) == "/opt/lisa/kernel"
+    assert _requirement_from_direct_url("lisa-harness-kernel", payload) == "/opt/lisa/kernel"
 
 
 def test_direct_url_local_editable_yields_e_flag() -> None:
     """Editable local install: -e prefix preserved for the caller."""
     payload = {"url": "file:///opt/lisa/kernel", "dir_info": {"editable": True}}
-    assert _requirement_from_direct_url("lisa-kernel", payload) == "-e /opt/lisa/kernel"
+    assert _requirement_from_direct_url("lisa-harness-kernel", payload) == "-e /opt/lisa/kernel"
 
 
 def test_direct_url_registry_shape_is_skipped() -> None:
     """A plain URL with no vcs/dir info cannot be reinstalled → None."""
-    assert _requirement_from_direct_url("lisa-kernel", {"url": "https://pypi.org/..."}) is None
-    assert _requirement_from_direct_url("lisa-kernel", "not-a-dict") is None
+    assert (
+        _requirement_from_direct_url("lisa-harness-kernel", {"url": "https://pypi.org/..."}) is None
+    )
+    assert _requirement_from_direct_url("lisa-harness-kernel", "not-a-dict") is None
 
 
 def test_repo_mode_seed_requirements_cover_members_and_packs() -> None:

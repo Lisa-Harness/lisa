@@ -43,7 +43,7 @@ from sdk.layout import CACHE_DIR
 
 try:
     from diskcache import Cache as _DiskCache
-except ImportError:  # pragma: no cover - diskcache is a hard dep of lisa-sdk
+except ImportError:  # pragma: no cover - diskcache is a hard dep of lisa-harness-sdk
     _DiskCache = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)

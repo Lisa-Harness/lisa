@@ -401,7 +401,7 @@ class TestHandleMessage:
         runtime = HostRuntime(config)
         result = await handle_message(runtime, "/help")
         assert isinstance(result, HostCommandResult)
-        assert "Lisa Framework Host" in result.text
+        assert "Lisa Harness Host" in result.text
         assert "/help" in result.text
 
     @pytest.mark.asyncio

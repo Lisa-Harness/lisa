@@ -2,8 +2,8 @@
 
 Thin wrapper over :class:`sdk.content.ContentFetcher`, mirroring the
 ``mcp_server/content/server.py`` pattern: module-level ``MCPServer`` instance,
-lazy singleton holding the SDK fetcher, one ``@mcp.tool()`` per operation,
-``init_fetch()`` for setup, ``reset_fetch_state()`` for test isolation, and
+``FetchDeps`` carried by the lifespan, one ``@mcp.tool()`` per operation,
+``init_fetch()`` for setup, ``set_deps_for_test()`` for test isolation, and
 ``main()`` using the shared CLI helpers.
 
 The server is a pure pass-through; all network/cache/SSRF logic lives in the

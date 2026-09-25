@@ -26,14 +26,14 @@ jobs:
 
       - name: Build packages
         run: |
-          uv build --package lisa-kernel
-          uv build --package lisa-sdk
-          uv build --package lisa-mcp-servers
+          uv build --package lisa-harness-kernel
+          uv build --package lisa-harness-sdk
+          uv build --package lisa-harness-mcp-servers
           uv build --package lisa-pack-core
           uv build --package lisa-pack-introspect
           uv build --package lisa-pack-memory
           uv build --package lisa-pack-recovery
-          uv build --package lisa-host-runtime
+          uv build --package lisa-harness-runtime
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

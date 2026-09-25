@@ -1,11 +1,11 @@
-# Lisa Framework Release Readiness Checklist
+# Lisa Harness Release Readiness Checklist
 
 This checklist governs the release readiness of two repositories:
 
-- **lisa** — `github.com/Lisa-Framework/lisa` (private core framework)
-- **lisa-packs** — `github.com/Lisa-Framework/lisa-packs` (public pack registry)
+- **lisa** — `github.com/Lisa-Harness/lisa` (private core framework)
+- **lisa-packs** — `github.com/Lisa-Harness/lisa-packs` (public pack registry)
 
-Host distribution release (lisa-host-cli, lisa-host meta-package) is governed
+Host distribution release (lisa-harness-cli, lisa-host meta-package) is governed
 by `../lisa-hosts/docs/RELEASE_CHECKLIST.md`.
 
 Each section applies to one or both repositories as indicated. Items are marked with checkboxes for tracking. Complete all items before tagging a release.
@@ -23,7 +23,7 @@ ______________________________________________________________________
 - [ ] `CODE_OF_CONDUCT.md` present
 - [ ] `.gitignore` reviewed for stale or overly broad entries
 - [ ] No secrets, API keys, or `.env` files committed (scan history if necessary)
-- [ ] Docs reference the `lisa` CLI (shipped by `lisa-host-cli`) — no `little-lisa` references remain
+- [ ] Docs reference the `lisa` CLI (shipped by `lisa-harness-cli`) — no `little-lisa` references remain
 - [ ] Branch protection enabled on `main`
 - [ ] Default branch is `main`
 - [ ] Stale branches pruned or archived
@@ -37,7 +37,7 @@ ______________________________________________________________________
 - [ ] `README.md` accurately describes the pack registry, pack lifecycle, and how to add packs
 - [ ] `CONTRIBUTING.md` present and aligned with the promotion lifecycle (private standalone → packs-wip → lisa-packs)
 - [ ] `docs/PROMOTION_GUIDE.md` reviewed for accuracy and completeness
-- [ ] `.gitmodules` reviewed — all 10 submodule URLs resolve and point to `github.com/Lisa-Framework/lisa-pack-<name>` (brave, cloudservers, letta, markdown, mem0, okf, personas, search, serper, tavily)
+- [ ] `.gitmodules` reviewed — all 10 submodule URLs resolve and point to `github.com/Lisa-Harness/lisa-pack-<name>` (brave, cloudservers, letta, markdown, mem0, okf, personas, search, serper, tavily)
 - [ ] All submodule SHAs pinned to intended commits (not floating `HEAD`)
 - [ ] `.cspell` dictionary reviewed; no false positives blocking CI
 - [ ] `.github` workflows reviewed and passing
@@ -221,7 +221,7 @@ ______________________________________________________________________
 - [ ] `brave_search` API key handling reviewed
 - [ ] `search` pack reviewed for SSRF if it fetches URLs
 - [ ] `letta` and `mem0` packs reviewed for data exfiltration risks
-- [ ] Submodule URLs verified to point only to `Lisa-Framework` org
+- [ ] Submodule URLs verified to point only to `Lisa-Harness` org
 - [ ] No pack executes arbitrary code on load without documented consent
 
 ______________________________________________________________________

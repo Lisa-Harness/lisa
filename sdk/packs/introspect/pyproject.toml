@@ -12,7 +12,7 @@ version = "0.1.0"
 description = "Lisa introspect pack - operational self-model, architecture atlas, and reflective self-assessment operations"
 requires-python = ">=3.11"
 dependencies = [
-    "lisa-kernel",
+    "lisa-harness-kernel",
 ]
 
 [project.optional-dependencies]

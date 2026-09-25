@@ -1,4 +1,4 @@
-# Lisa Framework Roadmap
+# Lisa Harness Roadmap
 
 > Generated 2026-07-23 from a review of the codebase, documentation, known
 > incident records, and the wish list.

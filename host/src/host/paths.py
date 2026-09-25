@@ -1,4 +1,4 @@
-"""Central path resolution for Lisa framework hosts.
+"""Central path resolution for Lisa Harness hosts.
 
 Resolves the framework root, venv root, and packs venv in a way that works
 both in a repo checkout (dev) and a ``uv tool install`` environment (no
@@ -61,7 +61,7 @@ def _repo_root_from_module() -> Path:
 
 
 def _is_repo_checkout(path: Path) -> bool:
-    """Return True if ``path`` looks like a Lisa framework repo checkout.
+    """Return True if ``path`` looks like a Lisa Harness repo checkout.
 
     A checkout is identified by the presence of a ``.git`` directory or a
     ``pyproject.toml`` with a ``[tool.uv.workspace]`` section at the top
@@ -313,7 +313,7 @@ def framework_seed_requirements() -> list[str]:
     installed from in its PEP 610 ``direct_url.json``. For git-sourced
     installs that yields a commit-pinned ``git+<url>@<commit>
     #subdirectory=<sub>`` requirement that can be re-installed into the
-    packs venv, giving its resolver a concrete ``lisa-kernel`` candidate
+    packs venv, giving its resolver a concrete ``lisa-harness-kernel`` candidate
     instead of failing with "not found in the package registry".
 
     Returns an empty list when no framework package source can be located
@@ -397,16 +397,16 @@ def _requirement_from_direct_url(dist_name: str, payload: object) -> str | None:
 
 # Repo-mode seed members: distribution name → directory under framework root.
 _REPO_SEED_MEMBERS: dict[str, str] = {
-    "lisa-kernel": "kernel",
-    "lisa-sdk": "sdk",
-    "lisa-mcp-servers": "mcp_server",
+    "lisa-harness-kernel": "kernel",
+    "lisa-harness-sdk": "sdk",
+    "lisa-harness-mcp-servers": "mcp_server",
 }
 
 # Tool-mode seed distributions: framework packages external packs depend on.
 _TOOL_SEED_DISTRIBUTIONS: tuple[str, ...] = (
-    "lisa-kernel",
-    "lisa-sdk",
-    "lisa-mcp-servers",
+    "lisa-harness-kernel",
+    "lisa-harness-sdk",
+    "lisa-harness-mcp-servers",
     "lisa-pack-core",
     "lisa-pack-memory",
     "lisa-pack-introspect",

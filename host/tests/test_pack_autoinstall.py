@@ -74,19 +74,19 @@ def _make_runtime(
 def test_resolve_auto_install_spec_prefers_explicit_source() -> None:
     """An explicit auto_install.source is returned verbatim with the right label."""
     spec = PackInstallSpec(
-        source="git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
+        source="git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
         pin="v0.2.0",
     )
     result = _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
     assert result == (
-        "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
+        "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
         "auto_install.source",
     )
 
 
 def test_resolve_auto_install_spec_rejects_unpinned_git() -> None:
     """An unpinned git+ source raises ValueError (pin is mandatory)."""
-    spec = PackInstallSpec(source="git+https://github.com/lisa-framework/lisa-pack-cloudflare.git")
+    spec = PackInstallSpec(source="git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git")
     with pytest.raises(ValueError, match="unpinned"):
         _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
 
@@ -140,7 +140,7 @@ def test_auto_install_installs_missing_required_pack(
         required=["lisa-pack-cloudflare"],
         auto_install={
             "lisa-pack-cloudflare": {
-                "source": "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
                 "pin": "v0.2.0",
             }
         },
@@ -162,7 +162,7 @@ def test_auto_install_installs_missing_required_pack(
 
     installed = auto_install_required_packs(runtime)
     assert installed == ["lisa-pack-cloudflare"]
-    assert call_log == ["git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0"]
+    assert call_log == ["git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0"]
     # The caller (discover_framework) requests the restart, not this function.
     assert runtime.session.restart_required is False
 
@@ -177,7 +177,7 @@ def test_auto_install_raises_on_install_failure(
         required=["lisa-pack-cloudflare"],
         auto_install={
             "lisa-pack-cloudflare": {
-                "source": "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
             }
         },
     )
@@ -207,7 +207,7 @@ def test_auto_install_raises_on_unpinned_git_ref(
         required=["lisa-pack-cloudflare"],
         auto_install={
             "lisa-pack-cloudflare": {
-                "source": "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git",
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git",
             }
         },
     )

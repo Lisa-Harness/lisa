@@ -1,4 +1,4 @@
-"""Runtime-neutral Pydantic contracts for Lisa framework hosts and packs."""
+"""Runtime-neutral Pydantic contracts for Lisa Harness hosts and packs."""
 
 from __future__ import annotations
 

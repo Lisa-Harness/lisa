@@ -132,5 +132,5 @@ async def test_full_chain(tmp_path) -> None:
 ## Boundary rule
 
 `packstest` imports `kernel` and `sdk` only — never hosts, never packs. Pack
-repos consume it as a dev dependency (`lisa-packstest`) and keep their own
+repos consume it as a dev dependency (`lisa-harness-packstest`) and keep their own
 unit tests in `tests/` plus evals in `tests/evals/`.

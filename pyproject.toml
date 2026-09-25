@@ -1,18 +1,18 @@
 [project]
-name = "lisa-framework"
+name = "lisa-harness"
 version = "0.1.0"
-description = "Workspace for the public Lisa framework packages and examples"
+description = "Workspace for the public Lisa Harness packages and examples"
 requires-python = ">=3.11"
 dependencies = [
-    "lisa-kernel",
-    "lisa-sdk",
-    "lisa-mcp-servers",
+    "lisa-harness-kernel",
+    "lisa-harness-sdk",
+    "lisa-harness-mcp-servers",
     "lisa-pack-memory",
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-recovery",
-    "lisa-host-runtime",
-    "lisa-packstest",
+    "lisa-harness-runtime",
+    "lisa-harness-packstest",
 ]
 
 [project.optional-dependencies]
@@ -45,15 +45,15 @@ members = [
 ]
 
 [tool.uv.sources]
-lisa-kernel = { workspace = true }
-lisa-sdk = { workspace = true }
-lisa-mcp-servers = { workspace = true }
+lisa-harness-kernel = { workspace = true }
+lisa-harness-sdk = { workspace = true }
+lisa-harness-mcp-servers = { workspace = true }
 lisa-pack-memory = { workspace = true }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-recovery = { workspace = true }
-lisa-host-runtime = { workspace = true }
-lisa-packstest = { workspace = true }
+lisa-harness-runtime = { workspace = true }
+lisa-harness-packstest = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = [

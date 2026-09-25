@@ -1,4 +1,4 @@
-# Lisa Framework
+# Lisa Harness
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -25,11 +25,11 @@ It also contains the CEL-based [model router](sdk/src/sdk/router/) the host uses
 There is also the `packstest` harness that verifies content packs in-process,
 from source, with no model calls.
 
-The [`lisa-host-cli`][lisa-host-cli] contains the runnable CLI tool.
+The [`lisa-harness-cli`][lisa-host-cli] contains the runnable CLI tool.
 
 ## Table of contents
 
-- [Lisa Framework](#lisa-framework)
+- [Lisa Harness](#lisa-harness)
   - [Table of contents](#table-of-contents)
   - [Architecture](#architecture)
   - [Repository layout](#repository-layout)
@@ -89,7 +89,7 @@ infrastructural seams rather than whole-layer import dependencies.
 | `sdk/packs` | Bundled reference packs — `core`, `memory`, `introspect`, `recovery` — contributing modes, operations, tools, authored content, slice providers, and pack-registered slash commands; the memory pack also provides the default memory MCP backend | `kernel`, `sdk` (bundled packs may lazily import `host.thread`) | Product strategy, private app behavior, cross-pack imports |
 | `host` | Abstract runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), `handle_message` dispatch and host commands, MCP pool compilation and launch policy, the approval policy engine (`config/policy.yaml`), model discovery, context assembly, the thread store write path, recovery records, and pack management | `kernel`, `sdk`, the bundled packs, `mcp_server` (launch config) | Chat transport, durable memory backends, production-grade model policy |
 | `mcp_server` | First-party MCP servers exposing Lisa's surface-scoped tools over stdio — thin facades; domain logic stays in the SDK | `kernel`, `sdk` | Transport, host wiring, cross-server imports |
-| `packstest` | The in-process pack test/eval harness: `validate_pack` structure checks, `run_tool`/`run_scenario` behavior driving, diffable `Trajectory` reports, offline git fixtures, and deterministic `eval` cases | `kernel`, `sdk` only | Anything at runtime — pack repos consume it as the dev dependency `lisa-packstest` |
+| `packstest` | The in-process pack test/eval harness: `validate_pack` structure checks, `run_tool`/`run_scenario` behavior driving, diffable `Trajectory` reports, offline git fixtures, and deterministic `eval` cases | `kernel`, `sdk` only | Anything at runtime — pack repos consume it as the dev dependency `lisa-harness-packstest` |
 
 ### What a host injects
 
@@ -101,7 +101,7 @@ the transport adapter, and scheduling for signal connector polling.
 
 ### The packstest harness
 
-`packstest` (`lisa-packstest`) is a dev-only harness for pack authors. It is
+`packstest` (`lisa-harness-packstest`) is a dev-only harness for pack authors. It is
 not part of any runtime: it imports `kernel` and `sdk` only, and pack
 repositories consume it as a dev dependency.
 See [`packstest/README.md`](packstest/README.md) for the full API.
@@ -135,7 +135,7 @@ Lisa requires **Python 3.11 or newer** and is managed with `uv`. Clone the
 repo and sync the workspace, including the development extras:
 
 ```sh
-git clone https://github.com/Lisa-Framework/lisa.git
+git clone https://github.com/Lisa-Harness/lisa.git
 cd lisa
 uv sync --extra dev
 ```
@@ -144,7 +144,7 @@ The framework packages are installed as editable workspace members. To drive
 Lisa from a terminal, install the CLI host from the sibling repo:
 
 ```sh
-uv tool install lisa-host-cli
+uv tool install lisa-harness-cli
 ```
 
 This provides the `lisa` entry point, which wraps the transport-neutral
@@ -339,10 +339,10 @@ for the current work horizons.
 
 ## License
 
-Lisa Framework is released under the [MIT License](LICENSE), © 2026 The Migus
+Lisa Harness is released under the [MIT License](LICENSE), © 2026 The Migus
 Group.
 
-[lisa-host-cli]: https://github.com/Lisa-Framework/lisa-host-cli
-[lisa-packs]: https://github.com/Lisa-Framework/lisa-packs
+[lisa-host-cli]: https://github.com/Lisa-Harness/lisa-host-cli
+[lisa-packs]: https://github.com/Lisa-Harness/lisa-packs
 [mcp]: https://modelcontextprotocol.io
 [uv]: https://docs.astral.sh/uv

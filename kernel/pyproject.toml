@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 packages = ["src/kernel"]
 
 [project]
-name = "lisa-kernel"
+name = "lisa-harness-kernel"
 version = "0.1.0"
 description = "Lisa kernel — runtime-neutral FSM engine, contracts, operation registry, and telemetry primitives"
 requires-python = ">=3.11"

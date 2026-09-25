@@ -19,9 +19,9 @@ Packs live in one of two places depending on whether they are bundled with the f
 | Location | Packages | Import namespace | When to use |
 | --- | --- | --- | --- |
 | `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-recovery` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
-| [`lisa-packs`](https://github.com/Lisa-Framework/lisa-packs) (`../lisa-packs/<name>` in a sibling checkout) | `lisa-pack-brave`, `lisa-pack-markdown`, `lisa-pack-okf`, `lisa-pack-search` | `lisa_packs.<name>` | External integration packs maintained in separate repos; public subset in lisa-packs |
+| [`lisa-packs`](https://github.com/Lisa-Harness/lisa-packs) (`../lisa-packs/<name>` in a sibling checkout) | `lisa-pack-brave`, `lisa-pack-markdown`, `lisa-pack-okf`, `lisa-pack-search` | `lisa_packs.<name>` | External integration packs maintained in separate repos; public subset in lisa-packs |
 
-See the [lisa-packs repo](https://github.com/Lisa-Framework/lisa-packs) for the public pack set, per-pack installation, and the submodule workflow.
+See the [lisa-packs repo](https://github.com/Lisa-Harness/lisa-packs) for the public pack set, per-pack installation, and the submodule workflow.
 
 ## Pack Shape
 
@@ -401,7 +401,7 @@ include = ["sdk.packs.hello_world*"]
 name = "lisa-pack-hello-world"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["lisa-kernel", "httpx>=0.27.0"]
+dependencies = ["lisa-harness-kernel", "httpx>=0.27.0"]
 
 [project.entry-points."lisa.extensions.signal_connectors"]
 hello_world = "sdk.packs.hello_world.connector:HelloWorldSignalCollector"

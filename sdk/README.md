@@ -1,6 +1,6 @@
 # SDK
 
-`lisa-sdk` (`sdk`) is the reusable content-discovery, customization-parsing, and repository-facing helper layer of the Lisa Framework. It sits between the runtime-neutral `kernel` and the concrete runtime that packs compose: the kernel owns contracts and the turn loop, the SDK owns the catalog scanners, model router, provider gateways, and the memory/thread/guard/storage/fetch primitives that first-party MCP servers expose.
+`lisa-harness-sdk` (`sdk`) is the reusable content-discovery, customization-parsing, and repository-facing helper layer of the Lisa Harness. It sits between the runtime-neutral `kernel` and the concrete runtime that packs compose: the kernel owns contracts and the turn loop, the SDK owns the catalog scanners, model router, provider gateways, and the memory/thread/guard/storage/fetch primitives that first-party MCP servers expose.
 
 ## Design Philosophy
 
@@ -57,11 +57,11 @@ Key principles:
 
 ## Bundled Packs
 
-The `sdk/packs/` subtree contains the bundled reference packs — `core`, `memory`, `introspect`, `recovery` — which ship as their own distributions and are excluded from the `lisa-sdk` wheel. For pack structure, mode front matter, operations, signal connectors, and the testing workflow, see:
+The `sdk/packs/` subtree contains the bundled reference packs — `core`, `memory`, `introspect`, `recovery` — which ship as their own distributions and are excluded from the `lisa-harness-sdk` wheel. For pack structure, mode front matter, operations, signal connectors, and the testing workflow, see:
 
 - [docs/PACK_AUTHORING_GUIDE.md](../docs/PACK_AUTHORING_GUIDE.md) — pack anatomy, mode files, extension entry points, and the hello-world walkthrough.
 - [AUTHORING.md](AUTHORING.md) — the operation authoring deep-dive (runtime vs. declarative, metadata fields, the `execute(ctx)` contract).
-- The [lisa-packs](https://github.com/Lisa-Framework/lisa-packs) repo — the public external packs, their installation, and the per-pack submodule workflow for authoring real integration packs.
+- The [lisa-packs](https://github.com/Lisa-Harness/lisa-packs) repo — the public external packs, their installation, and the per-pack submodule workflow for authoring real integration packs.
 
 ## Testing
 
