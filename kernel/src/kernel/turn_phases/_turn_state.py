@@ -557,28 +557,48 @@ def merge_child_usage(
     for entry in per_model_usage or []:
         mid = str(entry.get("model_id", "") or "-").strip() or "-"
         target = state.per_model_usage.setdefault(mid, {"model_id": mid})
-        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(entry.get("prompt_tokens", 0))
-        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(entry.get("completion_tokens", 0))
+        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(
+            entry.get("prompt_tokens", 0)
+        )
+        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(
+            entry.get("completion_tokens", 0)
+        )
         target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
-        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
-        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(
+            entry.get("cached_tokens", 0)
+        )
+        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(
+            entry.get("reasoning_tokens", 0)
+        )
         target["cache_creation_tokens"] = target.get("cache_creation_tokens", 0) + _int(
             entry.get("cache_creation_tokens", 0)
         )
-        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
+        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(
+            entry.get("duration_ms", 0.0)
+        )
         target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
     for entry in per_mode_usage or []:
         mid = str(entry.get("mode_id", "") or "-").strip() or "-"
         target = state.per_mode_usage.setdefault(mid, {"mode_id": mid})
-        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(entry.get("prompt_tokens", 0))
-        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(entry.get("completion_tokens", 0))
+        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(
+            entry.get("prompt_tokens", 0)
+        )
+        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(
+            entry.get("completion_tokens", 0)
+        )
         target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
-        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
-        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(
+            entry.get("cached_tokens", 0)
+        )
+        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(
+            entry.get("reasoning_tokens", 0)
+        )
         target["cache_creation_tokens"] = target.get("cache_creation_tokens", 0) + _int(
             entry.get("cache_creation_tokens", 0)
         )
-        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
+        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(
+            entry.get("duration_ms", 0.0)
+        )
         target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
 
 

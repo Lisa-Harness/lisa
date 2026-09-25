@@ -138,9 +138,7 @@ class TestSchemalessOperationsAreAdvertised:
             mode_kind="action",
             routable=True,
         )
-        monkeypatch.setattr(
-            ipsar_fsm, "get_workflow_catalog", lambda: base_catalog
-        )
+        monkeypatch.setattr(ipsar_fsm, "get_workflow_catalog", lambda: base_catalog)
         effects = mode_completion_effects("incident")
         assert "op_no_schema" in effects, (
             "the write-effect schema-less op must remain in the completion "

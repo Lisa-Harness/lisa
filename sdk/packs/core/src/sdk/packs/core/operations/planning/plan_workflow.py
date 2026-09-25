@@ -332,9 +332,7 @@ def _build_mode_catalog_summary(*, include_tools: bool = False) -> str:
             write_caps = sorted(mode_completion_effects(mode_id))
         except Exception:  # pylint: disable=broad-except
             write_caps = []
-        write_caps_line = (
-            f"\n  write_capabilities: {', '.join(write_caps)}" if write_caps else ""
-        )
+        write_caps_line = f"\n  write_capabilities: {', '.join(write_caps)}" if write_caps else ""
         lines.append(
             f"- **{mode_id}** (intents: {tags})\n{keywords_text}"
             + tools_line
@@ -393,9 +391,7 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     for idx, step in enumerate(parsed.steps, start=1):
         lines.append(f"{idx}. **{step.mode_id}** — {step.description}")
         deliverable_line = (
-            f"   _writes: {step.write_capability}_"
-            if step.write_capability
-            else "   _reads_"
+            f"   _writes: {step.write_capability}_" if step.write_capability else "   _reads_"
         )
         lines.append(deliverable_line)
         if step.rationale:

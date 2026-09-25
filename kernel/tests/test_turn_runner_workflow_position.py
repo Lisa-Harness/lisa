@@ -31,10 +31,10 @@ class _StubCompletion:
 
 def _build_minimal_hooks(complete_fn: Any) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
 
 
 def _mode_config(
@@ -129,7 +129,7 @@ async def test_chain_satisfied_hydrates_from_instance_completed_steps() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow.workflow_position= lambda: instance
+    hooks.workflow.workflow_position = lambda: instance
     # No updater wired — we only test hydration here.
 
     catalog = _catalog_with_chain()
@@ -192,7 +192,7 @@ async def test_instance_advanced_on_successful_handoff() -> None:
         return _StubCompletion(content="Done writing.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow.workflow_position= lambda: instance
+    hooks.workflow.workflow_position = lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         updated_instances.append(updated)
@@ -290,7 +290,7 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
     # Mirror the host wiring: ``workflow_position`` returns the live active
     # ref (None at turn 1); the updater persists the advanced instance and
     # swaps the active ref in place.
-    hooks.workflow.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position = lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
@@ -348,7 +348,7 @@ async def test_adhoc_no_chain_attaches_no_steps() -> None:
         return _StubCompletion(content="Hello.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position = lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
@@ -410,7 +410,7 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow.workflow_position= lambda: active_instance[0]
+    hooks.workflow.workflow_position = lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
@@ -437,11 +437,8 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
     # No ad-hoc chain: plan escalation owns the chain. The ad-hoc
     # block must have skipped (the hint was a plan-escalation hint), so no
     # saved position carries ad-hoc declared steps.
-    adhoc_chains = [
-        p for p in saved_instances if p.spawned_from == "adhoc" and p.declared_steps
-    ]
+    adhoc_chains = [p for p in saved_instances if p.spawned_from == "adhoc" and p.declared_steps]
     assert not adhoc_chains, (
         "ad-hoc chain must not be committed when plan escalation fires "
         f"(got {len(adhoc_chains)} ad-hoc chain(s))"
     )
-

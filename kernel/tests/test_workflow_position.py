@@ -485,9 +485,7 @@ def test_is_terminal_stage_returns_false_for_unknown_stage_id() -> None:
     catalog = {"ponder": mode_cfg}
 
     position = WorkflowPosition(
-        declared_steps=(
-            WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),
-        ),
+        declared_steps=(WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),),
         current_step_id="ponder_1",
         mode_id="ponder",
         stage_id="stale_stage_not_in_graph",
@@ -524,9 +522,7 @@ def test_is_terminal_stage_returns_true_for_terminal_stage() -> None:
     catalog = {"ponder": mode_cfg}
 
     position = WorkflowPosition(
-        declared_steps=(
-            WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),
-        ),
+        declared_steps=(WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),),
         current_step_id="ponder_1",
         mode_id="ponder",
         stage_id="exit",

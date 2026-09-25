@@ -360,9 +360,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     data_dir_arg_raw = entry.get("data_dir_arg", "--data-dir")
     data_dir_arg = None if data_dir_arg_raw is None else str(data_dir_arg_raw)
     workspace_root_arg_raw = entry.get("workspace_root_arg", "--workspace-root")
-    workspace_root_arg = (
-        None if workspace_root_arg_raw is None else str(workspace_root_arg_raw)
-    )
+    workspace_root_arg = None if workspace_root_arg_raw is None else str(workspace_root_arg_raw)
     data_dir_subdir = entry.get("data_dir_subdir")
     if data_dir_subdir is not None:
         data_dir_subdir = str(data_dir_subdir)

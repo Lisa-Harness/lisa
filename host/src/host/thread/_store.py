@@ -6,6 +6,7 @@ re-exports the read/write API that delegates into :meth:`ThreadStore`.
 
 See ``docs/SPEC/THREAD_STORE.md`` for the on-disk format.
 """
+
 from __future__ import annotations
 
 import json

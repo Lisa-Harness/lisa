@@ -142,9 +142,7 @@ class GoogleGeminiGateway:
                         continue
                     data = json.loads(serialized)
                     text_parts, tool_calls, reasoning_parts = _extract_gemini_response(data)
-                    finish_reason, _ = _extract_gemini_finish(
-                        data, has_tool_calls=bool(tool_calls)
-                    )
+                    finish_reason, _ = _extract_gemini_finish(data, has_tool_calls=bool(tool_calls))
                     usage = _extract_gemini_usage(data)
                     if text_parts or reasoning_parts or finish_reason or usage:
                         yield StreamedChunk(
@@ -218,8 +216,7 @@ class GoogleGeminiGateway:
 
     def _stream_generate_content_url(self, model_id: str) -> str:
         return (
-            f"{self._base_url}/{self._api_version}/models/{model_id}:streamGenerateContent"
-            "?alt=sse"
+            f"{self._base_url}/{self._api_version}/models/{model_id}:streamGenerateContent?alt=sse"
         )
 
     def _embed_content_url(self, model_id: str) -> str:
@@ -292,9 +289,7 @@ def _translate_gemini_schema(
     resolved = _resolve_gemini_reference(schema, definitions)
     if resolved is None:
         return None
-    has_nullable_variant, nullable_schema = _translate_nullable_gemini_schema(
-        resolved, definitions
-    )
+    has_nullable_variant, nullable_schema = _translate_nullable_gemini_schema(resolved, definitions)
     if has_nullable_variant:
         return nullable_schema
 
@@ -303,9 +298,7 @@ def _translate_gemini_schema(
         return None
     translated = _copy_gemini_schema_metadata(resolved, type_name)
     if type_name in {"object", "array"}:
-        return _translate_gemini_container_schema(
-            type_name, resolved, definitions, translated
-        )
+        return _translate_gemini_container_schema(type_name, resolved, definitions, translated)
     return translated
 
 

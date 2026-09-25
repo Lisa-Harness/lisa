@@ -192,7 +192,6 @@ class SessionState:
         self.restart_required: bool = False
         self.restart_reason: str = ""
 
-
         # Per-turn count of policy auto-approvals; the approval flow reads
         # and increments it, and the dispatcher resets it at each turn start.
         self.auto_approved_this_turn: int = 0

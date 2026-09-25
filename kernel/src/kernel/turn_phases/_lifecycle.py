@@ -537,7 +537,11 @@ def resolve_lifecycle_action(
     # ── 1. Router decision ──────────────────────────────────────────────
     if router_decision is not None:
         if getattr(router_decision, "finish", "").strip():
-            _log.info("lifecycle: router finish (mode=%s reason=%s)", mode_id, router_decision.finish.strip())
+            _log.info(
+                "lifecycle: router finish (mode=%s reason=%s)",
+                mode_id,
+                router_decision.finish.strip(),
+            )
             return FinishAction(
                 strip_tools=True,
                 reason=f"router finish: {router_decision.finish.strip()}",
@@ -554,7 +558,12 @@ def resolve_lifecycle_action(
     # ── 2. Recovery stall blocks the workflow ───────────────────────────
     blocking = _stalled_blocking_record(recovery_records)
     if blocking is not None:
-        _log.info("lifecycle: recovery stall blocks workflow (mode=%s step=%s target=%s)", mode_id, blocking.step_id, blocking.target_id)
+        _log.info(
+            "lifecycle: recovery stall blocks workflow (mode=%s step=%s target=%s)",
+            mode_id,
+            blocking.step_id,
+            blocking.target_id,
+        )
         target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
         detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
         work_item_id = str(getattr(blocking, "work_item_id", "") or "")
@@ -585,7 +594,12 @@ def resolve_lifecycle_action(
     # iteration cap so a tight handoff loop (A→B→A→B...) is caught early
     # rather than burning the full iteration budget.
     if state.handoff_count > settings.max_handoffs_per_turn:
-        _log.warning("lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)", mode_id, state.handoff_count, settings.max_handoffs_per_turn)
+        _log.warning(
+            "lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)",
+            mode_id,
+            state.handoff_count,
+            settings.max_handoffs_per_turn,
+        )
         return FinishAction(
             strip_tools=True,
             reason=(
@@ -608,8 +622,7 @@ def resolve_lifecycle_action(
     if (
         state.forced_action_target
         and not state.forced_action_target.startswith("fork:")
-        and state.forced_action_non_compliant_dispatches
-        >= settings.forced_action_non_compliant_cap
+        and state.forced_action_non_compliant_dispatches >= settings.forced_action_non_compliant_cap
     ):
         return TransitionAction(
             target_mode_id=state.forced_action_target,
@@ -673,9 +686,7 @@ def resolve_lifecycle_action(
     if state.iteration >= settings.max_tool_iterations:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
             return PauseAction(
-                reason=(
-                    f"iteration cap {settings.max_tool_iterations} reached"
-                ),
+                reason=(f"iteration cap {settings.max_tool_iterations} reached"),
             )
         # Action mode with no yield escape: pausing would hang a mode that
         # cannot resume. Terminate is the honest answer — mark the workflow
@@ -683,10 +694,7 @@ def resolve_lifecycle_action(
         # truncate (FinishAction) is gone; the operator gets a real terminal
         # state they can see.
         return TerminateAction(
-            reason=(
-                f"iteration cap {settings.max_tool_iterations} "
-                f"(action mode, no yield escape)"
-            ),
+            reason=(f"iteration cap {settings.max_tool_iterations} (action mode, no yield escape)"),
         )
 
     # ── 3b. Resource-budget exhaustion (Phase 4) ────────────────────
@@ -737,10 +745,7 @@ def resolve_lifecycle_action(
     if state.turns_in_stage >= settings.stage_nudge_cap:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
             return PauseAction(
-                reason=(
-                    f"stuck in {mode_id} for {state.turns_in_stage} "
-                    f"iterations (cap)"
-                ),
+                reason=(f"stuck in {mode_id} for {state.turns_in_stage} iterations (cap)"),
             )
         return TerminateAction(
             reason=(

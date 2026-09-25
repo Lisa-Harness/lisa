@@ -135,9 +135,7 @@ class TestEnrichment:
         assert model.latency_tier == "medium"
 
     def test_missing_pricing_leaves_zero_and_blank_tier(self) -> None:
-        model = _enrich_openrouter_model(
-            "x/m", _row(pricing={}, reasoning=None)
-        )
+        model = _enrich_openrouter_model("x/m", _row(pricing={}, reasoning=None))
         assert model.prompt_price == 0.0
         assert model.completion_price == 0.0
         assert model.cost_tier == ""

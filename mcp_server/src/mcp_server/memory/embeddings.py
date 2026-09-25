@@ -136,10 +136,7 @@ def resolve_embedding_config(args: Any) -> tuple[HttpEmbeddingProvider | None, i
     - ``LISA_EMBEDDING_TIMEOUT`` — optional request timeout in seconds
     """
     model_id = getattr(args, "embedding_model", None) or os.getenv("LISA_EMBEDDING_MODEL", "")
-    endpoint = (
-        getattr(args, "embedding_endpoint", None)
-        or os.getenv("LISA_EMBEDDING_ENDPOINT", "")
-    )
+    endpoint = getattr(args, "embedding_endpoint", None) or os.getenv("LISA_EMBEDDING_ENDPOINT", "")
     if not model_id or not endpoint:
         return None, 1536
     api_key = os.getenv("LISA_EMBEDDING_API_KEY", "")

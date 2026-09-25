@@ -154,9 +154,7 @@ class SqliteMemoryStore:
             self._conn.load_extension(_sqlite_vec.loadable_path())
             return True
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "sqlite-vec extension unavailable; semantic recall disabled: %s", exc
-            )
+            logger.warning("sqlite-vec extension unavailable; semantic recall disabled: %s", exc)
             return False
 
     def _init_schema(self) -> None:
@@ -302,9 +300,7 @@ class SqliteMemoryStore:
             )
             self._conn.commit()
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "embedding write failed for memory_id=%s: %s", memory_id, exc
-            )
+            logger.warning("embedding write failed for memory_id=%s: %s", memory_id, exc)
 
     async def list_memories(
         self,
@@ -325,9 +321,7 @@ class SqliteMemoryStore:
         ``memory_kind`` filters by ``episodic``/``semantic``/… when given.
         """
         assert self._conn is not None
-        where = (
-            "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
-        )
+        where = "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
         params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
         if memory_kind is not None:
             where += " AND memory_kind = ?"
@@ -487,9 +481,7 @@ class SqliteMemoryStore:
         ``status='active'`` to match ``list_memories``.
         """
         assert self._conn is not None
-        where = (
-            "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
-        )
+        where = "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
         params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
         if memory_kind is not None:
             where += " AND memory_kind = ?"
@@ -528,8 +520,7 @@ class SqliteMemoryStore:
             if not vectors:
                 return []
             where = (
-                "m.user_slug = ? AND m.workspace_id = ? "
-                "AND m.memory_scope = ? AND m.surface_id = ?"
+                "m.user_slug = ? AND m.workspace_id = ? AND m.memory_scope = ? AND m.surface_id = ?"
             )
             params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
             if memory_kind is not None:

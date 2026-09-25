@@ -524,7 +524,9 @@ def setup_framework(
         load_manifest_or_none as _load_manifest_or_none,
     )
 
-    runtime.session.manifest = _load_manifest_or_none(data_dir=runtime.paths.data_dir, path=runtime.paths.models_path)
+    runtime.session.manifest = _load_manifest_or_none(
+        data_dir=runtime.paths.data_dir, path=runtime.paths.models_path
+    )
 
 
 def configure_runtime(runtime: HostRuntime) -> None:
@@ -656,13 +658,9 @@ def compile_mcp_configs(
     # an unredacted store; unset patterns fall back to the framework
     # defaults inside the server. Unconditional assignment (never
     # ``setdefault``) per the parent-shell pollution note above.
-    os.environ["LISA_THREAD_REDACTION_ENABLED"] = (
-        "1" if config.thread_redaction_enabled else "0"
-    )
+    os.environ["LISA_THREAD_REDACTION_ENABLED"] = "1" if config.thread_redaction_enabled else "0"
     if config.thread_redaction_enabled and config.thread_redaction_patterns:
-        os.environ["LISA_THREAD_REDACTION_PATTERNS"] = "\n".join(
-            config.thread_redaction_patterns
-        )
+        os.environ["LISA_THREAD_REDACTION_PATTERNS"] = "\n".join(config.thread_redaction_patterns)
     else:
         os.environ.pop("LISA_THREAD_REDACTION_PATTERNS", None)
 
@@ -817,9 +815,7 @@ def compile_mcp_configs(
         rewritten: list[MCPClientConfig] = []
         for cfg in compiled:
             if cfg.server_id in first_party_ids and cfg.runtime_kind == "venv_bin":
-                rewritten.append(
-                    dataclasses.replace(cfg, runtime_kind="in_process")
-                )
+                rewritten.append(dataclasses.replace(cfg, runtime_kind="in_process"))
             else:
                 rewritten.append(cfg)
         compiled = rewritten
@@ -864,9 +860,7 @@ def compile_proxy_configs(  # noqa: C901
             dataclasses.replace(
                 spec,
                 proxy_id=proxy_id,
-                required=(
-                    spec.required or normalized in required or declared in required
-                ),
+                required=(spec.required or normalized in required or declared in required),
             )
         )
 
@@ -892,9 +886,7 @@ def compile_proxy_configs(  # noqa: C901
         for spec in load(manifest_path, source="pack"):
             add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
 
-    providers = sorted(
-        {provider for spec in registry.all_specs() for provider in spec.providers}
-    )
+    providers = sorted({provider for spec in registry.all_specs() for provider in spec.providers})
     provider_base_urls = direct_provider_base_urls(runtime, providers)
 
     return compile_proxy_registry(

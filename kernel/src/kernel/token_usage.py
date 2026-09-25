@@ -77,9 +77,7 @@ def publish_token_usage(bus: Any, event: TokenUsageEvent) -> None:
     if bus is None or not hasattr(bus, "publish"):
         return
     with contextlib.suppress(Exception):
-        task = asyncio.create_task(
-            bus.publish(TOKEN_USAGE_TOPIC, event.model_dump(mode="json"))
-        )
+        task = asyncio.create_task(bus.publish(TOKEN_USAGE_TOPIC, event.model_dump(mode="json")))
         _PENDING_PUBLISH_TASKS.add(task)
         task.add_done_callback(_PENDING_PUBLISH_TASKS.discard)
 
@@ -169,9 +167,7 @@ class TokenUsageTelemetryHandler:
                 try:
                     event = TokenUsageEvent.model_validate(event)
                 except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning(
-                        "token-usage dropped unvalidatable dict payload: %s", exc
-                    )
+                    logger.warning("token-usage dropped unvalidatable dict payload: %s", exc)
                     return
             else:
                 return

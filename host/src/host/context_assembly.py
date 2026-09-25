@@ -106,18 +106,12 @@ def context_budget_values_from_config(config: Any) -> ContextBudgetValues:
 
     return {
         "enabled": bool(getattr(config, "context_budget_enabled", True)),
-        "token_char_ratio": int(
-            getattr(config, "context_budget_token_char_ratio", 4) or 4
-        ),
-        "core_max_tokens": int(
-            getattr(config, "context_budget_core_max_tokens", 2000) or 2000
-        ),
+        "token_char_ratio": int(getattr(config, "context_budget_token_char_ratio", 4) or 4),
+        "core_max_tokens": int(getattr(config, "context_budget_core_max_tokens", 2000) or 2000),
         "retrieval_max_tokens": int(
             getattr(config, "context_budget_retrieval_max_tokens", 1500) or 1500
         ),
-        "memory_max_tokens": int(
-            getattr(config, "context_budget_memory_max_tokens", 1200) or 1200
-        ),
+        "memory_max_tokens": int(getattr(config, "context_budget_memory_max_tokens", 1200) or 1200),
         "reflection_max_tokens": int(
             getattr(config, "context_budget_reflection_max_tokens", 1000) or 1000
         ),
@@ -642,9 +636,7 @@ def assemble_dynamic_user_context(
             },
         ),
         total_tokens=(
-            mapper_snapshot.available_context_tokens
-            if mapper_snapshot is not None
-            else None
+            mapper_snapshot.available_context_tokens if mapper_snapshot is not None else None
         ),
     )
     # Tighten-only override: session front matter may reduce lane budgets,

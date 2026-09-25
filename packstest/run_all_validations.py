@@ -11,7 +11,7 @@ from pathlib import Path
 
 REPOS = [Path("/home/adam/Code/lisa-packs"), Path("/home/adam/Code/lisa-packs-wip")]
 
-WORKER = r'''
+WORKER = r"""
 import sys
 from pathlib import Path
 sys.path.insert(0, "/home/adam/Code/lisa/packstest/src")
@@ -27,7 +27,7 @@ print(f"provider_id={report.provider_id!r} tools={len(report.tools)} ok={report.
 for issue in report.issues:
     print(f"ISSUE {issue}")
 raise SystemExit(0 if report.ok else 1)
-'''
+"""
 
 WORKER_FILE = Path("/tmp/packstest_worker.py")
 WORKER_FILE.write_text(WORKER, encoding="utf-8")

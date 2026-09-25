@@ -105,9 +105,11 @@ def build_test_runtime(
                 capabilities=existing.capabilities,
             )
             runtime.session_plan = runtime.session_plan.model_copy(
-                update={"manifest": runtime.session_plan.manifest.model_copy(
-                    update={"providers": new_providers}
-                )}
+                update={
+                    "manifest": runtime.session_plan.manifest.model_copy(
+                        update={"providers": new_providers}
+                    )
+                }
             )
 
     if setup_framework:

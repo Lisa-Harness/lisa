@@ -41,9 +41,7 @@ from kernel.tools.mcp_client import (
 
 from host import mcp_pool
 
-_REPO_MANIFEST = (
-    Path(__file__).resolve().parents[2] / "host" / "src" / "host" / "mcp_servers.yaml"
-)
+_REPO_MANIFEST = Path(__file__).resolve().parents[2] / "host" / "src" / "host" / "mcp_servers.yaml"
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:

@@ -178,8 +178,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         if target_config is None:
             return OperationResult(
                 output_text=(
-                    f"fork target mode '{tp.mode_id}' is not in the "
-                    "installed catalog; cannot fork."
+                    f"fork target mode '{tp.mode_id}' is not in the installed catalog; cannot fork."
                 ),
                 output_json={
                     "target_mode_id": tp.mode_id,
@@ -200,8 +199,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if host is None or getattr(host, "fork", None) is None:
         return OperationResult(
             output_text=(
-                "ctx.host.fork is not wired; the host has not enabled "
-                "fork fan-out. Cannot fork."
+                "ctx.host.fork is not wired; the host has not enabled fork fan-out. Cannot fork."
             ),
             output_json={
                 "status": "error",

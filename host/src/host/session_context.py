@@ -78,7 +78,9 @@ def bundled_default_session_path() -> Path:
                     return candidate
     except Exception:
         pass  # fall through to the legacy path below
-    return Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
+    return (
+        Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
+    )
 
 
 LISA_SESSION_CONTEXT_PATH_ENV = "LISA_SESSION_CONTEXT_PATH"
@@ -104,7 +106,9 @@ def resolve_session_context_source(
     requested = session_context.strip()
     if requested:
         explicit_path = Path(requested).expanduser()
-        if explicit_path.is_dir() or (explicit_path.exists() and explicit_path.suffix.lower() != ".md"):
+        if explicit_path.is_dir() or (
+            explicit_path.exists() and explicit_path.suffix.lower() != ".md"
+        ):
             raise ValueError("Session context path must be a Markdown file.")
         if explicit_path.is_file():
             return _read_session_source(

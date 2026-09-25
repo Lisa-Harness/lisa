@@ -45,9 +45,7 @@ __all__ = [
 _PLAN_HEADER_RE = re.compile(r"^##\s+Plan\s*$", re.MULTILINE)
 # Matches:  1. **search** — Search for the latest rust async runtime news
 # Captures: mode_id="search", description="Search for the latest..."
-_PLAN_STEP_RE = re.compile(
-    r"^\s*(?:\d+\.|[-*])\s+\*{0,2}([a-zA-Z0-9_-]+)\*{0,2}\s*[—–-]\s*(.+)$"
-)
+_PLAN_STEP_RE = re.compile(r"^\s*(?:\d+\.|[-*])\s+\*{0,2}([a-zA-Z0-9_-]+)\*{0,2}\s*[—–-]\s*(.+)$")
 # Optional rationale line:  _Provides web_search_
 _RATIONALE_RE = re.compile(r"^\s*_\s*(.+?)\s*_\s*$")
 # Optional deliverable line:  _writes: markdown_forge_document_  or  _reads_
@@ -75,7 +73,7 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | N
 
     # Extract from the header to the next ## heading or end of text.
     block_start = match.start()
-    after = text[match.end():]
+    after = text[match.end() :]
     next_header = re.search(r"^##\s+", after, re.MULTILINE)
     if next_header:
         block_text = text[block_start : match.end() + next_header.start()]
@@ -248,9 +246,7 @@ def _step_satisfied(
     return None
 
 
-def _receipts_for_mode(
-    entries: list[dict[str, Any]], mode_id: str, after_index: int
-) -> bool:
+def _receipts_for_mode(entries: list[dict[str, Any]], mode_id: str, after_index: int) -> bool:
     """Check if any entry after ``after_index`` has a write receipt while
     running in ``mode_id``."""
     for entry in entries[after_index + 1 :]:
@@ -332,9 +328,7 @@ def derive_workflow_view(
     step_results: dict[str, str] = {}
 
     for idx, step in enumerate(steps):
-        completing_entry = _step_satisfied(
-            thread_entries, step, plan_entry_index + idx
-        )
+        completing_entry = _step_satisfied(thread_entries, step, plan_entry_index + idx)
         if completing_entry is not None:
             completed.append(step.step_id)
             preview = str(completing_entry.get("response_text") or "").strip()[:300]
@@ -418,9 +412,7 @@ def is_complete(view: WorkflowView) -> bool:
     Complete means: every declared step is completed AND the intra-mode
     pointer is either absent or parked on a terminal stage.
     """
-    steps_open = bool(view.declared_steps) and len(view.completed_steps) < len(
-        view.declared_steps
-    )
+    steps_open = bool(view.declared_steps) and len(view.completed_steps) < len(view.declared_steps)
     stage_open = bool(view.stage_id) and not view.terminal_reached
     return not steps_open and not stage_open
 

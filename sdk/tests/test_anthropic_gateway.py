@@ -187,9 +187,7 @@ async def test_segments_without_ephemeral_tail_cache_the_single_stable_block() -
         model_def=_model_def(),
         max_tokens=1024,
         temperature=0.0,
-        system_prompt_segments=(
-            SystemPromptSegment(text="Stable only", stability="stable"),
-        ),
+        system_prompt_segments=(SystemPromptSegment(text="Stable only", stability="stable"),),
     )
     await gateway.complete(request)
     system = captured["json"]["system"]

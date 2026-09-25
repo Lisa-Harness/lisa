@@ -235,12 +235,9 @@ async def test_default_fork_fn_interrupted_on_harness_yield(
 
 async def _noop_complete(**kwargs: Any) -> Any:
     """Stand-in for the ``complete`` callable (unused by stubbed run_turn)."""
-    return SimpleNamespace(
-        content="", tool_calls=[], finish_reason="stop", truncated=False
-    )
+    return SimpleNamespace(content="", tool_calls=[], finish_reason="stop", truncated=False)
 
 
 async def _noop_exec_op(operation_id: str, ctx: Any) -> Any:
     """Stand-in for the ``exec_op`` callable (unused by stubbed run_turn)."""
     return SimpleNamespace(output_text="", output_json={})
-

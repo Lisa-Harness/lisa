@@ -124,6 +124,4 @@ def set_production_extension_item_builder(
     """
     from sdk.context.context_broker import set_extension_item_builder
 
-    set_extension_item_builder(
-        EntryPointExtensionItemBuilder(excluded_packs=excluded_packs)
-    )
+    set_extension_item_builder(EntryPointExtensionItemBuilder(excluded_packs=excluded_packs))

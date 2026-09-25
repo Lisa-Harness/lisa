@@ -314,12 +314,12 @@ async def test_router_escalates_past_capability_gate() -> None:
     )
     try:
         hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete,
-        resolve_model=lambda mid: models.get(mid, models["default-model"]),
-    ),
-    context_seams=ContextSeams(model_router=router),
-)
+            models=ModelHooks(
+                complete=complete,
+                resolve_model=lambda mid: models.get(mid, models["default-model"]),
+            ),
+            context_seams=ContextSeams(model_router=router),
+        )
         result = await run_turn(
             mode_id="coding",
             query="implement a thing",

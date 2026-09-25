@@ -22,9 +22,9 @@ from host import HostConfig, HostRuntime, TransportCallbacks, handle_message
 
 config = HostConfig.from_env()
 runtime = HostRuntime(config)
-await runtime.start()           # starts MCP pool in the host's event loop
+await runtime.start()  # starts MCP pool in the host's event loop
 result = await handle_message(runtime, "/search test", transport)
-await runtime.aclose()          # closes MCP pool in the same loop
+await runtime.aclose()  # closes MCP pool in the same loop
 ```
 
 ## Module Map

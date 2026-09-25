@@ -86,18 +86,14 @@ def build_unified_state(
         )
         # Intake-produced context items (signals, intel, alerts,
         # self_model) is the single feed. No arbitrary named buckets.
-        state.context_items = _coerce_items(
-            snapshot.get("context_items")
-        )
+        state.context_items = _coerce_items(snapshot.get("context_items"))
 
     # Invoke the extension context-item hook so installed packs contribute
     # ContextItem records (self_model, Cloudflare, GitHub, Stripe, etc.).
     # The hook is the only coupling between packs and the host context path.
     if item_builder is not None:
         try:
-            contributed = item_builder.build_extension_context_items(
-                runtime_context, state
-            )
+            contributed = item_builder.build_extension_context_items(runtime_context, state)
         except Exception:  # pylint: disable=broad-except
             logger.warning(
                 "extension item builder raised; continuing with intake items only.",
@@ -170,8 +166,7 @@ def _coerce_items(raw_items: Any) -> list[ContextItem]:
         return []
     try:
         return [
-            e if isinstance(e, ContextItem) else ContextItem.model_validate(e)
-            for e in raw_items
+            e if isinstance(e, ContextItem) else ContextItem.model_validate(e) for e in raw_items
         ]
     except (ValidationError, TypeError):
         return []

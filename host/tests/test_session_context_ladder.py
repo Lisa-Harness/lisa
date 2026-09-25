@@ -54,9 +54,7 @@ def test_explicit_path_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_explicit_missing_path_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not found"):
-        resolve_session_context_source(
-            session_context=str(tmp_path / "nope.md"), data_dir=tmp_path
-        )
+        resolve_session_context_source(session_context=str(tmp_path / "nope.md"), data_dir=tmp_path)
 
 
 def test_explicit_directory_raises(tmp_path: Path) -> None:

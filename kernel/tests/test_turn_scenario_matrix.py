@@ -294,10 +294,10 @@ def test_completion_contract_combinatorial_grid(
     [
         (1, False, 0, ContinueAction),  # Normal early working iteration
         (4, False, 0, ContinueAction),  # At threshold (generic nudge)
-        (5, True, 0, ContinueAction),   # Past threshold with read receipts (synthesize nudge)
-        (5, True, 2, ContinueAction),   # Past threshold with error streak (diagnose nudge)
-        (9, False, 0, PauseAction),     # At stage cap -> pauses
-        (10, True, 3, PauseAction),     # Past stage cap -> pauses
+        (5, True, 0, ContinueAction),  # Past threshold with read receipts (synthesize nudge)
+        (5, True, 2, ContinueAction),  # Past threshold with error streak (diagnose nudge)
+        (9, False, 0, PauseAction),  # At stage cap -> pauses
+        (10, True, 3, PauseAction),  # Past stage cap -> pauses
     ],
 )
 def test_lifecycle_stage_stall_hierarchy(

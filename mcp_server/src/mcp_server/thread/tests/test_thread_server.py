@@ -325,8 +325,7 @@ async def test_thread_read_range_redacts_default_patterns_by_default(
         thread_path,
         query="do the work",
         response_text=(
-            "I've hit my iteration budget in default "
-            "(stuck in default for 6 iterations (cap))."
+            "I've hit my iteration budget in default (stuck in default for 6 iterations (cap))."
         ),
     )
     _write_active_entry(thread_path, query="next", response_text="clean answer")

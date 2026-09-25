@@ -46,9 +46,7 @@ def test_turn_completed_payload_omits_receipt_ledger() -> None:
             EffectReceipt(effect="external_write", capability_id="memory.add"),
         ]
     )
-    payload = build_turn_completed_payload(
-        mode_id="markdown", result=result, coerce_int=_coerce
-    )
+    payload = build_turn_completed_payload(mode_id="markdown", result=result, coerce_int=_coerce)
     assert payload["mode_id"] == "markdown"
     assert "receipts" not in payload
     assert payload["tool_call_count"] == 3
@@ -58,9 +56,7 @@ def test_turn_completed_payload_omits_receipt_ledger() -> None:
 def test_turn_completed_payload_blocked_turn_metadata() -> None:
     """A blocked turn carries blocked/block_origin — receipts are in the entry."""
     result = _result(blocked=True, block_origin="no_tools")
-    payload = build_turn_completed_payload(
-        mode_id="remember", result=result, coerce_int=_coerce
-    )
+    payload = build_turn_completed_payload(mode_id="remember", result=result, coerce_int=_coerce)
     assert "receipts" not in payload
     assert payload["blocked"] is True
     assert payload["block_origin"] == "no_tools"

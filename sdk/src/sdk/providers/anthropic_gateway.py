@@ -78,12 +78,7 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("cache_read_input_tokens")
     )
-    if (
-        prompt_tokens == 0
-        and completion_tokens == 0
-        and cache_creation == 0
-        and cache_read == 0
-    ):
+    if prompt_tokens == 0 and completion_tokens == 0 and cache_creation == 0 and cache_read == 0:
         # All counters zero/empty — no usage object on the wire (some partial
         # events report nothing). Distinguishing that from a real zero-usage
         # response keeps an empty ``usage`` from silently fabricating a 0/0.
@@ -428,9 +423,7 @@ class AnthropicGateway:
                         "id": str(block.get("id") or ""),
                         "type": "function",
                         "name": restored_name,
-                        "arguments": _normalize_openai_tool_arguments(
-                            block.get("input") or {}
-                        ),
+                        "arguments": _normalize_openai_tool_arguments(block.get("input") or {}),
                     }
                 )
         request_id = extract_request_id(response_json) or str(
@@ -508,9 +501,7 @@ class AnthropicGateway:
         if request.temperature:
             payload["temperature"] = request.temperature
         if request.tools:
-            payload["tools"] = [
-                _openai_tool_to_anthropic_tool(tool) for tool in request.tools
-            ]
+            payload["tools"] = [_openai_tool_to_anthropic_tool(tool) for tool in request.tools]
         if getattr(request.model_def, "thinking_model", False):
             payload["thinking"] = {
                 "type": "enabled",

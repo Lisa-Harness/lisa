@@ -134,6 +134,7 @@ def test_turn_decision_telemetry_event_emitted() -> None:
 
     async def complete(**_kwargs: Any) -> Any:
         from types import SimpleNamespace
+
         return SimpleNamespace(content="Hello world.", tool_calls=[])
 
     hooks = TurnHooks(

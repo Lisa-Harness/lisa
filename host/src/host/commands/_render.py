@@ -332,9 +332,7 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
     # Cache-read share: tokens served from cache as a fraction of everything
     # the provider *input* (prompt + cache reads). Zero-denominator guard so
     # an all-empty record set renders 0.0 rather than raising.
-    cache_read_share = (
-        cached / (prompt + cached) if (prompt + cached) > 0 else 0.0
-    )
+    cache_read_share = cached / (prompt + cached) if (prompt + cached) > 0 else 0.0
     out: list[str] = [
         "",
         "### Lifetime (all sessions)",
@@ -639,8 +637,7 @@ def _inventory_command_help_text(topic: str) -> str:
     return "\n".join(
         [
             f"## /{topic}",
-            f"List the live {topic} catalog discovered from installed packs and "
-            "SDK_CONTENT_ROOTS.",
+            f"List the live {topic} catalog discovered from installed packs and SDK_CONTENT_ROOTS.",
             "",
             f"Run `/{topic}` to render the full table. These catalogs back the "
             "capability snapshot shown by /help capabilities:",
@@ -670,7 +667,6 @@ def _host_shortcut_help_text(topic: str) -> str:
             "Show the effective runtime settings: profile, timezone, debug level, "
             "log level, and resolved paths."
         ),
-
         "policy": (
             "## /policy\n\n"
             "Show or change the approval policy. Bare /policy renders the active "

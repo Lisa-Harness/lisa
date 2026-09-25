@@ -70,9 +70,7 @@ def _make_position(steps: int):
     """Build a WorkflowPosition-like object with ``steps`` declared steps."""
     from kernel.workflow_position import WorkflowPosition
 
-    declared = tuple(
-        _make_step(f"step_{i}", mode_id="default") for i in range(steps)
-    )
+    declared = tuple(_make_step(f"step_{i}", mode_id="default") for i in range(steps))
     return WorkflowPosition(
         declared_steps=declared,
         current_step_id="step_0" if steps > 0 else "",
@@ -86,10 +84,10 @@ def _build_hooks_with_position(
 ) -> TurnHooks:
     """Build TurnHooks with a ``workflow_position`` callable returning ``position``."""
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
     hooks.workflow.workflow_position = lambda: position
     return hooks
 
@@ -102,10 +100,10 @@ async def test_no_position_uses_base_cap() -> None:
     """When no workflow_position hook is wired, the global cap stays at the
     base default (300). No scaling occurs."""
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=_make_stub_complete("Done."),
-    ),
-)
+        models=ModelHooks(
+            complete=_make_stub_complete("Done."),
+        ),
+    )
     # No workflow_position wired → hooks.workflow.workflow_position is None.
 
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -161,9 +159,7 @@ async def test_position_with_five_steps_scales_up() -> None:
 
     async def _on_stage(label: str, data: dict[str, Any] | None) -> None:
         if label == "model_call" and data is not None:
-            captured_max_iterations.append(
-                int(data.get("max_iterations", 0))
-            )
+            captured_max_iterations.append(int(data.get("max_iterations", 0)))
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
     hooks.lifecycle.on_stage = _on_stage
@@ -184,9 +180,7 @@ async def test_position_with_eight_steps_scales_to_600() -> None:
 
     async def _on_stage(label: str, data: dict[str, Any] | None) -> None:
         if label == "model_call" and data is not None:
-            captured_max_iterations.append(
-                int(data.get("max_iterations", 0))
-            )
+            captured_max_iterations.append(int(data.get("max_iterations", 0)))
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
     hooks.lifecycle.on_stage = _on_stage
@@ -211,9 +205,7 @@ async def test_execution_policy_tightens_after_scaling() -> None:
 
     async def _on_stage(label: str, data: dict[str, Any] | None) -> None:
         if label == "model_call" and data is not None:
-            captured_max_iterations.append(
-                int(data.get("max_iterations", 0))
-            )
+            captured_max_iterations.append(int(data.get("max_iterations", 0)))
 
     hooks = _build_hooks_with_position(_make_stub_complete("Done."), pos)
     hooks.lifecycle.on_stage = _on_stage

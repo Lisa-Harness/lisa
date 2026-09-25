@@ -561,9 +561,7 @@ class HostConfig:
             raw_profile = _resolve_env(LISA_PROFILE_ENV)
             if raw_profile:
                 raw_data_dir = str(profile_data_dir(raw_profile))
-        resolved_data_dir = (
-            Path(raw_data_dir or str(default_data_dir())).expanduser().resolve()
-        )
+        resolved_data_dir = Path(raw_data_dir or str(default_data_dir())).expanduser().resolve()
 
         # ── Overlays dir ──────────────────────────────────────────────
         resolved_overlays_dir: Path | None = None

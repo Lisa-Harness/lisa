@@ -1968,4 +1968,3 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
-

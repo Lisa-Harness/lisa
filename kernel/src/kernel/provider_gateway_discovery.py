@@ -74,7 +74,9 @@ def discover_provider_gateway_factories(
                 "Failed to load provider_gateways entry-point %r", ep.name, exc_info=True
             )
             continue
-        entries.append(PackProviderGatewayEntry(pack_name=_entry_point_pack_name(ep), provider=loaded))
+        entries.append(
+            PackProviderGatewayEntry(pack_name=_entry_point_pack_name(ep), provider=loaded)
+        )
     return entries
 
 

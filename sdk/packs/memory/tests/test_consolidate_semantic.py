@@ -24,9 +24,24 @@ def _model_def() -> dict[str, Any]:
 
 def _episodic_records() -> list[dict[str, Any]]:
     return [
-        {"id": 1, "content": "We chose Postgres for analytics.", "created_at": "2026-07-01T00:00:00Z", "salience": 0.3},
-        {"id": 2, "content": "Postgres analytics pipeline ships Friday.", "created_at": "2026-07-02T00:00:00Z", "salience": 0.4},
-        {"id": 3, "content": "The analytics team owns the Postgres warehouse.", "created_at": "2026-07-03T00:00:00Z", "salience": 0.2},
+        {
+            "id": 1,
+            "content": "We chose Postgres for analytics.",
+            "created_at": "2026-07-01T00:00:00Z",
+            "salience": 0.3,
+        },
+        {
+            "id": 2,
+            "content": "Postgres analytics pipeline ships Friday.",
+            "created_at": "2026-07-02T00:00:00Z",
+            "salience": 0.4,
+        },
+        {
+            "id": 3,
+            "content": "The analytics team owns the Postgres warehouse.",
+            "created_at": "2026-07-03T00:00:00Z",
+            "salience": 0.2,
+        },
     ]
 
 
@@ -37,11 +52,13 @@ async def test_consolidate_distills_persists_and_retires() -> None:
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
         # Return a valid ConsolidatedSemantic JSON payload.
-        return json.dumps({
-            "summary": "Postgres was chosen for the analytics warehouse.",
-            "confidence": 0.85,
-            "item_ids": [1, 2, 3],
-        })
+        return json.dumps(
+            {
+                "summary": "Postgres was chosen for the analytics warehouse.",
+                "confidence": 0.85,
+                "item_ids": [1, 2, 3],
+            }
+        )
 
     def resolve_model_fn(model_id: str | None) -> dict[str, Any]:
         return _model_def()
@@ -56,7 +73,9 @@ async def test_consolidate_distills_persists_and_retires() -> None:
             # Simulate the "Memory stored with ID N" reply.
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 42")
         if tool_id == "memory.retire":
-            return ToolResult(tool_id=tool_id, output_text=f"Retired memory {params.get('memory_id')}.")
+            return ToolResult(
+                tool_id=tool_id, output_text=f"Retired memory {params.get('memory_id')}."
+            )
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = OperationExecutionContext(
@@ -109,11 +128,13 @@ async def test_consolidate_filters_hallucinated_item_ids() -> None:
     """Evidence ids not in the input batch are dropped; falls back to all input ids."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({
-            "summary": "Consolidated fact.",
-            "confidence": 0.7,
-            "item_ids": [1, 999],  # 999 is not in the input batch.
-        })
+        return json.dumps(
+            {
+                "summary": "Consolidated fact.",
+                "confidence": 0.7,
+                "item_ids": [1, 999],  # 999 is not in the input batch.
+            }
+        )
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         if tool_id == "memory.add":
@@ -151,11 +172,13 @@ async def test_consolidate_falls_back_to_all_input_ids_when_model_returns_none()
     """When the model returns no valid evidence ids, use the full input set."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({
-            "summary": "Consolidated fact.",
-            "confidence": 0.5,
-            "item_ids": [888, 999],  # none in the input batch.
-        })
+        return json.dumps(
+            {
+                "summary": "Consolidated fact.",
+                "confidence": 0.5,
+                "item_ids": [888, 999],  # none in the input batch.
+            }
+        )
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         if tool_id == "memory.add":

@@ -200,9 +200,7 @@ def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, An
     if len(response) > max_chars:
         response = response[:max_chars] + "\n[…truncated…]"
     receipts = entry.get("effect_receipts") or []
-    receipt_caps = [
-        str(r.get("capability_id") or "") for r in receipts if isinstance(r, dict)
-    ]
+    receipt_caps = [str(r.get("capability_id") or "") for r in receipts if isinstance(r, dict)]
     result = {
         "turn": entry.get("turn"),
         "mode_id": entry.get("mode_id"),

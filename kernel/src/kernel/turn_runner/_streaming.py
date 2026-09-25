@@ -1,4 +1,5 @@
 """StreamedCompletionAdapter — makes a StreamedCompletion look like a CompletionResult."""
+
 from __future__ import annotations
 
 from kernel.provider_contracts import StreamedCompletion
@@ -24,7 +25,14 @@ class StreamedCompletionAdapter:
     ``self.reasoning_content`` for callers that want to distinguish the two.
     """
 
-    __slots__ = ("_aggregated", "content", "duration_ms", "reasoning_content", "tool_calls", "usage")
+    __slots__ = (
+        "_aggregated",
+        "content",
+        "duration_ms",
+        "reasoning_content",
+        "tool_calls",
+        "usage",
+    )
 
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated

@@ -29,40 +29,50 @@ from pathlib import Path
 
 # Attribute-method calls on any object (e.g. ``path.write_text(...)``).
 # Matched by attribute name only -- the receiver type is resolved at runtime.
-_BANNED_METHODS_WRITE: frozenset[str] = frozenset({
-    "write_text",
-    "write_bytes",
-})
+_BANNED_METHODS_WRITE: frozenset[str] = frozenset(
+    {
+        "write_text",
+        "write_bytes",
+    }
+)
 
-_BANNED_METHODS_READ: frozenset[str] = frozenset({
-    "read_text",
-    "read_bytes",
-})
+_BANNED_METHODS_READ: frozenset[str] = frozenset(
+    {
+        "read_text",
+        "read_bytes",
+    }
+)
 
-_BANNED_METHODS_MUTATE: frozenset[str] = frozenset({
-    "unlink",
-    "mkdir",
-    "rmdir",
-})
+_BANNED_METHODS_MUTATE: frozenset[str] = frozenset(
+    {
+        "unlink",
+        "mkdir",
+        "rmdir",
+    }
+)
 
 # Module-level function calls (e.g. ``os.replace(...)``, ``sqlite3.connect(...)``).
 # Keyed by ``(module_name, function_name)``.
-_BANNED_MODULE_FUNCS_WRITE: frozenset[tuple[str, str]] = frozenset({
-    ("os", "replace"),
-    ("os", "remove"),
-    ("os", "rmdir"),
-    ("shutil", "copy"),
-    ("shutil", "copy2"),
-    ("shutil", "copyfile"),
-    ("shutil", "rmtree"),
-    ("sqlite3", "connect"),
-})
+_BANNED_MODULE_FUNCS_WRITE: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("os", "replace"),
+        ("os", "remove"),
+        ("os", "rmdir"),
+        ("shutil", "copy"),
+        ("shutil", "copy2"),
+        ("shutil", "copyfile"),
+        ("shutil", "rmtree"),
+        ("sqlite3", "connect"),
+    }
+)
 
-_BANNED_MODULE_FUNCS_READ: frozenset[tuple[str, str]] = frozenset({
-    ("shutil", "copy"),
-    ("shutil", "copy2"),
-    ("shutil", "copyfile"),
-})
+_BANNED_MODULE_FUNCS_READ: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("shutil", "copy"),
+        ("shutil", "copy2"),
+        ("shutil", "copyfile"),
+    }
+)
 
 # ``open()`` mode argument prefixes that indicate write/mutation.
 # ``open("r")`` is read-only (only banned for external packs).
@@ -129,9 +139,7 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "host/src/host/commands/_packs.py": (
-        "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
-    ),
+    "host/src/host/commands/_packs.py": ("packs_venv.parent.mkdir(parents=True, exist_ok=True)",),
     "kernel/src/kernel/token_usage.py": (
         'self._path.open("a"',
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
@@ -139,15 +147,9 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "kernel/src/kernel/tools/mcp_client.py": (
         "Path(config.data_dir_path).mkdir(parents=True, exist_ok=True)",
     ),
-    "mcp_server/src/mcp_server/config/cli.py": (
-        "path.mkdir(parents=True, exist_ok=True)",
-    ),
-    "sdk/src/sdk/content/_fetcher.py": (
-        "cache_dir.mkdir(parents=True, exist_ok=True)",
-    ),
-    "sdk/src/sdk/logging_setup.py": (
-        "log_path.parent.mkdir(parents=True, exist_ok=True)",
-    ),
+    "mcp_server/src/mcp_server/config/cli.py": ("path.mkdir(parents=True, exist_ok=True)",),
+    "sdk/src/sdk/content/_fetcher.py": ("cache_dir.mkdir(parents=True, exist_ok=True)",),
+    "sdk/src/sdk/logging_setup.py": ("log_path.parent.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/memory/store.py": (
         "sqlite3.connect(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
@@ -162,13 +164,13 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
-        "resolved.write_text(content, encoding=\"utf-8\")",
+        'resolved.write_text(content, encoding="utf-8")',
         "resolved.unlink()",
         "resolved.mkdir(parents=True, exist_ok=True)",
         "checkpoints_root.mkdir(parents=True, exist_ok=True)",
-        "path.write_text(json.dumps(bundle, default=str, indent=2), encoding=\"utf-8\")",
+        'path.write_text(json.dumps(bundle, default=str, indent=2), encoding="utf-8")',
         "path.parent.mkdir(parents=True, exist_ok=True)",
-        "path.write_text(content, encoding=\"utf-8\")",
+        'path.write_text(content, encoding="utf-8")',
     ),
 }
 
@@ -291,9 +293,7 @@ class _IOLocator(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _find_io_violations(
-    source: str, *, scan_reads: bool
-) -> list[tuple[int, str]]:
+def _find_io_violations(source: str, *, scan_reads: bool) -> list[tuple[int, str]]:
     """Parse source and return (line_number, source_snippet) for banned calls."""
     try:
         tree = ast.parse(source, type_comments=True)

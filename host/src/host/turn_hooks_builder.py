@@ -767,8 +767,7 @@ def build_turn_hooks(
             e
             for e in catalog
             if not (
-                (isinstance(e, dict)
-                and e.get("item_id") == evidence.item_id)
+                (isinstance(e, dict) and e.get("item_id") == evidence.item_id)
                 or getattr(e, "item_id", None) == evidence.item_id
             )
         ]
@@ -963,8 +962,7 @@ def build_turn_hooks(
                 bus.subscribe(TOKEN_USAGE_TOPIC, handler.publish)
             except Exception:  # pylint: disable=broad-except
                 logger.warning(
-                    "token-usage telemetry subscribe failed; usage will not "
-                    "be persisted to %s",
+                    "token-usage telemetry subscribe failed; usage will not be persisted to %s",
                     runtime.paths.token_usage_path,
                     exc_info=True,
                 )

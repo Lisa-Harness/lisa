@@ -242,12 +242,10 @@ def classify_child_turn(
     # to a read-only turn. Only a write ATTEMPT (name dispatched, receipt
     # absent because the dispatch failed) keeps the strict path: the model
     # may claim success on the failed write.
-    read_work = any(
-        r.effect in ("read", "execute") for r in child_result.effect_receipts
+    read_work = any(r.effect in ("read", "execute") for r in child_result.effect_receipts)
+    called_bare = {bare_tool_name(n) for n in child_result.called_tool_names} | set(
+        child_result.called_tool_names
     )
-    called_bare = {
-        bare_tool_name(n) for n in child_result.called_tool_names
-    } | set(child_result.called_tool_names)
     write_attempted = bool(called_bare & action_tool_ids)
     if read_work and not write_attempted:
         _clog.debug(

@@ -691,9 +691,7 @@ def discover_pack_redaction_patterns(
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "redaction: failed to parse %s: %s", path, exc
-            )
+            logger.warning("redaction: failed to parse %s: %s", path, exc)
             continue
         if not isinstance(raw, dict):
             continue

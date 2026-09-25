@@ -250,9 +250,7 @@ async def broker_context(
         mode_id=request.mode_id,
         stage_id=request.stage_id,
         candidates=candidates,
-        active_packs=frozenset(
-            {request.mode_provider_id} | set(request.context_item_packs)
-        )
+        active_packs=frozenset({request.mode_provider_id} | set(request.context_item_packs))
         if request.mode_provider_id or request.context_item_packs
         else frozenset(),
         model_context_window_tokens=request.model_context_window_tokens,

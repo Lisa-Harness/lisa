@@ -936,5 +936,3 @@ def test_display_label_truncates_to_limit() -> None:
 def test_display_label_format_error_returns_empty() -> None:
     """A malformed template yields empty rather than raising mid-turn."""
     assert _resolve_tool_display_label("{command!bad}", {"command": "ls"}) == ""
-
-

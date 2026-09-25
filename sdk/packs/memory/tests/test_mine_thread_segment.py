@@ -18,7 +18,11 @@ from sdk.packs.memory.operations.memory import mine_thread_segment as op
 
 def _turns() -> list[dict[str, Any]]:
     return [
-        {"turn": 10, "query": "how do we start the GCP bind VM?", "response_text": "needs project_id"},
+        {
+            "turn": 10,
+            "query": "how do we start the GCP bind VM?",
+            "response_text": "needs project_id",
+        },
         {"turn": 11, "query": "what model do we prefer?", "response_text": "user prefers Claude"},
         {"turn": 12, "query": "tools were down again", "response_text": "cs_list_vms failed"},
     ]

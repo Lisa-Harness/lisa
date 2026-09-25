@@ -152,10 +152,10 @@ async def test_parent_turn_no_receipt_blocked_as_no_tools() -> None:
         return _StubCompletion(content="Done — I wrote the file for you.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=hallucinating,
-    ),
-)
+        models=ModelHooks(
+            complete=hallucinating,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -187,10 +187,10 @@ async def test_parent_turn_chat_mode_without_contract_is_exempt() -> None:
         return _StubCompletion(content="Just a chat answer.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=chat,
-    ),
-)
+        models=ModelHooks(
+            complete=chat,
+        ),
+    )
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
 
     assert result.blocked is False
@@ -239,13 +239,13 @@ async def test_parent_turn_with_receipt_is_not_blocked() -> None:
         return _StubCompletion(content="Wrote it.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=writing,
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_operation,
-    ),
-)
+        models=ModelHooks(
+            complete=writing,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -319,13 +319,13 @@ async def test_degraded_write_operation_produces_no_receipt() -> None:
         return _StubCompletion(content="Wrote it.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=writing,
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_operation,
-    ),
-)
+        models=ModelHooks(
+            complete=writing,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -412,13 +412,13 @@ async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
         return await then_claims_done()
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_FailingWritePool(),
-    ),
-)
+        models=ModelHooks(
+            complete=model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_FailingWritePool(),
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -509,13 +509,13 @@ async def test_parent_turn_dense_content_with_readonly_work_accepted() -> None:
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_ReadOnlyPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_ReadOnlyPool(),
+        ),
+    )
     # The mode has a real write contract (``write_file``) AND a read-only
     # tool. The model did read-only work but no write; a ``chat``-kind mode
     # that did real work and produced dense content is accepted, not blocked.
@@ -633,13 +633,13 @@ async def test_parent_turn_failed_write_attempt_action_mode_still_blocked() -> N
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_FailingWritePool(),
-    ),
-)
+        models=ModelHooks(
+            complete=model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_FailingWritePool(),
+        ),
+    )
     # Same read-tool surface as the accepted case, but the model
     # ATTEMPTED the write (``write_file``) and the dispatch failed: the
     # strict block applies regardless of mode kind, content density, or
@@ -711,10 +711,10 @@ async def test_parent_turn_dense_content_zero_tool_calls_blocked() -> None:
         return _StubCompletion(content=announcement)
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=announcing,
-    ),
-)
+        models=ModelHooks(
+            complete=announcing,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -797,13 +797,13 @@ async def test_parent_turn_zero_tool_calls_backstop_synthesizes_dispatch() -> No
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_Pool(),
-    ),
-)
+        models=ModelHooks(
+            complete=model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_Pool(),
+        ),
+    )
     catalog = {
         "writer": WorkflowModeConfig(
             mode_id="writer",
@@ -916,13 +916,13 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
         return await then_claims_done()
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_ReadOnlyPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_ReadOnlyPool(),
+        ),
+    )
     # ``read_file`` is an unresolvable authored tool (not in the in-process
     # catalog). With the pool declaring ``read_only_hint=True``, the resolver
     # excludes it from the write contract — the mode has NO write-contract
@@ -960,9 +960,7 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     assert result.blocked is False
     assert result.block_origin == ""
     read_receipts = [
-        r
-        for r in result.effect_receipts
-        if r.capability_id == "lisa-storage.read_file"
+        r for r in result.effect_receipts if r.capability_id == "lisa-storage.read_file"
     ]
     assert read_receipts, "read-only MCP tool produced no receipt"
     assert all(r.effect == "read" for r in read_receipts)
@@ -1157,13 +1155,13 @@ async def test_routing_misfire_zero_dispatch_prose_surfaced_not_blocked() -> Non
         return _StubCompletion(content=prose)
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=prose_only,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_EmptyPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=prose_only,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_EmptyPool(),
+        ),
+    )
     catalog = {
         "executor": WorkflowModeConfig(
             mode_id="executor",
@@ -1196,9 +1194,7 @@ async def test_routing_misfire_zero_dispatch_prose_surfaced_not_blocked() -> Non
                 return_value=_misroute_tool_catalog(),
             ),
         ):
-            result = await run_turn(
-                mode_id="executor", query="what would you extend?", hooks=hooks
-            )
+            result = await run_turn(mode_id="executor", query="what would you extend?", hooks=hooks)
     finally:
         mp.undo()
 
@@ -1250,13 +1246,13 @@ async def test_routing_misfire_empty_prose_yields_not_surfaces() -> None:
         return _StubCompletion(content="")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=empty_prose,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_EmptyPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=empty_prose,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_EmptyPool(),
+        ),
+    )
     catalog = {
         "executor": WorkflowModeConfig(
             mode_id="executor",
@@ -1289,9 +1285,7 @@ async def test_routing_misfire_empty_prose_yields_not_surfaces() -> None:
                 return_value=_misroute_tool_catalog(),
             ),
         ):
-            result = await run_turn(
-                mode_id="executor", query="do the work", hooks=hooks
-            )
+            result = await run_turn(mode_id="executor", query="do the work", hooks=hooks)
     finally:
         mp.undo()
 
@@ -1361,13 +1355,13 @@ async def test_parent_turn_pre_cap_write_nudge_fires_before_cap(
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=read_loop,
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_operation,
-    ),
-)
+        models=ModelHooks(
+            complete=read_loop,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -1388,9 +1382,7 @@ async def test_parent_turn_pre_cap_write_nudge_fires_before_cap(
     # The nudge fires exactly once at the pre-cap iteration. Assert the
     # nudge prose ("zero writes") appears in at least one captured
     # system prompt, and that it fired before the cap paused the turn.
-    nudge_iterations = [
-        i for i, p in enumerate(captured_prompts) if "zero writes" in p
-    ]
+    nudge_iterations = [i for i, p in enumerate(captured_prompts) if "zero writes" in p]
     assert nudge_iterations, (
         "parent-turn pre-cap write-nudge did not fire; captured prompts "
         f"did not contain 'zero writes'. prompts={captured_prompts!r}"
@@ -1436,13 +1428,13 @@ async def test_parent_turn_write_nudge_disabled_when_margin_zero(
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=read_loop,
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_operation,
-    ),
-)
+        models=ModelHooks(
+            complete=read_loop,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -1558,13 +1550,13 @@ async def test_midpoint_nudge_fires_for_guidance_model_gather_without_output(
         return _needs_guidance_model()
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=gather_loop,
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_operation,
-    ),
-)
+        models=ModelHooks(
+            complete=gather_loop,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -1724,13 +1716,13 @@ async def test_stalled_write_rescue_directs_announced_write_to_dispatch() -> Non
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=announcing_model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=pool,
-    ),
-)
+        models=ModelHooks(
+            complete=announcing_model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=pool,
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -1800,13 +1792,13 @@ async def test_stalled_write_rescue_does_not_fire_for_dense_honest_answers() -> 
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=honest_model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=pool,
-    ),
-)
+        models=ModelHooks(
+            complete=honest_model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=pool,
+        ),
+    )
     mp = pytest.MonkeyPatch()
     mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 100)
     try:
@@ -1869,13 +1861,13 @@ async def test_stalled_write_rescue_is_one_shot_per_turn() -> None:
         return _StubCompletion(content="Writing both files now. No more stalling.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=stalling_model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_ReadThenWritePool(),
-    ),
-)
+        models=ModelHooks(
+            complete=stalling_model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_ReadThenWritePool(),
+        ),
+    )
     with (
         patch(
             "kernel.turn_runner.get_workflow_catalog",
@@ -1956,13 +1948,13 @@ async def test_stalled_write_rescue_fires_on_silent_read_loop_at_threshold() -> 
         )
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=read_loop_model,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=pool,
-    ),
-)
+        models=ModelHooks(
+            complete=read_loop_model,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=pool,
+        ),
+    )
     mp = pytest.MonkeyPatch()
     mp.setattr(config.settings, "stage_nudge_threshold", 3)
     try:

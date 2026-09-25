@@ -293,12 +293,11 @@ def normalize_openai_messages(
         # as Google requires. This is scoped to the Gemini
         # (``require_thought_signature``) path; OpenAI/Azure accept a
         # trailing assistant message.
-        if normalized_messages and str(
-            normalized_messages[-1].get("role", "") or ""
-        ) == "assistant":
-            normalized_messages.append(
-                {"role": "user", "content": "Continue."}
-            )
+        if (
+            normalized_messages
+            and str(normalized_messages[-1].get("role", "") or "") == "assistant"
+        ):
+            normalized_messages.append({"role": "user", "content": "Continue."})
     return normalized_messages
 
 
@@ -346,7 +345,7 @@ def sanitize_chat_tool_names(
 
 
 def restore_chat_tool_names(
-    tool_calls: list[dict[str, Any]], 
+    tool_calls: list[dict[str, Any]],
     name_map: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Restore original dotted tool names in extracted chat-completions calls."""
@@ -965,9 +964,7 @@ def _normalize_openai_response_tool(tool: dict[str, Any]) -> dict[str, Any]:
 
     normalized: dict[str, Any] = {
         "type": "function",
-        "name": _sanitize_responses_tool_name(
-            str(function_payload.get("name", "") or "")
-        ),
+        "name": _sanitize_responses_tool_name(str(function_payload.get("name", "") or "")),
         "parameters": function_payload.get("parameters", {}),
     }
     description = function_payload.get("description")
@@ -1238,9 +1235,7 @@ class OpenAICompatibleGateway:
         sanitized_tools, name_map = sanitize_chat_tool_names(kwargs.get("tools"))
         if name_map:
             kwargs["tools"] = sanitized_tools
-            kwargs["messages"] = sanitize_chat_history_tool_names(
-                kwargs["messages"], name_map
-            )
+            kwargs["messages"] = sanitize_chat_history_tool_names(kwargs["messages"], name_map)
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -1291,9 +1286,7 @@ class OpenAICompatibleGateway:
             model_id=request.model_def.model_id,
             display_name=request.model_def.display_name,
             request_id=request_id,
-            tool_calls=restore_chat_tool_names(
-                extract_openai_tool_calls(response), name_map
-            ),
+            tool_calls=restore_chat_tool_names(extract_openai_tool_calls(response), name_map),
             usage=extract_openai_completion_usage(response),
             finish_reason=finish_reason,
             truncated=truncated,
@@ -1335,9 +1328,7 @@ class OpenAICompatibleGateway:
         sanitized_tools, _ = sanitize_chat_tool_names(kwargs.get("tools"))
         if sanitized_tools is not kwargs.get("tools"):
             kwargs["tools"] = sanitized_tools
-            kwargs["messages"] = sanitize_chat_history_tool_names(
-                kwargs["messages"], {}
-            )
+            kwargs["messages"] = sanitize_chat_history_tool_names(kwargs["messages"], {})
         await self._emit(
             {
                 "type": "provider_call_started",

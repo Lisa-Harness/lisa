@@ -35,10 +35,10 @@ def test_turn_hooks_accepts_new_seam_fields() -> None:
     sentinel: Any = object()
 
     hooks = TurnHooks(
-    context=ContextHooks(
-        last_context_snapshot=sentinel,
-    ),
-)
+        context=ContextHooks(
+            last_context_snapshot=sentinel,
+        ),
+    )
     assert hooks.context.last_context_snapshot is sentinel
 
 

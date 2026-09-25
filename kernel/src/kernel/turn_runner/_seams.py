@@ -3,6 +3,7 @@
 The 7 ``_lazy_*`` factories defer importing optional concrete classes until
 first use so hosts that never wire a guard/policy/router pay no import cost.
 """
+
 from __future__ import annotations
 
 import logging
@@ -87,7 +88,9 @@ class ContextSeams:
     ``preferred_model_id`` — preserving today's behavior. Hosts wire a
     discovered ``ModelRouter`` (from ``lisa.extensions.model_routers``) here
     to enable per-iteration model selection without extra model calls."""
-    provider_gateways: ProviderGatewayProvider | None = field(default_factory=_lazy_provider_gateways)
+    provider_gateways: ProviderGatewayProvider | None = field(
+        default_factory=_lazy_provider_gateways
+    )
     """Provider gateway dispatch. When ``None`` (default), the kernel ships
     no gateways — concrete implementations are discovered via
     ``lisa.extensions.provider_gateways`` (SDK ships the reference backends)

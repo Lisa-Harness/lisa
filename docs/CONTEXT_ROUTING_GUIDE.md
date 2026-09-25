@@ -161,22 +161,23 @@ If you are authoring a Lisa Pack, your pack simply yields `ContextItem` objects.
 ```python
 from kernel.models import ContextItem
 
+
 def build_evidence() -> ContextItem:
     return ContextItem(
         item_id="stripe:customer_123",
-        namespace="billing",       # Provenance label only — not a selector.
-        source="stripe",           # -> Matched by sources: [stripe]
-        source_type="extension",   # -> Matched by source_kinds: [extension]
-        evidence_type="status",    # -> Matched by evidence_types: [status]
-        tags=["billing", "mrr"],   # -> Matched by tags: [billing, mrr]
+        namespace="billing",  # Provenance label only — not a selector.
+        source="stripe",  # -> Matched by sources: [stripe]
+        source_type="extension",  # -> Matched by source_kinds: [extension]
+        evidence_type="status",  # -> Matched by evidence_types: [status]
+        tags=["billing", "mrr"],  # -> Matched by tags: [billing, mrr]
         title="Customer Billing Status",
         body="MRR: $450 | Status: Past Due",
-        salience_score=0.85        # Ranking feature (0.0–1.0). Does NOT
-                                  # guarantee inclusion — admission is
-                                  # governed by source-rule priority /
-                                  # required / pinned in the session plan.
-                                  # The mapper recomputes relevance,
-                                  # freshness, and recency each turn; only
-                                  # salience_score is carried over.
+        salience_score=0.85,  # Ranking feature (0.0–1.0). Does NOT
+        # guarantee inclusion — admission is
+        # governed by source-rule priority /
+        # required / pinned in the session plan.
+        # The mapper recomputes relevance,
+        # freshness, and recency each turn; only
+        # salience_score is carried over.
     )
 ```

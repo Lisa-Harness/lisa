@@ -378,7 +378,9 @@ async def _record_and_continue_after_approval(
             "target_id": invocation.target_id,
         },
         effect_receipts=[_approval_action_receipt_for_thread(invocation)],
-        handoff_to="" if owner_mode == runtime.session.current_mode_id else runtime.session.current_mode_id,
+        handoff_to=""
+        if owner_mode == runtime.session.current_mode_id
+        else runtime.session.current_mode_id,
     )
 
     # ── Continuation turn in the owning mode ─────────────────────────
@@ -399,7 +401,7 @@ async def _record_and_continue_after_approval(
         "start follow-up commands; the operator is watching and can ask for "
         "more work explicitly. End your report with the single most likely "
         "next step as one short prose sentence (no tool calls, no question) "
-        "so the operator can say \"go\" or redirect."
+        'so the operator can say "go" or redirect.'
     )
     runtime.session.current_mode_id = owner_mode
     routed = await route_model_turn(runtime, continuation_query, transport)
@@ -455,7 +457,9 @@ def _remember_allow_rule(
         return
     try:
         remember_allow_prefix(
-            Path(runtime.paths.data_dir), tool=str(invocation.target_id or ""), command_prefix=prefix
+            Path(runtime.paths.data_dir),
+            tool=str(invocation.target_id or ""),
+            command_prefix=prefix,
         )
         logger.info("approve --remember: allow %s prefix %r", invocation.target_id, prefix)
     except Exception as exc:  # pylint: disable=broad-except

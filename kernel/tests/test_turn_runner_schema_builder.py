@@ -470,7 +470,9 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
             return []
 
     # Pretend okf has routing targets (it can hand off to markdown).
-    monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: ["markdown"] if mode_id == "okf" else [])
+    monkeypatch.setattr(
+        _ts, "get_routing_targets", lambda mode_id: ["markdown"] if mode_id == "okf" else []
+    )
     # No operations or pack tools; transition_stage comes only from the
     # rebuild's explicit append.
     monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
@@ -649,10 +651,10 @@ async def test_schema_assembly_includes_operations_for_mode() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture,
-    ),
-)
+        models=ModelHooks(
+            complete=capture,
+        ),
+    )
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
@@ -706,13 +708,13 @@ async def test_schema_assembly_excludes_mcp_tools_not_in_allowlist() -> None:
             pass
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=capture,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_StubPool(),
+        ),
+    )
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
@@ -769,13 +771,13 @@ async def test_schema_assembly_authoritative_empty_allowlist_no_mcp_tools() -> N
     default_mode.tools_authoritative = True
     try:
         hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+            models=ModelHooks(
+                complete=capture,
+            ),
+            tools=ToolHooks(
+                mcp_tool_pool=_StubPool(),
+            ),
+        )
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original
@@ -838,13 +840,13 @@ async def test_schema_assembly_deduplicates_before_model_call() -> None:
     default_mode.tools_authoritative = False
     try:
         hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+            models=ModelHooks(
+                complete=capture,
+            ),
+            tools=ToolHooks(
+                mcp_tool_pool=_StubPool(),
+            ),
+        )
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original

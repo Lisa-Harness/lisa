@@ -81,16 +81,15 @@ class _CallableHost:
         # is present this raises the documented no-completion-path error.
         if self._gateway_provider_fn is not None:
             provider_gateways = (
-                self._gateway_provider_fn() if callable(self._gateway_provider_fn) else self._gateway_provider_fn
+                self._gateway_provider_fn()
+                if callable(self._gateway_provider_fn)
+                else self._gateway_provider_fn
             )
             if provider_gateways is None:
                 raise NotImplementedError(
-                    "OperationHost.complete: no provider gateway wired "
-                    "(provider_gateways is None)."
+                    "OperationHost.complete: no provider gateway wired (provider_gateways is None)."
                 )
-            gateway = provider_gateways.gateway_for(
-                str(getattr(model_def, "provider", "") or "")
-            )
+            gateway = provider_gateways.gateway_for(str(getattr(model_def, "provider", "") or ""))
             if gateway is None:
                 raise NotImplementedError(
                     f"OperationHost.complete: no provider gateway registered for "

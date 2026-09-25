@@ -300,10 +300,10 @@ async def test_chain_handoff_turn_has_no_synthesized_user_messages() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete,
-    ),
-)
+        models=ModelHooks(
+            complete=complete,
+        ),
+    )
     hooks.workflow.workflow_position = lambda: active[0]
 
     def _updater(position: WorkflowPosition) -> None:

@@ -140,7 +140,10 @@ def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
         capabilities.append("tools")
     if "structured_outputs" in supported_params or "response_format" in supported_params:
         capabilities.append("structured_output")
-    if "image" in input_modalities or "multimodal" in str(architecture.get("modality") or "").lower():
+    if (
+        "image" in input_modalities
+        or "multimodal" in str(architecture.get("modality") or "").lower()
+    ):
         capabilities.append("vision")
     if "reasoning" in supported_params or "include_reasoning" in supported_params:
         capabilities.append("reasoning")

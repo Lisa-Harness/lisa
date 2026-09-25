@@ -324,9 +324,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     batch_text = _render_batch(records)
     consolidate_max_tokens = _resolve_settings(ctx).consolidate_max_tokens
     try:
-        consolidated = await _distill_batch(
-            ctx, system_prompt, batch_text, consolidate_max_tokens
-        )
+        consolidated = await _distill_batch(ctx, system_prompt, batch_text, consolidate_max_tokens)
     except Exception as exc:  # pylint: disable=broad-except
         raise RuntimeError(f"consolidate_semantic distillation failed: {exc}") from exc
 
@@ -340,9 +338,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     # Step 2: Persist the semantic record via memory.add with boosted salience.
     try:
-        semantic_id = await _persist_semantic(
-            ctx, parsed, consolidated, item_ids, len(records)
-        )
+        semantic_id = await _persist_semantic(ctx, parsed, consolidated, item_ids, len(records))
     except RuntimeError as exc:
         return OperationResult(output_text=f"⛔ {exc}")
 

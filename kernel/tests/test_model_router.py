@@ -72,10 +72,10 @@ def _make_stub_complete(response: str):
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
 
 
 @pytest.mark.asyncio

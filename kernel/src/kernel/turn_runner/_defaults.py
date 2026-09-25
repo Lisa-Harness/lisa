@@ -6,6 +6,7 @@ recurses into :func:`kernel.turn_runner.run_turn` — imported lazily inside
 the function because the circular import ``defaults -> loop -> defaults``
 must be deferred to call time.
 """
+
 from __future__ import annotations
 
 import logging

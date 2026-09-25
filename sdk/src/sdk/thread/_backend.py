@@ -303,9 +303,7 @@ class ThreadStore:
             if not sealed_path.exists():
                 continue
             try:
-                decompressed = _decompress_bytes(
-                    sealed_path.read_bytes(), self._paths.dictionary
-                )
+                decompressed = _decompress_bytes(sealed_path.read_bytes(), self._paths.dictionary)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("thread: range decompress failed for %s: %s", record.seg_id, exc)
                 continue
@@ -439,16 +437,13 @@ class ThreadStore:
             write_caps = [
                 str(r.get("capability_id") or "")
                 for r in receipts
-                if isinstance(r, dict)
-                and str(r.get("effect", "")) in ("write", "external_write")
+                if isinstance(r, dict) and str(r.get("effect", "")) in ("write", "external_write")
             ]
             writes = ", ".join(sorted(set(write_caps))) or "-"
             handoff = str(entry.get("handoff_to") or entry.get("transitioned_to") or "-")
             is_current = offset == total - 1
             row_marker = " ← current" if is_current else ""
-            lines.append(
-                f"| {turn} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |"
-            )
+            lines.append(f"| {turn} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |")
         return "\n".join(lines)
 
     def search(

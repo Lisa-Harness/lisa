@@ -126,18 +126,14 @@ def _ensure_strict_json_schema(
     if _is_dict(properties):
         schema["required"] = list(properties.keys())
         schema["properties"] = {
-            key: _ensure_strict_json_schema(
-                prop_schema, path=(*path, "properties", key), root=root
-            )
+            key: _ensure_strict_json_schema(prop_schema, path=(*path, "properties", key), root=root)
             for key, prop_schema in properties.items()
         }
 
     # arrays
     items = schema.get("items")
     if _is_dict(items):
-        schema["items"] = _ensure_strict_json_schema(
-            items, path=(*path, "items"), root=root
-        )
+        schema["items"] = _ensure_strict_json_schema(items, path=(*path, "items"), root=root)
 
     # unions
     any_of = schema.get("anyOf")

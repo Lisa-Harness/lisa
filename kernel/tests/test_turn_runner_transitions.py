@@ -969,27 +969,19 @@ async def test_handoff_runs_target_mode_pre_turn_operations(
 
     dispatched: list[tuple[str, str]] = []
 
-    async def stub_execute_op(
-        operation_id: str, ctx: OperationExecutionContext
-    ) -> OperationResult:
+    async def stub_execute_op(operation_id: str, ctx: OperationExecutionContext) -> OperationResult:
         dispatched.append((operation_id, str(getattr(ctx, "mode_id", ""))))
         return OperationResult(output_text=f"prewarmed in {ctx.mode_id}")
 
     real_catalog = dict(_workflow_catalog or get_workflow_catalog())
     base = real_catalog.get("default")
-    probe = (
-        base.model_copy(deep=True)
-        if base is not None
-        else WorkflowModeConfig(mode_id="probe")
-    )
+    probe = base.model_copy(deep=True) if base is not None else WorkflowModeConfig(mode_id="probe")
     probe.mode_id = "probe"
     probe.routable = True
     probe.pre_turn_operation_ids = ["probe_prewarm"]
     patched_catalog = dict(real_catalog)
     patched_catalog["probe"] = probe
-    monkeypatch.setattr(
-        "kernel.ipsar_fsm._workflow_catalog", patched_catalog
-    )
+    monkeypatch.setattr("kernel.ipsar_fsm._workflow_catalog", patched_catalog)
 
     real_ops = dict(op_registry.get_operation_catalog())
     fake_op = OperationDefinition(
@@ -1000,9 +992,7 @@ async def test_handoff_runs_target_mode_pre_turn_operations(
     patched_ops = dict(real_ops)
     patched_ops["probe_prewarm"] = fake_op
     monkeypatch.setattr(op_registry, "_OPERATION_CATALOG", patched_ops)
-    monkeypatch.setattr(
-        "kernel.ipsar_fsm._execute_operation_fn", stub_execute_op
-    )
+    monkeypatch.setattr("kernel.ipsar_fsm._execute_operation_fn", stub_execute_op)
 
     call_count = 0
 
@@ -1022,6 +1012,5 @@ async def test_handoff_runs_target_mode_pre_turn_operations(
     assert result.handoff_to == "probe"
     # The prewarm must have dispatched exactly once, with the TARGET mode id.
     assert dispatched == [("probe_prewarm", "probe")], (
-        f"mid-turn handoff must run the target mode's pre-turn ops; "
-        f"got {dispatched}"
+        f"mid-turn handoff must run the target mode's pre-turn ops; got {dispatched}"
     )

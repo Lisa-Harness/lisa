@@ -822,9 +822,7 @@ def load_catalog_from_disk(
         # it is reachable only via delegate or single-handoff.
         fork_allowed_raw = mode_front_matter.get("fork_allowed", False)
         if not isinstance(fork_allowed_raw, bool):
-            raise WorkflowValidationError(
-                f"fork_allowed must be a boolean in {mode_config_path}"
-            )
+            raise WorkflowValidationError(f"fork_allowed must be a boolean in {mode_config_path}")
         fork_allowed = fork_allowed_raw
 
         # Collect app/pack-owned extension keys the kernel does not interpret.

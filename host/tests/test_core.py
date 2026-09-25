@@ -766,9 +766,7 @@ class TestHandleMessage:
             "  display_name: GPT 5.6 Terra\n"
             "  capabilities: [text]\n"
         )
-        runtime.paths.models_proposal_path.parent.mkdir(
-            parents=True, exist_ok=True
-        )
+        runtime.paths.models_proposal_path.parent.mkdir(parents=True, exist_ok=True)
         runtime.paths.models_proposal_path.write_text(broken_proposal, encoding="utf-8")
 
         apply_result = await handle_message(runtime, "/models apply")

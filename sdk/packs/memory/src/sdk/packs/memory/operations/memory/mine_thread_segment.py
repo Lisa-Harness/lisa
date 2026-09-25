@@ -177,9 +177,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
 
     # Thread-turn provenance bounds for the mined records.
-    turn_indices = [
-        int(rec["turn"]) for rec in turns if isinstance(rec.get("turn"), int)
-    ]
+    turn_indices = [int(rec["turn"]) for rec in turns if isinstance(rec.get("turn"), int)]
     turn_lo = min(turn_indices) if turn_indices else None
     turn_hi = max(turn_indices) if turn_indices else None
 
@@ -264,9 +262,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             ),
         )
         if getattr(add_result, "error", None):
-            logger.warning(
-                "mine_thread_segment: fact storage failed: %s", add_result.error
-            )
+            logger.warning("mine_thread_segment: fact storage failed: %s", add_result.error)
             continue
         add_text = getattr(add_result, "output_text", "") or ""
         if "ID " in add_text:

@@ -1983,6 +1983,7 @@ class ThreadState(BaseModel):
             self.recent_handoffs = self.recent_handoffs[-_MAX_RECENT_HANDOFFS:]
         return self
 
+
 # ---------------------------------------------------------------------------
 # Reflection / thinking memory
 # ---------------------------------------------------------------------------

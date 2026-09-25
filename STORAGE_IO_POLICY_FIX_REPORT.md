@@ -238,8 +238,8 @@ The allowlist entry has 10 snippets; 7 of the 9 flagged lines match, and the
 **Allowlist contains:**
 
 ```python
-"(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
-"(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
+("(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",)
+("(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",)
 ```
 
 **Code says:**

@@ -49,10 +49,10 @@ def _make_stub_complete(response: str, captured: dict[str, Any] | None = None):
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
 
 
 # ── Pass-through guard tests ──────────────────────────────────────────

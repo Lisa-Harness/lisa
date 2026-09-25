@@ -632,9 +632,7 @@ async def test_retire_memory_flips_status_and_is_scoped(tmp_path: Path) -> None:
     store = _store(tmp_path)
     record = await store.record_memory(_write(content="episodic note"))
     # Wrong scope cannot retire.
-    assert await store.retire_memory(
-        memory_id=record.id, user_slug="nadia"
-    ) is False
+    assert await store.retire_memory(memory_id=record.id, user_slug="nadia") is False
     # Correct scope retires.
     assert await store.retire_memory(memory_id=record.id, user_slug="adam") is True
     fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
@@ -677,31 +675,23 @@ async def test_count_memories_filters_by_kind_and_status(tmp_path: Path) -> None
     await store.retire_memory(memory_id=sem.id, user_slug="adam")
 
     assert await store.count_memories(user_slug="adam") == 2  # active only
-    assert (
-        await store.count_memories(user_slug="adam", memory_kind="episodic") == 2
-    )
-    assert (
-        await store.count_memories(user_slug="adam", memory_kind="semantic") == 0
-    )  # retired
-    assert (
-        await store.count_memories(user_slug="adam", status=None) == 3
-    )
+    assert await store.count_memories(user_slug="adam", memory_kind="episodic") == 2
+    assert await store.count_memories(user_slug="adam", memory_kind="semantic") == 0  # retired
+    assert await store.count_memories(user_slug="adam", status=None) == 3
 
 
 @pytest.mark.asyncio
 async def test_update_salience_is_clamped_and_scoped(tmp_path: Path) -> None:
     store = _store(tmp_path)
     record = await store.record_memory(_write(content="note", salience=0.3))
-    assert await store.update_salience(
-        memory_id=record.id, salience=1.5, user_slug="adam"
-    ) is True
+    assert await store.update_salience(memory_id=record.id, salience=1.5, user_slug="adam") is True
     fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
     assert fetched is not None
     assert fetched.salience == 1.0  # clamped
     # Wrong scope.
-    assert await store.update_salience(
-        memory_id=record.id, salience=0.2, user_slug="nadia"
-    ) is False
+    assert (
+        await store.update_salience(memory_id=record.id, salience=0.2, user_slug="nadia") is False
+    )
 
 
 @pytest.mark.asyncio
@@ -715,9 +705,7 @@ async def test_recall_excludes_retired_by_default(tmp_path: Path) -> None:
     assert "active postgres note" in result
     assert "retired postgres note" not in result
     # status=None surfaces the retired one.
-    all_result = await store.recall(
-        "postgres", user_slug="adam", limit=5, status=None
-    )
+    all_result = await store.recall("postgres", user_slug="adam", limit=5, status=None)
     assert "retired postgres note" in all_result
     del a
 
@@ -755,9 +743,7 @@ async def test_embedding_write_and_semantic_recall(tmp_path: Path) -> None:
 
     # Query that lexically overlaps "postgres" but should rank the
     # postgres record first via semantic proximity too.
-    result = await store.recall(
-        "postgres analytics database", user_slug="adam", limit=2
-    )
+    result = await store.recall("postgres analytics database", user_slug="adam", limit=2)
     assert "we chose postgres for analytics" in result
 
 

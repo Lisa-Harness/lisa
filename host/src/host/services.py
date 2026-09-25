@@ -56,9 +56,7 @@ class HostServices:
                 FileApprovalService(data_dir / STATE_DIR / "approvals.json"),
                 data_dir=data_dir,
             ),
-            recovery_service=FileRecoveryService(
-                data_dir / STATE_DIR / "recovery-items.json"
-            ),
+            recovery_service=FileRecoveryService(data_dir / STATE_DIR / "recovery-items.json"),
             code_change_artifact_store=FileCodeChangeArtifactStore(
                 data_dir / STATE_DIR / "code-change-artifacts.json"
             ),

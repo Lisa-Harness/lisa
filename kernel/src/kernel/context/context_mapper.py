@@ -96,9 +96,7 @@ def context_candidates_from_items(
 
         content = item.body.strip() or item.title.strip()
         if not content:
-            raise ContextMappingError(
-                f"Context item '{candidate_id}' requires a title or body."
-            )
+            raise ContextMappingError(f"Context item '{candidate_id}' requires a title or body.")
         metadata = item.metadata
         provenance = _metadata_choice(
             metadata,
@@ -117,9 +115,7 @@ def context_candidates_from_items(
         candidates.append(
             ContextCandidate(
                 candidate_id=candidate_id,
-                source_id=(
-                    item.source.strip() or item.collector_id.strip() or candidate_id
-                ),
+                source_id=(item.source.strip() or item.collector_id.strip() or candidate_id),
                 source_ref=f"context_item:{candidate_id}",
                 source_kind=(
                     "extension_item"

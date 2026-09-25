@@ -36,10 +36,10 @@ class _StubCompletion:
 
 def _build_minimal_hooks(complete_fn: Any) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
 
 
 def _mode_config(
@@ -139,7 +139,7 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(loop_then_handoff)
-    hooks.workflow.workflow_position= lambda: instance
+    hooks.workflow.workflow_position = lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
@@ -265,7 +265,7 @@ async def test_step_counter_resets_on_handoff() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow.workflow_position= lambda: instance
+    hooks.workflow.workflow_position = lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
@@ -339,7 +339,7 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
         )
 
     hooks = _build_minimal_hooks(two_tools_then_text)
-    hooks.workflow.workflow_position= lambda: instance
+    hooks.workflow.workflow_position = lambda: instance
 
     def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)

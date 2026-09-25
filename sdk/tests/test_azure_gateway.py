@@ -205,9 +205,7 @@ class TestMaxCompletionTokens:
         assert "temperature" not in kwargs
 
     def test_public_openai_non_reasoning_gets_max_tokens(self) -> None:
-        kwargs = build_openai_completion_kwargs(
-            _request(model_def=_model_def(provider="openai"))
-        )
+        kwargs = build_openai_completion_kwargs(_request(model_def=_model_def(provider="openai")))
         assert kwargs["max_tokens"] == 1024
         assert "max_completion_tokens" not in kwargs
 

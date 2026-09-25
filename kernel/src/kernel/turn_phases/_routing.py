@@ -43,18 +43,23 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+
 class TurnDecision(Enum):
     """The three possible outcomes of an execution loop evaluation."""
+
     CONTINUE = "continue"
     HANDOFF = "handoff"
     FINISH = "finish"
 
+
 @dataclass(frozen=True, slots=True)
 class TurnDecisionResult:
     """The result of the centralized loop decision."""
+
     decision: TurnDecision
     target: str | None = None
     reason: str = ""
+
 
 RoutingSource = Literal["model_tool_call", "entry_op_contract", "forced_enforcer"]
 """Who decided the routing. Diagnostics only — behavior is identical."""

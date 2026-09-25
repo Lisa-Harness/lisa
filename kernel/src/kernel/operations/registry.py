@@ -604,9 +604,10 @@ def mode_completion_effects(  # noqa: C901  (was 13 pre-2026-09-07 fix; +1 branc
             result.add(tool_id)
     for tool_id in mode.authored_allowed_tool_ids:
         op_def = op_catalog.get(tool_id)
-        if op_def is not None and str(
-            getattr(op_def, "effect", "write") or "write"
-        ) not in ("write", "external_write"):
+        if op_def is not None and str(getattr(op_def, "effect", "write") or "write") not in (
+            "write",
+            "external_write",
+        ):
             result.discard(tool_id)
     # 3) Operations explicitly bound via their own ``mode_allowlist``.
     result.update(_mode_allowlist_write_ops(op_catalog, mode_id))
@@ -824,7 +825,9 @@ async def execute_operation(
                         ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
                     )
                 except Exception:  # pylint: disable=broad-except
-                    logger.debug("operation telemetry publish failed for %s", operation_id, exc_info=True)
+                    logger.debug(
+                        "operation telemetry publish failed for %s", operation_id, exc_info=True
+                    )
                 else:
                     _PENDING_TELEMETRY_TASKS.add(task)
                     task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)

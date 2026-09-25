@@ -8,6 +8,7 @@ Every Python module with logic (not purely a type/protocol file or `__init__` re
 
 ```python
 import logging
+
 _log = logging.getLogger(__name__)
 ```
 
@@ -245,8 +246,12 @@ def validate_guard_response(response_json):
     try:
         parsed = json.loads(response_json)
     except json.JSONDecodeError as exc:
-        _log.warning("guard response parse failed; using default_allowed=%s: %s",
-                     default_allowed, exc, exc_info=True)
+        _log.warning(
+            "guard response parse failed; using default_allowed=%s: %s",
+            default_allowed,
+            exc,
+            exc_info=True,
+        )
         return GuardResult(allowed=default_allowed)
 ```
 

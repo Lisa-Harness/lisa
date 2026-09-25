@@ -182,16 +182,16 @@ async def test_non_operation_tool_call_dispatches_via_pool() -> None:
         return OperationResult(output_text="should not be called")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=two_step,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-    operations=OperationHooks(
-        execute_operation=stub_execute_op,
-    ),
-)
+        models=ModelHooks(
+            complete=two_step,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_StubPool(),
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_op,
+        ),
+    )
 
     result = await run_turn(mode_id="default", query="save a memory", hooks=hooks)
 
@@ -210,10 +210,10 @@ async def test_operation_schemas_appear_in_tools_sent_to_model() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture_then_respond,
-    ),
-)
+        models=ModelHooks(
+            complete=capture_then_respond,
+        ),
+    )
 
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
@@ -359,13 +359,13 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
             pass
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture_then_respond,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+        models=ModelHooks(
+            complete=capture_then_respond,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=_StubPool(),
+        ),
+    )
 
     await run_turn(mode_id="remember", query="test", hooks=hooks)
 
@@ -507,13 +507,13 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     default_mode.tools_authoritative = True
     try:
         hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture_then_respond,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+            models=ModelHooks(
+                complete=capture_then_respond,
+            ),
+            tools=ToolHooks(
+                mcp_tool_pool=_StubPool(),
+            ),
+        )
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original
@@ -608,13 +608,13 @@ async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
     default_mode.tools_authoritative = False
     try:
         hooks = TurnHooks(
-    models=ModelHooks(
-        complete=capture_then_respond,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=_StubPool(),
-    ),
-)
+            models=ModelHooks(
+                complete=capture_then_respond,
+            ),
+            tools=ToolHooks(
+                mcp_tool_pool=_StubPool(),
+            ),
+        )
         await run_turn(mode_id="default", query="test", hooks=hooks)
     finally:
         default_mode.tools_authoritative = original_authoritative

@@ -86,7 +86,10 @@ def test_direct_url_git_without_commit_has_no_pin() -> None:
         "subdirectory": "kernel",
     }
     requirement = _requirement_from_direct_url("lisa-harness-kernel", payload)
-    assert requirement == "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git#subdirectory=kernel"
+    assert (
+        requirement
+        == "lisa-harness-kernel @ git+https://github.com/Lisa-Harness/lisa.git#subdirectory=kernel"
+    )
 
 
 def test_direct_url_local_dir_yields_path() -> None:

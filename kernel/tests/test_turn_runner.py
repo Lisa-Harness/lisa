@@ -66,10 +66,10 @@ async def _stub_execute_operation(
 
 def _build_minimal_hooks(complete_fn) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+        ),
+    )
 
 
 # ── Core flow tests ───────────────────────────────────────────────────
@@ -183,8 +183,22 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
@@ -254,8 +268,22 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(mode_id="plan", query="draft a doc", hooks=hooks)
@@ -319,8 +347,22 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -402,8 +444,22 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -469,8 +525,22 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -492,7 +562,9 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
 
 
 @pytest.mark.asyncio
-async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_plan_failure() -> None:
+async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_plan_failure() -> (
+    None
+):
     """A non-routing action mode entered at turn start (e.g. the recursive
     ``run_turn(mode_id="search")`` from ``plan``'s kernel-driven handoff,
     or a ``/search`` direct command) must return its entry-op result
@@ -557,8 +629,22 @@ async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_pl
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -649,8 +735,22 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -728,8 +828,22 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -806,7 +920,7 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
 
     hooks = _build_minimal_hooks(complete)
     hooks.workflow.route_coordinator = coordinator
-    hooks.workflow.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
 
@@ -871,7 +985,7 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
 
     hooks = _build_minimal_hooks(complete)
     # Production wiring: workflow_position is set, route_coordinator is NOT.
-    hooks.workflow.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
     assert hooks.workflow.route_coordinator is None
 
     result = await run_turn(mode_id="default", query="proceed with P0", hooks=hooks)
@@ -987,8 +1101,22 @@ async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1003,8 +1131,7 @@ async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
     # Brave as the query. ``markdown``'s entry op may run after the
     # synthesized handoff lands; only ``search`` is gated.
     assert "search" not in entry_op_calls, (
-        "resume-in-flight must skip the parked search entry op; got: "
-        f"{entry_op_calls}"
+        f"resume-in-flight must skip the parked search entry op; got: {entry_op_calls}"
     )
     # The plan advances: the kernel synthesized a transition_stage
     # handoff to ``markdown`` (the next declared step). When the external
@@ -1083,8 +1210,22 @@ async def test_resume_in_flight_does_not_fire_for_real_query() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         await run_turn(
@@ -1191,8 +1332,22 @@ async def test_resume_in_flight_skips_routing_entry_op_and_advances_plan() -> No
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1256,7 +1411,7 @@ async def test_plan_progress_rendered_when_plan_instance_active() -> None:
         return _StubCompletion(content="Drafted the markdown summary.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     result = await run_turn(mode_id="markdown", query="write the summary", hooks=hooks)
 
@@ -1381,8 +1536,22 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1497,13 +1666,27 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow.workflow_position= lambda: active_instance
+    hooks.workflow.workflow_position = lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         await run_turn(
@@ -1602,8 +1785,22 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -1615,7 +1812,8 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
     assert plan_entry_calls == 1
     # A WorkflowPosition was persisted for the plan's steps.
     plan_positions = [
-        p for p in persisted_positions
+        p
+        for p in persisted_positions
         if isinstance(p, WorkflowPosition) and p.spawned_from == "plan_workflow_op"
     ]
     assert len(plan_positions) >= 1, "mid-turn plan handoff must persist a WorkflowPosition"
@@ -1998,9 +2196,7 @@ async def test_empty_natural_completion_logs_diagnostic_warning(
 
     async def empty_completion(**kwargs: Any) -> _StubCompletion:
         # Mimic the incident shape: reasoning burned the budget, finish=-length.
-        return _StubCompletion(
-            content="", finish_reason="length", completion_tokens=980
-        )
+        return _StubCompletion(content="", finish_reason="length", completion_tokens=980)
 
     hooks = _build_minimal_hooks(empty_completion)
     with caplog.at_level("WARNING", logger="kernel.turn_runner"):
@@ -2008,7 +2204,8 @@ async def test_empty_natural_completion_logs_diagnostic_warning(
 
     assert result.yielded is not None
     empty_warnings = [
-        rec for rec in caplog.records
+        rec
+        for rec in caplog.records
         if "natural completion returned empty content" in rec.getMessage()
     ]
     assert empty_warnings, "expected the empty natural-completion warning"
@@ -2032,7 +2229,8 @@ async def test_natural_completion_with_content_logs_no_warning(
     assert result.response_text == "Hello, world!"
     assert result.yielded is None
     assert not [
-        rec for rec in caplog.records
+        rec
+        for rec in caplog.records
         if "natural completion returned empty content" in rec.getMessage()
     ]
 
@@ -3392,8 +3590,22 @@ def test_routing_hint_after_handoff_names_next_target() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         # After handing off to search (satisfies "research"), the remaining
         # "write" intent is still a gap — the hint must name markdown.
@@ -3432,8 +3644,22 @@ def test_routing_hint_after_handoff_empty_when_new_mode_satisfies_all() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="markdown",
@@ -3497,8 +3723,22 @@ def test_routing_hint_sequential_query_does_not_fork() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
@@ -3576,8 +3816,13 @@ def test_detect_query_intents_attributes_only_matched_keyword_tag() -> None:
     cloudservers_cfg = _mode_config(
         mode_id="cloudservers",
         routing_intent_tags=[
-            "cloud-init", "create-vm", "list-vms", "schedule-vm",
-            "start-vm", "stop-vm", "terminate-vm",
+            "cloud-init",
+            "create-vm",
+            "list-vms",
+            "schedule-vm",
+            "start-vm",
+            "stop-vm",
+            "terminate-vm",
         ],
         routing_intent_keywords={
             "list-vms": ["list vms", "what vms", "running"],
@@ -3711,7 +3956,9 @@ def test_detect_query_intents_still_scans_genuine_user_text() -> None:
     )
     patched_catalog = {"finances": finances_cfg}
 
-    user_query = "thanks — now that the approved action finished, please import transactions for 2024"
+    user_query = (
+        "thanks — now that the approved action finished, please import transactions for 2024"
+    )
 
     with patch(
         "kernel.turn_phases._routing_hint.get_workflow_catalog",
@@ -3769,8 +4016,22 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
@@ -3838,7 +4099,9 @@ def test_routing_hint_refuses_fork_for_consumer_only_gap() -> None:
         "default": default_cfg,
     }
 
-    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+    ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="write a markdown document and patch the code",
@@ -4118,8 +4381,22 @@ def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
         with (
             patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
             patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch(
+                "kernel.turn_runner.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
         ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
@@ -4186,8 +4463,22 @@ def test_routing_hint_chain_memory_skips_completed_steps() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="coding",
@@ -4383,7 +4674,10 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
-        "search", "ponder", "markdown", "coding",
+        "search",
+        "ponder",
+        "markdown",
+        "coding",
         keywords={
             "search": ["search", "web"],
             "ponder": ["understand", "swot", "tradeoffs", "analyze"],
@@ -4411,7 +4705,8 @@ def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
     from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
-        "search", "ponder",
+        "search",
+        "ponder",
         keywords={
             "search": ["search", "web"],
             "ponder": ["analyze", "tradeoff", "understand"],
@@ -4470,8 +4765,22 @@ def test_routing_hint_suppresses_target_on_topic_abandonment_marker() -> None:
         with (
             patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
             patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch(
+                "kernel.turn_runner.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
         ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
@@ -4521,8 +4830,22 @@ def test_routing_hint_routes_into_target_when_no_abandonment_marker() -> None:
         with (
             patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
             patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-            patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-            patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+            patch(
+                "kernel.turn_runner.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_mode_system_intro",
+                lambda mid, _c=patched_catalog: (
+                    _c.get(mid).instruction_body
+                    if _c.get(mid) and _c.get(mid).instruction_body
+                    else mid
+                ),
+            ),
         ):
             hint = _compute_capability_routing_hint(
                 mode_id="default",
@@ -4545,7 +4868,9 @@ def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
     from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
     catalog = _hint_catalog(
-        "markdown", "coding", "ponder",
+        "markdown",
+        "coding",
+        "ponder",
         keywords={
             "markdown": ["write", "markdown", "document"],
             "coding": ["code", "implement"],
@@ -4915,8 +5240,22 @@ def test_routing_hint_partial_coverage_fallback_instead_of_silence() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
@@ -4959,8 +5298,22 @@ def test_routing_hint_silence_when_no_target_covers_any_gap_intent() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
     ):
         hint = _compute_capability_routing_hint(
             mode_id="default",
@@ -5343,8 +5696,22 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch(
             "kernel.turn_runner.run_mode_entry_operations", side_effect=failing_plan_entry_operation
         ),
@@ -5580,12 +5947,15 @@ def test_synthesized_call_missing_all_required_true_for_empty_args() -> None:
         description="apply cloud-init",
         parameters_schema=_Params,
     )
-    assert _synthesized_call_missing_all_required(
-        "cs_apply_cloud_init",
-        {},
-        operation_catalog={"cs_apply_cloud_init": op_def},
-        tool_catalog={},
-    ) is True
+    assert (
+        _synthesized_call_missing_all_required(
+            "cs_apply_cloud_init",
+            {},
+            operation_catalog={"cs_apply_cloud_init": op_def},
+            tool_catalog={},
+        )
+        is True
+    )
 
 
 def test_synthesized_call_missing_all_required_false_when_some_supplied() -> None:
@@ -5605,12 +5975,15 @@ def test_synthesized_call_missing_all_required_false_when_some_supplied() -> Non
         description="apply cloud-init",
         parameters_schema=_Params,
     )
-    assert _synthesized_call_missing_all_required(
-        "cs_apply_cloud_init",
-        {"template_id": "tpl_123"},
-        operation_catalog={"cs_apply_cloud_init": op_def},
-        tool_catalog={},
-    ) is False
+    assert (
+        _synthesized_call_missing_all_required(
+            "cs_apply_cloud_init",
+            {"template_id": "tpl_123"},
+            operation_catalog={"cs_apply_cloud_init": op_def},
+            tool_catalog={},
+        )
+        is False
+    )
 
 
 def test_synthesized_call_missing_all_required_false_for_optional_only_schema() -> None:
@@ -5628,12 +6001,15 @@ def test_synthesized_call_missing_all_required_false_for_optional_only_schema() 
         description="transition",
         parameters_schema=_Params,
     )
-    assert _synthesized_call_missing_all_required(
-        "transition_stage",
-        {},
-        operation_catalog={},
-        tool_catalog={"transition_stage": tool_def},
-    ) is False
+    assert (
+        _synthesized_call_missing_all_required(
+            "transition_stage",
+            {},
+            operation_catalog={},
+            tool_catalog={"transition_stage": tool_def},
+        )
+        is False
+    )
 
 
 def test_synthesized_call_missing_all_required_false_for_unknown_tool() -> None:
@@ -5641,12 +6017,15 @@ def test_synthesized_call_missing_all_required_false_for_unknown_tool() -> None:
     let the normal dispatch path handle it."""
     from kernel.turn_runner import _synthesized_call_missing_all_required
 
-    assert _synthesized_call_missing_all_required(
-        "lisa-storage.read_file",
-        {},
-        operation_catalog={},
-        tool_catalog={},
-    ) is False
+    assert (
+        _synthesized_call_missing_all_required(
+            "lisa-storage.read_file",
+            {},
+            operation_catalog={},
+            tool_catalog={},
+        )
+        is False
+    )
 
 
 def test_turn_state_has_loop_guard_fields() -> None:
@@ -5755,8 +6134,22 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -5836,7 +6229,9 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
         sys_content = str(kwargs["messages"][0].get("content", ""))
         msgs = str([m.get("content", "") for m in kwargs["messages"]])
         # In search mode (reached after the forced handoff): return results.
-        if "Handed off to mode: search" in msgs or ("`search`" in sys_content and "search" in sys_content):
+        if "Handed off to mode: search" in msgs or (
+            "`search`" in sys_content and "search" in sys_content
+        ):
             search_reached = True
             return _StubCompletion(content="Search results from web_search.")
         # In remember mode: the weak model returns text WITHOUT calling
@@ -5883,8 +6278,22 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
-        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: (_c.get(mid).instruction_body if _c.get(mid) and _c.get(mid).instruction_body else mid)),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: (
+                _c.get(mid).instruction_body
+                if _c.get(mid) and _c.get(mid).instruction_body
+                else mid
+            ),
+        ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
@@ -5895,7 +6304,9 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
 
     # The kernel forced the remember→search handoff even though the model
     # returned text without calling transition_stage. Search ran.
-    assert search_reached, "search mode was never reached — the forced-transition enforcer did not fire"
+    assert search_reached, (
+        "search mode was never reached — the forced-transition enforcer did not fire"
+    )
     assert "Search results from web_search." in result.response_text
 
 
@@ -5936,8 +6347,7 @@ async def test_forced_transition_preserves_pre_handoff_text() -> None:
         msgs = str([m.get("content", "") for m in kwargs["messages"]])
         # In shell mode (reached after the forced handoff): return a summary.
         if "Handed off to mode: shell" in msgs or (
-            "`shell`" in sys_content and "shell" in sys_content
-            and "Handoff Context" in sys_content
+            "`shell`" in sys_content and "shell" in sys_content and "Handoff Context" in sys_content
         ):
             shell_reached = True
             return _StubCompletion(
@@ -5946,9 +6356,7 @@ async def test_forced_transition_preserves_pre_handoff_text() -> None:
         # In default mode: the model produces the command list as text
         # but does NOT call transition_stage — the kernel must force the
         # handoff AND preserve this text.
-        return _StubCompletion(
-            content="#1 — ps aux | grep zeek\n#2 — zeekctl status\n#3 — cat log"
-        )
+        return _StubCompletion(content="#1 — ps aux | grep zeek\n#2 — zeekctl status\n#3 — cat log")
 
     hooks = _build_minimal_hooks(complete)
     hooks.recall.enabled = False
@@ -5980,7 +6388,9 @@ async def test_forced_transition_preserves_pre_handoff_text() -> None:
         )
 
     # The kernel forced the default→shell handoff.
-    assert shell_reached, "shell mode was never reached — the forced-transition enforcer did not fire"
+    assert shell_reached, (
+        "shell mode was never reached — the forced-transition enforcer did not fire"
+    )
     # The pre-handoff text (the command list) must survive in the response.
     assert "#1" in result.response_text, (
         "pre-handoff model text was lost — the command list from the "

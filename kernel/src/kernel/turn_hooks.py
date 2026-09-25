@@ -78,9 +78,7 @@ class ContextHooks:
     #: ground truth for what the model can call — so hosts render a capability
     #: context that matches the injected function schema (the "Tooling
     #: Paradox" fix).
-    assemble_user_context: (
-        Callable[[str, str, str, CapabilityManifest | None], str] | None
-    ) = None
+    assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
 
     #: Most recent ``ContextBudgetSnapshot`` produced by the host's
     #: context-mapper pass. Mutated by the host after each prompt assembly so
@@ -104,9 +102,7 @@ class OperationHooks:
     #: ``_default_delegate_fn`` (recurses ``run_turn`` as a ``"delegate"``
     #: child). ``None`` means delegation is not wired; the delegate operation
     #: fails loudly until the kernel fills it in at turn start.
-    delegate_fn: (
-        Callable[[DelegationSpec], Awaitable[DelegationResult]] | None
-    ) = None
+    delegate_fn: Callable[[DelegationSpec], Awaitable[DelegationResult]] | None = None
 
     #: ``fork_fn(spec)`` — run a parallel fork fan-out. Default:
     #: ``_default_fork_fn`` (``asyncio.TaskGroup``). ``None`` means fork is
@@ -123,9 +119,9 @@ class LifecycleHooks:
     #: Called after every successful turn with ``mode_id, query,
     #: response_text, messages, effect_ledger``. Default: no-op. The app hooks
     #: thread persistence, digest refresh, and provenance here.
-    on_turn_complete: Callable[
-        [str, str, str, list[dict[str, Any]], list[Any]], Awaitable[None]
-    ] | None = None
+    on_turn_complete: (
+        Callable[[str, str, str, list[dict[str, Any]], list[Any]], Awaitable[None]] | None
+    ) = None
 
     #: ``SliceTuning`` controlling the slice budget shape. ``None`` means
     #: "use defaults and disable all three triggers."

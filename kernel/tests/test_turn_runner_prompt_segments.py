@@ -109,11 +109,7 @@ async def test_lifecycle_briefing_is_a_replaced_ephemeral_segment() -> None:
     assert request is not None
     segments = tuple(request.system_prompt_segments)
 
-    lifecycle_blocks = [
-        s
-        for s in segments
-        if not s.is_stable and "## Turn Lifecycle" in s.text
-    ]
+    lifecycle_blocks = [s for s in segments if not s.is_stable and "## Turn Lifecycle" in s.text]
     # Exactly one ephemeral lifecycle segment exists for the turn; iteration
     # 2's briefing replaced iteration 1's rather than appending a second.
     assert len(lifecycle_blocks) == 1
@@ -126,6 +122,7 @@ async def test_lifecycle_briefing_is_a_replaced_ephemeral_segment() -> None:
 @pytest.mark.asyncio
 async def test_flattened_prompt_is_byte_identical_to_messages_system() -> None:
     """Legacy message content equals the segment-flattened string."""
+
     async def complete_fn(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="ok")
 
@@ -142,6 +139,4 @@ async def test_flattened_prompt_is_byte_identical_to_messages_system() -> None:
     assert last is not None
     request = last.last_request
     segments = tuple(request.system_prompt_segments)
-    assert flatten_system_prompt_segments(segments) == str(
-        request.messages[0].get("content", "")
-    )
+    assert flatten_system_prompt_segments(segments) == str(request.messages[0].get("content", ""))

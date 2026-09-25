@@ -42,7 +42,6 @@ __all__ = [
 ]
 
 
-
 import json
 import logging
 import re
@@ -526,9 +525,7 @@ def _build_budget_briefing(
     turns_in_stage = getattr(state, "turns_in_stage", 0) or 0
     if stage_nudge_cap > 0 and turns_in_stage > 0:
         stage_remaining = max(0, stage_nudge_cap - turns_in_stage)
-        lines.append(
-            f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining"
-        )
+        lines.append(f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining")
     # ── Per-step sub-budget (only when a WorkflowPosition is wired) ──
     if per_step_max_iterations > 0 and state.step_iteration > 0:
         step_remaining = per_step_max_iterations - state.step_iteration
@@ -825,7 +822,6 @@ def _resume_in_flight_target(
     return target
 
 
-
 # ── Core turn runner ────────────────────────────────────────────────────────
 
 
@@ -967,7 +963,9 @@ async def run_turn(
 
     if hooks.services.recovery_service is not None:
         try:
-            await hooks.services.recovery_service.mark_running_indeterminate(_build_recovery_identity(hooks))
+            await hooks.services.recovery_service.mark_running_indeterminate(
+                _build_recovery_identity(hooks)
+            )
         except Exception as exc:  # pylint: disable=broad-except
             _log.warning("recovery startup reconciliation failed: %s", exc)
 
@@ -1195,7 +1193,9 @@ async def execute_approved_invocation(
                 ToolExecutionContext(
                     tool_id=invocation.target_id,
                     parameters=invocation.parameters,
-                    stream_output=bool(getattr(_tool_def, "stream_output", False)) if _tool_def else False,
+                    stream_output=bool(getattr(_tool_def, "stream_output", False))
+                    if _tool_def
+                    else False,
                     event_bus=_tool_output_bus,
                     **common,
                 ),
@@ -1214,7 +1214,8 @@ async def execute_approved_invocation(
                     None,
                 ),
                 execute_tool_fn=_nested_tool_executor,
-                execute_operation_fn=hooks.operations.execute_operation or _default_execute_operation,
+                execute_operation_fn=hooks.operations.execute_operation
+                or _default_execute_operation,
                 gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
             ),
             **common,
@@ -1773,9 +1774,7 @@ async def _run_turn_inner(
         )
         _hint_target_id = _extract_hint_target(routing_hint)
         _transition_target = (
-            _hint_target_id
-            if _hint_target_id and not _hint_target_id.startswith("fork")
-            else ""
+            _hint_target_id if _hint_target_id and not _hint_target_id.startswith("fork") else ""
         )
         _forced_targets = _fork_targets or ([_transition_target] if _transition_target else [])
         _state.forced_action = (
@@ -1864,9 +1863,7 @@ async def _run_turn_inner(
     # it. ``messages[0].content`` is always produced by ``_sys_segments.flatten()``
     # so the rendered prompt stays byte-identical to the historical single
     # string while the stable prefix is never rewritten per-iteration.
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _sys_segments.flatten()}
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": _sys_segments.flatten()}]
 
     # Build user message
     user_parts: list[str] = []
@@ -2182,7 +2179,8 @@ async def _run_turn_inner(
             turns_in_stage=_turns_in_stage,
             budget_exhausted=_budget_forces_final() if _pending_yield is None else False,
             forced_action_target=(
-                f"fork:{_forced.target_csv}" if _forced is not None and _forced.kind == "fork"
+                f"fork:{_forced.target_csv}"
+                if _forced is not None and _forced.kind == "fork"
                 else (_forced.target_csv if _forced is not None else "")
             ),
             forced_action_non_compliant_dispatches=(
@@ -2197,9 +2195,7 @@ async def _run_turn_inner(
                 for r in _state.effect_receipts
                 if r.effect in ("write", "external_write")
             ),
-            has_read_receipt=any(
-                r.effect in ("read", "execute") for r in _state.effect_receipts
-            ),
+            has_read_receipt=any(r.effect in ("read", "execute") for r in _state.effect_receipts),
             consecutive_tool_errors=_state.consecutive_tool_errors,
             last_error_tool=_state.last_error_tool,
         )
@@ -2242,9 +2238,7 @@ async def _run_turn_inner(
                             if r.effect in ("write", "external_write")
                         ),
                         "read_receipts": sum(
-                            1
-                            for r in _state.effect_receipts
-                            if r.effect in ("read", "execute")
+                            1 for r in _state.effect_receipts if r.effect in ("read", "execute")
                         ),
                     },
                 )
@@ -2404,10 +2398,7 @@ async def _run_turn_inner(
             and not any(r.effect in ("read", "execute") for r in _state.effect_receipts)
             and (
                 _parent_write_deadline
-                or (
-                    _state.sub_turn_kind
-                    and _state.iteration > max_tool_iterations // 2
-                )
+                or (_state.sub_turn_kind and _state.iteration > max_tool_iterations // 2)
             )
             and _pending_yield is None
         ):
@@ -2576,8 +2567,7 @@ async def _run_turn_inner(
                 # No mutable position is updated here.
                 transitioned_to = _target_stage
                 _log.debug(
-                    "router transition_to action (iteration=%d, "
-                    "stage=%s); forcing final summary",
+                    "router transition_to action (iteration=%d, stage=%s); forcing final summary",
                     _state.iteration,
                     _target_stage,
                 )
@@ -2614,9 +2604,7 @@ async def _run_turn_inner(
             _synth_delegated_goal = ""
             try:
                 _synth_pos = (
-                    hooks.workflow.workflow_position()
-                    if hooks.workflow.workflow_position
-                    else None
+                    hooks.workflow.workflow_position() if hooks.workflow.workflow_position else None
                 )
             except Exception:
                 _synth_pos = None
@@ -2769,9 +2757,7 @@ async def _run_turn_inner(
                     _fallback_started = time.perf_counter()
                     completion = await _gateway.complete(_fallback_request)
                     if completion.duration_ms <= 0.0:
-                        completion.duration_ms = (
-                            time.perf_counter() - _fallback_started
-                        ) * 1000.0
+                        completion.duration_ms = (time.perf_counter() - _fallback_started) * 1000.0
                 else:
                     # Build a completion-like object from the aggregated stream
                     completion = StreamedCompletionAdapter(aggregated)
@@ -2793,15 +2779,10 @@ async def _run_turn_inner(
                 # answer while the announced write never dispatched). Retry
                 # once with a doubled budget (bounded by the model's context
                 # window) before accepting the truncated completion as final.
-                if (
-                    getattr(completion, "finish_reason", None) == "length"
-                    and effective_tools
-                ):
+                if getattr(completion, "finish_reason", None) == "length" and effective_tools:
                     _base_max_tokens = int(completion_request.max_tokens or 0)
                     _retry_max_tokens = _base_max_tokens * 2
-                    _cap_window = int(
-                        getattr(effective_model_def, "context_window", 0) or 0
-                    )
+                    _cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
                     if _cap_window > 0:
                         _retry_max_tokens = min(_retry_max_tokens, _cap_window)
                     if _retry_max_tokens > _base_max_tokens:
@@ -2826,9 +2807,7 @@ async def _run_turn_inner(
                         _retry_started = time.perf_counter()
                         completion = await _gateway.complete(_retry_request)
                         if completion.duration_ms <= 0.0:
-                            completion.duration_ms = (
-                                time.perf_counter() - _retry_started
-                            ) * 1000.0
+                            completion.duration_ms = (time.perf_counter() - _retry_started) * 1000.0
                 if completion.duration_ms <= 0.0:
                     completion.duration_ms = (time.perf_counter() - _complete_started) * 1000.0
         usage = _extract_completion_usage(completion)
@@ -2950,9 +2929,7 @@ async def _run_turn_inner(
                 )
                 if _fa.kind == "fork":
                     _forced_arguments: dict[str, Any] = {
-                        "targets": [
-                            {"mode_id": mid, "query": query} for mid in _fa.targets
-                        ],
+                        "targets": [{"mode_id": mid, "query": query} for mid in _fa.targets],
                     }
                 else:
                     _forced_arguments = {
@@ -2990,11 +2967,7 @@ async def _run_turn_inner(
                 # NOT when fork results are present (the post-fork
                 # synthesis is the model's final answer, not pre-handoff
                 # content that needs to be preserved separately).
-                if (
-                    _fa.kind == "transition"
-                    and not _pre_handoff_text
-                    and not _state.fork_results
-                ):
+                if _fa.kind == "transition" and not _pre_handoff_text and not _state.fork_results:
                     _pre_iteration_text = completion_content(completion).strip()
                     if _pre_iteration_text:
                         _pre_handoff_text = _pre_iteration_text
@@ -3436,14 +3409,16 @@ async def _run_turn_inner(
             _forced = _state.forced_action
             if _forced is not None and tool_name != _forced.expected_tool:
                 _forced.non_compliant_dispatches += 1
-                
+
                 # Trust-Aware Enforcer Cap
-                reliability = float(getattr(_state.effective_model, "structured_reliability", 0.0) or 0.0)
+                reliability = float(
+                    getattr(_state.effective_model, "structured_reliability", 0.0) or 0.0
+                )
                 is_frontier = getattr(_state.effective_model, "cost_tier", "") == "frontier"
                 is_reasoning = getattr(_state.effective_model, "reasoning_model", False)
-                
+
                 if is_frontier or is_reasoning or reliability >= 0.95:
-                    effective_cap = float('inf')
+                    effective_cap = float("inf")
                 else:
                     effective_cap = _kernel_settings.forced_action_non_compliant_cap
 
@@ -3462,8 +3437,7 @@ async def _run_turn_inner(
                     if _forced.kind == "fork":
                         tool_arguments = {
                             "targets": [
-                                {"mode_id": mid, "query": query}
-                                for mid in _forced.targets
+                                {"mode_id": mid, "query": query} for mid in _forced.targets
                             ],
                         }
                     else:
@@ -3566,9 +3540,7 @@ async def _run_turn_inner(
                 # region only for tools whose ``.tool.yml`` declares
                 # ``stream_output`` — the flag travels on the dispatch event
                 # so the region is armed before the first line arrives.
-                _tool_streams_output = bool(
-                    getattr(_tool_definition, "stream_output", False)
-                )
+                _tool_streams_output = bool(getattr(_tool_definition, "stream_output", False))
             await _emit_stage(
                 "tool_dispatch",
                 {
@@ -3591,7 +3563,10 @@ async def _run_turn_inner(
             # of ``RecoveryTargetKind`` (recovery.py), so constructing a
             # ``RecoveryRecord`` for them raises a pydantic ``literal_error``
             # and only logs a misleading "recovery begin failed" warning.
-            if hooks.services.recovery_service is not None and _tool_kind not in ("transition", "yield"):
+            if hooks.services.recovery_service is not None and _tool_kind not in (
+                "transition",
+                "yield",
+            ):
                 try:
                     effect = "read"
                     if tool_name in operation_catalog:
@@ -3779,9 +3754,8 @@ async def _run_turn_inner(
                         # the stage from it on the next turn. No mutable
                         # position is updated here.
                         transitioned_to = target_stage
-                        tool_output = (
-                            f"Transitioned to stage: {target_stage}."
-                            + (f" Rationale: {rationale}" if rationale else "")
+                        tool_output = f"Transitioned to stage: {target_stage}." + (
+                            f" Rationale: {rationale}" if rationale else ""
                         )
                         await _emit_stage(
                             "tool_dispatch_complete",
@@ -3793,7 +3767,9 @@ async def _run_turn_inner(
                                 "ok": transitioned_to is not None,
                                 "transition": "workflow_stage",
                                 "transitioned_to": transitioned_to,
-                                "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                                "duration_ms": int(
+                                    (time.monotonic() - _tool_dispatch_started) * 1000
+                                ),
                             },
                         )
                         messages.append(
@@ -3808,7 +3784,7 @@ async def _run_turn_inner(
                             _log.warning(
                                 "Model batched %d trailing tool call(s) after stage transition. "
                                 "Breaking the dispatch loop to cleanly boot the new stage.",
-                                len(tool_calls) - tool_calls.index(tool_call) - 1
+                                len(tool_calls) - tool_calls.index(tool_call) - 1,
                             )
                         break
 
@@ -3950,10 +3926,10 @@ async def _run_turn_inner(
                                             ):
                                                 remaining_steps.append(rid)
                                     chain_position = len(_state.chain_satisfied) + 1
-                                    
+
                                     # Use the payload parsed from transition_stage arguments
-                                    dg = delegated_goal if 'delegated_goal' in locals() else ""
-                                    cp = context_payload if 'context_payload' in locals() else ""
+                                    dg = delegated_goal if "delegated_goal" in locals() else ""
+                                    cp = context_payload if "context_payload" in locals() else ""
 
                                     # Inject the active plan's rendered block
                                     # so the receiving mode knows the plan it
@@ -4007,8 +3983,7 @@ async def _run_turn_inner(
                                     )
                                     if _handoff_plan_text:
                                         handoff_context += (
-                                            f"\n## Plan You Are Executing\n"
-                                            f"{_handoff_plan_text}\n"
+                                            f"\n## Plan You Are Executing\n{_handoff_plan_text}\n"
                                         )
                                     if dg:
                                         handoff_context += f"\n## Your Current Task\n{dg}\n"
@@ -4018,9 +3993,7 @@ async def _run_turn_inner(
                                     # Route handoff context through segments
                                     # so the stable base stays untouched and
                                     # this per-turn content is replaceable.
-                                    _sys_segments.set_dynamic(
-                                        N_HANDOFF_CONTEXT, handoff_context
-                                    )
+                                    _sys_segments.set_dynamic(N_HANDOFF_CONTEXT, handoff_context)
                                     messages[0]["content"] = _sys_segments.flatten()
                                 except Exception as ctx_exc:  # pylint: disable=broad-except
                                     _log.warning(
@@ -4417,8 +4390,7 @@ async def _run_turn_inner(
                                         raise
                                     except Exception as pre_exc:  # pylint: disable=broad-except
                                         _log.warning(
-                                            "mid-turn pre_turn targets failed for "
-                                            "mode '%s': %s",
+                                            "mid-turn pre_turn targets failed for mode '%s': %s",
                                             target_stage,
                                             pre_exc,
                                         )
@@ -4645,7 +4617,8 @@ async def _run_turn_inner(
                                             )
                                             if _halt_yp.allowed or _halt_yp.fallback_mode:
                                                 _pending_yield = YieldAction(
-                                                    question=_halt_yp.default_question or (
+                                                    question=_halt_yp.default_question
+                                                    or (
                                                         "I've overridden the suggested routing "
                                                         f"{_state.hint_override_count} times and "
                                                         "am not converging. How would you like "
@@ -4742,9 +4715,7 @@ async def _run_turn_inner(
                                         # post-handoff hint as a fresh dynamic
                                         # segment named after the new mode's
                                         # residual chain direction.
-                                        _sys_segments.set_dynamic(
-                                            N_ROUTING_HINT, post_handoff_hint
-                                        )
+                                        _sys_segments.set_dynamic(N_ROUTING_HINT, post_handoff_hint)
                                         messages[0]["content"] = _sys_segments.flatten()
                                         routing_hint = post_handoff_hint
                                         # Phase 7 (one control channel):
@@ -4766,8 +4737,7 @@ async def _run_turn_inner(
                                             "MUST call `transition_stage` "
                                             "to continue to the next step. "
                                             "Do NOT end the turn without "
-                                            "calling `transition_stage`. "
-                                            + post_handoff_hint
+                                            "calling `transition_stage`. " + post_handoff_hint
                                         )
                                         # Refresh the forced action for the
                                         # new mode so the enforcer tracks
@@ -4791,9 +4761,7 @@ async def _run_turn_inner(
                                             else ""
                                         )
                                         _ph_targets = _ph_fork_targets or (
-                                            [_ph_transition_target]
-                                            if _ph_transition_target
-                                            else []
+                                            [_ph_transition_target] if _ph_transition_target else []
                                         )
                                         _state.forced_action = (
                                             ForcedAction(targets=list(_ph_targets))
@@ -4892,7 +4860,7 @@ async def _run_turn_inner(
                             _log.warning(
                                 "Model batched %d trailing tool call(s) after transition_stage. "
                                 "Breaking the dispatch loop to cleanly boot the new mode.",
-                                len(tool_calls) - tool_calls.index(tool_call) - 1
+                                len(tool_calls) - tool_calls.index(tool_call) - 1,
                             )
                         break
                     tool_output = (
@@ -4968,8 +4936,7 @@ async def _run_turn_inner(
                     content = _pending_yield.question
                     _yielded = True
                     _log.info(
-                        "delegate child model_yield propagated to user "
-                        "(mode=%s, iteration=%d)",
+                        "delegate child model_yield propagated to user (mode=%s, iteration=%d)",
                         mode_id,
                         _state.iteration,
                     )
@@ -5159,12 +5126,10 @@ async def _run_turn_inner(
             _budget_actually_exhausted = _state.iteration >= max_tool_iterations
             if _budget_actually_exhausted:
                 _fallback_question = _yield_policy.default_question or (
-                    "I've hit my iteration budget for this turn. "
-                    "How would you like me to proceed?"
+                    "I've hit my iteration budget for this turn. How would you like me to proceed?"
                 )
                 _fallback_context = (
-                    f"iteration cap {max_tool_iterations} reached "
-                    f"with no final content"
+                    f"iteration cap {max_tool_iterations} reached with no final content"
                 )
             else:
                 _fallback_question = _yield_policy.default_question or (
@@ -5295,7 +5260,9 @@ async def _run_turn_inner(
     # stage, force one final no-tools completion using the
     # terminal stage's instruction so the model produces a closing summary.
     if transitioned_to is not None:
-        terminal_position = hooks.workflow.workflow_position() if hooks.workflow.workflow_position else None
+        terminal_position = (
+            hooks.workflow.workflow_position() if hooks.workflow.workflow_position else None
+        )
         if terminal_position is not None and is_terminal_stage(terminal_position):
             terminal_stage_config = mode_config.stages.get(terminal_position.stage_id)
             if terminal_stage_config and terminal_stage_config.instruction_body:
@@ -5381,10 +5348,7 @@ async def _run_turn_inner(
         preexisting_block=bool(
             _state.entry_failed
             or _state.plan_failed
-            or (
-                _state.fork_results
-                and any(r.status != "ok" for r in (_state.fork_results or []))
-            )
+            or (_state.fork_results and any(r.status != "ok" for r in (_state.fork_results or [])))
         ),
     )
 
@@ -5401,9 +5365,7 @@ async def _run_turn_inner(
             "warning instead of blocking as no_tools",
             mode_id,
         )
-        _action_names = ", ".join(
-            f"`{t}`" for t in sorted(contract_decision.action_tool_ids)
-        )
+        _action_names = ", ".join(f"`{t}`" for t in sorted(contract_decision.action_tool_ids))
         _warning = render_no_write_warning(action_names=_action_names)
         if _warning:
             content = content.rstrip() + "\n\n" + _warning
@@ -5422,9 +5384,7 @@ async def _run_turn_inner(
             mode_id,
             sorted(contract_decision.action_tool_ids),
         )
-        _action_names = ", ".join(
-            f"`{t}`" for t in sorted(contract_decision.action_tool_ids)
-        )
+        _action_names = ", ".join(f"`{t}`" for t in sorted(contract_decision.action_tool_ids))
         _warning = render_no_write_warning(action_names=_action_names)
         if _warning:
             content = content.rstrip() + "\n\n" + _warning

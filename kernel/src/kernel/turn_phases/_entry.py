@@ -116,9 +116,7 @@ async def execute_entry_phase(
         return EntryPhaseResult(early_user_context=early_user_context)
 
     # ── Resume-in-flight gate (work + routing entry ops) ──────────
-    resume_target = resume_in_flight_target_fn(
-        hooks=hooks, mode_id=mode_id, query=query
-    )
+    resume_target = resume_in_flight_target_fn(hooks=hooks, mode_id=mode_id, query=query)
     if resume_target:
         _log.info(
             "resume-in-flight: skipping work entry op for mode=%s "
@@ -144,9 +142,7 @@ async def execute_entry_phase(
         execution_policy=execution_policy,
     )
 
-    planned_target = str(
-        (result.output_json or {}).get("target_stage_id", "") or ""
-    ).strip()
+    planned_target = str((result.output_json or {}).get("target_stage_id", "") or "").strip()
     promises_routing = promises_routing_contract_fn(mode_config)
 
     if not planned_target and not promises_routing:
@@ -200,8 +196,7 @@ async def execute_entry_phase(
             routing_ctx,
             target_mode_id=planned_target,
             reason=(
-                (result.output_json or {}).get("rationale")
-                or f"planned handoff from {mode_id}"
+                (result.output_json or {}).get("rationale") or f"planned handoff from {mode_id}"
             ),
         )
         _log.debug(

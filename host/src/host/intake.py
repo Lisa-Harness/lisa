@@ -329,11 +329,7 @@ def _evidence_from_processed_state(
         out.extend(ps.context_items)
     if ps.signal_snapshots:
         for connector_id, snapshot in ps.signal_snapshots.items():
-            status = (
-                str(snapshot.get("status", "ok"))
-                if isinstance(snapshot, dict)
-                else "ok"
-            )
+            status = str(snapshot.get("status", "ok")) if isinstance(snapshot, dict) else "ok"
             out.append(
                 _evidence_from_signal(
                     collector_id=connector_id,

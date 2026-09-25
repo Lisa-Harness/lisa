@@ -392,14 +392,10 @@ class MemoryConsolidationSlice:
                 end_turn=turn_hi,
             )
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "memory_consolidation: failed to load segment %s: %s", seg_id, exc
-            )
+            logger.warning("memory_consolidation: failed to load segment %s: %s", seg_id, exc)
             return []
 
-    async def _mine_new_segments(
-        self, policy: SlicePolicy, started: float
-    ) -> tuple[int, str, str]:
+    async def _mine_new_segments(self, policy: SlicePolicy, started: float) -> tuple[int, str, str]:
         """Mine newly sealed thread segments into semantic memories.
 
         Returns ``(work_items, last_item, note)``.
@@ -441,8 +437,10 @@ class MemoryConsolidationSlice:
             self._persist_mine_marker(seg_id)
             work_items += 1
             last_item = f"mined:{seg_id}({turn_lo}-{turn_hi})->{len(stored_ids)}"
-        return work_items, last_item, (
-            f"mined {work_items} sealed segment(s)" if work_items else ""
+        return (
+            work_items,
+            last_item,
+            (f"mined {work_items} sealed segment(s)" if work_items else ""),
         )
 
     # ── Slice entrypoint ─────────────────────────────────────────────
@@ -462,9 +460,7 @@ class MemoryConsolidationSlice:
         # ── Job 1: mine newly sealed thread segments ────────────────
         if self._mine_enabled:
             try:
-                mined, mined_last, mine_note = await self._mine_new_segments(
-                    policy, started
-                )
+                mined, mined_last, mine_note = await self._mine_new_segments(policy, started)
                 if mined > 0:
                     total_work += mined
                     if mined_last:
@@ -605,9 +601,7 @@ def get_slice_provider_factory() -> SliceProviderFactory:
     the host skips wiring — no behavior change for that session.
     """
 
-    def factory(
-        turn_hooks: Any, session_plan: Any
-    ) -> MemoryConsolidationSlice | None:
+    def factory(turn_hooks: Any, session_plan: Any) -> MemoryConsolidationSlice | None:
         tuning = _resolve_consolidation_tuning(session_plan)
         if tuning is None or not bool(getattr(tuning, "enabled", False)):
             return None

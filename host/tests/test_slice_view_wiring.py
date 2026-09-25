@@ -44,9 +44,7 @@ def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:
     """
     from host.testing import build_test_runtime
 
-    runtime = build_test_runtime(
-        tmp_path, user_slug="user", surface_type="dm", surface_id="s"
-    )
+    runtime = build_test_runtime(tmp_path, user_slug="user", surface_type="dm", surface_id="s")
 
     async def fake_execute_tool(tool_id: str, args: Any) -> str:
         return "[]"

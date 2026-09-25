@@ -82,11 +82,7 @@ def _seal_active(thread_path: Path) -> None:
     sealed_path.write_bytes(compressed)
 
     # Parse entries to count turns and derive the turn range.
-    entries = [
-        json.loads(line)
-        for line in raw_bytes.decode("utf-8").splitlines()
-        if line.strip()
-    ]
+    entries = [json.loads(line) for line in raw_bytes.decode("utf-8").splitlines() if line.strip()]
     turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
     turn_hi = turn_lo + len(entries) - 1
     record = SegmentRecord(

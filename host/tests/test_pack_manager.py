@@ -850,9 +850,7 @@ async def test_framework_seed_requirements_repo_mode_covers_bundled_packs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Repo-mode requirements cover kernel/sdk/mcp_server plus bundled packs."""
-    monkeypatch.setattr(
-        "host.paths.is_tool_install", lambda: False, raising=False
-    )
+    monkeypatch.setattr("host.paths.is_tool_install", lambda: False, raising=False)
     reqs = framework_seed_requirements()
     assert reqs, "repo checkout must produce seed requirements"
     joined = "\n".join(reqs)

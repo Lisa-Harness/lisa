@@ -166,17 +166,12 @@ async def test_complete_sanitizes_wire_names_and_restores_result() -> None:
         {"role": "tool", "tool_call_id": "call_0", "content": "[]"},
         {"role": "user", "content": "read it"},
     ]
-    result = await gateway.complete(
-        _request(messages=history, tools=[_TOOL])
-    )
+    result = await gateway.complete(_request(messages=history, tools=[_TOOL]))
     wire_kwargs = captured["kwargs"]
     # Tools and history are sanitized on the wire.
+    assert wire_kwargs["tools"][0]["function"]["name"] == "lisa-storage_read_file"
     assert (
-        wire_kwargs["tools"][0]["function"]["name"] == "lisa-storage_read_file"
-    )
-    assert (
-        wire_kwargs["messages"][0]["tool_calls"][0]["function"]["name"]
-        == "lisa-storage_list_files"
+        wire_kwargs["messages"][0]["tool_calls"][0]["function"]["name"] == "lisa-storage_list_files"
     )
     # The extracted tool call is restored to the dotted original.
     assert result.tool_calls[0]["name"] == "lisa-storage.read_file"
@@ -217,10 +212,7 @@ async def test_complete_stream_sanitizes_wire_names() -> None:
     gateway = OpenAICompatibleGateway(client_factory=lambda: client)
     async for _ in gateway.complete_stream(_request(tools=[_TOOL])):
         pass
-    assert (
-        captured["kwargs"]["tools"][0]["function"]["name"]
-        == "lisa-storage_read_file"
-    )
+    assert captured["kwargs"]["tools"][0]["function"]["name"] == "lisa-storage_read_file"
 
 
 # ── Reasoning-field fallbacks (2026-09-02 empty-turn incident) ────────
@@ -261,9 +253,7 @@ class TestOllamaReasoningFieldFallback:
         assert "read the config" in extract_openai_content(response)
 
     def test_extract_returns_empty_when_both_absent(self) -> None:
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=""))]
-        )
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=""))])
         assert extract_openai_content(response) == ""
 
     @pytest.mark.asyncio
@@ -277,9 +267,7 @@ class TestOllamaReasoningFieldFallback:
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=message)],
             id="chat-1",
-            usage=SimpleNamespace(
-                prompt_tokens=10, completion_tokens=200, total_tokens=210
-            ),
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=200, total_tokens=210),
         )
         client = _StubClient(response, {})
         gateway = OpenAICompatibleGateway(client_factory=lambda: client)
@@ -322,9 +310,7 @@ class TestOllamaReasoningFieldFallback:
             async def create(self, **kwargs: Any) -> Any:
                 return _Stream()
 
-        client = SimpleNamespace(
-            chat=SimpleNamespace(completions=_StreamCompletions())
-        )
+        client = SimpleNamespace(chat=SimpleNamespace(completions=_StreamCompletions()))
         gateway = OpenAICompatibleGateway(client_factory=lambda: client)
         chunks = [chunk async for chunk in gateway.complete_stream(_request())]
         assert chunks[0].reasoning_content == "thinking..."

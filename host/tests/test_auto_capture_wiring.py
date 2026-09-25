@@ -39,7 +39,7 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
             "router:",
             "  backend: lisa-router",
             "  rules:",
-            "    - when: route.operation_id in [\"synthesize_and_store_learning\"]",
+            '    - when: route.operation_id in ["synthesize_and_store_learning"]',
             "      use: gemma3:latest",
             "models:",
             "  - model_id: gemma3:latest",
@@ -122,9 +122,10 @@ async def test_auto_capture_context_carries_pack_config_resolver_and_router(
 
     # Fire the hook with a turn that trips the write-effect trigger.
     messages: list[dict[str, Any]] = [
-        {"role": "assistant", "tool_calls": [
-            {"function": {"name": "lisa-storage.write_file", "arguments": "{}"}}
-        ]},
+        {
+            "role": "assistant",
+            "tool_calls": [{"function": {"name": "lisa-storage.write_file", "arguments": "{}"}}],
+        },
         {
             "role": "tool",
             "content": "the approved action executed successfully",

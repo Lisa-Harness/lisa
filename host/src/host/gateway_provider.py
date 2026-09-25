@@ -141,8 +141,7 @@ class HostGatewayProvider:
                 return gateway_cls(
                     region_name=_env("LISA_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION")
                     or "us-east-1",
-                    aws_access_key_id=_env("LISA_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
-                    or None,
+                    aws_access_key_id=_env("LISA_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID") or None,
                     aws_secret_access_key=_env(
                         "LISA_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
                     )
@@ -255,7 +254,9 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
-    direct_base_url = normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    direct_base_url = (
+        normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    )
     base_url = _proxy_base_url(runtime, "ollama", direct_base_url)
     client = AsyncOpenAI(
         api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
@@ -314,8 +315,7 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
                 "(or OPENROUTER_API_KEY)."
             )
         direct_base_url = (
-            _env(LISA_OPENROUTER_BASE_URL_ENV, "OPENROUTER_BASE_URL")
-            or OPENROUTER_DEFAULT_BASE_URL
+            _env(LISA_OPENROUTER_BASE_URL_ENV, "OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE_URL
         )
         base_url = _proxy_base_url(runtime, "openrouter", direct_base_url)
         default_headers: dict[str, str] = {}

@@ -904,7 +904,8 @@ def run_pack_update_sync(
     if request_restart:
         runtime.session.request_restart(reason=f"pack update: {resolved}")
     return True, details.replace(
-        "Installed '", f"Updated '{resolved}' from '{source_ref}'. Installed '",
+        "Installed '",
+        f"Updated '{resolved}' from '{source_ref}'. Installed '",
         1,
     )
 

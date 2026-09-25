@@ -351,9 +351,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     del message
     from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
-    entries = load_recent_thread_entries(
-        thread_path=runtime.paths.thread_path, limit=30
-    )
+    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     yielded_entry: dict[str, Any] | None = None
     for entry in reversed(entries):
         if entry.get("yielded"):

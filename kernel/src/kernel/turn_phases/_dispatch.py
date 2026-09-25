@@ -130,9 +130,7 @@ async def _dispatch_operation(
     exec_op: Callable[..., Awaitable[OperationResult]],
 ) -> tuple[str, OperationResult | None, YieldAction | None]:
     """Execute an in-process operation via the host's exec_op hook."""
-    op_ctx = ctx.model_copy(
-        update={"operation_id": tool_name, "params": tool_arguments}
-    )
+    op_ctx = ctx.model_copy(update={"operation_id": tool_name, "params": tool_arguments})
     op_result = await exec_op(tool_name, op_ctx)
     tool_output = _stringify_result(op_result)
 
@@ -168,8 +166,7 @@ async def _dispatch_operation(
         child_question = str(ya_dict.get("question") or "")
         delegated_query = str(tool_arguments.get("query") or "")
         ya_dict["context"] = (
-            f"The delegate was asked: '{delegated_query}'. "
-            f"It asks: '{child_question}'"
+            f"The delegate was asked: '{delegated_query}'. It asks: '{child_question}'"
         )
         delegate_yield = YieldAction.model_validate(ya_dict)
         tool_output = f"Yielded to user: {delegate_yield.question}"
@@ -454,7 +451,11 @@ async def _settle_recovery(
     retry_policy: Any = None,
 ) -> None:
     """Safely settle an active recovery record with fail-loud logging."""
-    if not (recovery_item_id and hooks.services.recovery_service is not None and rec_identity is not None):
+    if not (
+        recovery_item_id
+        and hooks.services.recovery_service is not None
+        and rec_identity is not None
+    ):
         return
     try:
         kwargs: dict[str, Any] = {"state": state}

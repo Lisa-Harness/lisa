@@ -158,11 +158,11 @@ def _make_stub_complete(response: str):
 
 def _build_minimal_hooks(complete_fn=None, stream_fn=None) -> TurnHooks:
     return TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-        complete_stream=stream_fn,
-    ),
-)
+        models=ModelHooks(
+            complete=complete_fn,
+            complete_stream=stream_fn,
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -237,7 +237,10 @@ async def test_turn_runner_rescues_truncated_stream_with_tools_offered() -> None
         [StreamedChunk(content="Writing both files now."), StreamedChunk(finish_reason="length")],
         # Retry: the same narration plus a tool_calls finish — the payload
         # fits in the doubled budget.
-        [StreamedChunk(content="Writing both files now."), StreamedChunk(finish_reason="tool_calls")],
+        [
+            StreamedChunk(content="Writing both files now."),
+            StreamedChunk(finish_reason="tool_calls"),
+        ],
     ]
     stream_fn = _stream_fn(chunks_by_call)
 
@@ -254,9 +257,7 @@ async def test_turn_runner_rescues_truncated_stream_with_tools_offered() -> None
         "kernel.turn_runner._compute_capability_routing_hint",
         return_value="",
     ):
-        result = await run_turn(
-            mode_id="default", query="write the scripts", hooks=hooks
-        )
+        result = await run_turn(mode_id="default", query="write the scripts", hooks=hooks)
 
     # The retry fired with a doubled budget…
     assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
@@ -281,8 +282,16 @@ async def test_turn_runner_truncated_stream_without_tools_is_not_retried() -> No
         raise AssertionError("complete() must not be called on the natural path")
 
     async def empty_tool_surface(_mode_config: Any, **_kwargs: Any):
-        return ([], {"input_count": 0, "output_count": 0, "dropped_duplicate": 0,
-                     "dropped_disallowed": 0, "dropped_invalid": 0})
+        return (
+            [],
+            {
+                "input_count": 0,
+                "output_count": 0,
+                "dropped_duplicate": 0,
+                "dropped_disallowed": 0,
+                "dropped_invalid": 0,
+            },
+        )
 
     hooks = _build_minimal_hooks(complete_fn, stream_fn)
     # The default catalog loads ambient memory/yield tools; strip the tool
@@ -309,19 +318,19 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
         return _StubCompletion(content="wrote it")
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-        complete_stream=stream_fn,
-        resolve_model=lambda _mid: SimpleNamespace(
-            provider="test",
-            model_id="small-model",
-            display_name="Small Model",
-            reasoning_model=False,
-            thinking_model=False,
-            context_window=6000,
+        models=ModelHooks(
+            complete=complete_fn,
+            complete_stream=stream_fn,
+            resolve_model=lambda _mid: SimpleNamespace(
+                provider="test",
+                model_id="small-model",
+                display_name="Small Model",
+                reasoning_model=False,
+                thinking_model=False,
+                context_window=6000,
+            ),
         ),
-    ),
-)
+    )
     # context_window 6000 caps the doubled budget at 6000 (not 8192).
     # Suppress the routing hint (same seam as the rescue test above) so
     # the forced transition cannot consume a third stubbed stream call.
@@ -395,9 +404,7 @@ async def test_turn_runner_rescues_truncated_completion_with_tools_offered() -> 
         "kernel.turn_runner._compute_capability_routing_hint",
         return_value="",
     ):
-        result = await run_turn(
-            mode_id="default", query="write the scripts", hooks=hooks
-        )
+        result = await run_turn(mode_id="default", query="write the scripts", hooks=hooks)
 
     # The retry fired with a doubled budget…
     assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
@@ -422,8 +429,16 @@ async def test_turn_runner_truncated_completion_without_tools_is_not_retried() -
         )
 
     async def empty_tool_surface(_mode_config: Any, **_kwargs: Any):
-        return ([], {"input_count": 0, "output_count": 0, "dropped_duplicate": 0,
-                     "dropped_disallowed": 0, "dropped_invalid": 0})
+        return (
+            [],
+            {
+                "input_count": 0,
+                "output_count": 0,
+                "dropped_duplicate": 0,
+                "dropped_disallowed": 0,
+                "dropped_invalid": 0,
+            },
+        )
 
     hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
     # Strip the tool surface so this exercises the genuinely
@@ -455,18 +470,18 @@ async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> 
         return completion
 
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete_fn,
-        resolve_model=lambda _mid: SimpleNamespace(
-            provider="test",
-            model_id="small-model",
-            display_name="Small Model",
-            reasoning_model=False,
-            thinking_model=False,
-            context_window=6000,
+        models=ModelHooks(
+            complete=complete_fn,
+            resolve_model=lambda _mid: SimpleNamespace(
+                provider="test",
+                model_id="small-model",
+                display_name="Small Model",
+                reasoning_model=False,
+                thinking_model=False,
+                context_window=6000,
+            ),
         ),
-    ),
-)
+    )
     # context_window 6000 caps the doubled budget at 6000 (not 8192).
     with patch(
         "kernel.turn_runner._compute_capability_routing_hint",

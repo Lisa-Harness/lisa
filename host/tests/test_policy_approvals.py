@@ -150,7 +150,9 @@ async def test_deny_leaves_no_pending_record(tmp_path: Path) -> None:
 async def test_passthrough_methods_delegate(tmp_path: Path) -> None:
     """approve/deny/consume/get/list_pending behave exactly like the store."""
     store = FileApprovalService(tmp_path / "state" / "approvals.json")
-    service = PolicyApprovalService(store, policy=PolicyDocument(mode=PolicyMode.ASK), data_dir=tmp_path)
+    service = PolicyApprovalService(
+        store, policy=PolicyDocument(mode=PolicyMode.ASK), data_dir=tmp_path
+    )
     invocation = _bash_invocation("ls")
     await service.request(invocation)
     ident = invocation.identity
@@ -162,10 +164,19 @@ async def test_passthrough_methods_delegate(tmp_path: Path) -> None:
     # approve + consume flow through to a real receipt, single-use.
     receipt = await service.approve(invocation.request_id, ident)
     assert receipt is not None
-    consumed = await service.consume(invocation.request_id, build_approval_invocation(
-        target_kind="tool", target_id="bash_run", pack_id="lisa-pack-bash", effect="execute",
-        parameters={"command": "ls"}, identity=ident, pack_config={}, safe_preview="x",
-    ))
+    consumed = await service.consume(
+        invocation.request_id,
+        build_approval_invocation(
+            target_kind="tool",
+            target_id="bash_run",
+            pack_id="lisa-pack-bash",
+            effect="execute",
+            parameters={"command": "ls"},
+            identity=ident,
+            pack_config={},
+            safe_preview="x",
+        ),
+    )
     assert consumed is not None
 
     # deny on a fresh request returns True and persists the decision.

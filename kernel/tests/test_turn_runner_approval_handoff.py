@@ -144,20 +144,20 @@ async def test_run_turn_approval_after_mid_turn_handoff_propagates_owning_mode(
 
     service = InMemoryApprovalService()
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=complete,
-    ),
-    services=HostServiceHandles(
-        approval_service=service,
-    ),
-    identity=TurnIdentity(
-        workspace_id="workspace",
-        user_id="user",
-        user_slug="user",
-        surface_id="surface",
-        session_plan_digest="plan-a",
-    ),
-)
+        models=ModelHooks(
+            complete=complete,
+        ),
+        services=HostServiceHandles(
+            approval_service=service,
+        ),
+        identity=TurnIdentity(
+            workspace_id="workspace",
+            user_id="user",
+            user_slug="user",
+            surface_id="surface",
+            session_plan_digest="plan-a",
+        ),
+    )
 
     # Patch the binding where the behavior is defined: the transition
     # interception's routability gate (``is_routable_mode``) and the FSM
@@ -238,20 +238,20 @@ async def test_run_turn_approval_in_entry_mode_leaves_handoff_to_none(
         mode_id="default",
         query="write the file",
         hooks=TurnHooks(
-    models=ModelHooks(
-        complete=complete,
-    ),
-    services=HostServiceHandles(
-        approval_service=InMemoryApprovalService(),
-    ),
-    identity=TurnIdentity(
-        workspace_id="workspace",
-        user_id="user",
-        user_slug="user",
-        surface_id="surface",
-        session_plan_digest="plan-a",
-    ),
-),
+            models=ModelHooks(
+                complete=complete,
+            ),
+            services=HostServiceHandles(
+                approval_service=InMemoryApprovalService(),
+            ),
+            identity=TurnIdentity(
+                workspace_id="workspace",
+                user_id="user",
+                user_slug="user",
+                surface_id="surface",
+                session_plan_digest="plan-a",
+            ),
+        ),
     )
 
     assert result.pending_approval is not None

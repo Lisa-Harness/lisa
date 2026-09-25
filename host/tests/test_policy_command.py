@@ -207,9 +207,7 @@ def test_rule_add_preserves_other_lists(tmp_path: Path) -> None:
 def test_rule_add_rejects_bad_expression_without_write(tmp_path: Path) -> None:
     """A non-compiling when is rejected and the file stays untouched."""
     runtime = _make_runtime(tmp_path)
-    reply = handle_policy_command(
-        runtime, "/policy rule add allow --when this is (bad cel", "x"
-    )  # type: ignore[arg-type]
+    reply = handle_policy_command(runtime, "/policy rule add allow --when this is (bad cel", "x")  # type: ignore[arg-type]
     assert "Rejected" in reply
     loaded = load_policy(tmp_path)
     assert loaded.allow == []
@@ -278,9 +276,7 @@ def test_rule_remove_out_of_range_is_rejected(tmp_path: Path) -> None:
 def test_rule_remove_bad_address_is_usage(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
     for bad in ("allow", "allow:", "allow:x", "maybe:1", ":1"):
-        reply = handle_policy_command(
-            runtime, f"/policy rule remove {bad}", "x"
-        )  # type: ignore[arg-type]
+        reply = handle_policy_command(runtime, f"/policy rule remove {bad}", "x")  # type: ignore[arg-type]
         assert "Usage: /policy rule remove" in reply, bad
 
 

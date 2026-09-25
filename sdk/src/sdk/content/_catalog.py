@@ -452,8 +452,7 @@ def _load_one_mode(
                     f"routing_intent_tags in {mode_config_path}"
                 )
             logger.warning(
-                "Skipping mode '%s': routing_intent_keywords set without "
-                "routing_intent_tags in %s",
+                "Skipping mode '%s': routing_intent_keywords set without routing_intent_tags in %s",
                 mode_id,
                 mode_config_path,
             )
@@ -530,9 +529,7 @@ def _load_one_mode(
         "default_intent_bridges": _parse_intent_bridges(
             front_matter.get("default_intent_bridges") or []
         ),
-        "context_item_packs": [
-            str(p) for p in (front_matter.get("context_item_packs") or [])
-        ],
+        "context_item_packs": [str(p) for p in (front_matter.get("context_item_packs") or [])],
     }
 
 
@@ -1283,7 +1280,7 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
                 break
         package_dir = parent
     # Build dotted path from the anchor (top-level importable package) down
-    pkg_parts = dir_names[:anchor_idx + 1] if anchor_idx >= 0 else []
+    pkg_parts = dir_names[: anchor_idx + 1] if anchor_idx >= 0 else []
     # Include the operations directory name itself
     if root.name:
         pkg_parts.append(root.name)

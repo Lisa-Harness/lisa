@@ -212,7 +212,9 @@ async def _run_fork_child_turn(
         )
     except Exception as exc:  # pylint: disable=broad-except
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        _flog.warning("fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc, exc_info=True)
+        _flog.warning(
+            "fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc, exc_info=True
+        )
         return (
             ForkChildResult(
                 target=target,

@@ -55,7 +55,10 @@ def _build_in_process_tool_schemas(
     """
     catalog = get_tool_catalog()
     if not catalog:
-        _log.info("tool schema: empty in-process catalog for mode=%s", getattr(mode_config, 'mode_id', 'unknown'))
+        _log.info(
+            "tool schema: empty in-process catalog for mode=%s",
+            getattr(mode_config, "mode_id", "unknown"),
+        )
         return []
 
     allowed_tool_ids: set[str] | None = None
@@ -76,7 +79,11 @@ def _build_in_process_tool_schemas(
                 parameters_schema=definition.parameters_schema,
             )
         )
-    _log.info("tool schema: built %d in-process schemas for mode=%s", len(schemas), getattr(mode_config, 'mode_id', 'unknown'))
+    _log.info(
+        "tool schema: built %d in-process schemas for mode=%s",
+        len(schemas),
+        getattr(mode_config, "mode_id", "unknown"),
+    )
     return schemas
 
 
@@ -230,7 +237,7 @@ def _prune_model_tool_schemas(
     }
     _log.info(
         "tool schema: pruned for mode=%s input=%d output=%d invalid=%d disallowed=%d duplicates=%d",
-        getattr(mode_config, 'mode_id', 'unknown'),
+        getattr(mode_config, "mode_id", "unknown"),
         len(tool_schemas),
         len(pruned),
         dropped_invalid,

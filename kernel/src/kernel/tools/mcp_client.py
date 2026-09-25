@@ -1237,9 +1237,7 @@ class MCPToolPool:
             # Register the task for cancellation on teardown.
             stack.callback(server_task.cancel)
 
-            session = await stack.enter_async_context(
-                ClientSession(client_read, client_write)
-            )
+            session = await stack.enter_async_context(ClientSession(client_read, client_write))
             await session.initialize()
         except BaseException as exc:
             await stack.aclose()
@@ -1494,7 +1492,9 @@ class MCPToolPool:
                     # SSE-style batch: take the first object with a result/error.
                     body = next((b for b in body if isinstance(b, dict)), {})
                 if not isinstance(body, dict):
-                    raise RuntimeError(f"lenient list_tools: unexpected response type {type(body)!r}")
+                    raise RuntimeError(
+                        f"lenient list_tools: unexpected response type {type(body)!r}"
+                    )
                 if "error" in body:
                     err = body["error"]
                     raise RuntimeError(f"lenient list_tools server error: {err}")
@@ -2268,11 +2268,7 @@ class MCPToolPool:
             # modern-protocol servers omit required cache-control fields and
             # the SDK rejects the CallToolResult. Retry via raw HTTP POST
             # before tearing down the session.
-            if (
-                config.url
-                and "CallToolResult" in str(exc)
-                and "Field required" in str(exc)
-            ):
+            if config.url and "CallToolResult" in str(exc) and "Field required" in str(exc):
                 try:
                     result = await self._call_tool_lenient(
                         config, tool_id, mapped, server_id=server_id

@@ -84,7 +84,6 @@ class StubModelDefinition:
 
     child processes receive it via ``value_from: direct_base_url``."""
 
-
     base_url_env: str = ""
 
     """Environment variable holding the model's direct endpoint, forwarded
@@ -92,6 +91,7 @@ class StubModelDefinition:
     from ``ManifestModelEntry.base_url_env``. Resolution happens in the
 
     host's provider-endpoints module at use time, not here."""
+
 
 @dataclass(frozen=True, slots=True)
 class StubCompletion:

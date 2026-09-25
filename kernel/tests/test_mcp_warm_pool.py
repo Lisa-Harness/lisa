@@ -254,13 +254,13 @@ async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
     spy = _SpyPool([])
     spy._started = True  # host pre-starts the pool; run_turn must not re-start it
     hooks = TurnHooks(
-    models=ModelHooks(
-        complete=stub_complete,
-    ),
-    tools=ToolHooks(
-        mcp_tool_pool=spy,
-    ),
-)
+        models=ModelHooks(
+            complete=stub_complete,
+        ),
+        tools=ToolHooks(
+            mcp_tool_pool=spy,
+        ),
+    )
     await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert started == []  # run_turn did not start the host pool
     assert closed == []  # run_turn did not close the host pool

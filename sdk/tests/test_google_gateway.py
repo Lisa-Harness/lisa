@@ -386,11 +386,7 @@ class _StructuredReply(BaseModel):
 
 @pytest.mark.asyncio
 async def test_structured_output_uses_json_mode_schema_and_normalizes_content() -> None:
-    data = {
-        "candidates": [
-            {"content": {"parts": [{"text": "```json\n{\"answer\": \"ok\"}\n```"}]}}
-        ]
-    }
+    data = {"candidates": [{"content": {"parts": [{"text": '```json\n{"answer": "ok"}\n```'}]}}]}
     gateway, client = _gateway(data)
     result = await gateway.complete(
         _request(

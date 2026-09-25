@@ -28,10 +28,7 @@ def _patched_catalog(monkeypatch: pytest.MonkeyPatch, modes: set[str]) -> None:
     """Patch ``get_workflow_catalog`` to return a stub catalog."""
 
     def _stub_catalog() -> dict[str, SimpleNamespace]:
-        return {
-            m: SimpleNamespace(start_stage_id="start", satisfies_intents=[])
-            for m in modes
-        }
+        return {m: SimpleNamespace(start_stage_id="start", satisfies_intents=[]) for m in modes}
 
     monkeypatch.setattr(fork_mod, "get_workflow_catalog", _stub_catalog)
 
@@ -377,6 +374,8 @@ async def test_fork_propagates_child_per_model_usage_to_output_json(
     assert mode_ids == {"remember", "markdown"}
     # Each child's per-model usage rides the child row too (for inspection).
     child_model_ids = {
-        e["model_id"] for child in result.output_json["children"] for e in child.get("per_model_usage", [])
+        e["model_id"]
+        for child in result.output_json["children"]
+        for e in child.get("per_model_usage", [])
     }
     assert child_model_ids == {"remember-model", "markdown-model"}

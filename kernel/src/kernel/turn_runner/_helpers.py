@@ -5,6 +5,7 @@ These were extracted from the former single-file ``turn_runner``; the engine
 imports them back so ``kernel.turn_runner`` keeps its historical module
 namespace (``mock.patch("kernel.turn_runner.<name>")``).
 """
+
 from __future__ import annotations
 
 import logging
@@ -182,7 +183,7 @@ def _plan_steps_to_workflow_steps(
             continue
         mode_cfg = catalog.get(mode_id)
         satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or []) if mode_cfg else ()
-        
+
         # Extract the step-specific query from the plan's description or rationale.
         # This becomes the authoritative task payload when this step executes.
         step_query = str(step.get("description", "")).strip()

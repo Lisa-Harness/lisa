@@ -660,9 +660,7 @@ def test_has_tool_result_true_when_any_tool_returned_even_if_last_empty() -> Non
     router = LisaRouter(manifest)
     # Earlier tool returned text, but the *last* result is empty — the turn
     # has still received a tool result, so has_tool_result must be True.
-    decision = router.choose(
-        _req(iteration=2, last_tool_result="", has_tool_result=True)
-    )
+    decision = router.choose(_req(iteration=2, last_tool_result="", has_tool_result=True))
     assert decision is not None
     assert decision.model_id == "gpt-5.4"
 
@@ -679,9 +677,7 @@ def test_has_tool_result_false_when_no_tool_returned() -> None:
         catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)
-    decision = router.choose(
-        _req(iteration=2, last_tool_result=None, has_tool_result=False)
-    )
+    decision = router.choose(_req(iteration=2, last_tool_result=None, has_tool_result=False))
     assert decision is not None
     assert decision.model_id == "gemma4:cloud"
 
@@ -689,9 +685,7 @@ def test_has_tool_result_false_when_no_tool_returned() -> None:
 def test_has_tool_result_defaults_false_when_omitted() -> None:
     """``RouterRequest.has_tool_result`` defaults to False (no tools yet)."""
     manifest = _manifest(
-        rules=(
-            RouterRule(when="turn.has_tool_result", use="gpt-5.4"),
-        ),
+        rules=(RouterRule(when="turn.has_tool_result", use="gpt-5.4"),),
         catchall="gemma4:cloud",
     )
     router = LisaRouter(manifest)

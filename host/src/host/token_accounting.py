@@ -309,8 +309,7 @@ def _accumulate_session_state(state: dict[str, Any], turn: TurnUsage) -> None:
         coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn.cached
     )
     state["session_cache_creation_tokens"] = (
-        coerce_non_negative_int(state.get("session_cache_creation_tokens", 0))
-        + turn.cache_creation
+        coerce_non_negative_int(state.get("session_cache_creation_tokens", 0)) + turn.cache_creation
     )
     state["session_reasoning_tokens"] = (
         coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn.reasoning

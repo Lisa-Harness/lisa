@@ -382,7 +382,7 @@ The escalation gate is tag-blind and prose-blind:
 # kernel/turn_phases/_routing_hint.py
 if (
     "plan" in routing_targets
-    and "plan" not in current_satisfied               # not already planned
+    and "plan" not in current_satisfied  # not already planned
     and is_plan_reliable_for_model(planner_model_id)  # not blocklisted
     and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
 ):

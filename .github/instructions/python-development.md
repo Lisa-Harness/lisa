@@ -24,6 +24,7 @@ Every Python module must import the `logging` module and define a module-level l
 
 ```python
 import logging
+
 logger = logging.getLogger(__name__)
 ```
 

@@ -1,4 +1,5 @@
 """TurnResult — the result type of one ``run_turn()`` call."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

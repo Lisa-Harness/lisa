@@ -25,16 +25,12 @@ def _make_runtime(
 ) -> HostRuntime:
     from host.testing import build_test_runtime
 
-    return build_test_runtime(
-        tmp_path, models_yaml="", user_slug=user_slug, no_thread=no_thread
-    )
+    return build_test_runtime(tmp_path, models_yaml="", user_slug=user_slug, no_thread=no_thread)
 
 
 def _stub_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ``discover_framework`` hermetic: no pack auto-install, no roots."""
-    monkeypatch.setattr(
-        pack_autoinstall, "auto_install_required_packs", lambda _runtime: []
-    )
+    monkeypatch.setattr(pack_autoinstall, "auto_install_required_packs", lambda _runtime: [])
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
@@ -143,6 +139,5 @@ async def test_compile_mcp_configs_exports_custom_redaction_patterns(
     mcp_pool.compile_mcp_configs(runtime)
 
     assert (
-        os.environ["LISA_THREAD_REDACTION_PATTERNS"]
-        == "leaked_secret_\\d+\nstale_warning[^\\n]*"
+        os.environ["LISA_THREAD_REDACTION_PATTERNS"] == "leaked_secret_\\d+\nstale_warning[^\\n]*"
     )

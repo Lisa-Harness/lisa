@@ -4,6 +4,7 @@ Pure reads over the segmented store: ``build_recent_thread_excerpt`` strips
 host-only commands, and ``build_thread_manifest`` renders a compact structured
 summary. Both delegate to ``sdk.thread.ThreadStore``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

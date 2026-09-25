@@ -144,9 +144,7 @@ def _write_entry(
 class TestBuildRecentThreadExcerpt:
     def test_returns_empty_when_no_thread(self, tmp_path: Path) -> None:
         assert build_recent_thread_excerpt(thread_path=None, limit=3) == ""
-        assert (
-            build_recent_thread_excerpt(thread_path=tmp_path / "missing", limit=3) == ""
-        )
+        assert build_recent_thread_excerpt(thread_path=tmp_path / "missing", limit=3) == ""
 
     def test_returns_empty_when_all_entries_are_host_commands(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"
@@ -309,9 +307,7 @@ class TestNextTurnIndex:
         # The next entry should be turn 5 (0-based, 5 entries already in).
         assert next_turn_index(thread_path=thread_path) == 5
         _write_entry(thread_path, query="q5", response_text="a5")
-        entries = load_thread_range(
-            thread_path=thread_path, start_turn=5, end_turn=5
-        )
+        entries = load_thread_range(thread_path=thread_path, start_turn=5, end_turn=5)
         assert len(entries) == 1
         assert entries[0]["turn"] == 5
 
@@ -324,9 +320,7 @@ class TestNextTurnIndex:
         # Next turn should be 3.
         assert next_turn_index(thread_path=thread_path) == 3
         _write_entry(thread_path, query="q3", response_text="a3", segment_turns=3)
-        entries = load_thread_range(
-            thread_path=thread_path, start_turn=3, end_turn=3
-        )
+        entries = load_thread_range(thread_path=thread_path, start_turn=3, end_turn=3)
         assert len(entries) == 1
         assert entries[0]["turn"] == 3
 
@@ -484,9 +478,7 @@ class TestThreadRedaction:
             response_text="the password is hunter2 and I've hit my iteration budget",
         )
         # Custom pattern: only redact "hunter2" — defaults are NOT merged.
-        set_thread_redaction_policy(
-            ThreadRedactionPolicy.from_patterns([r"hunter2"])
-        )
+        set_thread_redaction_policy(ThreadRedactionPolicy.from_patterns([r"hunter2"]))
         try:
             excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
         finally:
@@ -510,9 +502,7 @@ def test_discover_pack_redaction_patterns_from_content_root(tmp_path: Path) -> N
     content_dir = pack_root / "content"
     content_dir.mkdir(parents=True)
     (content_dir / "redaction_patterns.yml").write_text(
-        "patterns:\n"
-        "  - \"leaked_secret_\\\\d+\"\n"
-        "  - \"stale_context_warning[^\\\\n]*\"\n",
+        'patterns:\n  - "leaked_secret_\\\\d+"\n  - "stale_context_warning[^\\\\n]*"\n',
         encoding="utf-8",
     )
 
@@ -545,6 +535,7 @@ def test_core_pack_redaction_patterns_match_defaults() -> None:
 
     # Resolve through the import system (src-layout compatible)
     import sdk.packs.core
+
     core_pack_yml = sdk.packs.core.get_content_root() / "content" / "redaction_patterns.yml"
     assert core_pack_yml.is_file(), f"core pack redaction_patterns.yml not found at {core_pack_yml}"
     raw = _yaml.safe_load(core_pack_yml.read_text(encoding="utf-8"))

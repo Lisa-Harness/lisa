@@ -173,11 +173,7 @@ def _check_receipt_satisfaction(
         bare_tool_name(r.capability_id)
         for r in effect_receipts
         if r.effect in ("write", "external_write")
-    } | {
-        r.capability_id
-        for r in effect_receipts
-        if r.effect in ("write", "external_write")
-    }
+    } | {r.capability_id for r in effect_receipts if r.effect in ("write", "external_write")}
     write_landed = bool(write_receipt_ids & action_set)
     read_work = any(r.effect in ("read", "execute") for r in effect_receipts)
     called_bare = {bare_tool_name(n) for n in called_tool_names} | set(called_tool_names)

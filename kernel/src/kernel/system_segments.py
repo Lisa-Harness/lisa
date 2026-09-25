@@ -78,9 +78,7 @@ class SystemPromptSegments:
         later static-only segments (mid-turn mode switch) replace it via
         :meth:`replace_base`.
         """
-        return cls(
-            _stable=[SystemPromptSegment(text=stable_text, stability="stable")]
-        )
+        return cls(_stable=[SystemPromptSegment(text=stable_text, stability="stable")])
 
     def replace_base(self, stable_text: str) -> None:
         """Swap the stable base wholesale (mode/stage changes mid-turn)."""
@@ -139,9 +137,7 @@ class SystemPromptSegments:
         # Preserve any dynamics set outside the canonical vocabulary at the end,
         # in insertion order, so extensions keep rendering predictably.
         ordered_dynamic.extend(
-            segment
-            for name, segment in self._dynamic.items()
-            if name not in DYNAMIC_SEGMENT_NAMES
+            segment for name, segment in self._dynamic.items() if name not in DYNAMIC_SEGMENT_NAMES
         )
         return (*self._stable, *ordered_dynamic)
 

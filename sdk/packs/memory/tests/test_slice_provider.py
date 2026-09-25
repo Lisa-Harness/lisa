@@ -78,12 +78,16 @@ class _FakeHooks:
     async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
         self.tool_calls.append((tool_id, dict(params)))
         if tool_id == "memory.count":
+
             class _RCount:
                 output_text = str(len(self._records))
+
             return _RCount()
         if tool_id == "memory.list":
+
             class _RList:
                 output_text = json.dumps(self._records)
+
             return _RList()
         return type("_R", (), {"output_text": "", "error": "unknown"})()
 
@@ -126,9 +130,7 @@ async def test_below_pressure_threshold_no_ops(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_below_min_episodic_count_defers(tmp_path: Path) -> None:
     # 4 records / 10 max = 0.4 pressure, above 0.3 threshold but below min_episodic_count=5.
-    hooks = _FakeHooks(
-        episodic_records=[{"id": i, "content": f"e{i}"} for i in range(4)]
-    )
+    hooks = _FakeHooks(episodic_records=[{"id": i, "content": f"e{i}"} for i in range(4)])
     slc = MemoryConsolidationSlice(
         config=_config(
             pressure_threshold=0.3,
@@ -147,7 +149,9 @@ async def test_below_min_episodic_count_defers(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_hard_threshold_override_fires(tmp_path: Path) -> None:
     # 9/10 = 0.9 >= hard_threshold 0.85 → fires regardless of min_interval.
-    records = [{"id": i, "content": f"e{i}", "created_at": "2026-07-01T00:00:00Z"} for i in range(9)]
+    records = [
+        {"id": i, "content": f"e{i}", "created_at": "2026-07-01T00:00:00Z"} for i in range(9)
+    ]
     hooks = _FakeHooks(episodic_records=records)
     slc = MemoryConsolidationSlice(
         config=_config(
@@ -174,9 +178,7 @@ async def test_hard_threshold_override_fires(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_low_slice_budget_defers_between_thresholds(tmp_path: Path) -> None:
     # 6/10 = 0.6, between 0.3 and 0.85, but budget < 150ms → defer.
-    hooks = _FakeHooks(
-        episodic_records=[{"id": i, "content": f"e{i}"} for i in range(6)]
-    )
+    hooks = _FakeHooks(episodic_records=[{"id": i, "content": f"e{i}"} for i in range(6)])
     slc = MemoryConsolidationSlice(
         config=_config(
             pressure_threshold=0.3,
@@ -256,6 +258,7 @@ async def test_tool_error_result_is_no_count(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
     """When memory.count is unsupported/fails, the slice falls back to memory.list."""
+
     class _FallbackHooks(_FakeHooks):
         async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
             self.tool_calls.append((tool_id, dict(params)))
@@ -265,7 +268,9 @@ async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
                 return type("_R", (), {"output_text": json.dumps(self._records), "error": None})()
             return type("_R", (), {"output_text": "", "error": "unknown"})()
 
-    records = [{"id": i, "content": f"e{i}", "created_at": "2026-07-01T00:00:00Z"} for i in range(9)]
+    records = [
+        {"id": i, "content": f"e{i}", "created_at": "2026-07-01T00:00:00Z"} for i in range(9)
+    ]
     hooks = _FallbackHooks(episodic_records=records)
     slc = MemoryConsolidationSlice(
         config=_config(
@@ -350,7 +355,9 @@ async def test_mining_disabled_when_mine_on_segment_seal_false(tmp_path: Path) -
         )
 
     hooks = _FakeHooks(episodic_records=[])
-    slc = MemoryConsolidationSlice(config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks)
+    slc = MemoryConsolidationSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
     slc._mine_enabled = False
     outcome = await slc.slice(None, _policy())
     assert not [c for c in hooks.op_calls if c[0] == "mine_thread_segment"]
