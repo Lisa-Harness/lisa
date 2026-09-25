@@ -108,7 +108,7 @@ def load_pack_content_root(pack_path: Path) -> Path:
             if len(children) > 1:
                 # Multiple pack packages under the shared namespace: pick the
                 # one whose name matches the distribution slug.
-                import tomllib  # noqa: PLC0415  # stdlib, no cycle risk
+                import tomllib  # stdlib, no cycle risk
 
                 payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
                 dist_name = str(payload.get("project", {}).get("name", ""))
@@ -138,7 +138,7 @@ def build_tool_catalog(
     if ensure_importable:
         _ensure_source_importable(pack_path)
     if invalidate:
-        from sdk.content import invalidate_catalog_cache  # noqa: PLC0415  # lazy: cache reset
+        from sdk.content import invalidate_catalog_cache  # lazy: cache reset
 
         invalidate_catalog_cache()
     root = load_pack_content_root(pack_path)
@@ -185,7 +185,7 @@ def load_pack_entry_points(pack_path: Path) -> dict[str, Any]:
     return without raising.
     """
 
-    import tomllib  # noqa: PLC0415  # stdlib, no cycle risk
+    import tomllib  # stdlib, no cycle risk
 
     pyproject = pack_path / "pyproject.toml"
     if not pyproject.is_file():
@@ -288,9 +288,9 @@ def _validate_tool_entry(
         issues.append(PackIssue("error", "tool-provider", f"{tool_id}: provider id unresolved"))
 
     # Validate against the real EffectKind contract, not a hardcoded set.
-    from typing import get_args  # noqa: PLC0415  # stdlib, no cycle risk
+    from typing import get_args  # stdlib, no cycle risk
 
-    from kernel.approval import EffectKind  # noqa: PLC0415  # lazy: optional import
+    from kernel.approval import EffectKind  # lazy: optional import
 
     effect = str(tool_dict.get("effect", "write"))
     if effect not in set(get_args(EffectKind)):
@@ -316,7 +316,7 @@ def validate_pack(pack_path: Path, *, ensure_importable: bool = True) -> PackVal
     root = load_pack_content_root(pack_path)
     catalog = build_tool_catalog(pack_path)
 
-    import tomllib  # noqa: PLC0415  # stdlib, no cycle risk
+    import tomllib  # stdlib, no cycle risk
 
     payload = tomllib.loads((pack_path / "pyproject.toml").read_text(encoding="utf-8"))
     dist_name = str(payload.get("project", {}).get("name", ""))

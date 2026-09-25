@@ -136,9 +136,9 @@ def _derive_view(runtime: HostRuntime) -> Any:
     A pure read from the lossless thread log — no mutable position store.
     Returns a ``WorkflowView`` or ``None`` when no active workflow exists.
     """
-    from kernel.workflow_view import derive_workflow_view  # noqa: PLC0415
+    from kernel.workflow_view import derive_workflow_view
 
-    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+    from host.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     return derive_workflow_view(entries)
@@ -199,7 +199,7 @@ def build_turn_hooks(
     # ``ContextSeams`` injection share one builder instance. Discovers
     # ``lisa.extensions.context_items`` entry points from installed
     # packs and tags each contributed record with its source pack name.
-    from kernel.pack_activation import (  # noqa: PLC0415
+    from kernel.pack_activation import (
         load_disabled_pack_names,
     )
 
@@ -381,12 +381,12 @@ def build_turn_hooks(
         # Derive the workflow view from the thread tail — the thread is
         # the single source of truth. The view is rebuilt every turn from
         # the append-only log; no mutable position store.
-        from kernel.workflow_view import (  # noqa: PLC0415
+        from kernel.workflow_view import (
             derive_workflow_view,
             render_workflow_progress,
         )
 
-        from host.thread import load_recent_thread_entries  # noqa: PLC0415
+        from host.thread import load_recent_thread_entries
 
         progress = ""
         thread_entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
@@ -418,7 +418,7 @@ def build_turn_hooks(
             )
 
         def _thread_manifest_builder() -> str:
-            from host.thread import build_thread_manifest  # noqa: PLC0415
+            from host.thread import build_thread_manifest
 
             return build_thread_manifest(
                 thread_path=runtime.paths.thread_path,
@@ -658,7 +658,7 @@ def build_turn_hooks(
                         # ``OperationExecutionError`` messages embed the
                         # operation id as ``"Operation '<id>' failed: ..."``;
                         # extract it for the structured log.
-                        import re  # noqa: PLC0415  # lazy: stdlib import avoids top-level re cost on the success path
+                        import re  # lazy: stdlib import avoids top-level re cost on the success path
 
                         m = re.search(r"Operation '([^']+)'", detail)
                         if m:
@@ -739,9 +739,9 @@ def build_turn_hooks(
         # single context_items — no arbitrary named bucket. The
         # mapper picks it up via context_candidates_from_items like every
         # other pack-contributed context item.
-        from datetime import UTC, datetime  # noqa: PLC0415
+        from datetime import UTC, datetime
 
-        from kernel.models import ContextItem  # noqa: PLC0415
+        from kernel.models import ContextItem
 
         evidence = ContextItem(
             item_id=f"state:self_model:{runtime.config.user_slug}",

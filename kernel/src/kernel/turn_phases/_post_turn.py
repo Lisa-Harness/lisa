@@ -142,7 +142,7 @@ def _validate_model_capabilities(
     )
     # Lazy import to avoid a circular dependency: ``kernel.turn_runner``
     # re-exports this module and defines ``TurnResult``.
-    from kernel.turn_runner import TurnResult as _TurnResult  # noqa: PLC0415
+    from kernel.turn_runner import TurnResult as _TurnResult
 
     _log.warning(
         "capability gate: model=%s missing required capabilities for mode=%s missing=%s",

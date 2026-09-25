@@ -69,7 +69,7 @@ def build_test_runtime(
         A ``HostRuntime`` ready for test assertions.
     """
     if models_yaml != "":
-        from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+        from sdk.layout import CONFIG_DIR
 
         manifest_dir = tmp_path / CONFIG_DIR
         manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +92,7 @@ def build_test_runtime(
         # unconditionally (not just for ``setup_framework=True``) because
         # many tests call ``mcp_pool.setup_framework(runtime)`` directly
         # after construction.
-        from kernel.session_plan import (  # noqa: PLC0415
+        from kernel.session_plan import (
             ProviderSelections,
         )
 
@@ -113,7 +113,7 @@ def build_test_runtime(
             )
 
     if setup_framework:
-        from host.mcp_pool import setup_framework as _setup_framework  # noqa: PLC0415
+        from host.mcp_pool import setup_framework as _setup_framework
 
         _setup_framework(runtime)
 

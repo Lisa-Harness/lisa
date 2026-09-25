@@ -66,7 +66,7 @@ async def run_case(
     for extra in case.assertions:
         extra(trajectory)
     if out_dir is not None:
-        from packstest.report import write_trajectory  # noqa: PLC0415  # lazy: report sink
+        from packstest.report import write_trajectory  # lazy: report sink
 
         write_trajectory(trajectory, out_dir)
     return trajectory

@@ -349,7 +349,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     operator can resolve them with ``/retry``, ``/skip``, or ``/cancel``.
     """
     del message
-    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+    from host.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     yielded_entry: dict[str, Any] | None = None

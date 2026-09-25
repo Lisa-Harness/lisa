@@ -551,7 +551,7 @@ async def _execute_mode_turn(
     # One source of truth: the number the model sees in the briefing is the
     # number stamped on the thread entry — no off-by-one between display and
     # persistence.
-    from host.thread import next_turn_index  # noqa: PLC0415
+    from host.thread import next_turn_index
 
     turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
 

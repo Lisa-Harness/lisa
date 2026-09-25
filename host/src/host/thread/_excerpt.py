@@ -19,7 +19,7 @@ def _store_from_package(thread_path: Path | None):
     importing the factory lazily keeps ``_store`` and the excerpt module
     import-cycle-free.
     """
-    from host.thread import _thread_store  # noqa: PLC0415
+    from host.thread import _thread_store
 
     return _thread_store(thread_path)
 

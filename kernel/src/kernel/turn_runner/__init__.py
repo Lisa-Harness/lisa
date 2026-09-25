@@ -46,8 +46,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
@@ -74,14 +73,11 @@ from kernel.ipsar_fsm import (
     run_mode_pre_turn_operations,
 )
 from kernel.models import (
-    BlockDiagnostic,
     CallLedger,
     CapabilityManifest,
     ConversationSurface,
     DelegationResult,
     DelegationSpec,
-    DelegationStatus,
-    EffectReceipt,
     ForkChildResult,
     ForkResult,
     ForkSpec,
@@ -96,7 +92,6 @@ from kernel.models import (
     YieldPolicy,
 )
 from kernel.operations.registry import (
-    execute_operation,
     get_operation_catalog,
     mode_completion_effects,
 )
@@ -108,29 +103,16 @@ from kernel.operations.structured_output import (
 from kernel.provider_contracts import (
     CompletionRequest,
     StreamedChunk,
-    StreamedCompletion,
     _aggregate_streamed_chunks,
 )
-from kernel.recovery import RecoveryIdentity, RecoveryRecord
+from kernel.recovery import RecoveryRecord
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import (
-    ContentRegistry,
     CoordinatorRouteDecision,
-    DataSanitizer,
-    EventBus,
-    ExtensionItemBuilder,
-    InputGuard,
-    ModelPolicy,
-    ModelRouter,
-    OutputGuard,
-    ProviderGatewayProvider,
 )
 from kernel.slice import (
     SliceMode,
     SliceOutcome,
-    SlicePolicy,
-    build_policy_for_trigger,
-    resolve_mode_for_trigger,
 )
 from kernel.system_segments import (
     N_HANDOFF_CONTEXT,
@@ -147,7 +129,6 @@ from kernel.tools.schema_translator import (
     openai_tool_call_to_mcp,
 )
 from kernel.turn_hooks import TurnHooks
-from kernel.turn_phases._child_turn import classify_child_turn
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
     BlockNoVerifiedWrite,
@@ -159,7 +140,7 @@ from kernel.turn_phases._completion_contract import (
 )
 from kernel.turn_phases._dispatch import _track_consecutive_errors, dispatch_capability
 from kernel.turn_phases._entry import execute_entry_phase
-from kernel.turn_phases._fork import _build_minimal_context, _execute_fork_fanout
+from kernel.turn_phases._fork import _build_minimal_context
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
 )
@@ -207,7 +188,6 @@ from kernel.turn_phases._tool_schemas import (
     _tool_schema_name,
     build_tool_surface,
 )
-from kernel.workflow_position import WorkflowStep, _step_id_for
 
 logger = logging.getLogger(__name__)
 

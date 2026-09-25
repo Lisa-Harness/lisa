@@ -1064,7 +1064,7 @@ class MCPToolPool:
             config.server_id,
             version,
         )
-        import mcp_types as _mcp_types  # noqa: PLC0415
+        import mcp_types as _mcp_types
 
         discover_result = _mcp_types.DiscoverResult(
             supported_versions=[version],
@@ -1096,9 +1096,9 @@ class MCPToolPool:
         handles servers that don't support ``server/discover`` but only
         speak the modern protocol version.
         """
-        from mcp.client._probe import negotiate_auto  # noqa: PLC0415
-        from mcp.client.session import ClientSession  # noqa: PLC0415
-        from mcp.client.streamable_http import streamable_http_client  # noqa: PLC0415
+        from mcp.client._probe import negotiate_auto
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
 
         assert config.url is not None
         http_client = self._build_http_client(config)
@@ -1172,8 +1172,8 @@ class MCPToolPool:
         so the existing ``restart_warm`` / ``aclose`` machinery works
         unchanged.
         """
-        from mcp.client.session import ClientSession  # noqa: PLC0415
-        from mcp.shared.memory import (  # noqa: PLC0415
+        from mcp.client.session import ClientSession
+        from mcp.shared.memory import (
             create_client_server_memory_streams,
         )
 
@@ -1457,8 +1457,8 @@ class MCPToolPool:
         servers do not hit this path because they speak the legacy protocol
         version that the SDK accepts without the cache fields.
         """
-        import httpx  # noqa: PLC0415
-        import mcp_types as _types  # noqa: PLC0415
+        import httpx
+        import mcp_types as _types
 
         if not config.url:
             raise RuntimeError(f"lenient list_tools requires an HTTP url for {server_id!r}")
@@ -1563,8 +1563,8 @@ class MCPToolPool:
         JSON manually, and synthesizes a ``CallToolResult`` so the caller's
         :meth:`_build_result` works unchanged.
         """
-        import httpx  # noqa: PLC0415
-        import mcp_types as _types  # noqa: PLC0415
+        import httpx
+        import mcp_types as _types
 
         if not config.url:
             raise RuntimeError(f"lenient call_tool requires an HTTP url for {server_id!r}")

@@ -148,7 +148,7 @@ def _load_zstd_dictionary(dict_path: Path) -> Any:
     if not dict_path.exists():
         return None
     try:
-        import zstandard  # noqa: PLC0415  # lazy: optional dep startup cost
+        import zstandard  # lazy: optional dep startup cost
 
         return zstandard.ZstdCompressionDict(dict_path.read_bytes())
     except Exception as exc:  # pylint: disable=broad-except
@@ -158,7 +158,7 @@ def _load_zstd_dictionary(dict_path: Path) -> Any:
 
 def _decompress_bytes(data: bytes, dict_path: Path) -> bytes:
     """Decompress a sealed segment, using the trained dictionary when present."""
-    import zstandard  # noqa: PLC0415  # lazy: optional dep startup cost
+    import zstandard  # lazy: optional dep startup cost
 
     dictionary = _load_zstd_dictionary(dict_path)
     if dictionary is not None:

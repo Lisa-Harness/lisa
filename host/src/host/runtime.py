@@ -454,7 +454,7 @@ class RuntimeResources:
         if not self._proxy_configs:
             self._proxy_routes = {}
             return
-        from kernel.proxy_launch.pool import (  # noqa: PLC0415  # lazy: defers proxy launch startup cost
+        from kernel.proxy_launch.pool import (  # lazy: defers proxy launch startup cost
             ProxyPool,
         )
 
@@ -488,7 +488,7 @@ class RuntimeResources:
             self._mcp_started = True
             return
 
-        from kernel.tools.mcp_client import MCPToolPool  # noqa: PLC0415
+        from kernel.tools.mcp_client import MCPToolPool
 
         # The pool MUST carry both warm AND cold configs. Cold servers (e.g.
         # mem0, lisa-guard) are lazily connected on first scoped dispatch
@@ -529,7 +529,7 @@ class RuntimeResources:
         # synthesize_and_store_learning) reach them via
         # ``ctx.execute_tool_fn`` and fail with "Tool 'memory.list' is not
         # registered on any MCP server".
-        from host.memory_aliases import register_memory_aliases  # noqa: PLC0415
+        from host.memory_aliases import register_memory_aliases
 
         rt = self._runtime
         register_memory_aliases(
@@ -543,7 +543,7 @@ class RuntimeResources:
         # Register generic aliases declared in pack MCP manifests so the
         # model sees stable tool names (e.g. ``cloudflare.search``) instead
         # of filesystem-derived namespaced ids.
-        from host.mcp_pool import register_mcp_aliases  # noqa: PLC0415
+        from host.mcp_pool import register_mcp_aliases
 
         register_mcp_aliases(self._mcp_tool_pool)
         self._mcp_started = True

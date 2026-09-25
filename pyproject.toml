@@ -95,7 +95,16 @@ extend-exclude = ["vulture_allowlist.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
-ignore = ["PLR0913"]
+# PLR0913 (too-many-arguments): the kernel's hook seams intentionally
+# take many parameters — a params-object indirection would hide the
+# protocol contract.
+# PLC0415 (import-outside-top-level): function-local imports are a
+# deliberate codebase pattern — cycle-breaking between co-dependent
+# modules (turn_runner ↔ turn_phases), startup-latency control
+# (host.__getattr__ lazy loaders), and test patch seams. Sites that
+# exist only for cycle reasons carry an inline `noqa: PLC0415` with a
+# rationale comment; the pattern itself is allowed.
+ignore = ["PLR0913", "PLC0415"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files use function-local imports (lazy dep loading) and literal

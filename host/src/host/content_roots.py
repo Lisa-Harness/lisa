@@ -166,7 +166,7 @@ def load_pack_policy_dict(host_manifest_path: Path, *, warning_subject: str) -> 
 
 def runtime_pack_lock_path(data_dir: Path) -> Path:
     """Return the path to the installed pack provenance lock file."""
-    from sdk.layout import STATE_DIR  # noqa: PLC0415
+    from sdk.layout import STATE_DIR
 
     return data_dir / STATE_DIR / _PACK_LOCK_FILE_NAME
 
@@ -413,14 +413,14 @@ def active_installed_pack_roots(
     # installed in the separate packs venv). Entry-point discovery cannot
     # find packs venv packages because ``importlib.metadata`` does not
     # re-scan after ``sys.path`` is modified at startup.
-    from kernel.content_roots import (  # noqa: PLC0415
+    from kernel.content_roots import (
         discover_installed_content_roots as _discover_entry_point_roots,
     )
     from kernel.content_roots import (
         discover_packs_venv_content_roots as _discover_packs_venv_roots,
     )
 
-    from host.paths import (  # noqa: PLC0415
+    from host.paths import (
         default_packs_venv,
         packs_venv_for,
         packs_venv_site_packages,
@@ -615,7 +615,7 @@ def resolve_pack_session_path(
     without an installed pack environment.
     """
 
-    from kernel.session_plan import SessionPlanError  # noqa: PLC0415
+    from kernel.session_plan import SessionPlanError
 
     requested = normalize_pack_name(pack)
     if not requested:

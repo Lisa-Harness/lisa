@@ -213,7 +213,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         context_item_packs=[str(p) for p in (data.get("context_item_packs") or [])],
     )
 
-    from kernel.ipsar_fsm import synthesize_stage_graph  # noqa: PLC0415
+    from kernel.ipsar_fsm import synthesize_stage_graph
 
     return synthesize_stage_graph(mode)
 

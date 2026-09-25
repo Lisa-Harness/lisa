@@ -469,8 +469,8 @@ async def mcp_tool_executor(
     Otherwise fall through to the MCP pool.  Declarative operations that need
     to call tools route through here.
     """
-    from kernel.tools.registry import get_tool_catalog as _get_tools  # noqa: PLC0415
-    from kernel.turn_phases._post_turn import _to_tool_context  # noqa: PLC0415
+    from kernel.tools.registry import get_tool_catalog as _get_tools
+    from kernel.turn_phases._post_turn import _to_tool_context
 
     tool_catalog = _get_tools()
     definition = tool_catalog.get(tool_id)
@@ -672,7 +672,7 @@ def resolve_iteration_model(
     returned — the turn loop inspects the pending decision after this call
     and forces a final completion or a workflow transition accordingly.
     """
-    from kernel.seams.protocols import (  # noqa: PLC0415
+    from kernel.seams.protocols import (
         RouterDecision,
         RouterRequest,
     )

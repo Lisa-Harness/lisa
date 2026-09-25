@@ -152,7 +152,7 @@ def _cel_program(when: str) -> Any:
         program = _CEL_RUNNERS[when]
     else:
         try:
-            import celpy  # noqa: PLC0415  # lazy: hosts without when-rules never pay
+            import celpy  # lazy: hosts without when-rules never pay
 
             env = celpy.Environment()
             program = env.program(env.compile(when))
@@ -212,7 +212,7 @@ def _cel_activation(
     - ``containment`` — the resolved sandbox state string
       (``contained|degraded|none|unknown``).
     """
-    import celpy  # noqa: PLC0415  # lazy: hosts without when-rules never pay
+    import celpy  # lazy: hosts without when-rules never pay
 
     identity = getattr(invocation, "identity", None)
 
@@ -351,7 +351,7 @@ class PolicyDecision:
 
 def _policy_path(data_dir: Path) -> Path:
     """Return the policy.yaml path under the config category."""
-    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+    from sdk.layout import CONFIG_DIR
 
     return Path(data_dir) / CONFIG_DIR / DEFAULT_POLICY_PATH
 
@@ -554,7 +554,7 @@ def read_containment(data_dir: Path, identity: Any) -> dict[str, str]:
     ``degraded`` carries a ``reasons`` list the transport can surface.
     """
     key = sandbox_session_key(identity)
-    from sdk.layout import RUN_DIR  # noqa: PLC0415
+    from sdk.layout import RUN_DIR
 
     path = Path(data_dir) / RUN_DIR / key / "sandbox-facts.json"
     try:

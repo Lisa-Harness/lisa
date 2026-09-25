@@ -52,7 +52,7 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
     agree. A mode with no side-effecting completion contract (chat / reasoning)
     returns False; its output is the response text, not a side effect.
     """
-    from kernel.operations.registry import (  # noqa: PLC0415  # lazy: breaks cycle with registry
+    from kernel.operations.registry import (  # lazy: breaks cycle with registry
         mode_completion_effects,
     )
 
@@ -98,7 +98,7 @@ async def _run_fork_child_turn(
         # re-exports this module, so importing it at module top would create
         # an import cycle. The function-level import is cheap (module is
         # already cached in ``sys.modules`` after the first turn).
-        from kernel.turn_runner import run_turn as _run_turn  # noqa: PLC0415
+        from kernel.turn_runner import run_turn as _run_turn
 
         child_result = await _run_turn(
             mode_id=target.mode_id,
@@ -153,10 +153,10 @@ async def _run_fork_child_turn(
         # included in the action-tool set.
         # 7.1 — the duplicated classifier is removed; both paths call the
         # same function.
-        from kernel.operations.registry import (  # noqa: PLC0415  # lazy: breaks cycle with registry
+        from kernel.operations.registry import (  # lazy: breaks cycle with registry
             mode_completion_effects,
         )
-        from kernel.turn_phases._child_turn import (  # noqa: PLC0415  # lazy: breaks cycle with turn_runner
+        from kernel.turn_phases._child_turn import (  # lazy: breaks cycle with turn_runner
             classify_child_turn,
         )
 

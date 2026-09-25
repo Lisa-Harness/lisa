@@ -31,7 +31,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Build a fresh ``LisaSelfModelArtifact`` from the wired runtime catalogs."""
 
     # Lazy import to avoid circular import with kernel.operations.registry
-    from kernel.operations.registry import get_operation_catalog  # noqa: PLC0415
+    from kernel.operations.registry import get_operation_catalog
 
     now_iso = datetime.now(UTC).isoformat()
     user_slug = ctx.user_slug or "default"
@@ -204,7 +204,7 @@ def _resolve_tool_catalog(ctx: OperationExecutionContext) -> dict[str, Any]:
     registry itself uses internally.
     """
     try:
-        from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
+        from kernel.tools.registry import get_tool_catalog
 
         return dict(get_tool_catalog())
     except Exception:

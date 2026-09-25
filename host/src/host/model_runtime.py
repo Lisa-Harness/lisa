@@ -174,7 +174,7 @@ class StubCompletion:
 def active_manifest_path(*, data_dir: Path) -> Path:
     """Return the canonical active model-manifest path under one data directory."""
 
-    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+    from sdk.layout import CONFIG_DIR
 
     return data_dir / CONFIG_DIR / "models.yaml"
 
@@ -256,7 +256,7 @@ def resolve_session_manifest_path(
 def proposal_manifest_path(*, data_dir: Path) -> Path:
     """Return the canonical proposal model-manifest path under one data directory."""
 
-    from sdk.layout import STATE_DIR  # noqa: PLC0415
+    from sdk.layout import STATE_DIR
 
     return data_dir / STATE_DIR / "models.proposed.yaml"
 

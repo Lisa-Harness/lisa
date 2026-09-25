@@ -543,7 +543,7 @@ def _builtin_command_help(topic: str, runtime: HostRuntime) -> str | None:
     if topic == "models":
         # Lazy import: _models imports _simple which imports _render — a
         # module-level import here would create a cycle.
-        from host.commands._models import _models_help_text  # noqa: PLC0415
+        from host.commands._models import _models_help_text
 
         return _models_help_text(runtime)
     if topic == "mcp":

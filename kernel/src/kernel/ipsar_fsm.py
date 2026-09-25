@@ -1474,7 +1474,7 @@ def get_yield_tool_schema() -> list[dict[str, object]]:
     executor; it intercepts the call in the tool-dispatch loop (same pattern
     as ``transition_stage``).
     """
-    from kernel.models import YieldAction  # noqa: PLC0415
+    from kernel.models import YieldAction
 
     return [
         build_strict_openai_function_tool(
@@ -1520,7 +1520,7 @@ def _ensure_catalog_loaded() -> None:
     # Enforce the cross-pack export boundary now that both the workflow catalog
     # and the operation/tool catalogs are loaded. Generic rule over
     # ``provider_id`` + ``exportable``; the kernel never names capability ids.
-    from kernel.operations.registry import validate_export_boundaries  # noqa: PLC0415
+    from kernel.operations.registry import validate_export_boundaries
 
     validate_export_boundaries()
 

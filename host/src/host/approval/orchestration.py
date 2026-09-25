@@ -125,7 +125,7 @@ def is_affirmative_resume(lowered: str) -> bool:
     # anyway"`` and ``"continue anyway"`` are historically affirmative —
     # the registry's default list includes ``"proceed"`` and ``"continue"``,
     # so the prefix match covers them without a dedicated entry.
-    from kernel.routing_vocabulary import get_resume_phrases  # noqa: PLC0415
+    from kernel.routing_vocabulary import get_resume_phrases
 
     return any(lowered.startswith(phrase) for phrase in get_resume_phrases())
 
@@ -350,7 +350,7 @@ async def _record_and_continue_after_approval(
     and token accounting stay identical to a user-initiated turn.
     """
 
-    from host.thread import (  # noqa: PLC0415  # lazy: defers host.thread import to approval time
+    from host.thread import (  # lazy: defers host.thread import to approval time
         append_thread_entry,
     )
 
@@ -676,7 +676,7 @@ def _recovery_identity_for_invocation(
     settlement safely rather than clearing another session's stall.
     """
 
-    from kernel.recovery import RecoveryIdentity  # noqa: PLC0415
+    from kernel.recovery import RecoveryIdentity
 
     if invocation.session_plan_digest != runtime.session_plan.plan_digest:
         return None

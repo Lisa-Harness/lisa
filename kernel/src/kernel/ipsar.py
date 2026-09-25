@@ -30,7 +30,7 @@ def _get_mode_routes() -> list[tuple[str, re.Pattern[str]]]:
         return _mode_route_cache
 
     # Imported here to avoid a module-level circular import.
-    from kernel.ipsar_fsm import get_workflow_catalog  # noqa: PLC0415
+    from kernel.ipsar_fsm import get_workflow_catalog
 
     routes: list[tuple[str, re.Pattern[str]]] = []
     for mode_id, mode_cfg in get_workflow_catalog().items():

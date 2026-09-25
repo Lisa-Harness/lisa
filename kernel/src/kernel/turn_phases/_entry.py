@@ -147,7 +147,7 @@ async def execute_entry_phase(
 
     if not planned_target and not promises_routing:
         # Work entry op: the result IS the turn output.
-        from kernel.turn_runner import TurnResult  # noqa: PLC0415
+        from kernel.turn_runner import TurnResult
 
         entry_text = (result.output_text or "").strip()
         # Detect the query-discard hazard: a work entry op replaces the
@@ -236,7 +236,7 @@ async def execute_entry_phase(
         plan_reason=plan_reason,
         partial_steps=partial_steps,
     )
-    from kernel.turn_runner import TurnResult  # noqa: PLC0415
+    from kernel.turn_runner import TurnResult
 
     return EntryPhaseResult(
         early_return=TurnResult(

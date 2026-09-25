@@ -129,7 +129,7 @@ def resolve_session_context_source(
             f"{LISA_SESSION_CONTEXT_PATH_ENV}='{env_path}' is not an existing file."
         )
 
-    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+    from sdk.layout import CONFIG_DIR
 
     candidate = (data_dir / CONFIG_DIR / "session_context.md").resolve()
     if candidate.is_file():
@@ -176,7 +176,7 @@ def _make_pack_session_lookup(*, data_dir: Path) -> Callable[..., Path]:
     — so sessions without directives pay zero discovery cost.
     """
 
-    from host.content_roots import (  # noqa: PLC0415
+    from host.content_roots import (
         active_installed_pack_roots,
         resolve_pack_session_path,
     )

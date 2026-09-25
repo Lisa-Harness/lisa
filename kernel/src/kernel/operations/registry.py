@@ -717,7 +717,7 @@ async def execute_operation(
     # through the wrapper applied above. The other host methods
     # (complete, resolve_model, read_authored_text, etc.) are preserved
     # from the existing host.
-    from kernel.seams.host_adapter import build_callable_host  # noqa: PLC0415
+    from kernel.seams.host_adapter import build_callable_host
 
     _existing_host = ctx.host
     _wrapped_tool_fn = _wrap_declarative_tool_executor(
@@ -870,7 +870,7 @@ def _resolve_operation_model(
     """
     router = ctx.model_router
     if router is not None:
-        from kernel.seams.protocols import RouterDecision, RouterRequest  # noqa: PLC0415
+        from kernel.seams.protocols import RouterDecision, RouterRequest
 
         authored = definition.preferred_model_id or ""
         req = RouterRequest(

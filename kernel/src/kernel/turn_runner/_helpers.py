@@ -30,7 +30,7 @@ def _engine_catalog() -> dict[str, Any]:
     ``kernel.turn_runner`` package (which is the engine module after the
     split) at call time rather than binding a private copy at import.
     """
-    import kernel.turn_runner as _engine  # noqa: PLC0415  # package namespace
+    import kernel.turn_runner as _engine  # package namespace
 
     return _engine.get_workflow_catalog()
 

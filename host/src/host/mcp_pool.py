@@ -75,7 +75,7 @@ def _validate_pack_prerequisites() -> None:
     A broken callable (raises) is logged and skipped - a faulty probe must not
     itself take the host down; only a *reported* miss is fatal.
     """
-    from importlib import metadata  # noqa: PLC0415
+    from importlib import metadata
 
     try:
         eps = metadata.entry_points(group="lisa.extensions.prerequisites")
@@ -256,7 +256,7 @@ def build_content_mcp_config(
     parameter contract; only the host-owned ``packs_venv_site_packages``
     resolution is added here.
     """
-    from sdk.mcp_host import build_content_mcp_config as _build  # noqa: PLC0415
+    from sdk.mcp_host import build_content_mcp_config as _build
 
     return _build(
         data_dir=data_dir,
@@ -277,7 +277,7 @@ def session_provider_selection_payload(
     existing ``host.mcp_pool`` call sites. New code should import from
     ``sdk.mcp_host`` directly.
     """
-    from sdk.mcp_host import (  # noqa: PLC0415
+    from sdk.mcp_host import (
         session_provider_selection_payload as _payload,
     )
 
@@ -291,7 +291,7 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
     The pure projection logic lives in the SDK so external hosts can reuse
     it without depending on ``host``.
     """
-    from sdk.mcp_host import build_catalog_mcp_config as _build  # noqa: PLC0415
+    from sdk.mcp_host import build_catalog_mcp_config as _build
 
     return _build(content_config=content_config, data_dir=data_dir)
 
@@ -319,7 +319,7 @@ def resolve_default_mcp_tool_ids(
     namespacing as the framework manifest — user-added servers are not
     pack-prefixed. Malformed user manifests are skipped defensively.
     """
-    from kernel.tools.mcp_client import namespaced_tool_name  # noqa: PLC0415
+    from kernel.tools.mcp_client import namespaced_tool_name
 
     ids: set[str] = set()
     used_pack_slugs: set[str] = set()
@@ -406,7 +406,7 @@ def setup_framework(
     # planner share one vocabulary source. Empty list (the default)
     # resets to the historical built-in set; sessions opt into richer
     # coverage via ``routing.sequential_connectors`` front matter.
-    from kernel.routing_vocabulary import register_routing_vocabulary  # noqa: PLC0415
+    from kernel.routing_vocabulary import register_routing_vocabulary
 
     register_routing_vocabulary(
         sequential_connectors=runtime.session_plan.manifest.routing.sequential_connectors,
@@ -442,13 +442,13 @@ def setup_framework(
             catalog_config = dataclasses.replace(catalog_config, env={})
         catalog_config.env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
 
-    from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks  # noqa: PLC0415
-    from kernel.operations.registry import (  # noqa: PLC0415
+    from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks
+    from kernel.operations.registry import (
         execute_operation,
         get_operation_catalog,
         register_operation_mcp,
     )
-    from kernel.tools.registry import register_tool_mcp  # noqa: PLC0415
+    from kernel.tools.registry import register_tool_mcp
 
     register_operation_mcp(catalog_config)
     register_tool_mcp(catalog_config)
@@ -468,9 +468,9 @@ def setup_framework(
     # Wire the MCPContentRegistry as the content registry for context frames
     # and the sub-turn contract assets (fork/delegate briefings + midpoint
     # write-nudge). Both modules share the same registry instance.
-    from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
-    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
-    from kernel.context.sub_turn_contract import (  # noqa: PLC0415
+    from kernel.context.context_frames import set_content_registry
+    from kernel.context.mcp_content_registry import MCPContentRegistry
+    from kernel.context.sub_turn_contract import (
         set_content_registry as _set_sub_turn_content_registry,
     )
 
@@ -481,7 +481,7 @@ def setup_framework(
     # Eagerly validate required authored content at startup so a broken
     # content install fails at boot rather than producing a silently-
     # degraded first turn with an empty system prompt.
-    from sdk.content import validate_required_content  # noqa: PLC0415
+    from sdk.content import validate_required_content
 
     validate_required_content(
         registry.read_authored_text,
@@ -492,7 +492,7 @@ def setup_framework(
     # Wire the production extension-item builder so the context broker's
     # catalog builder picks up items from installed SDK extensions
     # (Cloudflare, GitHub, Stripe) via entry-point discovery.
-    from sdk.context.extension_item_builder import (  # noqa: PLC0415
+    from sdk.context.extension_item_builder import (
         set_production_extension_item_builder,
     )
 
@@ -520,7 +520,7 @@ def setup_framework(
     # ``HostRuntime._resolve_models_path``, so a missing session-pinned path
     # already raises before we reach this point — only the default
     # ``data_dir/models.yaml`` first-run case lands here.
-    from host.model_runtime import (  # noqa: PLC0415
+    from host.model_runtime import (
         load_manifest_or_none as _load_manifest_or_none,
     )
 
@@ -1053,7 +1053,7 @@ def _resolve_user_manifest_path(config: HostConfig) -> Path | None:
     """
     if config.mcp_manifest_path is not None:
         return config.mcp_manifest_path
-    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+    from sdk.layout import CONFIG_DIR
 
     default_user_path = config.data_dir / CONFIG_DIR / "mcp_servers.yaml"
     if default_user_path.exists():
@@ -1072,7 +1072,7 @@ def register_mcp_aliases(pool: Any) -> None:
     Must be called after ``pool.start()`` so the alias handlers can route to
     live server sessions.
     """
-    from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
+    from kernel.tools.synthetic import mcp_alias_tool
 
     configs = list(getattr(pool, "configs", []))
     for config in configs:

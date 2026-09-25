@@ -199,7 +199,7 @@ def classify_child_turn(
     # attempted name before success is known, so a failed MCP write would
     # false-positive as completion. Only receipts count.
     # lazy: avoids top-level MCP import
-    from kernel.tools.mcp_client import bare_tool_name  # noqa: PLC0415
+    from kernel.tools.mcp_client import bare_tool_name
 
     # Match the receipt against the action set using BOTH the raw
     # capability id and its bare form. ``bare_tool_name`` strips a

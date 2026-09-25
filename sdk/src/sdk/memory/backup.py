@@ -46,7 +46,7 @@ _BACKUP_NAME_RE = re.compile(
 
 def default_backup_dir(data_dir: Path) -> Path:
     """Return the default backup directory for a memory data dir."""
-    from sdk.layout import DATA_DIR  # noqa: PLC0415
+    from sdk.layout import DATA_DIR
 
     return Path(data_dir) / DATA_DIR / "backups"
 
@@ -54,7 +54,7 @@ def default_backup_dir(data_dir: Path) -> Path:
 def _resolved_db_path(data_dir: Path, db_path: Path | None) -> Path:
     if db_path is not None:
         return Path(db_path)
-    from sdk.layout import DATA_DIR  # noqa: PLC0415
+    from sdk.layout import DATA_DIR
 
     return Path(data_dir) / DATA_DIR / "memory.db"
 

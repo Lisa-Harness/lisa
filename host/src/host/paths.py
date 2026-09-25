@@ -200,7 +200,7 @@ def default_packs_venv() -> Path:
         # surfaces the validation error from HostConfig.from_env; this
         # startup-time resolver must not crash before the error panel.
         try:
-            from host.config import profile_data_dir  # noqa: PLC0415
+            from host.config import profile_data_dir
 
             profile = profile_data_dir(profile_env)
         except ValueError:
@@ -210,7 +210,7 @@ def default_packs_venv() -> Path:
             if base is not None:
                 return base / _PACKS_VENV_DIR_NAME
             return profile / _PACKS_VENV_DIR_NAME
-    from host.config import default_data_dir  # noqa: PLC0415
+    from host.config import default_data_dir
 
     return default_data_dir() / _PACKS_VENV_DIR_NAME
 

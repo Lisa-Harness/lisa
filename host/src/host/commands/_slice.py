@@ -124,7 +124,7 @@ async def handle_intake_command(
     ``state.json`` via the host's state provider.
     """
     try:
-        from host.intake import run_intake  # noqa: PLC0415
+        from host.intake import run_intake
     except ImportError:
         return "intake module not available in this host."
 
@@ -169,7 +169,7 @@ async def handle_intake_command(
     runtime.session.current_stage_id = "-"
     runtime.session.next_model_id = "-"
 
-    from sdk.layout import STATE_DIR  # noqa: PLC0415
+    from sdk.layout import STATE_DIR
 
     state_path = runtime.paths.data_dir / STATE_DIR / "state.json"
     return (

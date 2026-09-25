@@ -147,7 +147,7 @@ async def _default_delegate_fn(
         # (this package's ``__init__``), and ``defaults ──► package ──► defaults``
         # would be a circular import at module load. Resolving at call time also
         # lets tests patching ``kernel.turn_runner.run_turn`` intercept here.
-        import kernel.turn_runner as _engine_pkg  # noqa: PLC0415
+        import kernel.turn_runner as _engine_pkg
 
         child_result = await _engine_pkg.run_turn(
             mode_id=spec.target_mode_id,

@@ -46,7 +46,7 @@ from kernel.models import (
     WorkflowModeConfig,
 )
 from kernel.session_plan import ContextPlan
-from sdk.content import MissingAuthoredContentError, require_authored_text
+from sdk.content import require_authored_text
 
 from host.model_runtime import StubModelDefinition
 from host.session_context import ReplayControls

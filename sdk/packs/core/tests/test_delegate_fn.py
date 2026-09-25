@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from kernel.config import settings as _kernel_settings
 from kernel.delegation import DelegationResult, DelegationSpec
 from kernel.models import EffectReceipt, YieldAction

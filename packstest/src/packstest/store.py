@@ -71,7 +71,7 @@ class MemoryWorkProductStore:
         so a top-level import here would be a cycle.
         """
 
-        from packstest.context import (  # noqa: PLC0415  # lazy: breaks cycle with packstest.context
+        from packstest.context import (  # lazy: breaks cycle with packstest.context
             DEFAULT_IDENTITY,
         )
 

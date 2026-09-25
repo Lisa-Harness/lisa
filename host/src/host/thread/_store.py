@@ -147,7 +147,7 @@ def _load_zstd_dictionary(
     if not dict_path.exists():
         return None
     try:
-        import zstandard  # noqa: PLC0415  # lazy: defers optional dep startup cost
+        import zstandard  # lazy: defers optional dep startup cost
 
         return zstandard.ZstdCompressionDict(dict_path.read_bytes())
     except Exception as exc:  # pylint: disable=broad-except
@@ -157,7 +157,7 @@ def _load_zstd_dictionary(
 
 def _compress_bytes(data: bytes, dict_path: Path) -> bytes:
     """Compress ``data`` with zstd, using a trained dictionary when available."""
-    import zstandard  # noqa: PLC0415  # lazy: defers optional dep startup cost
+    import zstandard  # lazy: defers optional dep startup cost
 
     dictionary = _load_zstd_dictionary(dict_path)
     params = zstandard.ZstdCompressionParameters.from_level(_ZSTD_LEVEL)
@@ -173,7 +173,7 @@ def _compress_bytes(data: bytes, dict_path: Path) -> bytes:
 
 def _decompress_bytes(data: bytes, dict_path: Path) -> bytes:
     """Decompress a sealed segment, using the trained dictionary when present."""
-    import zstandard  # noqa: PLC0415  # lazy: defers optional dep startup cost
+    import zstandard  # lazy: defers optional dep startup cost
 
     dictionary = _load_zstd_dictionary(dict_path)
     if dictionary is not None:
@@ -191,7 +191,7 @@ def _train_dictionary(samples: Sequence[bytes | bytearray], dict_path: Path) -> 
     if len(samples) < _DICT_MIN_SAMPLES:
         return  # too few samples to train meaningfully
     try:
-        import zstandard  # noqa: PLC0415  # lazy: defers optional dep startup cost
+        import zstandard  # lazy: defers optional dep startup cost
 
         dict_data = zstandard.train_dictionary(_DEFAULT_SEGMENT_TURNS, list(samples))
         dict_path.parent.mkdir(parents=True, exist_ok=True)

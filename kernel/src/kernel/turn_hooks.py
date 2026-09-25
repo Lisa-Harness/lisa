@@ -304,7 +304,7 @@ class TurnHooks:
         # Lazy import to keep the kernel's default context seams out of the
         # import graph for hosts that never wire context (bare/test hosts).
         if self.context_seams is None:
-            from kernel.turn_runner import ContextSeams  # noqa: PLC0415
+            from kernel.turn_runner import ContextSeams
 
             self.context_seams = ContextSeams()
 

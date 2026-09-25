@@ -117,7 +117,7 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     the host terminal and corrupt the Rich TUI on Linux. Set
     ``LISA_LOG_STDERR=1`` to force the stderr mirror on for debugging.
     """
-    from sdk.logging_setup import (  # noqa: PLC0415
+    from sdk.logging_setup import (
         LISA_LOG_DEBUG_ENV,
         _parse_debug_modules,
     )

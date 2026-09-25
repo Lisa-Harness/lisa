@@ -399,7 +399,7 @@ async def run_intake(*, data_dir: Path) -> UnifiedState:
     state = _merge_results(collections, processed)
 
     # 4. Write to disk
-    from sdk.layout import STATE_DIR  # noqa: PLC0415
+    from sdk.layout import STATE_DIR
 
     state_path = data_dir / STATE_DIR / _DEFAULT_STATE_FILE
     state_path.parent.mkdir(parents=True, exist_ok=True)

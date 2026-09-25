@@ -326,7 +326,7 @@ def compile_steps_from_routing_targets(
     # Local import to avoid a kernel-boot-time cycle: _routing_hint imports
     # from this module's neighbors but not from here, so the deferred
     # import keeps workflow_position importable before the catalog is wired.
-    from kernel.turn_phases._routing_hint import (  # noqa: PLC0415
+    from kernel.turn_phases._routing_hint import (
         _detect_query_intents,
         _first_target_for_earliest_intent,
         _query_is_sequential,

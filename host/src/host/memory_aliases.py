@@ -118,7 +118,7 @@ def _register_memory_synthetic_tools(
     aliases — they only do generic→native field renaming (e.g.
     ``content``→``text`` for mem0).
     """
-    from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
+    from kernel.tools.synthetic import mcp_alias_tool
 
     default_backend_id = getattr(memory_config, "default_backend", None)
     declared = list(getattr(memory_config, "backends", ()) or ())

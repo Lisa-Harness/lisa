@@ -150,7 +150,7 @@ def _scan_lisa_packs_dir(
     excluded_packs: set[str] | None,
 ) -> list[Path]:
     """Scan a ``lisa_packs/`` directory for pack content roots."""
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
     roots: list[Path] = []
     for pack_dir in sorted(lisa_packs_dir.iterdir()):

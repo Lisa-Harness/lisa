@@ -133,7 +133,7 @@ def register_builtin_host_commands() -> None:
     global _builtin_done  # noqa: PLW0603  # module-level one-time guard
     if _builtin_done:
         return
-    from kernel.host_command_discovery import discover_pack_host_commands  # noqa: PLC0415
+    from kernel.host_command_discovery import discover_pack_host_commands
 
     register_host_command_prefixes(
         (

@@ -194,7 +194,7 @@ def _pack_contributes_memory_capability(package_name: str) -> bool:
     if not normalized:
         return False
 
-    from kernel.mcp_launch.server_manifest import (  # noqa: PLC0415
+    from kernel.mcp_launch.server_manifest import (
         MCPServerManifestError,
         load_mcp_server_manifest,
     )

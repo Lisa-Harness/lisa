@@ -337,7 +337,7 @@ def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
     if position is None:
         return False
     try:
-        from kernel.workflow_position import is_complete  # noqa: PLC0415
+        from kernel.workflow_position import is_complete
 
         return not is_complete(position)
     except Exception as exc:  # pylint: disable=broad-except
@@ -355,7 +355,7 @@ def _next_step_mode_id(position: _WorkflowPositionLike | None) -> str:
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import remaining_steps  # noqa: PLC0415
+        from kernel.workflow_position import remaining_steps
 
         remaining = remaining_steps(position)
         if not remaining:
@@ -440,7 +440,7 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import remaining_steps  # noqa: PLC0415
+        from kernel.workflow_position import remaining_steps
 
         remaining = remaining_steps(position)
         if not remaining:

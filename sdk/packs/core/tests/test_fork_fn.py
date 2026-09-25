@@ -13,11 +13,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
-from kernel.config import settings as _kernel_settings
 from kernel.models import (
     EffectReceipt,
-    ForkChildResult,
     ForkResult,
     ForkSpec,
     ForkTarget,

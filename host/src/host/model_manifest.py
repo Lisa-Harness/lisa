@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 def default_manifest_path() -> Path:
     """Return the default manifest path rooted under the runtime data-dir."""
 
-    from sdk.layout import CONFIG_DIR  # noqa: PLC0415
+    from sdk.layout import CONFIG_DIR
 
-    from host.config import default_data_dir  # noqa: PLC0415
+    from host.config import default_data_dir
 
     return (default_data_dir() / CONFIG_DIR / "models.yaml").resolve()
 

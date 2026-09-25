@@ -262,31 +262,31 @@ __all__ = [
 # ``setattr`` on this module shadow each entry. Each value is a zero-arg
 # callable that performs the lazy import on first access.
 def _import_discover_models() -> object:
-    from host.model_discovery import discover_models  # noqa: PLC0415
+    from host.model_discovery import discover_models
 
     return discover_models
 
 
 def _import_build_manifest_payload() -> object:
-    from host.model_discovery import build_manifest_payload  # noqa: PLC0415
+    from host.model_discovery import build_manifest_payload
 
     return build_manifest_payload
 
 
 def _import_render_manifest_yaml() -> object:
-    from host.model_discovery import render_manifest_yaml  # noqa: PLC0415
+    from host.model_discovery import render_manifest_yaml
 
     return render_manifest_yaml
 
 
 def _import_write_manifest_yaml() -> object:
-    from host.model_discovery import write_manifest_yaml  # noqa: PLC0415
+    from host.model_discovery import write_manifest_yaml
 
     return write_manifest_yaml
 
 
 def _import_router_preset_annotations() -> object:
-    from host.model_discovery.manifest import (  # noqa: PLC0415
+    from host.model_discovery.manifest import (
         _router_preset_annotations,
     )
 
@@ -294,67 +294,67 @@ def _import_router_preset_annotations() -> object:
 
 
 def _import_load_model_manifest() -> object:
-    from host.model_manifest import load_model_manifest  # noqa: PLC0415
+    from host.model_manifest import load_model_manifest
 
     return load_model_manifest
 
 
 def _import_active_manifest_path() -> object:
-    from host.model_runtime import active_manifest_path  # noqa: PLC0415
+    from host.model_runtime import active_manifest_path
 
     return active_manifest_path
 
 
 def _import_proposal_manifest_path() -> object:
-    from host.model_runtime import proposal_manifest_path  # noqa: PLC0415
+    from host.model_runtime import proposal_manifest_path
 
     return proposal_manifest_path
 
 
 def _import_reload_manifest() -> object:
-    from host.model_runtime import reload_manifest  # noqa: PLC0415
+    from host.model_runtime import reload_manifest
 
     return reload_manifest
 
 
 def _import_load_manifest() -> object:
-    from host.model_runtime import load_manifest  # noqa: PLC0415
+    from host.model_runtime import load_manifest
 
     return load_manifest
 
 
 def _import_resolve_little_lisa_model() -> object:
-    from host.model_runtime import resolve_model  # noqa: PLC0415
+    from host.model_runtime import resolve_model
 
     return resolve_model
 
 
 def _import_stub_model_definition() -> object:
-    from host.model_runtime import StubModelDefinition  # noqa: PLC0415
+    from host.model_runtime import StubModelDefinition
 
     return StubModelDefinition
 
 
 def _import_discovery_report() -> object:
-    from host.model_discovery import DiscoveryReport  # noqa: PLC0415
+    from host.model_discovery import DiscoveryReport
 
     return DiscoveryReport
 
 
 def _import_probe_status() -> object:
-    from host.model_discovery import ProbeStatus  # noqa: PLC0415
+    from host.model_discovery import ProbeStatus
 
     return ProbeStatus
 
 
 def _import_file_backed_state_provider() -> object:
-    from host.state_provider import FileBackedStateProvider  # noqa: PLC0415
+    from host.state_provider import FileBackedStateProvider
 
     return FileBackedStateProvider
 
 
 def _import_format_session_exit_summary_lines() -> object:
-    from host.token_accounting import (  # noqa: PLC0415
+    from host.token_accounting import (
         format_session_exit_summary_lines,
     )
 
@@ -362,13 +362,13 @@ def _import_format_session_exit_summary_lines() -> object:
 
 
 def _import_append_thread_entry() -> object:
-    from host.thread import append_thread_entry  # noqa: PLC0415
+    from host.thread import append_thread_entry
 
     return append_thread_entry
 
 
 def _import_load_recent_thread_entries() -> object:
-    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+    from host.thread import load_recent_thread_entries
 
     return load_recent_thread_entries
 

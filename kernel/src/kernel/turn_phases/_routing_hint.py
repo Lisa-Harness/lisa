@@ -718,14 +718,14 @@ def _fork_has_producer_consumer_mix(gap_intents: set[str]) -> bool:
 
 def _producer_intent_set() -> frozenset[str]:
     """Return the active producer-intent set (opaque tags)."""
-    from kernel.routing_vocabulary import get_producer_intents  # noqa: PLC0415
+    from kernel.routing_vocabulary import get_producer_intents
 
     return get_producer_intents()
 
 
 def _consumer_intent_set() -> frozenset[str]:
     """Return the active consumer-intent set (opaque tags)."""
-    from kernel.routing_vocabulary import get_consumer_intents  # noqa: PLC0415
+    from kernel.routing_vocabulary import get_consumer_intents
 
     return get_consumer_intents()
 
@@ -975,7 +975,7 @@ def _compute_capability_routing_hint(
     # escalation for unreliable models and fall through to the
     # single-handoff / fork branches instead. See
     # ``kernel.routing_vocabulary.is_plan_reliable_for_model``.
-    from kernel.routing_vocabulary import is_plan_reliable_for_model  # noqa: PLC0415
+    from kernel.routing_vocabulary import is_plan_reliable_for_model
 
     if (
         "planner" in routing_targets

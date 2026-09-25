@@ -624,7 +624,7 @@ def _read_distribution_name(pyproject: Path) -> str:
     ``pyproject.toml`` with no ``[project] name`` rather than raising — the
     caller falls back to the path-guess heuristic.
     """
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
     if not pyproject.is_file():
         return ""
