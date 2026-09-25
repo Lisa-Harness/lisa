@@ -6026,6 +6026,847 @@ async def _intercept_transition_stage(
     return _ret("continue")
 
 
+async def _dispatch_capability_and_track(
+    *,
+    tool_name: str,
+    tool_arguments: Any,
+    tool_kind: str,
+    ctx: Any,
+    state: Any,
+    ledger: Any,
+    pool: MCPToolPool,
+    operation_catalog: Any,
+    tool_catalog: Any,
+    exec_op: Any,
+    hooks: TurnHooks,
+    recovery_item_id: str | None,
+    recovery_retry_policy: str,
+    build_recovery_identity_fn: Any,
+    messages: list[dict[str, Any]],
+    tool_call_id: str,
+    mode_id: str,
+    emit_stage: Any,
+    log: logging.Logger,
+) -> dict[str, Any]:
+    """Dispatch one capability call and track its result on the turn state.
+
+    Returns ``{"tool_output": str, "delegate_yield": YieldAction | None}``.
+    A delegate child's model-yield propagates to the user: the caller
+    stamps the pending yield, marks the turn yielded, and breaks the
+    dispatch loop (the messages append happens here so the in-turn
+    history records the tool's yield receipt).
+    """
+    _outcome = await dispatch_capability(
+        tool_name=tool_name,
+        tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
+        tool_kind=tool_kind,
+        ctx=ctx,
+        state=state,
+        ledger=ledger,
+        pool=pool,
+        operation_catalog=operation_catalog,
+        tool_catalog=tool_catalog,
+        exec_op=exec_op,
+        hooks=hooks,
+        recovery_item_id=recovery_item_id,
+        recovery_retry_policy=recovery_retry_policy,
+        build_recovery_identity_fn=build_recovery_identity_fn,
+        log=log,
+    )
+    tool_output = _outcome.tool_output
+
+    await emit_stage(
+        "tool_dispatch_complete",
+        {
+            "tool": tool_name,
+            "tool_kind": tool_kind,
+            "_state.iteration": state.iteration,
+            "tool_calls_so_far": state.total_tool_calls,
+            "ok": _outcome.is_ok,
+            "duration_ms": _outcome.duration_ms,
+            "result_preview": str(tool_output)[:200],
+        },
+    )
+
+    if not tool_output.strip():
+        tool_output = "Done"
+
+    # Track the latest tool result for the model router.
+    state.last_tool_result_text = str(tool_output)
+    state.last_operation_result = _outcome.operation_result
+    state.tool_results_received += 1
+
+    delegate_yield = _outcome.delegate_yield
+    if delegate_yield is not None:
+        log.info(
+            "delegate child model_yield propagated to user (mode=%s, iteration=%d)",
+            mode_id,
+            state.iteration,
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": f"Yielded to user: {delegate_yield.question}",
+            }
+        )
+
+    return {"tool_output": tool_output, "delegate_yield": delegate_yield}
+
+
+def _wire_build_entry_ctx(
+    *,
+    hooks: TurnHooks,
+    mode_id: str,
+    query: str,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    exec_op: Any,
+    mcp_tool_executor: Any,
+    delegate_fn: Any,
+    fork_fn: Any,
+    tool_output_bus: Any,
+) -> Callable[..., Any]:
+    """Build the ``build_entry_ctx(**overrides)`` factory for entry operations.
+
+    Binds the mode/identity/service seams plus the turn-scoped executor,
+    delegate, fork, and tool-output-bus closures; overrides patch the
+    per-call-site kwargs (e.g. the conversation excerpt on the early
+    user-context pass).
+    """
+
+    def _build_entry_ctx(**overrides: Any) -> Any:
+        base_ctx_kwargs = dict(
+            mode_id=mode_id,
+            query=query,
+            resolve_model_fn=resolve_model,
+            complete_fn=complete,
+            read_authored_text_fn=getattr(
+                hooks.context_seams.content_registry,
+                "read_authored_text",
+                None,
+            ),
+            execute_tool_fn=mcp_tool_executor,
+            execute_operation_fn=exec_op,
+            state_provider=hooks.services.state_provider,
+            pack_configuration_resolver=hooks.services.pack_configuration_resolver,
+            approval_service=hooks.services.approval_service,
+            code_change_artifact_store=hooks.services.code_change_artifact_store,
+            gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
+            workspace_id=hooks.identity.workspace_id,
+            user_id=hooks.identity.user_id,
+            user_slug=hooks.identity.user_slug,
+            user_name=hooks.identity.user_name,
+            principal_key=hooks.identity.principal_key,
+            conversation_id=hooks.identity.conversation_id,
+            surface_type=hooks.identity.surface_type,
+            surface_id=hooks.identity.surface_id,
+            memory_scope=hooks.identity.memory_scope,
+            session_plan_digest=hooks.identity.session_plan_digest,
+            data_dir=hooks.services.data_dir,
+            delegate_fn=delegate_fn,
+            fork_fn=fork_fn,
+            model_router=hooks.context_seams.model_router,
+            event_bus=tool_output_bus,
+        )
+        base_ctx_kwargs.update(overrides)
+        return _build_minimal_context(**base_ctx_kwargs)
+
+    return _build_entry_ctx
+
+
+def _apply_router_terminal_action(
+    *,
+    state: Any,
+    router_decision: Any,
+    effective_tools: Any,
+    transitioned_to: str | None,
+    log: logging.Logger,
+) -> tuple[Any, str | None]:
+    """Apply a terminal router decision (``finish`` / ``transition_to``).
+
+    Both reuse the existing budget-finalization path: tools are stripped
+    (``effective_tools = None``) so the model must respond with text.
+    ``transition_to`` first records the target stage on ``transitioned_to``
+    (the TurnResult and thread carry it; the WorkflowView derives the
+    stage from it on the next turn — no mutable position is updated here).
+    """
+    if router_decision is None:
+        return effective_tools, transitioned_to
+    if router_decision.finish.strip():
+        log.debug(
+            "router finish action (iteration=%d, reason=%s); forcing final",
+            state.iteration,
+            router_decision.finish,
+        )
+        return None, transitioned_to
+    if router_decision.transition_to.strip():
+        target_stage = router_decision.transition_to.strip()
+        log.debug(
+            "router transition_to action (iteration=%d, stage=%s); forcing final summary",
+            state.iteration,
+            target_stage,
+        )
+        return None, target_stage
+    return effective_tools, transitioned_to
+
+
+async def _apply_output_guard(
+    *,
+    hooks: TurnHooks,
+    mode_id: str,
+    content: str,
+    turn_blocked: bool,
+    block_origin: str,
+    log: logging.Logger,
+) -> tuple[str, bool, str]:
+    """Run the output guard and apply its sanitization/block decision.
+
+    Runs before on_complete/store_mem so the persisted and delivered text
+    is the sanitized/safe-fallback version. Blocked outputs emit a
+    guardrail.audit event; a publish failure is logged and swallowed
+    (audit is observational, never turn-fatal).
+    """
+    guard_surface = _turn_guard_surface(hooks)
+    output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
+    if not turn_blocked:
+        if not output_guard_result.allowed:
+            original_len = len(content)
+            safe_fallback = "I'm unable to provide that response. Please rephrase your request."
+            log.warning(
+                "Output guard blocked turn for mode=%s (original_len=%d)",
+                mode_id,
+                original_len,
+            )
+            try:
+                await hooks.context_seams.event_bus.publish(
+                    "guardrail.audit",
+                    {
+                        "surface_id": guard_surface.surface_id,
+                        "mode_id": mode_id,
+                        "blocked_reason": output_guard_result.blocked_reason or "",
+                        "original_text_len": original_len,
+                    },
+                )
+            except Exception as audit_exc:  # pylint: disable=broad-except
+                log.warning("guardrail.audit publish failed: %s", audit_exc)
+            return safe_fallback, True, "output_guard"
+        if output_guard_result.sanitized_text is not None:
+            content = output_guard_result.sanitized_text
+    return content, turn_blocked, block_origin
+
+
+async def _run_turn_entry_sequence(
+    *,
+    hooks: TurnHooks,
+    mode_id: str,
+    query: str,
+    mode_config: Any,
+    stage_id_override: str | None,
+    ledger: CallLedger,
+    execution_policy: ExecutionPolicy | None,
+    routing_ctx: RoutingContext,
+    preferred_model_id: str | None,
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
+    assemble_system: Callable[[str, str | None], str],
+    build_entry_ctx: Callable[..., Any],
+    plan_steps_to_workflow_steps_fn: Any,
+    promises_routing_contract_fn: Any,
+    resume_in_flight_target_fn: Any,
+    run_mode_entry_operations_fn: Any,
+    state: Any,
+    log: logging.Logger,
+) -> tuple[
+    TurnResult | None,
+    str,
+    bool,
+    str,
+    str,
+    str,
+    list[SliceOutcome],
+    str,
+    str | None,
+    Any,
+]:
+    """Run the Phase-1 sequence: entry phase, pre-turn ops, input guard, slice.
+
+    Returns ``(early_return, query, suppress_routing_hint, early_user_context,
+    pre_briefing, system_prompt, slice_outcomes, mode_instruction,
+    stage_instruction)``. ``early_return`` is non-None only when the entry
+    phase or the input guard ended the turn; the caller returns it verbatim.
+    """
+    entry_result = await execute_entry_phase(
+        mode_id=mode_id,
+        query=query,
+        mode_config=mode_config,
+        hooks=hooks,
+        ledger=ledger,
+        execution_policy=execution_policy,
+        routing_ctx=routing_ctx,
+        preferred_model_id=preferred_model_id,
+        assemble_user_fn=assemble_user,
+        build_minimal_context_fn=build_entry_ctx,
+        plan_steps_to_workflow_steps_fn=plan_steps_to_workflow_steps_fn,
+        promises_routing_contract_fn=promises_routing_contract_fn,
+        resume_in_flight_target_fn=resume_in_flight_target_fn,
+        run_mode_entry_operations_fn=run_mode_entry_operations_fn,
+    )
+    if entry_result.early_return is not None:
+        return entry_result.early_return, query, False, "", "", "", [], "", None, None
+
+    if entry_result.pending_planned_handoff:
+        state.pending_planned_handoff = entry_result.pending_planned_handoff
+    if entry_result.plan_prefix:
+        state.plan_prefix = entry_result.plan_prefix
+    suppress_routing_hint = bool(entry_result.suppress_routing_hint)
+    if entry_result.first_step_query:
+        query = entry_result.first_step_query
+    early_user_context = entry_result.early_user_context
+
+    # Chat/workflow modes: run pre-turn operations
+    ctx = build_entry_ctx(conversation_excerpt_markdown=early_user_context)
+    pre_result = await run_mode_pre_turn_operations(
+        mode_id,
+        ctx,
+        ledger=ledger,
+        execution_policy=execution_policy,
+    )
+    pre_briefing = _extract_pre_turn_briefing(pre_result)
+    # ── Phase 1.0: Input guard ─────────────────────────────────────
+    # Runs before the pre-turn slice so a blocked input does not consume
+    # house-keeping budget. A sanitizing guard rewrites the query for the
+    # remainder of the turn.
+    input_guard_result = await _validate_turn_input(hooks, query)
+    if not input_guard_result.allowed:
+        blocked_reason = input_guard_result.blocked_reason or "Input blocked by safety policy."
+        log.warning("Input guard blocked turn for mode=%s: %s", mode_id, blocked_reason)
+        return (
+            TurnResult(
+                response_text=blocked_reason,
+                blocked=True,
+                block_origin="input_guard",
+            ),
+            query,
+            suppress_routing_hint,
+            early_user_context,
+            pre_briefing,
+            "",
+            [],
+            "",
+            None,
+            None,
+        )
+    if input_guard_result.sanitized_text is not None:
+        query = input_guard_result.sanitized_text
+
+    # ── Phase 1.5: Pre-turn opportunistic slice ────────────────────────
+    # Fires before the model call so any state the recall/assemble
+    # hooks will read is fresh. Bounded by the pressure curve. The slice
+    # fire and the mode/stage instruction resolution live in
+    # ``_pre_turn_slice_and_instructions`` (Phase 6c: uniform instruction
+    # injection — the mode intro is the mode body, the current stage's
+    # body injects when the stage carries one).
+    slice_outcomes, mode_instruction, stage_instruction, _ = await _pre_turn_slice_and_instructions(
+        hooks=hooks,
+        mode_id=mode_id,
+        query=query,
+        mode_config=mode_config,
+        stage_id_override=stage_id_override,
+    )
+    system_prompt = assemble_system(mode_instruction, stage_instruction)
+    return (
+        None,
+        query,
+        suppress_routing_hint,
+        early_user_context,
+        pre_briefing,
+        system_prompt,
+        slice_outcomes,
+        mode_instruction,
+        stage_instruction,
+        ctx,
+    )
+
+
+async def _process_empty_completion(
+    *,
+    state: Any,
+    mode_id: str,
+    query: str,
+    completion: Any,
+    assistant_msg: dict[str, Any],
+    pre_handoff_text: str,
+    pending_yield: Any,
+    content: str,
+    content_source: str,
+    turn_reasoning_text: str,
+    stalled_write_guidance: str,
+    budget_forces_final: Callable[[], bool],
+    mode_config: Any,
+    turns_in_stage: int,
+    max_tool_iterations: int,
+    log: logging.Logger,
+) -> tuple[
+    list[dict[str, Any]],
+    bool,
+    str,
+    str,
+    str,
+    str,
+    bool,
+    str,
+    str,
+]:
+    """Handle a model completion with no tool calls (the empty-completion path).
+
+    Runs the forced-action enforcer / do-the-work backstop synthesis, applies
+    a pending forced yield, arms the write-contract backstop and the
+    stalled-write rescue, and returns the updated loop values plus a control
+    action: ``""`` (continue to dispatch the synthesized calls), ``"break"``
+    (end the turn with ``content``), or ``"continue"`` (next while-iteration).
+    """
+    synthesized_forced = False
+    tool_calls, synthesized_forced, pre_handoff_text = _synthesize_empty_completion_call(
+        state=state,
+        mode_id=mode_id,
+        query=query,
+        completion=completion,
+        assistant_msg=assistant_msg,
+        pre_handoff_text=pre_handoff_text,
+        log=log,
+    )
+
+    # Use the tail-quote extractor at this user-facing site so a
+    # reasoning model that burned its budget on thinking surfaces a
+    # short labeled quote of the tail of its reasoning instead of a
+    # wall of raw thought presented as the answer (the 2026-09-18
+    # rambling relapse). ``completion_content`` stays the canonical
+    # fold for parsers and the in-turn history recording above —
+    # only what is surfaced to the user is bounded here.
+    _visible_text, _tail_caveat = reasoning_tail_excerpt(completion)
+    content = _visible_text or _tail_caveat
+    if _tail_caveat:
+        content_source = REASONING_TAIL_CONTENT_SOURCE
+        # Keep the FULL reasoning for the thread entry (exhaustive
+        # at rest); the caveat quotes only its tail.
+        turn_reasoning_text = str(
+            getattr(completion, "reasoning_content", "")
+            or getattr(completion, "reasoning", "")
+            or ""
+        )
+
+    if not synthesized_forced:
+        # ── Unified turn lifecycle: apply pending yield ──────────
+        # A forced yield (stuck-in-stage cap, iteration cap, or
+        # recovery stall) was set earlier in this iteration. The
+        # model produced no tool calls (it either complied with the
+        # stripped-tools force-final path, or it finished naturally
+        # at the same iteration the cap fired). Instead of accepting
+        # the model's text as the final answer, break the loop with
+        # the yield's question as the turn content so the user can
+        # redirect. The thread entry records
+        # ``yielded=True`` on the thread entry.
+        #
+        # The hallucinated-transition guard, chain-incomplete guard,
+        # and write-tool guard that lived here were removed in the
+        # unified-lifecycle cutover. They injected ``user`` messages
+        # to correct models that narrated transitions instead of
+        # calling ``transition_stage``, or stopped silently with a
+        # routing hint active. The unified lifecycle replaces that
+        # "beg via nudges" pattern: the harness either forces a
+        # ``TransitionAction`` (the forced-fork/plan enforcers
+        # below, which are kernel-takes-over, not nudge-and-beg) or
+        # forces a ``YieldAction`` (the cap paths). The model's
+        # narrated transition is now accepted as a final response —
+        # if the workflow is incomplete, the user can reply and the
+        # routing hint will re-fire on the next turn.
+        if pending_yield is not None:
+            content = pending_yield.question
+            log.debug(
+                "turn lifecycle: applying forced yield (mode=%s, iteration=%d, target=%s)",
+                mode_id,
+                state.iteration,
+                pending_yield.target_mode_id or "(in-place)",
+            )
+            return (
+                tool_calls,
+                synthesized_forced,
+                pre_handoff_text,
+                content,
+                content_source,
+                turn_reasoning_text,
+                True,
+                stalled_write_guidance,
+                "break",
+            )
+
+        # ── Write-contract empty-completion backstop ──────────────
+        # Live in ``_arm_write_contract_backstop`` (gated narrowly
+        # to avoid masking genuine hallucination; arms the one-shot
+        # ``forced_work_tool`` synthesizer).
+        if _arm_write_contract_backstop(
+            state=state,
+            mode_id=mode_id,
+            mode_config=mode_config,
+            budget_forces_final=budget_forces_final,
+            log=log,
+        ):
+            return (
+                tool_calls,
+                synthesized_forced,
+                pre_handoff_text,
+                content,
+                content_source,
+                turn_reasoning_text,
+                False,
+                stalled_write_guidance,
+                "continue",
+            )
+
+        # ── Stalled-write rescue (read-work, no write attempt) ────
+        # Live in ``_arm_stalled_write_rescue`` (one-shot Phase-7
+        # guidance line riding the next iteration's briefing).
+        stalled_write_guidance = _arm_stalled_write_rescue(
+            state=state,
+            mode_id=mode_id,
+            mode_config=mode_config,
+            content=content,
+            turns_in_stage=turns_in_stage,
+            log=log,
+        )
+        if stalled_write_guidance:
+            return (
+                tool_calls,
+                synthesized_forced,
+                pre_handoff_text,
+                content,
+                content_source,
+                turn_reasoning_text,
+                False,
+                stalled_write_guidance,
+                "continue",
+            )
+
+        log.debug(
+            "turn loop: natural completion (mode=%s, iteration=%d, "
+            "no tool calls, no pending yield)",
+            mode_id,
+            state.iteration,
+        )
+        if not content:
+            # Natural completion with zero tool calls AND empty
+            # content: the provider produced nothing usable. This
+            # break path bypasses the ``if not tools_dispatched``
+            # warning further down (that block only runs when
+            # tool_calls existed but none dispatched), so without
+            # this diagnostic the post-loop fallback yields the
+            # "empty response" question with NO logged cause. The
+            # 2026-09-02 incident: glm-5.3-flash:cloud via Ollama
+            # burned the whole completion budget on reasoning the
+            # gateway did not extract, produced ``content=""``, and
+            # every such turn exited silently here.
+            # ``finish_reason`` distinguishes truncation
+            # (``length``) from a clean-but-empty stop.
+            log.warning(
+                "turn loop: natural completion returned empty content "
+                "(mode=%s, iteration=%d/%d, finish_reason=%s, "
+                "completion_tokens=%d, reasoning_tokens=%d) — "
+                "harness will yield for redirect; if "
+                "finish_reason=length, reasoning consumed the "
+                "completion budget before any visible text",
+                mode_id,
+                state.iteration,
+                max_tool_iterations,
+                getattr(completion, "finish_reason", "unknown"),
+                state.total_completion_tokens,
+                state.total_reasoning_tokens,
+            )
+    # A synthesized forced call falls through to the dispatch loop below
+    # (action ""); a natural completion ends the turn (action "break").
+    action = "" if synthesized_forced else "break"
+    return (
+        tool_calls,
+        synthesized_forced,
+        pre_handoff_text,
+        content,
+        content_source,
+        turn_reasoning_text,
+        False,
+        stalled_write_guidance,
+        action,
+    )
+
+
+class _TurnInfrastructure:
+    """Turn-scoped infrastructure assembled once before the tool loop.
+
+    Carries the delegate/fork/delegate closures, the call ledger, the
+    seeded ``_TurnState``, the guard caps, the routing context, and the
+    stage/tool-output emitters so the turn loop body stays flat.
+    """
+
+    __slots__ = (
+        "budget_forces_final_fn",
+        "delegate_fn",
+        "emit_stage",
+        "emit_stage_fn",
+        "emit_tool_output",
+        "emit_tool_output_fn",
+        "fork_fn",
+        "hint_override_limit",
+        "ledger",
+        "max_handoffs_per_turn",
+        "mcp_tool_executor",
+        "mcp_tool_executor_fn",
+        "on_stage_hook",
+        "record_model_usage_fn",
+        "resolve_iteration_model_fn",
+        "routing_ctx",
+        "state",
+        "tool_output_bus",
+        "turn_start_mono",
+        "yield_policy_override",
+    )
+
+    def __init__(
+        self,
+        *,
+        delegate_fn: Any,
+        ledger: CallLedger,
+        turn_start_mono: float,
+        state: Any,
+        on_stage_hook: Any,
+        max_handoffs_per_turn: int,
+        hint_override_limit: int,
+        yield_policy_override: YieldPolicy | None,
+        routing_ctx: RoutingContext,
+        emit_stage: Any,
+        tool_output_bus: Any,
+        emit_tool_output: Any,
+        fork_fn: Any,
+        mcp_tool_executor: Any,
+        resolve_iteration_model_fn: Any,
+        record_model_usage_fn: Any,
+        budget_forces_final_fn: Any,
+        emit_stage_fn: Any,
+        emit_tool_output_fn: Any,
+        mcp_tool_executor_fn: Any,
+    ) -> None:
+        self.delegate_fn = delegate_fn
+        self.ledger = ledger
+        self.turn_start_mono = turn_start_mono
+        self.state = state
+        self.on_stage_hook = on_stage_hook
+        self.max_handoffs_per_turn = max_handoffs_per_turn
+        self.hint_override_limit = hint_override_limit
+        self.yield_policy_override = yield_policy_override
+        self.routing_ctx = routing_ctx
+        self.emit_stage = emit_stage
+        self.tool_output_bus = tool_output_bus
+        self.emit_tool_output = emit_tool_output
+        self.fork_fn = fork_fn
+        self.mcp_tool_executor = mcp_tool_executor
+        self.resolve_iteration_model_fn = resolve_iteration_model_fn
+        self.record_model_usage_fn = record_model_usage_fn
+        self.budget_forces_final_fn = budget_forces_final_fn
+        self.emit_stage_fn = emit_stage_fn
+        self.emit_tool_output_fn = emit_tool_output_fn
+        self.mcp_tool_executor_fn = mcp_tool_executor_fn
+
+
+def _prepare_turn_infrastructure(
+    *,
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    mode_id: str,
+    query: str,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    exec_op: Any,
+    turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
+    max_tool_iterations: int,
+    logger_override: logging.Logger | None,
+    log: logging.Logger,
+    sub_turn_kind: str | None,
+    delegate_depth: int,
+    yield_policy_override: YieldPolicy | None,
+) -> _TurnInfrastructure:
+    """Assemble the turn-scoped infrastructure before the tool loop.
+
+    Builds the delegate/fork closures, the call ledger, the seeded
+    ``_TurnState`` (budget caps, sub-turn kind, action-tool contract), the
+    guard caps, the routing context, and the stage/tool-output emitters.
+    """
+    # ── Delegate hook wiring ──────────────────────────────────────────
+    # Build the ``delegate_fn`` closure that the pack-level ``delegate``
+    # operation calls via ``ctx.host.delegate(spec)``. The closure captures
+    # the turn's hooks, budget, execution policy, and the current depth so
+    # the delegate child runs as a ``sub_turn_kind="delegate"`` turn at
+    # ``depth + 1``. See ``_wire_delegate_fn``.
+    delegate_fn = _wire_delegate_fn(
+        hooks=hooks,
+        delegate_depth=delegate_depth,
+        turn_budget=turn_budget,
+        execution_policy=execution_policy,
+        logger_override=logger_override,
+    )
+
+    # Per-turn call ledger shared across all dispatch branches (operations,
+    # pack tools, MCP tools). Enforces ``max_calls_per_turn`` uniformly; the
+    # declarative operation runtime keeps its own in-loop counter for its
+    # bounded sub-agent, but the ledger is the authoritative cross-branch cap.
+    ledger = CallLedger()
+    # Wall-clock anchor for the turn budget. Captured once so every budget
+    # check measures from the same origin.
+    turn_start_mono = time.monotonic()
+
+    # ── Mutable turn state (extracted to _TurnState) ───────────────────
+    # Promoted from nested closures to a dataclass + module-level functions
+    # in kernel.turn_phases._turn_state.  The state object is threaded
+    # through every helper call instead of being captured by closures.
+    from kernel.turn_phases._turn_state import _TurnState
+    from kernel.turn_phases._turn_state import (
+        budget_forces_final as budget_forces_final_fn,
+    )
+    from kernel.turn_phases._turn_state import emit_stage as emit_stage_fn
+    from kernel.turn_phases._turn_state import (
+        emit_tool_output as emit_tool_output_fn,
+    )
+    from kernel.turn_phases._turn_state import (
+        mcp_tool_executor as mcp_tool_executor_fn,
+    )
+    from kernel.turn_phases._turn_state import (
+        record_model_usage as record_model_usage_fn,
+    )
+    from kernel.turn_phases._turn_state import (
+        resolve_iteration_model as resolve_iteration_model_fn,
+    )
+
+    state = _TurnState()
+    # Expose the budget caps on the turn state so ``emit_stage`` stamps
+    # them on every stage payload. The transport uses them to render
+    # graphical counters (pip rows / sparklines) against the correct
+    # denominator. ``max_tool_iterations`` is the global iteration cap;
+    # ``max_tool_calls`` comes from the per-turn ``TurnBudget`` (0 =
+    # unlimited, in which case the transport falls back to a saturating
+    # counter).
+    state.max_iterations = max_tool_iterations
+    state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
+    state.max_handoffs = _kernel_settings.max_handoffs_per_turn
+    # ── Completion-contract state (sub-turns AND parent) ──────────
+    # Resolve the mode's required side-effecting capabilities once at
+    # turn start so the budget briefing and the midpoint write-nudge can
+    # name them without re-resolving every iteration, and so the Phase-3
+    # parent-turn receipt check (Phase 8) validates the parent against
+    # the same contract fork children are held to.
+    # ``mode_completion_effects`` is the canonical resolver shared with
+    # the child-turn classifier, so the briefing names the same action
+    # tools the validator checks — including ``mode_allowlist``-admitted
+    # operations the old authored-only resolver missed. Refreshed on
+    # every mid-turn mode handoff so the contract follows the mode the
+    # turn actually ends in.
+    if sub_turn_kind:
+        state.sub_turn_kind = sub_turn_kind
+    try:
+        state.action_tool_ids = mode_completion_effects(mode_id, mcp_pool=pool)
+    except Exception:  # pylint: disable=broad-except
+        state.action_tool_ids = set()
+    on_stage_hook = hooks.lifecycle.on_stage
+
+    # Turn-runner guard caps, read once from the kernel settings singleton
+    # (``kernel.config.Settings``). The three referenced multiple times
+    # per turn are bound to locals to avoid repeated attribute lookups in
+    # the hot loop; the rest are read directly from ``_kernel_settings``
+    # at their single use site. See the Settings fields for env-var
+    # overrides and the incidents each cap guards against.
+    max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
+    hint_override_limit = _kernel_settings.hint_override_limit
+    # The fork fan-out passes ``YieldPolicy(allowed=False)`` here so a fork
+    # child's ``yield`` tool surface and lifecycle resolution enforce the
+    # no-ask invariant. ``None`` (foreground / non-fork path) means
+    # ``_resolve_yield_policy`` reads the mode's authored ``yield_policy``.
+
+    # ── Unified routing applier (Phase 3) ─────────────────────────────
+    # The routing context bundles the host/session identity once so every
+    # handoff origin (planner entry op, model transition_stage, forced
+    # synthesis) saves the coordinator decision under the same identity via
+    # ``kernel.turn_phases._routing``.
+    routing_ctx = RoutingContext(
+        query=query,
+        surface_id=str(hooks.identity.surface_id or ""),
+        conversation_id=str(hooks.identity.conversation_id or ""),
+        user_id=str(hooks.identity.user_id or ""),
+        session_plan_digest=str(hooks.identity.session_plan_digest or ""),
+    )
+
+    async def emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
+        await emit_stage_fn(state, on_stage_hook, log, label, data)
+
+    # ── Tool-output streaming wiring ────────────────────────────────
+    # Pack tools that declare ``stream_output: true`` publish incremental
+    # operator-visible lines on the ``lisa.tool_output`` event-bus topic
+    # (``ctx.event_bus``). When a bus is present, the host-side subscriber
+    # re-emits each line through the same ``on_stage`` hook as a
+    # ``tool_output`` stage event so transports can render a live scrolling
+    # region. Without a bus (headless tests, MCP server) this is a no-op —
+    # the tool's publish call simply finds no subscribers.
+    # See ``_wire_tool_output_events``.
+    tool_output_bus, emit_tool_output = _wire_tool_output_events(
+        state=state,
+        hooks=hooks,
+        on_stage_hook=on_stage_hook,
+        emit_tool_output_fn=emit_tool_output_fn,
+        log=log,
+    )
+
+    # ── Fork hook wiring ──────────────────────────────────────────────
+    # Build the ``fork_fn`` closure that the pack-level ``fork`` operation
+    # calls via ``ctx.host.fork(spec)``. Built after ``emit_stage`` is
+    # defined (unlike ``delegate_fn``) because the fan-out emits fork
+    # stage events through it. See ``_wire_fork_fn``.
+    fork_fn = _wire_fork_fn(
+        hooks=hooks,
+        pool=pool,
+        resolve_model=resolve_model,
+        complete=complete,
+        exec_op=exec_op,
+        turn_budget=turn_budget,
+        execution_policy=execution_policy,
+        turn_start_mono=turn_start_mono,
+        logger_override=logger_override,
+        emit_stage=emit_stage,
+        max_tool_iterations=max_tool_iterations,
+    )
+
+    async def mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
+        return await mcp_tool_executor_fn(tool_id, _ctx, pool)
+
+    return _TurnInfrastructure(
+        delegate_fn=delegate_fn,
+        ledger=ledger,
+        turn_start_mono=turn_start_mono,
+        state=state,
+        on_stage_hook=on_stage_hook,
+        max_handoffs_per_turn=max_handoffs_per_turn,
+        hint_override_limit=hint_override_limit,
+        yield_policy_override=yield_policy_override,
+        routing_ctx=routing_ctx,
+        emit_stage=emit_stage,
+        tool_output_bus=tool_output_bus,
+        emit_tool_output=emit_tool_output,
+        fork_fn=fork_fn,
+        mcp_tool_executor=mcp_tool_executor,
+        resolve_iteration_model_fn=resolve_iteration_model_fn,
+        record_model_usage_fn=record_model_usage_fn,
+        budget_forces_final_fn=budget_forces_final_fn,
+        emit_stage_fn=emit_stage_fn,
+        emit_tool_output_fn=emit_tool_output_fn,
+        mcp_tool_executor_fn=mcp_tool_executor_fn,
+    )
+
+
 async def _run_turn_inner(
     *,
     mode_id: str,
@@ -6056,262 +6897,102 @@ async def _run_turn_inner(
 
     _log = logger_override or logger
 
-    # ── Delegate hook wiring ──────────────────────────────────────────
-    # Build the ``delegate_fn`` closure that the pack-level ``delegate``
-    # operation calls via ``ctx.host.delegate(spec)``. The closure captures
-    # the turn's hooks, budget, execution policy, and the current depth so
-    # the delegate child runs as a ``sub_turn_kind="delegate"`` turn at
-    # ``depth + 1``. See ``_wire_delegate_fn``.
-    _delegate_fn = _wire_delegate_fn(
-        hooks=hooks,
-        delegate_depth=delegate_depth,
-        turn_budget=turn_budget,
-        execution_policy=execution_policy,
-        logger_override=logger_override,
-    )
-
-    # Per-turn call ledger shared across all dispatch branches (operations,
-    # pack tools, MCP tools). Enforces ``max_calls_per_turn`` uniformly; the
-    # declarative operation runtime keeps its own in-loop counter for its
-    # bounded sub-agent, but the ledger is the authoritative cross-branch cap.
-    ledger = CallLedger()
-    # Wall-clock anchor for the turn budget. Captured once so every budget
-    # check measures from the same origin.
-    turn_start_mono = time.monotonic()
-
-    # ── Mutable turn state (extracted to _TurnState) ───────────────────
-    # Promoted from nested closures to a dataclass + module-level functions
-    # in kernel.turn_phases._turn_state.  The state object is threaded
-    # through every helper call instead of being captured by closures.
-    from kernel.turn_phases._turn_state import (
-        _TurnState,
-    )
-    from kernel.turn_phases._turn_state import (
-        budget_forces_final as _budget_forces_final_fn,
-    )
-    from kernel.turn_phases._turn_state import (
-        emit_stage as _emit_stage_fn,
-    )
-    from kernel.turn_phases._turn_state import (
-        emit_tool_output as _emit_tool_output_fn,
-    )
-    from kernel.turn_phases._turn_state import (
-        mcp_tool_executor as _mcp_tool_executor_fn,
-    )
-    from kernel.turn_phases._turn_state import (
-        record_model_usage as _record_model_usage_fn,
-    )
-    from kernel.turn_phases._turn_state import (
-        resolve_iteration_model as _resolve_iteration_model_fn,
-    )
-
-    _state = _TurnState()
-    # Expose the budget caps on the turn state so ``emit_stage`` stamps
-    # them on every stage payload. The transport uses them to render
-    # graphical counters (pip rows / sparklines) against the correct
-    # denominator. ``max_tool_iterations`` is the global iteration cap;
-    # ``max_tool_calls`` comes from the per-turn ``TurnBudget`` (0 =
-    # unlimited, in which case the transport falls back to a saturating
-    # counter).
-    _state.max_iterations = max_tool_iterations
-    _state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
-    _state.max_handoffs = _kernel_settings.max_handoffs_per_turn
-    # ── Completion-contract state (sub-turns AND parent) ──────────
-    # Resolve the mode's required side-effecting capabilities once at
-    # turn start so the budget briefing and the midpoint write-nudge can
-    # name them without re-resolving every iteration, and so the Phase-3
-    # parent-turn receipt check (Phase 8) validates the parent against
-    # the same contract fork children are held to.
-    # ``mode_completion_effects`` is the canonical resolver shared with
-    # the child-turn classifier, so the briefing names the same action
-    # tools the validator checks — including ``mode_allowlist``-admitted
-    # operations the old authored-only resolver missed. Refreshed on
-    # every mid-turn mode handoff so the contract follows the mode the
-    # turn actually ends in.
-    if sub_turn_kind:
-        _state.sub_turn_kind = sub_turn_kind
-    try:
-        _state.action_tool_ids = mode_completion_effects(mode_id, mcp_pool=pool)
-    except Exception:  # pylint: disable=broad-except
-        _state.action_tool_ids = set()
-    _on_stage_hook = hooks.lifecycle.on_stage
-
-    # Turn-runner guard caps, read once from the kernel settings singleton
-    # (``kernel.config.Settings``). The three referenced multiple times
-    # per turn are bound to locals to avoid repeated attribute lookups in
-    # the hot loop; the rest are read directly from ``_kernel_settings``
-    # at their single use site. See the Settings fields for env-var
-    # overrides and the incidents each cap guards against.
-    _max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
-    _hint_override_limit = _kernel_settings.hint_override_limit
-    # The fork fan-out passes ``YieldPolicy(allowed=False)`` here so a fork
-    # child's ``yield`` tool surface and lifecycle resolution enforce the
-    # no-ask invariant. ``None`` (foreground / non-fork path) means
-    # ``_resolve_yield_policy`` reads the mode's authored ``yield_policy``.
-    _yield_policy_override = yield_policy_override
-
-    # ── Unified routing applier (Phase 3) ─────────────────────────────
-    # The routing context bundles the host/session identity once so every
-    # handoff origin (planner entry op, model transition_stage, forced
-    # synthesis) saves the coordinator decision under the same identity via
-    # ``kernel.turn_phases._routing``.
-    _routing_ctx = RoutingContext(
-        query=query,
-        surface_id=str(hooks.identity.surface_id or ""),
-        conversation_id=str(hooks.identity.conversation_id or ""),
-        user_id=str(hooks.identity.user_id or ""),
-        session_plan_digest=str(hooks.identity.session_plan_digest or ""),
-    )
-
-    async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
-        await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
-
-    # ── Tool-output streaming wiring ────────────────────────────────
-    # Pack tools that declare ``stream_output: true`` publish incremental
-    # operator-visible lines on the ``lisa.tool_output`` event-bus topic
-    # (``ctx.event_bus``). When a bus is present, the host-side subscriber
-    # re-emits each line through the same ``on_stage`` hook as a
-    # ``tool_output`` stage event so transports can render a live scrolling
-    # region. Without a bus (headless tests, MCP server) this is a no-op —
-    # the tool's publish call simply finds no subscribers.
-    # See ``_wire_tool_output_events``.
-    _tool_output_bus, _emit_tool_output = _wire_tool_output_events(
-        state=_state,
-        hooks=hooks,
-        on_stage_hook=_on_stage_hook,
-        emit_tool_output_fn=_emit_tool_output_fn,
-        log=_log,
-    )
-
-    # ── Fork hook wiring ──────────────────────────────────────────────
-    # Build the ``fork_fn`` closure that the pack-level ``fork`` operation
-    # calls via ``ctx.host.fork(spec)``. Built after ``_emit_stage`` is
-    # defined (unlike ``_delegate_fn``) because the fan-out emits fork
-    # stage events through it. See ``_wire_fork_fn``.
-    _fork_fn = _wire_fork_fn(
+    # ── Turn infrastructure (state, wirings, caps, routing context) ──
+    # Delegate/fork wirings, the call ledger, ``_TurnState`` seeding, the
+    # guard caps, the routing context, and the stage/tool-output emitters
+    # all live in ``_prepare_turn_infrastructure``.
+    _infra = _prepare_turn_infrastructure(
         hooks=hooks,
         pool=pool,
+        mode_id=mode_id,
+        query=query,
         resolve_model=resolve_model,
         complete=complete,
         exec_op=exec_op,
         turn_budget=turn_budget,
         execution_policy=execution_policy,
-        turn_start_mono=turn_start_mono,
-        logger_override=logger_override,
-        emit_stage=_emit_stage,
         max_tool_iterations=max_tool_iterations,
+        logger_override=logger_override,
+        log=_log,
+        sub_turn_kind=sub_turn_kind,
+        delegate_depth=delegate_depth,
+        yield_policy_override=yield_policy_override,
     )
-
-    async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
-        return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
+    _delegate_fn = _infra.delegate_fn
+    ledger = _infra.ledger
+    turn_start_mono = _infra.turn_start_mono
+    _state = _infra.state
+    _on_stage_hook = _infra.on_stage_hook
+    _max_handoffs_per_turn = _infra.max_handoffs_per_turn
+    _hint_override_limit = _infra.hint_override_limit
+    _yield_policy_override = _infra.yield_policy_override
+    _routing_ctx = _infra.routing_ctx
+    _emit_stage = _infra.emit_stage
+    _tool_output_bus = _infra.tool_output_bus
+    _emit_tool_output = _infra.emit_tool_output
+    _fork_fn = _infra.fork_fn
+    _mcp_tool_executor = _infra.mcp_tool_executor
+    _resolve_iteration_model_fn = _infra.resolve_iteration_model_fn
+    _record_model_usage_fn = _infra.record_model_usage_fn
+    _budget_forces_final_fn = _infra.budget_forces_final_fn
+    _emit_stage_fn = _infra.emit_stage_fn
+    _emit_tool_output_fn = _infra.emit_tool_output_fn
+    _mcp_tool_executor_fn = _infra.mcp_tool_executor_fn
 
     # ── Phase 1: Pre-turn (entry operations and plan execution) ───────
-    def _build_entry_ctx(**overrides: Any) -> Any:
-        base_ctx_kwargs = dict(
-            mode_id=mode_id,
-            query=query,
-            resolve_model_fn=resolve_model,
-            complete_fn=complete,
-            read_authored_text_fn=getattr(
-                hooks.context_seams.content_registry,
-                "read_authored_text",
-                None,
-            ),
-            execute_tool_fn=_mcp_tool_executor,
-            execute_operation_fn=exec_op,
-            state_provider=hooks.services.state_provider,
-            pack_configuration_resolver=hooks.services.pack_configuration_resolver,
-            approval_service=hooks.services.approval_service,
-            code_change_artifact_store=hooks.services.code_change_artifact_store,
-            gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-            workspace_id=hooks.identity.workspace_id,
-            user_id=hooks.identity.user_id,
-            user_slug=hooks.identity.user_slug,
-            user_name=hooks.identity.user_name,
-            principal_key=hooks.identity.principal_key,
-            conversation_id=hooks.identity.conversation_id,
-            surface_type=hooks.identity.surface_type,
-            surface_id=hooks.identity.surface_id,
-            memory_scope=hooks.identity.memory_scope,
-            session_plan_digest=hooks.identity.session_plan_digest,
-            data_dir=hooks.services.data_dir,
-            delegate_fn=_delegate_fn,
-            fork_fn=_fork_fn,
-            model_router=hooks.context_seams.model_router,
-            event_bus=_tool_output_bus,
-        )
-        base_ctx_kwargs.update(overrides)
-        return _build_minimal_context(**base_ctx_kwargs)
-
-    _entry_result = await execute_entry_phase(
+    # The entry-context builder closure lives in
+    # ``_wire_build_entry_ctx`` (module-level factory binding the
+    # executor/delegate/fork seams).
+    _build_entry_ctx = _wire_build_entry_ctx(
+        hooks=hooks,
         mode_id=mode_id,
         query=query,
-        mode_config=mode_config,
-        hooks=hooks,
-        ledger=ledger,
-        execution_policy=execution_policy,
-        routing_ctx=_routing_ctx,
-        preferred_model_id=preferred_model_id,
-        assemble_user_fn=assemble_user,
-        build_minimal_context_fn=_build_entry_ctx,
-        plan_steps_to_workflow_steps_fn=_plan_steps_to_workflow_steps,
-        promises_routing_contract_fn=_promises_routing_contract,
-        resume_in_flight_target_fn=_resume_in_flight_target,
-        run_mode_entry_operations_fn=run_mode_entry_operations,
+        resolve_model=resolve_model,
+        complete=complete,
+        exec_op=exec_op,
+        mcp_tool_executor=_mcp_tool_executor,
+        delegate_fn=_delegate_fn,
+        fork_fn=_fork_fn,
+        tool_output_bus=_tool_output_bus,
     )
-    if _entry_result.early_return is not None:
-        return _entry_result.early_return
 
-    if _entry_result.pending_planned_handoff:
-        _state.pending_planned_handoff = _entry_result.pending_planned_handoff
-    if _entry_result.plan_prefix:
-        _state.plan_prefix = _entry_result.plan_prefix
-    if _entry_result.suppress_routing_hint:
-        suppress_routing_hint = True
-    if _entry_result.first_step_query:
-        query = _entry_result.first_step_query
-    _early_user_context = _entry_result.early_user_context
-
-    # Chat/workflow modes: run pre-turn operations
-    ctx = _build_entry_ctx(conversation_excerpt_markdown=_early_user_context)
-    pre_result = await run_mode_pre_turn_operations(
-        mode_id,
+    # ── Phase 1 run (entry phase, pre-turn ops, input guard) ───────
+    # Early returns (entry early_return, input-guard block) come back as
+    # ``early_return``; the updated query and suppress flag come back with
+    # the early user context. See ``_run_turn_entry_sequence``.
+    (
+        _entry_early_return,
+        query,
+        suppress_routing_hint,
+        _early_user_context,
+        pre_briefing,
+        system_prompt,
+        slice_outcomes,
+        mode_instruction,
+        _,  # stage_instruction — consumed inside the helper
         ctx,
-        ledger=ledger,
-        execution_policy=execution_policy,
-    )
-    pre_briefing = _extract_pre_turn_briefing(pre_result)
-    # ── Phase 1.0: Input guard ─────────────────────────────────────
-    # Runs before the pre-turn slice so a blocked input does not consume
-    # house-keeping budget. A sanitizing guard rewrites the query for the
-    # remainder of the turn.
-    input_guard_result = await _validate_turn_input(hooks, query)
-    if not input_guard_result.allowed:
-        blocked_reason = input_guard_result.blocked_reason or "Input blocked by safety policy."
-        _log.warning("Input guard blocked turn for mode=%s: %s", mode_id, blocked_reason)
-        return TurnResult(
-            response_text=blocked_reason,
-            blocked=True,
-            block_origin="input_guard",
-        )
-    if input_guard_result.sanitized_text is not None:
-        query = input_guard_result.sanitized_text
-
-    # ── Phase 1.5: Pre-turn opportunistic slice ────────────────────────
-    # Fires before the model call so any state the recall/assemble
-    # hooks will read is fresh. Bounded by the pressure curve. The slice
-    # fire and the mode/stage instruction resolution live in
-    # ``_pre_turn_slice_and_instructions`` (Phase 6c: uniform instruction
-    # injection — the mode intro is the mode body, the current stage's
-    # body injects when the stage carries one).
-    slice_outcomes, mode_instruction, stage_instruction, _ = await _pre_turn_slice_and_instructions(
+    ) = await _run_turn_entry_sequence(
         hooks=hooks,
         mode_id=mode_id,
         query=query,
         mode_config=mode_config,
         stage_id_override=stage_id_override,
+        ledger=ledger,
+        execution_policy=execution_policy,
+        routing_ctx=_routing_ctx,
+        preferred_model_id=preferred_model_id,
+        assemble_user=assemble_user,
+        assemble_system=assemble_system,
+        build_entry_ctx=_build_entry_ctx,
+        plan_steps_to_workflow_steps_fn=_plan_steps_to_workflow_steps,
+        promises_routing_contract_fn=_promises_routing_contract,
+        resume_in_flight_target_fn=_resume_in_flight_target,
+        run_mode_entry_operations_fn=run_mode_entry_operations,
+        state=_state,
+        log=_log,
     )
-    system_prompt = assemble_system(mode_instruction, stage_instruction)
+    if _entry_early_return is not None:
+        return _entry_early_return
 
     # Build the tool surface for this turn via the single shared assembler
     # (kernel.turn_phases._tool_schemas.build_tool_surface). The post-handoff
@@ -6709,27 +7390,13 @@ async def _run_turn_inner(
             _state.iteration,
         )
         _router_decision = _state.pending_router_decision
-        if _router_decision is not None:
-            if _router_decision.finish.strip():
-                _log.debug(
-                    "router finish action (iteration=%d, reason=%s); forcing final",
-                    _state.iteration,
-                    _router_decision.finish,
-                )
-                effective_tools = None
-            elif _router_decision.transition_to.strip():
-                _target_stage = _router_decision.transition_to.strip()
-                # The transition target is recorded on the TurnResult
-                # (``transitioned_to``) and written to the thread; the
-                # WorkflowView derives the stage from it on the next turn.
-                # No mutable position is updated here.
-                transitioned_to = _target_stage
-                _log.debug(
-                    "router transition_to action (iteration=%d, stage=%s); forcing final summary",
-                    _state.iteration,
-                    _target_stage,
-                )
-                effective_tools = None
+        effective_tools, transitioned_to = _apply_router_terminal_action(
+            state=_state,
+            router_decision=_router_decision,
+            effective_tools=effective_tools,
+            transitioned_to=transitioned_to,
+            log=_log,
+        )
 
         # ── Kernel-driven planned handoff synthesis ───────────────────
         # ── Provider-gateway dispatch (single live completion path) ──
@@ -6775,136 +7442,38 @@ async def _run_turn_inner(
         # iteration (2026-08-27 planner transition turn).
         _synthesized_forced = False
         if not tool_calls:
-            # ── Forced-action enforcer / do-the-work backstop ───────
-            # (empty-completion path). Both syntheses live in
-            # ``_synthesize_empty_completion_call``.
-            tool_calls, _synthesized_forced, _pre_handoff_text = _synthesize_empty_completion_call(
+            (
+                tool_calls,
+                _synthesized_forced,
+                _pre_handoff_text,
+                content,
+                _content_source,
+                _turn_reasoning_text,
+                _yielded,
+                _stalled_write_guidance,
+                _empty_action,
+            ) = await _process_empty_completion(
                 state=_state,
                 mode_id=mode_id,
                 query=query,
                 completion=completion,
                 assistant_msg=assistant_msg,
                 pre_handoff_text=_pre_handoff_text,
+                pending_yield=_pending_yield,
+                content=content,
+                content_source=_content_source,
+                turn_reasoning_text=_turn_reasoning_text,
+                stalled_write_guidance=_stalled_write_guidance,
+                budget_forces_final=_budget_forces_final,
+                mode_config=mode_config,
+                turns_in_stage=_turns_in_stage,
+                max_tool_iterations=max_tool_iterations,
                 log=_log,
             )
-
-            # Use the tail-quote extractor at this user-facing site so a
-            # reasoning model that burned its budget on thinking surfaces a
-            # short labeled quote of the tail of its reasoning instead of a
-            # wall of raw thought presented as the answer (the 2026-09-18
-            # rambling relapse). ``completion_content`` stays the canonical
-            # fold for parsers and the in-turn history recording above —
-            # only what is surfaced to the user is bounded here.
-            _visible_text, _tail_caveat = reasoning_tail_excerpt(completion)
-            content = _visible_text or _tail_caveat
-            if _tail_caveat:
-                _content_source = REASONING_TAIL_CONTENT_SOURCE
-                # Keep the FULL reasoning for the thread entry (exhaustive
-                # at rest); the caveat quotes only its tail.
-                _turn_reasoning_text = str(
-                    getattr(completion, "reasoning_content", "")
-                    or getattr(completion, "reasoning", "")
-                    or ""
-                )
-
-            if not _synthesized_forced:
-                # ── Unified turn lifecycle: apply pending yield ──────────
-                # A forced yield (stuck-in-stage cap, iteration cap, or
-                # recovery stall) was set earlier in this iteration. The
-                # model produced no tool calls (it either complied with the
-                # stripped-tools force-final path, or it finished naturally
-                # at the same iteration the cap fired). Instead of accepting
-                # the model's text as the final answer, break the loop with
-                # the yield's question as the turn content so the user can
-                # redirect. The thread entry records
-                # ``yielded=True`` on the thread entry.
-                #
-                # The hallucinated-transition guard, chain-incomplete guard,
-                # and write-tool guard that lived here were removed in the
-                # unified-lifecycle cutover. They injected ``user`` messages
-                # to correct models that narrated transitions instead of
-                # calling ``transition_stage``, or stopped silently with a
-                # routing hint active. The unified lifecycle replaces that
-                # "beg via nudges" pattern: the harness either forces a
-                # ``TransitionAction`` (the forced-fork/plan enforcers
-                # below, which are kernel-takes-over, not nudge-and-beg) or
-                # forces a ``YieldAction`` (the cap paths). The model's
-                # narrated transition is now accepted as a final response —
-                # if the workflow is incomplete, the user can reply and the
-                # routing hint will re-fire on the next turn.
-                if _pending_yield is not None:
-                    content = _pending_yield.question
-                    _yielded = True
-                    _log.debug(
-                        "turn lifecycle: applying forced yield (mode=%s, iteration=%d, target=%s)",
-                        mode_id,
-                        _state.iteration,
-                        _pending_yield.target_mode_id or "(in-place)",
-                    )
-                    break
-
-                # ── Write-contract empty-completion backstop ──────────────
-                # Live in ``_arm_write_contract_backstop`` (gated narrowly
-                # to avoid masking genuine hallucination; arms the one-shot
-                # ``forced_work_tool`` synthesizer).
-                if _arm_write_contract_backstop(
-                    state=_state,
-                    mode_id=mode_id,
-                    mode_config=mode_config,
-                    budget_forces_final=_budget_forces_final,
-                    log=_log,
-                ):
-                    continue
-
-                # ── Stalled-write rescue (read-work, no write attempt) ────
-                # Live in ``_arm_stalled_write_rescue`` (one-shot Phase-7
-                # guidance line riding the next iteration's briefing).
-                _stalled_write_guidance = _arm_stalled_write_rescue(
-                    state=_state,
-                    mode_id=mode_id,
-                    mode_config=mode_config,
-                    content=content,
-                    turns_in_stage=_turns_in_stage,
-                    log=_log,
-                )
-                if _stalled_write_guidance:
-                    continue
-
-                _log.debug(
-                    "turn loop: natural completion (mode=%s, iteration=%d, "
-                    "no tool calls, no pending yield)",
-                    mode_id,
-                    _state.iteration,
-                )
-                if not content:
-                    # Natural completion with zero tool calls AND empty
-                    # content: the provider produced nothing usable. This
-                    # break path bypasses the ``if not tools_dispatched``
-                    # warning further down (that block only runs when
-                    # tool_calls existed but none dispatched), so without
-                    # this diagnostic the post-loop fallback yields the
-                    # "empty response" question with NO logged cause. The
-                    # 2026-09-02 incident: glm-5.3-flash:cloud via Ollama
-                    # burned the whole completion budget on reasoning the
-                    # gateway did not extract, produced ``content=""``, and
-                    # every such turn exited silently here.
-                    # ``finish_reason`` distinguishes truncation
-                    # (``length``) from a clean-but-empty stop.
-                    _log.warning(
-                        "turn loop: natural completion returned empty content "
-                        "(mode=%s, iteration=%d/%d, finish_reason=%s, "
-                        "completion_tokens=%d, reasoning_tokens=%d) — "
-                        "harness will yield for redirect; if "
-                        "finish_reason=length, reasoning consumed the "
-                        "completion budget before any visible text",
-                        mode_id,
-                        _state.iteration,
-                        max_tool_iterations,
-                        getattr(completion, "finish_reason", "unknown"),
-                        _state.total_completion_tokens,
-                        _state.total_reasoning_tokens,
-                    )
+            if _empty_action == "break":
                 break
+            if _empty_action == "continue":
+                continue
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.
         tools_dispatched = False
@@ -7117,10 +7686,13 @@ async def _run_turn_inner(
                     if _ti.action == "break":
                         break
                     continue
-                # Capability dispatch (operation, pack tool, or MCP tool)
-                _outcome = await dispatch_capability(
+                # Capability dispatch (operation, pack tool, or MCP tool) —
+                # the dispatch, receipt tracking, stage emit, and the
+                # delegate-yield propagation live in
+                # ``_dispatch_capability_and_track``.
+                _disp = await _dispatch_capability_and_track(
                     tool_name=tool_name,
-                    tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
+                    tool_arguments=tool_arguments,
                     tool_kind=_tool_kind,
                     ctx=ctx,
                     state=_state,
@@ -7133,48 +7705,17 @@ async def _run_turn_inner(
                     recovery_item_id=recovery_item_id,
                     recovery_retry_policy=recovery_retry_policy,
                     build_recovery_identity_fn=_build_recovery_identity,
+                    messages=messages,
+                    tool_call_id=tool_call_id,
+                    mode_id=mode_id,
+                    emit_stage=_emit_stage,
                     log=_log,
                 )
-                tool_output = _outcome.tool_output
-
-                await _emit_stage(
-                    "tool_dispatch_complete",
-                    {
-                        "tool": tool_name,
-                        "tool_kind": _tool_kind,
-                        "_state.iteration": _state.iteration,
-                        "tool_calls_so_far": _state.total_tool_calls,
-                        "ok": _outcome.is_ok,
-                        "duration_ms": _outcome.duration_ms,
-                        "result_preview": str(tool_output)[:200],
-                    },
-                )
-
-                if not tool_output.strip():
-                    tool_output = "Done"
-
-                # Track the latest tool result for the model router.
-                _state.last_tool_result_text = str(tool_output)
-                _state.last_operation_result = _outcome.operation_result
-                _state.tool_results_received += 1
-
-                if _outcome.delegate_yield is not None:
-                    _pending_yield = _outcome.delegate_yield
+                tool_output = _disp["tool_output"]
+                if _disp["delegate_yield"] is not None:
+                    _pending_yield = _disp["delegate_yield"]
                     content = _pending_yield.question
                     _yielded = True
-                    _log.info(
-                        "delegate child model_yield propagated to user (mode=%s, iteration=%d)",
-                        mode_id,
-                        _state.iteration,
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": f"Yielded to user: {_pending_yield.question}",
-                        }
-                    )
                     break
             except ApprovalRequired:
                 raise
@@ -7322,34 +7863,16 @@ async def _run_turn_inner(
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
-    guard_surface = _turn_guard_surface(hooks)
-    output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
-    if not turn_blocked:
-        if not output_guard_result.allowed:
-            original_len = len(content)
-            safe_fallback = "I'm unable to provide that response. Please rephrase your request."
-            _log.warning(
-                "Output guard blocked turn for mode=%s (original_len=%d)",
-                mode_id,
-                original_len,
-            )
-            try:
-                await hooks.context_seams.event_bus.publish(
-                    "guardrail.audit",
-                    {
-                        "surface_id": guard_surface.surface_id,
-                        "mode_id": mode_id,
-                        "blocked_reason": output_guard_result.blocked_reason or "",
-                        "original_text_len": original_len,
-                    },
-                )
-            except Exception as audit_exc:  # pylint: disable=broad-except
-                _log.warning("guardrail.audit publish failed: %s", audit_exc)
-            content = safe_fallback
-            turn_blocked = True
-            _block_origin = "output_guard"
-        elif output_guard_result.sanitized_text is not None:
-            content = output_guard_result.sanitized_text
+    # The guard call, audit publish, and sanitization live in
+    # ``_apply_output_guard``.
+    content, turn_blocked, _block_origin = await _apply_output_guard(
+        hooks=hooks,
+        mode_id=mode_id,
+        content=content,
+        turn_blocked=turn_blocked,
+        block_origin=_block_origin,
+        log=_log,
+    )
 
     await on_complete(mode_id, query, content, messages, list(_state.effect_receipts))
 
