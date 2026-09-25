@@ -244,27 +244,17 @@ def format_token_stats(runtime: HostRuntime) -> str:
     return "\n".join(lines)
 
 
-def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
-    """Read the full ``token-usage.jsonl`` and return a lifetime Markdown section.
+def _aggregate_lifetime_usage(
+    lines: list[str],
+) -> dict[str, Any] | None:
+    """Aggregate the parsed token-usage JSONL lines into lifetime totals.
 
-    Aggregates every persisted ``TokenUsageEvent`` (across all sessions) into
-    prompt / completion / total / cached / reasoning / billed totals, a
-    per-model breakdown, total estimated cost, event count, and the
-    first/last event timestamps. Returns an empty list when the log is
-    missing or empty so ``/tokens`` degrades gracefully to the session view.
+    Returns:
+        A dict of aggregate totals (prompt/completion/total/cached/reasoning/
+        cache_creation tokens, cost, event count, first/last timestamps,
+        and the per-model breakdown), or ``None`` when no parsable event
+        lines were found.
     """
-    if token_usage_path is None:
-        return []
-    try:
-        path = token_usage_path
-        if not path.exists():
-            return []
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    if not lines:
-        return []
-
     prompt = 0
     completion = 0
     total = 0
@@ -326,7 +316,35 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
             entry["cache_creation_tokens"] += rec_cache_creation
 
     if event_count == 0:
-        return []
+        return None
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "total": total,
+        "cached": cached,
+        "reasoning": reasoning,
+        "cache_creation": cache_creation,
+        "cost": cost,
+        "event_count": event_count,
+        "first_at": first_at,
+        "last_at": last_at,
+        "model_totals": model_totals,
+    }
+
+
+def _render_lifetime_usage_lines(agg: dict[str, Any]) -> list[str]:
+    """Render the aggregated lifetime totals as the Markdown section lines."""
+    prompt = agg["prompt"]
+    completion = agg["completion"]
+    total = agg["total"]
+    cached = agg["cached"]
+    reasoning = agg["reasoning"]
+    cache_creation = agg["cache_creation"]
+    cost = agg["cost"]
+    event_count = agg["event_count"]
+    first_at = agg["first_at"]
+    last_at = agg["last_at"]
+    model_totals: dict[str, dict[str, int]] = agg["model_totals"]
 
     billed = max(0, total - cached)
     # Cache-read share: tokens served from cache as a fraction of everything
@@ -353,7 +371,7 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
                 "#### Lifetime by Model",
                 "| Model | Prompt | Completion | Total | Cached | Reasoning | "
                 "Billed (total-cached) |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| --- | --- | --- | --- | --- | --- |",
             ]
         )
         for model_key in sorted(model_totals):
@@ -368,6 +386,33 @@ def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
             )
 
     return out
+
+
+def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
+    """Read the full ``token-usage.jsonl`` and return a lifetime Markdown section.
+
+    Aggregates every persisted ``TokenUsageEvent`` (across all sessions) into
+    prompt / completion / total / cached / reasoning / billed totals, a
+    per-model breakdown, total estimated cost, event count, and the
+    first/last event timestamps. Returns an empty list when the log is
+    missing or empty so ``/tokens`` degrades gracefully to the session view.
+    """
+    if token_usage_path is None:
+        return []
+    try:
+        path = token_usage_path
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    if not lines:
+        return []
+
+    agg = _aggregate_lifetime_usage(lines)
+    if agg is None:
+        return []
+    return _render_lifetime_usage_lines(agg)
 
 
 # ── Help ─────────────────────────────────────────────────────────────

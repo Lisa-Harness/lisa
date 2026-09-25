@@ -404,16 +404,16 @@ class ContextMapper:
             selected_ids,
             request,
             budget,
-            decisions,
-            selections,
+            decisions=decisions,
+            selections=selections,
         )
         self._select_with_mmr(
             mapped,
             selected_ids,
             request,
             budget,
-            decisions,
-            selections,
+            decisions=decisions,
+            selections=selections,
         )
         self._mark_budget_drops(mapped, selected_ids, budget, decisions)
         return sorted(
@@ -430,6 +430,7 @@ class ContextMapper:
         selected_ids: set[str],
         request: ContextMapperRequest,
         budget: _BudgetState,
+        *,
         decisions: dict[str, _DecisionState],
         selections: list[ContextSelection],
     ) -> None:
@@ -467,6 +468,7 @@ class ContextMapper:
         selected_ids: set[str],
         request: ContextMapperRequest,
         budget: _BudgetState,
+        *,
         decisions: dict[str, _DecisionState],
         selections: list[ContextSelection],
     ) -> None:

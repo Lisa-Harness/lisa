@@ -29,6 +29,15 @@ class SdkProviderGatewayProvider:
         """Return the gateway class for ``provider``, or None if unsupported."""
 
         normalized = (provider or "").strip().lower()
+        return self._gateway_class_for(normalized)
+
+    def _gateway_class_for(self, normalized: str) -> Any | None:
+        """Map one normalized provider name to its gateway class.
+
+        Gateway modules import lazily so the SDK's import cost stays off
+        the startup path; each entry point only pays for the provider it
+        actually uses.
+        """
         if normalized == "azure_openai":
             from sdk.providers.openai_gateway import AzureOpenAIGateway
 
@@ -45,11 +54,7 @@ class SdkProviderGatewayProvider:
             from sdk.providers.bedrock_gateway import BedrockGateway
 
             return BedrockGateway
-        if normalized in {"openai", "ollama"}:
-            from sdk.providers.openai_gateway import OpenAICompatibleGateway
-
-            return OpenAICompatibleGateway
-        if normalized == "openrouter":
+        if normalized in {"openai", "ollama", "openrouter"}:
             # OpenRouter is OpenAI-compatible; the host's client factory
             # (host/gateway_provider.py) points the shared
             # OpenAICompatibleGateway at https://openrouter.ai/api/v1 with the

@@ -111,7 +111,7 @@ def init_backend(backend: str, *, readonly: bool = False) -> None:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-async def validate_input(
+async def validate_input(  # noqa: PLR0917 — one parameter per SurfaceContext field; the signature IS the MCP schema
     query: str,
     surface_type: str = "personal_dm",
     surface_id: str = "",
@@ -145,7 +145,7 @@ async def validate_input(
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-async def validate_output(
+async def validate_output(  # noqa: PLR0917 — one parameter per SurfaceContext field; the signature IS the MCP schema
     text: str,
     surface_type: str = "personal_dm",
     surface_id: str = "",

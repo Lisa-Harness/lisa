@@ -296,6 +296,36 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
     return _build(content_config=content_config, data_dir=data_dir)
 
 
+def _collect_default_tool_ids(
+    specs: list[Any],
+    *,
+    server_id_prefix: str = "",
+) -> set[str]:
+    """Collect namespaced ambient tool ids from one manifest's specs.
+
+    Args:
+        specs: Parsed ``MCPServerSpec`` entries from one manifest.
+        server_id_prefix: Optional pack slug applied at compile time
+            (``<pack_slug>.<server_id>``); empty for first-party/user
+            manifests which keep bare server ids.
+
+    Returns:
+        The set of namespaced ``server_id.tool`` ambient tool ids.
+    """
+    from kernel.tools.mcp_client import namespaced_tool_name
+
+    ids: set[str] = set()
+    for spec in specs:
+        if spec.disabled or not spec.default_available_tools:
+            continue
+        namespaced_server_id = (
+            f"{server_id_prefix}.{spec.server_id}" if server_id_prefix else spec.server_id
+        )
+        for tool_name in spec.default_available_tools:
+            ids.add(namespaced_tool_name(namespaced_server_id, tool_name))
+    return ids
+
+
 def resolve_default_mcp_tool_ids(
     *,
     host_manifest_path: Path,
@@ -319,20 +349,13 @@ def resolve_default_mcp_tool_ids(
     namespacing as the framework manifest — user-added servers are not
     pack-prefixed. Malformed user manifests are skipped defensively.
     """
-    from kernel.tools.mcp_client import namespaced_tool_name
-
     ids: set[str] = set()
-    used_pack_slugs: set[str] = set()
     # Host manifest first (first-party servers keep their bare server_id).
     try:
         host_specs, _ = load_mcp_server_manifest(host_manifest_path)
     except MCPServerManifestError:
         host_specs = []
-    for spec in host_specs:
-        if spec.disabled or not spec.default_available_tools:
-            continue
-        for tool_name in spec.default_available_tools:
-            ids.add(namespaced_tool_name(spec.server_id, tool_name))
+    ids |= _collect_default_tool_ids(host_specs)
     # User manifest (bare server_id, same as first-party). User-added
     # servers are not pack-prefixed; their default_available_tools become
     # ambient ids the same way lisa-storage.read_file does.
@@ -341,12 +364,9 @@ def resolve_default_mcp_tool_ids(
             user_specs, _ = load_mcp_server_manifest(user_manifest_path)
         except MCPServerManifestError:
             user_specs = []
-        for spec in user_specs:
-            if spec.disabled or not spec.default_available_tools:
-                continue
-            for tool_name in spec.default_available_tools:
-                ids.add(namespaced_tool_name(spec.server_id, tool_name))
+        ids |= _collect_default_tool_ids(user_specs)
     # Pack manifests (namespaced as <pack_slug>.<server_id> at compile time).
+    used_pack_slugs: set[str] = set()
     for root in pack_roots:
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():
@@ -356,12 +376,7 @@ def resolve_default_mcp_tool_ids(
         except MCPServerManifestError:
             continue
         pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
-        for spec in pack_specs:
-            if spec.disabled or not spec.default_available_tools:
-                continue
-            namespaced_server_id = f"{pack_slug}.{spec.server_id}"
-            for tool_name in spec.default_available_tools:
-                ids.add(namespaced_tool_name(namespaced_server_id, tool_name))
+        ids |= _collect_default_tool_ids(pack_specs, server_id_prefix=pack_slug)
     return ids
 
 
@@ -573,74 +588,23 @@ def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
     return [*warm_configs, *cold_configs]
 
 
-def compile_mcp_configs(
-    runtime: HostRuntime,
-    *,
-    discovery: _FrameworkDiscovery | None = None,
-) -> tuple[list[Any], list[Any]]:
-    """Compile all MCP servers from mcp_servers.yaml and split into (warm, cold).
+def _export_mcp_environment(runtime: HostRuntime, workspace_root: str) -> None:
+    """Export the MCP manifest-expansion environment for subprocess servers.
 
-    All servers (first-party and external) are declared in
-    ``mcp_servers.yaml`` with their ``warm`` / ``required`` / ``disabled``
-    launch policy. The manifest loader produces ``MCPServerSpec`` entries
-    that carry these fields; the compiler passes them through to
-    ``MCPClientConfig``. No hardcoded server list or ``warm_ids`` set
-    remains — adding, removing, disabling, or changing a server's launch
-    policy is a YAML edit.
-
-    The manifest's memory-backend designation (which server_id backs the
-    generic ``memory.*`` aliases) is stashed on the runtime for
-    ``_build_turn_hooks`` to consume.
-
-    When ``discovery`` is provided (computed once by
-    :func:`discover_framework`), the shared roots / lock / manifest path
-    are reused instead of recomputed. When ``None``, this function calls
-    :func:`discover_framework` internally (back-compat for standalone
-    callers like tests).
+    Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
+    the manifest's path-like fields (venv_dir, command_path, etc.).
+    Use unconditional assignment, not ``setdefault``: a parent shell
+    may export these as empty strings (e.g. ``LISA_USER_SLUG=""``),
+    and ``setdefault`` treats a present-but-empty value as already
+    set — silently dropping the host's resolved value. The empty
+    value then expands to ``""`` in the manifest, sending subprocesses
+    to the wrong path (the 2026-08-25 lisa-thread empty-read incident:
+    ``LISA_USER_SLUG=""`` made the thread server read
+    ``<data_dir>/threads`` instead of ``<data_dir>/threads/<slug>``
+    and return ``[]``). The host is the authoritative source for these
+    values once it has resolved them from CLI flags and config.
     """
     config = runtime.config
-    data_dir = str(runtime.paths.data_dir)
-    workspace_root = str(FRAMEWORK_ROOT)
-    if discovery is None:
-        discovery = discover_framework(runtime, seed_lock=False)
-    host_manifest_path = discovery.host_manifest_path
-    roots = discovery.roots
-    selected_capability_providers = dict(runtime.session_plan.manifest.providers.capabilities)
-
-    # ── Session-plan resource preferences ──────────────────────────
-    # The immutable plan can narrow installed resources and select an
-    # explicit owner, but cannot alter manifest launch/security policy.
-    plan_resources = runtime.session_plan.manifest.resources
-    plan_providers = runtime.session_plan.manifest.providers
-    session_exclude_servers: set[str] = set()
-    session_cap_preferences: dict[str, list[str]] = {}
-    for entry in plan_resources.servers.exclude:
-        normalized = entry.strip().lower()
-        if normalized:
-            session_exclude_servers.add(normalized)
-    for cap, pack in plan_providers.capabilities.items():
-        session_cap_preferences.setdefault(cap, []).append(pack)
-
-    # Capability ownership is explicit session policy, not host preference.
-    if session_cap_preferences:
-        selected_capability_providers = {
-            capability: providers[0]
-            for capability, providers in session_cap_preferences.items()
-            if providers
-        }
-
-    # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
-    # the manifest's path-like fields (venv_dir, command_path, etc.).
-    # Use unconditional assignment, not ``setdefault``: a parent shell
-    # may export these as empty strings (e.g. ``LISA_USER_SLUG=""``),
-    # and ``setdefault`` treats a present-but-empty value as already
-    # set — silently dropping the host's resolved value. The empty
-    # value then expands to ``""`` in the manifest, sending subprocesses
-    # to the wrong path (the 2026-08-25 lisa-thread empty-read incident:
-    # ``LISA_USER_SLUG=""`` made the thread server read
-    # ``<data_dir>/threads`` instead of ``<data_dir>/threads/<slug>``
-    # and return ``[]``). The host is the authoritative source for these
-    # values once it has resolved them from CLI flags and config.
     os.environ["FRAMEWORK_ROOT"] = workspace_root
     os.environ["LISA_TIMEZONE"] = config.timezone
     if not config.no_thread:
@@ -664,27 +628,71 @@ def compile_mcp_configs(
     else:
         os.environ.pop("LISA_THREAD_REDACTION_PATTERNS", None)
 
-    registry = MCPServerRegistry()
 
-    # Framework-owned (first-party) servers from the in-repo mcp_servers.yaml.
-    # These keep bare server_ids and cannot be redefined by the user manifest.
-    # The manifest loader honors ``disabled: true`` by skipping entries, and
-    # parses ``warm`` / ``required`` onto the spec. The compiler passes
-    # them through to MCPClientConfig. The framework manifest no longer carries
-    # a ``memory:`` section or memory server entries; memory backends +
-    # memory tool servers are contributed by the memory pack (see
-    # sdk/packs/memory/mcp_servers.yaml) and merged below.
+def _resolve_session_capability_preferences(
+    runtime: HostRuntime,
+) -> tuple[set[str], dict[str, str]]:
+    """Resolve session-plan server exclusions and capability preferences.
+
+    The immutable plan can narrow installed resources and select an
+    explicit owner, but cannot alter manifest launch/security policy.
+
+    Returns:
+        A ``(session_exclude_servers, selected_capability_providers)``
+        tuple: the lowercased server ids to exclude, and the explicit
+        capability → provider-owner mapping (empty when the session plan
+        declares no capability preferences).
+    """
+    plan_resources = runtime.session_plan.manifest.resources
+    plan_providers = runtime.session_plan.manifest.providers
+    session_exclude_servers: set[str] = set()
+    for entry in plan_resources.servers.exclude:
+        normalized = entry.strip().lower()
+        if normalized:
+            session_exclude_servers.add(normalized)
+    session_cap_preferences: dict[str, list[str]] = {}
+    for cap, pack in plan_providers.capabilities.items():
+        session_cap_preferences.setdefault(cap, []).append(pack)
+    # Capability ownership is explicit session policy, not host preference.
+    selected_capability_providers: dict[str, str] = {}
+    if session_cap_preferences:
+        selected_capability_providers = {
+            capability: providers[0]
+            for capability, providers in session_cap_preferences.items()
+            if providers
+        }
+    return session_exclude_servers, selected_capability_providers
+
+
+def _register_host_and_user_servers(
+    registry: MCPServerRegistry,
+    host_manifest_path: Path,
+    user_manifest_path: Path | None,
+) -> Any:
+    """Register first-party and user-owned servers onto the registry.
+
+    Framework-owned (first-party) servers from the in-repo mcp_servers.yaml
+    keep bare server_ids and cannot be redefined by the user manifest.
+    The manifest loader honors ``disabled: true`` by skipping entries, and
+    parses ``warm`` / ``required`` onto the spec. The compiler passes
+    them through to MCPClientConfig. The framework manifest no longer
+    carries a ``memory:`` section or memory server entries; memory
+    backends + memory tool servers are contributed by the memory pack
+    (see sdk/packs/memory/mcp_servers.yaml) and merged by the pack pass.
+
+    User-owned servers from <data_dir>/mcp_servers.yaml (optional) keep
+    bare server_ids (same as first-party), but collide loudly with any
+    framework server_id — a user cannot override lisa-storage, only add
+    new servers. Malformed user manifests are logged and skipped (fail
+    soft on user config, same as pack manifests).
+
+    Returns:
+        The (possibly None-bearing) memory config from the host manifest.
+    """
     specs, memory_config = load_mcp_server_manifest(host_manifest_path)
     for spec in specs:
         registry.register(spec)
 
-    # User-owned servers from \u003cdata_dir\u003e/mcp_servers.yaml (optional).
-    # These are user-added MCP servers that don't require a pack. They keep
-    # bare server_ids (same as first-party), but collide loudly with any
-    # framework server_id — a user cannot override lisa-storage, only add
-    # new servers. Malformed user manifests are logged and skipped (fail
-    # soft on user config, same as pack manifests).
-    user_manifest_path = discovery.user_manifest_path
     if user_manifest_path is not None and user_manifest_path.exists():
         try:
             user_specs, user_memory = load_mcp_server_manifest(user_manifest_path)
@@ -709,14 +717,25 @@ def compile_mcp_configs(
             "User MCP manifest path %s does not exist; skipping user servers.",
             user_manifest_path,
         )
+    return memory_config
 
-    excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
-    if user_manifest_path is not None and user_manifest_path.exists():
-        excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
-    excluded_pack_servers |= session_exclude_servers
+
+def _register_pack_servers(
+    registry: MCPServerRegistry,
+    roots: list[Path],
+    excluded_pack_servers: set[str],
+    memory_candidates: list[MemoryProviderCandidate],
+) -> None:
+    """Register pack-contributed servers (namespaced) onto the registry.
+
+    Compile-time namespacing (``<pack_slug>.<server_id>``) allows multiple
+    packs to declare the same server_id without collision in the global
+    registry. A pack may also contribute memory backends + memory tool
+    servers; ownership is collected into ``memory_candidates`` and selected
+    deterministically by the caller. Malformed pack manifests are logged
+    and skipped defensively.
+    """
     used_pack_slugs: set[str] = set()
-    memory_owner_slug: str | None = None
-    memory_candidates: list[MemoryProviderCandidate] = []
     for root in roots:
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():
@@ -755,11 +774,24 @@ def compile_mcp_configs(
                 )
                 continue
 
-            # Compile-time namespacing allows multiple packs to declare the same
-            # server_id without collision in the global registry.
             namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
             registry.register(namespaced)
 
+
+def _select_memory_owner(
+    memory_candidates: list[MemoryProviderCandidate],
+    selected_capability_providers: dict[str, str],
+) -> tuple[Any, str | None]:
+    """Select the memory-backend owner pack from host policy + candidates.
+
+    Returns:
+        A ``(memory_config, memory_owner_slug)`` tuple. When a candidate
+        owns the memory backend, its memory config replaces the host
+        manifest's (None-bearing) config and its pack slug is stashed for
+        ``_build_turn_hooks``; non-selected candidates are logged and
+        ignored. Otherwise the host manifest's config stands and the
+        owner slug is ``None``.
+    """
     selected_memory_provider = normalize_pack_name(
         str(selected_capability_providers.get("memory") or "")
     )
@@ -767,58 +799,137 @@ def compile_mcp_configs(
         candidates=memory_candidates,
         selected_provider=selected_memory_provider,
     )
+    if selected_memory_owner is None:
+        return None, None
 
-    if selected_memory_owner is not None:
-        memory_config = selected_memory_owner.memory_config
-        memory_owner_slug = selected_memory_owner.pack_slug or None
-        selected_manifest = str(selected_memory_owner.manifest_path)
-        selected_package = selected_memory_owner.package_name
+    memory_config = selected_memory_owner.memory_config
+    memory_owner_slug = selected_memory_owner.pack_slug or None
+    selected_manifest = str(selected_memory_owner.manifest_path)
+    selected_package = selected_memory_owner.package_name
+    logger.info(
+        "Selected memory provider owner: package=%s slug=%s manifest=%s",
+        selected_package,
+        memory_owner_slug or "(none)",
+        selected_manifest,
+    )
+    for candidate in memory_candidates:
+        if candidate is selected_memory_owner:
+            continue
         logger.info(
-            "Selected memory provider owner: package=%s slug=%s manifest=%s",
+            "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
+            candidate.package_name,
+            candidate.pack_slug,
+            candidate.manifest_path,
             selected_package,
-            memory_owner_slug or "(none)",
-            selected_manifest,
         )
-        for candidate in memory_candidates:
-            if candidate is selected_memory_owner:
-                continue
-            logger.info(
-                "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
-                candidate.package_name,
-                candidate.pack_slug,
-                candidate.manifest_path,
-                selected_package,
-            )
+    return memory_config, memory_owner_slug
+
+
+def _rewrite_in_process_configs(
+    runtime: HostRuntime,
+    compiled: list[MCPClientConfig],
+) -> list[MCPClientConfig]:
+    """Rewrite first-party VENV_BIN configs to IN_PROCESS when enabled.
+
+    When in-process mode is active, rewrite first-party VENV_BIN configs
+    to IN_PROCESS so the pool connects via memory transport instead of
+    spawning subprocesses. Only first-party servers (registered in
+    ``mcp_server.registry``) are rewritten; pack-contributed and
+    third-party servers keep their original runtime kind.
+
+    ``args`` MUST be preserved: the pool's in-process arg reconstruction
+    helpers (``_in_process_data_dir`` et al.) parse the standard CLI
+    contract flags out of ``args``. Wiping them drops ``--data-dir`` /
+    ``--deny-glob`` / ``--readonly``, so the server's ``_init`` receives
+    ``data_dir=""`` and builds a cwd-relative sandbox (the 2026-09-04
+    $HOME/files sandbox-escape: lisa-storage wrote the research doc the
+    model asked for into the host process's cwd instead of the data dir).
+    """
+    if not getattr(runtime, "_in_process_mcp", False):
+        return compiled
+    from mcp_server.registry import in_process_server_ids
+
+    first_party_ids = set(in_process_server_ids())
+    rewritten: list[MCPClientConfig] = []
+    for cfg in compiled:
+        if cfg.server_id in first_party_ids and cfg.runtime_kind == "venv_bin":
+            rewritten.append(dataclasses.replace(cfg, runtime_kind="in_process"))
+        else:
+            rewritten.append(cfg)
+    return rewritten
+
+
+def compile_mcp_configs(
+    runtime: HostRuntime,
+    *,
+    discovery: _FrameworkDiscovery | None = None,
+) -> tuple[list[Any], list[Any]]:
+    """Compile all MCP servers from mcp_servers.yaml and split into (warm, cold).
+
+    All servers (first-party and external) are declared in
+    ``mcp_servers.yaml`` with their ``warm`` / ``required`` / ``disabled``
+    launch policy. The manifest loader produces ``MCPServerSpec`` entries
+    that carry these fields; the compiler passes them through to
+    ``MCPClientConfig``. No hardcoded server list or ``warm_ids`` set
+    remains — adding, removing, disabling, or changing a server's launch
+    policy is a YAML edit.
+
+    The manifest's memory-backend designation (which server_id backs the
+    generic ``memory.*`` aliases) is stashed on the runtime for
+    ``_build_turn_hooks`` to consume.
+
+    When ``discovery`` is provided (computed once by
+    :func:`discover_framework`), the shared roots / lock / manifest path
+    are reused instead of recomputed. When ``None``, this function calls
+    :func:`discover_framework` internally (back-compat for standalone
+    callers like tests).
+    """
+    data_dir = str(runtime.paths.data_dir)
+    workspace_root = str(FRAMEWORK_ROOT)
+    if discovery is None:
+        discovery = discover_framework(runtime, seed_lock=False)
+    host_manifest_path = discovery.host_manifest_path
+    roots = discovery.roots
+    user_manifest_path = discovery.user_manifest_path
+
+    # ── Session-plan resource preferences ──────────────────────────
+    # The immutable plan can narrow installed resources and select an
+    # explicit owner, but cannot alter manifest launch/security policy.
+    session_exclude_servers, session_cap_preferences = _resolve_session_capability_preferences(
+        runtime
+    )
+    selected_capability_providers = dict(runtime.session_plan.manifest.providers.capabilities)
+    if session_cap_preferences:
+        selected_capability_providers = session_cap_preferences
+
+    _export_mcp_environment(runtime, workspace_root)
+
+    registry = MCPServerRegistry()
+
+    # Framework-owned (first-party) + user-owned servers.
+    memory_config = _register_host_and_user_servers(
+        registry, host_manifest_path, user_manifest_path
+    )
+
+    excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+    if user_manifest_path is not None and user_manifest_path.exists():
+        excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
+    excluded_pack_servers |= session_exclude_servers
+
+    memory_candidates: list[MemoryProviderCandidate] = []
+    _register_pack_servers(registry, roots, excluded_pack_servers, memory_candidates)
+
+    selected_config, memory_owner_slug = _select_memory_owner(
+        memory_candidates, selected_capability_providers
+    )
+    if selected_config is not None:
+        memory_config = selected_config
 
     runtime.services.memory_config = memory_config
     runtime.services.memory_config_pack_slug = memory_owner_slug
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
-
-    # When in-process mode is active, rewrite first-party VENV_BIN configs
-    # to IN_PROCESS so the pool connects via memory transport instead of
-    # spawning subprocesses. Only first-party servers (registered in
-    # ``mcp_server.registry``) are rewritten; pack-contributed and
-    # third-party servers keep their original runtime kind.
-    #
-    # ``args`` MUST be preserved: the pool's in-process arg reconstruction
-    # helpers (``_in_process_data_dir`` et al.) parse the standard CLI
-    # contract flags out of ``args``. Wiping them drops ``--data-dir`` /
-    # ``--deny-glob`` / ``--readonly``, so the server's ``_init`` receives
-    # ``data_dir=""`` and builds a cwd-relative sandbox (the 2026-09-04
-    # $HOME/files sandbox-escape: lisa-storage wrote the research doc the
-    # model asked for into the host process's cwd instead of the data dir).
-    if getattr(runtime, "_in_process_mcp", False):
-        from mcp_server.registry import in_process_server_ids
-
-        first_party_ids = set(in_process_server_ids())
-        rewritten: list[MCPClientConfig] = []
-        for cfg in compiled:
-            if cfg.server_id in first_party_ids and cfg.runtime_kind == "venv_bin":
-                rewritten.append(dataclasses.replace(cfg, runtime_kind="in_process"))
-            else:
-                rewritten.append(cfg)
-        compiled = rewritten
+    compiled = _rewrite_in_process_configs(runtime, compiled)
 
     warm = [c for c in compiled if c.warm]
     cold = [c for c in compiled if not c.warm]

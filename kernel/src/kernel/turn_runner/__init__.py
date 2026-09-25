@@ -489,35 +489,22 @@ def _build_budget_briefing(
     no guidance lines).
     """
     lines: list[str] = []
-    # ── Iteration budget ──
+    # ── Iteration / stage / per-step budgets ────────────────────────────
     # Uses the 1-indexed iteration counter so the model never guesses
     # whether "47/50" means "47 remaining" or "47 used": ``iteration: 3
     # of 50`` is unambiguously "I am on iteration 3 of a 50-iteration
     # budget." The previous ``remaining/total`` format (``iters: 47/50``)
     # was consistently misread as a progress bar during metaanalysis.
     remaining_iterations = max_tool_iterations - state.iteration
-    if max_tool_iterations > 0 and state.iteration > 0:
-        lines.append(f"iteration: {state.iteration} of {max_tool_iterations}")
-    # ── Stage budget (the per-mode ceiling that actually fires) ────────
-    # ``stage_nudge_cap`` is the real bound on iterations in one mode
-    # before the harness pauses the turn. The global ``max_tool_iterations``
-    # (300) is never reached in practice; the stage cap (default 10) is.
-    # Without surfacing it, the model sees only ``iter 3/300`` and has no
-    # way to reconcile that with prior cap-fire messages in the thread
-    # ("stuck in explainer for 6 iterations (cap)"). The format is
-    # explicitly ``N completed with M remaining`` to prevent the
-    # completed/remaining confusion that the old ``N/M`` format caused.
-    turns_in_stage = getattr(state, "turns_in_stage", 0) or 0
-    if stage_nudge_cap > 0 and turns_in_stage > 0:
-        stage_remaining = max(0, stage_nudge_cap - turns_in_stage)
-        lines.append(f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining")
-    # ── Per-step sub-budget (only when a WorkflowPosition is wired) ──
-    if per_step_max_iterations > 0 and state.step_iteration > 0:
-        step_remaining = per_step_max_iterations - state.step_iteration
-        lines.append(f"step: {step_remaining}/{per_step_max_iterations} iters")
-    if per_step_max_tool_calls > 0 and state.step_tool_calls > 0:
-        step_tc_remaining = per_step_max_tool_calls - state.step_tool_calls
-        lines.append(f"step: {step_tc_remaining}/{per_step_max_tool_calls} calls")
+    lines.extend(
+        _build_budget_count_lines(
+            state=state,
+            max_tool_iterations=max_tool_iterations,
+            per_step_max_iterations=per_step_max_iterations,
+            per_step_max_tool_calls=per_step_max_tool_calls,
+            stage_nudge_cap=stage_nudge_cap,
+        )
+    )
     # ── Per-target call limits (only tools with a non-zero cap) ──
     # Resolve the effective per-turn cap for each advertised tool. Only
     # tools that declare a finite ``max_calls_per_turn`` (tightened by the
@@ -525,34 +512,15 @@ def _build_budget_briefing(
     # iteration 1, emit the full contract (used/max); on later iterations,
     # emit only tools that are *partially consumed* (used > 0 and remaining
     # > 0) so the block stays super-brief.
-    from kernel.capability import resolve_capability_for_turn_limit
-
-    per_target_parts: list[str] = []
-    for schema in tool_schemas:
-        name = schema.get("function", {}).get("name", "")
-        if name in (_TRANSITION_TOOL_NAME, _YIELD_TOOL_NAME) or not name:
-            continue
-        target_def = resolve_capability_for_turn_limit(
-            name,
-            operation_catalog=operation_catalog,
-            tool_catalog=tool_catalog,
-        )
-        if target_def is None:
-            continue
-        authored = int(getattr(target_def, "max_calls_per_turn", 0) or 0)
-        if authored <= 0:
-            continue
-        max_calls = resolve_capability_invocation_limit(execution_policy, name, authored)
-        if max_calls <= 0:
-            continue
-        used = state.call_ledger_counts.get(name, 0) if hasattr(state, "call_ledger_counts") else 0
-        remaining = max(0, max_calls - used)
-        # Iteration 1: emit the full contract (used=0 → remaining=max).
-        # Later iterations: emit only partially-consumed tools (used > 0).
-        if state.iteration <= 1 or used > 0:
-            per_target_parts.append(f"{name}:{remaining}/{max_calls}")
-    if per_target_parts:
-        lines.append("calls: " + ", ".join(per_target_parts))
+    per_target_line = _build_per_target_call_limits(
+        state=state,
+        tool_schemas=tool_schemas,
+        operation_catalog=operation_catalog,
+        tool_catalog=tool_catalog,
+        execution_policy=execution_policy,
+    )
+    if per_target_line:
+        lines.append(per_target_line)
     # ── Lifecycle state ──
     # When the harness is about to yield (budget exhausted, stuck-in-stage
     # cap, or recovery stall), tell the model the harness will ask the user —
@@ -589,6 +557,90 @@ def _build_budget_briefing(
     if sub_contract:
         return sub_contract
     return lifecycle_block
+
+
+def _build_budget_count_lines(
+    *,
+    state: Any,
+    max_tool_iterations: int,
+    per_step_max_iterations: int,
+    per_step_max_tool_calls: int,
+    stage_nudge_cap: int,
+) -> list[str]:
+    """Build the iteration/stage/per-step count lines for the lifecycle block.
+
+    Surfaces only discrete, actionable counts: the global iteration
+    counter (1-indexed), the stage budget (the per-mode ceiling that
+    actually fires — the global ``max_tool_iterations`` (300) is never
+    reached in practice; the stage cap (default 10) is), and the per-step
+    iteration/tool-call sub-budget (only when a WorkflowPosition is wired).
+    The stage format is explicitly ``N completed with M remaining`` to
+    prevent the completed/remaining confusion that the old ``N/M`` format
+    caused.
+    """
+    lines: list[str] = []
+    if max_tool_iterations > 0 and state.iteration > 0:
+        lines.append(f"iteration: {state.iteration} of {max_tool_iterations}")
+    turns_in_stage = getattr(state, "turns_in_stage", 0) or 0
+    if stage_nudge_cap > 0 and turns_in_stage > 0:
+        stage_remaining = max(0, stage_nudge_cap - turns_in_stage)
+        lines.append(f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining")
+    if per_step_max_iterations > 0 and state.step_iteration > 0:
+        step_remaining = per_step_max_iterations - state.step_iteration
+        lines.append(f"step: {step_remaining}/{per_step_max_iterations} iters")
+    if per_step_max_tool_calls > 0 and state.step_tool_calls > 0:
+        step_tc_remaining = per_step_max_tool_calls - state.step_tool_calls
+        lines.append(f"step: {step_tc_remaining}/{per_step_max_tool_calls} calls")
+    return lines
+
+
+def _build_per_target_call_limits(
+    *,
+    state: Any,
+    tool_schemas: list[dict[str, Any]],
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    execution_policy: Any,
+) -> str:
+    """Build the per-target call-limits line for the turn lifecycle block.
+
+    Resolve the effective per-turn cap for each advertised tool. Only
+    tools that declare a finite ``max_calls_per_turn`` (tightened by the
+    execution policy) are surfaced — unlimited tools add noise. On
+    iteration 1, emit the full contract (used/max); on later iterations,
+    emit only tools that are *partially consumed* (used > 0 and remaining
+    > 0) so the block stays super-brief. Returns "" when no tool has a
+    finite cap.
+    """
+    from kernel.capability import resolve_capability_for_turn_limit
+
+    per_target_parts: list[str] = []
+    for schema in tool_schemas:
+        name = schema.get("function", {}).get("name", "")
+        if name in (_TRANSITION_TOOL_NAME, _YIELD_TOOL_NAME) or not name:
+            continue
+        target_def = resolve_capability_for_turn_limit(
+            name,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
+        )
+        if target_def is None:
+            continue
+        authored = int(getattr(target_def, "max_calls_per_turn", 0) or 0)
+        if authored <= 0:
+            continue
+        max_calls = resolve_capability_invocation_limit(execution_policy, name, authored)
+        if max_calls <= 0:
+            continue
+        used = state.call_ledger_counts.get(name, 0) if hasattr(state, "call_ledger_counts") else 0
+        remaining = max(0, max_calls - used)
+        # Iteration 1: emit the full contract (used=0 → remaining=max).
+        # Later iterations: emit only partially-consumed tools (used > 0).
+        if state.iteration <= 1 or used > 0:
+            per_target_parts.append(f"{name}:{remaining}/{max_calls}")
+    if per_target_parts:
+        return "calls: " + ", ".join(per_target_parts)
+    return ""
 
 
 def _build_sub_turn_contract(
@@ -810,6 +862,48 @@ def _resume_in_flight_target(
 # ── Core turn runner ────────────────────────────────────────────────────────
 
 
+def _scale_iteration_ceiling(
+    *,
+    hooks: TurnHooks,
+    max_tool_iterations: int,
+    per_step_max_iterations: int,
+    execution_policy: ExecutionPolicy | None,
+    log: logging.Logger,
+) -> int:
+    """Scale the global iteration ceiling to the active workflow position.
+
+    When a workflow position with N declared steps is active, scale the
+    global iteration ceiling to N × per_step_max_iterations so each step
+    gets its full sub-budget without starving later steps. Only scales
+    *up* — the base default covers ad-hoc single turns that may burn
+    iterations on read-only exploration. A 5-step plan with per_step=75
+    gets 375 total iterations instead of the flat 300 ceiling. The
+    execution policy may further tighten this via ``min()``.
+    """
+    if hooks.workflow.workflow_position is not None:
+        try:
+            _ratio_pos = hooks.workflow.workflow_position()
+        except Exception:  # pylint: disable=broad-except
+            _ratio_pos = None
+        if _ratio_pos is not None:
+            _declared = getattr(_ratio_pos, "declared_steps", ())
+            if _declared:
+                _step_count = max(1, len(_declared))
+                _scaled = _step_count * per_step_max_iterations
+                max_tool_iterations = max(max_tool_iterations, _scaled)
+                log.debug(
+                    "ratio cap: %d steps × %d per_step = %d global (base=%d)",
+                    _step_count,
+                    per_step_max_iterations,
+                    max_tool_iterations,
+                    _kernel_settings.max_tool_iterations,
+                )
+
+    if execution_policy is not None and execution_policy.max_model_calls is not None:
+        max_tool_iterations = min(max_tool_iterations, execution_policy.max_model_calls)
+    return max_tool_iterations
+
+
 async def run_turn(
     *,
     mode_id: str,
@@ -910,39 +1004,23 @@ async def run_turn(
     # ── Ratio-based iteration cap scaling ────────────────────────────
     # When a workflow position with N declared steps is active, scale the
     # global iteration ceiling to N × per_step_max_iterations so each step
-    # gets its full sub-budget without starving later steps. Only scales
-    # *up* — the base default covers ad-hoc single turns that may burn
-    # iterations on read-only exploration. A 5-step plan with per_step=75
-    # gets 375 total iterations instead of the flat 300 ceiling.
-    if hooks.workflow.workflow_position is not None:
-        try:
-            _ratio_pos = hooks.workflow.workflow_position()
-        except Exception:  # pylint: disable=broad-except
-            _ratio_pos = None
-        if _ratio_pos is not None:
-            _declared = getattr(_ratio_pos, "declared_steps", ())
-            if _declared:
-                _step_count = max(1, len(_declared))
-                _scaled = _step_count * per_step_max_iterations
-                max_tool_iterations = max(max_tool_iterations, _scaled)
-                _log.debug(
-                    "ratio cap: %d steps × %d per_step = %d global (base=%d)",
-                    _step_count,
-                    per_step_max_iterations,
-                    max_tool_iterations,
-                    _kernel_settings.max_tool_iterations,
-                )
+    # gets its full sub-budget without starving later steps (see
+    # ``_scale_iteration_ceiling``).
+    max_tool_iterations = _scale_iteration_ceiling(
+        hooks=hooks,
+        max_tool_iterations=max_tool_iterations,
+        per_step_max_iterations=per_step_max_iterations,
+        execution_policy=execution_policy,
+        log=_log,
+    )
 
-    if execution_policy is not None:
-        if execution_policy.max_model_calls is not None:
-            max_tool_iterations = min(max_tool_iterations, execution_policy.max_model_calls)
-        if turn_budget is None:
-            turn_budget = TurnBudget(
-                max_tool_calls=execution_policy.max_capability_calls or 0,
-                max_total_tokens=execution_policy.max_total_tokens or 0,
-                max_completion_tokens=execution_policy.max_completion_tokens or 0,
-                max_wall_ms=execution_policy.max_wall_ms or 0,
-            )
+    if execution_policy is not None and turn_budget is None:
+        turn_budget = TurnBudget(
+            max_tool_calls=execution_policy.max_capability_calls or 0,
+            max_total_tokens=execution_policy.max_total_tokens or 0,
+            max_completion_tokens=execution_policy.max_completion_tokens or 0,
+            max_wall_ms=execution_policy.max_wall_ms or 0,
+        )
 
     mode_config = get_workflow_catalog().get(mode_id)
 
@@ -1901,11 +1979,11 @@ async def _run_turn_inner(
         hooks,
         preferred_model_id,
         resolve_model,
-        model_def,
-        query,
-        mode_id,
-        turn_budget,
-        _log,
+        model_def=model_def,
+        query=query,
+        mode_id=mode_id,
+        turn_budget=turn_budget,
+        log=_log,
     )
     if _resolved_for_gate is not None:
         model_def = _resolved_for_gate
@@ -2052,11 +2130,11 @@ async def _run_turn_inner(
             hooks,
             preferred_model_id,
             resolve_model,
-            model_def,
-            query,
-            mode_id,
-            turn_budget,
-            _log,
+            model_def=model_def,
+            query=query,
+            mode_id=mode_id,
+            turn_budget=turn_budget,
+            log=_log,
         )
 
     tools_dispatched_ever = False  # tracks if *any* tool was called this turn

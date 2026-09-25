@@ -235,8 +235,15 @@ def _normalize_timezone_name(value: str) -> str | None:
         return None
     if "/" in configured:
         return configured
-    # '/'-less key: accept it only when the local tzdata can actually load
-    # it, so garbage abbreviations are still rejected.
+    return _resolve_local_tzdata_key(configured)
+
+
+def _resolve_local_tzdata_key(configured: str) -> str | None:
+    """Accept a ``/``-less tz key only when the local tzdata can load it.
+
+    Garbage abbreviations are rejected; a loadable POSIX tz string (e.g.
+    ``EST5EDT``) round-trips through ``LISA_TIMEZONE`` re-export.
+    """
     try:
         ZoneInfo(configured)
     except (ZoneInfoNotFoundError, ValueError):

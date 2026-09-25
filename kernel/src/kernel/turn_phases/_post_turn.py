@@ -200,12 +200,7 @@ def _stringify_pack_tool_result(result: ToolResult) -> str:
     summary = result.output_text.strip()
     payload = result.output_json
     if result.error.strip():
-        error_text = f"Error: {result.error.strip()}"
-        if summary:
-            return f"{summary}\n{error_text}"
-        if payload:
-            return f"{error_text}\n{json.dumps(payload, indent=2, sort_keys=True)}"
-        return error_text
+        return _render_pack_tool_error(result)
     if summary and payload:
         return f"{summary}\n{json.dumps(payload, indent=2, sort_keys=True)}"
     if summary:
@@ -213,6 +208,18 @@ def _stringify_pack_tool_result(result: ToolResult) -> str:
     if payload:
         return json.dumps(payload, indent=2, sort_keys=True)
     return "Done"
+
+
+def _render_pack_tool_error(result: ToolResult) -> str:
+    """Render a pack tool's error text, optionally with summary or JSON payload."""
+    summary = result.output_text.strip()
+    payload = result.output_json
+    error_text = f"Error: {result.error.strip()}"
+    if summary:
+        return f"{summary}\n{error_text}"
+    if payload:
+        return f"{error_text}\n{json.dumps(payload, indent=2, sort_keys=True)}"
+    return error_text
 
 
 def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:

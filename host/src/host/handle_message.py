@@ -313,63 +313,51 @@ async def handle_message(
 # mutated registry.
 
 
-async def _dispatch_host_command(
+def _dispatch_simple_command(
+    runtime: HostRuntime,
+    lowered: str,
+    message: str,
+) -> str | None:
+    """Match the simple static-render built-in commands.
+
+    These commands take no argument handling beyond the message itself —
+    each renders a fixed runtime view (tokens, settings, modes, operations,
+    tools). Returns the response text, or ``None`` when the lowered message
+    matches no simple command.
+    """
+    if lowered in {"/tokens", "tokens"}:
+        return handle_simple_command(runtime, message, "tokens", format_token_stats(runtime))
+    if lowered in {"/settings", "settings"}:
+        return handle_simple_command(runtime, message, "settings", render_runtime_settings(runtime))
+    if lowered in {"/modes", "modes"}:
+        return handle_simple_command(runtime, message, "modes", render_modes_list(runtime))
+    if lowered in {"/operations", "operations"}:
+        return handle_simple_command(
+            runtime, message, "operations", render_operations_list(runtime)
+        )
+    if lowered in {"/tools", "tools"}:
+        return handle_simple_command(runtime, message, "tools", render_tools_list(runtime))
+    return None
+
+
+async def _dispatch_approval_command(
     runtime: HostRuntime,
     stripped: str,
     lowered: str,
-    message: str,
     transport: TransportCallbacks,
-) -> HostCommandResult | None:
-    """Try each host shortcut command; return result or ``None`` to continue.
+) -> tuple[str | None, HostCommandResult | None]:
+    """Match the /approve and /deny approval commands.
 
-    Delegates to the individual command handlers in ``host.commands``.
-    Each handler returns a plain text string; this function wraps it in a
-    ``HostCommandResult`` and emits the transport callback.
+    Returns:
+        A ``(response_text, continuation_result)`` tuple; both ``None``
+        when the message is not an approval command. ``continuation_result``
+        is set when the approve path ran a post-approval continuation turn
+        and returned a structured result (preserving ``operator_exit``)
+        rather than plain text.
     """
-    # Ensure the (possibly deferred) MCP pool is ready before any slash
-    # command touches runtime.resources.mcp_tool_pool (/settings, /debug, /pack).
-    # Cheap commands (/help, /quit) don't need the pool, but awaiting a
-    # completed no-op task is free.
-    await runtime.ensure_pool_ready()
     response_text: str | None = None
-    # The approve path may run a post-approval continuation turn and return
-    # a structured result (preserving ``operator_exit``) rather than plain
-    # text; when set it short-circuits the string wrapping below.
     continuation_result: HostCommandResult | None = None
-
-    if lowered.startswith("/help") or lowered == "help":
-        response_text = await handle_help_command(runtime, stripped, lowered, message)
-    elif lowered in {"/tokens", "tokens"}:
-        response_text = handle_simple_command(
-            runtime, message, "tokens", format_token_stats(runtime)
-        )
-    elif lowered in {"/settings", "settings"}:
-        response_text = handle_simple_command(
-            runtime, message, "settings", render_runtime_settings(runtime)
-        )
-    elif lowered == "/policy" or lowered.startswith("/policy "):
-        response_text = handle_simple_command(
-            runtime, message, "policy", handle_policy_command(runtime, stripped, message)
-        )
-    elif lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
-        response_text = await run_explicit_slice_command(runtime, message=message)
-    elif lowered in {"/intake", "intake"}:
-        response_text = await handle_intake_command(runtime, message=message)
-    elif lowered.startswith("/pack"):
-        response_text = await handle_pack_command(runtime, stripped, message)
-    elif lowered.startswith("/models"):
-        response_text = await handle_models_command(runtime, stripped, message)
-    elif lowered in {"/modes", "modes"}:
-        response_text = handle_simple_command(runtime, message, "modes", render_modes_list(runtime))
-    elif lowered in {"/operations", "operations"}:
-        response_text = handle_simple_command(
-            runtime, message, "operations", render_operations_list(runtime)
-        )
-    elif lowered in {"/tools", "tools"}:
-        response_text = handle_simple_command(runtime, message, "tools", render_tools_list(runtime))
-    elif lowered.startswith("/mcp"):
-        response_text = await handle_mcp_command(runtime, stripped, message)
-    elif lowered == "/approve" or lowered.startswith("/approve "):
+    if lowered == "/approve" or lowered.startswith("/approve "):
         approved = await handle_approval_command(
             runtime,
             stripped,
@@ -389,10 +377,125 @@ async def _dispatch_host_command(
             transport=transport,
             route_model_turn=_route_model_turn,
         )
+    return response_text, continuation_result
+
+
+async def _dispatch_async_command(
+    runtime: HostRuntime,
+    stripped: str,
+    lowered: str,
+    message: str,
+) -> str | None:
+    """Match the built-in commands with async handlers.
+
+    Covers /help, /policy, /consolidate (alias /slice), /intake, /pack,
+    /models, /mcp, /last, and /debug. Returns the response text, or
+    ``None`` when the message matches none of these commands.
+    """
+    response: str | None = None
+    if lowered.startswith("/help") or lowered == "help":
+        response = await handle_help_command(runtime, stripped, lowered, message)
+    elif lowered == "/policy" or lowered.startswith("/policy "):
+        response = handle_simple_command(
+            runtime, message, "policy", handle_policy_command(runtime, stripped, message)
+        )
+    elif lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
+        response = await run_explicit_slice_command(runtime, message=message)
+    elif lowered in {"/intake", "intake"}:
+        response = await handle_intake_command(runtime, message=message)
+    elif lowered.startswith("/pack"):
+        response = await handle_pack_command(runtime, stripped, message)
+    elif lowered.startswith("/models"):
+        response = await handle_models_command(runtime, stripped, message)
+    elif lowered.startswith("/mcp"):
+        response = await handle_mcp_command(runtime, stripped, message)
     elif lowered.startswith("/last"):
-        response_text = handle_last_command(runtime, stripped, message)
+        response = handle_last_command(runtime, stripped, message)
     elif lowered.startswith("/debug"):
-        response_text = handle_debug_command(runtime, stripped, message)
+        response = handle_debug_command(runtime, stripped, message)
+    return response
+
+
+async def _dispatch_builtin_command(
+    runtime: HostRuntime,
+    stripped: str,
+    lowered: str,
+    message: str,
+    transport: TransportCallbacks,
+) -> tuple[str | None, HostCommandResult | None]:
+    """Match one built-in host shortcut command.
+
+    Returns:
+        A ``(response_text, continuation_result)`` tuple. Exactly one
+        element is set when a command matched; both are ``None`` when no
+        built-in command matched (the caller continues to pack commands).
+        ``continuation_result`` is set when the approve path ran a
+        post-approval continuation turn and returned a structured result
+        rather than plain text.
+    """
+    # Simple static-render commands first (no awaitable handlers).
+    response_text = _dispatch_simple_command(runtime, lowered, message)
+    continuation_result: HostCommandResult | None = None
+    if response_text is not None:
+        return response_text, continuation_result
+
+    # Commands with async handlers.
+    response_text = await _dispatch_async_command(runtime, stripped, lowered, message)
+    if response_text is not None:
+        return response_text, continuation_result
+
+    # Approval commands (structured continuation handling).
+    return await _dispatch_approval_command(runtime, stripped, lowered, transport)
+
+
+async def _dispatch_pack_command(
+    runtime: HostRuntime,
+    stripped: str,
+    lowered: str,
+    message: str,
+) -> str | None:
+    """Match the first pack-registered command whose prefix fits ``lowered``.
+
+    Packs register slash commands via lisa.extensions.host_commands. The
+    host owns only the dispatch mechanism and host-intrinsic commands;
+    pack-owned commands live in the pack that owns the operations they
+    call. Returns the handler's response text, or ``None`` when no pack
+    command matched (or every matching handler returned ``None`` — the
+    scan continues past a handler that declines with ``None``).
+    """
+    for entry in _pack_host_commands():
+        for spec in entry.specs:
+            if lowered.startswith(spec.prefix):
+                try:
+                    response_text: str | None = await spec.handler(runtime, stripped, message)
+                except Exception as exc:  # pylint: disable=broad-except
+                    response_text = f"Command {spec.prefix} failed: {exc}"
+                if response_text is not None:
+                    return response_text
+    return None
+
+
+async def _dispatch_host_command(
+    runtime: HostRuntime,
+    stripped: str,
+    lowered: str,
+    message: str,
+    transport: TransportCallbacks,
+) -> HostCommandResult | None:
+    """Try each host shortcut command; return result or ``None`` to continue.
+
+    Delegates to the individual command handlers in ``host.commands``.
+    Each handler returns a plain text string; this function wraps it in a
+    ``HostCommandResult`` and emits the transport callback.
+    """
+    # Ensure the (possibly deferred) MCP pool is ready before any slash
+    # command touches runtime.resources.mcp_tool_pool (/settings, /debug, /pack).
+    # Cheap commands (/help, /quit) don't need the pool, but awaiting a
+    # completed no-op task is free.
+    await runtime.ensure_pool_ready()
+    response_text, continuation_result = await _dispatch_builtin_command(
+        runtime, stripped, lowered, message, transport
+    )
 
     if continuation_result is not None:
         await transport.on_response(continuation_result.text)
@@ -403,20 +506,12 @@ async def _dispatch_host_command(
         return HostCommandResult(text=response_text)
 
     # ── Pack-registered commands ────────────────────────────────────
-    # Packs register slash commands via lisa.extensions.host_commands.
-    # The host owns only the dispatch mechanism and host-intrinsic
-    # commands; pack-owned commands live in the pack that owns the
-    # operations they call.
-    for entry in _pack_host_commands():
-        for spec in entry.specs:
-            if lowered.startswith(spec.prefix):
-                try:
-                    response_text = await spec.handler(runtime, stripped, message)
-                except Exception as exc:  # pylint: disable=broad-except
-                    response_text = f"Command {spec.prefix} failed: {exc}"
-                if response_text is not None:
-                    await transport.on_response(response_text)
-                    return HostCommandResult(text=response_text)
+    pack_response = await _dispatch_pack_command(runtime, stripped, lowered, message)
+    if pack_response is not None:
+        await transport.on_response(pack_response)
+        return HostCommandResult(text=pack_response)
+
+    return None
 
     return None
 
@@ -488,6 +583,213 @@ async def _route_model_turn(
 # ── Turn execution ────────────────────────────────────────────────────
 
 
+def _session_budget_blocked(runtime: HostRuntime) -> str | None:
+    """Return the budget-exhausted block message, or ``None`` to proceed.
+
+    Pre-turn session budget gate. When the session has declared a
+    ``max_session_tokens`` cap and the accumulated session total (across
+    prior turns in this session) already meets or exceeds it, block the
+    turn before any model call — the user must start a fresh session or
+    raise the cap rather than continue burning tokens.
+    """
+    max_session_tokens = runtime.session_plan.manifest.execution.max_session_tokens
+    if max_session_tokens and runtime.session.tokens.session_total_tokens >= max_session_tokens:
+        used = runtime.session.tokens.session_total_tokens
+        message_text = (
+            f"Session token budget exhausted ({used:,} / {max_session_tokens:,} tokens). "
+            "Start a new session (or raise `max_session_tokens` in your session context) "
+            "to continue."
+        )
+        logger.warning(
+            "session token budget exhausted: used=%d cap=%d; blocking turn",
+            used,
+            max_session_tokens,
+        )
+        return message_text
+    return None
+
+
+def _log_operator_exit(result: TurnResult, mode_id: str) -> None:
+    """Log the operator exit path (pause/stop/terminate) for one turn.
+
+    The kernel produces ``operator_exit`` when an operator signal or a cap
+    path produced a PauseAction / StopAction / TerminateAction:
+
+    - ``paused``: the transport holds the turn open; the next input re-enters
+      the same turn against the preserved WorkflowPosition. The transport
+      decides how to surface this (e.g. a "paused" indicator).
+    - ``stopped``: the transport returns the prompt. The next message is a
+      fresh turn against the preserved position.
+    - ``terminated``: the transport returns the prompt. The workflow is
+      marked complete; the next message is a fresh turn with no workflow.
+
+    The kernel handles WorkflowPosition marking; the host only needs to
+    surface the exit to the transport.
+    """
+    _operator_exit = getattr(result, "operator_exit", "")
+    if not _operator_exit:
+        return
+    if _operator_exit == "paused":
+        logger.info("handle_message: turn paused by operator (mode=%s)", mode_id)
+    elif _operator_exit == "stopped":
+        logger.info("handle_message: turn stopped by operator (mode=%s)", mode_id)
+    elif _operator_exit == "terminated":
+        logger.info("handle_message: turn terminated by operator (mode=%s)", mode_id)
+
+
+def _build_thread_provenance(resolved_model: Any) -> dict[str, Any]:
+    """Build the thread-entry provenance dict for one completed turn."""
+    return {
+        "source": "observed",
+        "finish_reason": "unknown",
+        "model_id": resolved_model.model_id,
+    }
+
+
+def _serialize_effect_receipts(result: TurnResult) -> list[dict[str, str]]:
+    """Serialize the effect-receipt ledger for the thread entry.
+
+    The thread entry is the canonical source of receipts; the
+    ``turn.completed`` event links to it by turn number rather than
+    duplicating the receipt list.
+    """
+    return [
+        {
+            "capability_id": str(getattr(r, "capability_id", "")),
+            "effect": str(getattr(r, "effect", "")),
+            "artifact_id": str(getattr(r, "artifact_id", "") or ""),
+        }
+        for r in (result.effect_receipts or [])
+    ]
+
+
+def _record_operation_error_thread_entry(
+    runtime: HostRuntime,
+    run_context: dict[str, Any],
+    mode: Any,
+    query: str,
+    *,
+    message: str,
+    exc: OperationExecutionError,
+    response_text: str,
+    turn_index: int,
+) -> None:
+    """Persist the thread entry for a turn that failed with an operation error."""
+    run_context["operation_error"] = {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
+        mode_id=mode.mode_id,
+        query=query or message,
+        response_text=response_text,
+        provenance={"source": "system-verified", "finish_reason": "error"},
+        turn=turn_index,
+    )
+
+
+def _update_completion_context(
+    run_context: dict[str, Any],
+    mode: Any,
+    query: str,
+    *,
+    message: str,
+    result: TurnResult,
+    resolved_model: Any,
+) -> None:
+    """Update the run context's completion block with the turn's outcome."""
+    completion_context = run_context.get("completion")
+    if not isinstance(completion_context, dict):
+        completion_context = {}
+    completion_context.update(
+        {
+            "mode_id": mode.mode_id,
+            "query": query or message,
+            "response_preview": result.response_text[:240],
+            "response_chars": len(result.response_text),
+            # How the response was produced: "" (normal answer) or
+            # "reasoning_tail" (no visible answer; the surfaced text is a
+            # labeled quote of the tail of the model's reasoning). The full
+            # reasoning rides the thread entry's ``reasoning_text`` so the
+            # exhaustive log keeps it; playback surfaces bound/redact it.
+            "content_source": str(getattr(result, "content_source", "") or ""),
+            "tool_call_count": coerce_non_negative_int(result.tool_call_count),
+            "iteration_count": coerce_non_negative_int(result.iteration_count),
+            "prompt_tokens": coerce_non_negative_int(result.prompt_tokens),
+            "completion_tokens": coerce_non_negative_int(result.completion_tokens),
+            "total_tokens": coerce_non_negative_int(result.total_tokens),
+            "resolved_model": {
+                "model_id": resolved_model.model_id,
+                "provider": resolved_model.provider,
+                "reasoning_model": resolved_model.reasoning_model,
+            },
+        }
+    )
+    run_context["completion"] = completion_context
+
+
+def _emit_turn_completed_event(
+    mode_id: str,
+    result: TurnResult,
+) -> None:
+    """Emit the kernel turn's completion event for one finished turn.
+
+    The event carries mode/handoff/blocked metadata; the effect-receipt
+    ledger lives in the thread entry (the canonical, turn-addressable
+    source) and is not duplicated in the event payload.
+    """
+    emit_structured_event(
+        logger,
+        level=logging.INFO,
+        event="turn.completed",
+        message=(f"turn.completed: mode={mode_id} handoff={result.handoff_to or ''}"),
+        **build_turn_completed_payload(
+            mode_id=mode_id,
+            result=result,
+            coerce_int=coerce_non_negative_int,
+        ),
+    )
+
+
+def _apply_turn_decision(runtime: HostRuntime, mode_id: str, result: TurnResult) -> None:
+    """Classify the turn outcome and persist a mid-turn mode handoff.
+
+    Centralized loop-decision classification: the host does not iterate
+    the loop itself — ``run_turn`` does that internally — but this
+    classification ensures the host's post-turn handoff and persistence
+    logic is consistent with the same contract the kernel uses (the
+    uniform three-outcome CONTINUE / HANDOFF / FINISH contract).
+
+    Unified FSM routing: when the model called ``transition_stage`` with
+    a mode_id target, update ``current_mode_id`` so the next turn starts
+    in the new mode (see docs/ROUTING_RFC_HANDOFF.md).
+    """
+    _decision = evaluate_turn_decision(
+        has_tool_calls=bool(result.tool_call_count),
+        has_transition_request=bool(result.handoff_to),
+        transition_target=result.handoff_to or None,
+        is_terminal=not bool(result.handoff_to),
+        budget_exhausted=False,
+        has_content=bool(result.response_text),
+    )
+    logger.debug(
+        "turn decision: %s (target=%s reason=%s)",
+        _decision.decision.value,
+        _decision.target,
+        _decision.reason,
+    )
+    if _decision.decision is TurnDecision.HANDOFF and _decision.target:
+        runtime.session.current_mode_id = _decision.target
+        logger.debug(
+            "mode handoff: %s -> %s",
+            mode_id,
+            _decision.target,
+        )
+
+
 async def _execute_mode_turn(
     runtime: HostRuntime,
     message: str,
@@ -520,25 +822,10 @@ async def _execute_mode_turn(
     if mode_support_gap(mode) is not None:
         return _handle_unsupported_mode(runtime, message, mode, query)
 
-    # Pre-turn session budget gate. When the session has declared a
-    # ``max_session_tokens`` cap and the accumulated session total (across
-    # prior turns in this session) already meets or exceeds it, block the
-    # turn before any model call — the user must start a fresh session or
-    # raise the cap rather than continue burning tokens.
-    max_session_tokens = runtime.session_plan.manifest.execution.max_session_tokens
-    if max_session_tokens and runtime.session.tokens.session_total_tokens >= max_session_tokens:
-        used = runtime.session.tokens.session_total_tokens
-        message_text = (
-            f"Session token budget exhausted ({used:,} / {max_session_tokens:,} tokens). "
-            "Start a new session (or raise `max_session_tokens` in your session context) "
-            "to continue."
-        )
-        logger.warning(
-            "session token budget exhausted: used=%d cap=%d; blocking turn",
-            used,
-            max_session_tokens,
-        )
-        return message_text
+    # Pre-turn session budget gate.
+    budget_block = _session_budget_blocked(runtime)
+    if budget_block is not None:
+        return budget_block
 
     # Resolve the model for this turn.
     from host.commands import _resolve_model as _resolve_model_cmd
@@ -601,20 +888,16 @@ async def _execute_mode_turn(
             execution_policy=runtime.execution_policy,
         )
     except OperationExecutionError as exc:
-        run_context["operation_error"] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
         response_text = format_operation_error(exc)
-        append_thread_entry(
-            thread_path=runtime.paths.thread_path,
-            user_slug=runtime.config.user_slug,
-            segment_turns=runtime.config.thread_segment_turns,
-            mode_id=mode.mode_id,
-            query=query or message,
+        _record_operation_error_thread_entry(
+            runtime,
+            run_context,
+            mode,
+            query,
+            message=message,
+            exc=exc,
             response_text=response_text,
-            provenance={"source": "system-verified", "finish_reason": "error"},
-            turn=turn_index,
+            turn_index=turn_index,
         )
         await transport.on_error(f"Operation error: {exc}", exc)
         runtime.session.operator_signal_value = ""
@@ -632,24 +915,10 @@ async def _execute_mode_turn(
 
     # ── Operator exit handling (pause/stop/terminate) ──────────────────
     # The kernel produces ``operator_exit`` when an operator signal or a cap
-    # path produced a PauseAction / StopAction / TerminateAction.
-    # - ``paused``: the transport holds the turn open; the next input re-enters
-    #   the same turn against the preserved WorkflowPosition. The transport
-    #   decides how to surface this (e.g. a "paused" indicator).
-    # - ``stopped``: the transport returns the prompt. The next message is a
-    #   fresh turn against the preserved position.
-    # - ``terminated``: the transport returns the prompt. The workflow is
-    #   marked complete; the next message is a fresh turn with no workflow.
-    # The kernel handles WorkflowPosition marking; the host only needs to
+    # path produced a PauseAction / StopAction / TerminateAction. The
+    # kernel handles WorkflowPosition marking; the host only needs to
     # surface the exit to the transport.
-    _operator_exit = getattr(result, "operator_exit", "")
-    if _operator_exit:
-        if _operator_exit == "paused":
-            logger.info("handle_message: turn paused by operator (mode=%s)", mode.mode_id)
-        elif _operator_exit == "stopped":
-            logger.info("handle_message: turn stopped by operator (mode=%s)", mode.mode_id)
-        elif _operator_exit == "terminated":
-            logger.info("handle_message: turn terminated by operator (mode=%s)", mode.mode_id)
+    _log_operator_exit(result, mode.mode_id)
 
     # ── Pending-approval intercept (policy-driven auto-approve + payload) ──
     # ``run_turn`` pauses the turn before the side effect and exposes the
@@ -696,58 +965,21 @@ async def _execute_mode_turn(
     )
 
     # Update completion context.
-    completion_context = run_context.get("completion")
-    if not isinstance(completion_context, dict):
-        completion_context = {}
-    completion_context.update(
-        {
-            "mode_id": mode.mode_id,
-            "query": query or message,
-            "response_preview": result.response_text[:240],
-            "response_chars": len(result.response_text),
-            # How the response was produced: "" (normal answer) or
-            # "reasoning_tail" (no visible answer; the surfaced text is a
-            # labeled quote of the tail of the model's reasoning). The full
-            # reasoning rides the thread entry's ``reasoning_text`` so the
-            # exhaustive log keeps it; playback surfaces bound/redact it.
-            "content_source": str(getattr(result, "content_source", "") or ""),
-            "tool_call_count": coerce_non_negative_int(result.tool_call_count),
-            "iteration_count": coerce_non_negative_int(result.iteration_count),
-            "prompt_tokens": coerce_non_negative_int(result.prompt_tokens),
-            "completion_tokens": coerce_non_negative_int(result.completion_tokens),
-            "total_tokens": coerce_non_negative_int(result.total_tokens),
-            "resolved_model": {
-                "model_id": resolved_model.model_id,
-                "provider": resolved_model.provider,
-                "reasoning_model": resolved_model.reasoning_model,
-            },
-        }
+    _update_completion_context(
+        run_context,
+        mode,
+        query,
+        message=message,
+        result=result,
+        resolved_model=resolved_model,
     )
-    run_context["completion"] = completion_context
     _set_turn_context(runtime, run_context)
 
-    # Audit: emit the kernel turn's completion event. The event carries
-    # mode/handoff/blocked metadata; the effect-receipt ledger lives in
-    # the thread entry (the canonical, turn-addressable source) and is
-    # not duplicated in the event payload.
-    emit_structured_event(
-        logger,
-        level=logging.INFO,
-        event="turn.completed",
-        message=(f"turn.completed: mode={mode.mode_id} handoff={result.handoff_to or ''}"),
-        **build_turn_completed_payload(
-            mode_id=mode.mode_id,
-            result=result,
-            coerce_int=coerce_non_negative_int,
-        ),
-    )
+    # Audit: emit the kernel turn's completion event.
+    _emit_turn_completed_event(mode.mode_id, result)
 
     # Persist the thread entry.
-    provenance: dict[str, Any] = {
-        "source": "observed",
-        "finish_reason": "unknown",
-        "model_id": resolved_model.model_id,
-    }
+    provenance: dict[str, Any] = _build_thread_provenance(resolved_model)
 
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly
@@ -755,14 +987,7 @@ async def _execute_mode_turn(
     # The thread entry is the canonical source of receipts; the
     # ``turn.completed`` event links to it by turn number rather than
     # duplicating the receipt list.
-    receipts = [
-        {
-            "capability_id": str(getattr(r, "capability_id", "")),
-            "effect": str(getattr(r, "effect", "")),
-            "artifact_id": str(getattr(r, "artifact_id", "") or ""),
-        }
-        for r in (result.effect_receipts or [])
-    ]
+    receipts = _serialize_effect_receipts(result)
 
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
@@ -792,36 +1017,9 @@ async def _execute_mode_turn(
 
     # ── Centralized loop decision classification ────────────────────
     # Classify the turn's outcome using the uniform three-outcome contract
-    # (CONTINUE / HANDOFF / FINISH). The host does not iterate the loop
-    # itself — ``run_turn`` does that internally — but this classification
-    # ensures the host's post-turn handoff and persistence logic is
-    # consistent with the same contract the kernel uses. It also gives
-    # the transport a structured outcome for rendering.
-    _decision = evaluate_turn_decision(
-        has_tool_calls=bool(result.tool_call_count),
-        has_transition_request=bool(result.handoff_to),
-        transition_target=result.handoff_to or None,
-        is_terminal=not bool(result.handoff_to),
-        budget_exhausted=False,
-        has_content=bool(result.response_text),
-    )
-    logger.debug(
-        "turn decision: %s (target=%s reason=%s)",
-        _decision.decision.value,
-        _decision.target,
-        _decision.reason,
-    )
-
-    # Unified FSM routing: persist mid-turn mode handoff. When the model
-    # called transition_stage with a mode_id target, update current_mode_id
-    # so the next turn starts in the new mode. See docs/ROUTING_RFC_HANDOFF.md.
-    if _decision.decision is TurnDecision.HANDOFF and _decision.target:
-        runtime.session.current_mode_id = _decision.target
-        logger.debug(
-            "mode handoff: %s -> %s",
-            mode.mode_id,
-            _decision.target,
-        )
+    # (CONTINUE / HANDOFF / FINISH) and persist a mid-turn handoff when the
+    # model called transition_stage with a mode_id target.
+    _apply_turn_decision(runtime, mode.mode_id, result)
 
     # Emit debug context if debug mode is on.
     if runtime.config.debug:

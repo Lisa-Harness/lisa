@@ -154,35 +154,18 @@ def _looks_like_json(text: str) -> bool:
     return bool("{" in stripped and "}" in stripped)
 
 
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    """Distill a sealed segment's turns into durable semantic memories."""
-    params = ctx.params or {}
-    try:
-        parsed = Parameters.model_validate(params)
-    except ValidationError as exc:
-        return OperationResult(output_text=f"⛔ Invalid mining parameters: {exc}")
+async def _distill_facts(
+    ctx: OperationExecutionContext,
+    *,
+    system_prompt: str,
+    turns_text: str,
+    mine_max_tokens: int,
+) -> MinedFacts:
+    """Distill a segment's rendered turns into durable facts via the model.
 
-    turns = parsed.turns
-    if not turns:
-        return OperationResult(output_text="⛔ No turns provided to mine.")
-
-    if ctx.host is None:
-        raise RuntimeError("mine_thread_segment requires the OperationHost seam")
-
-    system_prompt = _load_system_prompt(ctx)
-    turns_text = _render_turns(turns)
-    if not turns_text.strip():
-        return OperationResult(
-            output_text="No mineable turns in segment (all entries empty).",
-            extra={"mined": False, "memory_ids": []},
-        )
-
-    # Thread-turn provenance bounds for the mined records.
-    turn_indices = [int(rec["turn"]) for rec in turns if isinstance(rec.get("turn"), int)]
-    turn_lo = min(turn_indices) if turn_indices else None
-    turn_hi = max(turn_indices) if turn_indices else None
-
-    # Distillation loop: 2 attempts (structured first, JSON-only retry).
+    Two attempts: structured output first, then a JSON-only retry with a
+    schema-echoing user message. Raises when both attempts fail.
+    """
     model_id = ctx.preferred_model_id
     model_def = ctx.host.resolve_model(model_id)
     if model_def is None:
@@ -194,7 +177,6 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": turns_text},
     ]
-    mine_max_tokens = _resolve_settings(ctx)
     mined: MinedFacts | None = None
     last_exc: Exception | None = None
     for attempt_idx, attempt_messages in enumerate(
@@ -217,6 +199,120 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             break
     if mined is None:
         raise RuntimeError(f"mine_thread_segment distillation failed: {last_exc}")
+    return mined
+
+
+async def _store_mined_facts(
+    ctx: OperationExecutionContext,
+    parsed: Parameters,
+    facts: list[str],
+    content_json: dict[str, object],
+) -> list[int]:
+    """Persist each durable fact as a semantic record with thread-turn provenance.
+
+    The thread is never mutated — the segment is the archive. Fact-storage
+    failures are logged and skipped; returns the stored record ids.
+    """
+    memory_ids: list[int] = []
+    for fact in facts:
+        add_result = await ctx.host.execute_tool(
+            "memory.add",
+            ToolExecutionContext(
+                tool_id="memory.add",
+                workspace_id=parsed.workspace_id,
+                user_id=ctx.user_id,
+                user_slug=ctx.user_slug,
+                surface_id=parsed.surface_id,
+                memory_scope=parsed.memory_scope,  # type: ignore[arg-type]
+                mode_id=ctx.mode_id,
+                parameters={
+                    "content": fact,
+                    "user_slug": parsed.user_slug,
+                    "workspace_id": parsed.workspace_id,
+                    "surface_id": parsed.surface_id,
+                    "memory_scope": parsed.memory_scope,
+                    "memory_tier": "long_term",
+                    "memory_kind": "semantic",
+                    "operation_id": "mine_thread_segment",
+                    "salience": _MINED_SALIENCE_FLOOR,
+                    "confidence": 0.85,
+                    "content_json": content_json,
+                },
+            ),
+        )
+        if getattr(add_result, "error", None):
+            logger.warning("mine_thread_segment: fact storage failed: %s", add_result.error)
+            continue
+        add_text = getattr(add_result, "output_text", "") or ""
+        if "ID " in add_text:
+            with contextlib.suppress(ValueError, IndexError):
+                memory_ids.append(int(add_text.split("ID ", 1)[1].rstrip(".")))
+    return memory_ids
+
+
+def _validate_mining_params(
+    ctx: OperationExecutionContext,
+) -> tuple[Parameters, str, OperationResult | None]:
+    """Validate the operation's params and mining preconditions.
+
+    Returns:
+        A ``(parsed, turns_text, error_result)`` tuple. ``error_result``
+        is ``None`` on success, or an OperationResult the caller should
+        return immediately (invalid params, no turns, or no mineable
+        turn content). ``turns_text`` is the rendered turn content (only
+        meaningful on success).
+    """
+    params = ctx.params or {}
+    try:
+        parsed = Parameters.model_validate(params)
+    except ValidationError as exc:
+        return (
+            Parameters.model_construct(),
+            "",
+            OperationResult(output_text=f"⛔ Invalid mining parameters: {exc}"),
+        )
+
+    turns = parsed.turns
+    if not turns:
+        return parsed, "", OperationResult(output_text="⛔ No turns provided to mine.")
+
+    if ctx.host is None:
+        raise RuntimeError("mine_thread_segment requires the OperationHost seam")
+
+    turns_text = _render_turns(turns)
+    if not turns_text.strip():
+        return (
+            parsed,
+            turns_text,
+            OperationResult(
+                output_text="No mineable turns in segment (all entries empty).",
+                extra={"mined": False, "memory_ids": []},
+            ),
+        )
+    return parsed, turns_text, None
+
+
+async def execute(ctx: OperationExecutionContext) -> OperationResult:
+    """Distill a sealed segment's turns into durable semantic memories."""
+    parsed, turns_text, invalid = _validate_mining_params(ctx)
+    if invalid is not None:
+        return invalid
+    turns = parsed.turns
+
+    system_prompt = _load_system_prompt(ctx)
+
+    # Thread-turn provenance bounds for the mined records.
+    turn_indices = [int(rec["turn"]) for rec in turns if isinstance(rec.get("turn"), int)]
+    turn_lo = min(turn_indices) if turn_indices else None
+    turn_hi = max(turn_indices) if turn_indices else None
+
+    # Distillation loop: 2 attempts (structured first, JSON-only retry).
+    mined = await _distill_facts(
+        ctx,
+        system_prompt=system_prompt,
+        turns_text=turns_text,
+        mine_max_tokens=_resolve_settings(ctx),
+    )
 
     facts = [f.strip() for f in mined.facts if f.strip()]
     if not facts:

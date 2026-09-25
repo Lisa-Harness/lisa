@@ -11,10 +11,12 @@ import json
 import logging
 
 from kernel.models import (
+    MemoryRecallAnswer,
     MemoryRecord,
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
+    ToolResult,
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.config import settings
@@ -39,71 +41,51 @@ class Parameters(BaseModel):
     )
 
 
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    """Run the fused memory recall flow and return text plus structured evidence.
-
-    An empty query returns a no-op result so action modes can expose the
-    operation directly without wrapper logic.
-    """
-    raw_query = str(ctx.params.get("query") or ctx.query or "").strip()
-    if not raw_query:
-        return OperationResult()
-
-    if ctx.host is None:
-        return OperationResult(
-            output_text="Memory recall unavailable: tool execution not injected."
-        )
-
+def _resolve_recall_limit(ctx: OperationExecutionContext) -> int:
+    """Resolve the effective evidence limit from params with sane clamping."""
     default_limit = max(1, ctx.memory_recall_default_limit or settings.memory_recall_final_limit)
-    limit = int(ctx.params.get("limit", default_limit) or 1)
+    return int(ctx.params.get("limit", default_limit) or 1)
 
-    # Use memory.search (semantic/lexical search with the query), not
-    # memory.list (recent listing without query). The query must reach the
-    # backend's search engine — setting it only on ToolExecutionContext.query
-    # is not enough; it must also be in parameters (which is what
-    # _mcp_tool_executor forwards to the pool).
-    #
-    # The same applies to the scope fields: the memory.search synthetic alias
-    # forwards ONLY the `parameters` dict to the native search_memory backend
-    # (see kernel.tools.synthetic.mcp_alias_tool — its handler closes over
-    # `arguments`, never the ToolExecutionContext). Setting surface_id /
-    # workspace_id / memory_scope on the ToolExecutionContext alone leaves
-    # them at the native tool's defaults (surface_id="", workspace_id="default"),
-    # so the store's scoped WHERE clause (user_slug, workspace_id,
-    # memory_scope, surface_id) returns zero rows — recall reports "No memory
-    # matches found" even when the store is full. Mirror the synthesize path,
-    # which passes all three scope fields explicitly in parameters.
-    try:
-        tool_result = await ctx.host.execute_tool(
-            "memory.search",
-            ToolExecutionContext(
-                tool_id="memory.search",
-                workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id,
-                user_slug=ctx.user_slug,
-                surface_id=ctx.surface_id,
-                memory_scope=ctx.memory_scope,
-                mode_id=ctx.mode_id,
-                query=raw_query,
-                parameters={
-                    "query": raw_query,
-                    "user_slug": ctx.user_slug,
-                    "workspace_id": ctx.workspace_id,
-                    "surface_id": ctx.surface_id,
-                    "memory_scope": ctx.memory_scope,
-                    "limit": max(1, min(limit, 20)),
-                },
-            ),
-        )
-    except TypeError as exc:
-        if "not wired" in str(exc):
-            return OperationResult(
-                output_text="Memory recall unavailable: tool execution not injected."
-            )
-        raise
-    if getattr(tool_result, "error", None):
-        return OperationResult(output_text=f"Memory recall unavailable: {tool_result.error}")
 
+def _build_search_context(
+    ctx: OperationExecutionContext, raw_query: str, limit: int
+) -> ToolExecutionContext:
+    """Build the ``memory.search`` ToolExecutionContext mirroring the synthesize path.
+
+    Scope fields (user_slug / workspace_id / surface_id / memory_scope) must
+    ride in ``parameters`` — the memory.search synthetic alias forwards only
+    the parameters dict to the native search backend (see
+    kernel.tools.synthetic.mcp_alias_tool), so setting them on the context
+    alone leaves them at backend defaults and the scoped WHERE clause
+    returns zero rows.
+    """
+    return ToolExecutionContext(
+        tool_id="memory.search",
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        query=raw_query,
+        parameters={
+            "query": raw_query,
+            "user_slug": ctx.user_slug,
+            "workspace_id": ctx.workspace_id,
+            "surface_id": ctx.surface_id,
+            "memory_scope": ctx.memory_scope,
+            "limit": max(1, min(limit, 20)),
+        },
+    )
+
+
+def _parse_memory_records(tool_result: ToolResult) -> list[MemoryRecord]:
+    """Parse the memory.search tool result into validated ``MemoryRecord`` items.
+
+    Tolerates malformed payloads: JSON-decode failures, dict envelopes
+    (``{"results": [...]}``), and per-item validation errors all degrade to
+    fewer records (or none) rather than raising.
+    """
     records: list[MemoryRecord] = []
     try:
         data = json.loads(tool_result.output_text or "[]")
@@ -130,16 +112,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                     exc_info=False,
                 )
                 continue
+    return records
 
-    deep = bool(ctx.params.get("deep", False))
 
-    recall = build_memory_recall_answer(
-        query=raw_query,
-        records=records,
-        limit=limit,
-        deep=deep,
-    )
+def _render_recall_output(recall: MemoryRecallAnswer) -> OperationResult:
+    """Build the final ``OperationResult`` from a synthesized recall answer.
 
+    The not-found path returns the bare answer; the found path appends the
+    uncertainty note and the top-3 evidence lines with thread-turn pointers.
+    """
     if not recall.found:
         return OperationResult(
             output_text=recall.answer,
@@ -168,3 +149,62 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         output_json=recall.model_dump(mode="json"),
         extra={"confidence": recall.confidence, "auto_deep_used": recall.auto_deep_used},
     )
+
+
+async def execute(ctx: OperationExecutionContext) -> OperationResult:
+    """Run the fused memory recall flow and return text plus structured evidence.
+
+    An empty query returns a no-op result so action modes can expose the
+    operation directly without wrapper logic.
+    """
+    raw_query = str(ctx.params.get("query") or ctx.query or "").strip()
+    if not raw_query:
+        return OperationResult()
+
+    if ctx.host is None:
+        return OperationResult(
+            output_text="Memory recall unavailable: tool execution not injected."
+        )
+
+    limit = _resolve_recall_limit(ctx)
+
+    # Use memory.search (semantic/lexical search with the query), not
+    # memory.list (recent listing without query). The query must reach the
+    # backend's search engine — setting it only on ToolExecutionContext.query
+    # is not enough; it must also be in parameters (which is what
+    # _mcp_tool_executor forwards to the pool).
+    #
+    # The same applies to the scope fields: the memory.search synthetic alias
+    # forwards ONLY the `parameters` dict to the native search_memory backend
+    # (see kernel.tools.synthetic.mcp_alias_tool — its handler closes over
+    # `arguments`, never the ToolExecutionContext). Setting surface_id /
+    # workspace_id / memory_scope on the ToolExecutionContext alone leaves
+    # them at the native tool's defaults (surface_id="", workspace_id="default"),
+    # so the store's scoped WHERE clause (user_slug, workspace_id,
+    # memory_scope, surface_id) returns zero rows — recall reports "No memory
+    # matches found" even when the store is full. Mirror the synthesize path,
+    # which passes all three scope fields explicitly in parameters.
+    try:
+        search_ctx = _build_search_context(ctx, raw_query, limit)
+        tool_result = await ctx.host.execute_tool("memory.search", search_ctx)
+    except TypeError as exc:
+        if "not wired" in str(exc):
+            return OperationResult(
+                output_text="Memory recall unavailable: tool execution not injected."
+            )
+        raise
+    if getattr(tool_result, "error", None):
+        return OperationResult(output_text=f"Memory recall unavailable: {tool_result.error}")
+
+    records = _parse_memory_records(tool_result)
+
+    deep = bool(ctx.params.get("deep", False))
+
+    recall = build_memory_recall_answer(
+        query=raw_query,
+        records=records,
+        limit=limit,
+        deep=deep,
+    )
+
+    return _render_recall_output(recall)

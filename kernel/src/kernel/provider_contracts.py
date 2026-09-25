@@ -231,6 +231,7 @@ class ProviderGatewayError(RuntimeError):
         model_id: str,
         display_name: str,
         message: str,
+        *,
         request_id: str = "",
         status_code: int = 0,
     ) -> None:

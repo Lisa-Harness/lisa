@@ -461,6 +461,416 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
         return ""
 
 
+def _operator_signal_action(mode_id: str, op: str) -> LifecycleAction | None:
+    """Resolve the operator signal (priority 0) when one is active.
+
+    The operator is the highest authority: pause/stop/terminate override
+    the router decision and every cap path. Pause and stop share one
+    outcome; the difference is whether the transport returns the prompt.
+    Terminate marks the workflow complete for audit/``/undo``.
+    """
+    if op == "pause":
+        _log.info("lifecycle: operator pause request (mode=%s)", mode_id)
+        return PauseAction(reason="operator pause")
+    if op == "stop":
+        _log.info("lifecycle: operator stop request (mode=%s)", mode_id)
+        return StopAction(reason="operator stop")
+    if op == "terminate":
+        _log.info("lifecycle: operator terminate request (mode=%s)", mode_id)
+        return TerminateAction(reason="operator terminate")
+    return None
+
+
+def _router_decision_action(
+    mode_id: str,
+    router_decision: _RouterDecisionLike | None,
+) -> LifecycleAction | None:
+    """Resolve the formal router decision (priority 1) when one exists.
+
+    The router is the highest authority after the operator; it can see
+    query semantics the harness cannot.
+    """
+    if router_decision is None:
+        return None
+    if getattr(router_decision, "finish", "").strip():
+        _log.info(
+            "lifecycle: router finish (mode=%s reason=%s)",
+            mode_id,
+            router_decision.finish.strip(),
+        )
+        return FinishAction(
+            strip_tools=True,
+            reason=f"router finish: {router_decision.finish.strip()}",
+        )
+    target = getattr(router_decision, "transition_to", "").strip()
+    if target:
+        _log.info("lifecycle: router transition (mode=%s target=%s)", mode_id, target)
+        return TransitionAction(
+            target_mode_id=target,
+            rationale="router transition_to",
+            forced=False,
+        )
+    return None
+
+
+def _recovery_stall_action(
+    *,
+    mode_id: str,
+    mode_yield_policy: YieldPolicy,
+    workflow_position: _WorkflowPositionLike | None,
+    recovery_records: list[_RecoveryRecordLike] | None,
+) -> LifecycleAction | None:
+    """Resolve the blocking recovery-stall yield (priority 2).
+
+    A stalled ``RecoveryRecord`` with ``retry_policy="confirm"`` blocks the
+    instance. Yield with the stall detail so the user can retry/skip.
+    """
+    blocking = _stalled_blocking_record(recovery_records)
+    if blocking is None:
+        return None
+    _log.info(
+        "lifecycle: recovery stall blocks workflow (mode=%s step=%s target=%s)",
+        mode_id,
+        blocking.step_id,
+        blocking.target_id,
+    )
+    target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
+    detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
+    work_item_id = str(getattr(blocking, "work_item_id", "") or "")
+    # Print the literal slash commands with the work-item id so the user
+    # has a concrete, copy-pasteable escape. The historical prompt
+    # ("Retry, skip, or revise?") implied bare words work, but only the
+    # explicit ``/retry|/skip|/cancel <id>`` forms are real commands, and
+    # ``/retry`` on a confirm-policy record directs the user to re-issue
+    # the request or /skip it. Keep the prompt actionable, not a riddle.
+    commands_hint = (
+        f"Run /skip {work_item_id} or /cancel {work_item_id} to dismiss, "
+        f"or /retry {work_item_id} to retry. Otherwise rephrase your request."
+        if work_item_id
+        else "Run /stalls to see open work items, or rephrase your request."
+    )
+    return YieldAction(
+        question=(
+            f"A previous step stalled and needs your input to continue. "
+            f"Stall: {detail}. {commands_hint}"
+        ),
+        context=f"Recovery record blocks workflow step '{blocking.step_id}'.",
+        target_mode_id=target,
+    )
+
+
+def _handoff_loop_action(
+    *,
+    mode_id: str,
+    state: _TurnStateView,
+    settings: LifecycleResolverSettings,
+) -> LifecycleAction | None:
+    """Resolve the handoff-loop backstop finish (priority 2b).
+
+    The ``handoff_count`` hard backstop prevents infinite routing-hint
+    cycles when ``chain_satisfied`` attribution fails. Fires before the
+    iteration cap so a tight handoff loop (A→B→A→B...) is caught early
+    rather than burning the full iteration budget.
+    """
+    if state.handoff_count <= settings.max_handoffs_per_turn:
+        return None
+    _log.warning(
+        "lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)",
+        mode_id,
+        state.handoff_count,
+        settings.max_handoffs_per_turn,
+    )
+    return FinishAction(
+        strip_tools=True,
+        reason=(
+            f"handoff loop guard: {state.handoff_count} handoffs "
+            f"(cap={settings.max_handoffs_per_turn})"
+        ),
+    )
+
+
+def _forced_transition_action(
+    *,
+    state: _TurnStateView,
+    settings: LifecycleResolverSettings,
+) -> LifecycleAction | None:
+    """Resolve the kernel-forced transition handoff (priority 2d).
+
+    Bounds the pre-handoff token burn to roughly
+    ``cap x per-iteration-tokens`` instead of the full iteration budget
+    when the model refuses to call ``transition_stage`` for a hinted
+    single-handoff target (``plan``, ``search``, ``remember`` …).
+    Generalized 2026-08-07 from the plan-only enforcer so a weak model
+    that refuses to call ``transition_stage`` for ANY next step is
+    forced after the cap. The fork (multi-target) shape has no resolver
+    guard — the dispatch-loop enforcer is the single synthesis site
+    (Phase 5; the pre-Phase-5 fork guard here and the loop enforcer
+    were dual paths for one decision).
+    """
+    if (
+        not state.forced_action_target
+        or state.forced_action_target.startswith("fork:")
+        or state.forced_action_non_compliant_dispatches < settings.forced_action_non_compliant_cap
+    ):
+        return None
+    return TransitionAction(
+        target_mode_id=state.forced_action_target,
+        rationale=(
+            "kernel-forced transition handoff: the model did not call "
+            "transition_stage after the routing hint named a target."
+        ),
+        forced=True,
+    )
+
+
+def _write_rescue_action(
+    *,
+    mode_id: str,
+    state: _TurnStateView,
+    settings: LifecycleResolverSettings,
+    workflow_position: _WorkflowPositionLike | None,
+) -> LifecycleAction | None:
+    """Resolve the write-rescue forced transition (priority 2e).
+
+    When a write-contract mode hits the stuck-in-stage cap AND has
+    produced no write receipt for its action tools, force a transition
+    to the planned writer (the next remaining write step) or the
+    configured rescue mode (``explainer``). This guarantees every turn
+    ends productively: instead of pausing on a hallucinated-success
+    block at the cap, the turn hands off to a mode whose only job is to
+    expound the analysis so far into a durable artifact. Fires at
+    ``stage_nudge_cap`` (the same point the cap would pause) so the
+    pre-cap write-nudge (``write_deadline_margin``) gets its chance
+    first — if the nudge fails to produce a write, the rescue takes
+    over.
+    """
+    if not (
+        settings.write_rescue_mode
+        and state.action_tool_ids
+        and not state.has_write_receipt
+        and not state.has_read_receipt
+        and state.turns_in_stage >= settings.stage_nudge_cap
+    ):
+        return None
+    _rescue_target = _planned_writer_mode_id(workflow_position)
+    if not _rescue_target:
+        _rescue_target = settings.write_rescue_mode
+    # Guard against a self-handoff: if the rescue target equals the
+    # current mode (the planned writer IS this mode, or the fallback
+    # rescue mode is the mode already running), synthesizing the
+    # transition would reset ``turns_in_stage`` and re-fire this block
+    # every iteration — a zero-token but unbounded self-handoff loop.
+    # Fall through to the normal stuck-in-stage cap path (pause or
+    # terminate) instead. See ``self-handoff-hint-loop-2026-08-11.md``:
+    # the forced-transition enforcer will synthesize whatever the
+    # resolver returns, so the resolver must refuse the no-op case.
+    if not _rescue_target or _rescue_target == mode_id:
+        return None
+    return TransitionAction(
+        target_mode_id=_rescue_target,
+        rationale=(
+            f"write-rescue: mode '{mode_id}' hit the stuck-in-stage "
+            f"cap with no verified write for action tools "
+            f"{sorted(state.action_tool_ids)}; forcing transition to "
+            f"'{_rescue_target}' so the turn ends productively."
+        ),
+        forced=True,
+    )
+
+
+def _cap_pause_or_terminate(
+    *,
+    mode_yield_policy: YieldPolicy,
+    pause_reason: str,
+    terminate_reason: str,
+) -> LifecycleAction:
+    """Build the cap-outcome action: pause when yields are allowed, else terminate.
+
+    Caps pause, they do not yield. The operator did not ask a question;
+    the kernel ran out of budget. Freeze the turn in place
+    so the operator can resume for a fresh budget, or stop /
+    terminate. The old "How would you like me to proceed?" question is
+    gone — only model-emitted yields and recovery stalls surface a
+    question. Action modes with no yield escape cannot resume a paused
+    turn; terminate is the honest answer — mark the workflow done,
+    return the prompt. The old silent truncate (FinishAction) is gone;
+    the operator gets a real terminal state they can see.
+    """
+    if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
+        return PauseAction(reason=pause_reason)
+    return TerminateAction(reason=terminate_reason)
+
+
+def _per_step_budget_action(
+    *,
+    state: _TurnStateView,
+    settings: LifecycleResolverSettings,
+    workflow_position: _WorkflowPositionLike | None,
+) -> LifecycleAction | None:
+    """Resolve the per-step budget exhausted transition (priority 4).
+
+    The current workflow step consumed its ``per_step_max_iterations`` /
+    ``per_step_max_tool_calls``. If there is a next step, force a
+    ``TransitionAction`` to it (the old ``pending_planned_handoff`` synth).
+    """
+    step_budget_exhausted = (
+        state.step_iteration > settings.per_step_max_iterations
+        or state.step_tool_calls >= settings.per_step_max_tool_calls
+    )
+    has_next_step = workflow_position is not None and _has_next_step(workflow_position)
+    if not (step_budget_exhausted and has_next_step):
+        return None
+    next_mode = _next_step_mode_id(workflow_position)
+    if not next_mode:
+        return None
+    return TransitionAction(
+        target_mode_id=next_mode,
+        rationale=(
+            f"per-step budget exhausted "
+            f"(step_iteration={state.step_iteration}, "
+            f"step_tool_calls={state.step_tool_calls})"
+        ),
+        forced=True,
+    )
+
+
+def _stuck_in_stage_nudge(
+    *,
+    mode_id: str,
+    state: _TurnStateView,
+) -> ContinueAction:
+    """Build the soft stuck-in-stage threshold nudge (priority 6).
+
+    Enriches the nudge with turn context so the model gets actionable
+    guidance instead of a generic "transition or yield." This is NOT
+    a new nudge type — same ContinueAction, same threshold, same
+    transport. The text adapts based on what the turn has been doing:
+
+    - **Error streak** (``consecutive_tool_errors >= 2``): the same
+      tool has failed back-to-back. The model has evidence from
+      successful calls and diagnostic signal from the error strings.
+      Tell it to synthesize both — the findings AND the failure
+      diagnosis — then advance (the 2026-09-04 fetch_page loop:
+      30 calls with 404/402, the generic nudge was ignored because
+      it didn't tell the model what to do with the errors).
+    - **Read-only turn**: the turn has read receipts but no error
+      streak. The model has evidence — tell it to synthesize and
+      advance, not just "consider yielding."
+    - **Default**: the generic nudge (empty completions, write
+      stalls, etc.).
+    """
+    if state.consecutive_tool_errors >= _ERROR_STREAK_NUDGE_THRESHOLD and state.last_error_tool:
+        return ContinueAction(
+            nudge=(
+                f"You have been in {mode_id} for {state.turns_in_stage} iterations "
+                f"without advancing. Your last {state.consecutive_tool_errors} calls "
+                f"to `{state.last_error_tool}` returned errors. Synthesize what you "
+                f"have learned from the successful calls, diagnose why "
+                f"`{state.last_error_tool}` is failing from the error text, then "
+                f"call transition_stage to advance with your findings or call yield "
+                f"to ask for help."
+            )
+        )
+    if state.has_read_receipt:
+        return ContinueAction(
+            nudge=(
+                f"You have been in {mode_id} for {state.turns_in_stage} iterations "
+                f"without advancing. You have gathered evidence from read calls. "
+                f"Synthesize your findings, then call transition_stage to advance "
+                f"or call yield with a clarifying question."
+            )
+        )
+    return ContinueAction(
+        nudge=(
+            f"You have been in {mode_id} for {state.turns_in_stage} iterations "
+            f"without advancing. If you have enough evidence, call "
+            f"transition_stage to advance. Otherwise, call yield with a "
+            f"clarifying question."
+        )
+    )
+
+
+def _resolve_priority_action(
+    *,
+    mode_id: str,
+    state: _TurnStateView,
+    mode_yield_policy: YieldPolicy,
+    settings: LifecycleResolverSettings,
+    router_decision: _RouterDecisionLike | None,
+    workflow_position: _WorkflowPositionLike | None,
+    recovery_records: list[_RecoveryRecordLike] | None,
+) -> LifecycleAction | None:
+    """Run the pre-cap priority resolvers (lifecycle sections 1 through 2e).
+
+    Each resolver returns ``None`` when its gate does not apply; the first
+    concrete action wins. Order: router decision, recovery stall,
+    handoff-loop backstop, forced-transition enforcer, write-rescue.
+    """
+    _router_action = _router_decision_action(mode_id, router_decision)
+    if _router_action is not None:
+        return _router_action
+
+    _stall_action = _recovery_stall_action(
+        mode_id=mode_id,
+        mode_yield_policy=mode_yield_policy,
+        workflow_position=workflow_position,
+        recovery_records=recovery_records,
+    )
+    if _stall_action is not None:
+        return _stall_action
+
+    _handoff_action = _handoff_loop_action(mode_id=mode_id, state=state, settings=settings)
+    if _handoff_action is not None:
+        return _handoff_action
+
+    _forced_action = _forced_transition_action(state=state, settings=settings)
+    if _forced_action is not None:
+        return _forced_action
+
+    return _write_rescue_action(
+        mode_id=mode_id,
+        state=state,
+        settings=settings,
+        workflow_position=workflow_position,
+    )
+
+
+def _resolve_cap_action(
+    *,
+    mode_id: str,
+    state: _TurnStateView,
+    mode_yield_policy: YieldPolicy,
+    settings: LifecycleResolverSettings,
+    workflow_position: _WorkflowPositionLike | None,
+) -> LifecycleAction | None:
+    """Run the cap-path resolvers (lifecycle sections 3, 3b, and 4).
+
+    Order: global iteration cap, resource-budget exhaustion, per-step
+    budget exhaustion. Each returns ``None`` when its cap is not hit.
+    """
+    if state.iteration >= settings.max_tool_iterations:
+        return _cap_pause_or_terminate(
+            mode_yield_policy=mode_yield_policy,
+            pause_reason=(f"iteration cap {settings.max_tool_iterations} reached"),
+            terminate_reason=(
+                f"iteration cap {settings.max_tool_iterations} (action mode, no yield escape)"
+            ),
+        )
+
+    if state.budget_exhausted:
+        return _cap_pause_or_terminate(
+            mode_yield_policy=mode_yield_policy,
+            pause_reason="turn budget exhausted (tool calls / tokens / wall time)",
+            terminate_reason="turn budget exhausted (action mode, no yield escape)",
+        )
+
+    return _per_step_budget_action(
+        state=state,
+        settings=settings,
+        workflow_position=workflow_position,
+    )
+
+
 def resolve_lifecycle_action(
     *,
     state: _TurnStateView,
@@ -522,237 +932,39 @@ def resolve_lifecycle_action(
     ``PauseAction`` / ``StopAction`` / ``TerminateAction``.
     """
     # ── 0. Operator signal (highest priority) ──────────────────────────
-    # The operator is the highest authority: pause/stop/terminate override
-    # the router decision and every cap path. Pause and stop share one
-    # outcome; the difference is whether
-    # the transport returns the prompt. Terminate marks the workflow
-    # complete for audit/``/undo``.
-    _op = state.operator_signal
-    if _op == "pause":
-        _log.info("lifecycle: operator pause request (mode=%s)", mode_id)
-        return PauseAction(reason="operator pause")
-    if _op == "stop":
-        _log.info("lifecycle: operator stop request (mode=%s)", mode_id)
-        return StopAction(reason="operator stop")
-    if _op == "terminate":
-        _log.info("lifecycle: operator terminate request (mode=%s)", mode_id)
-        return TerminateAction(reason="operator terminate")
+    _op_action = _operator_signal_action(mode_id, state.operator_signal)
+    if _op_action is not None:
+        return _op_action
 
-    # ── 1. Router decision ──────────────────────────────────────────────
-    if router_decision is not None:
-        if getattr(router_decision, "finish", "").strip():
-            _log.info(
-                "lifecycle: router finish (mode=%s reason=%s)",
-                mode_id,
-                router_decision.finish.strip(),
-            )
-            return FinishAction(
-                strip_tools=True,
-                reason=f"router finish: {router_decision.finish.strip()}",
-            )
-        target = getattr(router_decision, "transition_to", "").strip()
-        if target:
-            _log.info("lifecycle: router transition (mode=%s target=%s)", mode_id, target)
-            return TransitionAction(
-                target_mode_id=target,
-                rationale="router transition_to",
-                forced=False,
-            )
-
-    # ── 2. Recovery stall blocks the workflow ───────────────────────────
-    blocking = _stalled_blocking_record(recovery_records)
-    if blocking is not None:
-        _log.info(
-            "lifecycle: recovery stall blocks workflow (mode=%s step=%s target=%s)",
-            mode_id,
-            blocking.step_id,
-            blocking.target_id,
-        )
-        target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
-        detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
-        work_item_id = str(getattr(blocking, "work_item_id", "") or "")
-        # Print the literal slash commands with the work-item id so the user
-        # has a concrete, copy-pasteable escape. The historical prompt
-        # ("Retry, skip, or revise?") implied bare words work, but only the
-        # explicit ``/retry|/skip|/cancel <id>`` forms are real commands, and
-        # ``/retry`` on a confirm-policy record directs the user to re-issue
-        # the request or /skip it. Keep the prompt actionable, not a riddle.
-        commands_hint = (
-            f"Run /skip {work_item_id} or /cancel {work_item_id} to dismiss, "
-            f"or /retry {work_item_id} to retry. Otherwise rephrase your request."
-            if work_item_id
-            else "Run /stalls to see open work items, or rephrase your request."
-        )
-        return YieldAction(
-            question=(
-                f"A previous step stalled and needs your input to continue. "
-                f"Stall: {detail}. {commands_hint}"
-            ),
-            context=f"Recovery record blocks workflow step '{blocking.step_id}'.",
-            target_mode_id=target,
-        )
-
-    # ── 2b. Handoff-loop backstop (Phase 4) ──────────────────────────────
-    # The ``handoff_count`` hard backstop prevents infinite routing-hint
-    # cycles when ``chain_satisfied`` attribution fails. Fires before the
-    # iteration cap so a tight handoff loop (A→B→A→B...) is caught early
-    # rather than burning the full iteration budget.
-    if state.handoff_count > settings.max_handoffs_per_turn:
-        _log.warning(
-            "lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)",
-            mode_id,
-            state.handoff_count,
-            settings.max_handoffs_per_turn,
-        )
-        return FinishAction(
-            strip_tools=True,
-            reason=(
-                f"handoff loop guard: {state.handoff_count} handoffs "
-                f"(cap={settings.max_handoffs_per_turn})"
-            ),
-        )
-
-    # ── 2d. Forced-transition enforcer (Phase 4) ───────────────────────
-    # Bounds the pre-handoff token burn to roughly
-    # ``cap x per-iteration-tokens`` instead of the full iteration budget
-    # when the model refuses to call ``transition_stage`` for a hinted
-    # single-handoff target (``plan``, ``search``, ``remember`` …).
-    # Generalized 2026-08-07 from the plan-only enforcer so a weak model
-    # that refuses to call ``transition_stage`` for ANY next step is
-    # forced after the cap. The fork (multi-target) shape has no resolver
-    # guard — the dispatch-loop enforcer is the single synthesis site
-    # (Phase 5; the pre-Phase-5 fork guard here and the loop enforcer
-    # were dual paths for one decision).
-    if (
-        state.forced_action_target
-        and not state.forced_action_target.startswith("fork:")
-        and state.forced_action_non_compliant_dispatches >= settings.forced_action_non_compliant_cap
-    ):
-        return TransitionAction(
-            target_mode_id=state.forced_action_target,
-            rationale=(
-                "kernel-forced transition handoff: the model did not call "
-                "transition_stage after the routing hint named a target."
-            ),
-            forced=True,
-        )
-
-    # ── 2e. Write-rescue forced transition (at the cap, before pause) ──
-    # When a write-contract mode hits the stuck-in-stage cap AND has
-    # produced no write receipt for its action tools, force a transition
-    # to the planned writer (the next remaining write step) or the
-    # configured rescue mode (``explainer``). This guarantees every turn
-    # ends productively: instead of pausing on a hallucinated-success
-    # block at the cap, the turn hands off to a mode whose only job is to
-    # expound the analysis so far into a durable artifact. Fires at
-    # ``stage_nudge_cap`` (the same point the cap would pause) so the
-    # pre-cap write-nudge (``write_deadline_margin``) gets its chance
-    # first — if the nudge fails to produce a write, the rescue takes
-    # over.
-    if (
-        settings.write_rescue_mode
-        and state.action_tool_ids
-        and not state.has_write_receipt
-        and not state.has_read_receipt
-        and state.turns_in_stage >= settings.stage_nudge_cap
-    ):
-        _rescue_target = _planned_writer_mode_id(workflow_position)
-        if not _rescue_target:
-            _rescue_target = settings.write_rescue_mode
-        # Guard against a self-handoff: if the rescue target equals the
-        # current mode (the planned writer IS this mode, or the fallback
-        # rescue mode is the mode already running), synthesizing the
-        # transition would reset ``turns_in_stage`` and re-fire this block
-        # every iteration — a zero-token but unbounded self-handoff loop.
-        # Fall through to the normal stuck-in-stage cap path (pause or
-        # terminate) instead. See ``self-handoff-hint-loop-2026-08-11.md``:
-        # the forced-transition enforcer will synthesize whatever the
-        # resolver returns, so the resolver must refuse the no-op case.
-        if _rescue_target and _rescue_target != mode_id:
-            return TransitionAction(
-                target_mode_id=_rescue_target,
-                rationale=(
-                    f"write-rescue: mode '{mode_id}' hit the stuck-in-stage "
-                    f"cap with no verified write for action tools "
-                    f"{sorted(state.action_tool_ids)}; forcing transition to "
-                    f"'{_rescue_target}' so the turn ends productively."
-                ),
-                forced=True,
-            )
-
-    # ── 3. Global iteration cap (the only true ceiling) ────────────────
-    # Caps pause, they do not yield. The operator did not ask a question;
-    # the kernel ran out of budget. Freeze the turn in place
-    # so the operator can resume for a fresh budget, or stop /
-    # terminate. The old "How would you like me to proceed?" question is
-    # gone — only model-emitted yields and recovery stalls surface a
-    # question.
-    if state.iteration >= settings.max_tool_iterations:
-        if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            return PauseAction(
-                reason=(f"iteration cap {settings.max_tool_iterations} reached"),
-            )
-        # Action mode with no yield escape: pausing would hang a mode that
-        # cannot resume. Terminate is the honest answer — mark the workflow
-        # done, return the prompt. The old silent
-        # truncate (FinishAction) is gone; the operator gets a real terminal
-        # state they can see.
-        return TerminateAction(
-            reason=(f"iteration cap {settings.max_tool_iterations} (action mode, no yield escape)"),
-        )
-
-    # ── 3b. Resource-budget exhaustion (Phase 4) ────────────────────
-    # The TurnBudget (tool calls / tokens / wall time) is exhausted. Pause
-    # so the operator can resume for a fresh budget, instead of surfacing a
-    # question or truncating. When no TurnBudget is wired (the common case),
-    # ``budget_exhausted`` is False and this is a no-op.
-    if state.budget_exhausted:
-        if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            return PauseAction(
-                reason="turn budget exhausted (tool calls / tokens / wall time)",
-            )
-        return TerminateAction(
-            reason="turn budget exhausted (action mode, no yield escape)",
-        )
-
-    # ── 4. Per-step budget exhausted ────────────────────────────────────
-    step_budget_exhausted = (
-        state.step_iteration > settings.per_step_max_iterations
-        or state.step_tool_calls >= settings.per_step_max_tool_calls
+    # ── 1–2e. Priority resolvers (router → stall → backstop → enforcers → rescue) ──
+    priority_action = _resolve_priority_action(
+        mode_id=mode_id,
+        state=state,
+        mode_yield_policy=mode_yield_policy,
+        settings=settings,
+        router_decision=router_decision,
+        workflow_position=workflow_position,
+        recovery_records=recovery_records,
     )
-    if (
-        step_budget_exhausted
-        and workflow_position is not None
-        and _has_next_step(workflow_position)
-    ):
-        next_mode = _next_step_mode_id(workflow_position)
-        if next_mode:
-            return TransitionAction(
-                target_mode_id=next_mode,
-                rationale=(
-                    f"per-step budget exhausted "
-                    f"(step_iteration={state.step_iteration}, "
-                    f"step_tool_calls={state.step_tool_calls})"
-                ),
-                forced=True,
-            )
+    if priority_action is not None:
+        return priority_action
 
-    # ── 5. Stuck-in-stage cap (unified across mode kinds) ──────────────
-    # ``turns_in_stage`` is fed uniformly by the loop: the workflow
-    # session's per-stage turn count for workflow modes, the per-step
-    # iteration counter (reset on every ``transition_stage``) for
-    # chat/action modes. One counter, one cap. The cap pauses the turn —
-    # the operator can resume, stop, or terminate. The old 2026-07-30
-    # "loop max guard 6" fix (yield, don't truncate) is now a pause: same
-    # state preservation, no spurious question, now covering the
-    # chat-mode case the 2026-08-05 markdown burn exposed.
+    # ── 3–4. Cap paths (iteration, resource budget, per-step budget) ──
+    cap_action = _resolve_cap_action(
+        mode_id=mode_id,
+        state=state,
+        mode_yield_policy=mode_yield_policy,
+        settings=settings,
+        workflow_position=workflow_position,
+    )
+    if cap_action is not None:
+        return cap_action
+
     if state.turns_in_stage >= settings.stage_nudge_cap:
-        if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            return PauseAction(
-                reason=(f"stuck in {mode_id} for {state.turns_in_stage} iterations (cap)"),
-            )
-        return TerminateAction(
-            reason=(
+        return _cap_pause_or_terminate(
+            mode_yield_policy=mode_yield_policy,
+            pause_reason=(f"stuck in {mode_id} for {state.turns_in_stage} iterations (cap)"),
+            terminate_reason=(
                 f"stuck in {mode_id} for {state.turns_in_stage} iterations "
                 f"(action mode, no yield escape)"
             ),
@@ -760,52 +972,7 @@ def resolve_lifecycle_action(
 
     # ── 6. Stuck-in-stage threshold (soft nudge) ────────────────────────
     if state.turns_in_stage >= settings.stage_nudge_threshold:
-        # Enrich the nudge with turn context so the model gets actionable
-        # guidance instead of a generic "transition or yield." This is NOT
-        # a new nudge type — same ContinueAction, same threshold, same
-        # transport. The text adapts based on what the turn has been doing:
-        #
-        # - **Error streak** (``consecutive_tool_errors >= 2``): the same
-        #   tool has failed back-to-back. The model has evidence from
-        #   successful calls and diagnostic signal from the error strings.
-        #   Tell it to synthesize both — the findings AND the failure
-        #   diagnosis — then advance (the 2026-09-04 fetch_page loop:
-        #   30 calls with 404/402, the generic nudge was ignored because
-        #   it didn't tell the model what to do with the errors).
-        # - **Read-only turn**: the turn has read receipts but no error
-        #   streak. The model has evidence — tell it to synthesize and
-        #   advance, not just "consider yielding."
-        # - **Default**: the generic nudge (empty completions, write
-        #   stalls, etc.).
-        if state.consecutive_tool_errors >= _ERROR_STREAK_NUDGE_THRESHOLD and state.last_error_tool:
-            return ContinueAction(
-                nudge=(
-                    f"You have been in {mode_id} for {state.turns_in_stage} iterations "
-                    f"without advancing. Your last {state.consecutive_tool_errors} calls "
-                    f"to `{state.last_error_tool}` returned errors. Synthesize what you "
-                    f"have learned from the successful calls, diagnose why "
-                    f"`{state.last_error_tool}` is failing from the error text, then "
-                    f"call transition_stage to advance with your findings or call yield "
-                    f"to ask for help."
-                )
-            )
-        if state.has_read_receipt:
-            return ContinueAction(
-                nudge=(
-                    f"You have been in {mode_id} for {state.turns_in_stage} iterations "
-                    f"without advancing. You have gathered evidence from read calls. "
-                    f"Synthesize your findings, then call transition_stage to advance "
-                    f"or call yield with a clarifying question."
-                )
-            )
-        return ContinueAction(
-            nudge=(
-                f"You have been in {mode_id} for {state.turns_in_stage} iterations "
-                f"without advancing. If you have enough evidence, call "
-                f"transition_stage to advance. Otherwise, call yield with a "
-                f"clarifying question."
-            )
-        )
+        return _stuck_in_stage_nudge(mode_id=mode_id, state=state)
 
     # ── 7. Default: keep working ───────────────────────────────────────
     return ContinueAction()

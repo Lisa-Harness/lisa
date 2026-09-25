@@ -711,6 +711,7 @@ def resolve_iteration_model(
     hooks: Any,
     preferred_model_id: str,
     resolve_model: Any,
+    *,
     model_def: Any,
     query: str,
     mode_id: str,

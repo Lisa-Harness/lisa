@@ -10,6 +10,8 @@ is always ``<base>/openai/deployments`` exactly once.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ..classify import apply_known_override, env_any
@@ -125,46 +127,44 @@ class AzureOpenAIProbe(ProviderProbe):
         return tuple(models) if models else None
 
 
-def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
-    """Build a :class:`DiscoveredModel` enriched from Azure OpenAI metadata.
+def _azure_catalog_capabilities(row: dict[str, Any]) -> list[str] | None:
+    """Parse the Azure catalog ``capabilities`` dict into Lisa capabilities.
 
-    Azure's deployments list carries ``model`` (underlying model family) and
-    ``capabilities`` (a dict with ``chat_completion``, ``tools``, ``vision``,
-    etc.) on the catalog endpoint. Deployments only carry ``id`` and ``model``,
-    so we fall back to family-based inference for the enrichment fields.
+    Returns the sorted capability list when the catalog reported any
+    capability, or ``None`` to keep the default chat surface.
     """
+    raw_capabilities = row.get("capabilities")
+    if not isinstance(raw_capabilities, dict):
+        return None
+    capability_set: set[str] = set()
+    if raw_capabilities.get("chat_completion"):
+        capability_set.add("text")
+    if raw_capabilities.get("tools"):
+        capability_set.add("tools")
+    if raw_capabilities.get("structured_output") or raw_capabilities.get("json_object"):
+        capability_set.add("structured_output")
+    if raw_capabilities.get("vision"):
+        capability_set.add("vision")
+    if raw_capabilities.get("reasoning"):
+        capability_set.add("reasoning")
+    if capability_set:
+        return sorted(capability_set)
+    return None
 
-    lowered = model_id.lower()
-    capabilities_list: list[str] = ["text", "tools", "structured_output"]
+
+def _azure_family_tiers(
+    lowered: str,
+    capabilities_list: list[str],
+) -> tuple[bool, list[str], str, str]:
+    """Derive ``(thinking_model, capabilities, cost_tier, latency_tier)`` from the model family.
+
+    The family chain: o-series (thinking/reasoning, premium for pro),
+    gpt-5 (code-capable; mini = standard, else frontier), gpt-chat
+    (standard/low), image (image-only), embedding (budget).
+    """
     thinking_model = False
     cost_tier = ""
     latency_tier = ""
-    display_name = str(row.get("model") or "").strip() or model_id
-    # Codex-family models are reasoning/thinking models — they reject
-    # ``temperature`` on both the Responses and chat-completions APIs.
-    # Detected here (before the if/elif model-family chain) so it does
-    # not add a branch to that chain; the o-series also sets
-    # ``thinking_model`` in its own branch below.
-    is_codex = "codex" in lowered
-    thinking_model = is_codex
-
-    # Parse the Azure catalog capabilities dict if present.
-    raw_capabilities = row.get("capabilities")
-    if isinstance(raw_capabilities, dict):
-        capability_set: set[str] = set()
-        if raw_capabilities.get("chat_completion"):
-            capability_set.add("text")
-        if raw_capabilities.get("tools"):
-            capability_set.add("tools")
-        if raw_capabilities.get("structured_output") or raw_capabilities.get("json_object"):
-            capability_set.add("structured_output")
-        if raw_capabilities.get("vision"):
-            capability_set.add("vision")
-        if raw_capabilities.get("reasoning"):
-            capability_set.add("reasoning")
-        if capability_set:
-            capabilities_list = sorted(capability_set)
-
     if lowered.startswith("o1") or lowered.startswith("o3") or lowered.startswith("o4"):
         thinking_model = True
         capabilities_list = sorted(set(capabilities_list) | {"reasoning"})
@@ -187,6 +187,39 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
     elif "embedding" in lowered:
         capabilities_list = ["embedding"]
         cost_tier = "budget"
+    return thinking_model, capabilities_list, cost_tier, latency_tier
+
+
+def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
+    """Build a :class:`DiscoveredModel` enriched from Azure OpenAI metadata.
+
+    Azure's deployments list carries ``model`` (underlying model family) and
+    ``capabilities`` (a dict with ``chat_completion``, ``tools``, ``vision``,
+    etc.) on the catalog endpoint. Deployments only carry ``id`` and ``model``,
+    so we fall back to family-based inference for the enrichment fields.
+    """
+
+    lowered = model_id.lower()
+    capabilities_list: list[str] = ["text", "tools", "structured_output"]
+    display_name = str(row.get("model") or "").strip() or model_id
+    # Codex-family models are reasoning/thinking models — they reject
+    # ``temperature`` on both the Responses and chat-completions APIs.
+    # Detected here (before the family chain) so it does not add a branch
+    # to that chain; the o-series also sets ``thinking_model`` in its own
+    # branch below.
+    is_codex = "codex" in lowered
+    thinking_model = is_codex
+
+    # Parse the Azure catalog capabilities dict if present.
+    catalog_caps = _azure_catalog_capabilities(row)
+    if catalog_caps is not None:
+        capabilities_list = catalog_caps
+
+    family_thinking, capabilities_list, cost_tier, latency_tier = _azure_family_tiers(
+        lowered, capabilities_list
+    )
+    if family_thinking:
+        thinking_model = True
 
     # Codex-family models on Azure only expose the Responses API; the
     # chat-completions endpoint rejects them with ``The requested

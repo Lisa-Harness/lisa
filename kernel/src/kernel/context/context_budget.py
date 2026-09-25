@@ -100,6 +100,98 @@ class ContextBudgetAllocator:
             lane_limits=resolved_lane_limits,
         )
 
+    def _record_unbudgeted(
+        self,
+        key: str,
+        *,
+        lane: ContextLane,
+        requested_tokens: int,
+        required: bool,
+    ) -> None:
+        """Record an included section on a disabled budget (everything passes)."""
+        self.records[key] = ContextBudgetRecord(
+            lane=lane,
+            requested_tokens=requested_tokens,
+            allocated_tokens=requested_tokens,
+            budget_tokens=requested_tokens,
+            included=True,
+            required=required,
+        )
+
+    def _record_dropped(
+        self,
+        key: str,
+        *,
+        lane: ContextLane,
+        requested_tokens: int,
+        allocated_budget: int,
+        required: bool,
+        dropped_reason: str,
+        truncated: bool = False,
+    ) -> None:
+        """Record a dropped section (budget gate / oversized / truncation-empty)."""
+        self.records[key] = ContextBudgetRecord(
+            lane=lane,
+            requested_tokens=requested_tokens,
+            allocated_tokens=0,
+            budget_tokens=allocated_budget,
+            required=required,
+            dropped_reason=dropped_reason,
+            truncated=truncated,
+        )
+
+    def _render_within_budget(
+        self,
+        key: str,
+        *,
+        lane: ContextLane,
+        normalized: str,
+        requested_tokens: int,
+        allocated_budget: int,
+        required: bool,
+        allow_truncate: bool,
+    ) -> tuple[str | None, bool]:
+        """Render the section within its allocated budget.
+
+        Returns a ``(rendered, truncated)`` tuple; ``rendered`` is ``None``
+        when the section was dropped (oversized with truncation disallowed,
+        or truncation produced an empty render). Raises
+        :class:`RequiredContextBudgetError` for dropped required sections.
+        """
+        if requested_tokens <= allocated_budget:
+            return normalized, False
+        if not allow_truncate:
+            self._record_dropped(
+                key,
+                lane=lane,
+                requested_tokens=requested_tokens,
+                allocated_budget=allocated_budget,
+                required=required,
+                dropped_reason="required_too_large" if required else "section_too_large",
+            )
+            if required:
+                raise RequiredContextBudgetError(
+                    f"Required context section '{key}' (lane={lane}, "
+                    f"{requested_tokens} tokens) exceeds the allocated "
+                    f"budget ({allocated_budget} tokens) and truncation "
+                    "is not allowed. Either increase the lane budget or "
+                    "allow truncation for this section."
+                )
+            return None, False
+        rendered, truncated = self._truncate_to_budget(normalized, allocated_budget)
+        if not rendered:
+            self._record_dropped(
+                key,
+                lane=lane,
+                requested_tokens=requested_tokens,
+                allocated_budget=allocated_budget,
+                required=required,
+                dropped_reason="truncation_empty",
+                truncated=True,
+            )
+            return None, truncated
+        return rendered, truncated
+
     def allocate(
         self,
         *,
@@ -122,12 +214,10 @@ class ContextBudgetAllocator:
 
         requested_tokens = self._estimate_tokens(normalized)
         if not self.enabled:
-            self.records[key] = ContextBudgetRecord(
+            self._record_unbudgeted(
+                key,
                 lane=lane,
                 requested_tokens=requested_tokens,
-                allocated_tokens=requested_tokens,
-                budget_tokens=requested_tokens,
-                included=True,
                 required=required,
             )
             return normalized
@@ -138,11 +228,11 @@ class ContextBudgetAllocator:
         allocated_budget = min(lane_remaining, total_remaining)
 
         if allocated_budget <= 0:
-            self.records[key] = ContextBudgetRecord(
+            self._record_dropped(
+                key,
                 lane=lane,
                 requested_tokens=requested_tokens,
-                allocated_tokens=0,
-                budget_tokens=allocated_budget,
+                allocated_budget=allocated_budget,
                 required=required,
                 dropped_reason="budget_exhausted",
             )
@@ -154,47 +244,25 @@ class ContextBudgetAllocator:
                 )
             return ""
 
-        rendered = normalized
-        truncated = False
-        if requested_tokens > allocated_budget:
-            if not allow_truncate:
-                self.records[key] = ContextBudgetRecord(
-                    lane=lane,
-                    requested_tokens=requested_tokens,
-                    allocated_tokens=0,
-                    budget_tokens=allocated_budget,
-                    required=required,
-                    dropped_reason="required_too_large" if required else "section_too_large",
-                )
-                if required:
-                    raise RequiredContextBudgetError(
-                        f"Required context section '{key}' (lane={lane}, "
-                        f"{requested_tokens} tokens) exceeds the allocated "
-                        f"budget ({allocated_budget} tokens) and truncation "
-                        "is not allowed. Either increase the lane budget or "
-                        "allow truncation for this section."
-                    )
-                return ""
-            rendered, truncated = self._truncate_to_budget(normalized, allocated_budget)
-            if not rendered:
-                self.records[key] = ContextBudgetRecord(
-                    lane=lane,
-                    requested_tokens=requested_tokens,
-                    allocated_tokens=0,
-                    budget_tokens=allocated_budget,
-                    required=required,
-                    dropped_reason="truncation_empty",
-                    truncated=True,
-                )
-                return ""
+        rendered, truncated = self._render_within_budget(
+            key,
+            lane=lane,
+            normalized=normalized,
+            requested_tokens=requested_tokens,
+            allocated_budget=allocated_budget,
+            required=required,
+            allow_truncate=allow_truncate,
+        )
+        if rendered is None:
+            return ""
 
         allocated_tokens = self._estimate_tokens(rendered)
         if allocated_tokens <= 0:
-            self.records[key] = ContextBudgetRecord(
+            self._record_dropped(
+                key,
                 lane=lane,
                 requested_tokens=requested_tokens,
-                allocated_tokens=0,
-                budget_tokens=allocated_budget,
+                allocated_budget=allocated_budget,
                 required=required,
                 dropped_reason="empty_after_trim",
                 truncated=truncated,

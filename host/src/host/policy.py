@@ -888,6 +888,27 @@ def decide(
 
     # 5. Mode fallback - blanket-deny first. PLAN's deny is stricter than the
     # bare-mode guard and must win: a plan-mode execute is denied, not asked.
+    return _mode_fallback_decision(
+        policy, effect=effect, tier=tier, containment=containment, data_dir=data_dir
+    )
+
+
+def _mode_fallback_decision(
+    policy: PolicyDocument,
+    *,
+    effect: str,
+    tier: str,
+    containment: str,
+    data_dir: Path | None,
+) -> PolicyDecision:
+    """Apply the mode-fallback decision (step 5 of ``decide``).
+
+    Read-only actions allow; PLAN mode blanket-denies effectful actions;
+    TRUST mode allows its auto-effects (subject to the bare-execute guard);
+    everything else asks. A bare (unsandboxed) execute action needs explicit
+    approval instead of TRUST's silent allow - the user's floor may permit
+    bare, but it is never allowed without a prompt.
+    """
     if effect == "read":
         return PolicyDecision(
             verdict=VERDICT_ALLOW,
@@ -902,11 +923,6 @@ def decide(
             tier=tier,
             containment=containment,
         )
-
-    # A bare (unsandboxed) execute action needs explicit approval instead of
-    # TRUST's silent allow - the user's floor may permit bare, but it is never
-    # allowed without a prompt. Narrows TRUST only; ask-mode and plan-mode are
-    # already at least as strict.
     if data_dir is None:
         containment = "unknown"
     if policy.mode is PolicyMode.TRUST and effect in _TRUST_AUTO_EFFECTS:

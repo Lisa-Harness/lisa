@@ -154,33 +154,13 @@ async def handle_stall(runtime: Any, stripped: str, message: str) -> str:
     return _render_record_detail(record)
 
 
-# ── /retry <id> ───────────────────────────────────────────────────────
+def _retry_guard_message(record: Any, work_item_id: str) -> str | None:
+    """Return the blocking message for a non-retryable record, or None.
 
-
-async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
-    """Handle ``/retry <id>`` — retry one stalled work item.
-
-    Read-only items (``retry_policy == "safe"``) are retried immediately.
-    Effectful or indeterminate items (``retry_policy == "confirm"``)
-    require explicit operator approval before replay — the handler
-    surfaces a prompt and does NOT auto-execute.
+    Encodes the /retry policy chain: unknown id, not operator-open,
+    ``retry_policy == "never"``, and the effectful ``confirm`` case that
+    requires a fresh turn rather than a replay.
     """
-    del message
-    parts = stripped.split(None, 1)
-    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
-        return "Usage: /retry <work_item_id>"
-
-    work_item_id = parts[1].strip()
-    service = getattr(runtime, "recovery_service", None)
-    if service is None or not hasattr(service, "get"):
-        return "Recovery service is not available in this host runtime."
-
-    try:
-        record = await service.get(work_item_id, _recovery_identity(runtime))
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("retry get failed: %s", exc)
-        return f"Failed to read work item: {type(exc).__name__}: {exc}"
-
     if record is None:
         return f"No work item found with id '{work_item_id}' for this session."
 
@@ -213,6 +193,39 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
             f"  - run `/skip {work_item_id}` or `/cancel {work_item_id}` to "
             "dismiss this stall and advance the workflow."
         )
+    return None
+
+
+# ── /retry <id> ───────────────────────────────────────────────────────
+
+
+async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
+    """Handle ``/retry <id>`` — retry one stalled work item.
+
+    Read-only items (``retry_policy == "safe"``) are retried immediately.
+    Effectful or indeterminate items (``retry_policy == "confirm"``)
+    require explicit operator approval before replay — the handler
+    surfaces a prompt and does NOT auto-execute.
+    """
+    del message
+    parts = stripped.split(None, 1)
+    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
+        return "Usage: /retry <work_item_id>"
+
+    work_item_id = parts[1].strip()
+    service = getattr(runtime, "recovery_service", None)
+    if service is None or not hasattr(service, "get"):
+        return "Recovery service is not available in this host runtime."
+
+    try:
+        record = await service.get(work_item_id, _recovery_identity(runtime))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("retry get failed: %s", exc)
+        return f"Failed to read work item: {type(exc).__name__}: {exc}"
+
+    guard = _retry_guard_message(record, work_item_id)
+    if guard is not None:
+        return guard
 
     # Safe (read-only) retry: settle as succeeded placeholder for now.
     # Full replay execution (re-dispatch through the kernel) is the next

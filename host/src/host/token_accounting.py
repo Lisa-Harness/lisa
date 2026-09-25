@@ -193,8 +193,8 @@ def apply_turn_usage(
         turn_index,
         main_tokens,
         model_id,
-        mode_id,
-        stage_id,
+        mode_id=mode_id,
+        stage_id=stage_id,
         skip_model_breakdown=bool(per_model_usage),
         skip_mode_breakdown=bool(per_mode_usage),
     )
@@ -328,9 +328,9 @@ def _record_main_ledger(
     turn_index: int,
     main: TurnUsage,
     model_id: str,
+    *,
     mode_id: str,
     stage_id: str,
-    *,
     skip_model_breakdown: bool = False,
     skip_mode_breakdown: bool = False,
 ) -> None:
@@ -446,6 +446,44 @@ def top_session_mode(state: dict[str, Any]) -> tuple[str, int] | None:
     return best_mode, best_count
 
 
+def _breakdown_table_lines(
+    section_title: str,
+    column_label: str,
+    totals: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Build the per-key breakdown table lines (models / modes / stages).
+
+    Args:
+        section_title: Markdown heading (e.g. ``"By Model"``).
+        column_label: Table column header for the breakdown key.
+        totals: The ``<kind>_token_totals`` dict from the session state.
+
+    Returns:
+        The heading + table rows, or an empty list when ``totals`` is empty.
+    """
+    if not totals:
+        return []
+    lines = [
+        "",
+        f"### {section_title}",
+        f"| {column_label} | Prompt | Completion | Total | Cached | Reasoning | "
+        "Billed (total-cached) | Duration ms |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for key in sorted(totals):
+        entry = totals[key]
+        total = int(entry.get("total_tokens", 0))
+        cached = int(entry.get("cached_tokens", 0))
+        lines.append(
+            f"| {key} | {entry.get('prompt_tokens', 0)} | "
+            f"{entry.get('completion_tokens', 0)} | {total} | "
+            f"{cached} | {entry.get('reasoning_tokens', 0)} | "
+            f"{max(0, total - cached)} | "
+            f"{entry.get('duration_ms', 0.0):.0f} |"
+        )
+    return lines
+
+
 def format_session_exit_summary_lines(
     state: dict[str, Any],
     *,
@@ -516,75 +554,15 @@ def format_session_exit_summary_lines(
 
     # ── Per-model breakdown ────────────────────────────────────────
     model_totals: dict[str, dict[str, Any]] = state.get("model_token_totals") or {}
-    if model_totals:
-        lines.extend(
-            [
-                "",
-                "### By Model",
-                "| Model | Prompt | Completion | Total | Cached | Reasoning | "
-                "Billed (total-cached) | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for model_key in sorted(model_totals):
-            entry = model_totals[model_key]
-            total = int(entry.get("total_tokens", 0))
-            cached = int(entry.get("cached_tokens", 0))
-            lines.append(
-                f"| {model_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {total} | "
-                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
-                f"{max(0, total - cached)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
+    lines.extend(_breakdown_table_lines("By Model", "Model", model_totals))
 
     # ── Per-mode breakdown ─────────────────────────────────────────
     mode_totals: dict[str, dict[str, Any]] = state.get("mode_token_totals") or {}
-    if mode_totals:
-        lines.extend(
-            [
-                "",
-                "### By Mode",
-                "| Mode | Prompt | Completion | Total | Cached | Reasoning | "
-                "Billed (total-cached) | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for mode_key in sorted(mode_totals):
-            entry = mode_totals[mode_key]
-            total = int(entry.get("total_tokens", 0))
-            cached = int(entry.get("cached_tokens", 0))
-            lines.append(
-                f"| {mode_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {total} | "
-                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
-                f"{max(0, total - cached)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
+    lines.extend(_breakdown_table_lines("By Mode", "Mode", mode_totals))
 
     # ── Per-stage breakdown ────────────────────────────────────────
     stage_totals: dict[str, dict[str, Any]] = state.get("stage_token_totals") or {}
-    if stage_totals:
-        lines.extend(
-            [
-                "",
-                "### By Stage",
-                "| Stage | Prompt | Completion | Total | Cached | Reasoning | "
-                "Billed (total-cached) | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for stage_key in sorted(stage_totals):
-            entry = stage_totals[stage_key]
-            total = int(entry.get("total_tokens", 0))
-            cached = int(entry.get("cached_tokens", 0))
-            lines.append(
-                f"| {stage_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {total} | "
-                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
-                f"{max(0, total - cached)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
+    lines.extend(_breakdown_table_lines("By Stage", "Stage", stage_totals))
 
     top_mode = top_session_mode(state)
     if top_mode is not None:

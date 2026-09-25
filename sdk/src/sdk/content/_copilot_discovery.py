@@ -84,102 +84,43 @@ def discover_copilot_customizations(
 
     seen_paths: set[str] = set()
 
-    def _rel(p: Path) -> str:
-        try:
-            return str(p.resolve().relative_to(workspace_root)).replace("\\", "/")
-        except ValueError:
-            return str(p)
-
     for root in roots:
-        # Always-on: copilot-instructions.md (root of each scan root only).
-        copilot_instr = root / ".github" / "copilot-instructions.md"
-        if copilot_instr.is_file():
-            _add_always_on(copilot_instr, _rel(copilot_instr), always_on, diagnostics, seen_paths)
-
-        # Always-on: AGENTS.md at scan root.
-        agents_md = root / "AGENTS.md"
-        if agents_md.is_file():
-            _add_always_on(agents_md, _rel(agents_md), always_on, diagnostics, seen_paths)
-
-        # Always-on: CLAUDE.md variants.
-        for claude_md in _iter_claude_md_files(root):
-            if claude_md.is_file():
-                _add_always_on(claude_md, _rel(claude_md), always_on, diagnostics, seen_paths)
-
-        # Nested AGENTS.md (experimental).
-        if nested_agents_md:
-            for candidate in root.rglob("AGENTS.md"):
-                if candidate == agents_md:
-                    continue
-                _add_always_on(candidate, _rel(candidate), always_on, diagnostics, seen_paths)
-
-        # File-based instructions: .github/instructions/**.instructions.md
-        instructions_dir = root / ".github" / "instructions"
-        if instructions_dir.is_dir():
-            for f in _rglob_suffix(instructions_dir, _INSTRUCTION_SUFFIXES):
-                _add_instruction(
-                    f,
-                    _rel(f),
-                    instructions,
-                    diagnostics,
-                    seen_paths,
-                    fmt="vscode",
-                )
-
-        # File-based instructions: .claude/rules/**.md (Claude format).
-        claude_rules_dir = root / ".claude" / "rules"
-        if claude_rules_dir.is_dir():
-            for f in claude_rules_dir.rglob("*.md"):
-                _add_instruction(
-                    f,
-                    _rel(f),
-                    instructions,
-                    diagnostics,
-                    seen_paths,
-                    fmt="claude",
-                )
-
-        # Prompts: .github/prompts/**.prompt.md
-        prompts_dir = root / ".github" / "prompts"
-        if prompts_dir.is_dir():
-            for f in _rglob_suffix(prompts_dir, _PROMPT_SUFFIXES):
-                _add_prompt(f, _rel(f), prompts, diagnostics, seen_paths)
-
-        # Agents (VS Code): .github/agents/**.agent.md
-        vscode_agents_dir = root / ".github" / "agents"
-        if vscode_agents_dir.is_dir():
-            for f in _rglob_suffix(vscode_agents_dir, _AGENT_SUFFIXES):
-                _add_agent(
-                    f,
-                    _rel(f),
-                    agents,
-                    diagnostics,
-                    seen_paths,
-                    fmt="vscode",
-                )
-
-        # Agents (Claude): .claude/agents/**.md (any .md, tools as comma-string).
-        claude_agents_dir = root / ".claude" / "agents"
-        if claude_agents_dir.is_dir():
-            for f in claude_agents_dir.rglob("*.md"):
-                _add_agent(
-                    f,
-                    _rel(f),
-                    agents,
-                    diagnostics,
-                    seen_paths,
-                    fmt="claude",
-                )
-
-        # Skills (dir-named SKILL.md) in all three locations.
-        for skills_dir in (
-            root / ".github" / "skills",
-            root / ".claude" / "skills",
-            root / ".agents" / "skills",
-        ):
-            if skills_dir.is_dir():
-                for skill_md in skills_dir.rglob("SKILL.md"):
-                    _add_skill(skill_md, _rel(skill_md), skills, diagnostics, seen_paths)
+        _scan_always_on_files(
+            root,
+            workspace_root=workspace_root,
+            always_on=always_on,
+            diagnostics=diagnostics,
+            seen_paths=seen_paths,
+            nested_agents_md=nested_agents_md,
+        )
+        _scan_instruction_files(
+            root,
+            workspace_root=workspace_root,
+            instructions=instructions,
+            diagnostics=diagnostics,
+            seen_paths=seen_paths,
+        )
+        _scan_prompt_files(
+            root,
+            workspace_root=workspace_root,
+            prompts=prompts,
+            diagnostics=diagnostics,
+            seen_paths=seen_paths,
+        )
+        _scan_agent_files(
+            root,
+            workspace_root=workspace_root,
+            agents=agents,
+            diagnostics=diagnostics,
+            seen_paths=seen_paths,
+        )
+        _scan_skill_files(
+            root,
+            workspace_root=workspace_root,
+            skills=skills,
+            diagnostics=diagnostics,
+            seen_paths=seen_paths,
+        )
 
     return CustomizationBundle(
         always_on=tuple(always_on),
@@ -189,6 +130,173 @@ def discover_copilot_customizations(
         skills=tuple(skills),
         diagnostics=tuple(diagnostics),
     )
+
+
+def _rel_path(p: Path, workspace_root: Path) -> str:
+    """Return the workspace-relative POSIX path for ``p``, or its full path."""
+    try:
+        return str(p.resolve().relative_to(workspace_root)).replace("\\", "/")
+    except ValueError:
+        return str(p)
+
+
+def _scan_always_on_files(
+    root: Path,
+    *,
+    workspace_root: Path,
+    always_on: list[CopilotInstructionsFile],
+    diagnostics: list[CustomizationDiagnostic],
+    seen_paths: set[str],
+    nested_agents_md: bool,
+) -> None:
+    """Collect always-on files for one scan root.
+
+    Covers copilot-instructions.md, AGENTS.md, CLAUDE.md variants, and the
+    experimental nested AGENTS.md search.
+    """
+    # Always-on: copilot-instructions.md (root of each scan root only).
+    copilot_instr = root / ".github" / "copilot-instructions.md"
+    if copilot_instr.is_file():
+        _add_always_on(
+            copilot_instr,
+            _rel_path(copilot_instr, workspace_root),
+            always_on,
+            diagnostics,
+            seen_paths,
+        )
+
+    # Always-on: AGENTS.md at scan root.
+    agents_md = root / "AGENTS.md"
+    if agents_md.is_file():
+        _add_always_on(
+            agents_md, _rel_path(agents_md, workspace_root), always_on, diagnostics, seen_paths
+        )
+
+    # Always-on: CLAUDE.md variants.
+    for claude_md in _iter_claude_md_files(root):
+        if claude_md.is_file():
+            _add_always_on(
+                claude_md, _rel_path(claude_md, workspace_root), always_on, diagnostics, seen_paths
+            )
+
+    # Nested AGENTS.md (experimental).
+    if nested_agents_md:
+        for candidate in root.rglob("AGENTS.md"):
+            if candidate == agents_md:
+                continue
+            _add_always_on(
+                candidate, _rel_path(candidate, workspace_root), always_on, diagnostics, seen_paths
+            )
+
+
+def _scan_instruction_files(
+    root: Path,
+    *,
+    workspace_root: Path,
+    instructions: list[InstructionFile],
+    diagnostics: list[CustomizationDiagnostic],
+    seen_paths: set[str],
+) -> None:
+    """Collect file-based instructions for one scan root (VS Code + Claude formats)."""
+    # File-based instructions: .github/instructions/**.instructions.md
+    instructions_dir = root / ".github" / "instructions"
+    if instructions_dir.is_dir():
+        for f in _rglob_suffix(instructions_dir, _INSTRUCTION_SUFFIXES):
+            _add_instruction(
+                f,
+                _rel_path(f, workspace_root),
+                instructions,
+                diagnostics,
+                seen_paths,
+                fmt="vscode",
+            )
+
+    # File-based instructions: .claude/rules/**.md (Claude format).
+    claude_rules_dir = root / ".claude" / "rules"
+    if claude_rules_dir.is_dir():
+        for f in claude_rules_dir.rglob("*.md"):
+            _add_instruction(
+                f,
+                _rel_path(f, workspace_root),
+                instructions,
+                diagnostics,
+                seen_paths,
+                fmt="claude",
+            )
+
+
+def _scan_prompt_files(
+    root: Path,
+    *,
+    workspace_root: Path,
+    prompts: list[PromptFile],
+    diagnostics: list[CustomizationDiagnostic],
+    seen_paths: set[str],
+) -> None:
+    """Collect prompt files (.github/prompts/**.prompt.md) for one scan root."""
+    # Prompts: .github/prompts/**.prompt.md
+    prompts_dir = root / ".github" / "prompts"
+    if prompts_dir.is_dir():
+        for f in _rglob_suffix(prompts_dir, _PROMPT_SUFFIXES):
+            _add_prompt(f, _rel_path(f, workspace_root), prompts, diagnostics, seen_paths)
+
+
+def _scan_agent_files(
+    root: Path,
+    *,
+    workspace_root: Path,
+    agents: list[AgentFile],
+    diagnostics: list[CustomizationDiagnostic],
+    seen_paths: set[str],
+) -> None:
+    """Collect agent files for one scan root (VS Code + Claude formats)."""
+    # Agents (VS Code): .github/agents/**.agent.md
+    vscode_agents_dir = root / ".github" / "agents"
+    if vscode_agents_dir.is_dir():
+        for f in _rglob_suffix(vscode_agents_dir, _AGENT_SUFFIXES):
+            _add_agent(
+                f,
+                _rel_path(f, workspace_root),
+                agents,
+                diagnostics,
+                seen_paths,
+                fmt="vscode",
+            )
+
+    # Agents (Claude): .claude/agents/**.md (any .md, tools as comma-string).
+    claude_agents_dir = root / ".claude" / "agents"
+    if claude_agents_dir.is_dir():
+        for f in claude_agents_dir.rglob("*.md"):
+            _add_agent(
+                f,
+                _rel_path(f, workspace_root),
+                agents,
+                diagnostics,
+                seen_paths,
+                fmt="claude",
+            )
+
+
+def _scan_skill_files(
+    root: Path,
+    *,
+    workspace_root: Path,
+    skills: list[SkillFile],
+    diagnostics: list[CustomizationDiagnostic],
+    seen_paths: set[str],
+) -> None:
+    """Collect dir-named SKILL.md files for one scan root (all three locations)."""
+    # Skills (dir-named SKILL.md) in all three locations.
+    for skills_dir in (
+        root / ".github" / "skills",
+        root / ".claude" / "skills",
+        root / ".agents" / "skills",
+    ):
+        if skills_dir.is_dir():
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                _add_skill(
+                    skill_md, _rel_path(skill_md, workspace_root), skills, diagnostics, seen_paths
+                )
 
 
 # --------------------------------------------------------------------------- #

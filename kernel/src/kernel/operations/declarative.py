@@ -223,6 +223,184 @@ class DeclarativeOperationModule:
         )
 
 
+async def _execute_declarative_tool_call(
+    ctx: OperationExecutionContext,
+    *,
+    tool_call: dict[str, Any],
+    used_tools: list[str],
+    remaining_tool_calls: int,
+) -> tuple[str, dict[str, Any] | None, int]:
+    """Execute one declarative tool call, honoring the per-turn call budget.
+
+    Args:
+        ctx: The operation execution context (host seam + scope fields).
+        tool_call: The raw tool-call payload from the completion.
+        used_tools: Accumulator of distinct tool names used (mutated).
+        remaining_tool_calls: Remaining budget (``-1`` = unlimited,
+            ``0`` = exhausted).
+
+    Returns:
+        A ``(tool_output, last_tool_output_json, remaining_tool_calls)``
+        tuple: the serialized tool output text, the tool's structured
+        output json (for structured-payload passthrough), and the
+        post-dispatch remaining budget.
+    """
+    tool_call_id = str(tool_call.get("id") or "")
+    del tool_call_id  # caller appends the message; kept for parity
+    tool_name = _extract_tool_name(tool_call)
+    tool_arguments = _extract_tool_arguments(tool_call)
+    tool_output = "Tool call budget exhausted."
+    last_tool_output_json: dict[str, Any] | None = None
+
+    if remaining_tool_calls != 0:
+        if remaining_tool_calls > 0:
+            remaining_tool_calls -= 1
+        try:
+            tool_result = await ctx.host.execute_tool(
+                tool_name,
+                ToolExecutionContext(
+                    tool_id=tool_name,
+                    workspace_id=ctx.workspace_id,
+                    user_id=ctx.user_id,
+                    user_slug=ctx.user_slug,
+                    surface_type=ctx.surface_type,
+                    surface_id=ctx.surface_id,
+                    memory_scope=ctx.memory_scope,
+                    mode_id=ctx.mode_id,
+                    query=_resolve_tool_query(ctx.query, tool_arguments),
+                    parameters=tool_arguments,
+                    pack_configuration_resolver=ctx.pack_configuration_resolver,
+                    approval_service=ctx.approval_service,
+                    approval_request_id=ctx.approval_request_id,
+                    session_plan_digest=ctx.session_plan_digest,
+                    code_change_artifact_store=ctx.code_change_artifact_store,
+                    event_bus=ctx.event_bus,
+                    state_provider=ctx.state_provider,
+                    data_dir=ctx.data_dir,
+                ),
+            )
+            if tool_name and tool_name not in used_tools:
+                used_tools.append(tool_name)
+            if isinstance(tool_result, ToolResult) and tool_result.output_json:
+                last_tool_output_json = dict(tool_result.output_json)
+            tool_output = _stringify_tool_result(tool_result)
+        except ApprovalRequired:
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("declarative operation tool '%s' failed: %s", tool_name, exc)
+            tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+
+    return tool_output, last_tool_output_json, remaining_tool_calls
+
+
+async def _complete_with_json_retry(
+    ctx: OperationExecutionContext,
+    *,
+    operation_id: str,
+    messages: list[dict[str, Any]],
+    model_def: Any,
+    response_format_model: type[BaseModel] | None,
+    completion_max_tokens: int,
+    completion_temperature: float,
+) -> tuple[str, Any, BaseModel | None]:
+    """Run one completion pass, applying the JSON-only retry when needed.
+
+    Returns:
+        A ``(content_text, completion, parsed_payload)`` tuple. The
+        ``parsed_payload`` is ``None`` when no structured model is
+        requested, validation failed after the retry (degraded to raw
+        content), or the retry answered with a tool-call-only turn
+        (deferred to the shared tool-execution loop).
+
+    Raises:
+        OperationExecutionError: When the JSON-only retry returned no
+            content and no tool calls (genuine provider-empty or
+            truncation).
+    """
+    should_retry_for_json_only = False
+    parsed_payload: BaseModel | None = None
+    content_text = ""
+    try:
+        completion = await ctx.host.complete(
+            messages=messages,
+            model_def=model_def,
+            max_tokens=completion_max_tokens,
+            temperature=completion_temperature,
+            tools=ctx.tool_schemas or None,
+            response_format=response_format_model,
+        )
+        # Use the canonical extractor so reasoning models (gpt-5.x,
+        # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
+        # while leaving ``content`` empty are parsed correctly. Reading
+        # ``completion.content`` raw was the 2026-07-30 ``web_search``
+        # root cause: the empty-content guard skipped parsing, the retry
+        # hit the same condition, and the op hard-failed.
+        content_text = completion_content(completion)
+        if response_format_model is not None and content_text:
+            try:
+                parsed_payload = parse_structured_payload(
+                    response_format_model,
+                    content_text,
+                )
+            except ValidationError:
+                should_retry_for_json_only = True
+    except Exception as exc:  # pylint: disable=broad-except
+        if response_format_model is None or not is_structured_output_unsupported(exc):
+            raise
+        should_retry_for_json_only = True
+    if should_retry_for_json_only and response_format_model is not None:
+        completion = await ctx.host.complete(
+            messages=json_only_retry_messages(messages, response_format_model),
+            model_def=model_def,
+            max_tokens=completion_max_tokens,
+            temperature=completion_temperature,
+            tools=ctx.tool_schemas or None,
+        )
+        content_text = completion_content(completion)
+        # A JSON-only retry may legitimately answer with a tool-call-only
+        # turn. The web_search operation must dispatch its web_search tool
+        # before it can return the final JSON envelope, so a tool-call turn
+        # has empty visible content by design. Firing the empty-content
+        # guard for it hard-fails the operation exactly when the model
+        # correctly wants to keep searching — the 2026-08-01 ``web_search``
+        # incidents surfaced this as ``finish_reason=tool_calls`` followed
+        # by "returned no content after JSON-only retry". Defer parsing and
+        # fall through to the shared tool-execution loop below instead.
+        if completion.tool_calls:
+            parsed_payload = None
+        elif content_text:
+            try:
+                parsed_payload = parse_structured_payload(
+                    response_format_model,
+                    content_text,
+                )
+            except ValidationError:
+                # Retry returned non-empty prose again (the model ignored
+                # the JSON-only instruction). Degrade gracefully to the
+                # raw content rather than leaking a second ValidationError.
+                parsed_payload = None
+        else:
+            # No tool dispatch and no text -> genuine provider-empty
+            # response or token-budget truncation. Surface a typed
+            # ``OperationExecutionError`` with diagnostics so the turn
+            # runner can treat an empty upstream result as a hard failure
+            # and the operator can distinguish truncation from a genuine
+            # provider-empty response.
+            finish_reason = getattr(completion, "finish_reason", None)
+            completion_tokens = getattr(completion, "completion_tokens", None)
+            detail = _empty_content_detail(
+                operation_id, finish_reason, completion_tokens, completion_max_tokens
+            )
+            logger.warning("declarative operation '%s' empty after retry: %s", operation_id, detail)
+            raise OperationExecutionError(
+                f"Declarative operation '{operation_id}' returned no content "
+                f"after JSON-only retry; cannot parse structured output. {detail}"
+            )
+    else:
+        parsed_payload = parsed_payload if response_format_model is not None else None
+    return content_text, completion, parsed_payload
+
+
 async def execute_declarative_operation(
     ctx: OperationExecutionContext,
     *,
@@ -265,88 +443,15 @@ async def execute_declarative_operation(
     last_tool_output_json: dict[str, Any] | None = None
 
     while True:
-        should_retry_for_json_only = False
-        try:
-            completion = await ctx.host.complete(
-                messages=messages,
-                model_def=model_def,
-                max_tokens=completion_max_tokens,
-                temperature=completion_temperature,
-                tools=ctx.tool_schemas or None,
-                response_format=response_format_model,
-            )
-            # Use the canonical extractor so reasoning models (gpt-5.x,
-            # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
-            # while leaving ``content`` empty are parsed correctly. Reading
-            # ``completion.content`` raw was the 2026-07-30 ``web_search``
-            # root cause: the empty-content guard skipped parsing, the retry
-            # hit the same condition, and the op hard-failed.
-            content_text = completion_content(completion)
-            parsed_payload: BaseModel | None = None
-            if response_format_model is not None and content_text:
-                try:
-                    parsed_payload = parse_structured_payload(
-                        response_format_model,
-                        content_text,
-                    )
-                except ValidationError:
-                    should_retry_for_json_only = True
-        except Exception as exc:  # pylint: disable=broad-except
-            if response_format_model is None or not is_structured_output_unsupported(exc):
-                raise
-            should_retry_for_json_only = True
-        if should_retry_for_json_only and response_format_model is not None:
-            completion = await ctx.host.complete(
-                messages=json_only_retry_messages(messages, response_format_model),
-                model_def=model_def,
-                max_tokens=completion_max_tokens,
-                temperature=completion_temperature,
-                tools=ctx.tool_schemas or None,
-            )
-            content_text = completion_content(completion)
-            # A JSON-only retry may legitimately answer with a tool-call-only
-            # turn. The web_search operation must dispatch its web_search tool
-            # before it can return the final JSON envelope, so a tool-call turn
-            # has empty visible content by design. Firing the empty-content
-            # guard for it hard-fails the operation exactly when the model
-            # correctly wants to keep searching — the 2026-08-01 ``web_search``
-            # incidents surfaced this as ``finish_reason=tool_calls`` followed
-            # by "returned no content after JSON-only retry". Defer parsing and
-            # fall through to the shared tool-execution loop below instead.
-            if completion.tool_calls:
-                parsed_payload = None
-            elif content_text:
-                try:
-                    parsed_payload = parse_structured_payload(
-                        response_format_model,
-                        content_text,
-                    )
-                except ValidationError:
-                    # Retry returned non-empty prose again (the model ignored
-                    # the JSON-only instruction). Degrade gracefully to the
-                    # raw content rather than leaking a second ValidationError.
-                    parsed_payload = None
-            else:
-                # No tool dispatch and no text -> genuine provider-empty
-                # response or token-budget truncation. Surface a typed
-                # ``OperationExecutionError`` with diagnostics so the turn
-                # runner can treat an empty upstream result as a hard failure
-                # and the operator can distinguish truncation from a genuine
-                # provider-empty response.
-                finish_reason = getattr(completion, "finish_reason", None)
-                completion_tokens = getattr(completion, "completion_tokens", None)
-                detail = _empty_content_detail(
-                    operation_id, finish_reason, completion_tokens, completion_max_tokens
-                )
-                logger.warning(
-                    "declarative operation '%s' empty after retry: %s", operation_id, detail
-                )
-                raise OperationExecutionError(
-                    f"Declarative operation '{operation_id}' returned no content "
-                    f"after JSON-only retry; cannot parse structured output. {detail}"
-                )
-        else:
-            parsed_payload = parsed_payload if response_format_model is not None else None
+        content_text, completion, parsed_payload = await _complete_with_json_retry(
+            ctx,
+            operation_id=operation_id,
+            messages=messages,
+            model_def=model_def,
+            response_format_model=response_format_model,
+            completion_max_tokens=completion_max_tokens,
+            completion_temperature=completion_temperature,
+        )
 
         assistant_message: dict[str, Any] = {"role": "assistant"}
         if content_text:
@@ -376,54 +481,17 @@ async def execute_declarative_operation(
                 },
             )
 
-        if ctx.host is None:
-            raise RuntimeError(
-                f"Declarative operation '{operation_id}' is missing the OperationHost seam."
-            )
-
         for tool_call in completion.tool_calls:
             tool_call_id = str(tool_call.get("id") or "")
             tool_name = _extract_tool_name(tool_call)
-            tool_arguments = _extract_tool_arguments(tool_call)
-            tool_output = "Tool call budget exhausted."
-
-            if remaining_tool_calls != 0:
-                if remaining_tool_calls > 0:
-                    remaining_tool_calls -= 1
-                try:
-                    tool_result = await ctx.host.execute_tool(
-                        tool_name,
-                        ToolExecutionContext(
-                            tool_id=tool_name,
-                            workspace_id=ctx.workspace_id,
-                            user_id=ctx.user_id,
-                            user_slug=ctx.user_slug,
-                            surface_type=ctx.surface_type,
-                            surface_id=ctx.surface_id,
-                            memory_scope=ctx.memory_scope,
-                            mode_id=ctx.mode_id,
-                            query=_resolve_tool_query(ctx.query, tool_arguments),
-                            parameters=tool_arguments,
-                            pack_configuration_resolver=ctx.pack_configuration_resolver,
-                            approval_service=ctx.approval_service,
-                            approval_request_id=ctx.approval_request_id,
-                            session_plan_digest=ctx.session_plan_digest,
-                            code_change_artifact_store=ctx.code_change_artifact_store,
-                            event_bus=ctx.event_bus,
-                            state_provider=ctx.state_provider,
-                            data_dir=ctx.data_dir,
-                        ),
-                    )
-                    if tool_name and tool_name not in used_tools:
-                        used_tools.append(tool_name)
-                    if isinstance(tool_result, ToolResult) and tool_result.output_json:
-                        last_tool_output_json = dict(tool_result.output_json)
-                    tool_output = _stringify_tool_result(tool_result)
-                except ApprovalRequired:
-                    raise
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning("declarative operation tool '%s' failed: %s", tool_name, exc)
-                    tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+            tool_output, tool_json, remaining_tool_calls = await _execute_declarative_tool_call(
+                ctx,
+                tool_call=tool_call,
+                used_tools=used_tools,
+                remaining_tool_calls=remaining_tool_calls,
+            )
+            if tool_json is not None:
+                last_tool_output_json = tool_json
 
             messages.append(
                 {

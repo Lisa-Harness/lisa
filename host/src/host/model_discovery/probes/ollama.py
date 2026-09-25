@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ..classify import apply_known_override, env_any, is_code_model
@@ -84,6 +86,111 @@ class OllamaProbe(ProviderProbe):
         return tuple(models) if models else None
 
 
+def _ollama_show_capabilities(show_payload: dict[str, Any] | None) -> set[str]:
+    """Extract the authoritative per-model capability set from /api/show.
+
+    Maps Ollama's ``capabilities`` array onto Lisa capability vocabulary.
+    Embedding-only models (no "completion" capability) get ``embedding``.
+    """
+    show_caps: set[str] = set()
+    if not show_payload:
+        return show_caps
+    raw_caps = show_payload.get("capabilities")
+    if isinstance(raw_caps, list):
+        for cap in raw_caps:
+            lisa_cap = _OLLAMA_CAP_TO_LISA.get(str(cap).strip().lower())
+            if lisa_cap:
+                show_caps.add(lisa_cap)
+    # Ollama marks embedding-only models by exposing no "completion".
+    if "embedding" in {str(c).strip().lower() for c in (raw_caps or [])} and not show_caps:
+        show_caps.add("embedding")
+    return show_caps
+
+
+def _derive_ollama_capabilities(
+    model_id: str,
+    family: str,
+    show_caps: set[str],
+) -> list[str]:
+    """Derive the full Lisa capability list for one Ollama model.
+
+    Starts from the authoritative /api/show set when present (keeping
+    ``structured_output`` and ensuring ``text``/``embedding``), falls
+    back to the default chat surface. Vision is inferred from the family
+    (clip/llava) or the model-id. ``code`` is derived from the model-id
+    heuristic — Ollama tags carry no capability metadata beyond
+    family/size, so this heuristic cannot be replaced. This lets the
+    router rule ``'"code" in route.required_capabilities'`` and
+    ``_pick_code_model`` select a coding model (e.g. glm-5.2:cloud)
+    instead of silently defaulting. ``known_models.yaml`` can still
+    override per model.
+    """
+    capabilities: list[str] = ["text", "tools", "structured_output"]
+    if show_caps:
+        # Merge: start from the authoritative set, keep structured_output.
+        capabilities = sorted(show_caps | {"structured_output"})
+        if "text" not in capabilities and "embedding" not in capabilities:
+            capabilities.append("text")
+    vision_family = family in {"clip", "llava"} or "vision" in model_id.lower()
+    if vision_family and "vision" not in capabilities:
+        capabilities.append("vision")
+    if is_code_model(model_id):
+        capabilities.append("code")
+    return capabilities
+
+
+def _derive_ollama_tiers(
+    model_id: str,
+    parameter_size: str,
+) -> tuple[str, str, float]:
+    """Derive ``(cost_tier, latency_tier, structured_reliability)`` from size.
+
+    Ollama's tag ``details.parameter_size`` (e.g. "7B") drives the tier:
+    tiny (<3B) = budget/low, small (3-13B) = standard/medium, large
+    (>13B) = premium/high, frontier beyond. Cloud-suffixed (``:cloud``)
+    models are hosted by Ollama's infrastructure and billed as standard
+    tier with higher structured-output reliability regardless of size.
+
+    Local models treat ``response_format`` as a *soft hint*: small models
+    routinely ignore the declared schema and emit prose, so the
+    structured-output confidence starts at a conservative floor and rises
+    with parameter count. ``known_models.yaml`` can override per model
+    where measured.
+    """
+    if model_id.lower().endswith(":cloud"):
+        # Cloud-hosted models — billing is opaque, assume standard.
+        return "standard", "medium", 0.8
+    # Parse "7B", "13B", "70B" etc.; unparseable or absent sizes stay untiered.
+    size_str = parameter_size.lower().rstrip("b").strip()
+    try:
+        size_b = float(size_str)
+    except ValueError:
+        size_b = 0.0
+    if size_b <= 0:
+        return "", "", 0.0
+    if size_b <= _BUDGET_MAX_PARAMS_B:
+        return "budget", "low", 0.0
+    if size_b <= _STANDARD_MAX_PARAMS_B:
+        return "standard", "medium", 0.4
+    if size_b <= _PREMIUM_MAX_PARAMS_B:
+        return "premium", "high", 0.7
+    return "frontier", "high", 0.85
+
+
+def _ollama_show_context_window(show_payload: dict[str, Any] | None) -> int:
+    """Extract the authoritative context length from /api/show model_info."""
+    if not show_payload:
+        return 0
+    model_info = (
+        show_payload.get("model_info") if isinstance(show_payload.get("model_info"), dict) else None
+    )
+    if model_info:
+        raw_ctx = model_info.get("general.context_length")
+        if isinstance(raw_ctx, (int, float)) and raw_ctx > 0:
+            return int(raw_ctx)
+    return 0
+
+
 def _enrich_ollama_model(
     model_id: str,
     item: dict,
@@ -111,81 +218,11 @@ def _enrich_ollama_model(
     family = str(details.get("family") or "").strip()
 
     # Authoritative per-model capabilities from /api/show (best-effort).
-    show_caps: set[str] = set()
-    if show_payload:
-        raw_caps = show_payload.get("capabilities")
-        if isinstance(raw_caps, list):
-            for cap in raw_caps:
-                lisa_cap = _OLLAMA_CAP_TO_LISA.get(str(cap).strip().lower())
-                if lisa_cap:
-                    show_caps.add(lisa_cap)
-        # Ollama marks embedding-only models by exposing no "completion".
-        if "embedding" in {str(c).strip().lower() for c in (raw_caps or [])} and not show_caps:
-            show_caps.add("embedding")
+    show_caps = _ollama_show_capabilities(show_payload)
+    capabilities = _derive_ollama_capabilities(model_id, family, show_caps)
 
-    capabilities: list[str] = ["text", "tools", "structured_output"]
-    if show_caps:
-        # Merge: start from the authoritative set, keep structured_output.
-        capabilities = sorted(show_caps | {"structured_output"})
-        if "text" not in capabilities and "embedding" not in capabilities:
-            capabilities.append("text")
-    vision_family = family in {"clip", "llava"} or "vision" in model_id.lower()
-    if vision_family and "vision" not in capabilities:
-        capabilities.append("vision")
-    # Ollama tags carry no capability metadata beyond family/size, so the
-    # ``code`` capability is derived from the model-id heuristic — same as
-    # ``reasoning`` (which ``_model`` appends). Ollama exposes no ``code``
-    # capability in /api/show, so this heuristic cannot be replaced. This
-    # lets the router rule ``'"code" in route.required_capabilities'`` and
-    # ``_pick_code_model`` select a coding model (e.g. glm-5.2:cloud)
-    # instead of silently defaulting. ``known_models.yaml`` can still
-    # override per model.
-    if is_code_model(model_id):
-        capabilities.append("code")
-
-    cost_tier = ""
-    latency_tier = ""
+    cost_tier, latency_tier, structured_reliability = _derive_ollama_tiers(model_id, parameter_size)
     context_window = 0
-    # Local Ollama models treat ``response_format`` as a *soft hint*: small
-    # models routinely ignore the declared schema and emit prose, while larger
-    # models honor it more reliably. Default the confidence to a conservative
-    # floor for small models and only raise it as parameter count grows. Cloud
-    # (``:cloud``) models are served by Ollama's infrastructure and are more
-    # dependable, so they get a higher default. ``known_models.yaml`` can
-    # override this per model where measured.
-    structured_reliability = 0.0
-
-    lowered = model_id.lower()
-    if lowered.endswith(":cloud"):
-        # Cloud-hosted models — billing is opaque, assume standard.
-        cost_tier = "standard"
-        latency_tier = "medium"
-        structured_reliability = 0.8
-    elif parameter_size:
-        # Parse "7B", "13B", "70B" etc.
-        size_str = parameter_size.lower().rstrip("b").strip()
-        try:
-            size_b = float(size_str)
-        except ValueError:
-            size_b = 0.0
-        if size_b <= 0:
-            pass
-        elif size_b <= _BUDGET_MAX_PARAMS_B:
-            cost_tier = "budget"
-            latency_tier = "low"
-            structured_reliability = 0.0
-        elif size_b <= _STANDARD_MAX_PARAMS_B:
-            cost_tier = "standard"
-            latency_tier = "medium"
-            structured_reliability = 0.4
-        elif size_b <= _PREMIUM_MAX_PARAMS_B:
-            cost_tier = "premium"
-            latency_tier = "high"
-            structured_reliability = 0.7
-        else:
-            cost_tier = "frontier"
-            latency_tier = "high"
-            structured_reliability = 0.85
 
     display_name = model_id.replace("-", " ").title()
     description = ""
@@ -193,17 +230,7 @@ def _enrich_ollama_model(
         description = f"Ollama {family} model ({parameter_size or 'unknown size'})"
 
     # Authoritative context length from /api/show model_info (best-effort).
-    context_window = 0
-    if show_payload:
-        model_info = (
-            show_payload.get("model_info")
-            if isinstance(show_payload.get("model_info"), dict)
-            else None
-        )
-        if model_info:
-            raw_ctx = model_info.get("general.context_length")
-            if isinstance(raw_ctx, (int, float)) and raw_ctx > 0:
-                context_window = int(raw_ctx)
+    context_window = _ollama_show_context_window(show_payload)
 
     enrichment = apply_known_override(
         "ollama",

@@ -48,6 +48,7 @@ from host.thread._store import (
     _read_index,
     _seal_segment,
     _segment_paths,
+    _SegmentPaths,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,116 @@ def next_turn_index(*, thread_path: Path | None) -> int:
     return store.next_turn_index()
 
 
+def _resolve_thread_turn(
+    paths: _SegmentPaths,
+    turn: int | None,
+) -> int:
+    """Resolve the global turn number for a new thread entry.
+
+    Uses the caller-provided ``turn`` when set; otherwise computes it from
+    the sealed-segment index plus the active segment's entry count.
+    """
+    if turn is not None:
+        return turn
+    sealed_records = _read_index(paths.index_path)
+    active_count = _read_active_entries_count(paths.current)
+    return sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+
+
+def _build_thread_entry(
+    *,
+    user_slug: str,
+    mode_id: str,
+    query: str,
+    response_text: str,
+    global_turn: int,
+    content_source: str,
+    reasoning_text: str,
+    provenance: dict[str, Any] | None,
+    effect_receipts: list[dict[str, Any]] | None,
+    handoff_to: str,
+    transitioned_to: str,
+    yielded: bool,
+    yield_question: str,
+    turn_input: dict[str, Any] | None,
+    memory_ids: list[int] | None,
+) -> dict[str, Any]:
+    """Build one thread-entry JSON dict, omitting empty optional fields."""
+    entry: dict[str, Any] = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "user_slug": user_slug,
+        "mode_id": mode_id,
+        "query": query,
+        "response_text": response_text,
+        "turn": global_turn,
+    }
+    _apply_thread_metadata_fields(
+        entry,
+        provenance=provenance,
+        effect_receipts=effect_receipts,
+        handoff_to=handoff_to,
+        transitioned_to=transitioned_to,
+        yielded=yielded,
+        yield_question=yield_question,
+    )
+    _apply_thread_content_fields(
+        entry,
+        turn_input=turn_input,
+        memory_ids=memory_ids,
+        content_source=content_source,
+        reasoning_text=reasoning_text,
+    )
+    return entry
+
+
+def _apply_thread_metadata_fields(
+    entry: dict[str, Any],
+    *,
+    provenance: dict[str, Any] | None,
+    effect_receipts: list[dict[str, Any]] | None,
+    handoff_to: str,
+    transitioned_to: str,
+    yielded: bool,
+    yield_question: str,
+) -> None:
+    """Write the provenance / receipt / handoff / yield metadata fields (in place)."""
+    if provenance:
+        entry["provenance"] = provenance
+    if effect_receipts:
+        entry["effect_receipts"] = effect_receipts
+    if handoff_to:
+        entry["handoff_to"] = handoff_to
+    if transitioned_to:
+        entry["transitioned_to"] = transitioned_to
+    if yielded:
+        entry["yielded"] = True
+        if yield_question:
+            entry["yield_question"] = yield_question
+
+
+def _apply_thread_content_fields(
+    entry: dict[str, Any],
+    *,
+    turn_input: dict[str, Any] | None,
+    memory_ids: list[int] | None,
+    content_source: str,
+    reasoning_text: str,
+) -> None:
+    """Write the turn-input / memory / content-source fields (in place)."""
+    if turn_input:
+        entry["turn_input"] = turn_input
+    if memory_ids:
+        entry["memory_ids"] = memory_ids
+    if content_source:
+        # "reasoning_tail": ``response_text`` is a labeled quote of the
+        # tail of the model's reasoning (no visible answer was produced).
+        # The FULL reasoning rides ``reasoning_text`` so the log stays
+        # exhaustive at rest; playback surfaces redact/bound that field.
+        entry["content_source"] = content_source
+    if reasoning_text:
+        entry["reasoning_text"] = reasoning_text
+
+
 def append_thread_entry(
     *,
     thread_path: Path | None,
@@ -162,45 +273,24 @@ def append_thread_entry(
     if paths.current.exists() and _count_lines(paths.current) >= segment_turns:
         _seal_segment(paths)
 
-    if turn is None:
-        sealed_records = _read_index(paths.index_path)
-        active_count = _read_active_entries_count(paths.current)
-        global_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
-    else:
-        global_turn = turn
-
-    entry: dict[str, Any] = {
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "user_slug": user_slug,
-        "mode_id": mode_id,
-        "query": query,
-        "response_text": response_text,
-        "turn": global_turn,
-    }
-    if provenance:
-        entry["provenance"] = provenance
-    if effect_receipts:
-        entry["effect_receipts"] = effect_receipts
-    if handoff_to:
-        entry["handoff_to"] = handoff_to
-    if transitioned_to:
-        entry["transitioned_to"] = transitioned_to
-    if yielded:
-        entry["yielded"] = True
-        if yield_question:
-            entry["yield_question"] = yield_question
-    if turn_input:
-        entry["turn_input"] = turn_input
-    if memory_ids:
-        entry["memory_ids"] = memory_ids
-    if content_source:
-        # "reasoning_tail": ``response_text`` is a labeled quote of the
-        # tail of the model's reasoning (no visible answer was produced).
-        # The FULL reasoning rides ``reasoning_text`` so the log stays
-        # exhaustive at rest; playback surfaces redact/bound that field.
-        entry["content_source"] = content_source
-    if reasoning_text:
-        entry["reasoning_text"] = reasoning_text
+    global_turn = _resolve_thread_turn(paths, turn)
+    entry = _build_thread_entry(
+        user_slug=user_slug,
+        mode_id=mode_id,
+        query=query,
+        response_text=response_text,
+        global_turn=global_turn,
+        content_source=content_source,
+        reasoning_text=reasoning_text,
+        provenance=provenance,
+        effect_receipts=effect_receipts,
+        handoff_to=handoff_to,
+        transitioned_to=transitioned_to,
+        yielded=yielded,
+        yield_question=yield_question,
+        turn_input=turn_input,
+        memory_ids=memory_ids,
+    )
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:

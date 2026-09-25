@@ -198,6 +198,11 @@ def _canonicalize(value: Any) -> Any:
     if isinstance(value, set | frozenset):
         normalized = [_canonicalize(item) for item in value]
         return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True))
+    return _canonicalize_scalar(value)
+
+
+def _canonicalize_scalar(value: Any) -> Any:
+    """Normalize a scalar leaf (datetime / None / str / int / float / bool)."""
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
     if value is None or isinstance(value, str | int | float | bool):

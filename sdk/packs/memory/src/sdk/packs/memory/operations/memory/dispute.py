@@ -48,6 +48,90 @@ class Parameters(BaseModel):
     )
 
 
+async def _find_disputed_record_by_id(
+    ctx: OperationExecutionContext,
+    memory_id: str,
+) -> MemoryRecord | None:
+    """Fetch the target record directly by id (surface-scoped server-side).
+
+    A wrong-scope id returns ``None`` ("not found") rather than a
+    cross-surface record.
+    """
+    get_result = await ctx.host.execute_tool(
+        "memory.get",
+        ToolExecutionContext(
+            tool_id="memory.get",
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            parameters={
+                "memory_id": int(memory_id),
+                "user_slug": ctx.user_slug,
+            },
+        ),
+    )
+    if getattr(get_result, "error", None):
+        raise DisputeLookupError(f"could not fetch memory: {get_result.error}")
+    raw = (get_result.output_text or "").strip()
+    if raw and raw != "No memory found.":
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            data = None
+        if isinstance(data, dict):
+            with contextlib.suppress(ValidationError, TypeError):
+                return MemoryRecord.model_validate(data)
+    return None
+
+
+async def _find_disputed_record_by_search(
+    ctx: OperationExecutionContext,
+    search_query: str,
+) -> MemoryRecord | None:
+    """Find the target record by content search (first hit wins)."""
+    search_result = await ctx.host.execute_tool(
+        "memory.search",
+        ToolExecutionContext(
+            tool_id="memory.search",
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            query=search_query,
+            parameters={
+                "query": search_query,
+                "user_slug": ctx.user_slug,
+                "limit": 1,
+            },
+        ),
+    )
+    if getattr(search_result, "error", None):
+        raise DisputeLookupError(f"search failed: {search_result.error}")
+    try:
+        data = json.loads(search_result.output_text or "[]")
+    except (json.JSONDecodeError, TypeError):
+        data = []
+    if isinstance(data, dict) and "results" in data:
+        results = data.get("results")
+        if isinstance(results, list):
+            data = results
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            with contextlib.suppress(ValidationError, TypeError):
+                return MemoryRecord.model_validate(first)
+    return None
+
+
+class DisputeLookupError(RuntimeError):
+    """Raised when the memory.get / memory.search lookup call itself fails."""
+
+
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Correct or supersede an existing memory record.
 
@@ -72,77 +156,13 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # ── Find the target record ──────────────────────────────────────
     disputed_record: MemoryRecord | None = None
 
-    if memory_id:
-        # Fetch the target record directly by id — surface-scoped on the
-        # server side, so a wrong-scope id returns "not found" rather than
-        # a cross-surface record.
-        get_result = await ctx.host.execute_tool(
-            "memory.get",
-            ToolExecutionContext(
-                tool_id="memory.get",
-                workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id,
-                user_slug=ctx.user_slug,
-                surface_id=ctx.surface_id,
-                memory_scope=ctx.memory_scope,
-                mode_id=ctx.mode_id,
-                parameters={
-                    "memory_id": int(memory_id),
-                    "user_slug": ctx.user_slug,
-                },
-            ),
-        )
-        if getattr(get_result, "error", None):
-            return OperationResult(
-                output_text=f"Memory dispute: could not fetch memory: {get_result.error}"
-            )
-        raw = (get_result.output_text or "").strip()
-        if raw and raw != "No memory found.":
-            try:
-                data = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                data = None
-            if isinstance(data, dict):
-                with contextlib.suppress(ValidationError, TypeError):
-                    disputed_record = MemoryRecord.model_validate(data)
-
-    elif search_query:
-        # Search by content.
-        search_result = await ctx.host.execute_tool(
-            "memory.search",
-            ToolExecutionContext(
-                tool_id="memory.search",
-                workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id,
-                user_slug=ctx.user_slug,
-                surface_id=ctx.surface_id,
-                memory_scope=ctx.memory_scope,
-                mode_id=ctx.mode_id,
-                query=search_query,
-                parameters={
-                    "query": search_query,
-                    "user_slug": ctx.user_slug,
-                    "limit": 1,
-                },
-            ),
-        )
-        if getattr(search_result, "error", None):
-            return OperationResult(
-                output_text=f"Memory dispute: search failed: {search_result.error}"
-            )
-        try:
-            data = json.loads(search_result.output_text or "[]")
-        except (json.JSONDecodeError, TypeError):
-            data = []
-        if isinstance(data, dict) and "results" in data:
-            results = data.get("results")
-            if isinstance(results, list):
-                data = results
-        if isinstance(data, list) and data:
-            first = data[0]
-            if isinstance(first, dict):
-                with contextlib.suppress(ValidationError, TypeError):
-                    disputed_record = MemoryRecord.model_validate(first)
+    try:
+        if memory_id:
+            disputed_record = await _find_disputed_record_by_id(ctx, memory_id)
+        elif search_query:
+            disputed_record = await _find_disputed_record_by_search(ctx, search_query)
+    except DisputeLookupError as exc:
+        return OperationResult(output_text=f"Memory dispute: {exc}")
 
     if disputed_record is None:
         return OperationResult(

@@ -90,19 +90,13 @@ def _has_more_than_n_keys(obj: dict[str, object], n: int) -> bool:
     return sum(1 for _ in obj) > n
 
 
-def _ensure_strict_json_schema(
-    json_schema: object,
+def _inline_nested_defs(
+    schema: dict[str, Any],
     *,
     path: tuple[str, ...],
     root: dict[str, object],
-) -> dict[str, Any]:
-    """Mutate ``json_schema`` in place to conform to OpenAI strict mode."""
-
-    if not _is_dict(json_schema):
-        raise TypeError(f"Expected {json_schema} to be a dictionary; path={path}")
-
-    schema: dict[str, Any] = json_schema  # type: ignore[assignment]
-
+) -> None:
+    """Recursively strictify ``$defs`` / ``definitions`` subschemas (in place)."""
     defs = schema.get("$defs")
     if _is_dict(defs):
         for def_name, def_schema in defs.items():
@@ -116,6 +110,42 @@ def _ensure_strict_json_schema(
                 path=(*path, "definitions", definition_name),
                 root=root,
             )
+
+
+def _inline_all_of(
+    schema: dict[str, Any],
+    *,
+    path: tuple[str, ...],
+    root: dict[str, object],
+) -> None:
+    """Strictify ``allOf`` entries, inlining a single-entry intersection (in place)."""
+    all_of = schema.get("allOf")
+    if not _is_list(all_of):
+        return
+    if len(all_of) == 1:
+        schema.update(_ensure_strict_json_schema(all_of[0], path=(*path, "allOf", "0"), root=root))
+        schema.pop("allOf")
+    else:
+        schema["allOf"] = [
+            _ensure_strict_json_schema(entry, path=(*path, "allOf", str(i)), root=root)
+            for i, entry in enumerate(all_of)
+        ]
+
+
+def _ensure_strict_json_schema(
+    json_schema: object,
+    *,
+    path: tuple[str, ...],
+    root: dict[str, object],
+) -> dict[str, Any]:
+    """Mutate ``json_schema`` in place to conform to OpenAI strict mode."""
+
+    if not _is_dict(json_schema):
+        raise TypeError(f"Expected {json_schema} to be a dictionary; path={path}")
+
+    schema: dict[str, Any] = json_schema  # type: ignore[assignment]
+
+    _inline_nested_defs(schema, path=path, root=root)
 
     typ = schema.get("type")
     if typ == "object" and "additionalProperties" not in schema:
@@ -144,18 +174,7 @@ def _ensure_strict_json_schema(
         ]
 
     # intersections
-    all_of = schema.get("allOf")
-    if _is_list(all_of):
-        if len(all_of) == 1:
-            schema.update(
-                _ensure_strict_json_schema(all_of[0], path=(*path, "allOf", "0"), root=root)
-            )
-            schema.pop("allOf")
-        else:
-            schema["allOf"] = [
-                _ensure_strict_json_schema(entry, path=(*path, "allOf", str(i)), root=root)
-                for i, entry in enumerate(all_of)
-            ]
+    _inline_all_of(schema, path=path, root=root)
 
     # strip None defaults
     if schema.get("default") is None:

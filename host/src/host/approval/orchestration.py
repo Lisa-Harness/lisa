@@ -466,6 +466,198 @@ def _remember_allow_rule(
         logger.warning("approve --remember: failed to persist rule: %s", exc)
 
 
+def _parse_approval_command(
+    command: str,
+    *,
+    approve: bool,
+) -> tuple[str, str | None]:
+    """Parse the ``/<verb> <request_id> [--remember [prefix]]`` command form.
+
+    Returns:
+        A ``(request_id, remember)`` tuple. ``remember`` is ``None``
+        unless ``--remember`` was present on an approve command (its
+        value is the explicit prefix or ``None`` for the default).
+    """
+    _, _, request_id = command.partition(" ")
+    request_id = request_id.strip()
+    remember: str | None = None
+    # `--remember [prefix]` (approve only): on success, persist an allow rule
+    # so future runs of this command are auto-approved without a prompt. The
+    # host owns the policy write — the CLI only ever sends the command text.
+    if approve and "--remember" in request_id:
+        head, _, tail = request_id.partition("--remember")
+        request_id = head.strip()
+        remember = tail.strip() or None
+    return request_id, remember
+
+
+def _resolve_approval_identity(
+    runtime: HostRuntime,
+    record: Any,
+    request_id: str,
+) -> tuple[Any, str | None]:
+    """Resolve the identity for acting on one approval record.
+
+    The primary path rebuilds the identity from the live runtime — the same
+    identity the turn path used, so a pending approval inside one process
+    resolves exactly. When that rebuild cannot match (mode handoffs reset
+    ``current_mode_id`` across process boundaries; the invocation's identity
+    carries the *owning* mode), the recorded owner identity on the saved
+    invocation is used instead: the record is a host-persisted claim, and
+    the id was minted by the approval service that owns this data dir, so
+    the operator's explicit id reference is the session-boundary decision.
+    Cross-user references are still rejected — the fallback only ever
+    matches the record's own owner.
+
+    Returns:
+        A ``(identity, error_text)`` tuple. ``error_text`` is ``None`` on
+        success, or a message the caller should return immediately when
+        the record belongs to a different session scope.
+    """
+    identity = approval_identity(runtime)
+    recorded = getattr(record.invocation, "identity", None)
+    identity_fallback_used = recorded is not None and identity != recorded
+    if identity_fallback_used:
+        if not same_session_scope(identity, recorded):
+            return identity, (
+                f"Approval request {request_id} belongs to a different session "
+                f"(user {record.invocation.identity.user_slug or 'unknown'})."
+            )
+        logger.info(
+            "approval %s: live identity mismatch (mode %r vs owner %r); using recorded owner",
+            request_id,
+            identity.mode_id,
+            recorded.mode_id,
+        )
+        identity = recorded
+    return identity, None
+
+
+async def _acquire_approval_receipt(
+    runtime: HostRuntime,
+    record: Any,
+    *,
+    request_id: str,
+    identity: Any,
+) -> tuple[Any, str | None]:
+    """Acquire the receipt for an approved invocation.
+
+    Policy ``allow`` has already persisted and approved this exact action
+    so the registry can consume its genuine receipt. Re-approving would
+    reject the record as non-pending and strand an otherwise valid
+    auto-approval. Human approvals remain the normal pending transition.
+
+    Returns:
+        A ``(receipt, error_text)`` tuple. ``error_text`` is ``None`` on
+        success, or the unresolved-approval diagnostic the caller should
+        return immediately.
+    """
+    if record.state == "approved" and record.receipt is not None:
+        return record.receipt, None
+    receipt = await runtime.services.approval_service.approve(request_id, identity)
+    if receipt is None:
+        # The service may have mutated the record inside this call (e.g.
+        # latched an expired TTL) — re-fetch so the diagnostic reflects the
+        # post-attempt state, not the pre-call snapshot.
+        fresh = await runtime.services.approval_service.get(request_id)
+        return None, unresolved_approval_text(request_id, fresh or record)
+    return receipt, None
+
+
+async def _execute_approved_with_settlement(
+    runtime: HostRuntime,
+    record: Any,
+    *,
+    request_id: str,
+    transport: TransportCallbacks,
+) -> str | Any:
+    """Execute the approved invocation, settling the paired recovery record.
+
+    On success the paired recovery record is settled as ``succeeded`` so
+    the workflow unblocks (the model-turn path settled it as ``stalled``
+    with ``blocks_workflow=True``; the two stores share no id). On failure
+    the record is settled as ``stalled`` with the error.
+
+    Returns:
+        The invocation result, or a plain ``str`` the caller should return
+        immediately (re-approval request or failure text).
+    """
+    hooks = build_turn_hooks(runtime, context={}, transport=transport)
+    try:
+        result = await execute_approved_invocation(invocation=record.invocation, hooks=hooks)
+    except ApprovalRequired as required:
+        return render_approval_request(required.invocation)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("approved action %s failed: %s", request_id, exc)
+        await settle_paired_recovery_record(
+            runtime, record.invocation, state="stalled", last_error=f"{type(exc).__name__}: {exc}"
+        )
+        return f"Approved action failed: {type(exc).__name__}: {exc}"
+    # The approved action executed against the real registry, which consumes
+    # the receipt. But the *model-turn* path that originally raised
+    # ``ApprovalRequired`` also settled a paired recovery record as
+    # ``stalled`` with ``blocks_workflow=True`` (turn_runner.py). The approval
+    # and recovery stores are independent with no shared id, so approving the
+    # action left the stall permanently blocking every subsequent turn. Settle
+    # the paired record now so the workflow unblocks.
+    await settle_paired_recovery_record(
+        runtime,
+        record.invocation,
+        state="succeeded",
+        result_preview=approval_result_text(result)[:240],
+    )
+    return result
+
+
+async def _deny_approval_record(
+    runtime: HostRuntime,
+    record: Any,
+    *,
+    request_id: str,
+    identity: Any,
+) -> str:
+    """Deny one approval request and settle its paired recovery record.
+
+    Denying the approval also unblocks the paired recovery record: the
+    original model-turn stall was ``blocks_workflow=True`` and would
+    otherwise re-yield on every subsequent turn. Settle it as cancelled
+    so the workflow can advance.
+    """
+    if await runtime.services.approval_service.deny(request_id, identity):
+        await settle_paired_recovery_record(
+            runtime,
+            record.invocation,
+            state="cancelled",
+            last_error="denied by operator",
+        )
+        return f"Denied approval request {request_id}."
+    return unresolved_approval_text(request_id, record)
+
+
+async def _load_approval_record(
+    runtime: HostRuntime,
+    command: str,
+    *,
+    approve: bool,
+) -> tuple[Any, str | None]:
+    """Load the approval record addressed by the command.
+
+    Returns:
+        A ``(record, error_text)`` tuple. ``error_text`` is ``None`` on
+        success, or the usage / not-found diagnostic the caller should
+        return immediately. ``record`` is ``None`` alongside a non-None
+        ``error_text``.
+    """
+    request_id, _remember = _parse_approval_command(command, approve=approve)
+    verb = "approve" if approve else "deny"
+    if not request_id:
+        return None, f"Usage: /{verb} <request_id>"
+    record = await runtime.services.approval_service.get(request_id)
+    if record is None:
+        return None, f"No pending approval request named '{request_id}'."
+    return record, None
+
+
 async def handle_approval_command(
     runtime: HostRuntime,
     command: str,
@@ -492,98 +684,31 @@ async def handle_approval_command(
     continuation turn so ``operator_exit`` survives the command dispatch.
     """
 
-    _, _, request_id = command.partition(" ")
-    request_id = request_id.strip()
-    verb = "approve" if approve else "deny"
-    if not request_id:
-        return f"Usage: /{verb} <request_id>"
+    request_id, remember = _parse_approval_command(command, approve=approve)
+    record, load_error = await _load_approval_record(runtime, command, approve=approve)
+    if load_error is not None:
+        return load_error
 
-    # `--remember [prefix]` (approve only): on success, persist an allow rule
-    # so future runs of this command are auto-approved without a prompt. The
-    # host owns the policy write — the CLI only ever sends the command text.
-    remember: str | None = None
-    if approve and "--remember" in request_id:
-        head, _, tail = request_id.partition("--remember")
-        request_id = head.strip()
-        remember = tail.strip() or None
-    if not request_id:
-        return f"Usage: /{verb} <request_id>"
-
-    record = await runtime.services.approval_service.get(request_id)
-    if record is None:
-        return f"No pending approval request named '{request_id}'."
-
-    identity = approval_identity(runtime)
-    recorded = getattr(record.invocation, "identity", None)
-    identity_fallback_used = recorded is not None and identity != recorded
-    if identity_fallback_used:
-        if not same_session_scope(identity, recorded):
-            return (
-                f"Approval request {request_id} belongs to a different session "
-                f"(user {record.invocation.identity.user_slug or 'unknown'})."
-            )
-        logger.info(
-            "approval %s: live identity mismatch (mode %r vs owner %r); using recorded owner",
-            request_id,
-            identity.mode_id,
-            recorded.mode_id,
-        )
-        identity = recorded
+    identity, identity_error = _resolve_approval_identity(runtime, record, request_id)
+    if identity_error is not None:
+        return identity_error
 
     if not approve:
-        if await runtime.services.approval_service.deny(request_id, identity):
-            # Denying the approval also unblocks the paired recovery record:
-            # the original model-turn stall was ``blocks_workflow=True`` and
-            # would otherwise re-yield on every subsequent turn. Settle it
-            # as cancelled so the workflow can advance.
-            await settle_paired_recovery_record(
-                runtime,
-                record.invocation,
-                state="cancelled",
-                last_error="denied by operator",
-            )
-            return f"Denied approval request {request_id}."
-        return unresolved_approval_text(request_id, record)
-
-    # Policy ``allow`` has already persisted and approved this exact action
-    # so the registry can consume its genuine receipt. Re-approving would
-    # reject the record as non-pending and strand an otherwise valid
-    # auto-approval. Human approvals remain the normal pending transition.
-    if record.state == "approved" and record.receipt is not None:
-        receipt = record.receipt
-    else:
-        receipt = await runtime.services.approval_service.approve(request_id, identity)
-        if receipt is None:
-            # The service may have mutated the record inside this call (e.g.
-            # latched an expired TTL) — re-fetch so the diagnostic reflects the
-            # post-attempt state, not the pre-call snapshot.
-            fresh = await runtime.services.approval_service.get(request_id)
-            return unresolved_approval_text(request_id, fresh or record)
-
-    hooks = build_turn_hooks(runtime, context={}, transport=transport)
-    try:
-        result = await execute_approved_invocation(invocation=record.invocation, hooks=hooks)
-    except ApprovalRequired as required:
-        return render_approval_request(required.invocation)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("approved action %s failed: %s", request_id, exc)
-        await settle_paired_recovery_record(
-            runtime, record.invocation, state="stalled", last_error=f"{type(exc).__name__}: {exc}"
+        return await _deny_approval_record(
+            runtime, record, request_id=request_id, identity=identity
         )
-        return f"Approved action failed: {type(exc).__name__}: {exc}"
-    # The approved action executed against the real registry, which consumes
-    # the receipt. But the *model-turn* path that originally raised
-    # ``ApprovalRequired`` also settled a paired recovery record as
-    # ``stalled`` with ``blocks_workflow=True`` (turn_runner.py). The approval
-    # and recovery stores are independent with no shared id, so approving the
-    # action left the stall permanently blocking every subsequent turn. Settle
-    # the paired record now so the workflow unblocks.
-    await settle_paired_recovery_record(
-        runtime,
-        record.invocation,
-        state="succeeded",
-        result_preview=approval_result_text(result)[:240],
+
+    _receipt, receipt_error = await _acquire_approval_receipt(
+        runtime, record, request_id=request_id, identity=identity
     )
+    if receipt_error is not None:
+        return receipt_error
+
+    result = await _execute_approved_with_settlement(
+        runtime, record, request_id=request_id, transport=transport
+    )
+    if isinstance(result, str):
+        return result
 
     # `--remember`: persist an allow rule so future runs of this command are
     # auto-approved. Default prefix = the executed command's first token (the

@@ -176,7 +176,7 @@ def _context_plan_from_request(request: BrokerContextRequest) -> ContextPlan:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-async def broker_context(
+async def broker_context(  # noqa: PLR0917 — one parameter per BrokerContextRequest field; the signature IS the MCP schema
     query: str,
     mode_id: str = "default",
     stage_id: str = "",

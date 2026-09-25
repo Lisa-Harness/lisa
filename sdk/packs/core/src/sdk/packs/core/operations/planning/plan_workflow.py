@@ -421,6 +421,85 @@ def _calling_mode_needs_full_catalog(mode_id: str) -> bool:
     return bool(mode.extra_front_matter.get("needs_full_mode_catalog", False))
 
 
+async def _structured_plan_call(
+    ctx: OperationExecutionContext,
+    messages: list[dict[str, Any]],
+    model_def: Any,
+    plan_max_tokens: int,
+) -> PlanWorkflowOutput | None:
+    """Run the structured planning call, falling back to the JSON-only retry.
+
+    Returns the parsed plan, or ``None`` when neither the structured call
+    nor the JSON-only retry produced a parseable plan. A 400 "unsupported"
+    on ``response_format`` is EXACTLY what the JSON-only retry (which
+    clears ``response_format``) is designed to recover from — the
+    2026-07-30 incident: gpt-5.1-codex-max returned `400 - The requested
+    operation is unsupported` on the structured call, and plan_workflow
+    bailed immediately with no retry, even though the retry path would
+    have succeeded. Call failures route into the same retry path as parse
+    failures instead of giving up.
+    """
+    first_completion: Any | None = None
+    try:
+        first_completion = await ctx.host.complete(
+            messages=messages,
+            model_def=model_def,
+            max_tokens=plan_max_tokens,
+            temperature=0.1,
+            response_format=PlanWorkflowOutput,
+        )
+        content = completion_content(first_completion)
+        try:
+            return cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
+        except (ValidationError, EmptyStructuredOutputError):
+            logger.info(
+                "plan_workflow structured parse failed; retrying with JSON-only instruction"
+            )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "plan_workflow structured call failed (%s); retrying with JSON-only instruction",
+            exc,
+        )
+        first_completion = None
+
+    return await _json_only_retry(
+        ctx,
+        messages,
+        model_def,
+        plan_max_tokens,
+        first_completion,
+    )
+
+
+def _validate_step_write_capabilities(parsed: PlanWorkflowOutput) -> None:
+    """Validate write_capability assignments against each mode's write contract.
+
+    A write step's capability must be in its mode's write contract
+    (``mode_completion_effects``). An invalid assignment is downgraded to
+    None (read step) rather than failing the plan — the kernel will block at
+    runtime if the model then fails to produce any receipt, which is the
+    honest signal.
+    """
+    from kernel.operations.registry import mode_completion_effects
+
+    for idx, step in enumerate(parsed.steps):
+        if not step.write_capability:
+            continue
+        try:
+            allowed = mode_completion_effects(step.mode_id)
+        except Exception:  # pylint: disable=broad-except
+            allowed = set()
+        if step.write_capability not in allowed:
+            logger.warning(
+                "plan_workflow: step mode=%s write_capability=%s not in "
+                "mode's write contract %r; downgrading to read step",
+                step.mode_id,
+                step.write_capability,
+                sorted(allowed),
+            )
+            parsed.steps[idx] = step.model_copy(update={"write_capability": None})
+
+
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Run the workflow planner and return the visible plan.
 
@@ -505,65 +584,12 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # tiny (~2 fields); the budget is for the model's thinking room.
     plan_max_tokens = 8192
 
-    first_completion: Any | None = None
-    first_call_failed = False
-    try:
-        first_completion = await ctx.host.complete(
-            messages=messages,
-            model_def=model_def,
-            max_tokens=plan_max_tokens,
-            temperature=0.1,
-            response_format=PlanWorkflowOutput,
+    parsed = await _structured_plan_call(ctx, messages, model_def, plan_max_tokens)
+    if parsed is None:
+        return OperationResult(
+            output_text="plan_workflow could not parse structured output after retry",
+            output_json={"target_stage_id": "", "rationale": "model error"},
         )
-    except Exception as exc:  # pylint: disable=broad-except
-        # A 400 "unsupported" on response_format is EXACTLY what the
-        # JSON-only retry (which clears response_format) is designed to
-        # recover from. The 2026-07-30 incident: gpt-5.1-codex-max returned
-        # `400 - The requested operation is unsupported` on the structured
-        # call, and plan_workflow bailed immediately with no retry — even
-        # though the retry path drops response_format and would have
-        # succeeded. Route call failures into the same retry path as parse
-        # failures instead of giving up.
-        logger.warning(
-            "plan_workflow structured call failed (%s); retrying with JSON-only instruction",
-            exc,
-        )
-        first_call_failed = True
-
-    if not first_call_failed:
-        content = completion_content(first_completion)
-        parsed: PlanWorkflowOutput | None = None
-        try:
-            parsed = cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
-        except (ValidationError, EmptyStructuredOutputError):
-            logger.info(
-                "plan_workflow structured parse failed; retrying with JSON-only instruction"
-            )
-            parsed = await _json_only_retry(
-                ctx,
-                messages,
-                model_def,
-                plan_max_tokens,
-                first_completion,
-            )
-            if parsed is None:
-                return OperationResult(
-                    output_text="plan_workflow could not parse structured output after retry",
-                    output_json={"target_stage_id": "", "rationale": "parse failure"},
-                )
-    else:
-        parsed = await _json_only_retry(
-            ctx,
-            messages,
-            model_def,
-            plan_max_tokens,
-            None,
-        )
-        if parsed is None:
-            return OperationResult(
-                output_text="plan_workflow model call failed and JSON-only retry did not recover",
-                output_json={"target_stage_id": "", "rationale": "model error"},
-            )
 
     # Normalize: when the model returned steps, target_stage_id is the
     # first step's mode_id (the initial handoff target). When the model
@@ -571,30 +597,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # shape), target_stage_id carries the single target as-is. This keeps
     # existing consumers that read only target_stage_id working while the
     # turn runner reads steps for the visible plan + WorkflowInstance.
-    # Validate write_capability assignments: a write step's capability
-    # must be in its mode's write contract (``mode_completion_effects``).
-    # An invalid assignment is downgraded to None (read step) rather than
-    # failing the plan — the kernel will block at runtime if the model
-    # then fails to produce any receipt, which is the honest signal.
-    from kernel.operations.registry import mode_completion_effects
-
-    for idx, step in enumerate(parsed.steps):
-        if not step.write_capability:
-            continue
-        try:
-            allowed = mode_completion_effects(step.mode_id)
-        except Exception:  # pylint: disable=broad-except
-            allowed = set()
-        if step.write_capability not in allowed:
-            logger.warning(
-                "plan_workflow: step mode=%s write_capability=%s not in "
-                "mode's write contract %r; downgrading to read step",
-                step.mode_id,
-                step.write_capability,
-                sorted(allowed),
-            )
-            parsed.steps[idx] = step.model_copy(update={"write_capability": None})
-
+    _validate_step_write_capabilities(parsed)
     normalized_target = parsed.steps[0].mode_id if parsed.steps else parsed.target_stage_id or ""
 
     plan_block = _render_plan_markdown(parsed)

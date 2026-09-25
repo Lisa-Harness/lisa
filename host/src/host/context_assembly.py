@@ -429,52 +429,22 @@ def assemble_dynamic_user_context(
 
     # --- Inject metadata into the live capability manifest ----------------
     if capability_manifest is not None:
-        if capability_snapshot_builder is not None:
-            snapshot = capability_snapshot_builder()
-            capability_manifest.metadata["total_horizon"] = {
-                "operations": len(snapshot["operations"]),
-                "tools": len(snapshot["tools"]),
-                "modes": len(snapshot["supported_modes"]),
-                # Full name lists so the renderer can compute inactive caps
-                # via set difference and group them by reason.
-                "operation_names": list(snapshot["operations"]),
-                "tool_names": list(snapshot["tools"]),
-            }
-        # Build a compact mode→capability routing map from the workflow
-        # catalog. Each mode's allowed_operation_ids and allowed_tool_ids
-        # are the capabilities the model could call if transitioned there.
-        catalog = get_workflow_catalog()
-        routing_map: dict[str, dict[str, list[str]]] = {}
-        for route_mode_id, mode_config in sorted(catalog.items()):
-            if gap_fn(mode_config) is not None:
-                continue
-            caps = sorted(
-                set(
-                    list(getattr(mode_config, "allowed_operation_ids", []))
-                    + list(getattr(mode_config, "allowed_tool_ids", []))
-                )
-            )
-            if caps:
-                routing_map[route_mode_id] = {"capabilities": caps}
-        capability_manifest.metadata["mode_routing_map"] = routing_map
+        _inject_capability_manifest_metadata(
+            capability_manifest=capability_manifest,
+            capability_snapshot_builder=capability_snapshot_builder,
+            gap_fn=gap_fn,
+        )
 
     # --- Dynamic context header ------------------------------------------
     mode = get_workflow_catalog().get(mode_id)
-    mode_kind = mode.mode_kind if mode is not None else "unknown"
-    mode_description = (mode.description or "").strip() if mode is not None else ""
-    command_pattern = (mode.command_pattern or "").strip() if mode is not None else ""
-    lines = [
-        f"- mode_id: {mode_id}",
-        f"- mode_kind: {mode_kind}",
-        f"- query_chars: {len(query)}",
-        f"- pre_turn_briefing_present: {'true' if bool(pre_turn_briefing.strip()) else 'false'}",
-        f"- host: {host_name or resolve_host_name()}",
-    ]
-    lines.insert(2, f"- user_slug: {user_slug or 'none'}")
-    if mode_description:
-        lines.append(f"- mode_description: {mode_description}")
-    if command_pattern:
-        lines.append(f"- command_pattern: {command_pattern}")
+    lines = _build_dynamic_context_header(
+        mode_id=mode_id,
+        query=query,
+        pre_turn_briefing=pre_turn_briefing,
+        user_slug=user_slug,
+        host_name=host_name,
+        mode=mode,
+    )
     ambient_facts = build_ambient_facts(
         timezone=timezone,
         host_os=host_os or platform.system(),
@@ -499,6 +469,195 @@ def assemble_dynamic_user_context(
         budget_values=budget_values,
     )
 
+    _append_replay_gated_sections(
+        raw_sections=raw_sections,
+        content_loader=content_loader,
+        query=query,
+        session_context_loader=session_context_loader,
+        recent_thread_excerpt_builder=recent_thread_excerpt_builder,
+        thread_manifest_builder=thread_manifest_builder,
+        replay_policy=replay_policy,
+    )
+
+    # Ranked context evidence from the session-owned mapper (no MCP
+    # round-trip — the mapper is a pure ranking function over the
+    # in-process UnifiedState). The mapper already fits ranked context to
+    # the model-aware window, so it is NOT re-budgeted below; the snapshot
+    # it produces also drives the allocator's total ceiling so both share
+    # one window-derived budget.
+    mapper_snapshot: ContextBudgetSnapshot | None = None
+
+    def _capture_snapshot(snapshot: ContextBudgetSnapshot) -> None:
+        nonlocal mapper_snapshot
+        mapper_snapshot = snapshot
+        if snapshot_sink is not None:
+            snapshot_sink(snapshot)
+
+    # Pack-scoped item boundary: a mode sees extension items from its own
+    # provider pack plus any packs it explicitly allows via
+    # ``context_item_packs`` in its ``_mode.md`` front-matter. Without this
+    # the mapper gates every pack-tagged item as ``inactive_pack`` and the
+    # ranked context silently drops all extension contributions.
+    active_packs: frozenset[str] = frozenset()
+    if mode is not None:
+        active_packs = frozenset({mode.mode_provider_id, *mode.context_item_packs} - {""})
+    packet_markdown = build_brokered_context_markdown(
+        mode_id=mode_id,
+        query=query,
+        state=state,
+        context_plan=context_plan,
+        model_context_window_tokens=model_context_window_tokens,
+        active_packs=active_packs,
+        snapshot_sink=_capture_snapshot,
+    )
+    if packet_markdown:
+        raw_sections.append(("ranked_context", "retrieval", packet_markdown))
+
+    # Always inject the live capability manifest so the model's self-knowledge
+    # is consistent with the function schema it can actually call this turn.
+    # When the manifest is unavailable, fall back to the snapshot builder.
+    capability_block = _build_capability_block(
+        capability_manifest=capability_manifest,
+        capability_snapshot_builder=capability_snapshot_builder,
+    )
+    if capability_block:
+        raw_sections.append(("capability_context", "operational", capability_block))
+
+    # --- Route through the budget allocator ------------------------------
+    # Each section key's provenance kind is resolved inside
+    # ``_render_budgeted_sections``; sections not in the map default to
+    # ``authoritative`` (the runtime-state default). The allocator's total
+    # ceiling is the mapper's model-aware available
+    # context (window minus reserves, prefix, conversation, and tool
+    # schema). When the mapper produced no snapshot (no ranked context),
+    # fall back to the sum of the lane ceilings so the lane limits remain
+    # the binding constraint. Lane budgets and the master switch live on
+    # the host config (migrated from kernel.config).
+    allocator = _build_context_allocator(
+        budget_values=budget_values,
+        replay_policy=replay_policy,
+        total_tokens=(
+            mapper_snapshot.available_context_tokens if mapper_snapshot is not None else None
+        ),
+    )
+    rendered_sections = _render_budgeted_sections(
+        raw_sections=raw_sections,
+        allocator=allocator,
+    )
+
+    publish_context_usage_event(allocator=allocator, mode_id=mode_id, query=query)
+    return "\n\n".join(rendered_sections)
+
+
+def _render_budgeted_sections(
+    *,
+    raw_sections: list[tuple[str, ContextLane, str]],
+    allocator: ContextBudgetAllocator,
+) -> list[str]:
+    """Route each raw section through the budget allocator and provenance wrap.
+
+    ``ranked_context`` bypasses the allocator: the mapper already fit it to
+    the model-aware window, and re-budgeting it here would double-trim
+    with a fixed lane ceiling, so it is emitted as-is. Every other section
+    is allocated (``dynamic_context`` is required and may not be dropped),
+    then wrapped with its provenance tag. Empty wraps are skipped.
+    """
+    section_provenance = _SECTION_PROVENANCE
+    rendered_sections: list[str] = []
+    for key, lane, text in raw_sections:
+        if key == "ranked_context":
+            # The mapper already fit ranked context to the model-aware
+            # window; re-budgeting it here would double-trim with a fixed
+            # lane ceiling. Emit it as-is.
+            provenance = section_provenance.get(key, "authoritative")
+            wrapped = wrap_section(provenance, text, source=key)
+            if wrapped:
+                rendered_sections.append(wrapped)
+            continue
+        elected = allocator.allocate(
+            key=key,
+            lane=lane,
+            text=text,
+            required=(key == "dynamic_context"),
+            allow_truncate=True,
+        )
+        if elected:
+            provenance = section_provenance.get(key, "authoritative")
+            wrapped = wrap_section(provenance, elected, source=key)
+            if wrapped:
+                rendered_sections.append(wrapped)
+    return rendered_sections
+
+
+def _build_context_allocator(
+    *,
+    budget_values: ContextBudgetValues,
+    replay_policy: _ReplayPolicy,
+    total_tokens: int | None,
+) -> ContextBudgetAllocator:
+    """Build the per-turn lane budget allocator with tighten-only replay caps.
+
+    Lane budgets and the master switch live on the host config
+    (``budget_values``). The allocator's total ceiling is the mapper's
+    model-aware available context (``total_tokens``); when the mapper
+    produced no snapshot (no ranked context), the lanes' own limits remain
+    the binding constraint. Session front matter may REDUCE lane budgets
+    via the replay controls, never increase them.
+    """
+    allocator = ContextBudgetAllocator.for_turn(
+        enabled=budget_values["enabled"],
+        token_char_ratio=budget_values["token_char_ratio"],
+        lane_limits=cast(
+            "dict[ContextLane, int]",
+            {
+                "core": budget_values["core_max_tokens"],
+                "retrieval": budget_values["retrieval_max_tokens"],
+                "memory": budget_values["memory_max_tokens"],
+                "reflection": budget_values["reflection_max_tokens"],
+                "history": budget_values["history_max_tokens"],
+                "operational": budget_values["operational_max_tokens"],
+            },
+        ),
+        total_tokens=total_tokens,
+    )
+    # Tighten-only override: session front matter may reduce lane budgets,
+    # never increase kernel defaults.
+    allocator.lane_limits["history"] = min(
+        allocator.lane_limits.get("history", replay_policy.effective_history_max_tokens),
+        replay_policy.effective_history_max_tokens,
+    )
+    allocator.lane_limits["reflection"] = min(
+        allocator.lane_limits.get("reflection", replay_policy.effective_reflection_max_tokens),
+        replay_policy.effective_reflection_max_tokens,
+    )
+    return allocator
+
+
+def _append_replay_gated_sections(
+    *,
+    raw_sections: list[tuple[str, ContextLane, str]],
+    content_loader: Callable[[str], str],
+    query: str,
+    session_context_loader: Callable[[], str],
+    recent_thread_excerpt_builder: Callable[[int], str],
+    thread_manifest_builder: Callable[[], str] | None,
+    replay_policy: _ReplayPolicy,
+) -> None:
+    """Append the memory/history/reflection sections gated by replay policy.
+
+    The recent-conversation excerpt is allocated BEFORE the manifest so
+    the most recent dialogue wins the history-lane budget. Both share the
+    ``history`` lane; whichever is appended first consumes the lane and
+    the other is dropped (``budget_exhausted``) or truncated. The recent
+    excerpt is ``authoritative`` and time-sensitive — it carries the
+    assistant's last answer (e.g. an Option A/B offer the user just saw
+    and is replying to). The manifest is ``inferred``/structured and
+    covers older turns the model can pull on demand via
+    ``thread_read_range``. Dropping the recent excerpt while keeping
+    the manifest amputates the turn the user is responding to, so recent
+    conversation must be allocated first; the manifest takes the
+    remainder.
+    """
     user_context = session_context_loader().strip()
     if user_context:
         # Normalize authored markdown (which may use provenance fences)
@@ -511,18 +670,6 @@ def assemble_dynamic_user_context(
             )
         )
 
-    # Allocate the recent-conversation excerpt BEFORE the manifest so the
-    # most recent dialogue wins the history-lane budget. Both share the
-    # ``history`` lane; whichever is appended first consumes the lane and
-    # the other is dropped (``budget_exhausted``) or truncated. The recent
-    # excerpt is ``authoritative`` and time-sensitive — it carries the
-    # assistant's last answer (e.g. an Option A/B offer the user just saw
-    # and is replying to). The manifest is ``inferred``/structured and
-    # covers older turns the model can pull on demand via
-    # ``thread_read_range``. Dropping the recent excerpt while keeping
-    # the manifest amputates the turn the user is responding to, so recent
-    # conversation must be allocated first; the manifest takes the
-    # remainder.
     conversation_excerpt = recent_thread_excerpt_builder(3)
     if replay_policy.include_recent_conversation and conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
@@ -563,123 +710,99 @@ def assemble_dynamic_user_context(
         )
         raw_sections.append(("diagnostic_reflection", "reflection", diagnostic_reflection))
 
-    # Ranked context evidence from the session-owned mapper (no MCP
-    # round-trip — the mapper is a pure ranking function over the
-    # in-process UnifiedState). The mapper already fits ranked context to
-    # the model-aware window, so it is NOT re-budgeted below; the snapshot
-    # it produces also drives the allocator's total ceiling so both share
-    # one window-derived budget.
-    mapper_snapshot: ContextBudgetSnapshot | None = None
 
-    def _capture_snapshot(snapshot: ContextBudgetSnapshot) -> None:
-        nonlocal mapper_snapshot
-        mapper_snapshot = snapshot
-        if snapshot_sink is not None:
-            snapshot_sink(snapshot)
+def _inject_capability_manifest_metadata(
+    *,
+    capability_manifest: CapabilityManifest,
+    capability_snapshot_builder: Callable[[], dict[str, Any]] | None,
+    gap_fn: Callable[[WorkflowModeConfig], str | None],
+) -> None:
+    """Inject total-horizon and mode-routing metadata into the live manifest.
 
-    # Pack-scoped item boundary: a mode sees extension items from its own
-    # provider pack plus any packs it explicitly allows via
-    # ``context_item_packs`` in its ``_mode.md`` front-matter. Without this
-    # the mapper gates every pack-tagged item as ``inactive_pack`` and the
-    # ranked context silently drops all extension contributions.
-    active_packs: frozenset[str] = frozenset()
-    if mode is not None:
-        active_packs = frozenset({mode.mode_provider_id, *mode.context_item_packs} - {""})
-    packet_markdown = build_brokered_context_markdown(
-        mode_id=mode_id,
-        query=query,
-        state=state,
-        context_plan=context_plan,
-        model_context_window_tokens=model_context_window_tokens,
-        active_packs=active_packs,
-        snapshot_sink=_capture_snapshot,
-    )
-    if packet_markdown:
-        raw_sections.append(("ranked_context", "retrieval", packet_markdown))
+    The total horizon (operation/tool/mode counts plus full name lists so
+    the renderer can compute inactive caps via set difference) is written
+    when a snapshot builder is wired. The compact mode→capability routing
+    map is built from the workflow catalog: each mode's
+    allowed_operation_ids and allowed_tool_ids are the capabilities the
+    model could call if transitioned there. Modes with a support gap are
+    skipped.
+    """
+    if capability_snapshot_builder is not None:
+        snapshot = capability_snapshot_builder()
+        capability_manifest.metadata["total_horizon"] = {
+            "operations": len(snapshot["operations"]),
+            "tools": len(snapshot["tools"]),
+            "modes": len(snapshot["supported_modes"]),
+            # Full name lists so the renderer can compute inactive caps
+            # via set difference and group them by reason.
+            "operation_names": list(snapshot["operations"]),
+            "tool_names": list(snapshot["tools"]),
+        }
+    # Build a compact mode→capability routing map from the workflow
+    # catalog. Each mode's allowed_operation_ids and allowed_tool_ids
+    # are the capabilities the model could call if transitioned there.
+    catalog = get_workflow_catalog()
+    routing_map: dict[str, dict[str, list[str]]] = {}
+    for route_mode_id, mode_config in sorted(catalog.items()):
+        if gap_fn(mode_config) is not None:
+            continue
+        caps = sorted(
+            set(
+                list(getattr(mode_config, "allowed_operation_ids", []))
+                + list(getattr(mode_config, "allowed_tool_ids", []))
+            )
+        )
+        if caps:
+            routing_map[route_mode_id] = {"capabilities": caps}
+    capability_manifest.metadata["mode_routing_map"] = routing_map
 
-    # Always inject the live capability manifest so the model's self-knowledge
-    # is consistent with the function schema it can actually call this turn.
-    # When the manifest is unavailable, fall back to the snapshot builder.
+
+def _build_dynamic_context_header(
+    *,
+    mode_id: str,
+    query: str,
+    pre_turn_briefing: str,
+    user_slug: str,
+    host_name: str | None,
+    mode: WorkflowModeConfig | None,
+) -> list[str]:
+    """Build the key:value header lines for the dynamic user-context section."""
+    mode_kind = mode.mode_kind if mode is not None else "unknown"
+    mode_description = (mode.description or "").strip() if mode is not None else ""
+    command_pattern = (mode.command_pattern or "").strip() if mode is not None else ""
+    lines = [
+        f"- mode_id: {mode_id}",
+        f"- mode_kind: {mode_kind}",
+        f"- query_chars: {len(query)}",
+        f"- pre_turn_briefing_present: {'true' if bool(pre_turn_briefing.strip()) else 'false'}",
+        f"- host: {host_name or resolve_host_name()}",
+    ]
+    lines.insert(2, f"- user_slug: {user_slug or 'none'}")
+    if mode_description:
+        lines.append(f"- mode_description: {mode_description}")
+    if command_pattern:
+        lines.append(f"- command_pattern: {command_pattern}")
+    return lines
+
+
+def _build_capability_block(
+    *,
+    capability_manifest: CapabilityManifest | None,
+    capability_snapshot_builder: Callable[[], dict[str, Any]] | None,
+) -> str:
+    """Build the capability context block (live manifest, else snapshot summary)."""
     if capability_manifest is not None:
-        capability_block = render_capability_manifest_context(capability_manifest)
-    elif capability_snapshot_builder is not None:
+        return render_capability_manifest_context(capability_manifest)
+    if capability_snapshot_builder is not None:
         capability = capability_snapshot_builder()
-        capability_block = (
+        return (
             "## Capability Context\n\n"
             f"- supported_modes: {len(capability['supported_modes'])}\n"
             f"- operations: {len(capability['operations'])}\n"
             f"- tools: {len(capability['tools'])}\n"
             f"- models: {len(capability['models'])}"
         )
-    else:
-        capability_block = ""
-    if capability_block:
-        raw_sections.append(("capability_context", "operational", capability_block))
-
-    # --- Route through the budget allocator ------------------------------
-    # Map each section key to its provenance kind. Sections not in the map
-    # default to ``authoritative`` (the runtime-state default).
-    section_provenance = _SECTION_PROVENANCE
-    # The allocator's total ceiling is the mapper's model-aware available
-    # context (window minus reserves, prefix, conversation, and tool
-    # schema). When the mapper produced no snapshot (no ranked context),
-    # fall back to the sum of the lane ceilings so the lane limits remain
-    # the binding constraint. Lane budgets and the master switch live on
-    # the host config (migrated from kernel.config).
-    allocator = ContextBudgetAllocator.for_turn(
-        enabled=budget_values["enabled"],
-        token_char_ratio=budget_values["token_char_ratio"],
-        lane_limits=cast(
-            "dict[ContextLane, int]",
-            {
-                "core": budget_values["core_max_tokens"],
-                "retrieval": budget_values["retrieval_max_tokens"],
-                "memory": budget_values["memory_max_tokens"],
-                "reflection": budget_values["reflection_max_tokens"],
-                "history": budget_values["history_max_tokens"],
-                "operational": budget_values["operational_max_tokens"],
-            },
-        ),
-        total_tokens=(
-            mapper_snapshot.available_context_tokens if mapper_snapshot is not None else None
-        ),
-    )
-    # Tighten-only override: session front matter may reduce lane budgets,
-    # never increase kernel defaults.
-    allocator.lane_limits["history"] = min(
-        allocator.lane_limits.get("history", replay_policy.effective_history_max_tokens),
-        replay_policy.effective_history_max_tokens,
-    )
-    allocator.lane_limits["reflection"] = min(
-        allocator.lane_limits.get("reflection", replay_policy.effective_reflection_max_tokens),
-        replay_policy.effective_reflection_max_tokens,
-    )
-    rendered_sections: list[str] = []
-    for key, lane, text in raw_sections:
-        if key == "ranked_context":
-            # The mapper already fit ranked context to the model-aware
-            # window; re-budgeting it here would double-trim with a fixed
-            # lane ceiling. Emit it as-is.
-            provenance = section_provenance.get(key, "authoritative")
-            wrapped = wrap_section(provenance, text, source=key)
-            if wrapped:
-                rendered_sections.append(wrapped)
-            continue
-        elected = allocator.allocate(
-            key=key,
-            lane=lane,
-            text=text,
-            required=(key == "dynamic_context"),
-            allow_truncate=True,
-        )
-        if elected:
-            provenance = section_provenance.get(key, "authoritative")
-            wrapped = wrap_section(provenance, elected, source=key)
-            if wrapped:
-                rendered_sections.append(wrapped)
-
-    publish_context_usage_event(allocator=allocator, mode_id=mode_id, query=query)
-    return "\n\n".join(rendered_sections)
+    return ""
 
 
 # Provenance kind per section key. Keys absent from this map default to

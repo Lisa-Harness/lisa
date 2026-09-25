@@ -263,6 +263,16 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
         entry["display_name"] = model.display_name
     if model.capabilities:
         entry["capabilities"] = compact_list(list(model.capabilities))
+    _apply_optional_model_fields(entry, model)
+    return entry
+
+
+def _apply_optional_model_fields(entry: dict[str, Any], model: DiscoveredModel) -> None:
+    """Write the truthy optional manifest fields (mutating ``entry`` in place).
+
+    Omitted when empty; ``pricing_currency`` skips the USD default and
+    ``completion_api`` skips the chat_completions default.
+    """
     if model.cost_tier:
         entry["cost_tier"] = model.cost_tier
     if model.latency_tier:
@@ -281,7 +291,6 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
         entry["structured_reliability"] = model.structured_reliability
     if model.completion_api and model.completion_api != "chat_completions":
         entry["completion_api"] = model.completion_api
-    return entry
 
 
 def _pick_code_model(

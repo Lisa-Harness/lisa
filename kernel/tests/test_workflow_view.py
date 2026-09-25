@@ -22,7 +22,7 @@ from kernel.workflow_view import (
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
-def _entry(
+def _entry(  # noqa: PLR0917 — one default per synthetic-entry field
     mode_id: str = "default",
     response_text: str = "",
     effect_receipts: list[dict] | None = None,

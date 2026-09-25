@@ -129,6 +129,144 @@ def _enforce_tool_result_contiguity(messages: ChatMessages) -> ChatMessages:
     ]
 
 
+def _collect_answered_tool_ids(messages: ChatMessages) -> set[str]:
+    """Collect every tool_call_id that has a matching tool-result message."""
+    return {
+        str(message.get("tool_call_id", "") or "")
+        for message in messages
+        if str(message.get("role", "") or "") == "tool"
+    }
+
+
+def _collect_signed_tool_ids(messages: ChatMessages) -> set[str]:
+    """Collect ids of assistant tool_calls that carry a ``thought_signature``.
+
+    Gemini thinking models emit a ``thoughtSignature`` on every
+    ``functionCall`` part; the signature must be echoed verbatim on the
+    next turn. The signature is read from the top level or nested under
+    ``function``. Calls without a signature (kernel-synthesized handoff
+    calls) must be stripped to avoid the 400.
+    """
+    signed_ids: set[str] = set()
+    for message in messages:
+        if str(message.get("role", "") or "") != "assistant":
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            continue
+        for tool_call in raw_tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = str(tool_call.get("id", "") or "")
+            if not call_id:
+                continue
+            thought_sig = tool_call.get("thought_signature")
+            if not thought_sig:
+                fn_payload = tool_call.get("function")
+                if isinstance(fn_payload, dict):
+                    thought_sig = fn_payload.get("thought_signature")
+            if thought_sig:
+                signed_ids.add(call_id)
+    return signed_ids
+
+
+def _normalize_message_tool_calls(
+    message: dict[str, Any],
+    answered_ids: set[str],
+    signed_ids: set[str],
+    *,
+    require_thought_signature: bool,
+) -> dict[str, Any]:
+    """Default the assistant ``content`` and prune orphaned tool_calls on one message.
+
+    Guarantees every ``assistant`` message carries a string ``content``
+    (strict OpenAI-compatible backends reject ``content: <nil>``), prunes
+    ``tool_calls`` entries with no matching tool result (or, for Gemini
+    thinking models, without a ``thought_signature``), and drops the
+    ``tool_calls`` key entirely when nothing remains.
+    """
+    normalized_message = dict(message)
+    if (
+        str(normalized_message.get("role", "") or "") == "assistant"
+        and normalized_message.get("content") is None
+    ):
+        normalized_message["content"] = ""
+    raw_tool_calls = normalized_message.get("tool_calls")
+    if isinstance(raw_tool_calls, list):
+        pruned = [
+            tool_call
+            for tool_call in raw_tool_calls
+            if not isinstance(tool_call, dict) or str(tool_call.get("id", "") or "") in answered_ids
+        ]
+        # Gemini thinking models: further prune any tool_call that lacks
+        # a ``thought_signature``. The kernel's synthesized
+        # ``transition_stage`` calls (planned handoff / forced fork /
+        # forced plan) have no model reasoning to sign and would trigger
+        # ``400 INVALID_ARGUMENT: Function call is missing a
+        # thought_signature``. Drop them and their matching tool
+        # results so the history stays well-formed for Gemini.
+        if require_thought_signature:
+            pruned = [
+                tool_call
+                for tool_call in pruned
+                if not isinstance(tool_call, dict)
+                or str(tool_call.get("id", "") or "") in signed_ids
+            ]
+        # Only normalize the tool-call payloads we keep; drop the key
+        # entirely when nothing remains so the message is a plain text
+        # assistant turn (valid) instead of an empty ``tool_calls: []``.
+        if pruned:
+            normalized_message["tool_calls"] = [
+                _normalize_openai_tool_call(tool_call) if isinstance(tool_call, dict) else tool_call
+                for tool_call in pruned
+            ]
+        else:
+            normalized_message.pop("tool_calls", None)
+    return normalized_message
+
+
+def _prune_orphaned_tool_results_gemini(
+    normalized_messages: ChatMessages,
+) -> ChatMessages:
+    """Drop tool results orphaned by signature-less pruning and fix the trailing role.
+
+    When signature-less tool_calls are pruned, the matching ``role: tool``
+    result messages become orphaned (no assistant tool_call references
+    them). Gemini does not reject orphaned tool results outright, but
+    strict OpenAI backends do, so drop them for parity with the existing
+    orphaned-tool-call pruning.
+
+    Google/Gemini rejects a request whose last message is an ``assistant``
+    turn (``400 Requests ending with a model turn are not supported``).
+    The signature-less synthesized ``transition_stage`` pruning can convert
+    a trailing assistant ``tool_calls`` message into plain text, leaving
+    the history ending with that assistant message. When that happens,
+    append a synthetic ``user`` nudge so the request ends with a
+    ``user``/``tool`` role as Google requires. Scoped to the Gemini
+    (``require_thought_signature``) path; OpenAI/Azure accept a trailing
+    assistant message.
+    """
+    retained_assistant_ids = set()
+    for message in normalized_messages:
+        if str(message.get("role", "") or "") != "assistant":
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            continue
+        for tool_call in raw_tool_calls:
+            if isinstance(tool_call, dict):
+                retained_assistant_ids.add(str(tool_call.get("id", "") or ""))
+    pruned_messages = [
+        message
+        for message in normalized_messages
+        if str(message.get("role", "") or "") != "tool"
+        or str(message.get("tool_call_id", "") or "") in retained_assistant_ids
+    ]
+    if pruned_messages and str(pruned_messages[-1].get("role", "") or "") == "assistant":
+        pruned_messages.append({"role": "user", "content": "Continue."})
+    return pruned_messages
+
+
 def normalize_openai_messages(
     messages: ChatMessages,
     *,
@@ -182,11 +320,7 @@ def normalize_openai_messages(
     """
 
     # Collect every tool_call_id that has a matching tool-result message.
-    answered_ids = {
-        str(message.get("tool_call_id", "") or "")
-        for message in messages
-        if str(message.get("role", "") or "") == "tool"
-    }
+    answered_ids = _collect_answered_tool_ids(messages)
 
     # When Gemini thinking-model round-tripping is required, collect the
     # ids of tool_calls that carry a ``thought_signature`` (top-level or
@@ -195,111 +329,22 @@ def normalize_openai_messages(
     # no signature and must be stripped to avoid the 400.
     signed_ids: set[str] = set()
     if require_thought_signature:
-        for message in messages:
-            if str(message.get("role", "") or "") != "assistant":
-                continue
-            raw_tool_calls = message.get("tool_calls")
-            if not isinstance(raw_tool_calls, list):
-                continue
-            for tool_call in raw_tool_calls:
-                if not isinstance(tool_call, dict):
-                    continue
-                call_id = str(tool_call.get("id", "") or "")
-                if not call_id:
-                    continue
-                thought_sig = tool_call.get("thought_signature")
-                if not thought_sig:
-                    fn_payload = tool_call.get("function")
-                    if isinstance(fn_payload, dict):
-                        thought_sig = fn_payload.get("thought_signature")
-                if thought_sig:
-                    signed_ids.add(call_id)
+        signed_ids = _collect_signed_tool_ids(messages)
 
-    normalized_messages: ChatMessages = []
-    for message in messages:
-        normalized_message = dict(message)
-        if (
-            str(normalized_message.get("role", "") or "") == "assistant"
-            and normalized_message.get("content") is None
-        ):
-            normalized_message["content"] = ""
-        raw_tool_calls = normalized_message.get("tool_calls")
-        if isinstance(raw_tool_calls, list):
-            pruned = [
-                tool_call
-                for tool_call in raw_tool_calls
-                if not isinstance(tool_call, dict)
-                or str(tool_call.get("id", "") or "") in answered_ids
-            ]
-            # Gemini thinking models: further prune any tool_call that lacks
-            # a ``thought_signature``. The kernel's synthesized
-            # ``transition_stage`` calls (planned handoff / forced fork /
-            # forced plan) have no model reasoning to sign and would trigger
-            # ``400 INVALID_ARGUMENT: Function call is missing a
-            # thought_signature``. Drop them and their matching tool
-            # results so the history stays well-formed for Gemini.
-            if require_thought_signature:
-                pruned = [
-                    tool_call
-                    for tool_call in pruned
-                    if not isinstance(tool_call, dict)
-                    or str(tool_call.get("id", "") or "") in signed_ids
-                ]
-            # Only normalize the tool-call payloads we keep; drop the key
-            # entirely when nothing remains so the message is a plain text
-            # assistant turn (valid) instead of an empty ``tool_calls: []``.
-            if pruned:
-                normalized_message["tool_calls"] = [
-                    _normalize_openai_tool_call(tool_call)
-                    if isinstance(tool_call, dict)
-                    else tool_call
-                    for tool_call in pruned
-                ]
-            else:
-                normalized_message.pop("tool_calls", None)
-        normalized_messages.append(normalized_message)
+    normalized_messages: ChatMessages = [
+        _normalize_message_tool_calls(
+            message,
+            answered_ids,
+            signed_ids,
+            require_thought_signature=require_thought_signature,
+        )
+        for message in messages
+    ]
 
     normalized_messages = _enforce_tool_result_contiguity(normalized_messages)
 
-    # When signature-less tool_calls are pruned, the matching ``role: tool``
-    # result messages become orphaned (no assistant tool_call references
-    # them). Gemini does not reject orphaned tool results outright, but
-    # strict OpenAI backends do, so drop them for parity with the existing
-    # orphaned-tool-call pruning. This keeps the payload well-formed for
-    # every backend, not just Gemini.
     if require_thought_signature:
-        retained_assistant_ids = set()
-        for message in normalized_messages:
-            if str(message.get("role", "") or "") != "assistant":
-                continue
-            raw_tool_calls = message.get("tool_calls")
-            if not isinstance(raw_tool_calls, list):
-                continue
-            for tool_call in raw_tool_calls:
-                if isinstance(tool_call, dict):
-                    retained_assistant_ids.add(str(tool_call.get("id", "") or ""))
-        normalized_messages = [
-            message
-            for message in normalized_messages
-            if str(message.get("role", "") or "") != "tool"
-            or str(message.get("tool_call_id", "") or "") in retained_assistant_ids
-        ]
-        # Google/Gemini rejects a request whose last message is an
-        # ``assistant`` turn: ``400 Requests ending with a model turn are
-        # not supported``. The signature-less synthesized
-        # ``transition_stage`` pruning above can convert a trailing
-        # assistant ``tool_calls`` message into plain text (dropping its
-        # orphaned tool result), leaving the history ending with that
-        # assistant message. When that happens, append a synthetic
-        # ``user`` nudge so the request ends with a ``user``/``tool`` role
-        # as Google requires. This is scoped to the Gemini
-        # (``require_thought_signature``) path; OpenAI/Azure accept a
-        # trailing assistant message.
-        if (
-            normalized_messages
-            and str(normalized_messages[-1].get("role", "") or "") == "assistant"
-        ):
-            normalized_messages.append({"role": "user", "content": "Continue."})
+        normalized_messages = _prune_orphaned_tool_results_gemini(normalized_messages)
     return normalized_messages
 
 
@@ -596,6 +641,20 @@ def build_openai_embedding_kwargs(request: EmbeddingRequest) -> dict[str, Any]:
 # ── Response extractors ──────────────────────────────────────────────────
 
 
+def _stringify_parsed_content(parsed: Any) -> str:
+    """Serialize one parsed (structured-output) payload to a string.
+
+    Pydantic models dump to JSON; other payloads fall back to ``json.dumps``
+    and, when that fails (non-serializable values), to ``str()``.
+    """
+    if isinstance(parsed, PydanticBaseModel):
+        return parsed.model_dump_json()
+    try:
+        return json.dumps(parsed)
+    except Exception:  # pylint: disable=broad-except
+        return str(parsed)
+
+
 def extract_openai_content(response: Any) -> str:
     """Extract text or parsed JSON content from one OpenAI-compatible response.
 
@@ -624,12 +683,7 @@ def extract_openai_content(response: Any) -> str:
         return content
     parsed = getattr(message, "parsed", None)
     if parsed is not None:
-        if isinstance(parsed, PydanticBaseModel):
-            return parsed.model_dump_json()
-        try:
-            return json.dumps(parsed)
-        except Exception:  # pylint: disable=broad-except
-            return str(parsed)
+        return _stringify_parsed_content(parsed)
     # Visible answer empty — fall back to reasoning content for reasoning
     # models. ``reasoning_content`` is the gpt-5.x wire name; ``reasoning``
     # is Ollama's. Empty string if neither is present.

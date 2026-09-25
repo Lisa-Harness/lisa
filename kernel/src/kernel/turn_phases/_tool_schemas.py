@@ -136,6 +136,83 @@ def _operation_allowed_for_mode(
     return not mode_allowlist
 
 
+def _classify_tool_schema(
+    *,
+    schema: dict[str, Any],
+    name: str,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    mode_config: Any,
+    tools_authoritative: bool,
+    allowed_tool_ids: set[str] | None,
+    mode_id: str,
+    mode_bound_ids: set[str],
+    allow_transition_stage: bool,
+) -> bool:
+    """Decide whether one named tool schema should reach the model.
+
+    Resolution order: the transition tool (gated by the flag), the yield
+    tool (always advertised, not in the catalogs), catalog operations (mode
+    binding check), catalog tools (mode allowlist + allowed ids), and
+    finally unknown tools (MCP tools — restricted by the mode allowlist
+    when one is active, including authoritative-empty => no unknown tools).
+
+    Returns:
+        True to keep the schema, False to drop it (as disallowed).
+    """
+    del schema  # the decision is name-only; the schema is not inspected
+
+    if name == _TRANSITION_TOOL_NAME:
+        return allow_transition_stage
+
+    # The yield tool is advertised by the turn runner based on the mode's
+    # yield_policy; it is not in the operation/tool catalog. Let it
+    # through so the model can call it.
+    if name == _YIELD_TOOL_NAME:
+        return True
+
+    op_def = operation_catalog.get(name)
+    if op_def is not None:
+        return _operation_allowed_for_mode(
+            operation_id=name,
+            definition=op_def,
+            mode_config=mode_config,
+            tools_authoritative=tools_authoritative,
+            mode_bound_ids=mode_bound_ids,
+        )
+
+    tool_def = tool_catalog.get(name)
+    if tool_def is not None:
+        return _classify_catalog_tool(
+            name=name,
+            tool_def=tool_def,
+            allowed_tool_ids=allowed_tool_ids,
+            mode_id=mode_id,
+        )
+
+    # Unknown tools are MCP tools. Restrict them by mode allowlist when
+    # one is active (including authoritative-empty => no unknown tools).
+    return allowed_tool_ids is None or name in allowed_tool_ids
+
+
+def _classify_catalog_tool(
+    *,
+    name: str,
+    tool_def: Any,
+    allowed_tool_ids: set[str] | None,
+    mode_id: str,
+) -> bool:
+    """Decide whether one catalog (non-operation) tool passes the mode gates.
+
+    Catalog tools are restricted by the mode's allowed-tool id set (when
+    authoritative) and the tool's own ``mode_allowlist`` binding.
+    """
+    if allowed_tool_ids is not None and name not in allowed_tool_ids:
+        return False
+    mode_allowlist = getattr(tool_def, "mode_allowlist", None)
+    return not (mode_allowlist and mode_id and mode_id not in mode_allowlist)
+
+
 def _prune_model_tool_schemas(
     *,
     tool_schemas: list[dict[str, Any]],
@@ -174,52 +251,21 @@ def _prune_model_tool_schemas(
             continue
         seen_names.add(name)
 
-        if name == _TRANSITION_TOOL_NAME:
-            if allow_transition_stage:
-                pruned.append(schema)
-            else:
-                dropped_disallowed += 1
-            continue
-
-        # The yield tool is advertised by the turn runner based on the mode's
-        # yield_policy; it is not in the operation/tool catalog. Let it
-        # through so the model can call it.
-        if name == _YIELD_TOOL_NAME:
+        if _classify_tool_schema(
+            schema=schema,
+            name=name,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
+            mode_config=mode_config,
+            tools_authoritative=tools_authoritative,
+            allowed_tool_ids=allowed_tool_ids,
+            mode_id=mode_id,
+            mode_bound_ids=mode_bound_ids,
+            allow_transition_stage=allow_transition_stage,
+        ):
             pruned.append(schema)
-            continue
-
-        op_def = operation_catalog.get(name)
-        if op_def is not None:
-            if _operation_allowed_for_mode(
-                operation_id=name,
-                definition=op_def,
-                mode_config=mode_config,
-                tools_authoritative=tools_authoritative,
-                mode_bound_ids=mode_bound_ids,
-            ):
-                pruned.append(schema)
-            else:
-                dropped_disallowed += 1
-            continue
-
-        tool_def = tool_catalog.get(name)
-        if tool_def is not None:
-            mode_allowlist = getattr(tool_def, "mode_allowlist", None)
-            if allowed_tool_ids is not None and name not in allowed_tool_ids:
-                dropped_disallowed += 1
-                continue
-            if mode_allowlist and mode_id and mode_id not in mode_allowlist:
-                dropped_disallowed += 1
-                continue
-            pruned.append(schema)
-            continue
-
-        # Unknown tools are MCP tools. Restrict them by mode allowlist when
-        # one is active (including authoritative-empty => no unknown tools).
-        if allowed_tool_ids is not None and name not in allowed_tool_ids:
+        else:
             dropped_disallowed += 1
-            continue
-        pruned.append(schema)
 
     # Canonical wire order: sort by function name so the same mode advertises
     # a byte-identical tool payload across turns regardless of catalog /

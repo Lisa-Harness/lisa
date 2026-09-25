@@ -370,6 +370,699 @@ def _apply_mode_overrides(
 # ---------------------------------------------------------------------------
 
 
+def _parse_mode_stage(
+    stage_path: Path,
+    stage_front_matter: dict[str, Any],
+    stage_body: str,
+) -> WorkflowStageConfig:
+    """Build one WorkflowStageConfig from a parsed stage file.
+
+    Args:
+        stage_path: Path of the stage file (for error messages).
+        stage_front_matter: Parsed front-matter dict from the stage file.
+        stage_body: Body markdown text from the stage file.
+
+    Returns:
+        The stage config built from validated front-matter fields.
+
+    Raises:
+        WorkflowValidationError: If a required field is missing or invalid.
+    """
+    stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
+    terminal = _require_bool_field(stage_front_matter, "terminal", stage_path)
+    allowed_next_stages = _require_list_field(
+        stage_front_matter,
+        "allowed_next_stages",
+        stage_path,
+    )
+    allow_user_questions = _require_bool_field(
+        stage_front_matter,
+        "allow_user_questions",
+        stage_path,
+    )
+    required_connectors = _require_list_field(
+        stage_front_matter,
+        "required_connectors",
+        stage_path,
+    )
+    stage_description = _require_str_field(stage_front_matter, "description", stage_path)
+    stage_default_model = str(stage_front_matter.get("default_model", "") or "") or None
+
+    return WorkflowStageConfig(
+        stage_id=stage_id,
+        instruction_markdown_path=str(stage_path),
+        instruction_body=stage_body,
+        description=stage_description,
+        default_model=stage_default_model,
+        required_connectors=required_connectors,
+        allowed_next_stages=allowed_next_stages,
+        allow_user_questions=allow_user_questions,
+        terminal=terminal,
+    )
+
+
+def _load_mode_stages(
+    mode_id: str,
+    mode_kind: ModeKind,
+    mode_dir: Path,
+) -> dict[str, WorkflowStageConfig]:
+    """Load all authored workflow stage files for one mode directory.
+
+    Stage files whose name starts with ``_`` are skipped (reserved for
+    mode-level config files like ``_mode.md``). Non-workflow modes may carry
+    additional authored markdown assets without a ``stage_id`` — those are
+    skipped for chat/action modes and rejected for workflow modes.
+
+    Args:
+        mode_id: Owning mode id (for error messages).
+        mode_kind: The mode's kind — only workflow modes define FSM stages.
+        mode_dir: Mode directory containing ``{stage_id}.md`` files.
+
+    Returns:
+        Mapping of stage_id -> WorkflowStageConfig for all authored stages.
+
+    Raises:
+        WorkflowValidationError: If stage front-matter is missing required
+            fields or a chat/action mode declares a stage file.
+    """
+    stages: dict[str, WorkflowStageConfig] = {}
+    for stage_path in sorted(mode_dir.glob("*.md")):
+        # Skip reserved files (e.g. _mode.md).
+        if stage_path.name.startswith("_"):
+            continue
+
+        stage_front_matter, stage_body = parse_front_matter(stage_path.read_text(encoding="utf-8"))
+
+        # Non-workflow modes may carry additional authored markdown assets
+        # (for example workshop planner/synthesis prompt blocks) that are
+        # not workflow stage definitions.
+        if "stage_id" not in stage_front_matter:
+            if mode_kind in {"chat", "action"}:
+                continue
+            raise WorkflowValidationError(
+                f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
+            )
+        if mode_kind in {"chat", "action"}:
+            # Stage files are workflow-mode authoring. A chat/action mode
+            # with a stage file is a contradiction (the stage graph would
+            # be ignored pre-synthesis and is rejected here rather than
+            # silently half-loaded). Want stages? Declare
+            # ``mode_kind: workflow``.
+            raise WorkflowValidationError(
+                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares a "
+                f"stage file '{stage_path}' — only workflow modes define FSM "
+                "stages."
+            )
+
+        stage_config = _parse_mode_stage(
+            stage_path=stage_path,
+            stage_front_matter=stage_front_matter,
+            stage_body=stage_body,
+        )
+        stages[stage_config.stage_id] = stage_config
+    return stages
+
+
+@dataclass(slots=True)
+class _ModeOperationBindings:
+    """Parsed operation/tool binding fields from one mode's front matter."""
+
+    entry_operation_ids: list[str]
+    entry_op_kind: str
+    pre_turn_operation_ids: list[str]
+    post_turn_operation_ids: list[str]
+    allowed_operation_ids: list[str]
+    allowed_tool_ids: list[str]
+    authored_allowed_operation_ids: list[str]
+    authored_allowed_tool_ids: list[str]
+    tools_authoritative: bool
+    accept_default_capabilities: bool
+    excluded_operation_ids: list[str]
+    excluded_tool_ids: list[str]
+
+
+def _parse_mode_operation_bindings(
+    mode_front_matter: dict[str, Any],
+    mode_kind: ModeKind,
+    mode_config_path: Path,
+) -> _ModeOperationBindings:
+    """Parse operation/tool binding fields from mode front matter.
+
+    Args:
+        mode_front_matter: Parsed (override-merged) mode front matter.
+        mode_kind: The mode's kind (entry_op_kind='routing' requires 'action').
+        mode_config_path: Path of ``_mode.md`` (for error messages).
+
+    Returns:
+        The parsed binding fields.
+
+    Raises:
+        WorkflowValidationError: On invalid field values.
+    """
+    entry_operation_ids = [
+        str(operation_id) for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
+    ]
+    entry_op_kind = str(mode_front_matter.get("entry_op_kind", "work") or "work")
+    if entry_op_kind not in ("work", "routing"):
+        raise WorkflowValidationError(
+            f"entry_op_kind must be 'work' or 'routing' in {mode_config_path}"
+        )
+    if entry_op_kind == "routing" and mode_kind != "action":
+        raise WorkflowValidationError(
+            f"entry_op_kind 'routing' requires mode_kind 'action' in "
+            f"{mode_config_path}: only action modes run entry operations"
+        )
+    pre_turn_operation_ids = [
+        str(operation_id)
+        for operation_id in (mode_front_matter.get("pre_turn_operation_ids") or [])
+    ]
+    post_turn_operation_ids = [
+        str(operation_id)
+        for operation_id in (mode_front_matter.get("post_turn_operation_ids") or [])
+    ]
+    allowed_operation_ids = [
+        str(operation_id) for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
+    ]
+    allowed_tool_ids = [
+        str(tool_id) for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
+    ]
+    # The disk path does not run the SDK default-available merge, so the
+    # authored and effective allowlists are identical. The SDK MCP path
+    # sets authored_allowed_*_ids to the pre-merge values and lets the
+    # merge populate allowed_*_ids with ambient capabilities.
+    authored_allowed_operation_ids = list(allowed_operation_ids)
+    authored_allowed_tool_ids = list(allowed_tool_ids)
+    tools_authoritative = mode_front_matter.get("tools_authoritative", True)
+    if not isinstance(tools_authoritative, bool):
+        raise WorkflowValidationError(
+            f"tools_authoritative must be a boolean in {mode_config_path}"
+        )
+    accept_default_capabilities = mode_front_matter.get("accept_default_capabilities", True)
+    if not isinstance(accept_default_capabilities, bool):
+        raise WorkflowValidationError(
+            f"accept_default_capabilities must be a boolean in {mode_config_path}"
+        )
+    excluded_operation_ids = [
+        str(op_id) for op_id in (mode_front_matter.get("excluded_operation_ids") or [])
+    ]
+    excluded_tool_ids = [
+        str(tool_id) for tool_id in (mode_front_matter.get("excluded_tool_ids") or [])
+    ]
+    return _ModeOperationBindings(
+        entry_operation_ids=entry_operation_ids,
+        entry_op_kind=entry_op_kind,
+        pre_turn_operation_ids=pre_turn_operation_ids,
+        post_turn_operation_ids=post_turn_operation_ids,
+        allowed_operation_ids=allowed_operation_ids,
+        allowed_tool_ids=allowed_tool_ids,
+        authored_allowed_operation_ids=authored_allowed_operation_ids,
+        authored_allowed_tool_ids=authored_allowed_tool_ids,
+        tools_authoritative=tools_authoritative,
+        accept_default_capabilities=accept_default_capabilities,
+        excluded_operation_ids=excluded_operation_ids,
+        excluded_tool_ids=excluded_tool_ids,
+    )
+
+
+@dataclass(slots=True)
+class _ModeRoutingFields:
+    """Parsed routing fields from one mode's front matter."""
+
+    routable: bool
+    priority: int
+    fast_path_patterns: list[str]
+    routing_intent_tags: list[str]
+    routing_intent_keywords: dict[str, list[str]]
+    satisfies_intents: list[str]
+    required_capabilities: list[str]
+
+
+def _parse_lowercase_tag_list(
+    mode_front_matter: dict[str, Any],
+    field: str,
+    mode_config_path: Path,
+) -> list[str]:
+    """Parse a list[str] field into stripped, lowercased, non-empty tags.
+
+    Shared by ``routing_intent_tags``, ``satisfies_intents``, and
+    ``required_capabilities`` parsing.
+
+    Raises:
+        WorkflowValidationError: If the field is not a list of non-empty strings.
+    """
+    raw_list = mode_front_matter.get(field) or []
+    if not isinstance(raw_list, list):
+        raise WorkflowValidationError(f"{field} must be a list in {mode_config_path}")
+    parsed: list[str] = []
+    for idx, raw_tag in enumerate(raw_list):
+        if not isinstance(raw_tag, str):
+            raise WorkflowValidationError(f"{field}[{idx}] must be a string in {mode_config_path}")
+        tag = raw_tag.strip().lower()
+        if not tag:
+            raise WorkflowValidationError(f"{field}[{idx}] cannot be empty in {mode_config_path}")
+        parsed.append(tag)
+    return parsed
+
+
+def _parse_routing_intent_keywords(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> dict[str, list[str]]:
+    """Parse the ``routing_intent_keywords`` per-tag keyword map from mode front matter.
+
+    Maps each intent tag to the substring keywords that signal that specific
+    intent. These are case-insensitive substring matches (not anchored regexes).
+
+    Raises:
+        WorkflowValidationError: If the field is not a dict of tag -> list[str].
+    """
+    routing_intent_keywords_raw = mode_front_matter.get("routing_intent_keywords") or {}
+    if not isinstance(routing_intent_keywords_raw, dict):
+        raise WorkflowValidationError(
+            f"routing_intent_keywords must be a dict in {mode_config_path}"
+        )
+    routing_intent_keywords: dict[str, list[str]] = {}
+    for tag, keywords in routing_intent_keywords_raw.items():
+        tag_str = str(tag).strip().lower()
+        if not tag_str:
+            raise WorkflowValidationError(
+                f"routing_intent_keywords has an empty tag in {mode_config_path}"
+            )
+        if not isinstance(keywords, list):
+            raise WorkflowValidationError(
+                f"routing_intent_keywords[{tag_str}] must be a list in {mode_config_path}"
+            )
+        kw_list: list[str] = []
+        for idx, raw_kw in enumerate(keywords):
+            if not isinstance(raw_kw, str):
+                raise WorkflowValidationError(
+                    f"routing_intent_keywords[{tag_str}][{idx}] must be a "
+                    f"string in {mode_config_path}"
+                )
+            kw = raw_kw.strip().lower()
+            if not kw:
+                raise WorkflowValidationError(
+                    f"routing_intent_keywords[{tag_str}][{idx}] cannot be "
+                    f"empty in {mode_config_path}"
+                )
+            kw_list.append(kw)
+        routing_intent_keywords[tag_str] = kw_list
+    return routing_intent_keywords
+
+
+def _validate_routing_intent_coverage(
+    routing_intent_tags: list[str],
+    routing_intent_keywords: dict[str, list[str]],
+    mode_config_path: Path,
+) -> None:
+    """Validate that every routing_intent_keywords key is declared in routing_intent_tags.
+
+    A keyword bucket keyed by a tag the mode does not cover produces an
+    uncoverable intent from any query that hits the bucket: the detector
+    attributes the tag, but no routing target claims it in
+    routing_intent_tags, so the gap can never be covered and the hint layer
+    falls through to ambiguity (the 2026-08-11 executor incident: bucket
+    keyed ``execute:`` while routing_intent_tags were ``[code, write,
+    implement]``). Fail fast at catalog load so a broken pack install
+    cannot reach the router.
+
+    Raises:
+        WorkflowValidationError: On keywords without declared tags.
+    """
+    routing_intent_tags_set = set(routing_intent_tags)
+    if routing_intent_keywords and not routing_intent_tags_set:
+        raise WorkflowValidationError(
+            f"routing_intent_keywords cannot be set without routing_intent_tags "
+            f"in {mode_config_path}"
+        )
+    _orphan_keyword_tags = set(routing_intent_keywords) - routing_intent_tags_set
+    if _orphan_keyword_tags:
+        raise WorkflowValidationError(
+            f"routing_intent_keywords keys must be a subset of "
+            f"routing_intent_tags in {mode_config_path}: "
+            f"unknown tags {sorted(_orphan_keyword_tags)}"
+        )
+
+
+def _parse_mode_routing_fields(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> _ModeRoutingFields:
+    """Parse routing fields (routable/priority/fast paths/intent tags) from mode front matter.
+
+    Args:
+        mode_front_matter: Parsed (override-merged) mode front matter.
+        mode_config_path: Path of ``_mode.md`` (for error messages).
+
+    Returns:
+        The parsed routing fields.
+
+    Raises:
+        WorkflowValidationError: On invalid field values or orphaned
+            routing_intent_keywords tags.
+    """
+    routable = mode_front_matter.get("routable", False)
+    if not isinstance(routable, bool):
+        raise WorkflowValidationError(f"routable must be a boolean in {mode_config_path}")
+    priority = mode_front_matter.get("priority", 0)
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise WorkflowValidationError(f"priority must be an integer in {mode_config_path}")
+    fast_path_patterns_raw = mode_front_matter.get("fast_path_patterns")
+    if fast_path_patterns_raw is None:
+        fast_path_patterns_raw = []
+    if not isinstance(fast_path_patterns_raw, list):
+        raise WorkflowValidationError(f"fast_path_patterns must be a list in {mode_config_path}")
+    fast_path_patterns: list[str] = []
+    for idx, raw_pattern in enumerate(fast_path_patterns_raw):
+        if not isinstance(raw_pattern, str):
+            raise WorkflowValidationError(
+                f"fast_path_patterns[{idx}] must be a string in {mode_config_path}"
+            )
+        pattern = raw_pattern.strip()
+        if not pattern:
+            raise WorkflowValidationError(
+                f"fast_path_patterns[{idx}] cannot be empty in {mode_config_path}"
+            )
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise WorkflowValidationError(
+                f"fast_path_patterns[{idx}] is not a valid regex in {mode_config_path}: {exc}"
+            ) from exc
+        fast_path_patterns.append(pattern)
+
+    # Parse routing_intent_tags: declarative intent coverage for proactive
+    # routing hints. Each tag is a lowercase string (e.g. "research",
+    # "reasoning", "remember", "write"). The hint generator checks whether
+    # a single routing target's tags cover all detected query intents,
+    # preferring it over a fork fan-out when they do.
+    routing_intent_tags = _parse_lowercase_tag_list(
+        mode_front_matter, "routing_intent_tags", mode_config_path
+    )
+
+    # Parse routing_intent_keywords: per-tag substring keywords for the
+    # proactive routing hint generator. Maps each intent tag to the
+    # substring keywords that signal that specific intent. These are
+    # case-insensitive substring matches (not anchored regexes).
+    routing_intent_keywords = _parse_routing_intent_keywords(mode_front_matter, mode_config_path)
+
+    # Validate that every routing_intent_keywords key is declared in
+    # routing_intent_tags. Fail fast at catalog load so a broken pack
+    # install cannot reach the router (see
+    # _validate_routing_intent_coverage for the incident history).
+    _validate_routing_intent_coverage(
+        routing_intent_tags, routing_intent_keywords, mode_config_path
+    )
+
+    # Parse satisfies_intents: intents this mode handles in-place as the
+    # *current* mode, so the proactive routing hint generator knows not
+    # to suggest a handoff for them. Symmetric counterpart to
+    # ``routing_intent_tags`` (which declares coverage when routing *to*
+    # the mode); both share the same pack-authored intent-tag vocabulary.
+    # The kernel never hardcodes mode-specific intent semantics or tool
+    # names — it only reads the mode's declared tags. Default empty means
+    # every detected intent is a gap (safe direction for modes that have
+    # not opted in, e.g. ``default``).
+    satisfies_intents = _parse_lowercase_tag_list(
+        mode_front_matter, "satisfies_intents", mode_config_path
+    )
+
+    # Parse required_capabilities: ``ModelCapability`` strings the resolved
+    # model must declare for this mode to run safely. Mirrors
+    # ``satisfies_intents`` parsing. Default empty means no capability gate
+    # (backward compatible). The kernel never hardcodes specific capability
+    # names — they are pack-authored vocabulary matching ``ModelCapability``
+    # (text, tools, code, reasoning, ...).
+    required_capabilities = _parse_lowercase_tag_list(
+        mode_front_matter, "required_capabilities", mode_config_path
+    )
+
+    return _ModeRoutingFields(
+        routable=routable,
+        priority=priority,
+        fast_path_patterns=fast_path_patterns,
+        routing_intent_tags=routing_intent_tags,
+        routing_intent_keywords=routing_intent_keywords,
+        satisfies_intents=satisfies_intents,
+        required_capabilities=required_capabilities,
+    )
+
+
+def _parse_default_intent_bridges(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> list[DefaultIntentBridge]:
+    """Parse the ``default_intent_bridges`` list from mode front matter.
+
+    Args:
+        mode_front_matter: Parsed (override-merged) mode front matter.
+        mode_config_path: Path of ``_mode.md`` (for error messages).
+
+    Returns:
+        The parsed DefaultIntentBridge list (empty when absent).
+
+    Raises:
+        WorkflowValidationError: On invalid bridge config entries.
+    """
+    default_intent_bridges: list[DefaultIntentBridge] = []
+    bridges_raw = mode_front_matter.get("default_intent_bridges") or []
+    if not isinstance(bridges_raw, list):
+        raise WorkflowValidationError(
+            "default_intent_bridges must be a list, got "
+            f"{type(bridges_raw).__name__} in {mode_config_path}"
+        )
+    for idx, bridge_config in enumerate(bridges_raw):
+        if not isinstance(bridge_config, dict):
+            raise WorkflowValidationError(
+                f"default_intent_bridges[{idx}] must be a dict, got "
+                f"{type(bridge_config).__name__} in {mode_config_path}"
+            )
+        target_mode_id = _require_str_field(
+            bridge_config,
+            "target_mode_id",
+            mode_config_path,
+            location=f"default_intent_bridges[{idx}]",
+        )
+        matcher_patterns = _require_list_field(
+            bridge_config,
+            "matcher_patterns",
+            mode_config_path,
+            location=f"default_intent_bridges[{idx}]",
+        )
+        matcher_patterns = [str(p) for p in matcher_patterns]
+        query_extraction_strategy = str(
+            bridge_config.get("query_extraction_strategy", "passthrough")
+        )
+        prerequisites = [str(p) for p in (bridge_config.get("prerequisites") or [])]
+        recent_handoff_source_modes = [
+            str(source_mode)
+            for source_mode in (bridge_config.get("recent_handoff_source_modes") or [])
+        ]
+        recent_handoff_required_artifact_keys = [
+            str(artifact_key)
+            for artifact_key in (bridge_config.get("recent_handoff_required_artifact_keys") or [])
+        ]
+        recent_handoff_context_key = str(bridge_config.get("recent_handoff_context_key", "") or "")
+        response_appendix = str(bridge_config.get("response_appendix", ""))
+
+        default_intent_bridges.append(
+            DefaultIntentBridge(
+                target_mode_id=target_mode_id,
+                matcher_patterns=matcher_patterns,
+                query_extraction_strategy=query_extraction_strategy,
+                prerequisites=prerequisites,
+                recent_handoff_source_modes=recent_handoff_source_modes,
+                recent_handoff_required_artifact_keys=recent_handoff_required_artifact_keys,
+                recent_handoff_context_key=recent_handoff_context_key,
+                response_appendix=response_appendix,
+            )
+        )
+    return default_intent_bridges
+
+
+def _parse_yield_and_fork_policy(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> tuple[YieldPolicy, bool]:
+    """Parse ``yield_policy`` and ``fork_allowed`` from mode front matter.
+
+    Args:
+        mode_front_matter: Parsed (override-merged) mode front matter.
+        mode_config_path: Path of ``_mode.md`` (for error messages).
+
+    Returns:
+        A ``(yield_policy, fork_allowed)`` tuple.
+
+    Raises:
+        WorkflowValidationError: If either field has an invalid type.
+    """
+    # Parse yield_policy: the per-mode policy for the unified turn-lifecycle
+    # ``yield`` action. Authored in ``_mode.md`` front matter as a dict with
+    # keys ``allowed`` (bool), ``fallback_mode`` (str),
+    # ``is_default_yield_target`` (bool), and ``default_question`` (str). See
+    # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
+    # Default-empty (YieldPolicy()) means inline asks allowed, no fallback,
+    # not the default target — safe for chat modes; action modes override
+    # with ``allowed: false`` + a ``fallback_mode`` (typically ``discuss``).
+    yield_policy_raw = mode_front_matter.get("yield_policy") or {}
+    if not isinstance(yield_policy_raw, dict):
+        raise WorkflowValidationError(f"yield_policy must be a mapping in {mode_config_path}")
+    yield_policy = YieldPolicy(
+        allowed=bool(yield_policy_raw.get("allowed", True)),
+        fallback_mode=str(yield_policy_raw.get("fallback_mode", "") or ""),
+        is_default_yield_target=bool(yield_policy_raw.get("is_default_yield_target", False)),
+        default_question=str(yield_policy_raw.get("default_question", "") or ""),
+    )
+    # Parse fork_allowed: a boolean consent flag. When True, this mode
+    # agrees to be a fork target — it commits to completing or failing
+    # without asking the user. When absent (default False), the routing
+    # fork decision and the fork enforcer refuse to fork to this mode;
+    # it is reachable only via delegate or single-handoff.
+    fork_allowed_raw = mode_front_matter.get("fork_allowed", False)
+    if not isinstance(fork_allowed_raw, bool):
+        raise WorkflowValidationError(f"fork_allowed must be a boolean in {mode_config_path}")
+    fork_allowed = fork_allowed_raw
+    return yield_policy, fork_allowed
+
+
+class _ModeFolderSkipped(Exception):
+    """Internal control-flow sentinel: non-strict mode folder missing ``_mode.md``.
+
+    Raised by :func:`_load_mode_from_dir` under ``strict=False`` so the scan
+    loop in :func:`load_catalog_from_disk` can continue to the next directory
+    without embedding the skip decision in the per-mode loader.
+    """
+
+
+def _load_mode_from_dir(
+    mode_dir: Path,
+    *,
+    strict: bool,
+) -> WorkflowModeConfig:
+    """Load one workflow mode from its directory into a WorkflowModeConfig.
+
+    Reads and parses ``_mode.md``, applies optional ``_overrides.yaml``,
+    loads all authored stage files, and parses every front-matter section
+    (operation bindings, routing fields, intent bridges, yield policy) into
+    typed fields.
+
+    Args:
+        mode_dir: Directory containing ``_mode.md`` and stage files.
+        strict: When True, missing ``_mode.md`` raises instead of warning
+            and skipping the folder.
+
+    Returns:
+        The loaded mode config (stage graph synthesized for stageless kinds).
+
+    Raises:
+        WorkflowValidationError: On missing required front-matter fields or
+            invalid values.
+        _ModeFolderSkipped: Under ``strict=False`` when the folder has no
+            ``_mode.md`` (the scan loop logs and continues).
+    """
+    mode_config_path = mode_dir / "_mode.md"
+    if not mode_config_path.exists():
+        if strict:
+            raise WorkflowValidationError(
+                f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
+                "without _mode.md is not a valid pack install."
+            )
+        logger.warning("Skipping instructions folder '%s': missing _mode.md", mode_dir.name)
+        raise _ModeFolderSkipped(mode_dir.name)
+
+    mode_front_matter, mode_body = parse_front_matter(mode_config_path.read_text(encoding="utf-8"))
+    # Apply host/pack-authored front-matter overrides from a sibling
+    # ``_overrides.yaml`` file so apps can manage extension front matter
+    # (e.g. lens specs) without editing pack-owned ``_mode.md`` files.
+    # Overrides are deep-merged on top of the authored front matter; the
+    # override file is optional and may be absent. The kernel protects its
+    # own owned keys and passes everything else through opaquely.
+    mode_front_matter = _apply_mode_overrides(mode_dir, mode_front_matter)
+
+    mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
+    # ``start_stage_id`` is authored by workflow modes (it must name a
+    # stage in the graph). Stageless modes (chat/action) omit it — the
+    # loader synthesizes a one-stage graph after construction (see
+    # ``synthesize_stage_graph``), so every catalog mode has a stage
+    # pointer regardless of kind.
+    start_stage_id = str(mode_front_matter.get("start_stage_id", "") or "")
+    mode_kind = cast(
+        ModeKind,
+        _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
+    )
+    mode_description = _require_str_field(mode_front_matter, "description", mode_config_path)
+    # command_pattern can be empty for fallback chat modes (e.g. default),
+    # but the key must exist in front-matter for explicitiveness.
+    raw_pattern = _require_field(mode_front_matter, "command_pattern", mode_config_path)
+    command_pattern = str(raw_pattern)
+    require_query = bool(mode_front_matter.get("require_query", False))
+    mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
+    stages = _load_mode_stages(mode_id, mode_kind, mode_dir)
+
+    operation_bindings = _parse_mode_operation_bindings(
+        mode_front_matter, mode_kind, mode_config_path
+    )
+    routing = _parse_mode_routing_fields(mode_front_matter, mode_config_path)
+    default_intent_bridges = _parse_default_intent_bridges(mode_front_matter, mode_config_path)
+    yield_policy, fork_allowed = _parse_yield_and_fork_policy(mode_front_matter, mode_config_path)
+
+    # Collect app/pack-owned extension keys the kernel does not interpret.
+    # Everything in the (possibly overridden) front matter that is not a
+    # kernel-owned field flows through opaquely as ``extra_front_matter``.
+    # This keeps the boundary honest: the kernel names only what it owns and
+    # never has to allowlist or curate app-owned concepts like ``lenses``.
+    extra_front_matter = {
+        key: value
+        for key, value in mode_front_matter.items()
+        if key not in _KERNEL_OWNED_FRONT_MATTER_KEYS
+    }
+
+    mode_config = WorkflowModeConfig(
+        mode_id=mode_id,
+        start_stage_id=start_stage_id,
+        stages=stages,
+        mode_kind=mode_kind,
+        artifact_type=str(mode_front_matter.get("artifact_type", "workflow_summary")),
+        description=mode_description,
+        instruction_body=mode_body.strip(),
+        mode_markdown_path=str(mode_config_path),
+        default_model=mode_default_model,
+        routable=routing.routable,
+        priority=routing.priority,
+        fast_path_patterns=routing.fast_path_patterns,
+        routing_intent_tags=routing.routing_intent_tags,
+        routing_intent_keywords=routing.routing_intent_keywords,
+        satisfies_intents=routing.satisfies_intents,
+        required_capabilities=routing.required_capabilities,
+        command_pattern=command_pattern,
+        require_query=require_query,
+        entry_operation_ids=operation_bindings.entry_operation_ids,
+        entry_op_kind=operation_bindings.entry_op_kind,
+        pre_turn_operation_ids=operation_bindings.pre_turn_operation_ids,
+        post_turn_operation_ids=operation_bindings.post_turn_operation_ids,
+        allowed_operation_ids=operation_bindings.allowed_operation_ids,
+        allowed_tool_ids=operation_bindings.allowed_tool_ids,
+        authored_allowed_operation_ids=operation_bindings.authored_allowed_operation_ids,
+        authored_allowed_tool_ids=operation_bindings.authored_allowed_tool_ids,
+        tools_authoritative=operation_bindings.tools_authoritative,
+        accept_default_capabilities=operation_bindings.accept_default_capabilities,
+        excluded_operation_ids=operation_bindings.excluded_operation_ids,
+        excluded_tool_ids=operation_bindings.excluded_tool_ids,
+        default_intent_bridges=default_intent_bridges,
+        mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
+        context_item_packs=[str(p) for p in (mode_front_matter.get("context_item_packs") or [])],
+        yield_policy=yield_policy,
+        fork_allowed=fork_allowed,
+        extra_front_matter=extra_front_matter,
+    )
+    # Synthesize a one-stage graph for stageless (chat/action) modes so
+    # every catalog mode carries a stage pointer. Runs post-construction,
+    # pre-validation: validation treats the synthesized graph as a fixed
+    # point (chat/action stage checks are skipped by kind).
+    synthesize_stage_graph(mode_config)
+    return mode_config
+
+
 def load_catalog_from_disk(
     instructions_dir: Path | None = None,
     *,
@@ -424,472 +1117,19 @@ def load_catalog_from_disk(
         if not mode_dir.is_dir():
             continue
 
-        mode_config_path = mode_dir / "_mode.md"
-        if not mode_config_path.exists():
-            if strict:
-                raise WorkflowValidationError(
-                    f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
-                    "without _mode.md is not a valid pack install."
-                )
-            logger.warning("Skipping instructions folder '%s': missing _mode.md", mode_dir.name)
+        try:
+            mode_config = _load_mode_from_dir(mode_dir, strict=strict)
+        except _ModeFolderSkipped:
             continue
+        mode_id = mode_config.mode_id
 
-        mode_front_matter, mode_body = parse_front_matter(
-            mode_config_path.read_text(encoding="utf-8")
-        )
-        # Apply host/pack-authored front-matter overrides from a sibling
-        # ``_overrides.yaml`` file so apps can manage extension front matter
-        # (e.g. lens specs) without editing pack-owned ``_mode.md`` files.
-        # Overrides are deep-merged on top of the authored front matter; the
-        # override file is optional and may be absent. The kernel protects its
-        # own owned keys and passes everything else through opaquely.
-        mode_front_matter = _apply_mode_overrides(mode_dir, mode_front_matter)
-
-        mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
-        # ``start_stage_id`` is authored by workflow modes (it must name a
-        # stage in the graph). Stageless modes (chat/action) omit it — the
-        # loader synthesizes a one-stage graph after construction (see
-        # ``synthesize_stage_graph``), so every catalog mode has a stage
-        # pointer regardless of kind.
-        start_stage_id = str(mode_front_matter.get("start_stage_id", "") or "")
-        mode_kind = cast(
-            ModeKind,
-            _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
-        )
-        mode_description = _require_str_field(mode_front_matter, "description", mode_config_path)
-        # command_pattern can be empty for fallback chat modes (e.g. default),
-        # but the key must exist in front-matter for explicitness.
-        raw_pattern = _require_field(mode_front_matter, "command_pattern", mode_config_path)
-        command_pattern = str(raw_pattern)
-        require_query = bool(mode_front_matter.get("require_query", False))
-        mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
-        stages: dict[str, WorkflowStageConfig] = {}
-
-        for stage_path in sorted(mode_dir.glob("*.md")):
-            # Skip reserved files (e.g. _mode.md).
-            if stage_path.name.startswith("_"):
-                continue
-
-            stage_front_matter, stage_body = parse_front_matter(
-                stage_path.read_text(encoding="utf-8")
-            )
-
-            # Non-workflow modes may carry additional authored markdown assets
-            # (for example workshop planner/synthesis prompt blocks) that are
-            # not workflow stage definitions.
-            if "stage_id" not in stage_front_matter:
-                if mode_kind in {"chat", "action"}:
-                    continue
-                raise WorkflowValidationError(
-                    f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
-                )
-            if mode_kind in {"chat", "action"}:
-                # Stage files are workflow-mode authoring. A chat/action mode
-                # with a stage file is a contradiction (the stage graph would
-                # be ignored pre-synthesis and is rejected here rather than
-                # silently half-loaded). Want stages? Declare
-                # ``mode_kind: workflow``.
-                raise WorkflowValidationError(
-                    f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares a "
-                    f"stage file '{stage_path}' — only workflow modes define FSM "
-                    "stages."
-                )
-
-            stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
-            terminal = _require_bool_field(stage_front_matter, "terminal", stage_path)
-            allowed_next_stages = _require_list_field(
-                stage_front_matter,
-                "allowed_next_stages",
-                stage_path,
-            )
-            allow_user_questions = _require_bool_field(
-                stage_front_matter,
-                "allow_user_questions",
-                stage_path,
-            )
-            required_connectors = _require_list_field(
-                stage_front_matter,
-                "required_connectors",
-                stage_path,
-            )
-            stage_description = _require_str_field(stage_front_matter, "description", stage_path)
-            stage_default_model = str(stage_front_matter.get("default_model", "") or "") or None
-
-            stages[stage_id] = WorkflowStageConfig(
-                stage_id=stage_id,
-                instruction_markdown_path=str(stage_path),
-                instruction_body=stage_body,
-                description=stage_description,
-                default_model=stage_default_model,
-                required_connectors=required_connectors,
-                allowed_next_stages=allowed_next_stages,
-                allow_user_questions=allow_user_questions,
-                terminal=terminal,
-            )
-
-        entry_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
-        ]
-        entry_op_kind = str(mode_front_matter.get("entry_op_kind", "work") or "work")
-        if entry_op_kind not in ("work", "routing"):
-            raise WorkflowValidationError(
-                f"entry_op_kind must be 'work' or 'routing' in {mode_config_path}"
-            )
-        if entry_op_kind == "routing" and mode_kind != "action":
-            raise WorkflowValidationError(
-                f"entry_op_kind 'routing' requires mode_kind 'action' in "
-                f"{mode_config_path}: only action modes run entry operations"
-            )
-        pre_turn_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("pre_turn_operation_ids") or [])
-        ]
-        post_turn_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("post_turn_operation_ids") or [])
-        ]
-        allowed_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
-        ]
-        allowed_tool_ids = [
-            str(tool_id) for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
-        ]
-        # The disk path does not run the SDK default-available merge, so the
-        # authored and effective allowlists are identical. The SDK MCP path
-        # sets authored_allowed_*_ids to the pre-merge values and lets the
-        # merge populate allowed_*_ids with ambient capabilities.
-        authored_allowed_operation_ids = list(allowed_operation_ids)
-        authored_allowed_tool_ids = list(allowed_tool_ids)
-        tools_authoritative = mode_front_matter.get("tools_authoritative", True)
-        if not isinstance(tools_authoritative, bool):
-            raise WorkflowValidationError(
-                f"tools_authoritative must be a boolean in {mode_config_path}"
-            )
-        accept_default_capabilities = mode_front_matter.get("accept_default_capabilities", True)
-        if not isinstance(accept_default_capabilities, bool):
-            raise WorkflowValidationError(
-                f"accept_default_capabilities must be a boolean in {mode_config_path}"
-            )
-        excluded_operation_ids = [
-            str(op_id) for op_id in (mode_front_matter.get("excluded_operation_ids") or [])
-        ]
-        excluded_tool_ids = [
-            str(tool_id) for tool_id in (mode_front_matter.get("excluded_tool_ids") or [])
-        ]
-        routable = mode_front_matter.get("routable", False)
-        if not isinstance(routable, bool):
-            raise WorkflowValidationError(f"routable must be a boolean in {mode_config_path}")
-        priority = mode_front_matter.get("priority", 0)
-        if isinstance(priority, bool) or not isinstance(priority, int):
-            raise WorkflowValidationError(f"priority must be an integer in {mode_config_path}")
-        fast_path_patterns_raw = mode_front_matter.get("fast_path_patterns")
-        if fast_path_patterns_raw is None:
-            fast_path_patterns_raw = []
-        if not isinstance(fast_path_patterns_raw, list):
-            raise WorkflowValidationError(
-                f"fast_path_patterns must be a list in {mode_config_path}"
-            )
-        fast_path_patterns: list[str] = []
-        for idx, raw_pattern in enumerate(fast_path_patterns_raw):
-            if not isinstance(raw_pattern, str):
-                raise WorkflowValidationError(
-                    f"fast_path_patterns[{idx}] must be a string in {mode_config_path}"
-                )
-            pattern = raw_pattern.strip()
-            if not pattern:
-                raise WorkflowValidationError(
-                    f"fast_path_patterns[{idx}] cannot be empty in {mode_config_path}"
-                )
-            try:
-                re.compile(pattern, re.IGNORECASE)
-            except re.error as exc:
-                raise WorkflowValidationError(
-                    f"fast_path_patterns[{idx}] is not a valid regex in {mode_config_path}: {exc}"
-                ) from exc
-            fast_path_patterns.append(pattern)
-
-        # Parse routing_intent_tags: declarative intent coverage for proactive
-        # routing hints. Each tag is a lowercase string (e.g. "research",
-        # "reasoning", "remember", "write"). The hint generator checks whether
-        # a single routing target's tags cover all detected query intents,
-        # preferring it over a fork fan-out when they do.
-        routing_intent_tags_raw = mode_front_matter.get("routing_intent_tags") or []
-        if not isinstance(routing_intent_tags_raw, list):
-            raise WorkflowValidationError(
-                f"routing_intent_tags must be a list in {mode_config_path}"
-            )
-        routing_intent_tags: list[str] = []
-        for idx, raw_tag in enumerate(routing_intent_tags_raw):
-            if not isinstance(raw_tag, str):
-                raise WorkflowValidationError(
-                    f"routing_intent_tags[{idx}] must be a string in {mode_config_path}"
-                )
-            tag = raw_tag.strip().lower()
-            if not tag:
-                raise WorkflowValidationError(
-                    f"routing_intent_tags[{idx}] cannot be empty in {mode_config_path}"
-                )
-            routing_intent_tags.append(tag)
-
-        # Parse routing_intent_keywords: per-tag substring keywords for the
-        # proactive routing hint generator. Maps each intent tag to the
-        # substring keywords that signal that specific intent. These are
-        # case-insensitive substring matches (not anchored regexes).
-        routing_intent_keywords_raw = mode_front_matter.get("routing_intent_keywords") or {}
-        if not isinstance(routing_intent_keywords_raw, dict):
-            raise WorkflowValidationError(
-                f"routing_intent_keywords must be a dict in {mode_config_path}"
-            )
-        routing_intent_keywords: dict[str, list[str]] = {}
-        for tag, keywords in routing_intent_keywords_raw.items():
-            tag_str = str(tag).strip().lower()
-            if not tag_str:
-                raise WorkflowValidationError(
-                    f"routing_intent_keywords has an empty tag in {mode_config_path}"
-                )
-            if not isinstance(keywords, list):
-                raise WorkflowValidationError(
-                    f"routing_intent_keywords[{tag_str}] must be a list in {mode_config_path}"
-                )
-            kw_list: list[str] = []
-            for idx, raw_kw in enumerate(keywords):
-                if not isinstance(raw_kw, str):
-                    raise WorkflowValidationError(
-                        f"routing_intent_keywords[{tag_str}][{idx}] must be a "
-                        f"string in {mode_config_path}"
-                    )
-                kw = raw_kw.strip().lower()
-                if not kw:
-                    raise WorkflowValidationError(
-                        f"routing_intent_keywords[{tag_str}][{idx}] cannot be "
-                        f"empty in {mode_config_path}"
-                    )
-                kw_list.append(kw)
-            routing_intent_keywords[tag_str] = kw_list
-
-        # Validate that every routing_intent_keywords key is declared in
-        # routing_intent_tags. A keyword bucket keyed by a tag the mode does
-        # not cover produces an uncoverable intent from any query that hits
-        # the bucket: the detector attributes the tag, but no routing target
-        # claims it in routing_intent_tags, so the gap can never be covered
-        # and the hint layer falls through to ambiguity (the 2026-08-11
-        # executor incident: bucket keyed ``execute:`` while
-        # routing_intent_tags were ``[code, write, implement]``). Fail fast
-        # at catalog load so a broken pack install cannot reach the router.
-        routing_intent_tags_set = set(routing_intent_tags)
-        if routing_intent_keywords and not routing_intent_tags_set:
-            raise WorkflowValidationError(
-                f"routing_intent_keywords cannot be set without routing_intent_tags "
-                f"in {mode_config_path}"
-            )
-        _orphan_keyword_tags = set(routing_intent_keywords) - routing_intent_tags_set
-        if _orphan_keyword_tags:
-            raise WorkflowValidationError(
-                f"routing_intent_keywords keys must be a subset of "
-                f"routing_intent_tags in {mode_config_path}: "
-                f"unknown tags {sorted(_orphan_keyword_tags)}"
-            )
-
-        # Parse satisfies_intents: intents this mode handles in-place as the
-        # *current* mode, so the proactive routing hint generator knows not
-        # to suggest a handoff for them. Symmetric counterpart to
-        # ``routing_intent_tags`` (which declares coverage when routing *to*
-        # the mode); both share the same pack-authored intent-tag vocabulary.
-        # The kernel never hardcodes mode-specific intent semantics or tool
-        # names — it only reads the mode's declared tags. Default empty means
-        # every detected intent is a gap (safe direction for modes that have
-        # not opted in, e.g. ``default``).
-        satisfies_intents_raw = mode_front_matter.get("satisfies_intents") or []
-        if not isinstance(satisfies_intents_raw, list):
-            raise WorkflowValidationError(f"satisfies_intents must be a list in {mode_config_path}")
-        satisfies_intents: list[str] = []
-        for idx, raw_tag in enumerate(satisfies_intents_raw):
-            if not isinstance(raw_tag, str):
-                raise WorkflowValidationError(
-                    f"satisfies_intents[{idx}] must be a string in {mode_config_path}"
-                )
-            tag = raw_tag.strip().lower()
-            if not tag:
-                raise WorkflowValidationError(
-                    f"satisfies_intents[{idx}] cannot be empty in {mode_config_path}"
-                )
-            satisfies_intents.append(tag)
-
-        # Parse required_capabilities: ``ModelCapability`` strings the resolved
-        # model must declare for this mode to run safely. Mirrors
-        # ``satisfies_intents`` parsing. Default empty means no capability gate
-        # (backward compatible). The kernel never hardcodes specific capability
-        # names — they are pack-authored vocabulary matching ``ModelCapability``
-        # (text, tools, code, reasoning, ...).
-        required_capabilities_raw = mode_front_matter.get("required_capabilities") or []
-        if not isinstance(required_capabilities_raw, list):
-            raise WorkflowValidationError(
-                f"required_capabilities must be a list in {mode_config_path}"
-            )
-        required_capabilities: list[str] = []
-        for idx, raw_cap in enumerate(required_capabilities_raw):
-            if not isinstance(raw_cap, str):
-                raise WorkflowValidationError(
-                    f"required_capabilities[{idx}] must be a string in {mode_config_path}"
-                )
-            cap = raw_cap.strip().lower()
-            if not cap:
-                raise WorkflowValidationError(
-                    f"required_capabilities[{idx}] cannot be empty in {mode_config_path}"
-                )
-            required_capabilities.append(cap)
-
-        # Parse default_intent_bridges: list of bridge configs from mode front-matter.
-        default_intent_bridges = []
-        bridges_raw = mode_front_matter.get("default_intent_bridges") or []
-        if not isinstance(bridges_raw, list):
-            raise WorkflowValidationError(
-                "default_intent_bridges must be a list, got "
-                f"{type(bridges_raw).__name__} in {mode_config_path}"
-            )
-        for idx, bridge_config in enumerate(bridges_raw):
-            if not isinstance(bridge_config, dict):
-                raise WorkflowValidationError(
-                    f"default_intent_bridges[{idx}] must be a dict, got "
-                    f"{type(bridge_config).__name__} in {mode_config_path}"
-                )
-            target_mode_id = _require_str_field(
-                bridge_config,
-                "target_mode_id",
-                mode_config_path,
-                location=f"default_intent_bridges[{idx}]",
-            )
-            matcher_patterns = _require_list_field(
-                bridge_config,
-                "matcher_patterns",
-                mode_config_path,
-                location=f"default_intent_bridges[{idx}]",
-            )
-            matcher_patterns = [str(p) for p in matcher_patterns]
-            query_extraction_strategy = str(
-                bridge_config.get("query_extraction_strategy", "passthrough")
-            )
-            prerequisites = [str(p) for p in (bridge_config.get("prerequisites") or [])]
-            recent_handoff_source_modes = [
-                str(source_mode)
-                for source_mode in (bridge_config.get("recent_handoff_source_modes") or [])
-            ]
-            recent_handoff_required_artifact_keys = [
-                str(artifact_key)
-                for artifact_key in (
-                    bridge_config.get("recent_handoff_required_artifact_keys") or []
-                )
-            ]
-            recent_handoff_context_key = str(
-                bridge_config.get("recent_handoff_context_key", "") or ""
-            )
-            response_appendix = str(bridge_config.get("response_appendix", ""))
-
-            default_intent_bridges.append(
-                DefaultIntentBridge(
-                    target_mode_id=target_mode_id,
-                    matcher_patterns=matcher_patterns,
-                    query_extraction_strategy=query_extraction_strategy,
-                    prerequisites=prerequisites,
-                    recent_handoff_source_modes=recent_handoff_source_modes,
-                    recent_handoff_required_artifact_keys=recent_handoff_required_artifact_keys,
-                    recent_handoff_context_key=recent_handoff_context_key,
-                    response_appendix=response_appendix,
-                )
-            )
-
-        # Parse yield_policy: the per-mode policy for the unified turn-lifecycle
-        # ``yield`` action. Authored in ``_mode.md`` front matter as a dict with
-        # keys ``allowed`` (bool), ``fallback_mode`` (str),
-        # ``is_default_yield_target`` (bool), and ``default_question`` (str). See
-        # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
-        # Default-empty (YieldPolicy()) means inline asks allowed, no fallback,
-        # not the default target — safe for chat modes; action modes override
-        # with ``allowed: false`` + a ``fallback_mode`` (typically ``discuss``).
-        yield_policy_raw = mode_front_matter.get("yield_policy") or {}
-        if not isinstance(yield_policy_raw, dict):
-            raise WorkflowValidationError(f"yield_policy must be a mapping in {mode_config_path}")
-        yield_policy = YieldPolicy(
-            allowed=bool(yield_policy_raw.get("allowed", True)),
-            fallback_mode=str(yield_policy_raw.get("fallback_mode", "") or ""),
-            is_default_yield_target=bool(yield_policy_raw.get("is_default_yield_target", False)),
-            default_question=str(yield_policy_raw.get("default_question", "") or ""),
-        )
-        # Parse fork_allowed: a boolean consent flag. When True, this mode
-        # agrees to be a fork target — it commits to completing or failing
-        # without asking the user. When absent (default False), the routing
-        # fork decision and the fork enforcer refuse to fork to this mode;
-        # it is reachable only via delegate or single-handoff.
-        fork_allowed_raw = mode_front_matter.get("fork_allowed", False)
-        if not isinstance(fork_allowed_raw, bool):
-            raise WorkflowValidationError(f"fork_allowed must be a boolean in {mode_config_path}")
-        fork_allowed = fork_allowed_raw
-
-        # Collect app/pack-owned extension keys the kernel does not interpret.
-        # Everything in the (possibly overridden) front matter that is not a
-        # kernel-owned field flows through opaquely as ``extra_front_matter``.
-        # This keeps the boundary honest: the kernel names only what it owns and
-        # never has to allowlist or curate app-owned concepts like ``lenses``.
-        extra_front_matter = {
-            key: value
-            for key, value in mode_front_matter.items()
-            if key not in _KERNEL_OWNED_FRONT_MATTER_KEYS
-        }
-
-        catalog[mode_id] = WorkflowModeConfig(
-            mode_id=mode_id,
-            start_stage_id=start_stage_id,
-            stages=stages,
-            mode_kind=mode_kind,
-            artifact_type=str(mode_front_matter.get("artifact_type", "workflow_summary")),
-            description=mode_description,
-            instruction_body=mode_body.strip(),
-            mode_markdown_path=str(mode_config_path),
-            default_model=mode_default_model,
-            routable=routable,
-            priority=priority,
-            fast_path_patterns=fast_path_patterns,
-            routing_intent_tags=routing_intent_tags,
-            routing_intent_keywords=routing_intent_keywords,
-            satisfies_intents=satisfies_intents,
-            required_capabilities=required_capabilities,
-            command_pattern=command_pattern,
-            require_query=require_query,
-            entry_operation_ids=entry_operation_ids,
-            entry_op_kind=entry_op_kind,
-            pre_turn_operation_ids=pre_turn_operation_ids,
-            post_turn_operation_ids=post_turn_operation_ids,
-            allowed_operation_ids=allowed_operation_ids,
-            allowed_tool_ids=allowed_tool_ids,
-            authored_allowed_operation_ids=authored_allowed_operation_ids,
-            authored_allowed_tool_ids=authored_allowed_tool_ids,
-            tools_authoritative=tools_authoritative,
-            accept_default_capabilities=accept_default_capabilities,
-            excluded_operation_ids=excluded_operation_ids,
-            excluded_tool_ids=excluded_tool_ids,
-            default_intent_bridges=default_intent_bridges,
-            mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
-            context_item_packs=[
-                str(p) for p in (mode_front_matter.get("context_item_packs") or [])
-            ],
-            yield_policy=yield_policy,
-            fork_allowed=fork_allowed,
-            extra_front_matter=extra_front_matter,
-        )
-        # Synthesize a one-stage graph for stageless (chat/action) modes so
-        # every catalog mode carries a stage pointer. Runs post-construction,
-        # pre-validation: validation treats the synthesized graph as a fixed
-        # point (chat/action stage checks are skipped by kind).
-        synthesize_stage_graph(catalog[mode_id])
-        resolved_provider_id = catalog[mode_id].mode_provider_id
+        resolved_provider_id = mode_config.mode_provider_id
         if not resolved_provider_id and (
-            entry_operation_ids
-            or pre_turn_operation_ids
-            or post_turn_operation_ids
-            or allowed_operation_ids
-            or allowed_tool_ids
+            mode_config.entry_operation_ids
+            or mode_config.pre_turn_operation_ids
+            or mode_config.post_turn_operation_ids
+            or mode_config.allowed_operation_ids
+            or mode_config.allowed_tool_ids
         ):
             # Empty provider id with capability references: the export-boundary
             # validator will raise a loud OperationValidationError at startup.
@@ -901,9 +1141,10 @@ def load_catalog_from_disk(
                 "capabilities (%d ops, %d tools); export-boundary validation "
                 "will reject it. Set mode_provider_id in the mode front matter.",
                 mode_id,
-                len(allowed_operation_ids),
-                len(allowed_tool_ids),
+                len(mode_config.allowed_operation_ids),
+                len(mode_config.allowed_tool_ids),
             )
+        catalog[mode_id] = mode_config
 
     return catalog
 
@@ -1032,6 +1273,100 @@ def _optional_int_field(
 # ---------------------------------------------------------------------------
 # Catalog validation
 # ---------------------------------------------------------------------------
+def _validate_stage_invariants(
+    mode: WorkflowModeConfig,
+    stage_id: str,
+    stage: WorkflowStageConfig,
+    connector_ids: frozenset[str],
+) -> None:
+    """Validate FSM invariants for one authored workflow stage.
+
+    Checks (per stage): terminal stages have no transitions; non-terminal
+    stages without transitions must allow user questions; transition targets
+    exist; self-loops require ``allow_user_questions=true``; referenced
+    connectors are installed.
+
+    Args:
+        mode: Owning mode config (for error messages and stage lookups).
+        stage_id: The stage being validated.
+        stage: The stage config being validated.
+        connector_ids: Installed connector ids from the extension registry.
+
+    Raises:
+        WorkflowValidationError: On any invariant violation.
+    """
+    if stage.terminal and stage.allowed_next_stages:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' stage '{stage_id}' is terminal but has transitions."
+        )
+
+    if not stage.terminal and not stage.allowed_next_stages and not stage.allow_user_questions:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' stage '{stage_id}' cannot progress and cannot ask questions."
+        )
+
+    for next_stage in stage.allowed_next_stages:
+        if next_stage not in mode.stages:
+            raise WorkflowValidationError(
+                f"Mode '{mode.mode_id}' stage '{stage_id}' targets unknown stage '{next_stage}'."
+            )
+        if next_stage == stage_id and not stage.allow_user_questions:
+            raise WorkflowValidationError(
+                f"Mode '{mode.mode_id}' stage '{stage_id}' self-loop "
+                "requires allow_user_questions=true."
+            )
+
+    for connector_id in stage.required_connectors:
+        if connector_id not in connector_ids:
+            raise WorkflowValidationError(
+                f"Mode '{mode.mode_id}' stage '{stage_id}' references "
+                f"unknown connector '{connector_id}'. "
+                f"Known connectors: {sorted(connector_ids)}."
+            )
+
+
+def _validate_mode_stage_bodies(mode: WorkflowModeConfig) -> None:
+    """Require non-empty instruction bodies for workflow modes and stages.
+
+    Workflow modes carry authored instructions at both levels — an empty
+    body would silently run the model modeless/stageless. Enforced here
+    (load time) so the turn loop can read both levels leniently: a mode
+    that reached runtime is known to have bodies.
+
+    Raises:
+        WorkflowValidationError: If the mode or any stage has an empty
+            instruction body.
+    """
+    if not (mode.instruction_body or "").strip():
+        raise WorkflowValidationError(
+            f"Workflow mode '{mode.mode_id}' has an empty instruction_body in its "
+            "_mode.md — workflow modes require authored instructions."
+        )
+    for stage_id, stage in mode.stages.items():
+        if not (stage.instruction_body or "").strip():
+            raise WorkflowValidationError(
+                f"Mode '{mode.mode_id}' stage '{stage_id}' has an empty "
+                "instruction_body — workflow stages require authored instructions."
+            )
+
+
+def _validate_start_stage(mode: WorkflowModeConfig) -> None:
+    """Validate that the mode's start_stage_id points into its stage graph.
+
+    Raises:
+        WorkflowValidationError: If the mode has no stages or the start
+            stage is unknown.
+    """
+    if mode.start_stage_id not in mode.stages:
+        if not mode.stages:
+            raise WorkflowValidationError(
+                f"Workflow mode '{mode.mode_id}' must define at least one stage."
+            )
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' has unknown start stage '{mode.start_stage_id}'."
+        )
+
+
 def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
     """Validate one workflow mode for deterministic exits and legal transitions.
 
@@ -1068,30 +1403,8 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
         # mode is always the synthesized fixed point.
         return
 
-    if mode.start_stage_id not in mode.stages:
-        if not mode.stages:
-            raise WorkflowValidationError(
-                f"Workflow mode '{mode.mode_id}' must define at least one stage."
-            )
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' has unknown start stage '{mode.start_stage_id}'."
-        )
-
-    # Workflow modes carry authored instructions at both levels — an empty
-    # body would silently run the model modeless/stageless. Enforced here
-    # (load time) so the turn loop can read both levels leniently: a mode
-    # that reached runtime is known to have bodies.
-    if not (mode.instruction_body or "").strip():
-        raise WorkflowValidationError(
-            f"Workflow mode '{mode.mode_id}' has an empty instruction_body in its "
-            "_mode.md — workflow modes require authored instructions."
-        )
-    for stage_id, stage in mode.stages.items():
-        if not (stage.instruction_body or "").strip():
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' has an empty "
-                "instruction_body — workflow stages require authored instructions."
-            )
+    _validate_start_stage(mode)
+    _validate_mode_stage_bodies(mode)
 
     terminal_stages = [stage for stage in mode.stages.values() if stage.terminal]
     if not terminal_stages:
@@ -1102,36 +1415,7 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
     connector_ids = _known_connector_ids()
 
     for stage_id, stage in mode.stages.items():
-        if stage.terminal and stage.allowed_next_stages:
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' is terminal but has transitions."
-            )
-
-        if not stage.terminal and not stage.allowed_next_stages and not stage.allow_user_questions:
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' cannot progress "
-                "and cannot ask questions."
-            )
-
-        for next_stage in stage.allowed_next_stages:
-            if next_stage not in mode.stages:
-                raise WorkflowValidationError(
-                    f"Mode '{mode.mode_id}' stage '{stage_id}' targets "
-                    f"unknown stage '{next_stage}'."
-                )
-            if next_stage == stage_id and not stage.allow_user_questions:
-                raise WorkflowValidationError(
-                    f"Mode '{mode.mode_id}' stage '{stage_id}' self-loop "
-                    "requires allow_user_questions=true."
-                )
-
-        for connector_id in stage.required_connectors:
-            if connector_id not in connector_ids:
-                raise WorkflowValidationError(
-                    f"Mode '{mode.mode_id}' stage '{stage_id}' references "
-                    f"unknown connector '{connector_id}'. "
-                    f"Known connectors: {sorted(connector_ids)}."
-                )
+        _validate_stage_invariants(mode, stage_id, stage, connector_ids)
 
     _assert_all_paths_reach_terminal(mode)
 
@@ -1639,6 +1923,187 @@ def get_required_stage_instruction(
     return instruction_body
 
 
+def _build_tool_execution_context(
+    target_id: str,
+    ctx: OperationExecutionContext,
+) -> ToolExecutionContext:
+    """Derive the tool-registry execution context for a lifecycle target.
+
+    Args:
+        target_id: The tool id being dispatched.
+        ctx: Shared operation execution context for the current mode turn.
+
+    Returns:
+        The ToolExecutionContext mirroring the shared turn context fields.
+    """
+    return ToolExecutionContext(
+        tool_id=target_id,
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_type=ctx.surface_type,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        query=ctx.query,
+        pack_config=ctx.pack_config,
+        pack_configuration_resolver=ctx.pack_configuration_resolver,
+        approval_service=ctx.approval_service,
+        approval_request_id=ctx.approval_request_id,
+        session_plan_digest=ctx.session_plan_digest,
+        code_change_artifact_store=ctx.code_change_artifact_store,
+        event_bus=ctx.event_bus,
+        state_provider=ctx.state_provider,
+        data_dir=ctx.data_dir,
+    )
+
+
+def _resolve_turn_cap(
+    target_id: str,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    execution_policy: ExecutionPolicy | None,
+) -> int:
+    """Resolve the per-turn invocation cap for a lifecycle target.
+
+    Args:
+        target_id: Operation or tool id whose ``max_calls_per_turn`` applies.
+        operation_catalog: The operation catalog (capability definitions).
+        tool_catalog: The tool catalog (capability definitions).
+        execution_policy: Optional execution policy overriding catalog caps.
+
+    Returns:
+        The resolved cap (0 means uncapped).
+    """
+    from kernel.capability import resolve_capability_for_turn_limit
+
+    definition = resolve_capability_for_turn_limit(
+        target_id,
+        operation_catalog=operation_catalog,
+        tool_catalog=tool_catalog,
+    )
+    max_calls = 0
+    if definition is not None:
+        max_calls = int(getattr(definition, "max_calls_per_turn", 0) or 0)
+    return resolve_capability_invocation_limit(
+        execution_policy,
+        target_id,
+        max_calls,
+    )
+
+
+async def _dispatch_lifecycle_target(
+    target_id: str,
+    target_ctx: OperationExecutionContext,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+) -> OperationResult | None:
+    """Dispatch one lifecycle target polymorphically (operation or tool).
+
+    Args:
+        target_id: Operation or tool id to dispatch.
+        target_ctx: Execution context for the dispatch.
+        operation_catalog: The operation catalog for resolution.
+        tool_catalog: The tool catalog for resolution.
+
+    Returns:
+        The result, or ``None`` when the target is neither a known
+        operation nor a known tool (logged and skipped by the caller).
+    """
+    if target_id in operation_catalog:
+        return await _execute_operation(target_id, target_ctx)
+    if target_id in tool_catalog:
+        from kernel.tools.registry import execute_tool
+
+        tool_ctx = _build_tool_execution_context(target_id, target_ctx)
+        tool_result = await execute_tool(target_id, tool_ctx)
+        return OperationResult(
+            output_text=tool_result.output_text,
+            output_json=dict(tool_result.output_json) if tool_result.output_json else {},
+            extra={"tool_error": tool_result.error} if tool_result.error else {},
+        )
+    logger.warning(
+        "lifecycle target '%s' is neither a known operation nor a known tool; skipping",
+        target_id,
+    )
+    return None
+
+
+def _lifecycle_cap_reached(
+    target_id: str,
+    ledger: CallLedger | None,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    execution_policy: ExecutionPolicy | None,
+) -> bool:
+    """Check whether a lifecycle target has exhausted its per-turn cap.
+
+    Args:
+        target_id: Operation or tool id to check.
+        ledger: Per-turn call ledger; ``None`` disables the check.
+        operation_catalog: The operation catalog (capability definitions).
+        tool_catalog: The tool catalog (capability definitions).
+        execution_policy: Optional execution policy overriding catalog caps.
+
+    Returns:
+        True when the target should be skipped (cap exhausted), False
+        otherwise. Always False when no ledger is provided.
+    """
+    if ledger is None:
+        return False
+    max_calls = _resolve_turn_cap(
+        target_id,
+        operation_catalog,
+        tool_catalog,
+        execution_policy,
+    )
+    if ledger.is_exhausted(target_id, max_calls):
+        logger.debug(
+            "lifecycle target '%s' skipped: per-turn cap %d reached",
+            target_id,
+            max_calls,
+        )
+        return True
+    return False
+
+
+def _accumulate_lifecycle_result(
+    target_id: str,
+    result: OperationResult,
+    output_parts: list[str],
+    json_results: list[tuple[str, dict[str, Any]]],
+    extra: dict[str, Any],
+) -> None:
+    """Fold one dispatched target's result into the shared accumulation buffers.
+
+    Args:
+        target_id: The target the result came from (keyed in JSON payloads).
+        result: The target's dispatch result.
+        output_parts: Text output accumulator (mutated in place).
+        json_results: ``(target_id, payload)`` accumulator (mutated in place).
+        extra: Extra-metadata accumulator (mutated in place).
+    """
+    if result.output_text:
+        output_parts.append(result.output_text)
+    if result.output_json:
+        json_results.append((target_id, result.output_json))
+    if result.extra:
+        extra.update(result.extra)
+
+
+def _merge_lifecycle_json_results(
+    json_results: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Merge per-target JSON payloads into the combined result payload.
+
+    A single-target payload passes through directly for convenience;
+    multiple payloads are keyed by their target id.
+    """
+    if len(json_results) == 1:
+        return json_results[0][1]
+    return {target_id: payload for target_id, payload in json_results}
+
+
 async def _execute_mode_target_ids(
     target_ids: list[str],
     ctx: OperationExecutionContext,
@@ -1672,7 +2137,7 @@ async def _execute_mode_target_ids(
         return OperationResult()
 
     from kernel.operations.registry import get_operation_catalog
-    from kernel.tools.registry import execute_tool, get_tool_catalog
+    from kernel.tools.registry import get_tool_catalog
 
     operation_catalog = get_operation_catalog()
     tool_catalog = get_tool_catalog()
@@ -1683,66 +2148,17 @@ async def _execute_mode_target_ids(
 
     for target_id in target_ids:
         # Per-turn cap enforcement (uniform across operations and tools).
-        if ledger is not None:
-            from kernel.capability import resolve_capability_for_turn_limit
-
-            definition = resolve_capability_for_turn_limit(
-                target_id,
-                operation_catalog=operation_catalog,
-                tool_catalog=tool_catalog,
-            )
-            max_calls = 0
-            if definition is not None:
-                max_calls = int(getattr(definition, "max_calls_per_turn", 0) or 0)
-            max_calls = resolve_capability_invocation_limit(
-                execution_policy,
-                target_id,
-                max_calls,
-            )
-            if ledger.is_exhausted(target_id, max_calls):
-                logger.debug(
-                    "lifecycle target '%s' skipped: per-turn cap %d reached",
-                    target_id,
-                    max_calls,
-                )
-                continue
+        if _lifecycle_cap_reached(
+            target_id, ledger, operation_catalog, tool_catalog, execution_policy
+        ):
+            continue
 
         target_ctx = ctx.model_copy(update={"operation_id": target_id, "extra": extra})
         try:
-            if target_id in operation_catalog:
-                result = await _execute_operation(target_id, target_ctx)
-            elif target_id in tool_catalog:
-                tool_ctx = ToolExecutionContext(
-                    tool_id=target_id,
-                    workspace_id=ctx.workspace_id,
-                    user_id=ctx.user_id,
-                    user_slug=ctx.user_slug,
-                    surface_type=ctx.surface_type,
-                    surface_id=ctx.surface_id,
-                    memory_scope=ctx.memory_scope,
-                    mode_id=ctx.mode_id,
-                    query=ctx.query,
-                    pack_config=ctx.pack_config,
-                    pack_configuration_resolver=ctx.pack_configuration_resolver,
-                    approval_service=ctx.approval_service,
-                    approval_request_id=ctx.approval_request_id,
-                    session_plan_digest=ctx.session_plan_digest,
-                    code_change_artifact_store=ctx.code_change_artifact_store,
-                    event_bus=ctx.event_bus,
-                    state_provider=ctx.state_provider,
-                    data_dir=ctx.data_dir,
-                )
-                tool_result = await execute_tool(target_id, tool_ctx)
-                result = OperationResult(
-                    output_text=tool_result.output_text,
-                    output_json=dict(tool_result.output_json) if tool_result.output_json else {},
-                    extra={"tool_error": tool_result.error} if tool_result.error else {},
-                )
-            else:
-                logger.warning(
-                    "lifecycle target '%s' is neither a known operation nor a known tool; skipping",
-                    target_id,
-                )
+            result = await _dispatch_lifecycle_target(
+                target_id, target_ctx, operation_catalog, tool_catalog
+            )
+            if result is None:
                 continue
         except ApprovalRequired:
             raise
@@ -1759,17 +2175,9 @@ async def _execute_mode_target_ids(
 
         if ledger is not None:
             ledger.record(target_id)
-        if result.output_text:
-            output_parts.append(result.output_text)
-        if result.output_json:
-            json_results.append((target_id, result.output_json))
-        if result.extra:
-            extra.update(result.extra)
+        _accumulate_lifecycle_result(target_id, result, output_parts, json_results, extra)
 
-    if len(json_results) == 1:
-        output_json = json_results[0][1]
-    else:
-        output_json = {target_id: payload for target_id, payload in json_results}
+    output_json = _merge_lifecycle_json_results(json_results)
 
     return OperationResult(
         output_text="\n\n".join(output_parts),

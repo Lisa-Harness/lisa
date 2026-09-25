@@ -153,6 +153,54 @@ def _wrap_declarative_tool_executor(
     return _execute_allowed_tool
 
 
+def _validate_definition_fields(
+    operation_id: str,
+    definition: OperationDefinition,
+) -> bool:
+    """Validate one operation definition's scalar/invariant fields.
+
+    Args:
+        operation_id: The registry key being validated.
+        definition: The operation definition to check.
+
+    Returns:
+        True when the definition is importable and should continue
+        field-level validation; False when its implementation module is
+        missing and the operation was queued for dropping.
+
+    Raises:
+        OperationValidationError: On any invariant violation.
+    """
+    if getattr(definition.implementation_module, "execute", None) is None:
+        raise OperationValidationError(
+            f"Operation '{operation_id}' implementation is missing execute(ctx)."
+        )
+    if definition.max_calls_per_turn < 0:
+        raise OperationValidationError(
+            "Operation "
+            f"'{operation_id}' has invalid max_calls_per_turn={definition.max_calls_per_turn}."
+        )
+    if definition.timeout_seconds < 0:
+        raise OperationValidationError(
+            f"Operation '{operation_id}' has invalid timeout_seconds={definition.timeout_seconds}."
+        )
+    if definition.execution_kind == "prompt":
+        if not definition.instruction_markdown_path.strip():
+            raise OperationValidationError(
+                f"Declarative operation '{operation_id}' is missing instruction_markdown_path."
+            )
+        if not definition.instruction_body.strip():
+            raise OperationValidationError(
+                f"Declarative operation '{operation_id}' must have a non-empty markdown body."
+            )
+        if definition.completion_max_tokens < 1:
+            raise OperationValidationError(
+                f"Declarative operation '{operation_id}' has invalid "
+                f"completion_max_tokens={definition.completion_max_tokens}."
+            )
+    return True
+
+
 def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
     """Validate the operation catalog for basic invariants.
 
@@ -189,34 +237,7 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
             )
             unimportable.append(operation_id)
             continue
-        if getattr(definition.implementation_module, "execute", None) is None:
-            raise OperationValidationError(
-                f"Operation '{operation_id}' implementation is missing execute(ctx)."
-            )
-        if definition.max_calls_per_turn < 0:
-            raise OperationValidationError(
-                "Operation "
-                f"'{operation_id}' has invalid max_calls_per_turn={definition.max_calls_per_turn}."
-            )
-        if definition.timeout_seconds < 0:
-            raise OperationValidationError(
-                f"Operation '{operation_id}' has invalid "
-                f"timeout_seconds={definition.timeout_seconds}."
-            )
-        if definition.execution_kind == "prompt":
-            if not definition.instruction_markdown_path.strip():
-                raise OperationValidationError(
-                    f"Declarative operation '{operation_id}' is missing instruction_markdown_path."
-                )
-            if not definition.instruction_body.strip():
-                raise OperationValidationError(
-                    f"Declarative operation '{operation_id}' must have a non-empty markdown body."
-                )
-            if definition.completion_max_tokens < 1:
-                raise OperationValidationError(
-                    f"Declarative operation '{operation_id}' has invalid "
-                    f"completion_max_tokens={definition.completion_max_tokens}."
-                )
+        _validate_definition_fields(operation_id, definition)
         if tool_catalog is not None:
             for tool_id in definition.tool_ids:
                 if tool_id not in tool_catalog:
@@ -682,6 +703,188 @@ def _mode_allowlist_write_tools(
     return result
 
 
+def _rebuild_host_with_tool_wrapper(
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+) -> None:
+    """Wrap the host's execute_tool with the declarative allowlist on ``ctx``.
+
+    Wraps the host's execute_tool with the per-operation allowlist, then
+    rebuilds the typed host seam so ``ctx.host.execute_tool`` routes through
+    the wrapper. The other host methods (complete, resolve_model,
+    read_authored_text, etc.) are preserved from the existing host.
+    """
+    from kernel.seams.host_adapter import build_callable_host
+
+    _existing_host = ctx.host
+    _wrapped_tool_fn = _wrap_declarative_tool_executor(
+        definition,
+        _existing_host.execute_tool if _existing_host is not None else None,
+    )
+    ctx.host = build_callable_host(
+        complete_fn=_existing_host._complete_fn if _existing_host is not None else None,
+        resolve_model_fn=_existing_host._resolve_model_fn if _existing_host is not None else None,
+        read_authored_text_fn=_existing_host._read_authored_text_fn
+        if _existing_host is not None
+        else None,
+        execute_tool_fn=_wrapped_tool_fn,
+        execute_operation_fn=_existing_host._execute_operation_fn
+        if _existing_host is not None
+        else None,
+        generate_image_fn=_existing_host._generate_image_fn if _existing_host is not None else None,
+        introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
+        delegate_fn=_existing_host._delegate_fn if _existing_host is not None else None,
+        fork_fn=_existing_host._fork_fn if _existing_host is not None else None,
+        # Preserve the provider-gateway seam. The production host sets
+        # ``complete=None`` and routes completion through the gateway; without
+        # this carry-through, ``ctx.host.complete`` falls back to the noop
+        # ``_complete_fn`` and operations fail with ``TurnHooks.complete is
+        # required``.
+        gateway_provider_fn=(
+            _existing_host._gateway_provider_fn if _existing_host is not None else None
+        ),
+    )
+
+
+def _emit_operation_telemetry(
+    operation_id: str,
+    ctx: OperationExecutionContext,
+    span: Any,
+    t0: float,
+    *,
+    status: Literal["success", "error", "timeout"],
+    err_msg: str | None,
+) -> None:
+    """Emit span attributes and best-effort event-bus telemetry for one operation.
+
+    Fire-and-forget telemetry on the EventBus (topic, payload) contract.
+    Strictly best-effort: a publish failure must never replace the
+    operation's own result/exception, so the coroutine is wrapped before
+    scheduling — a synchronous raise here would otherwise surface from the
+    ``finally`` block and mask the real dispatch outcome (2026-09-08
+    fetch_page incident).
+    """
+    duration_ms = int((time.perf_counter() - t0) * 1000)
+    set_span_attributes(
+        span,
+        {
+            "lisa.status": status,
+            "lisa.duration_ms": duration_ms,
+            "lisa.error_message": err_msg,
+        },
+    )
+    if ctx.event_bus:
+        event = ToolExecutionTelemetry(
+            target_id=operation_id,
+            target_type="operation",
+            status=status,
+            duration_ms=duration_ms,
+            error_message=err_msg,
+        )
+        try:
+            task = asyncio.create_task(
+                ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("operation telemetry publish failed for %s", operation_id, exc_info=True)
+        else:
+            _PENDING_TELEMETRY_TASKS.add(task)
+            task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+
+
+def _normalize_operation_result(
+    operation_id: str,
+    result: Any,
+) -> OperationResult:
+    """Coerce an operation's raw return value into an OperationResult.
+
+    Logs a warning when the operation reported status=error or degraded
+    (the result is passed through unchanged either way).
+    """
+    if isinstance(result, OperationResult):
+        if result.status == "error":
+            logger.warning(
+                "operation '%s' returned status=error: %s",
+                operation_id,
+                result.error_detail or result.output_text[:200],
+            )
+        elif result.status == "degraded":
+            logger.warning(
+                "operation '%s' returned status=degraded: %s",
+                operation_id,
+                result.error_detail or result.output_text[:200],
+            )
+        return result
+    if isinstance(result, str):
+        return OperationResult(output_text=result)
+    raise OperationExecutionError(
+        f"Operation '{operation_id}' returned unsupported result type {type(result).__name__}."
+    )
+
+
+async def _run_operation_with_telemetry(
+    operation_id: str,
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+    execute_fn: Any,
+) -> Any:
+    """Run one operation under a tracing span with timeout and telemetry.
+
+    Wraps the execute call in the ``operation.execute`` span, applies the
+    definition's timeout, marks the span failed and re-raises typed errors
+    on failure, and emits span attributes plus best-effort event-bus
+    telemetry in the ``finally`` block.
+
+    Raises:
+        OperationTimeoutError: When the operation exceeds its timeout.
+        OperationExecutionError: When the operation raises.
+    """
+    with _OPERATION_TRACER.start_as_current_span("operation.execute") as span:
+        set_span_attributes(
+            span,
+            {
+                "lisa.target_type": "operation",
+                "lisa.target_id": operation_id,
+                "lisa.timeout_seconds": definition.timeout_seconds,
+                "lisa.mode_id": ctx.mode_id,
+            },
+        )
+        t0 = time.perf_counter()
+        status: Literal["success", "error", "timeout"] = "success"
+        err_msg: str | None = None
+        try:
+            if definition.timeout_seconds > 0:
+                result = await asyncio.wait_for(execute_fn(ctx), timeout=definition.timeout_seconds)
+            else:
+                result = await execute_fn(ctx)
+            logger.debug(
+                "operation '%s' succeeded in %dms",
+                operation_id,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            return result
+        except TimeoutError as exc:
+            logger.error(
+                "operation '%s' timed out after %ss",
+                operation_id,
+                definition.timeout_seconds,
+            )
+            status = "timeout"
+            err_msg = f"Timed out after {definition.timeout_seconds}s"
+            mark_span_failed(span, exc)
+            raise OperationTimeoutError(f"Operation '{operation_id}' timed out") from exc
+        except ApprovalRequired:
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("operation '%s' failed: %s", operation_id, exc)
+            status = "error"
+            err_msg = f"{type(exc).__name__}: {exc}"
+            mark_span_failed(span, exc)
+            raise OperationExecutionError(f"Operation '{operation_id}' failed: {err_msg}") from exc
+        finally:
+            _emit_operation_telemetry(operation_id, ctx, span, t0, status=status, err_msg=err_msg)
+
+
 async def execute_operation(
     operation_id: str,
     ctx: OperationExecutionContext,
@@ -713,41 +916,7 @@ async def execute_operation(
     # concept, not an operation default.
     ctx.preferred_model_id = _resolve_operation_model(definition, ctx)
     ctx.tool_schemas = _build_tool_schemas(definition.tool_ids)
-    # Wrap the host's execute_tool with the declarative allowlist, then
-    # rebuild the typed host seam so ``ctx.host.execute_tool`` routes
-    # through the wrapper applied above. The other host methods
-    # (complete, resolve_model, read_authored_text, etc.) are preserved
-    # from the existing host.
-    from kernel.seams.host_adapter import build_callable_host
-
-    _existing_host = ctx.host
-    _wrapped_tool_fn = _wrap_declarative_tool_executor(
-        definition,
-        _existing_host.execute_tool if _existing_host is not None else None,
-    )
-    ctx.host = build_callable_host(
-        complete_fn=_existing_host._complete_fn if _existing_host is not None else None,
-        resolve_model_fn=_existing_host._resolve_model_fn if _existing_host is not None else None,
-        read_authored_text_fn=_existing_host._read_authored_text_fn
-        if _existing_host is not None
-        else None,
-        execute_tool_fn=_wrapped_tool_fn,
-        execute_operation_fn=_existing_host._execute_operation_fn
-        if _existing_host is not None
-        else None,
-        generate_image_fn=_existing_host._generate_image_fn if _existing_host is not None else None,
-        introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
-        delegate_fn=_existing_host._delegate_fn if _existing_host is not None else None,
-        fork_fn=_existing_host._fork_fn if _existing_host is not None else None,
-        # Preserve the provider-gateway seam. The production host sets
-        # ``complete=None`` and routes completion through the gateway; without
-        # this carry-through, ``ctx.host.complete`` falls back to the noop
-        # ``_complete_fn`` and operations fail with ``TurnHooks.complete is
-        # required``.
-        gateway_provider_fn=(
-            _existing_host._gateway_provider_fn if _existing_host is not None else None
-        ),
-    )
+    _rebuild_host_with_tool_wrapper(definition, ctx)
     module = definition.implementation_module
     if module is None:
         raise OperationExecutionError(f"Operation '{operation_id}' has no implementation module.")
@@ -756,102 +925,8 @@ async def execute_operation(
     if execute_fn is None:
         raise OperationExecutionError(f"Operation '{operation_id}' is missing async execute(ctx).")
 
-    with _OPERATION_TRACER.start_as_current_span("operation.execute") as span:
-        set_span_attributes(
-            span,
-            {
-                "lisa.target_type": "operation",
-                "lisa.target_id": operation_id,
-                "lisa.timeout_seconds": definition.timeout_seconds,
-                "lisa.mode_id": ctx.mode_id,
-            },
-        )
-        t0 = time.perf_counter()
-        status: Literal["success", "error", "timeout"] = "success"
-        err_msg = None
-        try:
-            if definition.timeout_seconds > 0:
-                result = await asyncio.wait_for(execute_fn(ctx), timeout=definition.timeout_seconds)
-            else:
-                result = await execute_fn(ctx)
-            logger.debug(
-                "operation '%s' succeeded in %dms",
-                operation_id,
-                int((time.perf_counter() - t0) * 1000),
-            )
-        except TimeoutError as exc:
-            logger.error(
-                "operation '%s' timed out after %ss",
-                operation_id,
-                definition.timeout_seconds,
-            )
-            status = "timeout"
-            err_msg = f"Timed out after {definition.timeout_seconds}s"
-            mark_span_failed(span, exc)
-            raise OperationTimeoutError(f"Operation '{operation_id}' timed out") from exc
-        except ApprovalRequired:
-            raise
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("operation '%s' failed: %s", operation_id, exc)
-            status = "error"
-            err_msg = f"{type(exc).__name__}: {exc}"
-            mark_span_failed(span, exc)
-            raise OperationExecutionError(f"Operation '{operation_id}' failed: {err_msg}") from exc
-        finally:
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            set_span_attributes(
-                span,
-                {
-                    "lisa.status": status,
-                    "lisa.duration_ms": duration_ms,
-                    "lisa.error_message": err_msg,
-                },
-            )
-            if ctx.event_bus:
-                event = ToolExecutionTelemetry(
-                    target_id=operation_id,
-                    target_type="operation",
-                    status=status,
-                    duration_ms=duration_ms,
-                    error_message=err_msg,
-                )
-                # Fire-and-forget telemetry on the EventBus (topic, payload)
-                # contract. Strictly best-effort: a publish failure must never
-                # replace the operation's own result/exception, so the
-                # coroutine is wrapped before scheduling — a synchronous raise
-                # here would otherwise surface from this ``finally`` and mask
-                # the real dispatch outcome (2026-09-08 fetch_page incident).
-                try:
-                    task = asyncio.create_task(
-                        ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
-                    )
-                except Exception:  # pylint: disable=broad-except
-                    logger.debug(
-                        "operation telemetry publish failed for %s", operation_id, exc_info=True
-                    )
-                else:
-                    _PENDING_TELEMETRY_TASKS.add(task)
-                    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
-
-    if isinstance(result, OperationResult):
-        if result.status == "error":
-            logger.warning(
-                "operation '%s' returned status=error: %s",
-                operation_id,
-                result.error_detail or result.output_text[:200],
-            )
-        elif result.status == "degraded":
-            logger.warning(
-                "operation '%s' returned status=degraded: %s",
-                operation_id,
-                result.error_detail or result.output_text[:200],
-            )
-        return result
-    if isinstance(result, str):
-        return OperationResult(output_text=result)
-    raise OperationExecutionError(
-        f"Operation '{operation_id}' returned unsupported result type {type(result).__name__}."
-    )
+    result = await _run_operation_with_telemetry(operation_id, definition, ctx, execute_fn)
+    return _normalize_operation_result(operation_id, result)
 
 
 def _resolve_operation_model(

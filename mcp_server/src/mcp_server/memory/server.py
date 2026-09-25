@@ -155,6 +155,7 @@ async def add_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     memory_tier: str = "daily",
     memory_kind: str = "episodic",
     operation_id: str = "mcp.add_memory",
@@ -237,6 +238,7 @@ async def search_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     limit: int = 5,
     memory_kind: str | None = None,
     status: str | None = "active",
@@ -281,6 +283,7 @@ async def get_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Fetch a single memory record by id, scoped to the caller's surface.
@@ -309,6 +312,7 @@ async def delete_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Delete a single memory record by id, scoped to the caller's surface.
@@ -337,6 +341,7 @@ async def list_memories(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     limit: int = 20,
     memory_kind: str | None = None,
     status: str | None = "active",
@@ -368,6 +373,7 @@ async def retire_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Retire a memory record by id, scoped to the caller's surface.
@@ -400,6 +406,7 @@ async def count_memories(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    *,
     memory_kind: str | None = None,
     status: str | None = "active",
     ctx: Context[MemoryDeps, Any] | None = None,

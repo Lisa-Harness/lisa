@@ -90,6 +90,20 @@ async def _read_manifest_text_from_storage(
     return result.output_text, None
 
 
+def _write_ack_error(decoded: Any) -> str | None:
+    """Check the decoded write_model_manifest acknowledgement for errors.
+
+    Returns the error string (tool-reported or generic), or ``None``
+    when the write was acknowledged with ``ok: true``.
+    """
+    tool_error = decoded.get("error")
+    if isinstance(tool_error, str) and tool_error.strip():
+        return tool_error.strip()
+    if decoded.get("ok") is not True:
+        return "write_model_manifest did not acknowledge a successful write."
+    return None
+
+
 async def _write_manifest_text_to_storage(
     runtime: HostRuntime,
     *,
@@ -114,12 +128,7 @@ async def _write_manifest_text_to_storage(
         return "write_model_manifest returned non-JSON output."
     if not isinstance(decoded, dict):
         return "write_model_manifest returned an unexpected response shape."
-    tool_error = decoded.get("error")
-    if isinstance(tool_error, str) and tool_error.strip():
-        return tool_error.strip()
-    if decoded.get("ok") is not True:
-        return "write_model_manifest did not acknowledge a successful write."
-    return None
+    return _write_ack_error(decoded)
 
 
 def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -> str:

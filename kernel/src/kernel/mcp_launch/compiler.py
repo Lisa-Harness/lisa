@@ -69,6 +69,69 @@ def compile_cwd(policy: CwdPolicy, *, workspace_root: str | None = None) -> str 
     return None
 
 
+def _compile_python_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+    """Compile a PYTHON spec: ``python -m <module>``."""
+    if not spec.module:
+        raise ValueError(f"PYTHON runtime requires 'module' for server '{spec.server_id}'")
+    return "python", ["-m", spec.module]
+
+
+def _compile_uv_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+    """Compile a UV spec: ``uv run --package <pkg> python -m <module>``."""
+    if not spec.package or not spec.module:
+        raise ValueError(
+            f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'"
+        )
+    args: list[str] = ["run"]
+    if spec.uv_directory:
+        args.extend(["--directory", spec.uv_directory])
+    args.extend(["--package", spec.package, "python", "-m", spec.module])
+    return "uv", args
+
+
+def _compile_venv_bin_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+    """Compile a VENV_BIN spec: the venv's entry-point binary path."""
+    if not spec.venv_dir:
+        raise ValueError(f"VENV_BIN runtime requires 'venv_dir' for server '{spec.server_id}'")
+    entry_point = spec.entry_point or spec.server_id
+    if sys.platform == "win32":
+        command_path = str(Path(spec.venv_dir) / "Scripts" / f"{entry_point}.exe")
+    else:
+        command_path = str(Path(spec.venv_dir) / "bin" / entry_point)
+    return command_path, []
+
+
+def _compile_node_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+    """Compile a NODE spec: ``<command_path> <script_path>``."""
+    if not spec.command_path or not spec.script_path:
+        raise ValueError(
+            f"NODE runtime requires 'command_path' and 'script_path' for server '{spec.server_id}'"
+        )
+    return spec.command_path, [spec.script_path]
+
+
+def _compile_npx_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
+    """Compile an NPX spec: ``npx -y <package>``."""
+    if not spec.npx_package:
+        raise ValueError(f"NPX runtime requires 'npx_package' for server '{spec.server_id}'")
+    return "npx", ["-y", spec.npx_package]
+
+
+def _compile_binary_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
+    """Compile a BINARY spec, or ``None`` when the optional binary is absent.
+
+    An empty command_path means the binary is not installed. Pack
+    manifests routinely point BINARY servers/proxies at an opt-in
+    third-party binary via ``command_path: ${SOME_BIN}`` and expect an
+    unset var to degrade to "this server is absent" (the headroom
+    pack contract). Raising here aborts the WHOLE startup for what is
+    an optional capability, so signal a skip instead.
+    """
+    if not spec.command_path:
+        return None
+    return spec.command_path, []
+
+
 def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     """Build (command, args) for one runtime kind.
 
@@ -78,68 +141,31 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     installed (e.g. an unexpanded ``${SOME_BIN}`` env reference), so the
     caller skips the entry instead of spawning.
     """
+    compiled: tuple[str, list[str]] | None
     if spec.runtime_kind == RuntimeKind.PYTHON:
-        if not spec.module:
-            raise ValueError(f"PYTHON runtime requires 'module' for server '{spec.server_id}'")
-        return "python", ["-m", spec.module]
-
-    if spec.runtime_kind == RuntimeKind.UV:
-        if not spec.package or not spec.module:
-            raise ValueError(
-                f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'"
-            )
-        args: list[str] = ["run"]
-        if spec.uv_directory:
-            args.extend(["--directory", spec.uv_directory])
-        args.extend(["--package", spec.package, "python", "-m", spec.module])
-        return "uv", args
-
-    if spec.runtime_kind == RuntimeKind.VENV_BIN:
-        if not spec.venv_dir:
-            raise ValueError(f"VENV_BIN runtime requires 'venv_dir' for server '{spec.server_id}'")
-        entry_point = spec.entry_point or spec.server_id
-        if sys.platform == "win32":
-            command_path = str(Path(spec.venv_dir) / "Scripts" / f"{entry_point}.exe")
-        else:
-            command_path = str(Path(spec.venv_dir) / "bin" / entry_point)
-        return command_path, []
-
-    if spec.runtime_kind == RuntimeKind.NODE:
-        if not spec.command_path or not spec.script_path:
-            raise ValueError(
-                f"NODE runtime requires 'command_path' and 'script_path' for "
-                f"server '{spec.server_id}'"
-            )
-        return spec.command_path, [spec.script_path]
-
-    if spec.runtime_kind == RuntimeKind.NPX:
-        if not spec.npx_package:
-            raise ValueError(f"NPX runtime requires 'npx_package' for server '{spec.server_id}'")
-        return "npx", ["-y", spec.npx_package]
-
-    if spec.runtime_kind == RuntimeKind.BINARY:
-        # An empty command_path means the binary is not installed. Pack
-        # manifests routinely point BINARY servers/proxies at an opt-in
-        # third-party binary via ``command_path: ${SOME_BIN}`` and expect an
-        # unset var to degrade to "this server is absent" (the headroom
-        # pack contract). Raising here aborts the WHOLE startup for what is
-        # an optional capability, so signal a skip instead.
-        if not spec.command_path:
-            return None
-        return spec.command_path, []
-
-    if spec.runtime_kind == RuntimeKind.HTTP:
-        if not spec.url:
+        compiled = _compile_python_command(spec)
+    elif spec.runtime_kind == RuntimeKind.UV:
+        compiled = _compile_uv_command(spec)
+    elif spec.runtime_kind == RuntimeKind.VENV_BIN:
+        compiled = _compile_venv_bin_command(spec)
+    elif spec.runtime_kind == RuntimeKind.NODE:
+        compiled = _compile_node_command(spec)
+    elif spec.runtime_kind == RuntimeKind.NPX:
+        compiled = _compile_npx_command(spec)
+    elif spec.runtime_kind == RuntimeKind.BINARY:
+        compiled = _compile_binary_command(spec)
+    elif spec.runtime_kind in (RuntimeKind.HTTP, RuntimeKind.IN_PROCESS):
+        # HTTP (validated url) and IN_PROCESS (memory transport;
+        # command/args unused but kept uniform) both spawn no subprocess
+        # command.
+        if spec.runtime_kind == RuntimeKind.HTTP and not spec.url:
             raise ValueError(f"HTTP runtime requires 'url' for server '{spec.server_id}'")
-        return "", []
-
-    if spec.runtime_kind == RuntimeKind.IN_PROCESS:
-        # In-process servers don't spawn a subprocess — the pool connects
-        # directly via the MCP SDK's in-memory transport. command/args are
-        # unused but kept as empty lists so MCPClientConfig stays uniform.
-        return "", []
-
-    raise ValueError(f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'")
+        compiled = ("", [])
+    else:
+        raise ValueError(
+            f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'"
+        )
+    return compiled
 
 
 def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:

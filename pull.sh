@@ -35,7 +35,7 @@ done
 test $# -eq 0 || { usage >&2; exit 1; }
 
 # upgrade shortcut
-test ${0##./} = $(basename $0) && wd=.. && sync_opts='-U --all-extras'
+test ${0##./} = $(basename $0) && wd=.. && sync_opts='-U'
 
 for d in "$wd/lisa-packs" "$wd/lisa-hosts"; do
 	if test ! -d "$d"; then

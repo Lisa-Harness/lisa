@@ -53,7 +53,7 @@ def _make_tool_schema(name: str, description: str = "") -> dict[str, Any]:
     }
 
 
-def _make_mode_config(
+def _make_mode_config(  # noqa: PLR0917 — one default knob per WorkflowModeConfig field
     mode_id: str = "default",
     allowed_tool_ids: list[str] | None = None,
     tools_authoritative: bool = True,

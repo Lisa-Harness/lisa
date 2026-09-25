@@ -443,21 +443,46 @@ class MemoryConsolidationSlice:
             (f"mined {work_items} sealed segment(s)" if work_items else ""),
         )
 
-    # ── Slice entrypoint ─────────────────────────────────────────────
+    def _outcome(
+        self,
+        *,
+        work_items: int,
+        started: float,
+        last_items: list[str],
+        notes: list[str],
+        extra_notes: tuple[str, ...] = (),
+    ) -> SliceOutcome:
+        """Build one SliceOutcome with elapsed time, merged notes, and last item.
 
-    async def slice(self, ctx: Any, policy: SlicePolicy) -> SliceOutcome:
-        """Mine new sealed segments, then fire consolidation if pressure warrants.
-
-        ``ctx`` is unused (matches the ``StateProvider.slice`` contract);
-        all state is read from ``self._hooks`` and the sidecars.
+        Args:
+            work_items: Total work items completed so far this slice.
+            started: The slice start time (``time.monotonic()`` baseline).
+            last_items: Accumulated per-job last-item strings (may be empty).
+            notes: Accumulated notes (may be empty).
+            extra_notes: Trailing notes to append (e.g. ``"<reason>;no_batch"``).
         """
-        del ctx  # explicit: the slice is stateless w.r.t. ctx
-        started = time.monotonic()
-        notes: list[str] = []
+        return SliceOutcome(
+            work_items_completed=work_items,
+            elapsed_ms=(time.monotonic() - started) * 1000.0,
+            last_item=last_items[-1] if last_items else "",
+            notes=(*notes, *extra_notes),
+        )
+
+    async def _run_mining_pass(
+        self,
+        policy: SlicePolicy,
+        started: float,
+    ) -> tuple[int, list[str], list[str]]:
+        """Run the mining job (job 1) and fold its results into the accumulators.
+
+        Mines newly sealed thread segments when enabled. Returns the
+        ``(total_work, last_items, notes)`` accumulators with the mining
+        results folded in. A failed mining pass is logged and swallowed —
+        the consolidation job still runs.
+        """
         total_work = 0
         last_items: list[str] = []
-
-        # ── Job 1: mine newly sealed thread segments ────────────────
+        notes: list[str] = []
         if self._mine_enabled:
             try:
                 mined, mined_last, mine_note = await self._mine_new_segments(policy, started)
@@ -469,74 +494,102 @@ class MemoryConsolidationSlice:
                         notes.append(mine_note)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("memory_consolidation: mining pass failed: %s", exc)
+        return total_work, last_items, notes
 
-        # ── Job 2: episodic-pressure consolidation ──────────────────
-        episodic_count = await self._episodic_count()
-        if episodic_count is None:
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            if total_work > 0:
-                return SliceOutcome(
-                    work_items_completed=total_work,
-                    elapsed_ms=elapsed_ms,
-                    last_item=last_items[-1] if last_items else "",
-                    notes=tuple(notes) or ("mined_only_no_episodic_count",),
-                )
-            return SliceOutcome(
-                work_items_completed=0,
-                elapsed_ms=elapsed_ms,
-                last_item="",
-                notes=("no_episodic_count_seam",),
+    def _no_episodic_count_outcome(
+        self,
+        total_work: int,
+        started: float,
+        last_items: list[str],
+        notes: list[str],
+    ) -> SliceOutcome:
+        """Build the outcome for the missing episodic-count seam.
+
+        The episodic-count seam returning ``None`` (backends without the
+        count operation) ends the slice after the mining pass.
+        """
+        if total_work > 0:
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=() if notes else ("mined_only_no_episodic_count",),
             )
-        pressure = episodic_count / max(self._config.max_records, 1)
-
-        fire, reason = self._should_fire(
-            pressure=pressure,
-            episodic_count=episodic_count,
-            slice_budget_ms=int(getattr(policy, "budget_ms", 0) or 0),
+        return SliceOutcome(
+            work_items_completed=0,
+            elapsed_ms=(time.monotonic() - started) * 1000.0,
+            last_item="",
+            notes=("no_episodic_count_seam",),
         )
-        if not fire:
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            if total_work > 0:
-                return SliceOutcome(
-                    work_items_completed=total_work,
-                    elapsed_ms=elapsed_ms,
-                    last_item=last_items[-1] if last_items else "",
-                    notes=(*notes, reason) if notes else (reason,),
-                )
-            return SliceOutcome(
-                work_items_completed=0,
-                elapsed_ms=elapsed_ms,
-                last_item="",
-                notes=(reason,),
-            )
 
-        # Fire: load the episodic batch, invoke the consolidation operation.
+    def _no_fire_outcome(
+        self,
+        total_work: int,
+        started: float,
+        last_items: list[str],
+        notes: list[str],
+        reason: str,
+    ) -> SliceOutcome:
+        """Build the outcome for a consolidation pass that did not fire."""
+        if total_work > 0:
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=(reason,),
+            )
+        return SliceOutcome(
+            work_items_completed=0,
+            elapsed_ms=(time.monotonic() - started) * 1000.0,
+            last_item="",
+            notes=(reason,),
+        )
+
+    async def _run_consolidation_pass(
+        self,
+        policy: SlicePolicy,
+        started: float,
+        total_work: int,
+        last_items: list[str],
+        *,
+        notes: list[str],
+        reason: str,
+    ) -> SliceOutcome:
+        """Run the consolidation job (job 2) once the fire decision is made.
+
+        Loads the episodic batch, invokes the consolidation operation, and
+        persists the fired state. Short-circuits with a note-suffixed
+        outcome when the batch is empty, the slice budget expired, or the
+        execute-operation seam is missing.
+        """
         batch = await self._load_episodic_batch()
         if not batch:
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            return SliceOutcome(
-                work_items_completed=total_work,
-                elapsed_ms=elapsed_ms,
-                last_item=last_items[-1] if last_items else "",
-                notes=(*notes, f"{reason};no_episodic_batch"),
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=(f"{reason};no_episodic_batch",),
             )
         if self._slice_budget_expired(policy, started):
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            return SliceOutcome(
-                work_items_completed=total_work,
-                elapsed_ms=elapsed_ms,
-                last_item=last_items[-1] if last_items else "",
-                notes=(*notes, f"{reason};budget_expired_before_operation"),
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=(f"{reason};budget_expired_before_operation",),
             )
 
         exec_op = getattr(self._hooks, "execute_operation", None)
         if not callable(exec_op):
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            return SliceOutcome(
-                work_items_completed=total_work,
-                elapsed_ms=elapsed_ms,
-                last_item=last_items[-1] if last_items else "",
-                notes=(*notes, f"{reason};no_execute_operation"),
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=(f"{reason};no_execute_operation",),
             )
 
         op_id = self._config.consolidate_operation
@@ -551,11 +604,12 @@ class MemoryConsolidationSlice:
             result = await exec_op(op_id, params)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("memory_consolidation: %s failed: %s", op_id, exc)
-            return SliceOutcome(
-                work_items_completed=total_work,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item=last_items[-1] if last_items else "",
-                notes=(*notes, f"{reason};operation_error:{type(exc).__name__}"),
+            return self._outcome(
+                work_items=total_work,
+                started=started,
+                last_items=last_items,
+                notes=notes,
+                extra_notes=(f"{reason};operation_error:{type(exc).__name__}",),
             )
 
         extra = getattr(result, "extra", {}) or {}
@@ -575,6 +629,44 @@ class MemoryConsolidationSlice:
                 else last_items[-1]
             ),
             notes=(*notes, reason),
+        )
+
+    # ── Slice entrypoint ─────────────────────────────────────────────
+
+    async def slice(self, ctx: Any, policy: SlicePolicy) -> SliceOutcome:
+        """Mine new sealed segments, then fire consolidation if pressure warrants.
+
+        ``ctx`` is unused (matches the ``StateProvider.slice`` contract);
+        all state is read from ``self._hooks`` and the sidecars.
+        """
+        del ctx  # explicit: the slice is stateless w.r.t. ctx
+        started = time.monotonic()
+
+        # ── Job 1: mine newly sealed thread segments ────────────────
+        total_work, last_items, notes = await self._run_mining_pass(policy, started)
+
+        # ── Job 2: episodic-pressure consolidation ──────────────────
+        episodic_count = await self._episodic_count()
+        if episodic_count is None:
+            return self._no_episodic_count_outcome(total_work, started, last_items, notes)
+        pressure = episodic_count / max(self._config.max_records, 1)
+
+        fire, reason = self._should_fire(
+            pressure=pressure,
+            episodic_count=episodic_count,
+            slice_budget_ms=int(getattr(policy, "budget_ms", 0) or 0),
+        )
+        if not fire:
+            return self._no_fire_outcome(total_work, started, last_items, notes, reason)
+
+        # Fire: load the episodic batch, invoke the consolidation operation.
+        return await self._run_consolidation_pass(
+            policy,
+            started,
+            total_work,
+            last_items,
+            notes=notes,
+            reason=reason,
         )
 
 
