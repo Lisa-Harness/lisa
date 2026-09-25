@@ -533,6 +533,13 @@ async def test_mcp_tool_error_continues_turn() -> None:
 # ── Tool dispatch: empty output coercion ──────────────────────────────
 
 
+def _capture_tool_role_messages(messages: list[dict[str, Any]], captured: list[str]) -> None:
+    """Append the contents of tool-role messages from one request into ``captured``."""
+    for msg in messages:
+        if msg.get("role") == "tool":
+            captured.append(str(msg.get("content", "")))
+
+
 @pytest.mark.asyncio
 async def test_empty_tool_output_coerced_to_done() -> None:
     """When a tool returns empty output, it's coerced to 'Done'."""
@@ -568,9 +575,7 @@ async def test_empty_tool_output_coerced_to_done() -> None:
                 content="",
                 tool_calls=[_make_tool_call("c1", "custom.tool", {})],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        _capture_tool_role_messages(kwargs.get("messages", []), captured_tool_outputs)
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(two_step, mcp_tool_pool=_EmptyPool())

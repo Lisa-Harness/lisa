@@ -144,6 +144,35 @@ class DistilledLearning(BaseModel):
     )
 
 
+def _parse_bullet_facts(normalized: str) -> list[str]:
+    """Extract up to three facts from bullet/list lines (non-JSON providers)."""
+    bullet_pattern = re.compile(r"^(?:[-*\u2022]|\d+[\.)\]])\s+(?P<fact>.+)$")
+    facts: list[str] = []
+    for line in normalized.splitlines():
+        match = bullet_pattern.match(line.strip())
+        if not match:
+            continue
+        fact = match.group("fact").strip()
+        if fact:
+            facts.append(fact)
+        if len(facts) == _MAX_DISTILLED_FACTS:
+            break
+    return facts
+
+
+def _parse_sentence_facts(normalized: str) -> list[str]:
+    """Extract up to three facts from plain prose (no JSON, no bullets)."""
+    sentence_facts: list[str] = []
+    for chunk in re.split(r"(?<=[.!?])\s+|\n+", normalized):
+        candidate = chunk.strip().strip('"').strip("'")
+        if not candidate:
+            continue
+        sentence_facts.append(candidate)
+        if len(sentence_facts) == _MAX_DISTILLED_FACTS:
+            break
+    return sentence_facts
+
+
 def _parse_distilled_learning(content: str) -> DistilledLearning:
     """Parse structured output with a bullet-list fallback for non-JSON providers."""
     normalized = (content or "").strip()
@@ -165,29 +194,12 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
                 "output that failed validation; refusing to fall back to prose "
                 f"parsing. Raw output: {normalized[:200]!r}"
             ) from direct_exc
-        bullet_pattern = re.compile(r"^(?:[-*\u2022]|\d+[\.)\]])\s+(?P<fact>.+)$")
-        facts: list[str] = []
-        for line in normalized.splitlines():
-            match = bullet_pattern.match(line.strip())
-            if not match:
-                continue
-            fact = match.group("fact").strip()
-            if fact:
-                facts.append(fact)
-            if len(facts) == _MAX_DISTILLED_FACTS:
-                break
-        if facts:
-            return DistilledLearning(facts=facts)
+        bullet_facts = _parse_bullet_facts(normalized)
+        if bullet_facts:
+            return DistilledLearning(facts=bullet_facts)
 
         # Fallback for providers that return plain prose instead of JSON or bullets.
-        sentence_facts: list[str] = []
-        for chunk in re.split(r"(?<=[.!?])\s+|\n+", normalized):
-            candidate = chunk.strip().strip('"').strip("'")
-            if not candidate:
-                continue
-            sentence_facts.append(candidate)
-            if len(sentence_facts) == _MAX_DISTILLED_FACTS:
-                break
+        sentence_facts = _parse_sentence_facts(normalized)
         if sentence_facts:
             return DistilledLearning(facts=sentence_facts)
 
@@ -222,55 +234,31 @@ def _default_learning_content(ctx: OperationExecutionContext) -> str:
     return query or response
 
 
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    """Distill raw content into durable facts, then persist to memory."""
-    params = ctx.params or {}
-    raw_content = str(params.get("content", "") or "").strip() or _default_learning_content(ctx)
-    if not raw_content:
-        return OperationResult(output_text="⛔ No content provided to store.")
+async def _distill_facts(
+    ctx: OperationExecutionContext,
+    *,
+    model_def: Any,
+    system_prompt: str,
+    raw_content: str,
+    distill_max_tokens: int,
+) -> str:
+    """Run the distillation loop and return the joined durable facts.
 
-    salience = float(params.get("salience", 0.5))
-    # Default to 'daily' so model-called captures that omit the tier land as
-    # short-lived workflow state. The auto-capture path always supplies an
-    # explicit, salience-graded tier, so this default only binds the
-    # model-invoked path (see Parameters.memory_tier).
-    memory_tier = params.get("memory_tier", "daily")
-    # Keep learning records under one canonical operation id so recall queries stay stable.
-    memory_operation_id = "save_learning"
-
-    # Step 1: Distill with the LLM. Distillation is required (not optional) —
-    # a missing completion function, unresolved model, or authored prompt
-    # raises rather than silently persisting the raw conversation text.
+    The distillation loop. Local OpenAI-compatible models (Ollama) frequently
+    ignore ``response_format`` and return empty content, or emit JSON that
+    truncates mid-array (``max_tokens`` too small for the envelope + 3 facts).
+    Both produce unparseable output. Per the structured-output contract
+    (/memories/repo/structured-output-contract.md), retry once with an
+    explicit JSON-only instruction before surfacing the failure. The retry
+    covers ALL first-attempt failures — empty output, JSON-truncation
+    (RuntimeError from the _looks_like_json guard), and ValidationError.
+    """
     if ctx.host is None:
         raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
-    model_id = ctx.preferred_model_id
-    model_def = ctx.host.resolve_model(model_id)
-    if model_def is None:
-        model_def = ctx.host.resolve_model("default")
-    if model_def is None:
-        raise RuntimeError("synthesize_and_store_learning could not resolve a model")
-
-    system_prompt = _load_system_prompt(ctx)
-    # The distillation loop. Local OpenAI-compatible models (Ollama) frequently
-    # ignore ``response_format`` and return empty content, or emit JSON that
-    # truncates mid-array (``max_tokens`` too small for the envelope + 3 facts).
-    # Both produce unparseable output. Per the structured-output contract
-    # (/memories/repo/structured-output-contract.md), retry once with an
-    # explicit JSON-only instruction before surfacing the failure. The retry
-    # covers ALL first-attempt failures — empty output, JSON-truncation
-    # (RuntimeError from the _looks_like_json guard), and ValidationError.
     first_messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": raw_content},
     ]
-    # Token budget for the distillation call, resolved from ``ctx.pack_config``
-    # (key ``memory_distill_max_tokens`` under
-    # ``resources.packs.configuration.lisa-pack-memory``) with a module
-    # fallback of 512. 512 leaves headroom for the JSON envelope + 3 durable
-    # facts; 300 truncated the array mid-fact on 2026-07-18, producing invalid
-    # JSON that the _looks_like_json guard correctly refused to fall back to
-    # prose.
-    distill_max_tokens = _resolve_settings(ctx).distill_max_tokens
     distilled_text: str | None = None
     last_exc: Exception | None = None
     for attempt_idx, attempt_messages in enumerate(
@@ -307,17 +295,82 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         raise RuntimeError(
             f"synthesize_and_store_learning distillation failed: {last_exc}"
         ) from last_exc
+    return distilled_text
 
-    # Step 2: Persist via the memory.add MCP tool (default memory backend).
+
+def _build_store_content_json(ctx: OperationExecutionContext) -> dict[str, object]:
+    """Build the stored record's content_json provenance payload.
+
+    Memory → thread linkage: when the host stamps the global turn index into
+    the capture context, carry it into the stored record so recall can point
+    back to the exact turn the learning came from.
+    """
     content_json: dict[str, object] = {"query": ctx.query, "model": ctx.model_id}
     if "had_briefing" in ctx.extra:
         content_json["had_chase_briefing"] = ctx.extra["had_briefing"]
-    # Memory → thread linkage: when the host stamps the global turn index
-    # into the capture context, carry it into the stored record so recall
-    # can point back to the exact turn the learning came from.
     thread_turn = ctx.extra.get("thread_turn")
     if isinstance(thread_turn, int):
         content_json["thread_turn"] = thread_turn
+    return content_json
+
+
+def _parse_memory_id(add_text: str) -> int | None:
+    """Extract the minted record id from a ``Memory stored with ID <n>`` reply."""
+    if "ID " not in add_text:
+        return None
+    try:
+        return int(add_text.split("ID ", 1)[1].rstrip("."))
+    except (ValueError, IndexError):
+        return None
+
+
+async def execute(ctx: OperationExecutionContext) -> OperationResult:
+    """Distill raw content into durable facts, then persist to memory."""
+    params = ctx.params or {}
+    raw_content = str(params.get("content", "") or "").strip() or _default_learning_content(ctx)
+    if not raw_content:
+        return OperationResult(output_text="⛔ No content provided to store.")
+
+    salience = float(params.get("salience", 0.5))
+    # Default to 'daily' so model-called captures that omit the tier land as
+    # short-lived workflow state. The auto-capture path always supplies an
+    # explicit, salience-graded tier, so this default only binds the
+    # model-invoked path (see Parameters.memory_tier).
+    memory_tier = params.get("memory_tier", "daily")
+    # Keep learning records under one canonical operation id so recall queries stay stable.
+    memory_operation_id = "save_learning"
+
+    # Step 1: Distill with the LLM. Distillation is required (not optional) —
+    # a missing completion function, unresolved model, or authored prompt
+    # raises rather than silently persisting the raw conversation text.
+    if ctx.host is None:
+        raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
+    model_id = ctx.preferred_model_id
+    model_def = ctx.host.resolve_model(model_id)
+    if model_def is None:
+        model_def = ctx.host.resolve_model("default")
+    if model_def is None:
+        raise RuntimeError("synthesize_and_store_learning could not resolve a model")
+
+    system_prompt = _load_system_prompt(ctx)
+    # Token budget for the distillation call, resolved from ``ctx.pack_config``
+    # (key ``memory_distill_max_tokens`` under
+    # ``resources.packs.configuration.lisa-pack-memory``) with a module
+    # fallback of 512. 512 leaves headroom for the JSON envelope + 3 durable
+    # facts; 300 truncated the array mid-fact on 2026-07-18, producing invalid
+    # JSON that the _looks_like_json guard correctly refused to fall back to
+    # prose.
+    distill_max_tokens = _resolve_settings(ctx).distill_max_tokens
+    distilled_text = await _distill_facts(
+        ctx,
+        model_def=model_def,
+        system_prompt=system_prompt,
+        raw_content=raw_content,
+        distill_max_tokens=distill_max_tokens,
+    )
+
+    # Step 2: Persist via the memory.add MCP tool (default memory backend).
+    content_json = _build_store_content_json(ctx)
 
     if ctx.host is None:
         return OperationResult(
@@ -354,19 +407,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # Thread → memory linkage: surface the minted record id so the host can
     # stamp it onto the thread entry's provenance. The lisa-memory backend
     # replies "Memory stored with ID <n>".
-    memory_id: int | None = None
     add_text = getattr(tool_result, "output_text", "") or ""
-    if "ID " in add_text:
-        try:
-            memory_id = int(add_text.split("ID ", 1)[1].rstrip("."))
-        except (ValueError, IndexError):
-            memory_id = None
+    memory_id = _parse_memory_id(add_text)
 
     preview = distilled_text[:_STORED_LEARNING_PREVIEW_CHARS]
     extra: dict[str, object] = {"recorded": True, "distilled": distilled_text}
     if memory_id is not None:
         extra["memory_ids"] = [memory_id]
+    suffix = "..." if len(distilled_text) > _STORED_LEARNING_PREVIEW_CHARS else ""
     return OperationResult(
-        output_text=f"✅ Learning stored: '{preview}{'...' if len(distilled_text) > _STORED_LEARNING_PREVIEW_CHARS else ''}'",
+        output_text=f"✅ Learning stored: '{preview}{suffix}'",
         extra=extra,
     )

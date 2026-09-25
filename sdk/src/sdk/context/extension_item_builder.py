@@ -76,39 +76,61 @@ class EntryPointExtensionItemBuilder:
             return items
 
         for ep in eps:
-            if self._excluded_packs and _entry_point_pack_name(ep) in self._excluded_packs:
-                continue
             pack_name = _entry_point_pack_name(ep)
-            try:
-                builder_fn = ep.load()
-            except Exception:  # pylint: disable=broad-except
-                logger.warning("Failed to load context_items entry %r", ep.name, exc_info=True)
+            if self._excluded_packs and pack_name in self._excluded_packs:
                 continue
-
-            try:
-                contributed = builder_fn(runtime_context, state)
-            except Exception:  # pylint: disable=broad-except
-                logger.warning(
-                    "Extension %r context_items builder raised; continuing.",
-                    ep.name,
-                    exc_info=True,
-                )
-                continue
-
+            contributed = self._load_and_call(ep, pack_name, runtime_context, state)
             if contributed:
-                for item in contributed:
-                    # Tag each item with its source distribution package name
-                    # so the broker can enforce pack-scoped item boundaries.
-                    # Use setattr to support both Pydantic models and plain
-                    # dict contributions.
-                    if hasattr(item, "pack"):
-                        if not item.pack:
-                            item.pack = pack_name
-                    elif isinstance(item, dict) and not item.get("pack"):
-                        item["pack"] = pack_name
+                _tag_items_with_pack(contributed, pack_name)
                 items.extend(contributed)
 
         return items
+
+    def _load_and_call(
+        self,
+        ep: EntryPoint,
+        pack_name: str,
+        runtime_context: Any,
+        state: Any,
+    ) -> list[Any]:
+        """Load one entry point's builder and collect its items.
+
+        Failures are logged and swallowed (empty list returned) so a
+        broken extension does not block context assembly.
+        """
+        try:
+            builder_fn = ep.load()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Failed to load context_items entry %r", ep.name, exc_info=True)
+            return []
+
+        try:
+            contributed = builder_fn(runtime_context, state)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Extension %r context_items builder raised; continuing.",
+                ep.name,
+                exc_info=True,
+            )
+            return []
+        return list(contributed) if contributed else []
+
+
+def _tag_items_with_pack(contributed: list[Any], pack_name: str) -> None:
+    """Tag each item with its source distribution package name.
+
+    The broker can then enforce pack-scoped item boundaries: a mode only
+    sees extension items from its own provider pack plus any packs it
+    explicitly allows via ``context_item_packs`` in its ``_mode.md``
+    front-matter. Uses setattr to support both Pydantic models and plain
+    dict contributions.
+    """
+    for item in contributed:
+        if hasattr(item, "pack"):
+            if not item.pack:
+                item.pack = pack_name
+        elif isinstance(item, dict) and not item.get("pack"):
+            item["pack"] = pack_name
 
 
 def set_production_extension_item_builder(

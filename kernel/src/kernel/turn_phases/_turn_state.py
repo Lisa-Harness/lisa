@@ -647,6 +647,64 @@ def budget_forces_final(
     return False
 
 
+def _budget_remaining(
+    state: _TurnState,
+    turn_budget: TurnBudget | None,
+) -> int | None:
+    """Return remaining tool-call budget, or None when there is no cap."""
+    if turn_budget is None or not turn_budget.max_tool_calls:
+        return None
+    return max(0, turn_budget.max_tool_calls - state.total_tool_calls)
+
+
+#: Sentinel meaning "the router decision produced no model; fall through to the
+#: next tier". Distinct from ``None`` because ``model_def`` itself may be None
+#: yet still a terminal answer (finish / transition_to) that must be returned.
+_NO_ROUTER_MODEL = object()
+
+
+def _resolve_router_decision(
+    decision: Any,
+    state: _TurnState,
+    resolve_model: Any,
+    model_def: Any,
+    log: logging.Logger,
+) -> Any:
+    """Resolve one router decision to a model definition.
+
+    Terminal actions (``finish`` / ``transition_to``) are stored on
+    ``state.pending_router_decision`` and the static ``model_def`` is
+    returned — the turn loop inspects the pending decision afterwards and
+    forces a final completion or a workflow transition. A ``model_id``
+    action resolves the model directly; bare model-id strings (routers that
+    skip the decision protocol) are tolerated the same way. Returns
+    ``_NO_ROUTER_MODEL`` when the decision yields no model (the caller
+    falls through to the legacy policy tier).
+    """
+    from kernel.seams.protocols import RouterDecision
+
+    if isinstance(decision, RouterDecision):
+        if decision.finish.strip() or decision.transition_to.strip():
+            state.pending_router_decision = decision
+            return model_def
+        if decision.model_id.strip():
+            resolved = resolve_model(decision.model_id.strip())
+            if resolved is not None:
+                state.effective_model = resolved
+                return resolved
+            log.warning(
+                "model_router returned unknown model_id %r; falling back",
+                decision.model_id,
+            )
+        return _NO_ROUTER_MODEL
+    if isinstance(decision, str) and decision.strip():
+        resolved = resolve_model(decision.strip())
+        if resolved is not None:
+            state.effective_model = resolved
+            return resolved
+    return _NO_ROUTER_MODEL
+
+
 def resolve_iteration_model(
     state: _TurnState,
     iteration_num: int,
@@ -686,13 +744,7 @@ def resolve_iteration_model(
             default_model_id=preferred_model_id,
             iteration=iteration_num,
             tool_calls_so_far=state.total_tool_calls,
-            budget_remaining=(
-                None
-                if turn_budget is None
-                else max(0, turn_budget.max_tool_calls - state.total_tool_calls)
-                if turn_budget.max_tool_calls
-                else None
-            ),
+            budget_remaining=_budget_remaining(state, turn_budget),
             query=query,
             last_tool_result=state.last_tool_result_text,
             has_tool_result=state.tool_results_received > 0,
@@ -710,26 +762,8 @@ def resolve_iteration_model(
             )
             decision = None
         if isinstance(decision, RouterDecision):
-            if decision.finish.strip():
-                state.pending_router_decision = decision
-                return model_def
-            if decision.transition_to.strip():
-                state.pending_router_decision = decision
-                return model_def
-            if decision.model_id.strip():
-                resolved = resolve_model(decision.model_id.strip())
-                if resolved is not None:
-                    state.effective_model = resolved
-                    return resolved
-                log.warning(
-                    "model_router returned unknown model_id %r; falling back",
-                    decision.model_id,
-                )
-        elif isinstance(decision, str) and decision.strip():
-            # Tolerate routers that return a bare model_id string.
-            resolved = resolve_model(decision.strip())
-            if resolved is not None:
-                state.effective_model = resolved
+            resolved = _resolve_router_decision(decision, state, resolve_model, model_def, log)
+            if resolved is not _NO_ROUTER_MODEL:
                 return resolved
     # Legacy duck-typed ``choose`` on ModelPolicy.
     policy = hooks.context_seams.model_policy
@@ -739,13 +773,7 @@ def resolve_iteration_model(
             default_model_id=preferred_model_id,
             iteration=iteration_num,
             tool_calls_so_far=state.total_tool_calls,
-            budget_remaining=(
-                None
-                if turn_budget is None
-                else max(0, turn_budget.max_tool_calls - state.total_tool_calls)
-                if turn_budget.max_tool_calls
-                else None
-            ),
+            budget_remaining=_budget_remaining(state, turn_budget),
         )
         if isinstance(chosen_id, str) and chosen_id.strip():
             resolved = resolve_model(chosen_id.strip())

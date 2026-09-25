@@ -369,6 +369,43 @@ async def test_call_tool_scoped_unknown_server_is_error(monkeypatch: pytest.Monk
     await pool.aclose()
 
 
+async def _refresh_connected_servers_only(self: MCPToolPool) -> None:
+    """Rebuild the tool index over CONNECTED servers only (mirrors real behavior),
+    so a cold server has no tools until lazily started."""
+    self._tools = []
+    self._tool_index = {}
+    self._tool_index_by_server = {}
+    self._bare_to_server_index = {}
+    for config in self._configs:
+        session = self._sessions.get(config.server_id)
+        if session is None:
+            continue
+        result = await session.list_tools()
+        server_index: dict[str, MCPToolSpec] = {}
+        for tool in result.tools:
+            bare_spec = MCPToolSpec(
+                server_id=config.server_id,
+                name=tool.name,
+                description=tool.description or "",
+                input_schema=tool.input_schema or {},
+            )
+            server_index[tool.name] = bare_spec
+            namespaced = namespaced_tool_name(config.server_id, tool.name)
+            namespaced_spec = MCPToolSpec(
+                server_id=config.server_id,
+                name=namespaced,
+                description=tool.description or "",
+                input_schema=tool.input_schema or {},
+            )
+            if namespaced not in self._tool_index:
+                self._tool_index[namespaced] = (config.server_id, namespaced_spec)
+                self._tools.append(namespaced_spec)
+            if tool.name not in self._bare_to_server_index:
+                self._bare_to_server_index[tool.name] = config.server_id
+        self._tool_index_by_server[config.server_id] = server_index
+    self._reindex_synthetic_tools()
+
+
 @pytest.mark.asyncio
 async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.MonkeyPatch) -> None:
     """A scoped call to a cold server that isn't connected yet lazily starts
@@ -397,43 +434,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
                 ]
             )
 
-    # A refresh that only indexes CONNECTED servers (mirrors real behavior),
-    # so mem0 (not connected at start) has no tools until lazily started.
-    async def fake_refresh(self: MCPToolPool) -> None:
-        self._tools = []
-        self._tool_index = {}
-        self._tool_index_by_server = {}
-        self._bare_to_server_index = {}
-        for config in self._configs:
-            session = self._sessions.get(config.server_id)
-            if session is None:
-                continue
-            result = await session.list_tools()
-            server_index: dict[str, MCPToolSpec] = {}
-            for tool in result.tools:
-                bare_spec = MCPToolSpec(
-                    server_id=config.server_id,
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=tool.input_schema or {},
-                )
-                server_index[tool.name] = bare_spec
-                namespaced = namespaced_tool_name(config.server_id, tool.name)
-                namespaced_spec = MCPToolSpec(
-                    server_id=config.server_id,
-                    name=namespaced,
-                    description=tool.description or "",
-                    input_schema=tool.input_schema or {},
-                )
-                if namespaced not in self._tool_index:
-                    self._tool_index[namespaced] = (config.server_id, namespaced_spec)
-                    self._tools.append(namespaced_spec)
-                if tool.name not in self._bare_to_server_index:
-                    self._bare_to_server_index[tool.name] = config.server_id
-            self._tool_index_by_server[config.server_id] = server_index
-        self._reindex_synthetic_tools()
-
-    monkeypatch.setattr(MCPToolPool, "_refresh_tool_index", fake_refresh)
+    monkeypatch.setattr(MCPToolPool, "_refresh_tool_index", _refresh_connected_servers_only)
 
     async def fake_connect(self: MCPToolPool, config: MCPClientConfig) -> None:
         started.append(config.server_id)

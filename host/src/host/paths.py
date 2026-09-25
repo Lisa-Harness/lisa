@@ -242,11 +242,7 @@ def _venv_python_dir(venv_path: Path) -> str:
                 value = value.strip()
                 if key in ("version_info", "version") and value:
                     parts = value.split(".")
-                    if (
-                        len(parts) >= _PYVER_MIN_PARTS
-                        and parts[0].isdigit()
-                        and parts[1].isdigit()
-                    ):
+                    if len(parts) >= _PYVER_MIN_PARTS and parts[0].isdigit() and parts[1].isdigit():
                         return f"python{parts[0]}.{parts[1]}"
         except OSError:
             pass

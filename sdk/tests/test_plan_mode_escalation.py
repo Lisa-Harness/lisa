@@ -491,6 +491,7 @@ def test_plan_workflow_returns_structured_target() -> None:
     payload = {"target_stage_id": "search", "rationale": "research intent detected"}
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -554,6 +555,7 @@ def test_plan_workflow_retries_when_first_completion_is_empty() -> None:
     call_count = {"n": 0}
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -606,6 +608,7 @@ def test_plan_workflow_retry_drops_response_format() -> None:
     calls: list[dict[str, Any]] = []
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -661,6 +664,7 @@ def test_plan_workflow_retries_when_first_call_raises_unsupported() -> None:
     call_count = {"n": 0}
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -725,6 +729,7 @@ def test_plan_workflow_returns_steps_in_output_json() -> None:
     }
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -781,6 +786,7 @@ def test_plan_workflow_renders_visible_plan_markdown() -> None:
     }
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -820,6 +826,7 @@ def test_plan_workflow_no_steps_falls_back_to_rationale_in_output_text() -> None
     payload = {"target_stage_id": "search", "rationale": "research intent detected"}
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,
@@ -859,6 +866,7 @@ def test_plan_workflow_empty_steps_and_empty_target_is_no_match() -> None:
     }
 
     async def fake_complete(
+        *,
         messages,
         model_def,
         max_tokens,

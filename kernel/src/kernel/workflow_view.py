@@ -53,6 +53,49 @@ _WRITES_RE = re.compile(r"^\s*_\s*writes:\s*([a-zA-Z0-9_.-]+)\s*_\s*$")
 _READS_RE = re.compile(r"^\s*_\s*reads_\s*$")
 
 
+def _parse_step_deliverable_lines(
+    lines: list[str],
+    step_index: int,
+) -> tuple[str, str | None, int]:
+    """Consume the optional rationale / deliverable lines following one plan step.
+
+    Both the rationale and the ``_writes_`` / ``_reads_`` line use the ``_..._``
+    wrapper; they are distinguished by content, and the deliverable line takes
+    precedence for capability extraction. Returns ``(rationale, write_capability,
+    next_index)`` where ``next_index`` is the line index after the consumed
+    lookahead lines.
+    """
+    rationale = ""
+    write_capability: str | None = None
+    i = step_index
+    if i + 1 >= len(lines):
+        return rationale, write_capability, i
+
+    writes_match = _WRITES_RE.match(lines[i + 1])
+    reads_match = _READS_RE.match(lines[i + 1])
+    if writes_match:
+        write_capability = writes_match.group(1).strip()
+        i += 1
+        if i + 1 < len(lines):
+            rat_match = _RATIONALE_RE.match(lines[i + 1])
+            if rat_match:
+                rationale = rat_match.group(1).strip()
+                i += 1
+    elif reads_match:
+        i += 1
+        if i + 1 < len(lines):
+            rat_match = _RATIONALE_RE.match(lines[i + 1])
+            if rat_match:
+                rationale = rat_match.group(1).strip()
+                i += 1
+    else:
+        rat_match = _RATIONALE_RE.match(lines[i + 1])
+        if rat_match:
+            rationale = rat_match.group(1).strip()
+            i += 1
+    return rationale, write_capability, i
+
+
 def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | None]]] | None:
     """Extract the ``## Plan`` block from ``text``.
 
@@ -84,40 +127,12 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | N
     steps: list[tuple[str, str, str, str | None]] = []
     i = 1  # skip the header line
     while i < len(lines):
-        line = lines[i]
-        step_match = _PLAN_STEP_RE.match(line)
+        step_match = _PLAN_STEP_RE.match(lines[i])
         if step_match:
             mode_id = step_match.group(1).strip()
             description = step_match.group(2).strip()
-            rationale = ""
-            write_capability: str | None = None
             # Check next lines for rationale and/or deliverable line.
-            # Both the rationale and the _writes_/_reads_ line use the
-            # ``_..._`` wrapper; distinguish by content. The deliverable
-            # line takes precedence for capability extraction.
-            if i + 1 < len(lines):
-                writes_match = _WRITES_RE.match(lines[i + 1])
-                reads_match = _READS_RE.match(lines[i + 1])
-                if writes_match:
-                    write_capability = writes_match.group(1).strip()
-                    i += 1
-                    if i + 1 < len(lines):
-                        rat_match = _RATIONALE_RE.match(lines[i + 1])
-                        if rat_match:
-                            rationale = rat_match.group(1).strip()
-                            i += 1
-                elif reads_match:
-                    i += 1
-                    if i + 1 < len(lines):
-                        rat_match = _RATIONALE_RE.match(lines[i + 1])
-                        if rat_match:
-                            rationale = rat_match.group(1).strip()
-                            i += 1
-                else:
-                    rat_match = _RATIONALE_RE.match(lines[i + 1])
-                    if rat_match:
-                        rationale = rat_match.group(1).strip()
-                        i += 1
+            rationale, write_capability, i = _parse_step_deliverable_lines(lines, i)
             # Skip steps with empty mode_id or description (hollow steps)
             if mode_id and description:
                 steps.append((mode_id, description, rationale, write_capability))
@@ -255,6 +270,107 @@ def _receipts_for_mode(entries: list[dict[str, Any]], mode_id: str, after_index:
     return False
 
 
+def _latest_plan_entry(
+    thread_entries: list[dict[str, Any]],
+) -> tuple[int, str, list[tuple[str, str, str, str | None]]] | None:
+    """Find the most recent ``## Plan`` block, scanning backwards.
+
+    Returns ``(entry_index, plan_text, parsed_steps)``, or None when no
+    entry carries a plan block (no active workflow).
+    """
+    for i in range(len(thread_entries) - 1, -1, -1):
+        entry = thread_entries[i]
+        response = str(entry.get("response_text") or "")
+        result = _parse_plan_block(response)
+        if result is not None:
+            plan_text, parsed_steps = result
+            return i, plan_text, parsed_steps
+    return None
+
+
+def _build_view_steps(
+    parsed_steps: list[tuple[str, str, str, str | None]],
+) -> list[WorkflowStep]:
+    """Build the declared WorkflowStep chain from one parsed plan."""
+    steps: list[WorkflowStep] = []
+    for idx, (mode_id, description, rationale, write_capability) in enumerate(parsed_steps):
+        step_id = _step_id_for(mode_id, idx)
+        steps.append(
+            WorkflowStep(
+                step_id=step_id,
+                mode_id=mode_id,
+                step_query=description,
+                plan_text=rationale,
+                is_terminal=(idx == len(parsed_steps) - 1),
+                spawned_from="thread_derived",
+                write_capability=write_capability,
+            )
+        )
+    return steps
+
+
+def _match_step_completions(
+    steps: list[WorkflowStep],
+    thread_entries: list[dict[str, Any]],
+    plan_entry_index: int,
+) -> tuple[list[str], dict[str, str], list[WorkflowStep]]:
+    """Determine step completion via the deliverable contract.
+
+    - Write step (write_capability set): complete iff a later thread entry
+      has a receipt whose capability_id matches write_capability (raw or
+      bare form). No dense-content fallback — the receipt is the honest
+      signal. The matching entry's global turn index is recorded on the
+      step as ``completing_turn`` so the completion is turn-addressed and
+      verifiable via ``thread_read_range``.
+    - Read step (write_capability None): complete on the first handoff_to or
+      transitioned_to in a later entry with matching mode_id. The reads
+      and prose are already in the lossless thread; the handoff is the
+      completion signal.
+
+    Returns ``(completed_ids, step_results, updated_steps)`` where the
+    updated steps carry ``completing_turn``.
+    """
+    completed: list[str] = []
+    step_results: dict[str, str] = {}
+    updated_steps = list(steps)
+
+    for idx, step in enumerate(updated_steps):
+        completing_entry = _step_satisfied(thread_entries, step, plan_entry_index + idx)
+        if completing_entry is None:
+            continue
+        completed.append(step.step_id)
+        preview = str(completing_entry.get("response_text") or "").strip()[:300]
+        if preview:
+            step_results[step.step_id] = preview
+        # Record the completing turn index on the step so the
+        # completion is turn-addressed. The entry's ``turn`` field is
+        # the global 0-based turn index stamped at append time.
+        completing_turn = completing_entry.get("turn")
+        if isinstance(completing_turn, int):
+            updated_steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
+
+    return completed, step_results, updated_steps
+
+
+def _count_consecutive_same_mode_turns(
+    thread_entries: list[dict[str, Any]],
+    current_mode: str,
+    current_stage: str,
+) -> int:
+    """Count consecutive tail entries sharing the same mode_id + stage_id."""
+    turn_count = 1
+    for j in range(len(thread_entries) - 2, -1, -1):
+        entry = thread_entries[j]
+        if (
+            entry.get("mode_id") == current_mode
+            and str(entry.get("transitioned_to") or "") == current_stage
+        ):
+            turn_count += 1
+        else:
+            break
+    return turn_count
+
+
 def derive_workflow_view(
     thread_entries: list[dict[str, Any]],
     catalog: dict[str, Any] | None = None,
@@ -280,66 +396,18 @@ def derive_workflow_view(
         return None
 
     # Scan from most recent backwards for the latest ## Plan block.
-    plan_entry_index = -1
-    plan_text = ""
-    parsed_steps: list[tuple[str, str, str, str | None]] = []
-
-    for i in range(len(thread_entries) - 1, -1, -1):
-        entry = thread_entries[i]
-        response = str(entry.get("response_text") or "")
-        result = _parse_plan_block(response)
-        if result is not None:
-            plan_text, parsed_steps = result
-            plan_entry_index = i
-            break
-
-    if plan_entry_index == -1:
+    latest_plan = _latest_plan_entry(thread_entries)
+    if latest_plan is None:
         # No plan block found — no active workflow.
         return None
+    plan_entry_index, plan_text, parsed_steps = latest_plan
 
     # Build WorkflowStep objects from the parsed plan.
-    steps: list[WorkflowStep] = []
-    for idx, (mode_id, description, rationale, write_capability) in enumerate(parsed_steps):
-        step_id = _step_id_for(mode_id, idx)
-        steps.append(
-            WorkflowStep(
-                step_id=step_id,
-                mode_id=mode_id,
-                step_query=description,
-                plan_text=rationale,
-                is_terminal=(idx == len(parsed_steps) - 1),
-                spawned_from="thread_derived",
-                write_capability=write_capability,
-            )
-        )
+    steps = _build_view_steps(parsed_steps)
 
-    # Determine completion via the deliverable contract:
-    # - Write step (write_capability set): complete iff a later thread
-    #   entry has a receipt whose capability_id matches write_capability
-    #   (raw or bare form). No dense-content fallback — the receipt is the
-    #   honest signal. The matching entry's global turn index is recorded
-    #   on the step as ``completing_turn`` so the completion is
-    #   turn-addressed and verifiable via ``thread_read_range``.
-    # - Read step (write_capability None): complete on the first
-    #   handoff_to or transitioned_to in a later entry with matching
-    #   mode_id. The reads and prose are already in the lossless thread;
-    #   the handoff is the completion signal.
-    completed: list[str] = []
-    step_results: dict[str, str] = {}
-
-    for idx, step in enumerate(steps):
-        completing_entry = _step_satisfied(thread_entries, step, plan_entry_index + idx)
-        if completing_entry is not None:
-            completed.append(step.step_id)
-            preview = str(completing_entry.get("response_text") or "").strip()[:300]
-            if preview:
-                step_results[step.step_id] = preview
-            # Record the completing turn index on the step so the
-            # completion is turn-addressed. The entry's ``turn`` field is
-            # the global 0-based turn index stamped at append time.
-            completing_turn = completing_entry.get("turn")
-            if isinstance(completing_turn, int):
-                steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
+    completed, step_results, steps = _match_step_completions(
+        steps, thread_entries, plan_entry_index
+    )
 
     # Derive mode/stage pointer from the most recent entry.
     last_entry = thread_entries[-1]
@@ -347,27 +415,17 @@ def derive_workflow_view(
     current_stage = str(last_entry.get("transitioned_to") or "")
 
     # Derive turn_count: consecutive entries with same mode_id + stage_id.
-    turn_count = 1
-    for j in range(len(thread_entries) - 2, -1, -1):
-        entry = thread_entries[j]
-        if (
-            entry.get("mode_id") == current_mode
-            and str(entry.get("transitioned_to") or "") == current_stage
-        ):
-            turn_count += 1
-        else:
-            break
+    turn_count = _count_consecutive_same_mode_turns(thread_entries, current_mode, current_stage)
 
     # Determine current step: first non-completed step.
     current_step_id = ""
     remaining = [s for s in steps if s.step_id not in completed]
-    if remaining:
-        current_step_id = remaining[0].step_id
-    else:
+    if not remaining:
         # All steps complete — the workflow is done. Return None so the
         # caller doesn't inject a stale plan ("if I finished a plan then
         # quit, there shouldn't be a plan").
         return None
+    current_step_id = remaining[0].step_id
 
     # Deterministic position_id from plan_text hash (stable across turns
     # for the same plan, so recovery record correlation works).

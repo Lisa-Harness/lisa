@@ -148,33 +148,21 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
         del catalog[tool_id]
 
 
-async def execute_tool(
+async def _execute_under_tracer(
     tool_id: str,
+    definition: ToolDefinition,
+    execute_fn: Any,
     ctx: ToolExecutionContext,
-) -> ToolResult:
-    """Execute one internal tool by ID and return its structured result.
+) -> Any:
+    """Run ``execute_fn(ctx)`` under the tool span with timeout + telemetry.
 
-    Dispatches to the tool's ``implementation_module.execute(ctx)`` under a
-    timeout, mirroring ``registry.execute_operation``. Tools are
-    runtime-only; there is no declarative tool path.
+    The span records the dispatch outcome, and a fire-and-forget telemetry
+    event is published on the EventBus in the ``finally`` block. Telemetry
+    is strictly best-effort: a publish failure must never replace the tool's
+    own result/exception, so the coroutine is wrapped before scheduling —
+    a synchronous raise here would otherwise surface from this ``finally``
+    and mask the real dispatch outcome (2026-09-08 fetch_page incident).
     """
-    definition = _TOOL_CATALOG.get(tool_id)
-    if definition is None:
-        raise ToolExecutionError(f"Unknown tool '{tool_id}'.")
-    if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
-        raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
-    ctx.tool_id = tool_id
-    _resolve_execution_configuration(definition, ctx)
-    _validate_parameters(definition, ctx)
-    await _require_approval(definition, ctx)
-    module = definition.implementation_module
-    if module is None:
-        raise ToolExecutionError(f"Tool '{tool_id}' has no implementation module.")
-
-    execute_fn = getattr(module, "execute", None)
-    if execute_fn is None:
-        raise ToolExecutionError(f"Tool '{tool_id}' is missing async execute(ctx).")
-
     with _TOOL_TRACER.start_as_current_span("tool.execute") as span:
         set_span_attributes(
             span,
@@ -221,29 +209,41 @@ async def execute_tool(
                 },
             )
             if ctx.event_bus:
-                event = ToolExecutionTelemetry(
-                    target_id=tool_id,
-                    target_type="tool",
-                    status=status,
-                    duration_ms=duration_ms,
-                    error_message=err_msg,
-                )
-                # Fire-and-forget telemetry on the EventBus (topic, payload)
-                # contract. Strictly best-effort: a publish failure must never
-                # replace the tool's own result/exception, so the coroutine is
-                # wrapped before scheduling — a synchronous raise here would
-                # otherwise surface from this ``finally`` and mask the real
-                # dispatch outcome (2026-09-08 fetch_page incident).
-                try:
-                    task = asyncio.create_task(
-                        ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
-                    )
-                except Exception:  # pylint: disable=broad-except
-                    logger.debug("tool telemetry publish failed for %s", tool_id, exc_info=True)
-                else:
-                    _PENDING_TELEMETRY_TASKS.add(task)
-                    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+                _publish_tool_telemetry(ctx, tool_id, status, duration_ms, err_msg)
+    return result
 
+
+def _publish_tool_telemetry(
+    ctx: ToolExecutionContext,
+    tool_id: str,
+    status: Literal["success", "error", "timeout"],
+    duration_ms: int,
+    err_msg: str | None,
+) -> None:
+    """Schedule the fire-and-forget tool telemetry publish on the EventBus."""
+    event = ToolExecutionTelemetry(
+        target_id=tool_id,
+        target_type="tool",
+        status=status,
+        duration_ms=duration_ms,
+        error_message=err_msg,
+    )
+    event_bus = ctx.event_bus
+    if event_bus is None:
+        return
+    try:
+        task = asyncio.create_task(
+            event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("tool telemetry publish failed for %s", tool_id, exc_info=True)
+        return
+    _PENDING_TELEMETRY_TASKS.add(task)
+    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+
+
+def _coerce_tool_result(tool_id: str, result: Any) -> ToolResult:
+    """Wrap a raw tool outcome into a :class:`ToolResult`."""
     if isinstance(result, ToolResult):
         return result
     if isinstance(result, str):
@@ -251,6 +251,37 @@ async def execute_tool(
     raise ToolExecutionError(
         f"Tool '{tool_id}' returned unsupported result type {type(result).__name__}."
     )
+
+
+async def execute_tool(
+    tool_id: str,
+    ctx: ToolExecutionContext,
+) -> ToolResult:
+    """Execute one internal tool by ID and return its structured result.
+
+    Dispatches to the tool's ``implementation_module.execute(ctx)`` under a
+    timeout, mirroring ``registry.execute_operation``. Tools are
+    runtime-only; there is no declarative tool path.
+    """
+    definition = _TOOL_CATALOG.get(tool_id)
+    if definition is None:
+        raise ToolExecutionError(f"Unknown tool '{tool_id}'.")
+    if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
+        raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
+    ctx.tool_id = tool_id
+    _resolve_execution_configuration(definition, ctx)
+    _validate_parameters(definition, ctx)
+    await _require_approval(definition, ctx)
+    module = definition.implementation_module
+    if module is None:
+        raise ToolExecutionError(f"Tool '{tool_id}' has no implementation module.")
+
+    execute_fn = getattr(module, "execute", None)
+    if execute_fn is None:
+        raise ToolExecutionError(f"Tool '{tool_id}' is missing async execute(ctx).")
+
+    result = await _execute_under_tracer(tool_id, definition, execute_fn, ctx)
+    return _coerce_tool_result(tool_id, result)
 
 
 def _resolve_execution_configuration(

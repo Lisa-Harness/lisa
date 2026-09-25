@@ -135,6 +135,21 @@ def _is_private_ip(host: str, blocks: tuple[str, ...]) -> bool:
     return False
 
 
+def _validate_url_scheme(
+    cleaned: str,
+    *,
+    allow_http: bool,
+) -> tuple[str | None, str | None]:
+    """Return the URL scheme-validation failure, or ``(scheme, None)`` when OK."""
+    parsed = urllib.parse.urlparse(cleaned)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        return None, f"URL must be http or https, got '{cleaned}'."
+    if scheme == "http" and not allow_http:
+        return None, f"Blocked HTTP URL '{cleaned}'. HTTPS is required by default."
+    return scheme, None
+
+
 def validate_url(
     url: str,
     *,
@@ -152,21 +167,67 @@ def validate_url(
     cleaned = (url or "").strip()
     if not cleaned:
         return None, "URL is required."
+    scheme, reason = _validate_url_scheme(cleaned, allow_http=allow_http)
+    if scheme is None or reason is not None:
+        return None, reason or "URL is required."
     parsed = urllib.parse.urlparse(cleaned)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in _ALLOWED_SCHEMES:
-        return None, f"URL must be http or https, got '{cleaned}'."
-    if scheme == "http" and not allow_http:
-        return None, (f"Blocked HTTP URL '{cleaned}'. HTTPS is required by default.")
     host = (parsed.hostname or "").lower()
     if not host:
         return None, f"URL has no host: {cleaned}"
     if allowed_hosts is not None and host not in allowed_hosts:
         allowed_str = ", ".join(sorted(allowed_hosts)) or "(none)"
-        return None, (f"Blocked URL from host '{host}'. Allowed hosts are: {allowed_str}.")
+        return None, f"Blocked URL from host '{host}'. Allowed hosts are: {allowed_str}."
     if _is_private_ip(host, private_ip_blocks):
-        return None, (f"Blocked URL to private/loopback host '{host}' (SSRF guard).")
+        return None, f"Blocked URL to private/loopback host '{host}' (SSRF guard)."
     return cleaned, None
+
+
+def _apply_auth_header(headers: dict[str, str], auth: str) -> None:
+    """Apply a ``name: value``- or bare-token auth header to ``headers`` in place.
+
+    A bare token (no colon) becomes a default ``Authorization`` header.
+    """
+    if ":" in auth:
+        hk, hv = auth.split(":", 1)
+        headers[hk.strip()] = hv.strip()
+    else:
+        headers["Authorization"] = auth
+
+
+def _apply_conditional_get_headers(headers: dict[str, str], stale: FetchedResult | None) -> None:
+    """Attach stale-cache validators (ETag / Last-Modified) for a conditional GET."""
+    if stale is None:
+        return
+    if stale.etag:
+        headers["If-None-Match"] = stale.etag
+    if stale.last_modified:
+        headers["If-Modified-Since"] = stale.last_modified
+
+
+def _refreshed_stale_result(stale: FetchedResult | None) -> FetchedResult | None:
+    """Return a 304-refreshed copy of ``stale``, or None when there is no cache entry.
+
+    Revalidation extends freshness without a body download; the caller stores
+    the refreshed result when the policy allows and degrades to an empty 304
+    response when there is nothing cached.
+    """
+    if stale is None:
+        return None
+    return stale.model_copy(update={"fetched_at": _now_iso(), "from_cache": False})
+
+
+def _empty_304_result(url: str) -> FetchedResult:
+    """Return the empty-body result used for a 304 with no usable cache entry."""
+    return FetchedResult(
+        url=url,
+        status_code=304,
+        body=b"",
+        text="",
+        content_type="",
+        etag="",
+        last_modified="",
+        fetched_at=_now_iso(),
+    )
 
 
 # ── Fetcher ─────────────────────────────────────────────────────────────────
@@ -369,22 +430,13 @@ class ContentFetcher:
         headers: dict[str, str] = {"User-Agent": _USER_AGENT}
         auth = policy.auth_header
         if auth:
-            if ":" in auth:
-                hk, hv = auth.split(":", 1)
-                headers[hk.strip()] = hv.strip()
-            else:
-                headers["Authorization"] = auth
+            _apply_auth_header(headers, auth)
 
         # Conditional GET: attach validators from a stale cache if we have one.
         # force_refresh suppresses conditional headers too (matches the
         # original session_context_fetch semantics: force = full fresh download).
         if policy.revalidate_etag and not policy.force_refresh:
-            stale = self._peek_raw(url)
-            if stale is not None:
-                if stale.etag:
-                    headers["If-None-Match"] = stale.etag
-                if stale.last_modified:
-                    headers["If-Modified-Since"] = stale.last_modified
+            _apply_conditional_get_headers(headers, self._peek_raw(url))
 
         try:
             async with httpx.AsyncClient(
@@ -394,25 +446,13 @@ class ContentFetcher:
                 response = await client.get(url, headers=headers)
 
                 if response.status_code == httpx.codes.NOT_MODIFIED and policy.revalidate_etag:
-                    stale = self._peek_raw(url)
-                    if stale is not None:
-                        refreshed = stale.model_copy(
-                            update={"fetched_at": _now_iso(), "from_cache": False}
-                        )
+                    refreshed = _refreshed_stale_result(self._peek_raw(url))
+                    if refreshed is not None:
                         if policy.cache:
                             self._store(refreshed)
                         return refreshed
                     # 304 with no cache — treat as a fresh empty-ish response.
-                    return FetchedResult(
-                        url=url,
-                        status_code=304,
-                        body=b"",
-                        text="",
-                        content_type="",
-                        etag="",
-                        last_modified="",
-                        fetched_at=_now_iso(),
-                    )
+                    return _empty_304_result(url)
 
                 response.raise_for_status()
                 raw = response.content[:max_bytes]

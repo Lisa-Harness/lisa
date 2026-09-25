@@ -231,38 +231,36 @@ def load_model_manifest_from_text(
     )
 
 
-def _load_model_manifest_payload(
-    raw_payload: dict[str, Any],
-    *,
-    require_mode_models: bool = False,
-    allowed_providers: set[str] | frozenset[str] | None = None,
-) -> ModelManifest:
-    """Validate one already-parsed manifest payload into ``ModelManifest``."""
+def _normalize_mode_models(raw_mode_models: Any, *, require_mode_models: bool) -> dict[str, str]:
+    """Validate and normalize the optional ``mode_models`` mapping.
 
-    raw_models = raw_payload.get("models")
-    if not isinstance(raw_models, list):
-        raise ValueError("Model manifest must include a 'models' list.")
-
-    raw_mode_models = raw_payload.get("mode_models")
+    Keys are normalized to lowercase mode ids; values keep their case.
+    """
     if require_mode_models and not isinstance(raw_mode_models, dict):
         raise ValueError("Model manifest must include a 'mode_models' mapping.")
 
     mode_models: dict[str, str] = {}
-    if raw_mode_models is not None:
-        if not isinstance(raw_mode_models, dict):
-            raise ValueError("Model manifest 'mode_models' must be a mapping when provided.")
-        for mode_id, model_ref in raw_mode_models.items():
-            normalized_mode_id = str(mode_id or "").strip().lower()
-            normalized_model_ref = str(model_ref or "").strip()
-            if not normalized_mode_id or not normalized_model_ref:
-                raise ValueError(
-                    f"mode_models entry '{mode_id}' must have a non-empty key and value."
-                )
-            mode_models[normalized_mode_id] = normalized_model_ref
+    if raw_mode_models is None:
+        return mode_models
+    if not isinstance(raw_mode_models, dict):
+        raise ValueError("Model manifest 'mode_models' must be a mapping when provided.")
+    for mode_id, model_ref in raw_mode_models.items():
+        normalized_mode_id = str(mode_id or "").strip().lower()
+        normalized_model_ref = str(model_ref or "").strip()
+        if not normalized_mode_id or not normalized_model_ref:
+            raise ValueError(f"mode_models entry '{mode_id}' must have a non-empty key and value.")
+        mode_models[normalized_mode_id] = normalized_model_ref
+    return mode_models
 
-    normalized_allowed_providers = {
-        provider.strip().lower() for provider in (allowed_providers or _DEFAULT_ALLOWED_PROVIDERS)
-    }
+
+def _parse_manifest_models(
+    raw_models: Any,
+    *,
+    allowed_providers: set[str],
+) -> list[ManifestModelEntry]:
+    """Parse and duplicate-check the manifest's ``models`` list."""
+    if not isinstance(raw_models, list):
+        raise ValueError("Model manifest must include a 'models' list.")
 
     models: list[ManifestModelEntry] = []
     seen_model_refs: set[str] = set()
@@ -270,7 +268,7 @@ def _load_model_manifest_payload(
         model = _parse_model_entry(
             raw_model,
             index=index,
-            allowed_providers=normalized_allowed_providers,
+            allowed_providers=allowed_providers,
         )
         for reference in {model.key.lower(), model.model_id.lower()}:
             if reference in seen_model_refs:
@@ -280,7 +278,14 @@ def _load_model_manifest_payload(
 
     if not models:
         raise ValueError("Model manifest must include at least one model.")
+    return models
 
+
+def _validate_mode_model_refs(
+    mode_models: dict[str, str],
+    models: list[ManifestModelEntry],
+) -> None:
+    """Ensure every ``mode_models`` value references a declared model."""
     for mode_id, model_ref in mode_models.items():
         if all(
             model_ref.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
@@ -291,6 +296,30 @@ def _load_model_manifest_payload(
                 f"Available models: {available_models}"
             )
 
+
+def _load_model_manifest_payload(
+    raw_payload: dict[str, Any],
+    *,
+    require_mode_models: bool = False,
+    allowed_providers: set[str] | frozenset[str] | None = None,
+) -> ModelManifest:
+    """Validate one already-parsed manifest payload into ``ModelManifest``."""
+
+    mode_models = _normalize_mode_models(
+        raw_payload.get("mode_models"),
+        require_mode_models=require_mode_models,
+    )
+
+    normalized_allowed_providers = {
+        provider.strip().lower() for provider in (allowed_providers or _DEFAULT_ALLOWED_PROVIDERS)
+    }
+
+    models = _parse_manifest_models(
+        raw_payload.get("models"),
+        allowed_providers=normalized_allowed_providers,
+    )
+    _validate_mode_model_refs(mode_models, models)
+
     # Parse the optional ``router:`` block. Absence means no router —
     # the manifest's ``mode_models`` static resolution is the only path.
     router_config = _parse_router_config(raw_payload.get("router"), models=models)
@@ -300,6 +329,48 @@ def _load_model_manifest_payload(
         mode_models=mode_models,
         router=router_config,
     )
+
+
+def _parse_router_rule(
+    raw_rule: Any,
+    index: int,
+) -> RouterRule:
+    """Validate one ``router.rules`` entry into a :class:`RouterRule`."""
+    if not isinstance(raw_rule, dict):
+        raise ValueError(f"router.rules entry #{index} must be an object.")
+    condition = str(raw_rule.get("when") or "").strip()
+    use = str(raw_rule.get("use") or "").strip()
+    finish = str(raw_rule.get("finish") or "").strip()
+    transition_to = str(raw_rule.get("transition_to") or "").strip()
+    if not condition:
+        raise ValueError(f"router.rules entry #{index} must include a non-empty 'when'.")
+    actions = [a for a in (use, finish, transition_to) if a]
+    if not actions:
+        raise ValueError(
+            f"router.rules entry #{index} must include one of 'use', 'finish', or 'transition_to'."
+        )
+    if len(actions) > 1:
+        raise ValueError(
+            f"router.rules entry #{index} must set exactly one of "
+            f"'use', 'finish', or 'transition_to' (got {len(actions)})."
+        )
+    return RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to)
+
+
+def _validate_router_rule_model_refs(
+    rules: list[RouterRule],
+    models: list[ManifestModelEntry],
+) -> None:
+    """Ensure every ``rules[].use`` references a known model."""
+    for rule in rules:
+        if rule.use and all(
+            rule.use.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
+        ):
+            available = ", ".join(sorted(model.model_id for model in models))
+            raise ValueError(
+                f"router.rules entry 'when: {rule.when}' references unknown model '{rule.use}'. "
+                f"Available models: {available}"
+            )
 
 
 def _parse_router_config(
@@ -333,41 +404,8 @@ def _parse_router_config(
     if not isinstance(raw_rules, list):
         raise ValueError("Model manifest 'router.rules' must be a list when provided.")
 
-    rules: list[RouterRule] = []
-    for index, raw_rule in enumerate(raw_rules, start=1):
-        if not isinstance(raw_rule, dict):
-            raise ValueError(f"router.rules entry #{index} must be an object.")
-        condition = str(raw_rule.get("when") or "").strip()
-        use = str(raw_rule.get("use") or "").strip()
-        finish = str(raw_rule.get("finish") or "").strip()
-        transition_to = str(raw_rule.get("transition_to") or "").strip()
-        if not condition:
-            raise ValueError(f"router.rules entry #{index} must include a non-empty 'when'.")
-        actions = [a for a in (use, finish, transition_to) if a]
-        if not actions:
-            raise ValueError(
-                f"router.rules entry #{index} must include one of "
-                f"'use', 'finish', or 'transition_to'."
-            )
-        if len(actions) > 1:
-            raise ValueError(
-                f"router.rules entry #{index} must set exactly one of "
-                f"'use', 'finish', or 'transition_to' (got {len(actions)})."
-            )
-        rules.append(
-            RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to)
-        )
-
-    # Validate that every ``rules[].use`` references a known model.
-    for rule in rules:
-        if rule.use and all(
-            rule.use.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
-        ):
-            available = ", ".join(sorted(model.model_id for model in models))
-            raise ValueError(
-                f"router.rules entry 'when: {rule.when}' references unknown model '{rule.use}'. "
-                f"Available models: {available}"
-            )
+    rules = [_parse_router_rule(raw_rule, index) for index, raw_rule in enumerate(raw_rules, 1)]
+    _validate_router_rule_model_refs(rules, models)
 
     return RouterConfig(backend=backend, rules=tuple(rules))
 

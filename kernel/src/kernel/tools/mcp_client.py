@@ -1650,6 +1650,121 @@ class MCPToolPool:
         )
         return result
 
+    async def _list_tools_with_retry(self, config: MCPClientConfig) -> list[Any] | None:
+        """Query one connected server's tool list, with a lenient retry on strict-model rejection.
+
+        Returns the discovered tools, or None when the server is unusable
+        (both the SDK call and the lenient raw-POST retry failed) — the
+        server's tools are then simply absent from the catalog. This method
+        NEVER spawns or restarts subprocesses; that is the host's job.
+        """
+        try:
+            result = await self._sessions[config.server_id].list_tools()
+        except Exception as exc:  # pylint: disable=broad-except
+            # Modern-protocol servers (2026-07-28) may omit required
+            # cache-control fields (cacheScope, resultType, ttlMs) from
+            # their ListToolsResult. The SDK's strict model rejects these.
+            # Retry with a raw HTTP POST that bypasses the SDK's response
+            # pipeline (and its ListToolsResult validation) entirely.
+            if "ListToolsResult" in str(exc) and "Field required" in str(exc):
+                try:
+                    result = await self._list_tools_lenient(config, server_id=config.server_id)
+                except Exception as exc2:  # pylint: disable=broad-except
+                    logger.warning(
+                        "MCP server %r list_tools failed (lenient retry also "
+                        "failed): %s: %s; tools absent from catalog",
+                        config.server_id,
+                        type(exc2).__name__,
+                        exc2,
+                    )
+                    return None
+            else:
+                logger.warning(
+                    "MCP server %r list_tools failed: %s: %s; "
+                    "tools absent from catalog (no restart from data path)",
+                    config.server_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                return None
+        return list(result.tools)
+
+    def _build_server_tool_specs(
+        self,
+        config: MCPClientConfig,
+        tools: list[Any],
+    ) -> list[MCPToolSpec]:
+        """Build the MCPToolSpec list from one server's discovered tools."""
+        return [
+            MCPToolSpec(
+                server_id=config.server_id,
+                name=tool.name,
+                description=tool.description or "",
+                input_schema=tool.input_schema or {"type": "object", "properties": {}},
+                read_only_hint=bool(
+                    getattr(getattr(tool, "annotations", None), "read_only_hint", False)
+                ),
+            )
+            for tool in tools
+        ]
+
+    def _merge_server_tool_indexes(
+        self,
+        config: MCPClientConfig,
+        server_tools: list[MCPToolSpec],
+    ) -> None:
+        """Merge one server's tools into the pool's per-server and bare-name indexes.
+
+        The per-server index keeps EVERY discovered tool, collisions or not:
+        server-scoped dispatch (_call_tool_scoped) resolves alias targets
+        through it, so it must not be filtered by tool_policy — denying a
+        tool from the model catalog must not break internal alias forwarding
+        (e.g. memory.list → list_memories when list_memories is denied to
+        the model). The bare-name index merges with first-registered-wins so
+        bare-name resolution stays deterministic.
+        """
+        server_index: dict[str, MCPToolSpec] = {}
+        for spec in server_tools:
+            server_index[spec.name] = spec
+        self._tool_index_by_server[config.server_id] = server_index
+        for bare_name in server_index:
+            if bare_name not in self._bare_to_server_index:
+                self._bare_to_server_index[bare_name] = config.server_id
+
+    def _merge_namespaced_catalog_tools(
+        self,
+        catalog_tools: list[MCPToolSpec],
+    ) -> None:
+        """Merge tool_policy/proxy_policy-filtered tools into the model-facing catalog.
+
+        The merged index is keyed by the namespaced name
+        (``server_id.tool_name``). This eliminates cross-server collisions
+        by construction — two servers exposing the same bare name land under
+        different namespaces and both appear in the catalog. Same-server
+        duplicates are genuine server-side duplicates: first-registered-wins
+        with a warning.
+        """
+        for spec in catalog_tools:
+            namespaced = namespaced_tool_name(spec.server_id, spec.name)
+            namespaced_spec = MCPToolSpec(
+                server_id=spec.server_id,
+                name=namespaced,
+                description=spec.description,
+                input_schema=spec.input_schema,
+                read_only_hint=spec.read_only_hint,
+            )
+            if namespaced in self._tool_index:
+                logger.warning(
+                    "MCP tool name collision within namespace %r: "
+                    "server %r lists duplicate tool %r; first entry wins.",
+                    namespaced,
+                    spec.server_id,
+                    spec.name,
+                )
+                continue
+            self._tool_index[namespaced] = (spec.server_id, namespaced_spec)
+            self._tools.append(namespaced_spec)
+
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index.
 
@@ -1673,66 +1788,11 @@ class MCPToolPool:
             session = self._sessions.get(config.server_id)
             if session is None:
                 continue
-            try:
-                result = await session.list_tools()
-            except Exception as exc:  # pylint: disable=broad-except
-                # Modern-protocol servers (2026-07-28) may omit required
-                # cache-control fields (cacheScope, resultType, ttlMs) from
-                # their ListToolsResult. The SDK's strict model rejects these.
-                # Retry with a raw HTTP POST that bypasses the SDK's response
-                # pipeline (and its ListToolsResult validation) entirely.
-                if "ListToolsResult" in str(exc) and "Field required" in str(exc):
-                    try:
-                        result = await self._list_tools_lenient(config, server_id=config.server_id)
-                    except Exception as exc2:  # pylint: disable=broad-except
-                        logger.warning(
-                            "MCP server %r list_tools failed (lenient retry also "
-                            "failed): %s: %s; tools absent from catalog",
-                            config.server_id,
-                            type(exc2).__name__,
-                            exc2,
-                        )
-                        continue
-                else:
-                    logger.warning(
-                        "MCP server %r list_tools failed: %s: %s; "
-                        "tools absent from catalog (no restart from data path)",
-                        config.server_id,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    continue
-            server_tools = [
-                MCPToolSpec(
-                    server_id=config.server_id,
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=tool.input_schema or {"type": "object", "properties": {}},
-                    read_only_hint=bool(
-                        getattr(getattr(tool, "annotations", None), "read_only_hint", False)
-                    ),
-                )
-                for tool in result.tools
-            ]
-            # Per-server index keeps EVERY discovered tool, collisions or
-            # not.  Server-scoped dispatch (_call_tool_scoped) resolves
-            # alias targets through this index, so it must not be filtered
-            # by tool_policy — denying a tool from the model catalog must
-            # not break internal alias forwarding (e.g. memory.list →
-            # list_memories when list_memories is denied to the model).
-            server_index: dict[str, MCPToolSpec] = {}
-            for spec in server_tools:
-                server_index[spec.name] = spec
-            self._tool_index_by_server[config.server_id] = server_index
-            # Bare-name index: merge this server's bare names into the
-            # pool-wide bare-to-server map. First-registered-wins mirrors
-            # the merged _tool_index collision policy. Bare-name collisions
-            # across connected servers are logged below via the namespaced
-            # index warning; here the bare index just keeps the first owner
-            # so bare-name resolution is deterministic.
-            for bare_name in server_index:
-                if bare_name not in self._bare_to_server_index:
-                    self._bare_to_server_index[bare_name] = config.server_id
+            tools = await self._list_tools_with_retry(config)
+            if tools is None:
+                continue
+            server_tools = self._build_server_tool_specs(config, tools)
+            self._merge_server_tool_indexes(config, server_tools)
 
             # Model-facing catalog: apply tool_policy (hide tools the model
             # should not call directly) then proxy_policy (strip ambient
@@ -1758,35 +1818,7 @@ class MCPToolPool:
                     )
                     for spec in catalog_tools
                 ]
-            for spec in catalog_tools:
-                # Merged index is keyed by the namespaced name
-                # (``server_id.tool_name``).  This eliminates cross-server
-                # collisions by construction — two servers exposing the
-                # same bare name (e.g. lisa-memory and mem0 both serving
-                # add_memory) land under different namespaces and both
-                # appear in the catalog.
-                namespaced = namespaced_tool_name(spec.server_id, spec.name)
-                namespaced_spec = MCPToolSpec(
-                    server_id=spec.server_id,
-                    name=namespaced,
-                    description=spec.description,
-                    input_schema=spec.input_schema,
-                    read_only_hint=spec.read_only_hint,
-                )
-                if namespaced in self._tool_index:
-                    # Same server listing the same tool name twice — a
-                    # genuine server-side duplicate, not a cross-server
-                    # collision.  First-registered-wins with a warning.
-                    logger.warning(
-                        "MCP tool name collision within namespace %r: "
-                        "server %r lists duplicate tool %r; first entry wins.",
-                        namespaced,
-                        spec.server_id,
-                        spec.name,
-                    )
-                    continue
-                self._tool_index[namespaced] = (config.server_id, namespaced_spec)
-                self._tools.append(namespaced_spec)
+            self._merge_namespaced_catalog_tools(catalog_tools)
 
         # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
         # Synthetic tools are not rediscovered from servers — they are owned
@@ -2054,116 +2086,53 @@ class MCPToolPool:
             await self._ensure_all_cold_connected(allowed_server_ids)
         return list(self._tools)
 
-    async def call_tool(
+    async def _call_synthetic_tool(
         self,
         tool_id: str,
         arguments: dict[str, Any],
-        *,
-        server_id: str | None = None,
-    ) -> MCPToolResult:
-        """Route one tool call to the server that owns the tool.
+    ) -> MCPToolResult | None:
+        """Dispatch a host-owned synthetic tool, or None when ``tool_id`` is not synthetic.
 
-        Host-owned synthetic tools (registered via :meth:`add_synthetic_tools`)
-        are dispatched to their in-process handler before any MCP server
-        routing — they have no subprocess backing them.
-
-        When ``server_id`` is provided, dispatch is **server-scoped**: the
-        tool is looked up in that server's own index
-        (:attr:`_tool_index_by_server`) instead of the merged bare-name index,
-        and the call is routed to that server's session. This bypasses the
-        first-registered-wins collision policy so an alias can pin a call to
-        a specific backend (e.g. ``memory.add`` → ``mem0``'s ``add_memory``
-        even when ``lisa-memory`` also exposes ``add_memory``). If the target
-        server is not connected, it is lazily started (cold servers) or
-        restarted (warm servers) once before failing; no bare-name fallback
-        occurs when ``server_id`` is set.
+        Host-owned synthetic tools are dispatched to their in-process handler
+        before any MCP server routing — they have no subprocess backing them.
         """
-
-        if not self._started:
-            await self.start()
         synthetic_handler = self._synthetic_handlers.get(tool_id)
-        if synthetic_handler is not None:
-            try:
-                output_text = await synthetic_handler(arguments)
-            except Exception as exc:  # pylint: disable=broad-except
-                return MCPToolResult(
-                    tool_id=tool_id,
-                    output_text=f"Synthetic tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
-                    is_error=True,
-                )
-            return MCPToolResult(tool_id=tool_id, output_text=output_text or "Done")
-
-        if server_id is not None:
-            return await self._call_tool_scoped(tool_id, arguments, server_id)
-
-        entry = self._tool_index.get(tool_id)
-        if entry is None:
-            # Bare-name fallback: internal callers (e.g. operations calling
-            # ``execute_tool_fn`` with a bare MCP tool name like
-            # ``read_model_manifest``) won't find the tool in the merged
-            # index because it is keyed by namespaced names
-            # (``lisa-storage.read_model_manifest``). Resolve via the
-            # precomputed ``_bare_to_server_index`` (O(1) over connected
-            # servers; cold servers lazily connected only when the bare name
-            # is absent). Model-facing calls always use namespaced names,
-            # so this fallback never shadows the namespaced path.
-            resolved_server_id = await self._resolve_server_for_bare_name(tool_id)
-            if resolved_server_id is not None:
-                return await self._call_tool_scoped(tool_id, arguments, resolved_server_id)
+        if synthetic_handler is None:
+            return None
+        try:
+            output_text = await synthetic_handler(arguments)
+        except Exception as exc:  # pylint: disable=broad-except
             return MCPToolResult(
                 tool_id=tool_id,
-                output_text=f"Tool '{tool_id}' is not registered on any MCP server.",
+                output_text=f"Synthetic tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
                 is_error=True,
             )
-        server_id, _spec = entry
-        config = next((c for c in self._configs if c.server_id == server_id), None)
-        session = self._sessions.get(server_id)
-        if session is None:
-            # Server is down. Warm servers get one restart attempt; cold
-            # servers are lazily connected on demand.
-            if config is not None:
-                await self._ensure_connected(config)
-                session = self._sessions.get(server_id)
-            if session is None:
-                return MCPToolResult(
-                    tool_id=tool_id,
-                    output_text=f"MCP server '{server_id}' for tool '{tool_id}' is not connected.",
-                    is_error=True,
-                )
-        # The merged index is keyed by namespaced names (server_id.tool),
-        # but the MCP session expects the bare tool name.  Strip the
-        # namespace prefix before calling the server.  Use the resolved
-        # server_id (not a naive first-dot split) so pack-contributed
-        # servers with dotted ids (e.g. ``lisa_packs.cloudflare.cloudflare-api``)
-        # dispatch to the correct native tool name (e.g. ``search``, not
-        # ``cloudflare-api.search``).
-        bare_name = tool_id
-        if server_id and tool_id.startswith(server_id + "."):
-            bare_name = tool_id[len(server_id) + 1 :]
-        elif "." in tool_id:
-            bare_name = bare_tool_name(tool_id)
-        mapped = self._apply_dispatch_arg_map(tool_id, arguments)
-        # Proxy policy: inject ambient scope (user_id, agent_id, app_id, …)
-        # from the host runtime after the dispatch arg map. This closes the
-        # privacy boundary for direct native-tool calls — the model cannot
-        # escape because the schema already hides these fields (stripped in
-        # _refresh_tool_index), and the values are overridden here even if
-        # the model somehow sends them.
-        server_spec = self._tool_index_by_server.get(server_id, {}).get(bare_name)
-        input_schema = server_spec.input_schema if server_spec else None
-        mapped = self._apply_proxy_policy_for_server(server_id, mapped, input_schema)
+        return MCPToolResult(tool_id=tool_id, output_text=output_text or "Done")
+
+    async def _call_tool_with_lenient_retry(
+        self,
+        session: Any,
+        bare_name: str,
+        mapped: dict[str, Any],
+        *,
+        config: MCPClientConfig | None,
+        server_id: str,
+        tool_id: str,
+    ) -> MCPToolResult:
+        """Call one MCP tool, falling back to a lenient raw-POST retry on strict-model rejection.
+
+        Modern-protocol servers (2026-07-28) may omit required cache-control
+        fields from CallToolResult; the SDK's strict model raises ValidationError
+        before we see the result. Retry via a raw HTTP POST that bypasses the
+        SDK's response pipeline, the same escape hatch used by
+        ``_list_tools_lenient``. Only HTTP servers can take this path; stdio
+        servers do not hit modern-protocol validation. A genuine
+        connection/transport error disconnects the server immediately — no
+        restart from the data path.
+        """
         try:
             result = await session.call_tool(bare_name, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
-            # Modern-protocol servers (2026-07-28) may omit required
-            # cache-control fields from CallToolResult, just as they do
-            # from ListToolsResult. The SDK's strict model raises
-            # ValidationError before we see the result. Retry via a raw
-            # HTTP POST that bypasses the SDK's response pipeline, the
-            # same escape hatch used by _list_tools_lenient. Only HTTP
-            # servers can take this path; stdio servers do not hit the
-            # modern-protocol validation because they speak a legacy
-            # version the SDK accepts.
             if (
                 config is not None
                 and config.url
@@ -2200,6 +2169,113 @@ class MCPToolPool:
                 is_error=True,
             )
         return self._build_result(tool_id, result)
+
+    async def call_tool(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+        *,
+        server_id: str | None = None,
+    ) -> MCPToolResult:
+        """Route one tool call to the server that owns the tool.
+
+        Host-owned synthetic tools (registered via :meth:`add_synthetic_tools`)
+        are dispatched to their in-process handler before any MCP server
+        routing — they have no subprocess backing them.
+
+        When ``server_id`` is provided, dispatch is **server-scoped**: the
+        tool is looked up in that server's own index
+        (:attr:`_tool_index_by_server`) instead of the merged bare-name index,
+        and the call is routed to that server's session. This bypasses the
+        first-registered-wins collision policy so an alias can pin a call to
+        a specific backend (e.g. ``memory.add`` → ``mem0``'s ``add_memory``
+        even when ``lisa-memory`` also exposes ``add_memory``). If the target
+        server is not connected, it is lazily started (cold servers) or
+        restarted (warm servers) once before failing; no bare-name fallback
+        occurs when ``server_id`` is set.
+        """
+
+        if not self._started:
+            await self.start()
+        synthetic_result = await self._call_synthetic_tool(tool_id, arguments)
+        if synthetic_result is not None:
+            return synthetic_result
+
+        if server_id is not None:
+            return await self._call_tool_scoped(tool_id, arguments, server_id)
+
+        entry = self._tool_index.get(tool_id)
+        if entry is None:
+            # Bare-name fallback: internal callers (e.g. operations calling
+            # ``execute_tool_fn`` with a bare MCP tool name like
+            # ``read_model_manifest``) won't find the tool in the merged
+            # index because it is keyed by namespaced names
+            # (``lisa-storage.read_model_manifest``). Resolve via the
+            # precomputed ``_bare_to_server_index`` (O(1) over connected
+            # servers; cold servers lazily connected only when the bare name
+            # is absent). Model-facing calls always use namespaced names,
+            # so this fallback never shadows the namespaced path.
+            resolved_server_id = await self._resolve_server_for_bare_name(tool_id)
+            if resolved_server_id is not None:
+                return await self._call_tool_scoped(tool_id, arguments, resolved_server_id)
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text=f"Tool '{tool_id}' is not registered on any MCP server.",
+                is_error=True,
+            )
+        target_server_id, _spec = entry
+        config = next((c for c in self._configs if c.server_id == target_server_id), None)
+        session = self._sessions.get(target_server_id)
+        if session is None:
+            # Server is down. Warm servers get one restart attempt; cold
+            # servers are lazily connected on demand.
+            if config is not None:
+                await self._ensure_connected(config)
+                session = self._sessions.get(target_server_id)
+            if session is None:
+                return MCPToolResult(
+                    tool_id=tool_id,
+                    output_text=(
+                        f"MCP server '{target_server_id}' for tool '{tool_id}' is not connected."
+                    ),
+                    is_error=True,
+                )
+        bare_name = self._strip_namespace_prefix(tool_id, target_server_id)
+        mapped = self._apply_dispatch_arg_map(tool_id, arguments)
+        # Proxy policy: inject ambient scope (user_id, agent_id, app_id, …)
+        # from the host runtime after the dispatch arg map. This closes the
+        # privacy boundary for direct native-tool calls — the model cannot
+        # escape because the schema already hides these fields (stripped in
+        # _refresh_tool_index), and the values are overridden here even if
+        # the model somehow sends them.
+        server_spec = self._tool_index_by_server.get(target_server_id, {}).get(bare_name)
+        input_schema = server_spec.input_schema if server_spec else None
+        mapped = self._apply_proxy_policy_for_server(target_server_id, mapped, input_schema)
+        return await self._call_tool_with_lenient_retry(
+            session,
+            bare_name,
+            mapped,
+            config=config,
+            server_id=target_server_id,
+            tool_id=tool_id,
+        )
+
+    @staticmethod
+    def _strip_namespace_prefix(tool_id: str, server_id: str) -> str:
+        """Strip the resolved server namespace prefix from ``tool_id``.
+
+        The merged index is keyed by namespaced names (server_id.tool), but
+        the MCP session expects the bare tool name. Uses the resolved
+        ``server_id`` (not a naive first-dot split) so pack-contributed
+        servers with dotted ids (e.g.
+        ``lisa_packs.cloudflare.cloudflare-api``) dispatch to the correct
+        native tool name (e.g. ``search``, not ``cloudflare-api.search``).
+        """
+        if server_id and tool_id.startswith(server_id + "."):
+            return tool_id[len(server_id) + 1 :]
+        if "." in tool_id:
+            return bare_tool_name(tool_id)
+        return tool_id
 
     async def _call_tool_scoped(
         self,
@@ -2261,44 +2337,14 @@ class MCPToolPool:
         scoped_spec = server_index.get(tool_id)
         scoped_schema = scoped_spec.input_schema if scoped_spec else None
         mapped = self._apply_proxy_policy_for_server(server_id, mapped, scoped_schema)
-        try:
-            result = await session.call_tool(tool_id, arguments=mapped)
-        except Exception as exc:  # pylint: disable=broad-except
-            # Same lenient-retry contract as the non-scoped call_tool path:
-            # modern-protocol servers omit required cache-control fields and
-            # the SDK rejects the CallToolResult. Retry via raw HTTP POST
-            # before tearing down the session.
-            if config.url and "CallToolResult" in str(exc) and "Field required" in str(exc):
-                try:
-                    result = await self._call_tool_lenient(
-                        config, tool_id, mapped, server_id=server_id
-                    )
-                    return self._build_result(tool_id, result)
-                except Exception as exc2:  # pylint: disable=broad-except
-                    return MCPToolResult(
-                        tool_id=tool_id,
-                        output_text=(
-                            f"MCP tool '{tool_id}' failed (lenient retry also "
-                            f"failed): {type(exc2).__name__}: {exc2}"
-                        ),
-                        is_error=True,
-                    )
-            # Genuine connection/transport error: close the child stack to
-            # kill the subprocess immediately — do NOT restart from the data
-            # path.
-            await self._disconnect_server(server_id)
-            if config.warm:
-                self._warm_failed.add(server_id)
-            return MCPToolResult(
-                tool_id=tool_id,
-                output_text=(
-                    f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}. "
-                    f"Server '{server_id}' session dropped; "
-                    f"restart may be needed."
-                ),
-                is_error=True,
-            )
-        return self._build_result(tool_id, result)
+        return await self._call_tool_with_lenient_retry(
+            session,
+            tool_id,
+            mapped,
+            config=config,
+            server_id=server_id,
+            tool_id=tool_id,
+        )
 
     @staticmethod
     def _build_result(tool_id: str, result: Any) -> MCPToolResult:

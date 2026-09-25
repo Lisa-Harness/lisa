@@ -216,6 +216,113 @@ def _parse_memory_section(raw: Any) -> MemoryBackendConfig:
     return MemoryBackendConfig(default_backend=default_backend, backends=backends)
 
 
+def _validated_backend_id(
+    entry: dict[str, Any],
+    index: int,
+    seen_ids: set[str],
+) -> str:
+    """Return the validated backend id for one ``memory.backends`` entry."""
+    backend_id = str(entry.get("id") or "").strip()
+    if not backend_id:
+        raise MCPServerManifestError(f"memory.backends[{index}]: 'id' is required")
+    if backend_id in seen_ids:
+        raise MCPServerManifestError(
+            f"memory.backends[{index}]: duplicate backend id {backend_id!r}"
+        )
+    seen_ids.add(backend_id)
+    return backend_id
+
+
+def _validated_backend_mapping(
+    entry: dict[str, Any],
+    backend_id: str,
+    index: int,
+    key: str,
+) -> dict[str, str]:
+    """Return a str-to-str mapping from one backend entry, or raise when invalid."""
+    raw = entry.get(key) or {}
+    if not isinstance(raw, dict):
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: '{key}' must be a mapping"
+        )
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _build_http_memory_backend(
+    entry: dict[str, Any],
+    backend_id: str,
+    index: int,
+    *,
+    tool_names: dict[str, str],
+    result_maps: dict[str, str],
+    agent_id: str,
+) -> MemoryBackendSpec:
+    """Build one ``kind=http`` memory backend spec from its manifest entry."""
+    url = _expand_env_value(entry.get("url") or "").strip()
+    if not url:
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: 'url' is required for kind=http"
+        )
+    headers_raw = entry.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: 'headers' must be a mapping"
+        )
+    headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
+    return MemoryBackendSpec(
+        id=backend_id,
+        kind="http",
+        tool_names=tool_names,
+        result_maps=result_maps,
+        url=url,
+        headers=headers,
+        agent_id=agent_id,
+    )
+
+
+def _build_stdio_memory_backend(
+    entry: dict[str, Any],
+    backend_id: str,
+    index: int,
+    *,
+    tool_names: dict[str, str],
+    result_maps: dict[str, str],
+    agent_id: str,
+) -> MemoryBackendSpec:
+    """Build one ``kind=stdio`` memory backend spec from its manifest entry."""
+    command = str(entry.get("command") or "").strip()
+    if not command:
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: 'command' is required for kind=stdio"
+        )
+    args_raw = entry.get("args") or []
+    if not isinstance(args_raw, list):
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: 'args' must be a list"
+        )
+    args = [_expand_env_value(a) for a in args_raw]
+    env_raw = entry.get("env") or {}
+    if not isinstance(env_raw, dict):
+        raise MCPServerManifestError(
+            f"memory.backends[{index}] {backend_id!r}: 'env' must be a mapping"
+        )
+    env = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
+    cwd = entry.get("cwd")
+    if cwd is not None:
+        cwd = str(cwd) or None
+    return MemoryBackendSpec(
+        id=backend_id,
+        kind="stdio",
+        tool_names=tool_names,
+        result_maps=result_maps,
+        command=command,
+        args=args,
+        env=env,
+        cwd=cwd,
+        agent_id=agent_id,
+    )
+
+
 def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
     """Parse the memory.backends list into MemoryBackendSpec entries.
 
@@ -231,86 +338,34 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
     for index, entry in enumerate(raw):
         if not isinstance(entry, dict):
             raise MCPServerManifestError(f"memory.backends[{index}] must be a mapping")
-        backend_id = str(entry.get("id") or "").strip()
-        if not backend_id:
-            raise MCPServerManifestError(f"memory.backends[{index}]: 'id' is required")
-        if backend_id in seen_ids:
-            raise MCPServerManifestError(
-                f"memory.backends[{index}]: duplicate backend id {backend_id!r}"
-            )
-        seen_ids.add(backend_id)
+        backend_id = _validated_backend_id(entry, index, seen_ids)
         kind = str(entry.get("kind") or "").strip()
         if kind not in {"http", "stdio"}:
             raise MCPServerManifestError(
                 f"memory.backends[{index}] {backend_id!r}: 'kind' must be 'http' or 'stdio'"
             )
-        tool_names_raw = entry.get("tool_names") or {}
-        if not isinstance(tool_names_raw, dict):
-            raise MCPServerManifestError(
-                f"memory.backends[{index}] {backend_id!r}: 'tool_names' must be a mapping"
-            )
-        tool_names = {str(alias): str(tool) for alias, tool in tool_names_raw.items()}
+        tool_names = _validated_backend_mapping(entry, backend_id, index, "tool_names")
+        result_maps = _validated_backend_mapping(entry, backend_id, index, "result_maps")
         agent_id = str(entry.get("agent_id") or "lisa")
-        result_maps_raw = entry.get("result_maps") or {}
-        if not isinstance(result_maps_raw, dict):
-            raise MCPServerManifestError(
-                f"memory.backends[{index}] {backend_id!r}: 'result_maps' must be a mapping"
-            )
-        result_maps = {str(op): str(path) for op, path in result_maps_raw.items()}
         if kind == "http":
-            url = _expand_env_value(entry.get("url") or "").strip()
-            if not url:
-                raise MCPServerManifestError(
-                    f"memory.backends[{index}] {backend_id!r}: 'url' is required for kind=http"
-                )
-            headers_raw = entry.get("headers") or {}
-            if not isinstance(headers_raw, dict):
-                raise MCPServerManifestError(
-                    f"memory.backends[{index}] {backend_id!r}: 'headers' must be a mapping"
-                )
-            headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
             specs.append(
-                MemoryBackendSpec(
-                    id=backend_id,
-                    kind=kind,
+                _build_http_memory_backend(
+                    entry,
+                    backend_id,
+                    index,
                     tool_names=tool_names,
                     result_maps=result_maps,
-                    url=url,
-                    headers=headers,
                     agent_id=agent_id,
                 )
             )
         else:  # stdio
-            command = str(entry.get("command") or "").strip()
-            if not command:
-                raise MCPServerManifestError(
-                    f"memory.backends[{index}] {backend_id!r}: 'command' is required for kind=stdio"
-                )
-            args_raw = entry.get("args") or []
-            if not isinstance(args_raw, list):
-                raise MCPServerManifestError(
-                    f"memory.backends[{index}] {backend_id!r}: 'args' must be a list"
-                )
-            args = [_expand_env_value(a) for a in args_raw]
-            env_raw = entry.get("env") or {}
-            if not isinstance(env_raw, dict):
-                raise MCPServerManifestError(
-                    f"memory.backends[{index}] {backend_id!r}: 'env' must be a mapping"
-                )
-            env = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
-            cwd = entry.get("cwd")
-            if cwd is not None:
-                cwd = str(cwd) or None
             specs.append(
-                MemoryBackendSpec(
-                    id=backend_id,
-                    kind=kind,
+                _build_stdio_memory_backend(
+                    entry,
+                    backend_id,
+                    index,
                     tool_names=tool_names,
                     result_maps=result_maps,
-                    command=command,
-                    args=args,
-                    env=env,
-                    cwd=cwd,
                     agent_id=agent_id,
                 )
             )
@@ -438,6 +493,54 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     )
 
 
+def _parse_bearer_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+    """Build a bearer-token AuthSpec, requiring an expanded ``token`` value."""
+    token = _expand_env_value(raw.get("token") or "")
+    if not token:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': auth type 'bearer' requires 'token'"
+        )
+    return AuthSpec(kind=AuthKind.BEARER, token=token)
+
+
+def _parse_header_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+    """Build a named-header AuthSpec, requiring ``header_name`` and ``token``."""
+    header_name = str(raw.get("header_name") or "").strip()
+    if not header_name:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': auth type 'header' requires 'header_name'"
+        )
+    token = _expand_env_value(raw.get("token") or "")
+    if not token:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': auth type 'header' requires 'token'"
+        )
+    return AuthSpec(kind=AuthKind.HEADER, header_name=header_name, token=token)
+
+
+def _parse_oauth2_pkce_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+    """Build an OAuth2 PKCE AuthSpec, requiring an expanded ``client_id``."""
+    client_id = _expand_env_value(raw.get("client_id") or "")
+    if not client_id:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': auth type 'oauth2-pkce' requires 'client_id'"
+        )
+    scopes_raw = raw.get("scopes") or []
+    if not isinstance(scopes_raw, list):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'auth.scopes' must be a list"
+        )
+    auth_server = raw.get("auth_server")
+    if auth_server is not None:
+        auth_server = _expand_env_value(auth_server) or None
+    return AuthSpec(
+        kind=AuthKind.OAUTH2_PKCE,
+        client_id=client_id,
+        scopes=tuple(str(s) for s in scopes_raw),
+        auth_server=auth_server,
+    )
+
+
 def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
     """Parse the ``auth:`` block for a network MCP server entry.
 
@@ -462,47 +565,11 @@ def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
         ) from exc
 
     if kind is AuthKind.BEARER:
-        token = _expand_env_value(raw.get("token") or "")
-        if not token:
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': auth type 'bearer' requires 'token'"
-            )
-        return AuthSpec(kind=kind, token=token)
-
+        return _parse_bearer_auth(raw, server_id, index)
     if kind is AuthKind.HEADER:
-        header_name = str(raw.get("header_name") or "").strip()
-        if not header_name:
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': auth type 'header' requires 'header_name'"
-            )
-        token = _expand_env_value(raw.get("token") or "")
-        if not token:
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': auth type 'header' requires 'token'"
-            )
-        return AuthSpec(kind=kind, header_name=header_name, token=token)
-
+        return _parse_header_auth(raw, server_id, index)
     if kind is AuthKind.OAUTH2_PKCE:
-        client_id = _expand_env_value(raw.get("client_id") or "")
-        if not client_id:
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': auth type 'oauth2-pkce' requires 'client_id'"
-            )
-        scopes_raw = raw.get("scopes") or []
-        if not isinstance(scopes_raw, list):
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': 'auth.scopes' must be a list"
-            )
-        auth_server = raw.get("auth_server")
-        if auth_server is not None:
-            auth_server = _expand_env_value(auth_server) or None
-        return AuthSpec(
-            kind=kind,
-            client_id=client_id,
-            scopes=tuple(str(s) for s in scopes_raw),
-            auth_server=auth_server,
-        )
-
+        return _parse_oauth2_pkce_auth(raw, server_id, index)
     return AuthSpec(kind=AuthKind.NONE)
 
 

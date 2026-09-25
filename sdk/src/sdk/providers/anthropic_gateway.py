@@ -298,6 +298,148 @@ def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
     return anthropic_messages
 
 
+def _merged_system_text(request: CompletionRequest) -> str:
+    """Return the merged system prompt text for one request.
+
+    Legacy merged ALL system messages with blank lines; taking only the first
+    silently dropped the rest of the assembled prompt. Structured-output
+    requests get an explicit JSON-only instruction appended — Anthropic has
+    no ``response_format`` constraint on the wire.
+    """
+    system_text = "\n\n".join(
+        str(message.get("content") or "")
+        for message in request.messages
+        if message.get("role") == "system" and message.get("content")
+    ).strip()
+    if request.response_format is not None:
+        format_prompt = "Return only a valid JSON object with no Markdown wrapper."
+        system_text = f"{system_text}\n\n{format_prompt}".strip()
+    return system_text
+
+
+def _base_messages_payload(
+    request: CompletionRequest,
+    system: str | list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the shared skeleton of one ``/v1/messages`` request payload.
+
+    Applies the system parameter (single string or cache-typed blocks), the
+    optional temperature override, and the thinking-model token budget;
+    callers add their tool set (and the stream flag for SSE requests).
+    """
+    payload: dict[str, Any] = {
+        "model": request.model_def.model_id,
+        "max_tokens": request.max_tokens,
+        "messages": _build_anthropic_messages(
+            [message for message in request.messages if message["role"] != "system"]
+        ),
+    }
+    if isinstance(system, str):
+        if system:
+            payload["system"] = system
+    else:
+        payload["system"] = system
+    if request.temperature:
+        payload["temperature"] = request.temperature
+    if getattr(request.model_def, "thinking_model", False):
+        payload["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": request.max_tokens,
+        }
+    return payload
+
+
+def _parse_content_blocks(
+    content_blocks: list[Any],
+    name_map: dict[str, str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Split Anthropic content blocks into text parts and OpenAI-style tool calls.
+
+    Restores the original (namespaced) tool name from the sanitized name
+    Anthropic echoes back. Falls back to the sanitized name if no mapping
+    exists (e.g. the model hallucinated a name we never advertised).
+    """
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "")
+        if block_type == "text":
+            text_parts.append(str(block.get("text") or ""))
+        elif block_type == "tool_use":
+            sanitized_name = str(block.get("name") or "")
+            restored_name = name_map.get(sanitized_name, sanitized_name)
+            tool_calls.append(
+                {
+                    "id": str(block.get("id") or ""),
+                    "type": "function",
+                    "name": restored_name,
+                    "arguments": _normalize_openai_tool_arguments(block.get("input") or {}),
+                }
+            )
+    return text_parts, tool_calls
+
+
+def _parse_sse_event(line: str) -> dict[str, Any] | None:
+    """Decode one SSE ``data:`` line into an event dict, or None to skip it."""
+    if not line.startswith("data:"):
+        return None
+    data_text = line[len("data:") :].strip()
+    if not data_text or data_text == "[DONE]":
+        return None
+    try:
+        event = json.loads(data_text)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _stream_delta_chunks(delta: dict[str, Any]) -> list[StreamedChunk]:
+    """Return the visible/reasoning chunks carried by one ``content_block_delta``."""
+    delta_type = str(delta.get("type") or "")
+    if delta_type == "text_delta" and delta.get("text"):
+        return [StreamedChunk(content=str(delta["text"]))]
+    if delta_type == "thinking_delta" and delta.get("thinking"):
+        return [StreamedChunk(reasoning_content=str(delta["thinking"]))]
+    return []
+
+
+def _apply_stream_event(
+    event: dict[str, Any],
+    finish_reason: str | None,
+    stream_usage: CompletionUsage | None,
+) -> tuple[list[StreamedChunk], str | None, CompletionUsage | None]:
+    """Dispatch one SSE event, returning its chunks plus updated stop/usage state.
+
+    ``message_delta`` carries the authoritative ``stop_reason`` (mapped to the
+    OpenAI-style vocabulary the turn runner branches on) and the cumulative
+    usage; ``message_stop`` emits the terminal chunk, preferring whichever
+    usage source was set (``message_delta`` on real Anthropic, defensively
+    ``message_stop`` otherwise).
+    """
+    event_type = str(event.get("type") or "")
+    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+    if event_type == "content_block_delta":
+        return _stream_delta_chunks(delta), finish_reason, stream_usage
+    if event_type == "message_delta":
+        stop_reason = str(delta.get("stop_reason") or "").strip().lower()
+        updated_reason = (
+            ("tool_calls" if stop_reason == "tool_use" else stop_reason)
+            if stop_reason
+            else finish_reason
+        )
+        return [], updated_reason, extract_anthropic_usage({"usage": delta.get("usage")})
+    if event_type == "message_stop":
+        final_usage = stream_usage or extract_anthropic_usage(event)
+        return (
+            [StreamedChunk(finish_reason=finish_reason or "stop", usage=final_usage)],
+            finish_reason,
+            stream_usage,
+        )
+    return [], finish_reason, stream_usage
+
+
 class AnthropicGateway:
     """Gateway for Anthropic message completions."""
 
@@ -341,48 +483,17 @@ class AnthropicGateway:
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         client = self._client_factory()
-        # Legacy merged ALL system messages with blank lines; taking only the
-        # first silently dropped the rest of the assembled prompt.
-        system_text = "\n\n".join(
-            str(message.get("content") or "")
-            for message in request.messages
-            if message.get("role") == "system" and message.get("content")
-        ).strip()
-        # Structured-output requests get an explicit JSON-only instruction —
-        # Anthropic has no response_format constraint on the wire.
-        if request.response_format is not None:
-            format_prompt = "Return only a valid JSON object with no Markdown wrapper."
-            system_text = f"{system_text}\n\n{format_prompt}".strip()
-        anthropic_messages = _build_anthropic_messages(
-            [message for message in request.messages if message["role"] != "system"]
-        )
-        payload: dict[str, Any] = {
-            "model": request.model_def.model_id,
-            "max_tokens": request.max_tokens,
-            "messages": anthropic_messages,
-        }
         _system = _build_anthropic_system_blocks(
-            system_text,
+            _merged_system_text(request),
             getattr(request, "system_prompt_segments", ()) or (),
             cache_enabled=self._prompt_cache_enabled,
         )
-        if isinstance(_system, str):
-            if _system:
-                payload["system"] = _system
-        else:
-            payload["system"] = _system
-        if request.temperature:
-            payload["temperature"] = request.temperature
+        payload = _base_messages_payload(request, _system)
         if request.tools:
             anthropic_tools, name_map = _build_anthropic_tools_with_name_map(request.tools)
             payload["tools"] = anthropic_tools
         else:
             name_map = {}
-        if getattr(request.model_def, "thinking_model", False):
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": request.max_tokens,
-            }
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -408,30 +519,7 @@ class AnthropicGateway:
             )
             raise provider_gateway_error_from_exception(request, exc) from exc
 
-        content_blocks = response_json.get("content") or []
-        text_parts: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
-        for block in content_blocks:
-            if not isinstance(block, dict):
-                continue
-            block_type = str(block.get("type") or "")
-            if block_type == "text":
-                text_parts.append(str(block.get("text") or ""))
-            elif block_type == "tool_use":
-                sanitized_name = str(block.get("name") or "")
-                # Restore the original (namespaced) tool name from the
-                # sanitized name Anthropic echoes back. Falls back to the
-                # sanitized name if no mapping exists (e.g. the model
-                # hallucinated a name we never advertised).
-                restored_name = name_map.get(sanitized_name, sanitized_name)
-                tool_calls.append(
-                    {
-                        "id": str(block.get("id") or ""),
-                        "type": "function",
-                        "name": restored_name,
-                        "arguments": _normalize_openai_tool_arguments(block.get("input") or {}),
-                    }
-                )
+        text_parts, tool_calls = _parse_content_blocks(response_json.get("content") or [], name_map)
         request_id = extract_request_id(response_json) or str(
             response.headers.get("request-id", "") or ""
         )
@@ -477,42 +565,15 @@ class AnthropicGateway:
         """
 
         client = self._client_factory()
-        system_text = "\n\n".join(
-            str(message.get("content") or "")
-            for message in request.messages
-            if message.get("role") == "system" and message.get("content")
-        ).strip()
-        if request.response_format is not None:
-            format_prompt = "Return only a valid JSON object with no Markdown wrapper."
-            system_text = f"{system_text}\n\n{format_prompt}".strip()
-        anthropic_messages = _build_anthropic_messages(
-            [message for message in request.messages if message["role"] != "system"]
-        )
-        payload: dict[str, Any] = {
-            "model": request.model_def.model_id,
-            "max_tokens": request.max_tokens,
-            "messages": anthropic_messages,
-            "stream": True,
-        }
         _system = _build_anthropic_system_blocks(
-            system_text,
+            _merged_system_text(request),
             getattr(request, "system_prompt_segments", ()) or (),
             cache_enabled=self._prompt_cache_enabled,
         )
-        if isinstance(_system, str):
-            if _system:
-                payload["system"] = _system
-        else:
-            payload["system"] = _system
-        if request.temperature:
-            payload["temperature"] = request.temperature
+        payload = _base_messages_payload(request, _system)
+        payload["stream"] = True
         if request.tools:
             payload["tools"] = [_openai_tool_to_anthropic_tool(tool) for tool in request.tools]
-        if getattr(request.model_def, "thinking_model", False):
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": request.max_tokens,
-            }
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -529,46 +590,14 @@ class AnthropicGateway:
             ) as response:
                 response.raise_for_status()
                 async for raw_line in response.aiter_lines():
-                    line = raw_line.strip()
-                    if not line.startswith("data:"):
+                    event = _parse_sse_event(raw_line.strip())
+                    if event is None:
                         continue
-                    data_text = line[len("data:") :].strip()
-                    if not data_text or data_text == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data_text)
-                    except ValueError:
-                        continue
-                    if not isinstance(event, dict):
-                        continue
-                    event_type = str(event.get("type") or "")
-                    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
-                    if event_type == "content_block_delta":
-                        delta_type = str(delta.get("type") or "")
-                        if delta_type == "text_delta" and delta.get("text"):
-                            yield StreamedChunk(content=str(delta["text"]))
-                        elif delta_type == "thinking_delta" and delta.get("thinking"):
-                            yield StreamedChunk(reasoning_content=str(delta["thinking"]))
-                    elif event_type == "message_delta":
-                        # Authoritative stop_reason AND cumulative usage both
-                        # arrive here (Anthropic puts ``usage`` in this
-                        # event's delta), before message_stop. Map Anthropic's
-                        # stop vocabulary to the OpenAI-style one the turn
-                        # runner branches on.
-                        stop_reason = str(delta.get("stop_reason") or "").strip().lower()
-                        if stop_reason:
-                            finish_reason = (
-                                "tool_calls" if stop_reason == "tool_use" else stop_reason
-                            )
-                        stream_usage = extract_anthropic_usage({"usage": delta.get("usage")})
-                    elif event_type == "message_stop":
-                        # Usage may ride message_delta (real Anthropic) or
-                        # message_stop (defensive); prefer whichever is set.
-                        final_usage = stream_usage or extract_anthropic_usage(event)
-                        yield StreamedChunk(
-                            finish_reason=finish_reason or "stop",
-                            usage=final_usage,
-                        )
+                    chunks, finish_reason, stream_usage = _apply_stream_event(
+                        event, finish_reason, stream_usage
+                    )
+                    for chunk in chunks:
+                        yield chunk
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {

@@ -161,42 +161,12 @@ def build_mode_catalog_json(
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
-    candidates_by_id: dict[str, list[dict[str, Any]]] = {}
+    candidates_by_id = _collect_mode_candidates(
+        mode_roots,
+        overlay_root=overlay_root,
+        strict=strict,
+    )
     selections = _load_session_provider_selections()
-    for root in mode_roots:
-        if not root.is_dir():
-            continue
-        inferred_provider_id = _infer_content_provider_id(root)
-        is_overlay_root = overlay_root is not None and _path_is_under(root, overlay_root)
-        for mode_dir in sorted(root.iterdir()):
-            if not mode_dir.is_dir():
-                continue
-            # ── Overlay provider-folder expansion ─────────────────────
-            # When scanning the overlay's modes root, a directory without
-            # _mode.md but with subdirectories that have _mode.md is a
-            # provider folder (e.g. overlays/modes/lisa-pack-core/).
-            # Scan one level deeper so folder-path entries work.
-            if is_overlay_root and not (mode_dir / _MODE_CONFIG_FILENAME).is_file():
-                _scan_overlay_provider_folder(
-                    mode_dir,
-                    candidates_by_id,
-                    strict=strict,
-                )
-                continue
-            mode_dict = _load_one_mode(
-                mode_dir,
-                inferred_provider_id=inferred_provider_id,
-                strict=strict,
-            )
-            if mode_dict is not None:
-                # Tag overlay entries so _resolve_catalog_candidates can
-                # auto-select them. The tag is stripped before serialization.
-                if overlay_root is not None:
-                    mode_path = str(mode_dict.get("mode_markdown_path", ""))
-                    if mode_path.startswith(str(overlay_root)):
-                        mode_dict["_overlay"] = True
-                mode_id = str(mode_dict.get("mode_id") or "")
-                candidates_by_id.setdefault(mode_id, []).append(mode_dict)
     # ── Shortcut validation ──────────────────────────────────────────
     # Shortcut entries (overlay modes without a provider folder) must
     # shadow an existing installed mode. Validate after all candidates
@@ -227,6 +197,55 @@ def build_mode_catalog_json(
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
     return result
+
+
+def _collect_mode_candidates(
+    mode_roots: list[Path],
+    *,
+    overlay_root: Path | None,
+    strict: bool,
+) -> dict[str, list[dict[str, Any]]]:
+    """Scan every mode root and collect candidate mode dicts keyed by mode id.
+
+    Entries discovered under ``overlay_root`` are tagged ``_overlay: True`` so
+    ``_resolve_catalog_candidates`` can auto-select them; the tag is stripped
+    before serialization.
+    """
+    candidates_by_id: dict[str, list[dict[str, Any]]] = {}
+    for root in mode_roots:
+        if not root.is_dir():
+            continue
+        inferred_provider_id = _infer_content_provider_id(root)
+        is_overlay_root = overlay_root is not None and _path_is_under(root, overlay_root)
+        for mode_dir in sorted(root.iterdir()):
+            if not mode_dir.is_dir():
+                continue
+            # ── Overlay provider-folder expansion ─────────────────
+            # When scanning the overlay's modes root, a directory without
+            # _mode.md but with subdirectories that have _mode.md is a
+            # provider folder (e.g. overlays/modes/lisa-pack-core/).
+            # Scan one level deeper so folder-path entries work.
+            if is_overlay_root and not (mode_dir / _MODE_CONFIG_FILENAME).is_file():
+                _scan_overlay_provider_folder(
+                    mode_dir,
+                    candidates_by_id,
+                    strict=strict,
+                )
+                continue
+            mode_dict = _load_one_mode(
+                mode_dir,
+                inferred_provider_id=inferred_provider_id,
+                strict=strict,
+            )
+            if mode_dict is None:
+                continue
+            if overlay_root is not None:
+                mode_path = str(mode_dict.get("mode_markdown_path", ""))
+                if mode_path.startswith(str(overlay_root)):
+                    mode_dict["_overlay"] = True
+            mode_id = str(mode_dict.get("mode_id") or "")
+            candidates_by_id.setdefault(mode_id, []).append(mode_dict)
+    return candidates_by_id
 
 
 def _decode_optional_catalog(raw: str | None) -> dict[str, dict[str, Any]]:
@@ -313,67 +332,13 @@ def _load_one_mode(
     warning-and-skip behavior is preserved.
     """
 
-    mode_config_path = mode_dir / _MODE_CONFIG_FILENAME
-    if not mode_config_path.is_file():
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
-                "without _mode.md is not a valid pack install."
-            )
-        logger.warning("Skipping mode folder '%s': missing _mode.md", mode_dir.name)
+    parsed = _parse_mode_front_matter(mode_dir, strict=strict)
+    if parsed is None:
         return None
+    front_matter, body, mode_id = parsed
 
-    mode_text = mode_config_path.read_text(encoding="utf-8")
-    try:
-        front_matter, body = parse_front_matter(mode_text)
-    except FrontMatterError as exc:
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode '{mode_dir.name}' has malformed front-matter: {exc}"
-            ) from exc
-        logger.warning("Skipping mode '%s': %s", mode_dir.name, exc)
-        return None
-
-    mode_id = front_matter.get("mode_id")
-    if not mode_id or not isinstance(mode_id, str):
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode '{mode_dir.name}' is missing a valid 'mode_id' in its front-matter."
-            )
-        return None
-
-    stages: dict[str, dict[str, Any]] = {}
-    for stage_path in sorted(mode_dir.glob("*.md")):
-        if stage_path.name.startswith("_"):
-            continue
-        stage_dict = _load_one_stage(
-            stage_path,
-            mode_kind=front_matter.get("mode_kind", "workflow"),
-            strict=strict,
-        )
-        if stage_dict is not None:
-            stages[stage_dict["stage_id"]] = stage_dict
-
-    # Stage files are workflow-mode authoring. A chat/action mode with an
-    # authored stage file is a contradiction — the kernel synthesizes a
-    # one-stage graph for stageless modes at load, and an authored graph on
-    # a non-workflow mode would bypass every workflow invariant. Reject it
-    # here (the kernel's disk loader does the same); want stages? Declare
-    # ``mode_kind: workflow``.
-    mode_kind = str(front_matter.get("mode_kind", "workflow") or "workflow")
-    if stages and mode_kind in {"chat", "action"}:
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares "
-                f"stage files {sorted(stages)} — only workflow modes define "
-                "FSM stages."
-            )
-        logger.warning(
-            "Skipping mode '%s': mode_kind '%s' cannot declare stage files %s",
-            mode_id,
-            mode_kind,
-            sorted(stages),
-        )
+    stages = _load_mode_stages(mode_dir, front_matter, strict=strict)
+    if stages is None:
         return None
 
     # Resolve mode-relative file references (workshop planner/synthesis prompts).
@@ -385,94 +350,20 @@ def _load_one_mode(
         mode_dir,
         str(front_matter.get("workshop_synthesis_prompt_file", "") or ""),
     )
-
-    # Parse workshop panels, resolving per-panel query_prompt_file refs.
-    workshop_panels: list[dict[str, Any]] = []
-    for panel in front_matter.get("workshop_panels") or []:
-        if not isinstance(panel, dict):
-            continue
-        panel_dict = {
-            "panel_id": str(panel.get("panel_id", "") or "").strip(),
-            "title": str(panel.get("title", "") or "").strip(),
-            "mode_id": str(panel.get("mode_id", "") or ""),
-            "model_alias": str(panel.get("model_alias", "") or "").strip(),
-            "query_prefix": str(panel.get("query_prefix", "") or "").strip(),
-            "query_prompt_file": _resolve_mode_relative_file(
-                mode_dir,
-                str(panel.get("query_prompt_file", "") or ""),
-            ),
-        }
-        workshop_panels.append(panel_dict)
+    workshop_panels = _parse_workshop_panels(mode_dir, front_matter)
 
     mode_provider_id = str(front_matter.get("mode_provider_id", "") or "").strip()
     if not mode_provider_id:
         mode_provider_id = inferred_provider_id
 
-    # Parse routing_intent_keywords defensively. The schema requires a dict
-    # mapping each intent tag to a list of substring keywords, but malformed
-    # pack files have shipped a flat list instead. An unguarded ``.items()``
-    # here raises ``'list' object has no attribute 'items'`` inside the
-    # catalog subprocess, which surfaces as an opaque startup failure. Mirror
-    # the kernel's validation (``kernel/ipsar_fsm.py``): raise in strict mode
-    # (host startup fails fast on a broken pack install), skip the mode with a
-    # warning otherwise.
-    routing_intent_keywords_raw = front_matter.get("routing_intent_keywords") or {}
-    if not isinstance(routing_intent_keywords_raw, dict):
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode '{mode_id}' has invalid routing_intent_keywords: "
-                "must be a mapping of intent tag to keyword list, "
-                f"got {type(routing_intent_keywords_raw).__name__} in {mode_config_path}"
-            )
-        logger.warning(
-            "Skipping mode '%s': routing_intent_keywords must be a dict in %s",
-            mode_id,
-            mode_config_path,
-        )
+    routing_intent_keywords = _parse_routing_intent_keywords(
+        mode_id,
+        mode_dir,
+        front_matter,
+        strict=strict,
+    )
+    if routing_intent_keywords is None:
         return None
-    routing_intent_keywords: dict[str, list[str]] = {}
-    for tag, keywords in routing_intent_keywords_raw.items():
-        routing_intent_keywords[str(tag)] = [str(k) for k in keywords]
-
-    # Validate that every routing_intent_keywords key is declared in
-    # routing_intent_tags. A keyword bucket keyed by a tag the mode does
-    # not cover produces an uncoverable intent: the detector attributes
-    # the tag, but no routing target claims it, so the gap can never be
-    # covered and the hint layer falls through to ambiguity (the
-    # 2026-08-11 executor incident: bucket keyed ``execute:`` while
-    # routing_intent_tags were ``[code, write, implement]``). Mirror the
-    # kernel guard (``kernel/ipsar_fsm.py``): raise in strict mode, skip
-    # the mode with a warning otherwise.
-    if routing_intent_keywords:
-        _tags_set = {str(t) for t in (front_matter.get("routing_intent_tags") or [])}
-        if not _tags_set:
-            if strict:
-                raise CatalogCollisionError(
-                    f"Mode '{mode_id}' has routing_intent_keywords but no "
-                    f"routing_intent_tags in {mode_config_path}"
-                )
-            logger.warning(
-                "Skipping mode '%s': routing_intent_keywords set without routing_intent_tags in %s",
-                mode_id,
-                mode_config_path,
-            )
-            return None
-        _orphan = set(routing_intent_keywords) - _tags_set
-        if _orphan:
-            if strict:
-                raise CatalogCollisionError(
-                    f"Mode '{mode_id}' has routing_intent_keywords keys not in "
-                    f"routing_intent_tags in {mode_config_path}: "
-                    f"{sorted(_orphan)}"
-                )
-            logger.warning(
-                "Skipping mode '%s': routing_intent_keywords keys not in "
-                "routing_intent_tags in %s: %s",
-                mode_id,
-                mode_config_path,
-                sorted(_orphan),
-            )
-            return None
 
     return {
         "mode_id": mode_id,
@@ -485,7 +376,7 @@ def _load_one_mode(
         ),
         "description": str(front_matter.get("description", "") or ""),
         "instruction_body": body.strip(),
-        "mode_markdown_path": str(mode_config_path),
+        "mode_markdown_path": str(mode_dir / _MODE_CONFIG_FILENAME),
         "default_model": (str(front_matter.get("default_model", "") or "") or None),
         "routable": bool(front_matter.get("routable", False)),
         "priority": int(front_matter.get("priority", 0) or 0),
@@ -531,6 +422,189 @@ def _load_one_mode(
         ),
         "context_item_packs": [str(p) for p in (front_matter.get("context_item_packs") or [])],
     }
+
+
+def _parse_mode_front_matter(
+    mode_dir: Path,
+    *,
+    strict: bool,
+) -> tuple[dict[str, Any], str, str] | None:
+    """Parse one mode folder's ``_mode.md`` front matter.
+
+    Returns ``(front_matter, body, mode_id)``, or None when the mode is
+    unusable (missing config, malformed front-matter, invalid mode_id) —
+    raising in strict mode and warning-and-skipping otherwise.
+    """
+    mode_config_path = mode_dir / _MODE_CONFIG_FILENAME
+    if not mode_config_path.is_file():
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
+                "without _mode.md is not a valid pack install."
+            )
+        logger.warning("Skipping mode folder '%s': missing _mode.md", mode_dir.name)
+        return None
+
+    mode_text = mode_config_path.read_text(encoding="utf-8")
+    try:
+        front_matter, body = parse_front_matter(mode_text)
+    except FrontMatterError as exc:
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_dir.name}' has malformed front-matter: {exc}"
+            ) from exc
+        logger.warning("Skipping mode '%s': %s", mode_dir.name, exc)
+        return None
+
+    mode_id = front_matter.get("mode_id")
+    if not mode_id or not isinstance(mode_id, str):
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_dir.name}' is missing a valid 'mode_id' in its front-matter."
+            )
+        return None
+    return front_matter, body, mode_id
+
+
+def _load_mode_stages(
+    mode_dir: Path,
+    front_matter: dict[str, Any],
+    *,
+    strict: bool,
+) -> dict[str, dict[str, Any]] | None:
+    """Load one mode folder's stage files, keyed by stage id.
+
+    Returns None when the mode must be skipped because a stageless
+    mode_kind declares authored stage files.
+    """
+    stages: dict[str, dict[str, Any]] = {}
+    for stage_path in sorted(mode_dir.glob("*.md")):
+        if stage_path.name.startswith("_"):
+            continue
+        stage_dict = _load_one_stage(
+            stage_path,
+            mode_kind=front_matter.get("mode_kind", "workflow"),
+            strict=strict,
+        )
+        if stage_dict is not None:
+            stages[stage_dict["stage_id"]] = stage_dict
+
+    # Stage files are workflow-mode authoring. A chat/action mode with an
+    # authored stage file is a contradiction — the kernel synthesizes a
+    # one-stage graph for stageless modes at load, and an authored graph on
+    # a non-workflow mode would bypass every workflow invariant. Reject it
+    # here (the kernel's disk loader does the same); want stages? Declare
+    # ``mode_kind: workflow``.
+    mode_kind = str(front_matter.get("mode_kind", "workflow") or "workflow")
+    if stages and mode_kind in {"chat", "action"}:
+        mode_id = str(front_matter.get("mode_id", ""))
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares "
+                f"stage files {sorted(stages)} — only workflow modes define "
+                "FSM stages."
+            )
+        logger.warning(
+            "Skipping mode '%s': mode_kind '%s' cannot declare stage files %s",
+            mode_id,
+            mode_kind,
+            sorted(stages),
+        )
+        return None
+    return stages
+
+
+def _parse_workshop_panels(
+    mode_dir: Path,
+    front_matter: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Parse workshop panel front-matter entries, resolving per-panel prompt refs."""
+    workshop_panels: list[dict[str, Any]] = []
+    for panel in front_matter.get("workshop_panels") or []:
+        if not isinstance(panel, dict):
+            continue
+        panel_dict = {
+            "panel_id": str(panel.get("panel_id", "") or "").strip(),
+            "title": str(panel.get("title", "") or "").strip(),
+            "mode_id": str(panel.get("mode_id", "") or ""),
+            "model_alias": str(panel.get("model_alias", "") or "").strip(),
+            "query_prefix": str(panel.get("query_prefix", "") or "").strip(),
+            "query_prompt_file": _resolve_mode_relative_file(
+                mode_dir,
+                str(panel.get("query_prompt_file", "") or ""),
+            ),
+        }
+        workshop_panels.append(panel_dict)
+    return workshop_panels
+
+
+def _parse_routing_intent_keywords(
+    mode_id: str,
+    mode_dir: Path,
+    front_matter: dict[str, Any],
+    *,
+    strict: bool,
+) -> dict[str, list[str]] | None:
+    """Validate and normalize a mode's ``routing_intent_keywords`` front matter.
+
+    Returns the normalized keyword map, or None when the mode must be
+    skipped: malformed payloads (a flat list instead of the required
+    mapping) or keyword buckets keyed by intents the mode does not
+    cover — an uncoverable intent that leaves the hint layer stuck in
+    ambiguity (the 2026-08-11 executor incident). Mirrors the kernel
+    guard (``kernel/ipsar_fsm.py``): raise in strict mode, skip with a
+    warning otherwise.
+    """
+    mode_config_path = mode_dir / _MODE_CONFIG_FILENAME
+    routing_intent_keywords_raw = front_matter.get("routing_intent_keywords") or {}
+    if not isinstance(routing_intent_keywords_raw, dict):
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' has invalid routing_intent_keywords: "
+                "must be a mapping of intent tag to keyword list, "
+                f"got {type(routing_intent_keywords_raw).__name__} in {mode_config_path}"
+            )
+        logger.warning(
+            "Skipping mode '%s': routing_intent_keywords must be a dict in %s",
+            mode_id,
+            mode_config_path,
+        )
+        return None
+    routing_intent_keywords: dict[str, list[str]] = {}
+    for tag, keywords in routing_intent_keywords_raw.items():
+        routing_intent_keywords[str(tag)] = [str(k) for k in keywords]
+    if not routing_intent_keywords:
+        return routing_intent_keywords
+
+    _tags_set = {str(t) for t in (front_matter.get("routing_intent_tags") or [])}
+    if not _tags_set:
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' has routing_intent_keywords but no "
+                f"routing_intent_tags in {mode_config_path}"
+            )
+        logger.warning(
+            "Skipping mode '%s': routing_intent_keywords set without routing_intent_tags in %s",
+            mode_id,
+            mode_config_path,
+        )
+        return None
+    _orphan = set(routing_intent_keywords) - _tags_set
+    if _orphan:
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' has routing_intent_keywords keys not in "
+                f"routing_intent_tags in {mode_config_path}: "
+                f"{sorted(_orphan)}"
+            )
+        logger.warning(
+            "Skipping mode '%s': routing_intent_keywords keys not in routing_intent_tags in %s: %s",
+            mode_id,
+            mode_config_path,
+            sorted(_orphan),
+        )
+        return None
+    return routing_intent_keywords
 
 
 def _provider_selection_cache_key() -> str:
@@ -1217,6 +1291,34 @@ def _is_sys_path_boundary(path: Path) -> bool:
         return False
 
 
+def _dir_is_importable_package(package_dir: Path) -> bool:
+    """Return True if ``package_dir`` is a regular or PEP 420 namespace package."""
+
+    return _is_package_dir(package_dir)
+
+
+def _reached_package_top(package_dir: Path) -> bool:
+    """Return True when ``package_dir`` is a top-level package boundary.
+
+    The walk stops here because the parent is not part of a regular package
+    chain (no ``__init__.py``) and either ``package_dir`` itself resolves as a
+    top-level importable package (no dots in its spec name) or its parent is a
+    sys.path boundary such as ``src/`` or ``site-packages/``.
+    """
+    import importlib.util
+
+    parent = package_dir.parent
+    if (parent / "__init__.py").is_file():
+        return False
+    try:
+        spec = importlib.util.find_spec(package_dir.name)
+    except ModuleNotFoundError:
+        spec = None
+    if spec is not None and "." not in spec.name:
+        return True
+    return _is_sys_path_boundary(parent)
+
+
 def _infer_module_path(py_path: Path, root: Path) -> str:
     """Infer a dotted Python module path from the file path relative to root.
 
@@ -1237,8 +1339,6 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
     # We walk all the way up collecting names, then find the top-level anchor
     # (the topmost dir whose leaf name resolves via find_spec), and build the
     # dotted path from the anchor down to root's parent.
-    import importlib.util
-
     package_dir = root.parent
     dir_names: list[str] = []
     anchor_idx = -1
@@ -1252,33 +1352,13 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
         if package_dir == package_dir.parent:
             break
         leaf = package_dir.name
-        is_pkg = (package_dir / "__init__.py").is_file()
-        if not is_pkg:
-            try:
-                spec = importlib.util.find_spec(leaf)
-            except ModuleNotFoundError:
-                spec = None
-            if spec is not None and spec.submodule_search_locations is not None:
-                resolved = {Path(p).resolve() for p in spec.submodule_search_locations}
-                is_pkg = package_dir.resolve() in resolved
-        if is_pkg:
+        if _dir_is_importable_package(package_dir):
             anchor_idx = len(dir_names)
         dir_names.insert(0, leaf)
         # Stop at the top: parent is a sys.path boundary (src/, site-packages)
-        parent = package_dir.parent
-        if not (parent / "__init__.py").is_file():
-            # Check if parent is on sys.path (i.e., package_dir is top-level)
-            try:
-                spec = importlib.util.find_spec(leaf)
-            except ModuleNotFoundError:
-                spec = None
-            if spec is not None and "." not in spec.name:
-                # This is a top-level package — stop here
-                break
-            # Also stop if parent looks like a boundary
-            if _is_sys_path_boundary(parent):
-                break
-        package_dir = parent
+        if _reached_package_top(package_dir):
+            break
+        package_dir = package_dir.parent
     # Build dotted path from the anchor (top-level importable package) down
     pkg_parts = dir_names[: anchor_idx + 1] if anchor_idx >= 0 else []
     # Include the operations directory name itself

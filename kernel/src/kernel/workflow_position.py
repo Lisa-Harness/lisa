@@ -291,6 +291,132 @@ def _step_id_for(mode_id: str, index: int) -> str:
     return f"{slug}_{index}"
 
 
+def _ordered_intent_groups(
+    detected: set[str],
+    producers: frozenset[str] | set[str],
+    consumers: frozenset[str] | set[str],
+) -> list[set[str]]:
+    """Return detected intents as ordered groups: producers, other, consumers.
+
+    Producers first (evidence gathering), then any non-role intents, then
+    consumers (artifact creation). This is the sequential chain order the
+    post-handoff hint recomputation follows; mirroring it here keeps the
+    instance and the router in lockstep.
+    """
+    producer_intents = detected & producers
+    consumer_intents = detected & consumers
+    other_intents = detected - producers - consumers
+
+    ordered_intent_groups: list[set[str]] = []
+    if producer_intents:
+        ordered_intent_groups.append(producer_intents)
+    if other_intents:
+        ordered_intent_groups.append(other_intents)
+    if consumer_intents:
+        ordered_intent_groups.append(consumer_intents)
+    return ordered_intent_groups
+
+
+def _append_step_for_target(
+    *,
+    steps: list[WorkflowStep],
+    seen_targets: set[str],
+    target_id: str,
+    catalog: dict[str, Any],
+    spawned_from: WorkflowPositionOrigin,
+) -> None:
+    """Append one non-terminal step for ``target_id`` to the chain in place."""
+    mode_cfg = catalog.get(target_id)
+    satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or [])
+    steps.append(
+        WorkflowStep(
+            step_id=_step_id_for(target_id, len(steps)),
+            mode_id=target_id,
+            satisfies_intents=satisfies,
+            depends_on=tuple(s.step_id for s in steps),
+            is_terminal=False,
+            spawned_from=spawned_from,
+        )
+    )
+    seen_targets.add(target_id)
+
+
+def _sequential_group_steps(
+    *,
+    query: str,
+    routing_targets: list[str],
+    catalog: dict[str, Any],
+    group: set[str],
+    seen_targets: set[str],
+    steps: list[WorkflowStep],
+    spawned_from: WorkflowPositionOrigin,
+) -> None:
+    """Emit one step per intent in a sequential group, ordered by the user's phrasing.
+
+    Picking the earliest-keyword target for each intent. A group like
+    {coding, write} (two consumer intents) must produce two steps (coding
+    then markdown), not one — otherwise the second consumer is dropped and
+    never reached (the glm-5.2 self-assessment bug). Intents within a group
+    are ordered by their earliest keyword position in the query so the chain
+    follows the user's phrasing.
+    """
+    from kernel.turn_phases._routing_hint import _first_target_for_earliest_intent
+
+    intent_order = _intents_by_earliest_keyword(
+        query=query,
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=group,
+    )
+    for intent in intent_order:
+        target = _first_target_for_earliest_intent(
+            query=query,
+            routing_targets=routing_targets,
+            catalog=catalog,
+            gap_intents={intent},
+        )
+        if not target or target in seen_targets:
+            continue
+        _append_step_for_target(
+            steps=steps,
+            seen_targets=seen_targets,
+            target_id=target,
+            catalog=catalog,
+            spawned_from=spawned_from,
+        )
+
+
+def _forked_group_steps(
+    *,
+    routing_targets: list[str],
+    catalog: dict[str, Any],
+    group: set[str],
+    seen_targets: set[str],
+    steps: list[WorkflowStep],
+    spawned_from: WorkflowPositionOrigin,
+) -> None:
+    """Flatten one non-sequential fork group into one step per child target.
+
+    The position does not model parallelism yet; each fork child is
+    tracked as its own step.
+    """
+    targets = _targets_covering_intents(
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=group,
+    )
+    for target_id in targets:
+        if not target_id or target_id in seen_targets:
+            continue
+        _append_step_for_target(
+            steps=steps,
+            seen_targets=seen_targets,
+            target_id=target_id,
+            catalog=catalog,
+            spawned_from=spawned_from,
+        )
+
+
 def compile_steps_from_routing_targets(
     *,
     query: str,
@@ -328,7 +454,6 @@ def compile_steps_from_routing_targets(
     # import keeps workflow_position importable before the catalog is wired.
     from kernel.turn_phases._routing_hint import (
         _detect_query_intents,
-        _first_target_for_earliest_intent,
         _query_is_sequential,
     )
 
@@ -338,94 +463,36 @@ def compile_steps_from_routing_targets(
     if not detected:
         return ()
 
-    producers = get_producer_intents()
-    consumers = get_consumer_intents()
-    producer_intents = detected & producers
-    consumer_intents = detected & consumers
-    other_intents = detected - producers - consumers
-
-    # Ordered intent groups: producers first (evidence gathering), then
-    # any non-role intents, then consumers (artifact creation). This is the
-    # sequential chain order the post-handoff hint recomputation follows;
-    # mirroring it here keeps the instance and the router in lockstep.
-    ordered_intent_groups: list[set[str]] = []
-    if producer_intents:
-        ordered_intent_groups.append(producer_intents)
-    if other_intents:
-        ordered_intent_groups.append(other_intents)
-    if consumer_intents:
-        ordered_intent_groups.append(consumer_intents)
+    ordered_intent_groups = _ordered_intent_groups(
+        detected,
+        get_producer_intents(),
+        get_consumer_intents(),
+    )
 
     sequential = _query_is_sequential(query)
     seen_targets: set[str] = set()
     steps: list[WorkflowStep] = []
-    step_index = 0
 
     for group in ordered_intent_groups:
         if sequential:
-            # For a sequential query, emit one step per intent in the group,
-            # picking the earliest-keyword target for each intent. A group
-            # like {coding, write} (two consumer intents) must produce two
-            # steps (coding then markdown), not one — otherwise the second
-            # consumer is dropped and never reached (the glm-5.2
-            # self-assessment bug). Intents within a group are ordered by
-            # their earliest keyword position in the query so the chain
-            # follows the user's phrasing.
-            intent_order = _intents_by_earliest_keyword(
+            _sequential_group_steps(
                 query=query,
                 routing_targets=routing_targets,
                 catalog=catalog,
-                gap_intents=group,
+                group=group,
+                seen_targets=seen_targets,
+                steps=steps,
+                spawned_from=spawned_from,
             )
-            for intent in intent_order:
-                target = _first_target_for_earliest_intent(
-                    query=query,
-                    routing_targets=routing_targets,
-                    catalog=catalog,
-                    gap_intents={intent},
-                )
-                if not target or target in seen_targets:
-                    continue
-                seen_targets.add(target)
-                mode_cfg = catalog.get(target)
-                satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or [])
-                steps.append(
-                    WorkflowStep(
-                        step_id=_step_id_for(target, step_index),
-                        mode_id=target,
-                        satisfies_intents=satisfies,
-                        depends_on=tuple(s.step_id for s in steps),
-                        is_terminal=False,
-                        spawned_from=spawned_from,
-                    )
-                )
-                step_index += 1
         else:
-            # For a non-sequential query, a group may fork across multiple
-            # targets — flatten them so the instance tracks each child as
-            # its own step (parallelism is not modeled yet).
-            targets = _targets_covering_intents(
+            _forked_group_steps(
                 routing_targets=routing_targets,
                 catalog=catalog,
-                gap_intents=group,
+                group=group,
+                seen_targets=seen_targets,
+                steps=steps,
+                spawned_from=spawned_from,
             )
-            for target_id in targets:
-                if not target_id or target_id in seen_targets:
-                    continue
-                seen_targets.add(target_id)
-                mode_cfg = catalog.get(target_id)
-                satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or [])
-                steps.append(
-                    WorkflowStep(
-                        step_id=_step_id_for(target_id, step_index),
-                        mode_id=target_id,
-                        satisfies_intents=satisfies,
-                        depends_on=tuple(s.step_id for s in steps),
-                        is_terminal=False,
-                        spawned_from=spawned_from,
-                    )
-                )
-                step_index += 1
 
     if not steps:
         return ()

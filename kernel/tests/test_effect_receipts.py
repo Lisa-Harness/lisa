@@ -32,6 +32,7 @@ from kernel.models import (
     OperationResult,
     WorkflowModeConfig,
 )
+from kernel.tools.mcp_client import MCPToolResult
 from kernel.turn_hooks import ModelHooks, OperationHooks, ToolHooks
 from kernel.turn_phases._dispatch import enforce_write_receipt as _enforce_write_receipt
 from kernel.turn_runner import (
@@ -347,6 +348,77 @@ async def test_degraded_write_operation_produces_no_receipt() -> None:
     assert not any(r.capability_id == "write_file" for r in result.effect_receipts)
 
 
+# ── Regression: failed MCP write still blocked ───────────────────
+
+
+class _FailingWritePool:
+    """Stub pool whose every call_tool returns an is_error result."""
+
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+        return []
+
+    async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+        return MCPToolResult(
+            tool_id=tool_id,
+            output_text="provider unavailable",
+            is_error=True,
+        )
+
+    def tool_spec(self, tool_id: str) -> Any:
+        return None
+
+    async def __aenter__(self) -> _FailingWritePool:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def start(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _ReadOnlyPool:
+    """Stub pool whose every tool is a server-declared read-only tool."""
+
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+        return []
+
+    async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+        return MCPToolResult(tool_id=tool_id, output_text="read result")
+
+    def tool_spec(self, tool_id: str) -> Any:
+        return SimpleNamespace(read_only_hint=True)
+
+    async def __aenter__(self) -> _ReadOnlyPool:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def start(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _two_step_model(first: Any, second: Any) -> Any:
+    """Build a completion fn that returns ``first`` on the first call, ``second`` after."""
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return await first()
+        return await second()
+
+    return model
+
+
 @pytest.mark.asyncio
 async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
     """A failed MCP write must not satisfy the completion contract.
@@ -357,33 +429,6 @@ async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
     raising). A write-contract mode whose only write attempt failed must
     still be blocked as ``no_tools`` — the receipt ledger is empty.
     """
-    from kernel.tools.mcp_client import MCPToolResult
-
-    class _FailingWritePool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
-            return []
-
-        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
-            return MCPToolResult(
-                tool_id=tool_id,
-                output_text="provider unavailable",
-                is_error=True,
-            )
-
-        def tool_spec(self, tool_id: str) -> Any:
-            return None
-
-        async def __aenter__(self) -> _FailingWritePool:
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            pass
-
-        async def start(self) -> None:
-            pass
-
-        async def aclose(self) -> None:
-            pass
 
     async def claims_write(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(
@@ -402,14 +447,7 @@ async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
     async def then_claims_done(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Done — I wrote the file for you.")
 
-    call_count = 0
-
-    async def model(**_kwargs: Any) -> _StubCompletion:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return await claims_write()
-        return await then_claims_done()
+    model = _two_step_model(claims_write, then_claims_done)
 
     hooks = TurnHooks(
         models=ModelHooks(
@@ -456,29 +494,6 @@ async def test_parent_turn_dense_content_with_readonly_work_accepted() -> None:
     the model did real investigation but failed to land the write. The
     turn must NOT be blocked as ``no_tools``.
     """
-    from kernel.tools.mcp_client import MCPToolResult
-
-    class _ReadOnlyPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
-            return []
-
-        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
-            return MCPToolResult(tool_id=tool_id, output_text="read result")
-
-        def tool_spec(self, tool_id: str) -> Any:
-            return SimpleNamespace(read_only_hint=True)
-
-        async def __aenter__(self) -> _ReadOnlyPool:
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            pass
-
-        async def start(self) -> None:
-            pass
-
-        async def aclose(self) -> None:
-            pass
 
     call_count = 0
 
@@ -865,29 +880,6 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     from the contract, so a turn that only calls it has an empty write contract
     and completes cleanly (no false ``no_tools`` block).
     """
-    from kernel.tools.mcp_client import MCPToolResult
-
-    class _ReadOnlyPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
-            return []
-
-        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
-            return MCPToolResult(tool_id=tool_id, output_text="read result")
-
-        def tool_spec(self, tool_id: str) -> Any:
-            return SimpleNamespace(read_only_hint=True)
-
-        async def __aenter__(self) -> _ReadOnlyPool:
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            pass
-
-        async def start(self) -> None:
-            pass
-
-        async def aclose(self) -> None:
-            pass
 
     async def reads_then_claims(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(
@@ -906,14 +898,7 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     async def then_claims_done(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Done — I read the file for you.")
 
-    call_count = 0
-
-    async def model(**_kwargs: Any) -> _StubCompletion:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return await reads_then_claims()
-        return await then_claims_done()
+    model = _two_step_model(reads_then_claims, then_claims_done)
 
     hooks = TurnHooks(
         models=ModelHooks(

@@ -186,6 +186,42 @@ def save_installed_packs_lock(data_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _normalize_lock_pack_entry(item: Any) -> dict[str, Any] | None:
+    """Return a normalized lock entry for ``item``, or None if it is unusable.
+
+    Non-dict items and entries without a resolvable package name are dropped
+    so malformed lock files degrade into an empty pack list rather than
+    breaking startup.
+    """
+    if not isinstance(item, dict):
+        return None
+    package_name = normalize_pack_name(str(item.get("package_name") or ""))
+    if not package_name:
+        return None
+    source_kind = str(item.get("source_kind") or "package").strip().lower() or "package"
+    return {
+        **item,
+        "package_name": package_name,
+        "source_kind": source_kind,
+        "enabled": bool(item.get("enabled", True)),
+    }
+
+
+def _normalize_selected_providers(selected: Any) -> dict[str, str]:
+    """Normalize the ``selected_capability_providers`` mapping from the lock."""
+    selected_map: dict[str, str] = {}
+    if not isinstance(selected, dict):
+        return selected_map
+    for capability_raw, provider_raw in selected.items():
+        if not isinstance(capability_raw, str) or not isinstance(provider_raw, str):
+            continue
+        capability_id = capability_raw.strip().lower()
+        provider_id = normalize_pack_name(provider_raw)
+        if capability_id and provider_id:
+            selected_map[capability_id] = provider_id
+    return selected_map
+
+
 def load_installed_packs_lock(data_dir: Path) -> dict[str, Any]:
     """Load installed pack provenance metadata from disk."""
     path = runtime_pack_lock_path(data_dir)
@@ -208,35 +244,15 @@ def load_installed_packs_lock(data_dir: Path) -> dict[str, Any]:
 
     normalized_packs: list[dict[str, Any]] = []
     for item in packs:
-        if not isinstance(item, dict):
-            continue
-        package_name = normalize_pack_name(str(item.get("package_name") or ""))
-        if not package_name:
-            continue
-        source_kind = str(item.get("source_kind") or "package").strip().lower() or "package"
-        normalized_packs.append(
-            {
-                **item,
-                "package_name": package_name,
-                "source_kind": source_kind,
-                "enabled": bool(item.get("enabled", True)),
-            }
-        )
-
-    selected = decoded.get("selected_capability_providers")
-    selected_map: dict[str, str] = {}
-    if isinstance(selected, dict):
-        for capability_raw, provider_raw in selected.items():
-            if not isinstance(capability_raw, str) or not isinstance(provider_raw, str):
-                continue
-            capability_id = capability_raw.strip().lower()
-            provider_id = normalize_pack_name(provider_raw)
-            if capability_id and provider_id:
-                selected_map[capability_id] = provider_id
+        entry = _normalize_lock_pack_entry(item)
+        if entry is not None:
+            normalized_packs.append(entry)
 
     return {
         "packs": normalized_packs,
-        "selected_capability_providers": selected_map,
+        "selected_capability_providers": _normalize_selected_providers(
+            decoded.get("selected_capability_providers")
+        ),
     }
 
 
