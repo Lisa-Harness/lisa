@@ -28,9 +28,7 @@ def is_safe_relative_path(normalized: str) -> bool:
         return False
     if Path(normalized).is_absolute():
         return False
-    if ".." in Path(normalized).parts:
-        return False
-    return True
+    return ".." not in Path(normalized).parts
 
 
 class ContentReader:

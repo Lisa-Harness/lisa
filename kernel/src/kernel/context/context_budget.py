@@ -92,10 +92,7 @@ class ContextBudgetAllocator:
             dict(lane_limits) if lane_limits is not None else {}
         )
         if total_tokens is None or total_tokens <= 0:
-            if resolved_lane_limits:
-                total_tokens = sum(resolved_lane_limits.values())
-            else:
-                total_tokens = 0
+            total_tokens = sum(resolved_lane_limits.values()) if resolved_lane_limits else 0
         return cls(
             enabled=enabled,
             total_tokens=total_tokens,

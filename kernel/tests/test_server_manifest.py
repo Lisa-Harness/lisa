@@ -673,7 +673,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, mem = load_mcp_server_manifest(manifest)
+    _specs, mem = load_mcp_server_manifest(manifest)
     assert mem.default_backend == "mem0"
     assert len(mem.backends) == 1
     backend = mem.backends[0]
@@ -707,7 +707,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, mem = load_mcp_server_manifest(manifest)
+    _specs, mem = load_mcp_server_manifest(manifest)
     assert mem.default_backend == "lisa_memory"
     backend = mem.backends[0]
     assert backend.result_maps == {}

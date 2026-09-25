@@ -239,10 +239,7 @@ def matches_apply_to(apply_to: list[str] | tuple[str, ...], file_path: str) -> b
         return _matches_fallback(apply_to, normalized)
 
     flags = _wcmatch_glob.GLOBSTAR | _wcmatch_glob.BRACE
-    for pattern in apply_to:
-        if _wcmatch_glob.globmatch(normalized, pattern, flags=flags):
-            return True
-    return False
+    return any(_wcmatch_glob.globmatch(normalized, pattern, flags=flags) for pattern in apply_to)
 
 
 def _matches_fallback(apply_to: list[str] | tuple[str, ...], file_path: str) -> bool:
@@ -290,10 +287,7 @@ def parse_instruction_file(
             path=path, message=f"Invalid front-matter: {exc}", kind="instructions"
         )
 
-    if fmt == "claude":
-        raw_apply = fm.get("paths", ["**"])
-    else:
-        raw_apply = fm.get("applyTo")
+    raw_apply = fm.get("paths", ["**"]) if fmt == "claude" else fm.get("applyTo")
     apply_to = tuple(_split_apply_to(raw_apply))
 
     name = _coerce_str(fm.get("name")) or _default_name_from_path(path)

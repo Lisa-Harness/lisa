@@ -258,7 +258,7 @@ def json_only_instruction(response_format_model: type[BaseModel]) -> str:
 
     schema = response_format_model.model_json_schema()
     properties = schema.get("properties") or {}
-    keys = [str(key) for key in properties.keys()]
+    keys = [str(key) for key in properties]
     key_list = ", ".join(keys) if keys else "the declared schema"
     return (
         "Return one JSON object only. Do not wrap it in markdown fences or prose. "

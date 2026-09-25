@@ -922,7 +922,7 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
     hooks.workflow.route_coordinator = coordinator
     hooks.workflow.workflow_position = lambda: active_instance
 
-    result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
+    await run_turn(mode_id="default", query="proceed", hooks=hooks)
 
     # The hint must point to the instance's current step (markdown), not
     # the coordinator's stale saved target (search). Verify via the
@@ -2459,7 +2459,7 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
     captured_stage_instructions: list[str | None] = []
 
     async def complete(**kwargs: Any) -> _StubCompletion:
-        captured_messages = kwargs["messages"]
+        kwargs["messages"]
         return _StubCompletion(content="Done.")
 
     def assemble_system(mode_instruction: str, stage_instruction: str | None) -> str:
@@ -3341,7 +3341,6 @@ async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
 @pytest.mark.asyncio
 async def test_run_turn_on_stage_hook_failure_is_swallowed() -> None:
     """A failing on_stage hook is logged and swallowed; the turn continues."""
-    call_count = 0
 
     async def on_stage(label: str, data: dict[str, Any]) -> None:
         raise RuntimeError("transport exploded")
@@ -3436,7 +3435,7 @@ async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
         # messages[0] is system, messages[1] is user
         # The user content should be the same across iterations
         first_user = captured_messages[0][1].get("content", "")
-        second_user = captured_messages[1][1].get("content", "")
+        captured_messages[1][1].get("content", "")
         # The user message content should contain the original query
         assert "write a doc" in first_user
 

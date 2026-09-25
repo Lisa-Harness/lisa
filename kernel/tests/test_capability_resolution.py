@@ -162,7 +162,7 @@ def test_resolve_capability_returns_none_for_unknown() -> None:
 
 def test_resolve_operation_definition_only_checks_op_catalog() -> None:
     """resolve_operation_definition does not consult the tool catalog."""
-    tools = {"shared": _tool("shared")}
+    {"shared": _tool("shared")}
     result = resolve_operation_definition("shared", operation_catalog={})
     assert result is None
     # Passing the tool catalog explicitly must not change the result.
@@ -172,7 +172,7 @@ def test_resolve_operation_definition_only_checks_op_catalog() -> None:
 
 def test_resolve_tool_definition_only_checks_tool_catalog() -> None:
     """resolve_tool_definition does not consult the operation catalog."""
-    ops = {"shared": _operation("shared")}
+    {"shared": _operation("shared")}
     assert resolve_tool_definition("shared", tool_catalog={}) is None
     assert resolve_tool_definition("shared", tool_catalog={"other": _tool("other")}) is None
 
@@ -230,7 +230,6 @@ def test_validate_export_boundaries_raises_on_empty_mode_provider_id_with_refs(
         {"bad": _mode("bad", mode_provider_id="", allowed_operation_ids=["recall"])},
     )
     ops = {"recall": _operation("recall", provider_id="lisa-pack-memory")}
-    tools: dict[str, ToolDefinition] = {}
     with pytest.raises(Exception) as exc_info:  # OperationValidationError
         validate_export_boundaries(operation_catalog=ops)
     assert "mode_provider_id" in str(exc_info.value)

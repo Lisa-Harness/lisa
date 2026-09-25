@@ -67,5 +67,5 @@ def test_render_workflow_progress_truncates_long_preview() -> None:
     )
     progress = render_workflow_progress(instance)
     # The preview line is at most 120 chars after the mode label.
-    line = [ln for ln in progress.splitlines() if "search" in ln][0]
+    line = next(ln for ln in progress.splitlines() if "search" in ln)
     assert len(line) < 200  # not the full 300-char preview

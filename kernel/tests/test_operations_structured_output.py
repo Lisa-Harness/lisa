@@ -108,7 +108,7 @@ def test_reasoning_tail_excerpt_clips_long_reasoning_to_tail() -> None:
         finish_reason="stop",
     )
     _, caveat = reasoning_tail_excerpt(completion, max_chars=120)
-    quote_line = [line for line in caveat.splitlines() if line.startswith("> ")][0]
+    quote_line = next(line for line in caveat.splitlines() if line.startswith("> "))
     # Clipped tail, not the full text.
     assert quote_line.startswith("> …")
     # The quote is bounded by max_chars (plus the ellipsis prefix).

@@ -13,7 +13,7 @@ registered once and reused across environments.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 __all__ = [
     "AliasSpec",
@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 
-class RuntimeKind(str, Enum):
+class RuntimeKind(StrEnum):
     """How to launch an MCP server subprocess."""
 
     PYTHON = "python"  # python -m package.server
@@ -82,7 +82,7 @@ class ToolPolicy:
     """Denylist of tool names to strip from the catalog."""
 
 
-class AuthKind(str, Enum):
+class AuthKind(StrEnum):
     """How a network (HTTP) MCP server authenticates the client."""
 
     NONE = "none"  # no auth — only allowed for loopback/allowlisted hosts
@@ -145,7 +145,7 @@ class AuthSpec:
         return False
 
 
-class AmbientSource(str, Enum):
+class AmbientSource(StrEnum):
     """Runtime sources the proxy can resolve ambient field values from.
 
     The host registers a resolver callable for each source; the proxy

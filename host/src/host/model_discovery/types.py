@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ProbeStatus(str, Enum):
+class ProbeStatus(StrEnum):
     """Discriminated outcome of a single provider probe.
 
     The UI layer branches on these to render actionable prose instead of

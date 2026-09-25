@@ -104,9 +104,8 @@ class EntryPointExtensionItemBuilder:
                     if hasattr(item, "pack"):
                         if not item.pack:
                             item.pack = pack_name
-                    elif isinstance(item, dict):
-                        if not item.get("pack"):
-                            item["pack"] = pack_name
+                    elif isinstance(item, dict) and not item.get("pack"):
+                        item["pack"] = pack_name
                 items.extend(contributed)
 
         return items

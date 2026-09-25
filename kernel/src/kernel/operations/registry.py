@@ -387,9 +387,7 @@ def _is_operation_allowed_for_mode(
         if operation_id in mode_bound_operation_ids:
             return True
 
-    if definition.mode_allowlist:
-        return False
-    return True
+    return not definition.mode_allowlist
 
 
 def _is_operation_bound_to_mode(

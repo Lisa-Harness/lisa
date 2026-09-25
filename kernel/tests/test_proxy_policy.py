@@ -262,7 +262,7 @@ async def test_direct_native_call_gets_ambient_injection(monkeypatch: pytest.Mon
     tool_name, args = session.calls[0]
     assert tool_name == "get_memories"
     and_list = args.get("filters", {}).get("AND", [])
-    ambient_entries = {list(e.keys())[0]: list(e.values())[0] for e in and_list}
+    ambient_entries = {next(iter(e.keys())): next(iter(e.values())) for e in and_list}
     assert ambient_entries["user_id"] == "adam"
     assert ambient_entries["agent_id"] == "coach"
     assert ambient_entries["app_id"] == "little-lisa"
@@ -319,7 +319,7 @@ async def test_scoped_call_gets_ambient_injection(monkeypatch: pytest.MonkeyPatc
     assert result.is_error is False
     _, args = session.calls[0]
     and_list = args.get("filters", {}).get("AND", [])
-    ambient_entries = {list(e.keys())[0]: list(e.values())[0] for e in and_list}
+    ambient_entries = {next(iter(e.keys())): next(iter(e.values())) for e in and_list}
     assert ambient_entries["user_id"] == "adam"
     assert ambient_entries["agent_id"] == "coach"
     assert ambient_entries["app_id"] == "little-lisa"
@@ -364,9 +364,9 @@ async def test_idempotent_filters_no_duplicates(monkeypatch: pytest.MonkeyPatch)
     # Should have exactly 4 entries: 3 ambient (replaced) + 1 content (preserved)
     assert len(and_list) == 4
     ambient_entries = {
-        list(e.keys())[0]: list(e.values())[0]
+        next(iter(e.keys())): next(iter(e.values()))
         for e in and_list
-        if list(e.keys())[0] in ("user_id", "agent_id", "app_id")
+        if next(iter(e.keys())) in ("user_id", "agent_id", "app_id")
     }
     assert ambient_entries["user_id"] == "adam"  # replaced, not "old_user"
     assert ambient_entries["agent_id"] == "coach"

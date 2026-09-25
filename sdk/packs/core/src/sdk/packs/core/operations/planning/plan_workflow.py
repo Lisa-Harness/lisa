@@ -595,10 +595,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             )
             step = step.model_copy(update={"write_capability": None})
 
-    if parsed.steps:
-        normalized_target = parsed.steps[0].mode_id
-    else:
-        normalized_target = parsed.target_stage_id or ""
+    normalized_target = parsed.steps[0].mode_id if parsed.steps else parsed.target_stage_id or ""
 
     plan_block = _render_plan_markdown(parsed)
     # When steps is non-empty, output_text is the rendered plan block

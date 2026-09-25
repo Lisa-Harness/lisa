@@ -8,6 +8,7 @@ correction outranks it in future recall.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 
@@ -98,10 +99,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             except (json.JSONDecodeError, TypeError):
                 data = None
             if isinstance(data, dict):
-                try:
+                with contextlib.suppress(ValidationError, TypeError):
                     disputed_record = MemoryRecord.model_validate(data)
-                except (ValidationError, TypeError):
-                    pass
 
     elif search_query:
         # Search by content.
@@ -138,10 +137,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         if isinstance(data, list) and data:
             first = data[0]
             if isinstance(first, dict):
-                try:
+                with contextlib.suppress(ValidationError, TypeError):
                     disputed_record = MemoryRecord.model_validate(first)
-                except (ValidationError, TypeError):
-                    pass
 
     if disputed_record is None:
         return OperationResult(

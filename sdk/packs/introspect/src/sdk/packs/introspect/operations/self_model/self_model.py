@@ -416,7 +416,6 @@ def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[
 def _build_grounding_entries(
     ctx: OperationExecutionContext, now_iso: str
 ) -> list[SelfKnowledgeEntry]:
-    extra = ctx.extra or {}
     tz = _resolve_timezone(ctx)
     return [
         SelfKnowledgeEntry(

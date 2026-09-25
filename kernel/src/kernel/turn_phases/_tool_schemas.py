@@ -130,9 +130,7 @@ def _operation_allowed_for_mode(
 
     if tools_authoritative:
         return False
-    if mode_allowlist:
-        return False
-    return True
+    return not mode_allowlist
 
 
 def _prune_model_tool_schemas(

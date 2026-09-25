@@ -1024,14 +1024,13 @@ def _compute_capability_routing_hint(
                     first_target,
                     sorted(gap_intents),
                 )
-                hint = (
+                return (
                     "## Routing Hint\n\n"
                     f"This request requires `{first_target}`'s tools as the "
                     f"first step. Call `transition_stage` with "
                     f"target_stage_id `{first_target}`. Subsequent steps "
                     f"will be chained by post-handoff hints."
                 )
-                return hint
             # No partial target found — fall through (silence).
             _log.info(
                 "routing hint: sequential multi-intent chain but no target found for gap=%s",
@@ -1064,12 +1063,11 @@ def _compute_capability_routing_hint(
                     sorted(gap_intents),
                 )
                 target_list = ", ".join(fork_modes)
-                hint = (
+                return (
                     "## Routing Hint\n\n"
                     f"Call the `fork` operation with targets "
                     f"[{target_list}] to fan out in parallel."
                 )
-                return hint
             # Fork refused — when the gap mixes a producer intent with a
             # consumer intent, the fork was sequential-wrong. Suggest a
             # single handoff to the first producer target so the
@@ -1121,12 +1119,11 @@ def _compute_capability_routing_hint(
             preferred,
             sorted(gap_intents),
         )
-        hint = (
+        return (
             "## Routing Hint\n\n"
             f"This request requires `{preferred}`'s tools. Call "
             f"`transition_stage` with target_stage_id `{preferred}`."
         )
-        return hint
 
     # ── 6. No clean cover → partial-coverage fallback or silence ─────
     # When no single target cleanly covers the whole gap (the disjoint-
@@ -1155,14 +1152,13 @@ def _compute_capability_routing_hint(
             partial_target,
             sorted(gap_intents),
         )
-        hint = (
+        return (
             "## Routing Hint\n\n"
             f"This request requires `{partial_target}`'s tools. Call "
             f"`transition_stage` with target_stage_id `{partial_target}`. "
             f"This covers part of your request; remaining steps will "
             f"chain after."
         )
-        return hint
     _log.info(
         "routing hint: no target covers any gap intent; silence "
         "(let model self-route) (gap=%s routing_targets=%d)",

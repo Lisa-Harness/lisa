@@ -12,10 +12,10 @@ should use ``is OperatorSignal.PAUSE`` for identity-based comparisons.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class OperatorSignal(str, Enum):
+class OperatorSignal(StrEnum):
     """A structured operator signal sent from the transport host to the turn runner.
 
     Values:

@@ -46,7 +46,9 @@ from kernel.models import (
     WorkflowModeConfig,
 )
 from kernel.session_plan import ContextPlan
-from sdk.content import require_authored_text
+# MissingAuthoredContentError is intentionally imported but not used in this
+# module: tests patch it as host.context_assembly.MissingAuthoredContentError.
+from sdk.content import MissingAuthoredContentError, require_authored_text  # noqa: F401
 
 from host.model_runtime import StubModelDefinition
 from host.session_context import ReplayControls
@@ -744,9 +746,9 @@ def _resolve_replay_policy(
     min_query_chars = max(0, controls.min_query_chars or 0)
     query_gate_passed = len(query.strip()) >= min_query_chars
 
-    include_manifest = True if controls.include_thread_manifest is not False else False
-    include_recent = True if controls.include_recent_conversation is not False else False
-    include_diag = True if controls.include_diagnostic_reflection is not False else False
+    include_manifest = controls.include_thread_manifest is not False
+    include_recent = controls.include_recent_conversation is not False
+    include_diag = controls.include_diagnostic_reflection is not False
 
     if trigger_mode == "manual":
         include_manifest = False

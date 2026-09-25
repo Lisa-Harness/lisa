@@ -75,7 +75,7 @@ class FakePool:
             closure_vars: dict[str, Any] = {}
             if handler is not None and hasattr(handler, "__closure__") and handler.__closure__:
                 freevars = handler.__code__.co_freevars
-                for var_name, cell in zip(freevars, handler.__closure__):
+                for var_name, cell in zip(freevars, handler.__closure__, strict=False):
                     closure_vars[var_name] = cell.cell_contents
             self.registered.append(
                 {

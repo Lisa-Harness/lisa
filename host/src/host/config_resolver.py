@@ -9,6 +9,7 @@ in ``HostConfig.from_env``).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
@@ -356,10 +357,8 @@ def parse_streaming_option(raw_value: str) -> tuple[str, int]:
     delay = 0
 
     if len(parts) == 2:
-        try:
+        with contextlib.suppress(ValueError):
             delay = max(0, int(parts[1]))
-        except ValueError:
-            pass
 
     if mode not in {"none", "stage", "text", "hybrid"}:
         return "none", 0

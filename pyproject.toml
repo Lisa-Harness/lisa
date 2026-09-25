@@ -104,7 +104,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
 # (host.__getattr__ lazy loaders), and test patch seams. Sites that
 # exist only for cycle reasons carry an inline `noqa: PLC0415` with a
 # rationale comment; the pattern itself is allowed.
-ignore = ["PLR0913", "PLC0415"]
+# RUF001/RUF002/RUF003 (ambiguous-unicode): the house style uses
+# typographic characters (×, –, —, box-drawing rules) in docstrings,
+# comments, and user-facing prose deliberately.
+ignore = ["PLR0913", "PLC0415", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files use function-local imports (lazy dep loading) and literal

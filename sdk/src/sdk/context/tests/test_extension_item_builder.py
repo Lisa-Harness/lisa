@@ -22,8 +22,10 @@ class _FakeEntryPoint:
 
 def test_extension_item_builder_excludes_disabled_packs(monkeypatch) -> None:
     """Entry points whose distribution name is in excluded_packs are skipped."""
-    active_fn = lambda _ctx, _state: [{"source": "active"}]
-    disabled_fn = lambda _ctx, _state: [{"source": "disabled"}]
+    def active_fn(_ctx, _state):
+        return [{"source": "active"}]
+    def disabled_fn(_ctx, _state):
+        return [{"source": "disabled"}]
 
     monkeypatch.setattr(
         "sdk.context.extension_item_builder.entry_points",
@@ -48,8 +50,10 @@ def test_extension_item_builder_excludes_disabled_packs(monkeypatch) -> None:
 
 def test_extension_item_builder_none_returns_all(monkeypatch) -> None:
     """excluded_packs=None preserves backward-compatible behavior."""
-    active_fn = lambda _ctx, _state: [{"source": "active"}]
-    other_fn = lambda _ctx, _state: [{"source": "other"}]
+    def active_fn(_ctx, _state):
+        return [{"source": "active"}]
+    def other_fn(_ctx, _state):
+        return [{"source": "other"}]
 
     monkeypatch.setattr(
         "sdk.context.extension_item_builder.entry_points",
@@ -70,7 +74,8 @@ def test_extension_item_builder_none_returns_all(monkeypatch) -> None:
 
 def test_extension_item_builder_empty_exclusion_returns_all(monkeypatch) -> None:
     """An empty exclusion set is equivalent to no filtering."""
-    fn = lambda _ctx, _state: [{"source": "test"}]
+    def fn(_ctx, _state):
+        return [{"source": "test"}]
 
     monkeypatch.setattr(
         "sdk.context.extension_item_builder.entry_points",

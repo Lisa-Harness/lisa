@@ -415,7 +415,7 @@ class ContentFetcher:
                 response.raise_for_status()
                 raw = response.content[:max_bytes]
                 text = _decode_body(raw, response.encoding)
-                result = FetchedResult(
+                return FetchedResult(
                     url=url,
                     status_code=response.status_code,
                     body=raw,
@@ -425,7 +425,6 @@ class ContentFetcher:
                     last_modified=response.headers.get("last-modified", ""),
                     fetched_at=_now_iso(),
                 )
-                return result
 
         except httpx.HTTPError as exc:
             stale = self._peek_raw(url)

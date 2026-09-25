@@ -1643,7 +1643,7 @@ def test_initialize_runtime_fails_when_user_context_missing(
     config = HostConfig.from_env(
         debug=False, user_slug="adam", timezone="UTC", data_dir=str(tmp_path)
     )
-    runtime = HostRuntime(config)
+    HostRuntime(config)
 
     # The new HostConfig does not raise at construction; session context
     # resolution happens lazily. We verify the config captured the slug.

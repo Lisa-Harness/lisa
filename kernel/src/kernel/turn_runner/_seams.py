@@ -115,4 +115,3 @@ class ContextSeams:
 # Re-export the grouped ``TurnHooks`` so existing ``from kernel.turn_runner
 # import TurnHooks`` construction and annotation sites keep working; the
 # definition now lives in ``kernel.turn_hooks``.
-from kernel.turn_hooks import TurnHooks as TurnHooks  # noqa: E402

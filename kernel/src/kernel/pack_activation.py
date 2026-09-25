@@ -37,8 +37,7 @@ EXCLUDED_PACK_NAMES: frozenset[str] = frozenset({"lisa-harness-sdk"})
 def normalize_pack_name(raw: str) -> str:
     """Normalize a pack name for comparison (lower-case, hyphen-separated)."""
     value = raw.strip().lower().replace("_", "-")
-    value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
-    return value
+    return re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
 
 
 def load_disabled_pack_names(data_dir: Path) -> set[str]:

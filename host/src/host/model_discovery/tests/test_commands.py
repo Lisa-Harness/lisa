@@ -31,7 +31,7 @@ class TestParseModelsSubcommand:
     def test_rejects_no_space(self) -> None:
         # /modelsdiscover has no space → parts[0] is the whole thing,
         # which is not "/models", so returns ("", ()) → help branch.
-        sub, args = _parse_models_subcommand("/modelsdiscover")
+        sub, _args = _parse_models_subcommand("/modelsdiscover")
         assert sub == ""
 
     def test_with_args(self) -> None:

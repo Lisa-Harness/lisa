@@ -863,7 +863,7 @@ def test_extract_completion_usage_defaults_to_zero() -> None:
         usage=None,
     )
     result = _extract_completion_usage(completion)
-    assert all(v == 0 or v == 0.0 for v in result)
+    assert all(v in {0} for v in result)
 
 
 # ── StreamedCompletionAdapter ─────────────────────────────────────────

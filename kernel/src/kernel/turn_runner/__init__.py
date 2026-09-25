@@ -13,8 +13,6 @@ __all__ = [
     "StreamedCompletionAdapter",
     "TurnHooks",
     "TurnResult",
-    "execute_approved_invocation",
-    "run_turn",
     # Satellite internals re-exported for the historical module namespace
     # (tests patch/mock these via ``kernel.turn_runner.<name>``).
     "_StubModelDef",
@@ -39,6 +37,8 @@ __all__ = [
     "_noop_complete",
     "_plan_steps_to_workflow_steps",
     "_synthesized_call_missing_all_required",
+    "execute_approved_invocation",
+    "run_turn",
 ]
 
 
@@ -525,7 +525,7 @@ def _build_budget_briefing(
     per_target_parts: list[str] = []
     for schema in tool_schemas:
         name = schema.get("function", {}).get("name", "")
-        if not name or name == _TRANSITION_TOOL_NAME or name == _YIELD_TOOL_NAME:
+        if name in (_TRANSITION_TOOL_NAME, _YIELD_TOOL_NAME) or not name:
             continue
         target_def = resolve_capability_for_turn_limit(
             name,
@@ -5046,14 +5046,13 @@ async def _run_turn_inner(
                 if _state.last_operation_result is not None:
                     _op_extra = getattr(_state.last_operation_result, "extra", {}) or {}
                     _cont = _op_extra.get("continuation") if isinstance(_op_extra, dict) else None
-                    if isinstance(_cont, dict):
-                        if _cont.get("was_truncated"):
-                            _attempts = _cont.get("attempts", 0)
-                            _finish = _cont.get("final_finish_reason", "unknown")
-                            _op_ctx_parts.append(
-                                f"truncated after {_attempts} continuation "
-                                f"attempt(s) (finish_reason={_finish})"
-                            )
+                    if isinstance(_cont, dict) and _cont.get("was_truncated"):
+                        _attempts = _cont.get("attempts", 0)
+                        _finish = _cont.get("final_finish_reason", "unknown")
+                        _op_ctx_parts.append(
+                            f"truncated after {_attempts} continuation "
+                            f"attempt(s) (finish_reason={_finish})"
+                        )
                     _trunc = _op_extra.get("truncated") if isinstance(_op_extra, dict) else None
                     if _trunc and not _op_ctx_parts:
                         _op_ctx_parts.append("persisted truncated")

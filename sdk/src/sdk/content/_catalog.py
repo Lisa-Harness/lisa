@@ -643,8 +643,7 @@ def _read_distribution_name(pyproject: Path) -> str:
 
 def _normalize_provider_id(raw: str) -> str:
     value = raw.strip().lower().replace("_", "-")
-    value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
-    return value
+    return re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
 
 
 def _backfill_provider_ids(
@@ -1424,10 +1423,7 @@ def _load_runtime_tool(
 
     mode_allowlist_raw = metadata.get("mode_allowlist")
     mode_allowlist: list[str] | None
-    if mode_allowlist_raw is None:
-        mode_allowlist = None
-    else:
-        mode_allowlist = [str(m) for m in mode_allowlist_raw]
+    mode_allowlist = None if mode_allowlist_raw is None else [str(m) for m in mode_allowlist_raw]
 
     return {
         "tool_id": tool_id,

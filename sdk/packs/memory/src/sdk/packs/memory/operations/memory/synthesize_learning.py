@@ -205,9 +205,7 @@ def _looks_like_json(text: str) -> bool:
     if stripped.startswith("{") or stripped.startswith("["):
         return True
     # Inner brace after any leading whitespace/prose — a strong JSON signal.
-    if "{" in stripped and "}" in stripped:
-        return True
-    return False
+    return bool("{" in stripped and "}" in stripped)
 
 
 def _default_learning_content(ctx: OperationExecutionContext) -> str:

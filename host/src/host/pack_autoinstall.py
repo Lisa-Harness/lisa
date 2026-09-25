@@ -186,9 +186,7 @@ def _looks_like_path(raw: str) -> bool:
     # Path separators (Windows or POSIX) or a leading ./ or ../ → path.
     if raw.startswith(("./", "../", ".\\", "..\\")):
         return True
-    if "/" in raw or "\\" in raw:
-        return True
-    return False
+    return bool("/" in raw or "\\" in raw)
 
 
 def auto_install_required_packs(runtime: HostRuntime) -> list[str]:

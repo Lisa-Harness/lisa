@@ -119,9 +119,7 @@ def _is_gemini_thinking_model_id(lowered_id: str) -> bool:
         return True
     # Gemini 2.5 family — all think by default (Pro cannot turn it off;
     # Flash / Flash-Lite default to thinking-on).
-    if lowered_id.startswith("gemini-2.5-"):
-        return True
-    return False
+    return bool(lowered_id.startswith("gemini-2.5-"))
 
 
 def _is_chat_model(model_id: str, row: dict) -> bool:

@@ -17,6 +17,7 @@ modes through the top-level map.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -602,10 +603,7 @@ def render_manifest_yaml(
     # ``router`` key from the dump so we don't emit two copies. When
     # ``router_block`` is None (e.g. the /models apply re-emit path), keep
     # the payload's ``router`` block as-is so the active manifest retains it.
-    if router_block:
-        dump_payload = {k: v for k, v in payload.items() if k != "router"}
-    else:
-        dump_payload = payload
+    dump_payload = {k: v for k, v in payload.items() if k != "router"} if router_block else payload
     rendered = _HEADER + dump_manifest(dump_payload)
     if not router_block and not annotations:
         return rendered
@@ -653,8 +651,6 @@ def write_manifest_yaml(
         tmp.replace(path)
     except Exception:
         # Ensure no stale .tmp lingers on failure.
-        try:
+        with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise

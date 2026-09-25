@@ -15,6 +15,7 @@ lossless store. The segment IS the archive; there is nothing to retire.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any, cast
 
@@ -266,10 +267,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             continue
         add_text = getattr(add_result, "output_text", "") or ""
         if "ID " in add_text:
-            try:
+            with contextlib.suppress(ValueError, IndexError):
                 memory_ids.append(int(add_text.split("ID ", 1)[1].rstrip(".")))
-            except (ValueError, IndexError):
-                pass
 
     return OperationResult(
         output_text=(

@@ -96,7 +96,7 @@ class TestDiscoverOrchestrator:
     ) -> None:
         # No OpenAI key → SKIPPED; Google has key → probes.
         monkeypatch.setenv("LISA_GOOGLE_API_KEY", _FAKE_KEY)
-        transport = httpx.MockTransport(
+        httpx.MockTransport(
             lambda req: (
                 httpx.Response(
                     200,

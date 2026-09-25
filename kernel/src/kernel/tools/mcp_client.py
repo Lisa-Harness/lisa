@@ -911,7 +911,7 @@ class MCPToolPool:
         )
         # Surface required-server failures after gather. Non-required
         # failures are already recorded in _warm_failed by _connect_warm.
-        for config, result in zip(self._warm_configs, results):
+        for config, result in zip(self._warm_configs, results, strict=False):
             if isinstance(result, MCPConnectionError) and config.required:
                 raise result
             if isinstance(result, BaseException) and not isinstance(result, MCPConnectionError):
