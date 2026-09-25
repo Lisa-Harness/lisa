@@ -23,6 +23,10 @@ from kernel.approval import ApprovalIdentity, ApprovalInvocation
 # only needs the command itself plus a preview to render.
 _APPROVAL_REDACT_KEYS = frozenset({"api_key", "token", "secret", "password", "content", "patch"})
 
+#: Maximum characters rendered for one approval parameter value before
+#: truncation with an ellipsis.
+_APPROVAL_VALUE_MAX_CHARS = 200
+
 
 def redact_parameters(parameters: dict[str, Any]) -> dict[str, str]:
     """Redact invocation parameters for the transport approval payload.
@@ -44,7 +48,11 @@ def redact_parameters(parameters: dict[str, Any]) -> dict[str, str]:
             text = joined
         else:
             text = str(value)
-        out[key] = text if len(text) <= 200 else text[:199] + "…"
+        out[key] = (
+            text
+            if len(text) <= _APPROVAL_VALUE_MAX_CHARS
+            else text[: _APPROVAL_VALUE_MAX_CHARS - 1] + "…"
+        )
     return out
 
 

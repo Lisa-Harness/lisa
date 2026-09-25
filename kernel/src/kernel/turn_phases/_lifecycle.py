@@ -46,6 +46,10 @@ from kernel.models import YieldAction, YieldPolicy
 
 _log = logging.getLogger(__name__)
 
+#: Consecutive tool errors that trigger the error-streak nudge (the model
+#: is told to synthesize from successful calls and diagnose the failing one).
+_ERROR_STREAK_NUDGE_THRESHOLD = 2
+
 __all__ = [
     "ContinueAction",
     "FinishAction",
@@ -773,7 +777,7 @@ def resolve_lifecycle_action(
         #   advance, not just "consider yielding."
         # - **Default**: the generic nudge (empty completions, write
         #   stalls, etc.).
-        if state.consecutive_tool_errors >= 2 and state.last_error_tool:
+        if state.consecutive_tool_errors >= _ERROR_STREAK_NUDGE_THRESHOLD and state.last_error_tool:
             return ContinueAction(
                 nudge=(
                     f"You have been in {mode_id} for {state.turns_in_stage} iterations "

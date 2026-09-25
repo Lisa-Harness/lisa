@@ -16,6 +16,16 @@ from kernel.models import CapabilityManifest, WorkflowModeConfig
 
 _log = logging.getLogger(__name__)
 
+#: Plan-mode escalation owns queries with this many gap intents or more
+#: (any fewer and single-target handoff or fork detection handles it).
+_PLAN_ESCALATION_MIN_GAP_INTENTS = 3
+#: Sequential queries escalate to the planner at 2+ gap intents (a fork
+#: cannot run sequential steps in parallel, so the planner takes over).
+_PLAN_ESCALATION_SEQUENTIAL_GAP_INTENTS = 2
+#: Minimum gap intents (or disjoint partial targets) before a fork fan-out
+#: is suggested.
+_FORK_MIN_GAP_INTENTS = 2
+
 
 # Host-synthesized approval-continuation prefix (host/approval/orchestration.py).
 # These turns are REPORTS, not fresh instructions: the blob embeds the
@@ -650,7 +660,11 @@ def _compute_fork_targets(
     # Plan-mode escalation owns the 3+ intent / sequential-2-intent case.
     # A fork is only suggested for a non-sequential 2+ gap intent query.
     if "planner" in routing_targets and (
-        len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query))
+        len(gap_intents) >= _PLAN_ESCALATION_MIN_GAP_INTENTS
+        or (
+            len(gap_intents) >= _PLAN_ESCALATION_SEQUENTIAL_GAP_INTENTS
+            and _query_is_sequential(query)
+        )
     ):
         return None
     # Single target covering all gaps → single handoff, not a fork.
@@ -662,7 +676,7 @@ def _compute_fork_targets(
             return None
     # Disjoint multi-target coverage → fork (subject to the
     # producer/consumer sequential guard below).
-    if len(gap_intents) < 2 or _query_is_sequential(query):
+    if len(gap_intents) < _FORK_MIN_GAP_INTENTS or _query_is_sequential(query):
         return None
     return _build_fork_target(
         routing_targets=routing_targets,
@@ -716,7 +730,7 @@ def _fork_has_producer_consumer_mix(gap_intents: set[str]) -> bool:
         return True
     # Two or more consumers with no producer → each re-gathers evidence
     # in parallel → sequential-wrong.
-    return len(gap_consumers) >= 2
+    return len(gap_consumers) >= _FORK_MIN_GAP_INTENTS
 
 
 def _producer_intent_set() -> frozenset[str]:
@@ -771,7 +785,7 @@ def _build_fork_target(
         if overlap:
             partial_targets.append(target_id)
             covered_intents.update(overlap)
-    if len(partial_targets) >= 2 and covered_intents == gap_intents:
+    if len(partial_targets) >= _FORK_MIN_GAP_INTENTS and covered_intents == gap_intents:
         return partial_targets
     return None
 
@@ -984,7 +998,13 @@ def _compute_capability_routing_hint(
         "planner" in routing_targets
         and "plan" not in current_satisfied
         and is_plan_reliable_for_model(planner_model_id)
-        and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
+        and (
+            len(gap_intents) >= _PLAN_ESCALATION_MIN_GAP_INTENTS
+            or (
+                len(gap_intents) >= _PLAN_ESCALATION_SEQUENTIAL_GAP_INTENTS
+                and _query_is_sequential(query)
+            )
+        )
     ):
         _log.info(
             "routing hint: escalating to planner (gap_size=%d sequential=%s model=%s)",
@@ -1008,7 +1028,7 @@ def _compute_capability_routing_hint(
     # sequence by the presence of sequential connectors ("then", "and then",
     # "after that", "next", "followed by") — a language pattern, not an
     # intent tag, so this does not violate tag-blindness.
-    if not covering_targets and len(gap_intents) >= 2:
+    if not covering_targets and len(gap_intents) >= _FORK_MIN_GAP_INTENTS:
         sequential = _query_is_sequential(query)
         if sequential:
             # Prefer a single handoff to the first-remaining-gap-intent's

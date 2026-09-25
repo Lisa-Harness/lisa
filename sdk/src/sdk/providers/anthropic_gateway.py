@@ -197,6 +197,9 @@ def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
 # per-request name map (see ``_build_anthropic_tools_with_name_map``).
 _ANTHROPIC_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
+#: Anthropic tool-name length bound (longer names are truncated).
+_ANTHROPIC_TOOL_NAME_MAX_CHARS = 128
+
 
 def _sanitize_anthropic_tool_name(name: str) -> str:
     """Return a tool name Anthropic will accept (``^[a-zA-Z0-9_-]{1,128}$``).
@@ -208,8 +211,8 @@ def _sanitize_anthropic_tool_name(name: str) -> str:
     unaffected. Truncates to 128 characters to satisfy the length bound.
     """
     sanitized = _ANTHROPIC_TOOL_NAME_RE.sub("_", name)
-    if len(sanitized) > 128:
-        sanitized = sanitized[:128]
+    if len(sanitized) > _ANTHROPIC_TOOL_NAME_MAX_CHARS:
+        sanitized = sanitized[:_ANTHROPIC_TOOL_NAME_MAX_CHARS]
     return sanitized or "_"
 
 

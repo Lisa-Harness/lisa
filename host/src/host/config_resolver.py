@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # ── Lookup tables ─────────────────────────────────────────────────────
 
+#: ``<mode>:<delay>`` streaming-config values split into exactly two parts.
+_MODE_DELAY_PARTS = 2
+
 _LOG_LEVEL_ORDER: dict[str, int] = {
     "debug": 10,
     "info": 20,
@@ -356,7 +359,7 @@ def parse_streaming_option(raw_value: str) -> tuple[str, int]:
     mode = parts[0]
     delay = 0
 
-    if len(parts) == 2:
+    if len(parts) == _MODE_DELAY_PARTS:
         with contextlib.suppress(ValueError):
             delay = max(0, int(parts[1]))
 

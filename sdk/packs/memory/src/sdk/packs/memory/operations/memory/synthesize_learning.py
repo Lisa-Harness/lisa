@@ -26,6 +26,11 @@ from sdk.content import require_authored_text
 
 logger = logging.getLogger(__name__)
 
+#: Facts kept per distilled learning (bullet/sentence fallback cap).
+_MAX_DISTILLED_FACTS = 3
+#: Characters of a stored learning shown in the confirmation message.
+_STORED_LEARNING_PREVIEW_CHARS = 80
+
 # Authored-text path — loaded via ctx.host.read_authored_text (SDK loader).
 _SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
 
@@ -169,7 +174,7 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             fact = match.group("fact").strip()
             if fact:
                 facts.append(fact)
-            if len(facts) == 3:
+            if len(facts) == _MAX_DISTILLED_FACTS:
                 break
         if facts:
             return DistilledLearning(facts=facts)
@@ -181,7 +186,7 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             if not candidate:
                 continue
             sentence_facts.append(candidate)
-            if len(sentence_facts) == 3:
+            if len(sentence_facts) == _MAX_DISTILLED_FACTS:
                 break
         if sentence_facts:
             return DistilledLearning(facts=sentence_facts)
@@ -357,11 +362,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         except (ValueError, IndexError):
             memory_id = None
 
-    preview = distilled_text[:80]
+    preview = distilled_text[:_STORED_LEARNING_PREVIEW_CHARS]
     extra: dict[str, object] = {"recorded": True, "distilled": distilled_text}
     if memory_id is not None:
         extra["memory_ids"] = [memory_id]
     return OperationResult(
-        output_text=f"✅ Learning stored: '{preview}{'...' if len(distilled_text) > 80 else ''}'",
+        output_text=f"✅ Learning stored: '{preview}{'...' if len(distilled_text) > _STORED_LEARNING_PREVIEW_CHARS else ''}'",
         extra=extra,
     )

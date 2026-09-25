@@ -10,6 +10,12 @@ from .base import ProviderProbe, _extract_rows, _model
 
 _LISA_OLLAMA_HOST_ENV = "LISA_OLLAMA_HOST"
 
+#: Parameter-count thresholds (in billions) for cost/latency/reliability
+#: tiers derived from Ollama tag sizes ("7B", "13B", "70B", ...).
+_BUDGET_MAX_PARAMS_B = 3
+_STANDARD_MAX_PARAMS_B = 13
+_PREMIUM_MAX_PARAMS_B = 35
+
 #: Maps Ollama ``/api/show`` capability strings onto Lisa capability names.
 #: ``completion`` is the baseline ``text`` already assumed for generation
 #: models, so it is only consulted to distinguish embedding-only models.
@@ -164,15 +170,15 @@ def _enrich_ollama_model(
             size_b = 0.0
         if size_b <= 0:
             pass
-        elif size_b <= 3:
+        elif size_b <= _BUDGET_MAX_PARAMS_B:
             cost_tier = "budget"
             latency_tier = "low"
             structured_reliability = 0.0
-        elif size_b <= 13:
+        elif size_b <= _STANDARD_MAX_PARAMS_B:
             cost_tier = "standard"
             latency_tier = "medium"
             structured_reliability = 0.4
-        elif size_b <= 35:
+        elif size_b <= _PREMIUM_MAX_PARAMS_B:
             cost_tier = "premium"
             latency_tier = "high"
             structured_reliability = 0.7

@@ -55,6 +55,9 @@ _RSS_WARN_MB = 1500.0
 _RSS_CRITICAL_MB = 3000.0
 _ERROR_WARN_THRESHOLD = 3
 _ERROR_CRITICAL_THRESHOLD = 8
+#: Two or more failed MCP servers flips health straight to critical (a
+#: single failure is "degraded" — any more and the session is unusable).
+_CRITICAL_FAILED_MCP_SERVERS = 2
 
 
 async def gather_introspection(
@@ -354,7 +357,7 @@ def _classify_operational_health(
     reasons: list[str] = []
     status: OperationalHealth = "healthy"
 
-    if failed_mcp_servers >= 2:
+    if failed_mcp_servers >= _CRITICAL_FAILED_MCP_SERVERS:
         status = "critical"
         reasons.append(f"mcp failures: {failed_mcp_servers}")
     elif failed_mcp_servers > 0:

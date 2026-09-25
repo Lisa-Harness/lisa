@@ -25,6 +25,14 @@ from .base import ProviderProbe, _model
 
 _LISA_OPENROUTER_API_KEY_ENV = "LISA_OPENROUTER_API_KEY"
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+#: Cost-tier thresholds in USD per million tokens (prompt and completion
+#: prices are each expressed per-token here; the tiers are derived from
+#: the scaled per-million rates). Roughly: free/local budget, cheap
+#: standard, premium, frontier beyond.
+_BUDGET_TIER_MAX_USD_PER_M = 0.5
+_STANDARD_TIER_MAX_USD_PER_M = 3.0
+_PREMIUM_TIER_MAX_USD_PER_M = 15.0
 # Page size is 500 by default; the catalog is a few hundred chat-capable
 # models, so one or two pages cover it. We cap pages to bound a runaway
 # pagination loop.
@@ -232,11 +240,11 @@ def _cost_tier_from_price(prompt_price: float, completion_price: float) -> str:
     out_m = completion_price * 1e6
     # Roughly: free/local budget (<0.5), cheap standard (<3), premium (<15),
     # frontier beyond.
-    if out_m < 0.5 and in_m < 0.5:
+    if out_m < _BUDGET_TIER_MAX_USD_PER_M and in_m < _BUDGET_TIER_MAX_USD_PER_M:
         return "budget"
-    if out_m < 3.0:
+    if out_m < _STANDARD_TIER_MAX_USD_PER_M:
         return "standard"
-    if out_m < 15.0:
+    if out_m < _PREMIUM_TIER_MAX_USD_PER_M:
         return "premium"
     return "frontier"
 

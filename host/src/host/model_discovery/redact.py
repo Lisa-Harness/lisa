@@ -96,11 +96,11 @@ def classify_status(exc: Exception) -> str:
             return "network"
         if isinstance(exc, httpx.HTTPStatusError):
             code = exc.response.status_code
-            if code in (401, 403):
+            if code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
                 return "auth"
-            if code == 404:
+            if code == httpx.codes.NOT_FOUND:
                 return "not_found"
-            if code == 429:
+            if code == httpx.codes.TOO_MANY_REQUESTS:
                 return "rate_limited"
             return "unknown"
     if isinstance(exc, (ValueError, KeyError, TypeError)):

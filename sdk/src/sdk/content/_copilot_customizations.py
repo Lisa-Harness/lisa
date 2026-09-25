@@ -499,6 +499,10 @@ def _default_name_from_path(path: str) -> str:
     return stem or path
 
 
+#: Minimum path depth for a valid SKILL.md location (``<dir>/SKILL.md``).
+_SKILL_PATH_MIN_DEPTH = 2
+
+
 def _expected_skill_dir_name(path: str) -> str | None:
     """Return the parent directory name for a SKILL.md path.
 
@@ -506,6 +510,6 @@ def _expected_skill_dir_name(path: str) -> str | None:
     Returns None if the path has no parent (defensive).
     """
     parts = PurePosixPath(path.replace("\\", "/")).parts
-    if len(parts) < 2:
+    if len(parts) < _SKILL_PATH_MIN_DEPTH:
         return None
     return parts[-2]

@@ -55,7 +55,7 @@ class AnthropicProbe(ProviderProbe):
             },
             timeout=timeout,
         )
-        if response.status_code == 404:
+        if response.status_code == httpx.codes.NOT_FOUND:
             # Endpoint absent in this environment — use conservative
             # defaults. Signal EMPTY so the UI notes it.
             return None

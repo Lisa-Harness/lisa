@@ -221,6 +221,12 @@ from ._streaming import StreamedCompletionAdapter
 
 logger = logging.getLogger(__name__)
 
+#: Router-reported model reliability at (or above) which the forced-action
+#: non-compliance cap is lifted (frontier/reasoning models self-correct).
+_PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
+#: Characters of the last tool result kept for the stuck-diagnosis snippet.
+_TOOL_RESULT_SNIPPET_CHARS = 300
+
 # ── Stalled-write rescue: announcement detection ───────────────────────────
 # Prose that ANNOUNCES a write in future/present-continuous tense while the
 # receipt ledger shows zero write attempts is the signature of the
@@ -3397,7 +3403,7 @@ async def _run_turn_inner(
                 is_frontier = getattr(_state.effective_model, "cost_tier", "") == "frontier"
                 is_reasoning = getattr(_state.effective_model, "reasoning_model", False)
 
-                if is_frontier or is_reasoning or reliability >= 0.95:
+                if is_frontier or is_reasoning or reliability >= _PLAN_MODEL_RELIABILITY_EXEMPT:
                     effective_cap = float("inf")
                 else:
                     effective_cap = _kernel_settings.forced_action_non_compliant_cap
@@ -5036,8 +5042,8 @@ async def _run_turn_inner(
                 )
             _last_tool_snippet = ""
             if _state.last_tool_result_text:
-                _last_tool_snippet = _state.last_tool_result_text[:300]
-                if len(_state.last_tool_result_text) > 300:
+                _last_tool_snippet = _state.last_tool_result_text[:_TOOL_RESULT_SNIPPET_CHARS]
+                if len(_state.last_tool_result_text) > _TOOL_RESULT_SNIPPET_CHARS:
                     _last_tool_snippet += "…"
             _why_clause = ""
             if _last_tool_name:

@@ -82,7 +82,7 @@ class AzureOpenAIProbe(ProviderProbe):
             headers={"api-key": api_key},
             timeout=timeout,
         )
-        if response.status_code == 404:
+        if response.status_code == httpx.codes.NOT_FOUND:
             # Retry with the legacy deployments API version (AI Foundry).
             response = await client.get(
                 f"{base}/openai/deployments",
@@ -90,7 +90,7 @@ class AzureOpenAIProbe(ProviderProbe):
                 headers={"api-key": api_key},
                 timeout=timeout,
             )
-        if response.status_code == 404:
+        if response.status_code == httpx.codes.NOT_FOUND:
             # Last resort: list catalog models (not deployments) and filter
             # to chat-completion-capable ones. This over-lists (returns the
             # full catalog, not just deployed models) but is better than

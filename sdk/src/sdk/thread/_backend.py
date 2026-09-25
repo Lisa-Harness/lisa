@@ -24,6 +24,9 @@ from sdk.thread.redaction import ThreadRedactionPolicy
 
 logger = logging.getLogger(__name__)
 
+#: Query preview width in the thread manifest table rows.
+_MANIFEST_QUERY_PREVIEW_CHARS = 80
+
 __all__ = ["SegmentRecord", "ThreadStore"]
 
 # ── Defaults ───────────────────────────────────────────────────────────
@@ -427,8 +430,8 @@ class ThreadStore:
             query = str(entry.get("query") or "").strip()
             if self._redaction is not None:
                 query = self._redaction.redact(query)
-            if len(query) > 80:
-                query = query[:77] + "…"
+            if len(query) > _MANIFEST_QUERY_PREVIEW_CHARS:
+                query = query[: _MANIFEST_QUERY_PREVIEW_CHARS - 3] + "…"
             # Escape pipes in query for markdown table safety.
             query = query.replace("|", "\\|")
             receipts = entry.get("effect_receipts") or []

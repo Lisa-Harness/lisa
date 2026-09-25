@@ -24,6 +24,10 @@ from kernel.models import (
 
 logger = logging.getLogger(__name__)
 
+#: Capabilities listed by name in the compact vibe string (rest are elided
+#: as ``(+N more)``).
+_VIBE_MODE_LIST_MAX = 12
+
 _VIBE_MAX_CHARS = 500
 
 
@@ -127,10 +131,13 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
     """Extract a compact (~500 char) vibe string for prompt injection."""
 
     mode_list = (
-        ", ".join(entry.title for entry in artifact.capabilities if entry.title)[:12] or "none"
+        ", ".join(entry.title for entry in artifact.capabilities if entry.title)[
+            :_VIBE_MODE_LIST_MAX
+        ]
+        or "none"
     )
-    if len(artifact.capabilities) > 12:
-        mode_list += f" (+{len(artifact.capabilities) - 12} more)"
+    if len(artifact.capabilities) > _VIBE_MODE_LIST_MAX:
+        mode_list += f" (+{len(artifact.capabilities) - _VIBE_MODE_LIST_MAX} more)"
 
     limitation_preview = (
         ", ".join(entry.title for entry in artifact.limitations[:3] if entry.title) or "none"

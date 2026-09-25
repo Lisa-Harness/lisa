@@ -393,7 +393,7 @@ class ContentFetcher:
             ) as client:
                 response = await client.get(url, headers=headers)
 
-                if response.status_code == 304 and policy.revalidate_etag:
+                if response.status_code == httpx.codes.NOT_MODIFIED and policy.revalidate_etag:
                     stale = self._peek_raw(url)
                     if stale is not None:
                         refreshed = stale.model_copy(

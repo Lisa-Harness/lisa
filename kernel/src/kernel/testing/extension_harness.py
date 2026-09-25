@@ -101,7 +101,8 @@ def _classify_error(exc: Exception) -> SignalCollectorError:
             kind="http_status_error",
             message=str(exc),
             status_code=status_code,
-            retryable=status_code == 429 or status_code >= 500,
+            retryable=status_code == httpx.codes.TOO_MANY_REQUESTS
+            or status_code >= httpx.codes.INTERNAL_SERVER_ERROR,
         )
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return SignalCollectorError(

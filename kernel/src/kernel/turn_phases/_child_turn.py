@@ -43,6 +43,11 @@ __all__ = [
     "classify_child_turn",
 ]
 
+#: Minimum non-whitespace characters a zero-receipt child response needs
+#: before it counts as "dense content" — accepted as successful work rather
+#: than a zero-call hallucination (see classify_child_turn).
+_DENSE_CONTENT_MIN_CHARS = 150
+
 
 def classify_child_turn(
     *,
@@ -265,7 +270,7 @@ def classify_child_turn(
 
     # No write-effect receipt and the mode requires one. Distinguish
     # zero-call hallucination from failed-work for honest messaging.
-    has_dense_content = len(child_result.response_text.strip()) > 150
+    has_dense_content = len(child_result.response_text.strip()) > _DENSE_CONTENT_MIN_CHARS
     if has_dense_content:
         _clog.info(
             "child turn mode=%s completed with no verified write, but "

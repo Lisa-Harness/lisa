@@ -34,6 +34,9 @@ from kernel.recovery import RecoveryIdentity
 
 logger = logging.getLogger(__name__)
 
+#: ``/cmd <id>`` commands need a command verb plus one argument.
+_CMD_ID_ARG_MIN_PARTS = 2
+
 __all__ = [
     "get_host_commands",
     "handle_cancel",
@@ -131,7 +134,7 @@ async def handle_stall(runtime: Any, stripped: str, message: str) -> str:
     """Handle ``/stall <id>`` — show details for one work item."""
     del message
     parts = stripped.split(None, 1)
-    if len(parts) < 2 or not parts[1].strip():
+    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
         return "Usage: /stall <work_item_id>"
 
     work_item_id = parts[1].strip()
@@ -164,7 +167,7 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
     """
     del message
     parts = stripped.split(None, 1)
-    if len(parts) < 2 or not parts[1].strip():
+    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
         return "Usage: /retry <work_item_id>"
 
     work_item_id = parts[1].strip()
@@ -275,7 +278,7 @@ async def handle_skip(runtime: Any, stripped: str, message: str) -> str:
     """Handle ``/skip <id>`` — mark one item as skipped."""
     del message
     parts = stripped.split(None, 1)
-    if len(parts) < 2 or not parts[1].strip():
+    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
         return "Usage: /skip <work_item_id>"
 
     work_item_id = parts[1].strip()
@@ -307,7 +310,7 @@ async def handle_cancel(runtime: Any, stripped: str, message: str) -> str:
     """Handle ``/cancel <id>`` — mark one item as cancelled."""
     del message
     parts = stripped.split(None, 1)
-    if len(parts) < 2 or not parts[1].strip():
+    if len(parts) < _CMD_ID_ARG_MIN_PARTS or not parts[1].strip():
         return "Usage: /cancel <work_item_id>"
 
     work_item_id = parts[1].strip()
