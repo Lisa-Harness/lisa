@@ -23,7 +23,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-__all__ = ["ThreadRedactionPolicy", "DEFAULT_REDACTION_PATTERNS"]
+__all__ = ["DEFAULT_REDACTION_PATTERNS", "ThreadRedactionPolicy"]
 
 #: The strikethrough marker substituted for matched substrings. Uses the
 #: Unicode strikethrough character so the redaction is visually obvious

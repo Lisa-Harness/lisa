@@ -26,6 +26,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from host.callbacks import NullTransport
+from host.config import HostConfig
+from host.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
+from host.handle_message import handle_message
+from host.model_runtime import StubModelDefinition, resolve_model
+from host.runtime import HostRuntime
+from host.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 from kernel.models import (
     WorkflowModeConfig,
 )
@@ -38,13 +45,6 @@ from host import (
     mcp_pool,
     turn_hooks_builder,
 )
-from host.callbacks import NullTransport
-from host.config import HostConfig
-from host.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
-from host.handle_message import handle_message
-from host.model_runtime import StubModelDefinition, resolve_model
-from host.runtime import HostRuntime
-from host.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 
 # ``host.__init__`` re-exports ``handle_message`` as the *function*,
 # shadowing the submodule attribute, so grab the real module from sys.modules

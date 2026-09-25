@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from sdk.storage import PathRejected, StorageBackend
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

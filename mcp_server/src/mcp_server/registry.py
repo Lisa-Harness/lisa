@@ -26,8 +26,9 @@ preserving the ``kernel → mcp_server`` dependency direction.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer

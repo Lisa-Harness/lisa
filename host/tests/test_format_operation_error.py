@@ -12,6 +12,7 @@ produce actionable user-facing guidance:
 
 from __future__ import annotations
 
+from host.commands._routing import format_operation_error
 from kernel.operations.registry import (
     OperationContentError,
     OperationDegradedError,
@@ -19,7 +20,6 @@ from kernel.operations.registry import (
     OperationTimeoutError,
     OperationValidationError,
 )
-from host.commands._routing import format_operation_error
 
 
 class TestExceptionHierarchy:

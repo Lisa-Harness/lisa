@@ -17,7 +17,7 @@ __all__ = [
     "ContextBudgetRecord",
     "ContextLane",
     "RequiredContextBudgetError",
-]  # noqa: F401  (settings re-export removed with the config migration)
+]
 
 ContextLane = Literal["core", "retrieval", "memory", "reflection", "history", "operational"]
 

@@ -35,10 +35,10 @@ from pydantic import BaseModel, Field
 
 __all__ = [
     "WorkProduct",
-    "WorkProductStore",
     "WorkProductCheck",
     "WorkProductCheckStatus",
     "WorkProductStatus",
+    "WorkProductStore",
 ]
 
 WorkProductCheckStatus = Literal["pending", "passed", "failed", "timed_out"]

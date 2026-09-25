@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from kernel.tools.schema_translator import (
     is_truncated_tool_arguments,
     json_escaped_string_decode,

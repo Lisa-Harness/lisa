@@ -12,8 +12,6 @@ from "provider returned malformed JSON".
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel, ValidationError
-
 from kernel.operations.structured_output import (
     REASONING_TAIL_CONTENT_SOURCE,
     EmptyStructuredOutputError,
@@ -21,6 +19,7 @@ from kernel.operations.structured_output import (
     parse_structured_payload,
     reasoning_tail_excerpt,
 )
+from pydantic import BaseModel, ValidationError
 
 
 class _SamplePayload(BaseModel):

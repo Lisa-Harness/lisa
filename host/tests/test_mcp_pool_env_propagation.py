@@ -15,10 +15,9 @@ import os
 from pathlib import Path
 
 import pytest
-
-import host.mcp_pool as mcp_pool
-import host.pack_autoinstall as pack_autoinstall
 from host.runtime import HostRuntime
+
+from host import mcp_pool, pack_autoinstall
 
 
 def _make_runtime(
@@ -133,7 +132,7 @@ async def test_compile_mcp_configs_exports_custom_redaction_patterns(
     runtime = _make_runtime(tmp_path, user_slug="testing")
     # Rebuild the runtime config with custom patterns (HostConfig is frozen;
     # ``runtime.config`` is a plain attribute so this assignment sticks).
-    import dataclasses  # noqa: PLC0415
+    import dataclasses
 
     runtime.config = dataclasses.replace(
         runtime.config,

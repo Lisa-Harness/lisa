@@ -31,12 +31,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from kernel.session_plan import compile_session_plan
-
-from host import commands, content_roots, mcp_pool
 from host.config import HostConfig
 from host.paths import framework_seed_requirements
 from host.runtime import HostRuntime
+from kernel.session_plan import compile_session_plan
+
+from host import commands, content_roots, mcp_pool
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:

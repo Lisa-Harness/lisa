@@ -410,7 +410,7 @@ def assemble_dynamic_user_context(
     context_plan: ContextPlan | None = None,
     model_context_window_tokens: int = 0,
     snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
-    context_budget_values: "ContextBudgetValues | None" = None,
+    context_budget_values: ContextBudgetValues | None = None,
 ) -> str:
     """Assemble the dynamic user-context block for the current turn.
 

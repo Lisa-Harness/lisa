@@ -801,9 +801,9 @@ def _producer_first_hint(
 
 def _compute_capability_routing_hint(
     *,
-    mode_id: str,  # noqa: ARG001
+    mode_id: str,
     query: str,
-    capability_manifest: CapabilityManifest,  # noqa: ARG001
+    capability_manifest: CapabilityManifest,
     routing_targets: list[str],
     mode_config: WorkflowModeConfig | None = None,
     extra_satisfied: set[str] | None = None,

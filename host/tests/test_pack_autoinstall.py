@@ -13,8 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from kernel.session_plan import PackInstallSpec
-
 from host.commands import _packs
 from host.config import HostConfig
 from host.pack_autoinstall import (
@@ -22,6 +20,7 @@ from host.pack_autoinstall import (
     auto_install_required_packs,
 )
 from host.runtime import HostRuntime
+from kernel.session_plan import PackInstallSpec
 
 
 def _session_with_required(

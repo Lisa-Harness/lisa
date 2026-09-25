@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
-from kernel.session_plan import SessionCapabilityExecutionRequest, SessionExecutionRequest
-
 from host.execution_policy import (
     default_interactive_execution_policy,
     resolve_execution_policy,
 )
+from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
+from kernel.session_plan import SessionCapabilityExecutionRequest, SessionExecutionRequest
 
 
 def test_default_interactive_execution_policy_matches_contract() -> None:

@@ -29,9 +29,8 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -39,6 +38,7 @@ import yaml
 
 from kernel.approval import ApprovalRequired
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.function_tools import build_strict_openai_function_tool
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     CallLedger,
@@ -47,15 +47,13 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
-    UnifiedState,
     WorkflowModeConfig,
     WorkflowStageConfig,
     WorkflowTransitionRequest,
     YieldPolicy,
 )
-from kernel.function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
-from kernel.workflow_position import WorkflowPosition, WorkflowStep
+from kernel.workflow_position import WorkflowPosition
 
 logger = logging.getLogger(__name__)
 

@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from host.commands import handle_policy_command, render_policy_document
 from host.policy import PolicyDocument, load_policy
 

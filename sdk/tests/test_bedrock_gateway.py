@@ -15,12 +15,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
-
 from kernel.provider_contracts import (
     CompletionRequest,
     CompletionResult,
 )
+from pydantic import BaseModel
 from sdk.providers import SdkProviderGatewayProvider
 from sdk.providers.bedrock_gateway import BedrockGateway
 

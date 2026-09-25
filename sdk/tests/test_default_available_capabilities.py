@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from sdk.content import (
     build_mode_catalog_json,
     build_operation_catalog_json,

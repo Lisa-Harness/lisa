@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from kernel.context import MCPContentRegistry, MCPInputGuard, MCPOutputGuard
 from kernel.mcp_launch.policy import AuthKind, AuthSpec
 from kernel.models import SurfaceContext

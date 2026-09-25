@@ -12,9 +12,9 @@ arguments — there is no ``_RUNTIME_STATE``.
 from __future__ import annotations
 
 import pytest
+from host.session_context import ReplayControls
 
 from host import context_assembly
-from host.session_context import ReplayControls
 
 
 def test_assemble_dynamic_user_context_includes_ambient_facts(

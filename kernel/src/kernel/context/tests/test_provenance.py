@@ -11,7 +11,6 @@ Verifies:
 from __future__ import annotations
 
 import pytest
-
 from kernel.context.provenance import (
     PROVENANCE_KINDS,
     is_provenance_kind,

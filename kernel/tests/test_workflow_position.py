@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from kernel.models import WorkflowModeConfig
 from kernel.recovery import RecoveryIdentity
 from kernel.routing_vocabulary import reset_routing_vocabulary

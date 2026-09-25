@@ -47,7 +47,7 @@ def _write_active_entry(
     reasoning_text: str = "",
 ) -> None:
     """Append one entry to the active segment (``.current.jsonl``)."""
-    from sdk.thread._backend import _segment_paths  # noqa: PLC0415
+    from sdk.thread._backend import _segment_paths
 
     paths = _segment_paths(thread_path)
     paths.current.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def _write_active_entry(
 @pytest.fixture
 def thread_deps(tmp_path: Path) -> None:
     """Initialize the lisa-thread server with a tmp thread store."""
-    from mcp_server.thread.server import init_thread  # noqa: PLC0415
+    from mcp_server.thread.server import init_thread
 
     init_thread(
         data_dir=tmp_path,

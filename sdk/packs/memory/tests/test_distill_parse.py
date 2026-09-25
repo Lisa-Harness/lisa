@@ -9,7 +9,6 @@ memory records like ``json | { | facts": [``.
 from __future__ import annotations
 
 import pytest
-
 from sdk.packs.memory.operations.memory.synthesize_learning import (
     DistilledLearning,
     _parse_distilled_learning,

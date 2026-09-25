@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from host.config import HostConfig
 from host.model_runtime import (
     active_manifest_path,

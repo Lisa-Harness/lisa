@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from kernel.provider_contracts import flatten_system_prompt_segments
 from kernel.testing.gateway_stub import StubGatewayProvider
 from kernel.turn_hooks import ModelHooks, OperationHooks, TurnHooks

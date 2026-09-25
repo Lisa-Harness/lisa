@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import httpx
-from pydantic import BaseModel
-
 from kernel.intake.connectors import SignalCollector
 from kernel.testing import extension_harness
+from pydantic import BaseModel
 
 
 class _FakeEntryPoint:

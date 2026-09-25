@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from datetime import timezone as dt_timezone
 
 import pytest
-
 from sdk.context.context_broker import build_ambient_facts
 
 

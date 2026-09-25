@@ -22,9 +22,8 @@ from datetime import UTC, datetime
 from html import unescape
 from pathlib import Path
 
-from pydantic import BaseModel, Field
-
 from kernel.models import ToolExecutionContext, ToolResult
+from pydantic import BaseModel, Field
 from sdk.content import ContentFetcher, FetchPolicy, validate_url
 from sdk.packs.core.tools.fetch_page._models import FetchedPage
 

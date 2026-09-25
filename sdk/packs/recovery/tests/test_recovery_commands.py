@@ -13,7 +13,6 @@ Covers:
 from __future__ import annotations
 
 import pytest
-
 from kernel.recovery import RecoveryIdentity, RecoveryRecord
 from sdk.packs.recovery.commands import (
     get_host_commands,

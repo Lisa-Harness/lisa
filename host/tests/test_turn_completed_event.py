@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from kernel.models import EffectReceipt
-
 from host.turn_logging import build_turn_completed_payload
+from kernel.models import EffectReceipt
 
 
 def _coerce(value: object) -> int:

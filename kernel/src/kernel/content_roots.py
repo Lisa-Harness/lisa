@@ -71,7 +71,7 @@ def discover_installed_content_roots(
         try:
             root_loader = ep.load()
             candidate = Path(root_loader())
-        except Exception:  # noqa: BLE001
+        except Exception:
             # ep.load() executes foreign entry-point code; a broken pack can
             # raise anything (ImportError, RuntimeError from module init, ...).
             # Skip it rather than aborting discovery for every other pack.

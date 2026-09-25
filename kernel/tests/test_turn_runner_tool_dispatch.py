@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.models import (
     CallLedger,
     OperationExecutionContext,

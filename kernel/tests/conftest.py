@@ -15,8 +15,7 @@ import pytest
 
 # Ensure sibling conftest_catalog is importable regardless of pytest import mode.
 sys.path.insert(0, str(Path(__file__).parent))
-from conftest_catalog import _mcp_catalog_setup  # noqa: F401,E402
-
+from conftest_catalog import _mcp_catalog_setup  # noqa: F401
 
 # ── Provider-gateway bridge for TurnHooks fakes ─────────────────────
 #

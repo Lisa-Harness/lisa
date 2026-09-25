@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from kernel.config import settings as _kernel_settings
 from kernel.execution_policy import ExecutionPolicy
-from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     ConversationSurface,
     ForkChildResult,
@@ -59,7 +58,7 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
 
     try:
         return bool(mode_completion_effects(mode_id))
-    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
         _log.debug("mode_completion_effects(%s) raised (degrading to False): %s", mode_id, exc)
         return False
 
@@ -211,7 +210,7 @@ async def _run_fork_child_turn(
             "timeout",
             elapsed_ms,
         )
-    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
         elapsed_ms = int((time.monotonic() - started) * 1000)
         _flog.warning("fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc, exc_info=True)
         return (

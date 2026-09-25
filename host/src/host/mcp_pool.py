@@ -87,7 +87,7 @@ def _validate_pack_prerequisites() -> None:
         try:
             checker = ep.load()
             reasons = checker()
-        except Exception as exc:  # noqa: BLE001 - a faulty probe must not abort
+        except Exception as exc:
             logger.warning("pack prerequisites: %s probe failed (%s); skipping", ep.name, exc)
             continue
         if reasons:
@@ -1032,7 +1032,7 @@ def pack_server_excluded(pack_slug: str, declared_server_id: str, exclusions: se
 # ── Internal helpers ─────────────────────────────────────────────────
 
 
-def _resolve_framework_manifest_path(config: HostConfig) -> Path:  # noqa: ARG001
+def _resolve_framework_manifest_path(config: HostConfig) -> Path:
     """Return the framework (in-repo) MCP manifest path.
 
     This is always ``host/mcp_servers.yaml`` — the fixed base layer of

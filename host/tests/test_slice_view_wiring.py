@@ -12,8 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from host import HostRuntime
 from host.turn_hooks_builder import _SliceProviderHooksView, build_turn_hooks
+
+from host import HostRuntime
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:

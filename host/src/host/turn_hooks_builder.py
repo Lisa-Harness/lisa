@@ -42,6 +42,9 @@ from kernel.turn_hooks import (
     WorkflowHooks,
 )
 from kernel.turn_runner import ContextSeams
+from sdk.context.extension_item_builder import (
+    EntryPointExtensionItemBuilder,
+)
 
 from host.context_assembly import (
     assemble_dynamic_user_context,
@@ -52,9 +55,6 @@ from host.introspect import gather_introspection
 from host.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from host.state_provider import FileBackedStateProvider, build_unified_state
 from host.thread import build_recent_thread_excerpt
-from sdk.context.extension_item_builder import (
-    EntryPointExtensionItemBuilder,
-)
 
 if TYPE_CHECKING:
     from host.callbacks import TransportCallbacks
@@ -136,8 +136,9 @@ def _derive_view(runtime: HostRuntime) -> Any:
     A pure read from the lossless thread log — no mutable position store.
     Returns a ``WorkflowView`` or ``None`` when no active workflow exists.
     """
-    from host.thread import load_recent_thread_entries  # noqa: PLC0415
     from kernel.workflow_view import derive_workflow_view  # noqa: PLC0415
+
+    from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     return derive_workflow_view(entries)
@@ -384,6 +385,7 @@ def build_turn_hooks(
             derive_workflow_view,
             render_workflow_progress,
         )
+
         from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
         progress = ""
@@ -514,6 +516,8 @@ def build_turn_hooks(
     # in ``daily``/``weekly`` rather than polluting ``long_term`` recall.
     from host.turn_hooks._auto_capture import (
         classify_memory_tier as _classify_memory_tier,
+    )
+    from host.turn_hooks._auto_capture import (
         should_auto_capture as _should_auto_capture,
     )
 
@@ -763,8 +767,8 @@ def build_turn_hooks(
             e
             for e in catalog
             if not (
-                isinstance(e, dict)
-                and e.get("item_id") == evidence.item_id
+                (isinstance(e, dict)
+                and e.get("item_id") == evidence.item_id)
                 or getattr(e, "item_id", None) == evidence.item_id
             )
         ]

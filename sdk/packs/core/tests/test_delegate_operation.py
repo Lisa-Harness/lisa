@@ -13,7 +13,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.delegation import DelegationResult, DelegationSpec
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.seams.host_adapter import build_callable_host

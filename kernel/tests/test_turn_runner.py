@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
 from kernel.models import (
     CapabilityManifest,
@@ -19,18 +18,10 @@ from kernel.models import (
     YieldPolicy,
 )
 from kernel.seams.protocols import CoordinatorRouteDecision
-from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 from kernel.turn_hooks import (
     ModelHooks,
-    ContextHooks,
-    OperationHooks,
-    LifecycleHooks,
-    WorkflowHooks,
-    HostServiceHandles,
-    TurnIdentity,
-    RecallHooks,
-    ToolHooks,
 )
+from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
 # ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
@@ -3529,7 +3520,6 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
     has no sequential connectors, so it must still fork — the two intents
     are independent and can run in parallel.
     """
-    from unittest.mock import patch
 
     from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
 
@@ -3623,7 +3613,6 @@ def test_detect_query_intents_fast_path_attributes_all_tags() -> None:
     from unittest.mock import patch
 
     from kernel.models import WorkflowModeConfig
-
     from kernel.turn_phases._routing_hint import _detect_query_intents
 
     multi_cfg = WorkflowModeConfig(
@@ -5577,10 +5566,9 @@ def test_synthesized_call_missing_all_required_true_for_empty_args() -> None:
     The guard lets the synthesis sites abort the turn rather than
     dispatch a guaranteed validation failure and risk a backstop loop.
     """
-    from pydantic import BaseModel
-
     from kernel.models import OperationDefinition
     from kernel.turn_runner import _synthesized_call_missing_all_required
+    from pydantic import BaseModel
 
     class _Params(BaseModel):
         template_id: str
@@ -5604,10 +5592,9 @@ def test_synthesized_call_missing_all_required_false_when_some_supplied() -> Non
     """When at least one required param is supplied, the call is not
     missing-all-required — let dispatch proceed (the model or kernel
     provided a value)."""
-    from pydantic import BaseModel
-
     from kernel.models import OperationDefinition
     from kernel.turn_runner import _synthesized_call_missing_all_required
+    from pydantic import BaseModel
 
     class _Params(BaseModel):
         template_id: str
@@ -5629,10 +5616,9 @@ def test_synthesized_call_missing_all_required_false_when_some_supplied() -> Non
 def test_synthesized_call_missing_all_required_false_for_optional_only_schema() -> None:
     """A tool with no required params (e.g. ``transition_stage``) is never
     missing-all-required — routing-only syntheses pass through unchanged."""
-    from pydantic import BaseModel
-
     from kernel.models import ToolDefinition
     from kernel.turn_runner import _synthesized_call_missing_all_required
+    from pydantic import BaseModel
 
     class _Params(BaseModel):
         rationale: str = ""
@@ -5850,7 +5836,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
         sys_content = str(kwargs["messages"][0].get("content", ""))
         msgs = str([m.get("content", "") for m in kwargs["messages"]])
         # In search mode (reached after the forced handoff): return results.
-        if "Handed off to mode: search" in msgs or "`search`" in sys_content and "search" in sys_content:
+        if "Handed off to mode: search" in msgs or ("`search`" in sys_content and "search" in sys_content):
             search_reached = True
             return _StubCompletion(content="Search results from web_search.")
         # In remember mode: the weak model returns text WITHOUT calling

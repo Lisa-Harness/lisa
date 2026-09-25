@@ -28,10 +28,11 @@ import os as _os
 from pathlib import Path
 
 import pytest
+from host.runtime import HostRuntime, _make_in_process_resolver
+from host.testing import build_test_runtime
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
-from host.testing import build_test_runtime
 from kernel.tools.mcp_client import (
     MCPClientConfig,
     MCPConnectionError,
@@ -39,7 +40,6 @@ from kernel.tools.mcp_client import (
 )
 
 from host import mcp_pool
-from host.runtime import HostRuntime, _make_in_process_resolver
 
 _REPO_MANIFEST = (
     Path(__file__).resolve().parents[2] / "host" / "src" / "host" / "mcp_servers.yaml"

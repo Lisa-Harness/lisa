@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from kernel.provider_contracts import StreamedCompletion
 
-
 # ── Streaming adapter ──────────────────────────────────────────────────────
 
 

@@ -10,7 +10,6 @@ a single path segment so a profile can never escape the ``profiles/`` root.
 from __future__ import annotations
 
 import pytest
-
 from host.config import HostConfig, default_data_dir, profile_data_dir
 from host.paths import packs_venv_for, profile_base_data_dir
 

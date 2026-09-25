@@ -19,8 +19,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.models import YieldPolicy
+from kernel.turn_hooks import ModelHooks, ToolHooks
 from kernel.turn_phases._tool_schemas import (
     _build_in_process_tool_schemas,
     _mode_bound_operation_ids,
@@ -28,7 +28,6 @@ from kernel.turn_phases._tool_schemas import (
     _prune_model_tool_schemas,
     _tool_schema_name,
 )
-from kernel.turn_hooks import ModelHooks, ToolHooks
 from kernel.turn_runner import (
     TurnHooks,
     run_turn,

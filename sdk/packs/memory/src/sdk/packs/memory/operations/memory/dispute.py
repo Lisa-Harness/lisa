@@ -11,14 +11,13 @@ from __future__ import annotations
 import json
 import logging
 
-from pydantic import BaseModel, Field, ValidationError
-
 from kernel.models import (
     MemoryRecord,
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
 )
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 

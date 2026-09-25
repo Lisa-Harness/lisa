@@ -19,7 +19,6 @@ from kernel.workflow_view import (
     render_workflow_progress,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────────
 
 

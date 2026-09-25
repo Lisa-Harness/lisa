@@ -8,7 +8,6 @@ wired. The session defines the vocabulary or boot fails.
 from __future__ import annotations
 
 import pytest
-
 from kernel.routing_vocabulary import (
     get_consumer_intents,
     get_producer_intents,

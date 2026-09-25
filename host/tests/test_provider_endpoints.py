@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from kernel.proxy_launch.pool import ProxyRoute
-
 from host.config import HostConfig
 from host.model_manifest import load_model_manifest
 from host.provider_endpoints import (
@@ -17,6 +15,7 @@ from host.provider_endpoints import (
 )
 from host.runtime import HostRuntime
 from host.testing import build_test_runtime
+from kernel.proxy_launch.pool import ProxyRoute
 
 
 def _make_runtime(tmp_path: Path, **config_kwargs: Any) -> HostRuntime:

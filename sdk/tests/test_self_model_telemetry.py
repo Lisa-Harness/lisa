@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-
 from kernel.models import (
     IntrospectSnapshot,
     McpServerHealth,

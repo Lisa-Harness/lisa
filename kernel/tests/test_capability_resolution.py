@@ -19,7 +19,6 @@ tests.
 from __future__ import annotations
 
 import pytest
-
 from kernel.capability import (
     resolve_capability,
     resolve_capability_for_turn_limit,

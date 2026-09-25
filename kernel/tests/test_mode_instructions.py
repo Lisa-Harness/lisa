@@ -5,13 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-from kernel import ipsar_fsm
 from kernel.ipsar_fsm import (
     MissingModeInstructionError,
     get_required_mode_intro,
     get_required_stage_instruction,
 )
+
+from kernel import ipsar_fsm
 
 
 def test_get_mode_system_intro_requires_authored_instruction(

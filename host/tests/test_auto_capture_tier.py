@@ -8,7 +8,6 @@ workflow-state captures (write-effect receipts, soft commitments) expire as
 from __future__ import annotations
 
 import pytest
-
 from host.turn_hooks import (
     AUTO_CAPTURE_TIERS,
     DEFAULT_TIER_THRESHOLD_DAILY,

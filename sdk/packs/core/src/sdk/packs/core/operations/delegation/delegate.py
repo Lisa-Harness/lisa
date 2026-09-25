@@ -23,11 +23,10 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import BaseModel, Field, ValidationError
-
 from kernel.delegation import DelegationResult, DelegationSpec
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationExecutionContext, OperationResult
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 

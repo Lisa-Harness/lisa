@@ -6,8 +6,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, Field
-
 from kernel.models import (
     OperationDefinition,
     OperationExecutionContext,
@@ -19,6 +17,7 @@ from kernel.models import (
 from kernel.operations.registry import OperationExecutionError, execute_operation
 from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.tools.registry import ToolExecutionError, execute_tool
+from pydantic import BaseModel, Field
 
 
 class _ToolParameters(BaseModel):

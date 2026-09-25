@@ -14,7 +14,6 @@ import json
 from typing import Any
 
 import pytest
-
 from kernel.models import OperationExecutionContext, ToolResult
 from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.memory.operations.memory import synthesize_learning as op

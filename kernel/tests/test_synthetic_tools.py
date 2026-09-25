@@ -19,7 +19,6 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 import pytest
-
 from kernel.tools.mcp_client import (
     SYNTHETIC_SERVER_ID,
     MCPClientConfig,

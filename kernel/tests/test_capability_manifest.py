@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.capability_manifest import (
     compile_capability_manifest,
     render_capability_manifest_context,

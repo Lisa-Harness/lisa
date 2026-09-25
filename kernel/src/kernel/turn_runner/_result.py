@@ -8,7 +8,6 @@ from kernel.approval import ApprovalInvocation
 from kernel.models import BlockDiagnostic, EffectReceipt, ForkChildResult, YieldAction
 from kernel.slice import SliceOutcome
 
-
 # ── Public types ───────────────────────────────────────────────────────────
 
 

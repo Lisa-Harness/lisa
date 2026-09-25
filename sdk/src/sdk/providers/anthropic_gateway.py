@@ -24,7 +24,6 @@ from kernel.provider_contracts import (
     provider_gateway_error_from_exception,
 )
 from kernel.token_usage import coerce_non_negative_int
-
 from sdk.providers.openai_gateway import (
     _normalize_openai_tool_arguments,
     normalize_structured_content,

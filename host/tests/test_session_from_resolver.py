@@ -7,10 +7,9 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
-from kernel.session_plan import SessionPlanError, compile_session_plan
-
 from host.content_roots import resolve_pack_session_path
 from host.session_from_resolver import resolve_session_from_directives
+from kernel.session_plan import SessionPlanError, compile_session_plan
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 

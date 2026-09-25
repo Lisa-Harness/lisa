@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from mcp_server.memory.embeddings import (
     HttpEmbeddingProvider,
     _extract_embeddings,

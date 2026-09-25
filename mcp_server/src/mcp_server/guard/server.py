@@ -31,7 +31,6 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp_types import ToolAnnotations
-
 from sdk.guard import GuardBackend, format_guard_result, get_backend, log_blocked_guard
 
 logger = logging.getLogger(__name__)

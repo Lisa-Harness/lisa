@@ -76,7 +76,7 @@ def bundled_default_session_path() -> Path:
                 candidate = Path(root_loader()) / "sessions" / "default.md"
                 if candidate.is_file():
                     return candidate
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # fall through to the legacy path below
     return Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
 

@@ -18,10 +18,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from kernel.turn_hooks import (
     ModelHooks,
-    OperationHooks,
     RecallHooks,
     ToolHooks,
 )

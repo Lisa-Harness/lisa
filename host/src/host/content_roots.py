@@ -714,6 +714,7 @@ __all__ = [
     "active_installed_pack_roots",
     "always_on_pack_names",
     "authored_content_roots",
+    "discover_pack_redaction_patterns",
     "host_mcp_manifest_path",
     "infer_pack_package_name",
     "load_disabled_pack_names",
@@ -729,7 +730,6 @@ __all__ = [
     "sdk_content_roots",
     "sdk_mode_roots",
     "sdk_operation_roots",
-    "discover_pack_redaction_patterns",
     "seed_bundled_packs_lock",
     "unique_paths",
 ]

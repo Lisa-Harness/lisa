@@ -15,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from host.policy import (
     VERDICT_ALLOW,
     VERDICT_ASK,

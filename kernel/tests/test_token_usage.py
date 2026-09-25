@@ -7,7 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-
 from kernel.token_usage import TokenUsageTelemetryHandler, build_token_usage_event
 
 

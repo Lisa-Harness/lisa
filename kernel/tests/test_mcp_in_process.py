@@ -11,12 +11,7 @@ real server modules and exercises the full MCP protocol stack in-memory.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from unittest.mock import patch
-
 import pytest
-
 from kernel.tools.mcp_client import (
     InProcessServerEntry,
     MCPClientConfig,

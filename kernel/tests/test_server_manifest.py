@@ -14,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from kernel.mcp_launch.policy import AuthKind, AuthSpec, RuntimeKind
 from kernel.mcp_launch.server_manifest import (
     load_mcp_server_manifest,

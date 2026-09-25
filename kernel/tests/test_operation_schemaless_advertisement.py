@@ -18,8 +18,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
-
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.models import WorkflowModeConfig
 from kernel.operations import registry as registry_module
@@ -28,6 +26,7 @@ from kernel.operations.registry import (
     build_operation_tool_schemas,
     mode_completion_effects,
 )
+from pydantic import BaseModel
 
 
 class _ParametersLessModule:
@@ -130,7 +129,7 @@ class TestSchemalessOperationsAreAdvertised:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """mode_completion_effects never skipped schema-less ops — keep it that way."""
-        import kernel.ipsar_fsm as ipsar_fsm
+        from kernel import ipsar_fsm
 
         base_catalog = dict(ipsar_fsm.get_workflow_catalog())
         base_catalog["incident"] = WorkflowModeConfig(

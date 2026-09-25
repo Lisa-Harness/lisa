@@ -1459,8 +1459,8 @@ class MCPToolPool:
         servers do not hit this path because they speak the legacy protocol
         version that the SDK accepts without the cache fields.
         """
-        import mcp_types as _types  # noqa: PLC0415
         import httpx  # noqa: PLC0415
+        import mcp_types as _types  # noqa: PLC0415
 
         if not config.url:
             raise RuntimeError(f"lenient list_tools requires an HTTP url for {server_id!r}")
@@ -1517,7 +1517,7 @@ class MCPToolPool:
                     json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                     headers=headers,
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         # Now list tools.

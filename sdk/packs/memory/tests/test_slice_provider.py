@@ -13,12 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from kernel.slice import SliceOutcome, SlicePolicy, SliceMode
+from kernel.slice import SliceMode, SlicePolicy
 from sdk.packs.memory.slice_provider import (
+    _LAST_CONSOLIDATION_FILE_NAME,
     MemoryConsolidationSlice,
     MemoryConsolidationSliceConfig,
-    _LAST_CONSOLIDATION_FILE_NAME,
     get_slice_provider_factory,
 )
 

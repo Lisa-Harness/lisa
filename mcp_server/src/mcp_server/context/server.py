@@ -28,12 +28,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.context import Context
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp_types import ToolAnnotations
-from pydantic import BaseModel, Field
-
 from kernel.context.context_mapper import (
     ContextMapper,
     ContextMappingError,
@@ -42,6 +36,11 @@ from kernel.context.context_mapper import (
 from kernel.context.models import ContextMapperRequest
 from kernel.models import UnifiedState
 from kernel.session_plan import ContextPlan
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
+from pydantic import BaseModel, Field
 from sdk.context.context_broker import build_ambient_facts
 
 __all__ = ["BrokerContextRequest", "ContextDeps", "main", "mcp", "set_deps_for_test"]

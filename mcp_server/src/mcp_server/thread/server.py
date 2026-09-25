@@ -42,11 +42,10 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
-from sdk.layout import DATA_DIR
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
-
+from sdk.layout import DATA_DIR
 from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy, ThreadStore
 
 __all__ = ["ThreadDeps", "init_thread", "main", "mcp", "set_deps_for_test"]

@@ -22,7 +22,6 @@ from typing import Any
 
 import pytest
 import yaml
-
 from kernel.ipsar_fsm import (
     WorkflowValidationError,
     _apply_mode_overrides,

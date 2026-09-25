@@ -14,11 +14,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
-
 from kernel.models import OperationExecutionContext
 from kernel.operations.declarative import execute_declarative_operation
 from kernel.operations.registry import OperationExecutionError
+from pydantic import BaseModel
 
 
 class _WebSearchStructuredOutput(BaseModel):

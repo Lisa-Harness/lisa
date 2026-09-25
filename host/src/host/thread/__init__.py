@@ -30,27 +30,25 @@ package never imports transport code.
 
 from __future__ import annotations
 
+import json
+import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sdk.thread import ThreadRedactionPolicy, ThreadStore
 
+from host.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
 from host.thread._store import (
+    _DEFAULT_SEGMENT_TURNS,
     SegmentRecord,
+    _count_lines,
+    _maybe_rename_legacy,
+    _read_active_entries_count,
     _read_index,
     _seal_segment,
     _segment_paths,
-    _maybe_rename_legacy,
-    _count_lines,
-    _read_active_entries_count,
 )
-from host.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
-
-import json
-import logging
-from datetime import UTC, datetime
-
-from host.thread._store import _DEFAULT_SEGMENT_TURNS
 
 logger = logging.getLogger(__name__)
 

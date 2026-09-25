@@ -38,7 +38,6 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel
-
 from sdk.layout import CACHE_DIR
 
 try:

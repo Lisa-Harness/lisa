@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from kernel.model_manifest import ManifestModelEntry, ModelManifest, RouterConfig, RouterRule
 from kernel.seams.protocols import RouterRequest
 from sdk.router.router import LisaRouter
@@ -488,7 +487,6 @@ def test_router_rule_requires_an_action() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
     from kernel.seams.protocols import RouterRequest  # noqa: F401
 
@@ -513,7 +511,6 @@ def test_router_rule_rejects_multiple_actions() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
 
     payload = {
@@ -543,7 +540,6 @@ def test_loader_rejects_fallback_key() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
 
     payload = {
@@ -575,7 +571,6 @@ def test_loader_rejects_mode_id_use_value() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
 
     payload = {
@@ -600,7 +595,6 @@ def test_manifest_parses_structured_reliability() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
 
     payload = {
@@ -629,7 +623,6 @@ def test_manifest_rejects_out_of_range_structured_reliability() -> None:
     import tempfile
 
     import yaml
-
     from kernel.model_manifest import load_model_manifest
 
     payload = {

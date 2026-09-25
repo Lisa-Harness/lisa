@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from host.paths import _venv_python_dir, packs_venv_site_packages
 
 

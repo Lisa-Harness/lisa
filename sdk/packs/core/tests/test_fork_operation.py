@@ -13,12 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.models import (
     ForkChildResult,
     ForkResult,
     ForkSpec,
-    ForkTarget,
     OperationExecutionContext,
     OperationResult,
 )

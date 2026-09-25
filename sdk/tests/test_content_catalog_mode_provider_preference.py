@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from sdk.content import (
     CatalogCollisionError,
     build_mode_catalog_json,

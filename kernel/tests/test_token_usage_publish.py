@@ -15,7 +15,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-
 from kernel.context import InProcessEventBus
 from kernel.token_usage import (
     TOKEN_USAGE_TOPIC,
@@ -28,7 +27,7 @@ from kernel.token_usage import (
 class _BrokenBus:
     """A bus whose publish raises synchronously (the 2026-09-08 signature)."""
 
-    async def publish(self, event) -> None:  # noqa: ANN001
+    async def publish(self, event) -> None:
         raise TypeError("publish() missing 1 required positional argument")
 
 

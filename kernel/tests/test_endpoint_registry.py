@@ -14,7 +14,6 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
-
 from kernel.testing.endpoint_registry import REGISTRY as ENDPOINTS
 
 # Sibling pack checkouts (public + WIP). Several public endpoints are

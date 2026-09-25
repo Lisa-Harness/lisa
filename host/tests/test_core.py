@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from host.config_resolver import parse_streaming_option, resolve_timezone
+from host.handle_message import handle_message
+from host.runtime import TokenCounters, TurnContext
 
 from host import (
     HostCommandResult,
@@ -15,9 +18,6 @@ from host import (
     HostRuntime,
     NullTransport,
 )
-from host.config_resolver import parse_streaming_option, resolve_timezone
-from host.handle_message import handle_message
-from host.runtime import TokenCounters, TurnContext
 
 # ── HostConfig ──────────────────────────────────────────────────────
 

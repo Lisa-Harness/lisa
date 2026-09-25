@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-
 from kernel.context.mcp_catalog import (
     CatalogResponseError,
     MCPModeCatalog,

@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from host.approvals import FileApprovalService
+from host.handle_message import handle_message
+from host.policy import PolicyDocument, PolicyRule
+from host.policy_service import PolicyApprovalService
+from host.types import HostCommandResult
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalInvocation,
@@ -16,26 +21,14 @@ from kernel.approval import (
 )
 from kernel.models import MemoryScope, ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.tools.registry import execute_tool
-from kernel.turn_runner import TurnHooks
 from kernel.turn_hooks import (
-    ModelHooks,
-    ContextHooks,
-    OperationHooks,
-    LifecycleHooks,
-    WorkflowHooks,
     HostServiceHandles,
     TurnIdentity,
-    RecallHooks,
-    ToolHooks,
 )
+from kernel.turn_runner import TurnHooks
 from pydantic import BaseModel
 
 from host import HostConfig, HostRuntime, NullTransport
-from host.approvals import FileApprovalService
-from host.handle_message import handle_message
-from host.policy import PolicyDocument, PolicyRule
-from host.policy_service import PolicyApprovalService
-from host.types import HostCommandResult
 
 
 class _Parameters(BaseModel):
@@ -589,12 +582,11 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
 
 def test_affirmative_resume_exact_match_still_works() -> None:
     """Conversational affirmatives (``"ok"``, ``"yes"``) still match exactly."""
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
     from kernel.routing_vocabulary import (
         register_routing_vocabulary,
         reset_routing_vocabulary,
     )
-
-    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["proceed"])
@@ -608,12 +600,11 @@ def test_affirmative_resume_exact_match_still_works() -> None:
 
 def test_affirmative_resume_rejects_non_prefix_non_exact() -> None:
     """A message that does not start with a resume phrase and isn't exact is rejected."""
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
     from kernel.routing_vocabulary import (
         register_routing_vocabulary,
         reset_routing_vocabulary,
     )
-
-    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["proceed", "continue", "go ahead"])
@@ -626,12 +617,11 @@ def test_affirmative_resume_rejects_non_prefix_non_exact() -> None:
 
 def test_affirmative_resume_uses_session_resume_phrases() -> None:
     """A session-authored resume phrase is honored by the prefix detector."""
+    from host.approval import is_affirmative_resume as _is_affirmative_resume
     from kernel.routing_vocabulary import (
         register_routing_vocabulary,
         reset_routing_vocabulary,
     )
-
-    from host.approval import is_affirmative_resume as _is_affirmative_resume
 
     try:
         register_routing_vocabulary(resume_phrases=["onward", "carry forward"])
@@ -973,7 +963,7 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
     await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
 
     # lazy: reads back the appended entry after the approve turn ran
-    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+    from host.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=5)
     action_entries = [
@@ -1038,7 +1028,7 @@ async def test_approve_reports_expiry_for_expired_request(
     await runtime.services.approval_service.request(invocation)
 
     # Backdate past the TTL so is_expired() fires inside approve().
-    import json as _json  # noqa: PLC0415  # local to this one-off store backdate
+    import json as _json  # local to this one-off store backdate
 
     store_path = Path(runtime.paths.data_dir) / "approvals.json"
     payload = _json.loads(store_path.read_text())

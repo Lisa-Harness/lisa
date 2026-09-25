@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
@@ -23,19 +22,14 @@ from kernel.operations.registry import (
     build_operation_tool_schemas,
     get_operation_catalog,
 )
-from kernel.turn_phases._tool_schemas import _prune_model_tool_schemas
-from kernel.turn_runner import TurnHooks, run_turn
 from kernel.turn_hooks import (
     ModelHooks,
-    ContextHooks,
     OperationHooks,
-    LifecycleHooks,
-    WorkflowHooks,
-    HostServiceHandles,
-    TurnIdentity,
     RecallHooks,
     ToolHooks,
 )
+from kernel.turn_phases._tool_schemas import _prune_model_tool_schemas
+from kernel.turn_runner import TurnHooks, run_turn
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 

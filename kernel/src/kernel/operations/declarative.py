@@ -28,7 +28,6 @@ from kernel.operations.registry import OperationExecutionError
 from kernel.operations.structured_output import (
     completion_content,
     is_structured_output_unsupported,
-    json_only_instruction,
     json_only_retry_messages,
     parse_structured_payload,
 )

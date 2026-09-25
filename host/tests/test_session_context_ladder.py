@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from host.session_context import (
     bundled_default_session_path,
     resolve_session_context_source,

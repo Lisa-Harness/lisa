@@ -20,8 +20,8 @@ This module is test-only; production code must not import it.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from kernel.provider_contracts import CompletionResult, CompletionUsage, StreamedChunk
 

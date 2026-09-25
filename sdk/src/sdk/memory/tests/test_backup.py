@@ -6,7 +6,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
 
 

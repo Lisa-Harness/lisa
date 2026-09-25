@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-
 from kernel.provider_contracts import (
     CompletionRequest,
     CompletionResult,

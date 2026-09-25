@@ -11,7 +11,6 @@ import json
 import logging
 
 import pytest
-
 from kernel.seams.protocols import GuardResult
 from sdk.guard import (
     GuardBackend,

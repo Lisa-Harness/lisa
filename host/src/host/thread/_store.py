@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, NamedTuple
 from pathlib import Path
-
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     import zstandard  # type-check-only; imported lazily at runtime

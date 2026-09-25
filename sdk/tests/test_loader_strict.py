@@ -7,7 +7,6 @@ and that valid content passes through stripped.
 from __future__ import annotations
 
 import pytest
-
 from sdk.content import (
     MissingAuthoredContentError,
     require_authored_text,

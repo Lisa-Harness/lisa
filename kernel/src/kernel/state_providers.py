@@ -100,7 +100,7 @@ class BlankStateProvider:
         ``synthesize_and_store_learning`` operation for the reference
         distillation + persistence path.
         """
-        return None
+        return
 
     async def slice(  # pragma: no cover  (intentional no-op)
         self, ctx: Any, policy: SlicePolicy

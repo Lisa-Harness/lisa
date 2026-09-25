@@ -10,14 +10,13 @@ from __future__ import annotations
 import json
 import logging
 
-from pydantic import BaseModel, Field, ValidationError
-
 from kernel.models import (
     MemoryRecord,
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
 )
+from pydantic import BaseModel, Field, ValidationError
 from sdk.config import settings
 from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
 

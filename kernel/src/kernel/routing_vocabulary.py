@@ -34,8 +34,6 @@ Design constraints:
 
 from __future__ import annotations
 
-from typing import Final
-
 __all__ = [
     "get_consumer_intents",
     "get_producer_intents",

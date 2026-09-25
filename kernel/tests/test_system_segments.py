@@ -11,7 +11,6 @@ Locks the cache-aware segment registry's invariants:
 from __future__ import annotations
 
 import pytest
-
 from kernel.system_segments import (
     N_HANDOFF_CONTEXT,
     N_LIFECYCLE_BRIEFING,

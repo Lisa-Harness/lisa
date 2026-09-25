@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from kernel.proxy_launch.pool import ProxyRoute
-
 from host.config import HostConfig
 from host.gateway_provider import HostGatewayProvider, _ollama_client_instance
 from host.runtime import HostRuntime
+from kernel.proxy_launch.pool import ProxyRoute
 
 
 class _CapturingBedrockGateway:

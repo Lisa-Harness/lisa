@@ -53,7 +53,7 @@ class SystemPromptSegment:
 
 
 def flatten_system_prompt_segments(
-    segments: tuple["SystemPromptSegment", ...],
+    segments: tuple[SystemPromptSegment, ...],
 ) -> str:
     """Render segments back to the legacy single system-prompt string.
 

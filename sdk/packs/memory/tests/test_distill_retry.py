@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.memory.operations.memory.synthesize_learning import execute

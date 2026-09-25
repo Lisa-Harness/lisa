@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from sdk.thread import ThreadStore
 from sdk.thread._backend import _read_index, _sealed_segment_path, _segment_paths
 
@@ -53,7 +52,7 @@ def _write_active_entry(
 
 def _zstd_available() -> bool:
     try:
-        import zstandard  # noqa: PLC0415
+        import zstandard
 
         return bool(zstandard.ZstdCompressor)
     except ImportError:
@@ -62,9 +61,8 @@ def _zstd_available() -> bool:
 
 def _seal_active(thread_path: Path) -> None:
     """Seal the active segment using zstd compression (host mirrors this)."""
-    import zstandard  # noqa: PLC0415
-
-    from sdk.thread._backend import SegmentRecord  # noqa: PLC0415
+    import zstandard
+    from sdk.thread._backend import SegmentRecord
 
     paths = _segment_paths(thread_path)
     if not paths.current.exists():

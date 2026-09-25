@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sdk.workproducts import WorkProduct, WorkProductCheck
-
 from host.code_artifacts import FileCodeChangeArtifactStore
+from sdk.workproducts import WorkProduct, WorkProductCheck
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
-
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalInvocation,
@@ -16,6 +14,7 @@ from kernel.approval import (
 )
 from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.tools.registry import ToolExecutionError, execute_tool
+from pydantic import BaseModel
 
 
 class _Parameters(BaseModel):

@@ -102,7 +102,7 @@ def save_route_decision(
                 "session_plan_digest": ctx.session_plan_digest,
             },
         )
-    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
         logger.warning(
             "route_coordinator.save failed for target %s: %s",
             target_mode_id,

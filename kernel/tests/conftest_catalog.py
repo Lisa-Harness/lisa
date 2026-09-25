@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from kernel.ipsar_fsm import (
     get_workflow_catalog,
     register_content_mcp,

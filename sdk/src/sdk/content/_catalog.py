@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from kernel.config import settings as _kernel_settings
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
 

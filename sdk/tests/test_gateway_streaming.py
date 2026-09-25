@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.provider_contracts import (
     CompletionRequest,
     _aggregate_streamed_chunks,

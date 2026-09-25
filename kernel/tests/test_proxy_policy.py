@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from kernel.mcp_launch.compiler import compile_mcp_config
 from kernel.mcp_launch.policy import (
     AmbientSource,

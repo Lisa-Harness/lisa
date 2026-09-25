@@ -26,15 +26,14 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-
 from kernel.models import (
     EffectReceipt,
     OperationExecutionContext,
     OperationResult,
     WorkflowModeConfig,
 )
-from kernel.turn_phases._dispatch import enforce_write_receipt as _enforce_write_receipt
 from kernel.turn_hooks import ModelHooks, OperationHooks, ToolHooks
+from kernel.turn_phases._dispatch import enforce_write_receipt as _enforce_write_receipt
 from kernel.turn_runner import (
     TurnHooks,
     run_turn,
@@ -1086,9 +1085,8 @@ def _misroute_tool_catalog() -> dict[str, Any]:
     the test exercises nothing. Mirrors the real ``apply_patch.tool.yml``
     shape (a write-effect tool whose params are user-supplied).
     """
-    from pydantic import BaseModel
-
     from kernel.models import ToolDefinition
+    from pydantic import BaseModel
 
     class _ApplyPatchParams(BaseModel):
         path: str
@@ -1119,8 +1117,9 @@ async def test_routing_misfire_zero_dispatch_prose_surfaced_not_blocked() -> Non
     warning footnote instead: answering a question is honest work even
     though the receipt ledger shows zero tool calls.
     """
-    from kernel import config
     from kernel.tools.mcp_client import MCPToolResult
+
+    from kernel import config
 
     class _EmptyPool:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
@@ -1220,8 +1219,9 @@ async def test_routing_misfire_empty_prose_yields_not_surfaces() -> None:
     question ("model returned an empty response…") — the turn is NOT
     blocked as no_tools and NOT silently accepted.
     """
-    from kernel import config
     from kernel.tools.mcp_client import MCPToolResult
+
+    from kernel import config
 
     class _EmptyPool:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
@@ -1649,7 +1649,7 @@ class _ReadThenWritePool:
         # read_file is server-declared read-only; write tools are not.
         return SimpleNamespace(read_only_hint=("write" not in tool_id and "append" not in tool_id))
 
-    async def __aenter__(self) -> "_ReadThenWritePool":
+    async def __aenter__(self) -> _ReadThenWritePool:
         return self
 
     async def __aexit__(self, *_args: object) -> None:

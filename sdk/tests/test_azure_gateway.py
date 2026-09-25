@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.provider_contracts import CompletionRequest
 from sdk.providers.openai_gateway import (
     AzureOpenAIGateway,

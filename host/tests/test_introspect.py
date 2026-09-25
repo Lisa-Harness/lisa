@@ -10,10 +10,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import pytest
+from host.introspect import gather_introspection
 from kernel.models import IntrospectSnapshot
 from kernel.tools.mcp_client import MCPToolSpec
-
-from host.introspect import gather_introspection
 
 
 @pytest.mark.asyncio

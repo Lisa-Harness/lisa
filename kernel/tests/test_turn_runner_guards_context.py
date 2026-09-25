@@ -15,14 +15,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from kernel.models import (
     SurfaceContext,
 )
 from kernel.seams.protocols import GuardResult
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy, SliceTuning
 from kernel.turn_hooks import (
-    ContextHooks,
     LifecycleHooks,
     ModelHooks,
 )

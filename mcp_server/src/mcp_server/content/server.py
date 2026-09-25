@@ -29,13 +29,13 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp_types import ToolAnnotations
+from sdk.content import ContentReader
 
 # Suppress a benign runpy RuntimeWarning + activate packs venv site-packages.
 # See ``mcp_server/_entrypoint.py`` for the full rationale. Imported
 # side-effect-first at the top so the packs venv is on sys.path before any
 # `from sdk.content import ...` triggers catalog loading.
 import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim
-from sdk.content import ContentReader
 
 logger = logging.getLogger(__name__)
 

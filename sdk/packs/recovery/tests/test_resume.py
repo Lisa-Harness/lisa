@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from sdk.packs.recovery.commands import handle_resume
 
 

@@ -37,7 +37,6 @@ from kernel.turn_hooks import TurnHooks
 from kernel.turn_phases._child_turn import classify_child_turn
 from kernel.turn_phases._fork import _execute_fork_fanout
 from kernel.turn_phases._routing_hint import emit_transition_hint
-
 from kernel.turn_runner._helpers import _StubModelDef
 
 logger = logging.getLogger(__name__)

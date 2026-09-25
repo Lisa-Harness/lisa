@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from kernel.models import MemoryRecord, MemoryWriteRequest
 from sdk.memory.store import DEFAULT_TTL_DAYS, SqliteMemoryStore
 

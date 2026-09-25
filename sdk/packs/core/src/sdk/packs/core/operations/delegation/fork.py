@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import BaseModel, Field, ValidationError
-
-from kernel.models import ForkChildResult, ForkResult, ForkSpec, ForkTarget
 from kernel.ipsar_fsm import get_workflow_catalog
-from kernel.models import OperationExecutionContext, OperationResult
+from kernel.models import (
+    ForkResult,
+    ForkSpec,
+    ForkTarget,
+    OperationExecutionContext,
+    OperationResult,
+)
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 

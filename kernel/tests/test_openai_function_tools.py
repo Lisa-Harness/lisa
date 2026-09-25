@@ -10,14 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
-
 from kernel.function_tools import (
     _has_additional_properties_true,
     _has_union_items,
     _strict_incompatible,
     build_strict_openai_function_tool,
 )
+from pydantic import BaseModel
 
 
 class _Empty(BaseModel):

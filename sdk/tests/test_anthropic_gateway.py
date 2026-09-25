@@ -12,13 +12,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from kernel.provider_contracts import (
     CompletionRequest,
     CompletionResult,
     ModelDescriptor,
 )
-from sdk.providers import SdkProviderGatewayProvider
 from sdk.providers.anthropic_gateway import AnthropicGateway
 from sdk.providers.openai_gateway import normalize_openai_messages
 

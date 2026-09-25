@@ -39,19 +39,21 @@ test ${0##./} = $(basename $0) && wd=.. && sync_opts='-U --all-extras'
 
 for d in "$wd/lisa-packs" "$wd/lisa-hosts"; do
 	if test ! -d "$d"; then
-		gp repo clone "$(basename $d)" "$d"
-		git config submodule.recurse==true
-		git submodule update --init
+		git clone --recurse-submodules "https://github.com/lisa-harness/$(basename $d)" "$d"
+		git config submodule.recurse true
+		git submodule update --init --recursive
 	fi
 	cd "$d"
 	git pull $pull_opts
 done
-test -d "$wd/lisa" || gh repo clone lisa "$wd/lisa"
-cd "$wd/lisa"
-git pull $pull_opts
+if test -d "$wd/lisa"; then
+	cd "$wd/lisa"
+	git pull $pull_opts
+else
+    git clone 'https://github.com/lisa-harness/lisa' "$wd/lisa"
+	cd "$wd/lisa"
+fi
 uv sync $sync_opts
 cd "$wd/lisa-hosts/cli"
 uv sync $sync_opts
-
-# install shortcut
-case "${name%%.sh}" in *install) uv tool install $install_opts hosts/cli ;; esac
+uv tool install $install_opts hosts/cli

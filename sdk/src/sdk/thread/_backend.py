@@ -91,7 +91,7 @@ class SegmentRecord(NamedTuple):
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "SegmentRecord":
+    def from_dict(cls, raw: dict[str, Any]) -> SegmentRecord:
         return cls(
             seg_id=str(raw["seg_id"]),
             turn_lo=int(raw["turn_lo"]),
@@ -326,7 +326,7 @@ class ThreadStore:
         self,
         *,
         limit: int = 3,
-        is_host_command: "Any" | None = None,
+        is_host_command: Any | None = None,
     ) -> str:
         """Build a short human-readable excerpt of recent thread entries.
 
@@ -456,7 +456,7 @@ class ThreadStore:
         *,
         query: str,
         limit: int = 10,
-        is_host_command: "Any | None" = None,
+        is_host_command: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search all thread entries by content and return ranked matches.
 
@@ -523,8 +523,8 @@ class ThreadStore:
         entry: dict[str, Any],
         global_turn: int,
         tokens: set[str],
-        is_host_command: "Any | None",
-    ) -> "tuple[float, int, dict[str, Any]] | None":
+        is_host_command: Any | None,
+    ) -> tuple[float, int, dict[str, Any]] | None:
         """Score one entry for search ranking. Returns ``(score, turn, result)`` or ``None``.
 
         ``None`` means the entry should be skipped (empty, or a host-command

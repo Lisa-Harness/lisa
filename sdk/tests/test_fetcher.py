@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx
 import pytest
-
 from sdk.content import ContentFetcher, FetchPolicy, validate_url
 
 # ── URL validation ──────────────────────────────────────────────────────────

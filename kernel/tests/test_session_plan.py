@@ -5,13 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-
 from kernel.session_plan import (
     PackInstallSpec,
     SessionPlanError,
     compile_session_plan,
 )
+from pydantic import ValidationError
 
 _SCHEMA_VERSION = 2
 _SHA256_LENGTH = 64

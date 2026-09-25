@@ -21,14 +21,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from pydantic import BaseModel, Field, ValidationError
-
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
     completion_content,
     json_only_retry_messages,
     parse_structured_payload,
 )
+from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
 
 logger = logging.getLogger(__name__)

@@ -19,12 +19,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from host.approvals import FileApprovalService
+from host.policy import (
+    PolicyDocument,
+    PolicyMode,
+    PolicyRule,
+    remember_allow_prefix,
+    sandbox_session_key,
+)
+from host.policy_service import PolicyApprovalService
 from kernel.approval import build_approval_invocation
 from kernel.tools.registry import ToolExecutionError
-
-from host.approvals import FileApprovalService
-from host.policy import PolicyDocument, PolicyMode, PolicyRule, remember_allow_prefix, sandbox_session_key
-from host.policy_service import PolicyApprovalService
 
 
 def _identity() -> object:

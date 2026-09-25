@@ -47,7 +47,6 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
-
 from sdk.storage import StorageBackend
 
 __all__ = ["StorageDeps", "init_storage", "main", "mcp", "set_deps_for_test"]

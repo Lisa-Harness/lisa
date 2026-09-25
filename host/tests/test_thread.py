@@ -31,7 +31,6 @@ from host.host_commands import (
 
 register_builtin_host_commands()
 from host.thread import (
-    SegmentRecord,
     _read_index,
     _segment_paths,
     append_thread_entry,
@@ -505,7 +504,6 @@ def test_discover_pack_redaction_patterns_from_content_root(tmp_path: Path) -> N
     patterns into the thread redaction policy. This test verifies the
     discovery function reads the YAML and returns the pattern list.
     """
-    from host.content_roots import discover_pack_redaction_patterns
 
     # Build a fake pack directory with a content/redaction_patterns.yml.
     pack_root = tmp_path / "fake-pack"
@@ -543,7 +541,6 @@ def test_core_pack_redaction_patterns_match_defaults() -> None:
     idempotent (deduplication removes the duplicates).
     """
     import yaml as _yaml
-
     from sdk.thread import DEFAULT_REDACTION_PATTERNS
 
     # Resolve through the import system (src-layout compatible)

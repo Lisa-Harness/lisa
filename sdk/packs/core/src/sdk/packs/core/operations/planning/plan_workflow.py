@@ -32,8 +32,6 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.operations.structured_output import (
@@ -42,6 +40,7 @@ from kernel.operations.structured_output import (
     json_only_retry_messages,
     parse_structured_payload,
 )
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 

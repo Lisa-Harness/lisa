@@ -66,7 +66,6 @@ import logging
 from typing import Any
 
 import celpy
-
 from kernel.model_manifest import ModelManifest, RouterRule
 from kernel.seams.protocols import (
     ModelRouter,

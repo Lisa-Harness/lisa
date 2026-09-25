@@ -24,9 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from host.turn_hooks_builder import build_turn_hooks
 
 from host import HostRuntime
-from host.turn_hooks_builder import build_turn_hooks
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:

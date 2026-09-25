@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel
-
 from sdk.packs.introspect.operations.self_model.reflect_self import ReflectSelfOutput
 
 

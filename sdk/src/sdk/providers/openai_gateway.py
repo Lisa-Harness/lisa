@@ -13,10 +13,6 @@ import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
-from openai import AsyncAzureOpenAI, AsyncOpenAI
-from pydantic import BaseModel as PydanticBaseModel
-from pydantic import ValidationError
-
 from kernel.operations.structured_output import parse_structured_payload
 from kernel.provider_contracts import (
     ChatMessages,
@@ -27,7 +23,6 @@ from kernel.provider_contracts import (
     EmbeddingResult,
     ModelDescriptor,
     ProviderEventEmitter,
-    ProviderGatewayError,
     ProviderStreamEvent,
     StreamedChunk,
     embedding_gateway_error_from_exception,
@@ -36,7 +31,9 @@ from kernel.provider_contracts import (
     provider_gateway_error_from_exception,
 )
 from kernel.token_usage import coerce_non_negative_int
-
+from openai import AsyncAzureOpenAI, AsyncOpenAI
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ValidationError
 
 # ── Message normalization ────────────────────────────────────────────────
 

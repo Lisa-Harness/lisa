@@ -18,7 +18,6 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-
 from kernel.provider_contracts import (
     CompletionRequest,
     CompletionUsage,
@@ -26,18 +25,10 @@ from kernel.provider_contracts import (
     StreamedCompletion,
     _aggregate_streamed_chunks,
 )
-from kernel.turn_runner import StreamedCompletionAdapter, TurnHooks, run_turn
 from kernel.turn_hooks import (
     ModelHooks,
-    ContextHooks,
-    OperationHooks,
-    LifecycleHooks,
-    WorkflowHooks,
-    HostServiceHandles,
-    TurnIdentity,
-    RecallHooks,
-    ToolHooks,
 )
+from kernel.turn_runner import StreamedCompletionAdapter, TurnHooks, run_turn
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
