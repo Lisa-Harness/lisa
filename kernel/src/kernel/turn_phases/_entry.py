@@ -42,6 +42,8 @@ class EntryPhaseResult:
     """Whether the planner/resume path suppresses emergent routing hints."""
     first_step_query: str = ""
     """Sub-query for the first planned step if derived from workflow steps."""
+    workflow_steps: tuple[Any, ...] = ()
+    """Compiled workflow steps returned by a routing entry operation."""
     early_user_context: str = ""
     """Pre-built conversation excerpt for entry ops."""
 
@@ -211,6 +213,7 @@ async def execute_entry_phase(
             plan_prefix=staged_prefix,
             suppress_routing_hint=True,
             first_step_query=first_step_query,
+            workflow_steps=tuple(workflow_steps),
             early_user_context=early_user_context,
         )
 

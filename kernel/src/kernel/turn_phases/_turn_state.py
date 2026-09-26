@@ -103,6 +103,7 @@ class _TurnState:
     """Per-turn tool-call cap (``TurnBudget.max_tool_calls``). 0 = unlimited."""
     max_handoffs: int = 0
     """Per-turn mode-handoff cap (``max_handoffs_per_turn``). 0 = unlimited."""
+    capability_limit_hit: bool = False
 
     # ── Router-relevant state ────────────────────────────────────────
     last_tool_result_text: str | None = None

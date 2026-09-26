@@ -151,6 +151,23 @@ def _reset_routing_vocabulary() -> None:
 # catalog per-test (the kernel test-seams rule) and their patch wins.
 
 _SYNTHETIC_TEST_MODES: dict[str, dict[str, Any]] = {
+    # Default mode must stay empty/ambient in the kernel tests: the ambient
+    # catalog is intentionally stripped down to the core operation set, not the
+    # external pack defaults. Keep operations available while forbidding any
+    # extra MCP tool ids from leaking into ``allowed_tool_ids``.
+    "default": {
+        "tags": ["default"],
+        "keywords": ["default", "chat", "general"],
+        "authored_ops": [],
+        "bound_ops": [
+            "dispute_memory",
+            "recall_memory",
+            "synthesize_and_store_learning",
+            "web_search",
+        ],
+        "authored_tool_ids": [],
+        "allow_tool_ids": [],
+    },
     # markdown mirrors the real pack's shape: a write-contract mode whose
     # completion contract names a write-effect operation the catalog cannot
     # resolve (unknown → conservative write), so the parent no_tools block
@@ -159,6 +176,9 @@ _SYNTHETIC_TEST_MODES: dict[str, dict[str, Any]] = {
         "tags": ["write"],
         "keywords": ["markdown", "document", "write"],
         "authored_ops": ["markdown_forge_document"],
+        "bound_ops": ["recall_memory"],
+        "authored_tool_ids": ["write_file"],
+        "allow_tool_ids": ["write_file"],
     },
     # remember mirrors the pre-migration core pack shape: an action mode
     # whose authored write operation the tests' child-classification
@@ -168,8 +188,10 @@ _SYNTHETIC_TEST_MODES: dict[str, dict[str, Any]] = {
     "remember": {
         "tags": ["remember"],
         "keywords": ["remember", "note", "capture"],
-        "authored_ops": ["remember_capture"],
-        "bound_ops": ["recall_memory", "synthesize_and_store_learning"],
+        "authored_ops": ["remember_capture", "synthesize_and_store_learning"],
+        "bound_ops": ["recall_memory"],
+        "authored_tool_ids": ["memory.add", "memory.search", "memory.list"],
+        "allow_tool_ids": ["memory.add", "memory.search", "memory.list"],
     },
     "ponder": {
         "tags": ["reasoning", "research"],
@@ -191,14 +213,25 @@ def _augment_catalog_with_synthetic_modes() -> None:
     loaded without the augmentation.
     """
     from kernel.ipsar_fsm import get_workflow_catalog
-    from kernel.models import WorkflowModeConfig
+    from kernel.models import OperationDefinition, WorkflowModeConfig, WorkflowStageConfig
+    from kernel.operations import registry as operation_registry
+
+    operation_registry.get_operation_catalog().setdefault(
+        "web_search",
+        OperationDefinition(
+            operation_id="web_search",
+            description="synthetic web search",
+            effect="read",
+        ),
+    )
 
     catalog = get_workflow_catalog()
     for mode_id, spec in _SYNTHETIC_TEST_MODES.items():
-        if mode_id in catalog:
-            continue
         authored_ops = list(spec.get("authored_ops", []))
         bound_ops = list(spec.get("bound_ops", []))
+        entry_ops = list(spec.get("entry_ops", []))
+        allow_tool_ids = list(spec.get("allow_tool_ids", []))
+        authored_tool_ids = list(spec.get("authored_tool_ids", []))
         # Keyword map: the spec's ``keywords`` list is flat (one pool per
         # mode), while ``routing_intent_keywords`` is keyed per tag. Attribute
         # the full pool to EVERY tag — intent detection is per-tag substring
@@ -206,17 +239,39 @@ def _augment_catalog_with_synthetic_modes() -> None:
         # fire on its cue words.
         tags = list(spec["tags"])
         kw_pool = list(spec["keywords"])
+        stages: dict[str, WorkflowStageConfig] = {}
+        mode_kind = str(spec.get("mode_kind", "chat"))
+        start_stage_id = "none"
+        if mode_id == "ponder":
+            mode_kind = "workflow"
+            start_stage_id = "inquire"
+            stages = {
+                "inquire": WorkflowStageConfig(
+                    stage_id="inquire",
+                    instruction_body="Inquire about the user's question.",
+                    allowed_next_stages=["reason"],
+                ),
+                "reason": WorkflowStageConfig(
+                    stage_id="reason",
+                    instruction_body="Reason about the gathered evidence.",
+                    terminal=True,
+                ),
+            }
         catalog[mode_id] = WorkflowModeConfig(
             mode_id=mode_id,
-            start_stage_id="none",
-            mode_kind="chat",
+            start_stage_id=start_stage_id,
+            stages=stages,
+            mode_kind=mode_kind,
             routable=True,
+            entry_operation_ids=entry_ops,
             fork_allowed=True,
             satisfies_intents=sorted(set(tags) | {mode_id}),
             routing_intent_tags=tags,
             routing_intent_keywords={tag: list(kw_pool) for tag in tags},
             authored_allowed_operation_ids=authored_ops,
             allowed_operation_ids=authored_ops + bound_ops,
+            authored_allowed_tool_ids=authored_tool_ids,
+            allowed_tool_ids=allow_tool_ids,
         )
 
 

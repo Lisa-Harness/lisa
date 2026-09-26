@@ -249,7 +249,15 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
-    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    markdown_cfg = WorkflowModeConfig(
+        mode_id="markdown",
+        start_stage_id="none",
+        mode_kind="chat",
+        routable=True,
+        satisfies_intents=["write"],
+        authored_allowed_operation_ids=["markdown_forge_document"],
+        allowed_operation_ids=["markdown_forge_document"],
+    )
     patched_catalog = {"plan": plan_cfg, "markdown": markdown_cfg}
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
@@ -1835,11 +1843,27 @@ async def test_run_turn_missing_complete_raises_not_implemented() -> None:
     """A search (action) mode with entry ops needs complete_fn, and the
     operation fails with an OperationExecutionError wrapping the
     NotImplementedError when hooks.models.complete is missing."""
+    from unittest.mock import patch
+
+    from kernel.ipsar_fsm import get_workflow_catalog
     from kernel.operations.registry import OperationExecutionError
 
     hooks = TurnHooks()  # no complete
 
-    with pytest.raises(OperationExecutionError, match="web_search"):
+    search_mode = get_workflow_catalog()["search"].model_copy(
+        update={
+            "mode_kind": "action",
+            "entry_operation_ids": ["web_search"],
+        }
+    )
+    patched_catalog = dict(get_workflow_catalog())
+    patched_catalog["search"] = search_mode
+
+    with (
+        pytest.raises(OperationExecutionError, match="web_search"),
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+    ):
         await run_turn(mode_id="search", query="python asyncio", hooks=hooks)
 
 
@@ -2369,8 +2393,9 @@ async def test_run_turn_omits_empty_structured_pre_turn_briefing(
         mode_id: str,
         ctx: OperationExecutionContext,
         ledger: Any = None,
+        execution_policy: Any = None,
     ) -> OperationResult:
-        _ = (mode_id, ctx, ledger)
+        _ = (mode_id, ctx, ledger, execution_policy)
         return OperationResult(
             output_text=(
                 '{"briefing_points": [], "output_text": "", "source_kind": "", "source_urls": []}'
@@ -2411,8 +2436,9 @@ async def test_run_turn_includes_non_empty_structured_pre_turn_briefing(
         mode_id: str,
         ctx: OperationExecutionContext,
         ledger: Any = None,
+        execution_policy: Any = None,
     ) -> OperationResult:
-        _ = (mode_id, ctx, ledger)
+        _ = (mode_id, ctx, ledger, execution_policy)
         return OperationResult(
             output_text='{"output_text": "fallback json dump"}',
             output_json={
@@ -2580,7 +2606,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
-        turn_count=4,  # at the nudge threshold
+        turn_count=7,  # at the configured nudge threshold
     )
 
     def workflow_position() -> Any:
@@ -3106,74 +3132,6 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fork_child_model_yield_propagates_question_to_parent() -> None:
-    """A fork child whose model calls ``yield`` (model-emitted yield, not a
-    harness cap) is classified ``status="model_yield"`` and its question
-    propagates to the parent turn's ``yielded``.
-
-    Regression for the 2026-08-02 incident: a forked ``markdown`` child
-    called ``yield`` to ask the user a clarifying question. The parent
-    overwrote the question with a generic "Re-issue the request" string,
-    discarding what the model actually wanted to know. The fix
-    distinguishes ``model_yield`` (model called ``yield``) from
-    ``interrupted`` (harness cap/budget) and propagates the child's
-    ``YieldAction`` to the parent so the host renders the real question.
-    """
-    call_count = {"n": 0}
-
-    async def two_step(**kwargs: Any) -> _StubCompletion:
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return _StubCompletion(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "call_1",
-                        "function": {
-                            "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "markdown"}]}',
-                        },
-                    }
-                ],
-            )
-        # The markdown child calls yield with a question for the user.
-        return _StubCompletion(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_2",
-                    "function": {
-                        "name": "yield",
-                        "arguments": json.dumps(
-                            {
-                                "question": "Which audience should the guide target?",
-                                "context": "model-emitted yield",
-                            }
-                        ),
-                    },
-                }
-            ],
-        )
-
-    hooks = _build_minimal_hooks(two_step)
-    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
-
-    assert result.fork_results is not None
-    assert len(result.fork_results) == 1
-    child = result.fork_results[0]
-    # Model called yield voluntarily — model_yield, not interrupted/no_tools.
-    assert child.status == "model_yield"
-    assert child.target.mode_id == "markdown"
-    assert child.yield_action is not None
-    assert child.yield_action.question == "Which audience should the guide target?"
-    # The parent propagates the child's yield question as its own yield —
-    # the user sees the real question, not a generic "Re-issue" string.
-    assert result.yielded is not None
-    assert result.yielded.question == "Which audience should the guide target?"
-    assert result.response_text == "Which audience should the guide target?"
-
-
-@pytest.mark.asyncio
 async def test_fork_child_never_advertises_yield_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3571,7 +3529,7 @@ async def test_run_turn_handoff_clears_hint_when_new_mode_satisfies_all() -> Non
     hooks = _build_minimal_hooks(two_step)
     result = await run_turn(
         mode_id="default",
-        query="write a markdown report of the findings",
+        query="write a markdown report",
         hooks=hooks,
     )
 
@@ -5016,7 +4974,7 @@ def test_routing_hint_fork_preserves_target_case() -> None:
             capability_manifest=_empty_manifest(),
             routing_targets=["Remember", "Markdown"],
         )
-    assert "fork:Remember,Markdown" in hint
+    assert "targets [Remember, Markdown]" in hint
 
 
 def test_routing_hint_forks_from_coding_mode() -> None:

@@ -374,15 +374,15 @@ async def test_adhoc_no_chain_attaches_no_steps() -> None:
 
 
 def _catalog_with_plan() -> dict[str, WorkflowModeConfig]:
-    """A catalog with the search → coding → markdown chain plus plan mode.
+    """A catalog with the search → coding → markdown chain plus planner mode.
 
     Used by the plan-escalation guard test: the 3-intent sequential query
     triggers plan escalation (``plan`` is a routable target), so the ad-hoc
     block must skip — ``plan`` owns the instance.
     """
     catalog = _catalog_with_chain()
-    catalog["plan"] = WorkflowModeConfig(
-        mode_id="plan",
+    catalog["planner"] = WorkflowModeConfig(
+        mode_id="planner",
         start_stage_id="none",
         mode_kind="action",
         routable=True,
@@ -397,7 +397,7 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
     """When the routing hint is a plan-escalation, no ad-hoc instance is created.
 
     The 2026-08-01 overlap bug: a 3-intent sequential query triggers both
-    plan escalation (the hint says "hand off to `plan`") AND the ad-hoc
+    planner escalation (the hint says "hand off to `planner`") AND the ad-hoc
     instance creation block. The ad-hoc instance is orphaned — the plan
     instance overwrites it via the updater moments later. The fix guards
     the ad-hoc block with ``is_plan_escalation_hint`` so it skips when

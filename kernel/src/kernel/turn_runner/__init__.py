@@ -83,6 +83,7 @@ from kernel.models import (
     ForkChildResult,
     ForkResult,
     ForkSpec,
+    ForkTarget,
     MemoryScope,
     OperationExecutionContext,
     OperationResult,
@@ -3052,29 +3053,11 @@ def _compute_post_handoff_hint(
         # mode's intents were added at init; each
         # handoff adds its target's intents here.
         #
-        # **Work-gate**: only accumulate if the
-        # departing mode produced at least one
-        # relevant receipt (read/execute for
-        # research/gather modes, write for
-        # code/write modes). A mode that was
-        # visited but did nothing — forced out
-        # by the forced-action enforcer after
-        # zero productive calls — must NOT mark
-        # its intents as satisfied. Otherwise the
-        # next mode inherits a false "research
-        # already done" and never redirects back
-        # (the 2026-09-04 incident: researcher
-        # was forced to executor after 1 failed
-        # fetch_page, but chain_satisfied already
-        # contained {research,gather,learn}, so
-        # executor saw no gap and crawled to the
-        # cap).
-        _departing_has_work = any(
-            r.effect in ("read", "execute", "write", "external_write")
-            for r in state.effect_receipts
-        )
-        if _departing_has_work:
-            state.chain_satisfied.update(target_mode_config.satisfies_intents)
+        # The selected target is now the active step. Count its declared
+        # intents immediately so the post-handoff hint does not reopen an
+        # earlier gap and synthesize a competing transition before the target
+        # gets its first completion.
+        state.chain_satisfied.update(target_mode_config.satisfies_intents)
         # Per-step counters were already reset by
         # ``apply_routing`` above (before the
         # durable instance advancement so a
@@ -4197,6 +4180,30 @@ async def _run_handoff_entry_operations(
                 preferred_model_id=preferred_model_id,
                 log=log,
             )
+            if _promises_routing and hooks.workflow.workflow_position_updater is not None:
+                try:
+                    from kernel.workflow_position import WorkflowPosition
+
+                    _plan_steps = _plan_steps_to_workflow_steps(
+                        list((entry_result.output_json or {}).get("steps") or [])
+                    )
+                    _existing_position = (
+                        hooks.workflow.workflow_position()
+                        if callable(hooks.workflow.workflow_position)
+                        else None
+                    )
+                    if _plan_steps and _existing_position is None:
+                        hooks.workflow.workflow_position_updater(
+                            WorkflowPosition(
+                                declared_steps=tuple(_plan_steps),
+                                current_step_id=_plan_steps[0].step_id,
+                                mode_id=target_stage,
+                                plan_text=entry_result.output_text or "",
+                                spawned_from="plan_workflow_op",
+                            )
+                        )
+                except Exception as position_exc:  # pylint: disable=broad-except
+                    log.warning("mid-turn plan position persistence failed: %s", position_exc)
         except Exception as entry_exc:  # pylint: disable=broad-except
             # The failure handling (unreliable-marking + hard-fail stamp)
             # lives in ``_handle_entry_operation_failure``.
@@ -4452,6 +4459,59 @@ async def _execute_mid_turn_handoff(
                         "operations may be mis-authorized.",
                         target_stage,
                     )
+            # Commit durable workflow progress before recomputing the
+            # post-handoff hint. Otherwise the hint reads the departing
+            # step and synthesizes a transition back to it on the next
+            # iteration.
+            if hooks.workflow.workflow_position is not None:
+                try:
+                    from kernel.workflow_position import (
+                        WorkflowPosition,
+                        advance_step,
+                        compile_steps_from_routing_targets,
+                    )
+
+                    _position = hooks.workflow.workflow_position()
+                    from kernel.turn_phases._routing_hint import is_plan_escalation_hint
+
+                    if (
+                        _position is None
+                        and hooks.workflow.workflow_position_updater is not None
+                        and not is_plan_escalation_hint(routing_hint)
+                        and "planner" not in get_workflow_catalog()
+                    ):
+                        _steps = compile_steps_from_routing_targets(
+                            query=query,
+                            routing_targets=get_routing_targets(_departing_mode_id),
+                            catalog=get_workflow_catalog(),
+                        )
+                        if len(_steps) > 1:
+                            _position = WorkflowPosition(
+                                declared_steps=_steps,
+                                mode_id=_departing_mode_id,
+                                spawned_from="adhoc",
+                            )
+                    if _position is not None and _position.current_step_id:
+                        _current_step = _position.step_by_id(_position.current_step_id)
+                        if _current_step is not None and _current_step.mode_id == _departing_mode_id:
+                            _advanced_position = advance_step(
+                                _position,
+                                _current_step.step_id,
+                                result_preview=rationale,
+                            ).model_copy(update={"mode_id": target_stage})
+                            if hooks.workflow.workflow_position_updater is not None:
+                                hooks.workflow.workflow_position_updater(_advanced_position)
+                    elif _position is not None and _position.declared_steps:
+                        _first_step = _position.declared_steps[0]
+                        if _first_step.mode_id == target_stage:
+                            _advanced_position = advance_step(
+                                _position,
+                                _first_step.step_id,
+                                result_preview=rationale,
+                            ).model_copy(update={"mode_id": target_stage})
+                            hooks.workflow.workflow_position_updater(_advanced_position)
+                except Exception as exc:  # pylint: disable=broad-except
+                    log.warning("workflow position advancement failed: %s", exc)
             # ── Mid-turn pre-turn operations ────────────
             # Run the new mode's ``pre_turn_operation_ids``
             # exactly as the turn-start path does; lives in
@@ -4746,6 +4806,17 @@ async def _resolve_empty_turn_content(
     # branches — the cap-pause/operator-exit paths leave it False).
     _yielded = False
     if not content:
+        if state.fork_results and any(result.status != "ok" for result in state.fork_results):
+            _failed_children = [
+                result.target.mode_id
+                for result in state.fork_results
+                if result.status != "ok"
+            ]
+            content = (
+                "Fork child turns failed or were interrupted after read-only calls: "
+                + ", ".join(_failed_children)
+                + ". Their results are unverified."
+            )
         # ── Cap-pause diagnostic ────────────────────────────────────────
         # The stuck-in-stage cap (NOT an operator signal) broke the loop
         # before the model call. Surface a diagnostic so the user knows why
@@ -4756,7 +4827,9 @@ async def _resolve_empty_turn_content(
         # ── Cap-pause diagnostic ────────────────────────────────
         # Built by ``_build_cap_pause_diagnostic`` (last-tool context
         # and structured operation context).
-        if cap_pause_reason:
+        if content:
+            pass
+        elif cap_pause_reason:
             content = _build_cap_pause_diagnostic(
                 state=state,
                 mode_id=mode_id,
@@ -4772,6 +4845,13 @@ async def _resolve_empty_turn_content(
         # recovery stalls do). The cap-pause diagnostic above already set
         # ``content`` for the stuck-in-stage cap case, so skip the fallback
         # yield paths entirely when the cap diagnostic has already surfaced.
+        elif getattr(state, "capability_limit_hit", False):
+            pending_yield = YieldAction(
+                question="I've reached a resource budget for this turn. How would you like me to proceed?",
+                context="capability invocation limit reached",
+            )
+            content = pending_yield.question
+            _yielded = True
         elif pending_operator_exit:
             content = ""
         elif pending_yield is not None:
@@ -5862,6 +5942,41 @@ async def _intercept_transition_stage(
             },
         )
         return _ret("continue")
+    if target_stage.startswith("fork:"):
+        _target_ids = [item.strip() for item in target_stage[5:].split(",") if item.strip()]
+        if not _target_ids:
+            tool_output = "fork transition has no valid targets."
+        else:
+            _catalog = get_workflow_catalog()
+            _invalid = next((item for item in _target_ids if item not in _catalog), "")
+            if _invalid:
+                tool_output = f"fork target mode '{_invalid}' is not in the installed catalog."
+            else:
+                _queries = tool_arguments.get("queries")
+                _targets = [
+                    ForkTarget(
+                        mode_id=_target_id,
+                        stage_id=_catalog[_target_id].start_stage_id,
+                        query=str(
+                            _queries[_index]
+                            if isinstance(_queries, list) and _index < len(_queries)
+                            else query
+                        ),
+                    )
+                    for _index, _target_id in enumerate(_target_ids)
+                ]
+                _fork_result = await ctx.host.fork(ForkSpec(targets=_targets))
+                state.fork_results = list(_fork_result.children)
+                tool_output = f"Forked {len(state.fork_results)} child turns."
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": tool_output,
+            }
+        )
+        return _ret("continue")
     # ── Guard: don't route a research/review intent into an
     # action mode after a search entry op failed this turn.
     # Once ``state.entry_failed`` is set, the research
@@ -5905,10 +6020,23 @@ async def _intercept_transition_stage(
     if mode_config is not None and target_stage in mode_config.stages:
         # Intra-mode stage transition. The transition target
         # is recorded on the TurnResult (``transitioned_to``)
-        # and written to the thread; the WorkflowView derives
-        # the stage from it on the next turn. No mutable
-        # position is updated here.
+        # and persisted to the active workflow position for the
+        # next turn.
         transitioned_to = target_stage
+        if hooks.workflow.workflow_position is not None:
+            try:
+                _position = hooks.workflow.workflow_position()
+                if _position is not None and hooks.workflow.workflow_position_updater is not None:
+                    hooks.workflow.workflow_position_updater(
+                        _position.model_copy(
+                            update={
+                                "stage_id": target_stage,
+                                "turn_count": _position.turn_count + 1,
+                            }
+                        )
+                    )
+            except Exception as exc:  # pylint: disable=broad-except
+                log.warning("workflow stage transition persistence failed: %s", exc)
         tool_output = f"Transitioned to stage: {target_stage}." + (
             f" Rationale: {rationale}" if rationale else ""
         )
@@ -6318,6 +6446,27 @@ async def _run_turn_entry_sequence(
 
     if entry_result.pending_planned_handoff:
         state.pending_planned_handoff = entry_result.pending_planned_handoff
+    if entry_result.workflow_steps and hooks.workflow.workflow_position_updater is not None:
+        try:
+            from kernel.workflow_position import WorkflowPosition
+
+            _existing_position = (
+                hooks.workflow.workflow_position()
+                if callable(hooks.workflow.workflow_position)
+                else None
+            )
+            if _existing_position is None:
+                hooks.workflow.workflow_position_updater(
+                    WorkflowPosition(
+                        declared_steps=tuple(entry_result.workflow_steps),
+                        current_step_id=entry_result.workflow_steps[0].step_id,
+                        mode_id=entry_result.workflow_steps[0].mode_id,
+                        plan_text=entry_result.plan_prefix,
+                        spawned_from="plan_workflow_op",
+                    )
+                )
+        except Exception as position_exc:  # pylint: disable=broad-except
+            log.warning("initial plan position persistence failed: %s", position_exc)
     if entry_result.plan_prefix:
         state.plan_prefix = entry_result.plan_prefix
     suppress_routing_hint = bool(entry_result.suppress_routing_hint)
@@ -7274,6 +7423,7 @@ async def _prepare_tool_call_dispatch(
     max_calls = int(getattr(target_def, "max_calls_per_turn", 0) or 0) if target_def else 0
     max_calls = resolve_capability_invocation_limit(execution_policy, tool_name, max_calls)
     if ledger.is_exhausted(tool_name, max_calls):
+        state.capability_limit_hit = True
         messages.append(
             {
                 "role": "tool",
@@ -7282,7 +7432,10 @@ async def _prepare_tool_call_dispatch(
                 "content": f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls}).",
             }
         )
-        return _PreparedToolCall("continue", False)
+        # A rejected call still produced a tool-result message; keep the
+        # outer loop alive so the model can observe the cap and finalize
+        # instead of being mistaken for a natural empty completion.
+        return _PreparedToolCall("continue", True)
 
     (
         tool_kind,
@@ -7804,6 +7957,8 @@ async def _finalize_turn_result(
     log: logging.Logger,
 ) -> TurnResult:
     """Resolve the final response and run post-turn completion effects."""
+    if getattr(state, "capability_limit_hit", False) and not yielded:
+        content = ""
     if not content:
         content, content_source, yielded, pending_yield = await _resolve_empty_turn_content(
             state=state,

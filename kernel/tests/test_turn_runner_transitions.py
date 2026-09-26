@@ -435,6 +435,11 @@ async def test_handoff_updates_ctx_mode_id_for_post_handoff_dispatch() -> None:
     "Operation '...' is not allowed for mode 'default'." — the exact
     "Letta tools are not allowed in the default mode" symptom.
     """
+    from unittest.mock import patch
+
+    from kernel.models import OperationDefinition
+    from kernel.operations import registry as operation_registry
+
     captured_op_ctx_modes: list[str] = []
 
     async def stub_execute_op(operation_id: str, ctx: OperationExecutionContext) -> OperationResult:
@@ -468,7 +473,14 @@ async def test_handoff_updates_ctx_mode_id_for_post_handoff_dispatch() -> None:
         return _StubCompletion(content="Document forged.")
 
     hooks = _build_hooks(three_step, execute_operation=stub_execute_op)
-    result = await run_turn(mode_id="default", query="write a doc", hooks=hooks)
+    _operations = dict(operation_registry.get_operation_catalog())
+    _operations["markdown_forge_document"] = OperationDefinition(
+        operation_id="markdown_forge_document",
+        description="synthetic markdown write for transition testing",
+        effect="write",
+    )
+    with patch.object(operation_registry, "_OPERATION_CATALOG", _operations):
+        result = await run_turn(mode_id="default", query="write a doc", hooks=hooks)
 
     assert result.handoff_to == "markdown"
     # The operation should have been dispatched exactly once, and the ctx

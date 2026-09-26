@@ -89,7 +89,12 @@ def is_plan_escalation_hint(hint: str) -> bool:
     the ad-hoc block creates an instance that the plan instance overwrites
     via the updater — a wasted compile and a silent ordering dependency.
     """
-    return bool(hint) and hint == _PLAN_ESCALATION_HINT
+    if not hint:
+        return False
+    return hint == _PLAN_ESCALATION_HINT or (
+        "This is a complex multi-step request. Hand off to `plan` by " in hint
+        and "calling `transition_stage`" in hint
+    )
 
 
 def emit_transition_hint(
