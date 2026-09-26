@@ -178,12 +178,22 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
 
 @pytest.mark.asyncio
 async def test_simple_help_reports_only_wired_capabilities(tmp_path: Path) -> None:
+    from host.commands._render import _pack_command_entries
+    from host.commands._routing import mode_support_gap
+    from kernel.ipsar_fsm import get_workflow_catalog
+
     runtime = _make_runtime(tmp_path)
     transport = NullTransport()
     output = await handle_message(runtime, "/help", transport)
 
-    assert "/search" in output.text or "search" in output.text
-    assert "/discuss" in output.text or "discuss" in output.text
+    for mode_id, mode in get_workflow_catalog().items():
+        advertised = f"- /{mode_id} <request>" in output.text
+        wired = mode_id != "default" and bool(mode.command_pattern)
+        assert advertised == (wired and mode_support_gap(mode) is None), mode_id
+    pack_prefixes = [spec.prefix for entry in _pack_command_entries() for spec in entry.specs]
+    assert pack_prefixes, "fixture should discover at least one pack command"
+    for prefix in pack_prefixes:
+        assert f"- {prefix} — " in output.text
     assert "/help capabilities" in output.text
     assert "/markdown" not in output.text
 
@@ -305,7 +315,13 @@ async def test_bare_word_catalog_aliases_dispatch_without_model(
 
 
 def test_build_capability_snapshot_reflects_live_catalog(tmp_path: Path) -> None:
+    from host.model_runtime import load_manifest_or_none
+
     runtime = _make_runtime(tmp_path)
+    # Startup (``setup_framework``) preloads the manifest; mirror that here.
+    runtime.session.manifest = load_manifest_or_none(
+        data_dir=runtime.paths.data_dir, path=runtime.paths.models_path
+    )
     snapshot = commands.build_capability_snapshot(runtime)
 
     assert "supported_modes" in snapshot
@@ -316,8 +332,10 @@ def test_build_capability_snapshot_reflects_live_catalog(tmp_path: Path) -> None
     assert isinstance(snapshot["operations"], list)
     assert isinstance(snapshot["tools"], list)
     assert isinstance(snapshot["models"], list)
-    # Models come from the manifest; at least one is configured in tests.
-    assert len(snapshot["models"]) >= 1
+    by_id = {model["model_id"]: model for model in snapshot["models"]}
+    assert set(by_id) == {"gemma3:latest", "deepseek-r1:latest"}
+    assert by_id["gemma3:latest"]["modes"] == ["default"]
+    assert by_id["deepseek-r1:latest"]["reasoning_model"] is True
 
 
 def test_get_little_lisa_tool_catalog_returns_registry_tools(
@@ -1710,9 +1728,8 @@ def test_resolve_timezone_maps_windows_daylight_display_name_to_iana(
     for env_name in ("LISA_TIMEZONE", "TZ", "TIMEZONE", "LOCAL_TIMEZONE"):
         monkeypatch.delenv(env_name, raising=False)
 
-    import datetime as _datetime_mod
-
-    monkeypatch.setattr(_datetime_mod, "datetime", _FakeDateTime)
+    monkeypatch.setattr("host.config_resolver.datetime", _FakeDateTime)
+    monkeypatch.setattr("host.config_resolver._localtime_symlink_iana_key", lambda: None)
 
     tz, source = resolve_timezone("")
 

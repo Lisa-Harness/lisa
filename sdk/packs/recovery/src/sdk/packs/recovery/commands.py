@@ -62,6 +62,12 @@ def _recovery_identity(runtime: Any) -> RecoveryIdentity:
     )
 
 
+def _recovery_service(runtime: Any) -> Any:
+    """Return the host's recovery service from the grouped ``runtime.services``."""
+
+    return getattr(getattr(runtime, "services", None), "recovery_service", None)
+
+
 def get_host_commands() -> list[HostCommandSpec]:
     """Return the slash-command specs this pack registers."""
     return [
@@ -109,7 +115,7 @@ def get_host_commands() -> list[HostCommandSpec]:
 async def handle_stalls(runtime: Any, stripped: str, message: str) -> str:
     """Handle ``/stalls`` — list open recovery work items."""
     del stripped, message
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "list_open"):
         return "Recovery service is not available in this host runtime."
     try:
@@ -138,7 +144,7 @@ async def handle_stall(runtime: Any, stripped: str, message: str) -> str:
         return "Usage: /stall <work_item_id>"
 
     work_item_id = parts[1].strip()
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "get"):
         return "Recovery service is not available in this host runtime."
 
@@ -213,7 +219,7 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
         return "Usage: /retry <work_item_id>"
 
     work_item_id = parts[1].strip()
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "get"):
         return "Recovery service is not available in this host runtime."
 
@@ -254,7 +260,7 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
 async def handle_retry_safe(runtime: Any, stripped: str, message: str) -> str:
     """Handle ``/retry-safe`` — retry all safe (read-only) stalled items."""
     del stripped, message
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "list_open"):
         return "Recovery service is not available in this host runtime."
 
@@ -295,7 +301,7 @@ async def handle_skip(runtime: Any, stripped: str, message: str) -> str:
         return "Usage: /skip <work_item_id>"
 
     work_item_id = parts[1].strip()
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "settle"):
         return "Recovery service is not available in this host runtime."
 
@@ -327,7 +333,7 @@ async def handle_cancel(runtime: Any, stripped: str, message: str) -> str:
         return "Usage: /cancel <work_item_id>"
 
     work_item_id = parts[1].strip()
-    service = getattr(runtime, "recovery_service", None)
+    service = _recovery_service(runtime)
     if service is None or not hasattr(service, "settle"):
         return "Recovery service is not available in this host runtime."
 
@@ -382,7 +388,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
 
     # Surface stalled recovery records alongside the yield question.
     stall_summary = ""
-    recovery_service = getattr(runtime, "recovery_service", None)
+    recovery_service = _recovery_service(runtime)
     if recovery_service is not None and hasattr(recovery_service, "list_open"):
         try:
             open_records = await recovery_service.list_open(_recovery_identity(runtime))

@@ -70,17 +70,40 @@ def _make_runtime(
 # ── _resolve_auto_install_spec ─────────────────────────────────────
 
 
-def test_resolve_auto_install_spec_prefers_explicit_source() -> None:
-    """An explicit auto_install.source is returned verbatim with the right label."""
-    spec = PackInstallSpec(
-        source="git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
-        pin="v0.2.0",
-    )
-    result = _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
-    assert result == (
-        "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
-        "auto_install.source",
-    )
+@pytest.mark.parametrize(
+    ("auto_install", "expected"),
+    [
+        pytest.param(
+            {
+                "lisa-pack-cloudflare": PackInstallSpec(
+                    source="git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
+                    pin="v0.2.0",
+                )
+            },
+            (
+                "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
+                True,
+                "auto_install.source",
+            ),
+            id="explicit-pinned-git-source",
+        ),
+        pytest.param(
+            {},
+            ("lisa-pack-cloudflare", False, "git-root-fallback"),
+            id="bare-name-git-root-fallback",
+        ),
+        pytest.param(
+            {"lisa-pack-cloudflare": PackInstallSpec(source="C:/Code/lisa-pack-cloudflare")},
+            ("C:/Code/lisa-pack-cloudflare", True, "auto_install.source"),
+            id="local-path-needs-no-pin",
+        ),
+    ],
+)
+def test_resolve_auto_install_spec(
+    auto_install: dict[str, PackInstallSpec], expected: tuple[str, bool, str]
+) -> None:
+    """Resolution returns ``(spec, editable, source_label)`` for each source kind."""
+    assert _resolve_auto_install_spec("lisa-pack-cloudflare", auto_install) == expected
 
 
 def test_resolve_auto_install_spec_rejects_unpinned_git() -> None:
@@ -88,19 +111,6 @@ def test_resolve_auto_install_spec_rejects_unpinned_git() -> None:
     spec = PackInstallSpec(source="git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git")
     with pytest.raises(ValueError, match="unpinned"):
         _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
-
-
-def test_resolve_auto_install_spec_falls_back_to_bare_name() -> None:
-    """With no auto_install entry, the bare pack name is returned for git-root expansion."""
-    result = _resolve_auto_install_spec("lisa-pack-cloudflare", {})
-    assert result == ("lisa-pack-cloudflare", "git-root-fallback")
-
-
-def test_resolve_auto_install_spec_allows_local_path() -> None:
-    """A local-path source doesn't require a git ref pin."""
-    spec = PackInstallSpec(source="C:/Code/lisa-pack-cloudflare")
-    result = _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
-    assert result == ("C:/Code/lisa-pack-cloudflare", "auto_install.source")
 
 
 # ── auto_install_required_packs ────────────────────────────────────
@@ -149,19 +159,21 @@ def test_auto_install_installs_missing_required_pack(
         lambda runtime: set(),
     )
 
-    call_log: list[str] = []
+    call_log: list[tuple[str, bool]] = []
 
     def _fake_install_sync(
-        rt: HostRuntime, spec: str, *, request_restart: bool = True
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
     ) -> tuple[bool, str]:
-        call_log.append(spec)
+        call_log.append((spec, editable))
         return True, "Installed."
 
     monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
 
     installed = auto_install_required_packs(runtime)
     assert installed == ["lisa-pack-cloudflare"]
-    assert call_log == ["git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0"]
+    assert call_log == [
+        ("git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0", True)
+    ]
     # The caller (discover_framework) requests the restart, not this function.
     assert runtime.session.restart_required is False
 
@@ -186,7 +198,7 @@ def test_auto_install_raises_on_install_failure(
     )
 
     def _fake_install_sync(
-        rt: HostRuntime, spec: str, *, request_restart: bool = True
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
     ) -> tuple[bool, str]:
         return False, "uv pip install failed: network error"
 

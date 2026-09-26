@@ -61,11 +61,9 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
             {
                 "model_id": model.model_id,
                 "provider": model.provider,
-                "roles": sorted(
-                    role_name
-                    for role_name, model_ref in (
-                        manifest.roles.items() if manifest is not None else []
-                    )
+                "modes": sorted(
+                    mode_id
+                    for mode_id, model_ref in manifest.mode_models.items()
                     if model_ref == model.model_id
                 ),
                 "reasoning_model": model.reasoning_model,
@@ -442,8 +440,8 @@ def _pack_command_help_lines() -> list[str]:
         for spec in entry.specs:
             summary = (spec.help_text or "").strip()
             if not summary:
-                summary = f"{spec.prefix} (pack command from {entry.pack_name})"
-            lines.append(f"- {summary}")
+                summary = f"pack command from {entry.pack_name}"
+            lines.append(f"- {spec.prefix} — {summary}")
     return lines
 
 
@@ -622,10 +620,10 @@ def _pack_command_help_for_topic(topic: str) -> str | None:
             if spec.prefix.lstrip("/").lower() == topic:
                 summary = (spec.help_text or "").strip()
                 if not summary:
-                    summary = f"{spec.prefix} (pack command from {entry.pack_name})"
+                    summary = f"pack command from {entry.pack_name}"
                 return (
                     f"## /{topic}\n\n"
-                    f"- {summary}\n\n"
+                    f"- {spec.prefix} — {summary}\n\n"
                     f"Pack: {entry.pack_name}\n\n"
                     f"Run `/{topic}` (with its arguments, if any) to invoke it."
                 )

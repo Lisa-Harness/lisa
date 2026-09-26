@@ -87,9 +87,8 @@ def should_auto_capture(  # noqa: C901,PLR0912
     max_salience = 0.0
 
     # 1. Commitment language in the user query
-    query_lower = query.lower()
     for pattern, salience in COMMITMENT_PATTERNS:
-        if re.search(pattern, query_lower):
+        if re.search(pattern, query, re.IGNORECASE):
             max_salience = max(max_salience, salience)
 
     # 2. Write-effect receipts — the turn produced a side effect.

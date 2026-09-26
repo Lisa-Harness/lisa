@@ -26,6 +26,17 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core").resolve()
 _LEARNING_ROOT: Path = (Path(__file__).resolve().parents[2] / "sdk" / "packs" / "memory").resolve()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``HostConfig.from_env()`` defaults off the developer's real ``~/.lisa``."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    for name in ("LISA_DATA_DIR", "LISA_PROFILE", "LISA_PACKS_VENV"):
+        monkeypatch.delenv(name, raising=False)
+
+
 # search, markdown, and letta migrated to ../../lisa_packs/<name>
 # (external submodules). Only include a content root when the submodule is
 # checked out alongside the framework; tests that need a migrated mode skip

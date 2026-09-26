@@ -1030,7 +1030,7 @@ async def test_approve_reports_expiry_for_expired_request(
     # Backdate past the TTL so is_expired() fires inside approve().
     import json as _json  # local to this one-off store backdate
 
-    store_path = Path(runtime.paths.data_dir) / "approvals.json"
+    store_path = Path(runtime.paths.state_dir) / "approvals.json"
     payload = _json.loads(store_path.read_text())
     payload[invocation.request_id]["invocation"]["expires_at"] = "2020-01-01T00:00:00Z"
     store_path.write_text(_json.dumps(payload))

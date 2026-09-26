@@ -47,9 +47,12 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
         lambda _path=None, **_kwargs: {"lisa-pack-core"},
     )
     monkeypatch.setattr(
-        content_roots,
-        "discover_installed_content_roots",
+        "kernel.content_roots.discover_installed_content_roots",
         lambda: [core_root, cloudflare_root, search_root],
+    )
+    monkeypatch.setattr(
+        "kernel.content_roots.discover_packs_venv_content_roots",
+        lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(content_roots, "discover_configured_content_roots", lambda: [])
     content_roots.save_installed_packs_lock(

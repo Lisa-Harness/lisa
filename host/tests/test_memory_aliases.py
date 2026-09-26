@@ -269,8 +269,15 @@ class TestBackendResultMaps:
         maps = _backend_result_maps(spec)
         assert all(m is None for m in maps)
 
-    def test_mem0_result_maps_resolve_to_callables(self) -> None:
-        """Mem0 result_maps import paths resolve to the actual adapter functions."""
+    def test_result_maps_resolve_dotted_paths_to_callables(self) -> None:
+        """Declared result_maps import paths resolve to the referenced callables.
+
+        Uses stdlib callables so resolution is exercised without depending on an
+        external pack distribution (e.g. ``lisa_packs.mem0``) being installed.
+        """
+        import json
+        import os.path
+
         from host.memory_aliases import _backend_result_maps
 
         mem0_spec = FakeSpec(
@@ -278,25 +285,15 @@ class TestBackendResultMaps:
             kind="http",
             tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
             result_maps={
-                "add": "lisa_packs.mem0.result_maps.mem0_add_result_map",
-                "search": "lisa_packs.mem0.result_maps.mem0_search_result_map",
-                "list": "lisa_packs.mem0.result_maps.mem0_list_result_map",
+                "add": "json.dumps",
+                "search": "json.loads",
+                "list": "os.path.basename",
             },
         )
         add_map, search_map, list_map, *_ = _backend_result_maps(mem0_spec)
-        assert callable(add_map)
-        assert callable(search_map)
-        assert callable(list_map)
-        # Verify they are the actual functions from the module
-        from lisa_packs.mem0.result_maps import (
-            mem0_add_result_map,
-            mem0_list_result_map,
-            mem0_search_result_map,
-        )
-
-        assert add_map is mem0_add_result_map
-        assert search_map is mem0_search_result_map
-        assert list_map is mem0_list_result_map
+        assert add_map is json.dumps
+        assert search_map is json.loads
+        assert list_map is os.path.basename
 
     def test_bad_import_path_falls_back_to_none(self) -> None:
         """A bad import path is logged and falls back to None (raw pass-through)."""

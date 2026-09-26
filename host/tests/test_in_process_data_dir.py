@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 from host.runtime import HostRuntime, _make_in_process_resolver
 from host.testing import build_test_runtime
+from kernel.layout import DATA_DIR
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
@@ -143,10 +144,12 @@ def test_in_process_storage_connect_uses_host_data_dir(
 
     output = asyncio.run(_drive())
     assert _json.loads(output).get("ok") is True
-    landed = runtime.paths.data_dir / "files" / "regression" / "sandbox-root.md"
+    probe = Path("files") / "regression" / "sandbox-root.md"
+    landed = runtime.paths.data_dir / DATA_DIR / probe
     assert landed.is_file(), f"write landed outside the sandbox: {output}"
     # And nothing escaped to the process cwd.
-    assert not (Path(cwd_before) / "files" / "regression" / "sandbox-root.md").exists()
+    assert not (Path(cwd_before) / probe).exists()
+    assert not (Path(cwd_before) / DATA_DIR / probe).exists()
 
 
 def test_in_process_data_dir_fail_closed() -> None:

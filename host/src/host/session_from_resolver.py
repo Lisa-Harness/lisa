@@ -185,8 +185,9 @@ def _resolve_from_block(
         )
 
     pack_plan = _load_pack_session(pack=pack, session=session, lookup=pack_session_lookup)
+    # Compiled manifests fill every block with defaults; only authored ones are in fields_set.
     pack_block_obj = getattr(pack_plan.manifest, block_name, None)
-    if pack_block_obj is None:
+    if pack_block_obj is None or block_name not in pack_plan.manifest.model_fields_set:
         raise SessionPlanError(
             f"session {source_uri!r}: block {block_name!r} pulled from "
             f"pack '{pack}' session '{session}', but that pack session does "

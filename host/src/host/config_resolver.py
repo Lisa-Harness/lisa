@@ -284,6 +284,9 @@ def _resolve_env_timezone(env_name: str) -> tuple[str, str] | None:
 
 
 def _resolve_system_local_timezone() -> tuple[str, str]:
+    iana_from_link = _localtime_symlink_iana_key()
+    if iana_from_link is not None:
+        return iana_from_link, "system-local"
     local_tz = datetime.now().astimezone().tzinfo
     if local_tz is not None:
         local_name = str(local_tz).strip()
@@ -293,6 +296,22 @@ def _resolve_system_local_timezone() -> tuple[str, str]:
         if normalized_local is not None:
             return normalized_local, "system-local"
     return "UTC", "default"
+
+
+def _localtime_symlink_iana_key(localtime: str = "/etc/localtime") -> str | None:
+    """Return the IANA key a POSIX ``/etc/localtime`` symlink points at, if any.
+
+    ``tzinfo`` only exposes the abbreviation (``EST``), which maps lossily to
+    ``EST5EDT``; the symlink target keeps the real zone (``America/New_York``).
+    """
+    try:
+        target = os.path.realpath(localtime)
+    except OSError:
+        return None
+    marker = "/zoneinfo/"
+    if marker not in target:
+        return None
+    return _normalize_timezone_name(target.split(marker, 1)[1])
 
 
 def _resolve_windows_tz_display_name(local_name: str) -> str | None:

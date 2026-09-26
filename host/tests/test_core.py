@@ -10,8 +10,10 @@ from typing import ClassVar
 
 import pytest
 from host.config_resolver import parse_streaming_option, resolve_timezone
+from host.execution_policy import default_interactive_execution_policy
 from host.handle_message import handle_message
 from host.runtime import TokenCounters, TurnContext
+from kernel.layout import DATA_DIR, LOGS_DIR
 
 from host import (
     HostCommandResult,
@@ -32,10 +34,7 @@ class TestHostConfig:
         assert config.timezone in {"UTC", "America/New_York"} or "/" in config.timezone
         assert config.streaming.mode == "hybrid"
         assert config.slice_config.explicit_budget_ms == 2000
-        assert config.execution_policy.max_model_calls == 20
-        assert config.execution_policy.max_capability_calls == 30
-        assert config.execution_policy.max_total_tokens == 50_000
-        assert config.execution_policy.max_wall_ms == 300_000
+        assert config.execution_policy == default_interactive_execution_policy()
 
     def test_from_env_debug_overrides_log_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
         config = HostConfig.from_env(debug=True)
@@ -60,8 +59,8 @@ class TestHostConfig:
 
     def test_resolved_paths(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
-        assert config.resolved_thread_dir == tmp_path / "threads"
-        assert config.resolved_host_log_path == tmp_path / "host.jsonl"
+        assert config.resolved_thread_dir == tmp_path / DATA_DIR / "threads"
+        assert config.resolved_host_log_path == tmp_path / LOGS_DIR / "host.jsonl"
 
     def test_streaming_config(self) -> None:
         config = HostConfig.from_env(streaming="hybrid:50")
@@ -152,29 +151,35 @@ class TestHostRuntime:
     def test_construction(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        assert runtime.config is config
+        # The runtime resolves a copy: input paths kept, identity from the session plan.
+        assert runtime.config.data_dir == config.data_dir
+        assert runtime.config.surface_type == runtime.session_plan.manifest.surface.type
         assert runtime.resources.mcp_started is False
         assert runtime.resources.mcp_tool_pool is None
         assert runtime.session.tokens.session_turn_count == 0
-        assert runtime.execution_policy.max_model_calls == 20
-        assert runtime.execution_policy.max_capability_calls == 30
+        # Session requests may only tighten the host defaults.
+        defaults = default_interactive_execution_policy()
+        assert runtime.execution_policy.max_model_calls <= defaults.max_model_calls
+        assert runtime.execution_policy.max_capability_calls <= defaults.max_capability_calls
 
     def test_path_accessors(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test-user")
         runtime = HostRuntime(config)
         assert runtime.paths.data_dir == tmp_path
-        assert runtime.paths.thread_dir == tmp_path / "threads"
-        assert runtime.paths.thread_path == tmp_path / "threads" / "test-user"
-        assert runtime.paths.token_usage_path == tmp_path / "token-usage.jsonl"
+        assert runtime.paths.thread_dir == tmp_path / DATA_DIR / "threads"
+        assert runtime.paths.thread_path == tmp_path / DATA_DIR / "threads" / "test-user"
+        assert runtime.paths.token_usage_path == tmp_path / LOGS_DIR / "token-usage.jsonl"
 
-    def test_thread_path_none_when_no_user(
+    def test_thread_path_defaults_to_session_name_when_no_user(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
-        assert runtime.paths.thread_path is None
+        session_name = runtime.session_plan.manifest.name
+        assert runtime.config.user_slug == session_name
+        assert runtime.paths.thread_path == runtime.paths.thread_dir / session_name
 
     def test_thread_path_none_when_no_thread(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

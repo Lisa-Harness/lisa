@@ -86,7 +86,7 @@ class _FakeRuntime:
     """Minimal runtime stub with a recovery_service and session identity."""
 
     def __init__(self, service: _FakeService) -> None:
-        self.recovery_service = service
+        self.services = type("Services", (), {"recovery_service": service})()
         self.session_plan = type(
             "Plan",
             (),

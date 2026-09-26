@@ -54,8 +54,8 @@ def _core_pack_session_text(*, with_routing: bool = True, with_context: bool = T
         if with_context
         else ""
     )
-    return dedent(
-        f"""\
+    template = dedent(
+        """\
         ---
         schema_version: 2
         name: core-default
@@ -69,12 +69,13 @@ def _core_pack_session_text(*, with_routing: bool = True, with_context: bool = T
         providers:
           modes:
             default: lisa-pack-core
-        {routing}{context_block}---
+        {optional_blocks}---
         # Core session body
 
         Use the available tools and supplied context carefully.
         """
     )
+    return template.format(optional_blocks=routing + context_block)
 
 
 @pytest.fixture
@@ -196,12 +197,7 @@ def test_from_pulls_routing_block(core_pack_root: Path) -> None:
 
 
 def test_from_pulls_execution_block(tmp_path: Path) -> None:
-    """``execution: from:`` substitutes the pack's execution block wholesale.
-
-    Uses a self-contained pack root (the shared ``_core_pack_session_text``
-    fixture has a pre-existing YAML-indent bug that breaks every ``from:``
-    test; this test does not depend on it).
-    """
+    """``execution: from:`` substitutes the pack's execution block wholesale."""
 
     pack_root = tmp_path / "lisa_pack_core"
     pack_root.mkdir()
