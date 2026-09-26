@@ -1737,6 +1737,40 @@ def test_resolve_timezone_maps_windows_daylight_display_name_to_iana(
     assert source == "system-local"
 
 
+@pytest.mark.parametrize(
+    ("target_parts", "expected"),
+    [
+        pytest.param(("zoneinfo", "America", "New_York"), "America/New_York", id="iana-zone"),
+        pytest.param(("other", "America", "New_York"), None, id="not-under-zoneinfo"),
+    ],
+)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX /etc/localtime symlink")
+def test_localtime_symlink_iana_key(
+    tmp_path: Path, target_parts: tuple[str, ...], expected: str | None
+) -> None:
+    from host.config_resolver import _localtime_symlink_iana_key
+
+    target = tmp_path.joinpath(*target_parts)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"")
+    link = tmp_path / "localtime"
+    link.symlink_to(target)
+
+    assert _localtime_symlink_iana_key(str(link)) == expected
+
+
+def test_resolve_timezone_prefers_localtime_symlink_over_abbreviation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for env_name in ("LISA_TIMEZONE", "TZ", "TIMEZONE", "LOCAL_TIMEZONE"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(
+        "host.config_resolver._localtime_symlink_iana_key", lambda: "America/New_York"
+    )
+
+    assert resolve_timezone("") == ("America/New_York", "system-local")
+
+
 # ── Status segments (CLI-only) ────────────────────────────────────────
 
 

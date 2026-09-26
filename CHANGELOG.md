@@ -6,6 +6,25 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+#### Kernel owns the data-dir layout; host runtime fixes surfaced by test repair
+
+- **What:** `kernel.layout` now owns the canonical data-dir constants
+  (`CONFIG_DIR`, `DATA_DIR`, `STATE_DIR`, `data_subdir`, ...);
+  `sdk.layout` re-exports them. Host fixes: undeclared session blocks no
+  longer silently take defaults; the system timezone resolves from the
+  `/etc/localtime` IANA key (`America/New_York`, not `EST5EDT`);
+  auto-capture commitment patterns match case-insensitively; recovery
+  pack commands (`/stalls`, `/retry`, ...) find the host recovery service;
+  the capability snapshot reports per-model `modes` (from `mode_models`)
+  instead of crashing on the removed `roles`; `/help` pack command lines
+  now lead with the command prefix.
+- **Why:** The kernel imported `sdk.layout`, violating the kernel→SDK
+  boundary. The host bugs were masked by stale tests that patched moved
+  seams or leaked the real `~/.lisa` into the suite.
+- **Tests:** Host tests isolate `HOME`/`LISA_*`; stale patches retarget
+  the binding modules; delegate/fork and pack-manager cases are
+  parametrized; new direct tests cover the localtime helper.
+
 #### Distribution rename: `lisa-*` → `lisa-harness-*`; brand → Lisa Harness
 
 - **What:** The framework distributions are renamed to match the
