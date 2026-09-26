@@ -21,7 +21,8 @@ uv run ruff check kernel sdk mcp_server hosts
 uv run python scripts/check_direct_io_policy.py
 
 # 4. Type check (strict, all public packages)
-uv run mypy kernel sdk mcp_server
+$env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [IO.Path]::PathSeparator
+uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
 # 5. Dead code check
 uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
