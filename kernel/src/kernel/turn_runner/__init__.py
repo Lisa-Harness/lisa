@@ -7331,6 +7331,7 @@ async def _resolve_empty_completion_for_dispatch(
     *,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
+    yielded: bool,
     state: Any,
     mode_id: str,
     query: str,
@@ -7356,7 +7357,7 @@ async def _resolve_empty_completion_for_dispatch(
             content,
             content_source,
             turn_reasoning_text,
-            False,
+            yielded,
             stalled_write_guidance,
             "",
         )
@@ -8385,6 +8386,7 @@ async def _run_turn_inner(
         _empty_completion = await _resolve_empty_completion_for_dispatch(
             tool_calls=tool_calls,
             synthesized_forced=False,
+            yielded=_yielded,
             state=_state,
             mode_id=mode_id,
             query=query,

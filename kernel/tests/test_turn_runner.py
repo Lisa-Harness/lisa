@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +22,12 @@ from kernel.seams.protocols import CoordinatorRouteDecision
 from kernel.turn_hooks import (
     ModelHooks,
 )
-from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_runner import (
+    TurnHooks,
+    TurnResult,
+    _resolve_empty_completion_for_dispatch,
+    run_turn,
+)
 
 # ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
@@ -6472,6 +6478,35 @@ async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
     # does not increment the dispatched-tool counter. The turn terminates
     # with the question as content.
     assert result.tool_call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_preserve_prior_yield_state() -> None:
+    tool_calls = [{"id": "call_after_yield"}]
+    result = await _resolve_empty_completion_for_dispatch(
+        tool_calls=tool_calls,
+        synthesized_forced=False,
+        yielded=True,
+        state=SimpleNamespace(),
+        mode_id="default",
+        query="question",
+        completion=None,
+        assistant_msg={},
+        pre_handoff_text="",
+        pending_yield=None,
+        content="Earlier yield question",
+        content_source="",
+        turn_reasoning_text="",
+        stalled_write_guidance="",
+        budget_forces_final=lambda: False,
+        mode_config=None,
+        turns_in_stage=0,
+        max_tool_iterations=10,
+        log=logging.getLogger(__name__),
+    )
+
+    assert result.tool_calls is tool_calls
+    assert result.yielded is True
 
 
 @pytest.mark.asyncio
