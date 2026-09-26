@@ -22,13 +22,18 @@ from kernel.models import (
 )
 from kernel.turn_runner import TurnHooks, TurnResult, _default_fork_fn
 
+_ACTION_TOOL = "synthesize_and_store_learning"
 
-def _stub_catalog(monkeypatch: pytest.MonkeyPatch, modes: dict[str, Any]) -> None:
-    """Patch ``get_workflow_catalog`` (import site in ``_fork``) to a stub."""
 
-    from kernel.turn_phases import _fork as fork_mod
+@pytest.fixture(autouse=True)
+def _stub_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the catalog and action-tool resolver at their owning bindings."""
 
-    monkeypatch.setattr(fork_mod, "get_workflow_catalog", lambda: modes)
+    def _effects(mode_id: str, **_kwargs: Any) -> set[str]:
+        return {_ACTION_TOOL} if mode_id == "remember" else set()
+
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: {})
+    monkeypatch.setattr("kernel.operations.registry.mode_completion_effects", _effects)
 
 
 def _noop_pool() -> Any:
@@ -39,7 +44,6 @@ def _noop_pool() -> Any:
 @pytest.mark.asyncio
 async def test_default_fork_fn_empty_targets_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty targets list returns an empty ForkResult without calling run_turn."""
-    _stub_catalog(monkeypatch, {})
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
         raise AssertionError("run_turn should not be called for empty targets")
@@ -68,7 +72,6 @@ async def test_default_fork_fn_ok_status_with_action_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Children that invoked action tools are ``ok``."""
-    _stub_catalog(monkeypatch, {})
 
     spec = ForkSpec(
         targets=[
@@ -101,10 +104,6 @@ async def test_default_fork_fn_ok_status_with_action_tool(
         )
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
-    monkeypatch.setattr(
-        "kernel.operations.registry.mode_completion_effects",
-        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
-    )
 
     result = await _default_fork_fn(
         spec,
@@ -129,22 +128,22 @@ async def test_default_fork_fn_ok_status_with_action_tool(
 
 
 @pytest.mark.asyncio
-async def test_default_fork_fn_passes_sub_turn_kind_fork(
+async def test_default_fork_fn_forwards_sub_turn_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The child turn is dispatched with ``sub_turn_kind="fork"``."""
-    _stub_catalog(monkeypatch, {})
-
-    captured: list[str] = []
+    """Children run as ``sub_turn_kind="fork"`` with the spec's iteration override."""
+    captured: list[dict[str, Any]] = []
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
-        captured.append(kwargs.get("sub_turn_kind", ""))
+        captured.append(kwargs)
         return TurnResult(response_text="ok")
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
-    monkeypatch.setattr("kernel.operations.registry.mode_completion_effects", lambda mode_id: set())
 
-    spec = ForkSpec(targets=[ForkTarget(mode_id="default", query="test")])
+    spec = ForkSpec(
+        targets=[ForkTarget(mode_id="default", query="test")],
+        max_tool_iterations=25,
+    )
     result = await _default_fork_fn(
         spec,
         hooks=TurnHooks(),
@@ -156,42 +155,9 @@ async def test_default_fork_fn_passes_sub_turn_kind_fork(
         execution_policy=None,
         turn_start_mono=0.0,
     )
-    assert captured == ["fork"]
+    assert [kw.get("sub_turn_kind") for kw in captured] == ["fork"]
+    assert [kw.get("max_tool_iterations") for kw in captured] == [25]
     assert result.succeeded == 1  # read-only mode, zero calls → ok
-
-
-@pytest.mark.asyncio
-async def test_default_fork_fn_uses_custom_max_iterations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``spec.max_tool_iterations`` overrides the kernel default."""
-    _stub_catalog(monkeypatch, {})
-
-    captured: list[int] = []
-
-    async def fake_run_turn(**kwargs: Any) -> TurnResult:
-        captured.append(kwargs.get("max_tool_iterations", 0))
-        return TurnResult(response_text="ok")
-
-    monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
-    monkeypatch.setattr("kernel.operations.registry.mode_completion_effects", lambda mode_id: set())
-
-    spec = ForkSpec(
-        targets=[ForkTarget(mode_id="default", query="test")],
-        max_tool_iterations=25,
-    )
-    await _default_fork_fn(
-        spec,
-        hooks=TurnHooks(),
-        pool=_noop_pool(),
-        resolve_model=lambda mid: None,
-        complete=_noop_complete,
-        exec_op=_noop_exec_op,
-        turn_budget=None,
-        execution_policy=None,
-        turn_start_mono=0.0,
-    )
-    assert captured == [25]
 
 
 @pytest.mark.asyncio
@@ -199,7 +165,6 @@ async def test_default_fork_fn_interrupted_on_harness_yield(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A force-yielded child (iteration cap) is classified ``interrupted``."""
-    _stub_catalog(monkeypatch, {})
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
         return TurnResult(
@@ -211,7 +176,6 @@ async def test_default_fork_fn_interrupted_on_harness_yield(
         )
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
-    monkeypatch.setattr("kernel.operations.registry.mode_completion_effects", lambda mode_id: set())
 
     spec = ForkSpec(targets=[ForkTarget(mode_id="coding", query="build it")])
     result = await _default_fork_fn(

@@ -29,22 +29,24 @@ from kernel.provider_contracts import CompletionResult, CompletionUsage, Streame
 def _usage_from_result(result: Any) -> CompletionUsage | None:
     """Best-effort map a fake completion's token counters to ``CompletionUsage``.
 
-    Fakes either carry flat counter attrs (``prompt_tokens`` etc.) or nothing.
-    Returns ``None`` when no counters are present so the gateway result omits
-    usage rather than fabricating zeros.
+    Fakes carry either flat counter attrs (``prompt_tokens`` etc.), a nested
+    ``usage`` object with the same attrs, or nothing. Returns ``None`` when no
+    counters are present so the gateway result omits usage rather than
+    fabricating zeros.
     """
 
-    prompt = getattr(result, "prompt_tokens", None)
+    source = getattr(result, "usage", None) or result
+    prompt = getattr(source, "prompt_tokens", None)
     if prompt is None:
         return None
     return CompletionUsage(
-        prompt_tokens=int(getattr(result, "prompt_tokens", 0)),
-        completion_tokens=int(getattr(result, "completion_tokens", 0)),
-        total_tokens=int(getattr(result, "total_tokens", 0)),
-        cached_tokens=int(getattr(result, "cached_tokens", 0)),
-        reasoning_tokens=int(getattr(result, "reasoning_tokens", 0)),
-        cache_creation_tokens=int(getattr(result, "cache_creation_tokens", 0)),
-        duration_ms=float(getattr(result, "duration_ms", 0.0)),
+        prompt_tokens=int(getattr(source, "prompt_tokens", 0)),
+        completion_tokens=int(getattr(source, "completion_tokens", 0)),
+        total_tokens=int(getattr(source, "total_tokens", 0)),
+        cached_tokens=int(getattr(source, "cached_tokens", 0)),
+        reasoning_tokens=int(getattr(source, "reasoning_tokens", 0)),
+        cache_creation_tokens=int(getattr(source, "cache_creation_tokens", 0)),
+        duration_ms=float(getattr(source, "duration_ms", 0.0)),
     )
 
 

@@ -487,17 +487,19 @@ class TestDiscoverCopilotCustomizations:
             "engineering/debugging.instructions.md",
             "engineering/pack-content.instructions.md",
             "engineering/workflow.instructions.md",
-            "architecture/hosts.instructions.md",
+            "architecture/host.instructions.md",
             "architecture/kernel.instructions.md",
             "architecture/mcp.instructions.md",
             "architecture/packs.instructions.md",
             "architecture/sdk.instructions.md",
         )
         discovered_paths = tuple(inst.path for inst in bundle.instructions)
-        assert all(
-            any(path.endswith(suffix) for path in discovered_paths)
+        missing = [
+            suffix
             for suffix in expected_instruction_suffixes
-        )
+            if not any(path.endswith(suffix) for path in discovered_paths)
+        ]
+        assert not missing
         assert all(diag is None or diag.kind != "instructions" for diag in bundle.diagnostics)
 
     def test_deduplicates_when_seen_twice(self, tmp_path: Path) -> None:

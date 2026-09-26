@@ -18,8 +18,37 @@ from unittest.mock import patch
 import pytest
 from kernel.models import WorkflowModeConfig
 from kernel.provider_contracts import StreamedChunk
+from kernel.testing.gateway_stub import StubGatewayProvider
+from kernel.testing.routing_vocabulary import representative_routing_vocabulary
 from kernel.turn_hooks import ModelHooks
-from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+from kernel.turn_runner import ContextSeams, TurnHooks, TurnResult, run_turn
+
+
+@pytest.fixture(autouse=True)
+def _routing_vocabulary() -> Any:
+    with representative_routing_vocabulary():
+        yield
+
+
+async def _no_complete(**_kwargs: Any) -> Any:
+    raise AssertionError("non-streaming completion was not expected")
+
+
+def _hooks(
+    *,
+    resolve_model: Any,
+    complete: Any = None,
+    complete_stream: Any = None,
+    model_router: Any = None,
+) -> TurnHooks:
+    """Build hooks whose fakes back the provider-gateway completion path."""
+    gateways = StubGatewayProvider(complete or _no_complete, complete_stream_fn=complete_stream)
+    return TurnHooks(
+        # ``complete_stream`` on ModelHooks is the runner's streaming opt-in.
+        models=ModelHooks(resolve_model=resolve_model, complete_stream=complete_stream),
+        context_seams=ContextSeams(provider_gateways=gateways, model_router=model_router),
+    )
+
 
 # ── Stubs ─────────────────────────────────────────────────────────────
 
@@ -100,12 +129,7 @@ async def test_run_turn_populates_per_model_usage_single_model() -> None:
     async def complete(**kwargs: Any) -> _StubCompletion:
         return completion
 
-    hooks = TurnHooks(
-        models=ModelHooks(
-            complete=complete,
-            resolve_model=lambda mid: _StubModelDef("default-model"),
-        ),
-    )
+    hooks = _hooks(complete=complete, resolve_model=lambda mid: _StubModelDef("default-model"))
 
     with _patched_catalog():
         result = await run_turn(mode_id="default", query="hello", hooks=hooks)
@@ -134,11 +158,9 @@ async def test_run_turn_records_per_model_usage_for_streaming_path() -> None:
             finish_reason="stop",
         )
 
-    hooks = TurnHooks(
-        models=ModelHooks(
-            complete_stream=complete_stream,
-            resolve_model=lambda mid: _StubModelDef("stream-model"),
-        ),
+    hooks = _hooks(
+        complete_stream=complete_stream,
+        resolve_model=lambda mid: _StubModelDef("stream-model"),
     )
 
     with _patched_catalog():
@@ -179,12 +201,7 @@ async def test_run_turn_populates_per_mode_usage_for_entry_mode() -> None:
     async def complete(**kwargs: Any) -> _StubCompletion:
         return completion
 
-    hooks = TurnHooks(
-        models=ModelHooks(
-            complete=complete,
-            resolve_model=lambda mid: _StubModelDef("default-model"),
-        ),
-    )
+    hooks = _hooks(complete=complete, resolve_model=lambda mid: _StubModelDef("default-model"))
 
     with _patched_catalog():
         result = await run_turn(mode_id="search", query="hello", hooks=hooks)
@@ -196,36 +213,6 @@ async def test_run_turn_populates_per_mode_usage_for_entry_mode() -> None:
     assert entry["prompt_tokens"] == 100
     assert entry["completion_tokens"] == 50
     assert entry["total_tokens"] == 150
-
-
-# ── Fork output_text visibility tests ─────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_fork_parent_sees_child_output() -> None:
-    """The parent model's post-fork tool message includes each child's
-    output_text so the parent can produce an accurate summary.
-
-    Removed (2026-08-06): the ``transition_stage(fork:...)`` routing syntax
-    this test exercised was deleted when fork was extracted into a pack
-    operation (commit 7bb025e). The fork operation's per-child output
-    propagation is now covered by
-    ``sdk/packs/core/tests/test_fork_operation.py``. The per-model usage
-    merge into the parent turn's ``_state`` ledger (the 2026-08-06 /tokens
-    regression) is covered by ``sdk/tests/test_merge_child_usage.py`` and
-    ``sdk/packs/core/tests/test_fork_operation.py::test_fork_propagates_child_per_model_usage_to_output_json``.
-    """
-    pytest.skip("fork: routing syntax removed; see fork operation tests")
-
-
-@pytest.mark.asyncio
-async def test_fork_child_output_text_populated() -> None:
-    """Fork children that complete ok have non-empty output_text.
-
-    Removed (2026-08-06): exercised the deleted ``transition_stage(fork:...)``
-    syntax. Covered now by ``sdk/packs/core/tests/test_fork_operation.py``.
-    """
-    pytest.skip("fork: routing syntax removed; see fork operation tests")
 
 
 # ── Capability gate vs. router ordering ───────────────────────────────
@@ -274,8 +261,6 @@ async def test_router_escalates_past_capability_gate() -> None:
     pre-gate router escalation (Option A), the gate validates the
     router-resolved model instead.
     """
-    from kernel.turn_runner import ContextSeams
-
     completion = _StubCompletion("done", "code-model", prompt=10, completion=5)
 
     async def complete(**kwargs: Any) -> _StubCompletion:
@@ -313,12 +298,10 @@ async def test_router_escalates_past_capability_gate() -> None:
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=_mode_catalog())
     )
     try:
-        hooks = TurnHooks(
-            models=ModelHooks(
-                complete=complete,
-                resolve_model=lambda mid: models.get(mid, models["default-model"]),
-            ),
-            context_seams=ContextSeams(model_router=router),
+        hooks = _hooks(
+            complete=complete,
+            resolve_model=lambda mid: models.get(mid, models["default-model"]),
+            model_router=router,
         )
         result = await run_turn(
             mode_id="coding",

@@ -125,40 +125,10 @@ def _reset_routing_vocabulary() -> None:
     to clear state, then register a representative vocabulary so the
     common case works without each test opting in.
     """
-    from kernel.routing_vocabulary import (
-        register_routing_vocabulary,
-        reset_routing_vocabulary,
-    )
+    from kernel.testing.routing_vocabulary import representative_routing_vocabulary
 
-    reset_routing_vocabulary()
-    register_routing_vocabulary(
-        sequential_connectors=["then", "and then", "after that", "next", "followed by"],
-        producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
-        consumer_intents=["code", "write", "implement", "review"],
-        resume_phrases=[
-            "proceed",
-            "continue",
-            "go ahead",
-            "go for it",
-            "do it",
-            "carry on",
-            "pick up",
-            "resume",
-            "next step",
-            "keep going",
-        ],
-        topic_abandonment_markers=[
-            "side quest",
-            "rewind",
-            "never mind",
-            "forget",
-            "different topic",
-            "not about",
-        ],
-    )
-    yield
-    reset_routing_vocabulary()
-    reset_routing_vocabulary()
+    with representative_routing_vocabulary():
+        yield
 
 
 # ── Synthetic target-mode augmentation for the ambient test catalog ──
