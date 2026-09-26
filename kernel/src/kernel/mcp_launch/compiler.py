@@ -241,7 +241,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
         and not env.get("LISA_MCP_LOG_PATH")
         and spec.runtime_kind is not RuntimeKind.IN_PROCESS
     ):
-        from sdk.layout import LOGS_DIR, MCP_LOGS_SUBDIR
+        from kernel.layout import LOGS_DIR, MCP_LOGS_SUBDIR
 
         env["LISA_MCP_LOG_PATH"] = str(
             Path(resolved_data_dir) / LOGS_DIR / MCP_LOGS_SUBDIR / f"{spec.server_id}.jsonl"

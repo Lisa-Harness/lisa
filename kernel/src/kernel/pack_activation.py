@@ -19,7 +19,7 @@ import os
 import re
 from pathlib import Path
 
-from sdk.layout import STATE_DIR as _STATE_DIR
+from kernel.layout import STATE_DIR as _STATE_DIR
 
 logger = logging.getLogger(__name__)
 

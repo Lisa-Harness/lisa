@@ -583,7 +583,9 @@ def test_compile_mcp_config_overwrites_empty_lisa_mcp_log_path(
     config = compile_mcp_config(spec)
     from pathlib import Path
 
-    expected = str(Path("/data") / "lisa-thread.jsonl")
+    from kernel.layout import LOGS_DIR, MCP_LOGS_SUBDIR
+
+    expected = str(Path("/data") / LOGS_DIR / MCP_LOGS_SUBDIR / "lisa-thread.jsonl")
     assert config.env["LISA_MCP_LOG_PATH"] == expected
 
 

@@ -37,7 +37,7 @@ from kernel.turn_hooks import (
 from kernel.turn_runner import TurnHooks, _build_budget_briefing, run_turn
 from kernel.workflow_position import WorkflowPosition
 
-_KERNEL_ROOT = Path(__file__).resolve().parents[1]
+_KERNEL_PKG = Path(__file__).resolve().parents[1] / "src" / "kernel"
 _ROLE_USER_RE = re.compile(r"[\"']role[\"']\s*:\s*[\"']user[\"']")
 
 
@@ -51,14 +51,21 @@ def test_turn_loop_source_has_no_synthesized_user_messages() -> None:
     ``_run_turn_inner``. Everything else — nudges, hints, escalations,
     closing directives — rides the system prompt.
     """
-    runner_hits = _ROLE_USER_RE.findall(
-        (_KERNEL_ROOT / "turn_runner.py").read_text(encoding="utf-8")
-    )
+    runner_files = sorted((_KERNEL_PKG / "turn_runner").glob("*.py"))
+    phase_files = sorted((_KERNEL_PKG / "turn_phases").glob("*.py"))
+    assert runner_files, "kernel/turn_runner package not found; scan would be vacuous"
+    assert phase_files, "kernel/turn_phases package not found; scan would be vacuous"
+
+    runner_hits = [
+        hit
+        for path in runner_files
+        for hit in _ROLE_USER_RE.findall(path.read_text(encoding="utf-8"))
+    ]
     assert len(runner_hits) == 1, (
-        "kernel/turn_runner.py must contain exactly one role:'user' "
+        "kernel/turn_runner must contain exactly one role:'user' "
         f"message literal (the host query); found {len(runner_hits)}"
     )
-    for phase_file in sorted((_KERNEL_ROOT / "turn_phases").glob("*.py")):
+    for phase_file in phase_files:
         hits = _ROLE_USER_RE.findall(phase_file.read_text(encoding="utf-8"))
         assert not hits, (
             f"kernel/turn_phases/{phase_file.name} synthesizes user "

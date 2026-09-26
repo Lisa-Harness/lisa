@@ -7,6 +7,7 @@ and registers it with the kernel so ``get_workflow_catalog()`` and
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -74,9 +75,18 @@ def _external_pack_roots() -> list[Path]:
         if name in installed:
             continue
         root = (_PACKS_ROOT / name / "lisa_packs" / name).resolve()
-        if root.exists():
+        # Content without importable operation code loads modes whose ops are
+        # dropped, shadowing the synthetic test modes in conftest.py.
+        if root.exists() and _pack_code_importable(name):
             roots.append(root)
     return roots
+
+
+def _pack_code_importable(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(f"lisa_packs.{name}") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
