@@ -46,6 +46,18 @@ All notable changes to the Lisa Harness will be documented in this file.
   `.env`-file tests; the bare-vs-`LISA_`-prefix shell-env tests are
   unchanged and still pass.
 
+#### CI-gated PyPI publishing and strict production typing
+
+- **What:** Tag-based PyPI publishing now waits for reusable CI, validates
+  all eight distribution names and versions against the tag, checks the
+  wheel and source-distribution counts, and publishes through OIDC. The
+  strict production mypy gate now passes across the kernel, SDK, and MCP
+  server packages.
+- **Why:** Prevent publishing an unvalidated or version-mismatched release
+  and make the type gate report actionable production-code errors.
+- **Tests:** The CI-equivalent mypy check reports zero errors across 168
+  source files; local release builds produced all eight wheels and sdists.
+
 ### Added
 
 #### CEL `when` expressions for policy rules + `/policy rule` management

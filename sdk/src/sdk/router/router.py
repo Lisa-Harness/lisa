@@ -66,6 +66,7 @@ import logging
 from typing import Any
 
 import celpy
+from celpy.adapter import json_to_cel
 from kernel.model_manifest import ModelManifest, RouterRule
 from kernel.seams.protocols import (
     ModelRouter,
@@ -238,9 +239,9 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
         }
 
     return {
-        "turn": celpy.json_to_cel(turn_ctx),
-        "route": celpy.json_to_cel(route_ctx),
-        "model": celpy.json_to_cel(model_ctx),
+        "turn": json_to_cel(turn_ctx),
+        "route": json_to_cel(route_ctx),
+        "model": json_to_cel(model_ctx),
     }
 
 

@@ -27,7 +27,8 @@ __all__ = ["MCPInputGuard", "MCPOutputGuard"]
 def _extract_text(result: Any) -> str:
     """Extract text from an MCP call_tool result."""
     if result.content and len(result.content) > 0:
-        return result.content[0].text  # type: ignore[union-attr]
+        text = result.content[0].text
+        return text if isinstance(text, str) else ""
     return ""
 
 

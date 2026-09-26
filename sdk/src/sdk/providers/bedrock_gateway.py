@@ -273,9 +273,10 @@ def _derive_bedrock_truncated(stop_reason: str | None) -> bool | None:
 def _openai_tool_to_bedrock_tool(tool: dict[str, Any]) -> dict[str, Any]:
     """Convert one OpenAI-format tool to Bedrock Converse ``toolConfig`` entry."""
 
-    function_payload: dict[str, Any] = (
-        tool.get("function") if isinstance(tool.get("function"), dict) else tool
-    )
+    function_payload: dict[str, Any] = tool
+    nested_payload = tool.get("function")
+    if isinstance(nested_payload, dict):
+        function_payload = nested_payload
     return {
         "toolSpec": {
             "name": str(function_payload.get("name", "")),

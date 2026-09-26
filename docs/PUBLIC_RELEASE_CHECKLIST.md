@@ -17,7 +17,7 @@ Legend: ✅ verified done · ⚠️ needs attention · ❌ missing/broken
 | Runtime/personal data in git | ✅ clean | `logs/`, `data/`, `config/…` untracked via ignore chain; `git log` on those paths = 0 commits; no `sk-`/`ghp_`/PEM in last 200 commits |
 | LICENSE | ✅ MIT, "The Migus Group" | [LICENSE](../LICENSE) |
 | CI | ✅ strong matrix (3 OS × Py 3.11/3.12) + format/lint/mypy/vulture/pytest | [ci.yml](../.github/workflows/ci.yml) · but **red**, see §1 |
-| Publish | ✅ tag-triggered PyPI trusted publishing (`v*`) | [publish.yml](../.github/workflows/publish.yml) |
+| Publish | ✅ tag-triggered PyPI trusted publishing after CI and package-version checks (`v*`) | [publish.yml](../.github/workflows/publish.yml) |
 | Working tree | ⚠️ | 5 modified files, 2 unpushed commits, 2 untracked paths |
 | Community files | ❌ | `SECURITY.md` and `CODE_OF_CONDUCT.md` missing |
 | Hardcoded paths | ⚠️ | `/home/adam/…` in `packstest/run_all_validations.py`, "p920" anecdotes in CHANGELOG |
@@ -77,7 +77,7 @@ Legend: ✅ verified done · ⚠️ needs attention · ❌ missing/broken
 - [ ] `uv run ruff format --check .`
 - [ ] `uv run ruff check .`
 - [ ] `uv run python scripts/check_direct_io_policy.py` ← the red one
-- [ ] `uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server`
+- [ ] Production mypy gate passes (see the type-check step in [ci.yml](../.github/workflows/ci.yml)).
 - [ ] `uv run vulture … vulture_allowlist.py`
 - [ ] `uv run pytest -m "not live" --tb=short`
 - [ ] Secret scan (gitleaks / GitHub secret scanning) over **full history**, not last-N.

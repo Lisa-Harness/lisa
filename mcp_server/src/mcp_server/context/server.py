@@ -154,7 +154,7 @@ def _state_from_request(request: BrokerContextRequest) -> UnifiedState:
     """
     state_data = request.state
     if not state_data:
-        return UnifiedState(compiled_at="", context_markdown="")
+        return UnifiedState(compiled_at="")
     try:
         return UnifiedState.model_validate(state_data)
     except Exception as exc:

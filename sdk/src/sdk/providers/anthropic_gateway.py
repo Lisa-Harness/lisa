@@ -179,9 +179,10 @@ def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     :func:`_build_anthropic_tools_with_name_map`.
     """
 
-    function_payload: dict[str, Any] = (
-        tool.get("function") if isinstance(tool.get("function"), dict) else tool
-    )
+    function_payload: dict[str, Any] = tool
+    nested_payload = tool.get("function")
+    if isinstance(nested_payload, dict):
+        function_payload = nested_payload
     raw_name = str(function_payload.get("name", ""))
     return {
         "name": _sanitize_anthropic_tool_name(raw_name),
@@ -230,7 +231,10 @@ def _build_anthropic_tools_with_name_map(
     for tool in tools:
         anthropic_tool = _openai_tool_to_anthropic_tool(tool)
         sanitized_name = anthropic_tool["name"]
-        function_payload = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        function_payload: dict[str, Any] = tool
+        nested_payload = tool.get("function")
+        if isinstance(nested_payload, dict):
+            function_payload = nested_payload
         original_name = str(function_payload.get("name", ""))
         # First-seen-wins so a duplicate sanitized name maps back to the
         # first original; the kernel's catalog is first-registered-wins too.
@@ -269,11 +273,10 @@ def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
             if text:
                 content_blocks.append({"type": "text", "text": str(text)})
             for tool_call in message["tool_calls"]:
-                function_payload = (
-                    tool_call.get("function")
-                    if isinstance(tool_call.get("function"), dict)
-                    else tool_call
-                )
+                function_payload: dict[str, Any] = tool_call
+                nested_payload = tool_call.get("function")
+                if isinstance(nested_payload, dict):
+                    function_payload = nested_payload
                 raw_input = function_payload.get("arguments", "{}")
                 if isinstance(raw_input, str):
                     try:
@@ -419,7 +422,8 @@ def _apply_stream_event(
     ``message_stop`` otherwise).
     """
     event_type = str(event.get("type") or "")
-    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+    delta_value = event.get("delta")
+    delta = delta_value if isinstance(delta_value, dict) else {}
     if event_type == "content_block_delta":
         return _stream_delta_chunks(delta), finish_reason, stream_usage
     if event_type == "message_delta":

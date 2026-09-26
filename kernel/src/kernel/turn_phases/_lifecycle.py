@@ -341,9 +341,11 @@ def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
     if position is None:
         return False
     try:
-        from kernel.workflow_position import is_complete
+        from kernel.workflow_position import WorkflowPosition, is_complete
 
-        return not is_complete(position)
+        if isinstance(position, WorkflowPosition):
+            return not is_complete(position)
+        return bool(position.declared_steps) and bool(position.current_step_id)
     except Exception as exc:  # pylint: disable=broad-except
         _log.debug("workflow_position.is_complete raised: %s", exc)
         return bool(position.declared_steps) and bool(position.current_step_id)
@@ -359,9 +361,15 @@ def _next_step_mode_id(position: _WorkflowPositionLike | None) -> str:
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import remaining_steps
+        from kernel.workflow_position import WorkflowPosition, remaining_steps
 
-        remaining = remaining_steps(position)
+        if isinstance(position, WorkflowPosition):
+            remaining = remaining_steps(position)
+        else:
+            completed = set(getattr(position, "completed_steps", ()))
+            remaining = tuple(
+                step for step in position.declared_steps if step.step_id not in completed
+            )
         if not remaining:
             return ""
         current = getattr(position, "current_step_id", "") or ""
@@ -444,9 +452,15 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import remaining_steps
+        from kernel.workflow_position import WorkflowPosition, remaining_steps
 
-        remaining = remaining_steps(position)
+        if isinstance(position, WorkflowPosition):
+            remaining = remaining_steps(position)
+        else:
+            completed = set(getattr(position, "completed_steps", ()))
+            remaining = tuple(
+                step for step in position.declared_steps if step.step_id not in completed
+            )
         if not remaining:
             return ""
         current = getattr(position, "current_step_id", "") or ""

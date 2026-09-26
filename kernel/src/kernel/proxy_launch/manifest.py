@@ -88,8 +88,11 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
     providers = tuple(item.strip().lower() for item in providers_raw if item.strip())
     if not providers:
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'providers' is required")
+    port_value = entry.get("port")
+    if port_value is None:
+        raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'port' must be an integer")
     try:
-        port = int(entry.get("port"))
+        port = int(port_value)
     except (TypeError, ValueError) as exc:
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}': 'port' must be an integer"

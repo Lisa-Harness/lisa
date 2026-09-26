@@ -104,8 +104,9 @@ async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[FetchDeps]:
     can be built via ``dataclasses.replace`` without reaching into the
     fetcher's private ``_default_policy`` attribute.
     """
-    fetcher = ContentFetcher(_cfg.data_dir)
-    yield FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy)  # type: ignore[reportPrivateUsage]
+    default_policy = FetchPolicy()
+    fetcher = ContentFetcher(_cfg.data_dir, default_policy=default_policy)
+    yield FetchDeps(fetcher=fetcher, default_policy=default_policy)
 
 
 mcp = MCPServer("Lisa Fetch Server", lifespan=_lifespan)
@@ -129,14 +130,15 @@ async def fetch_url(
     """
     deps = _resolve_deps(ctx)
     base = deps.default_policy
-    overrides: dict[str, object] = {}
-    if ttl_seconds is not None:
-        overrides["ttl_seconds"] = ttl_seconds
-    if force_refresh:
-        overrides["force_refresh"] = True
-    if max_bytes is not None:
-        overrides["max_bytes"] = max_bytes
-    policy = _policy_replace(base, **overrides) if overrides else base
+    if ttl_seconds is not None or force_refresh or max_bytes is not None:
+        policy = _policy_replace(
+            base,
+            ttl_seconds=ttl_seconds if ttl_seconds is not None else base.ttl_seconds,
+            force_refresh=force_refresh or base.force_refresh,
+            max_bytes=max_bytes if max_bytes is not None else base.max_bytes,
+        )
+    else:
+        policy = base
     result = await deps.fetcher.fetch(url, policy=policy)
     return json.dumps(
         {
@@ -174,13 +176,14 @@ def init_fetch(
     Kept as a thin back-compat shim. Tests should prefer
     :func:`set_deps_for_test` with a :class:`FetchDeps` instance.
     """
+    resolved_policy = default_policy if default_policy is not None else FetchPolicy()
     fetcher = ContentFetcher(
         data_dir,
-        default_policy=default_policy or FetchPolicy(),
+        default_policy=resolved_policy,
         allowed_hosts=allowed_hosts,
         allow_http=allow_http,
     )
-    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy))  # type: ignore[reportPrivateUsage]
+    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=resolved_policy))
 
 
 def _init(args: Any) -> None:
@@ -188,8 +191,9 @@ def _init(args: Any) -> None:
     _cfg.data_dir = Path(args.data_dir)
     # Also populate the test seam so the server is usable immediately after
     # init (the lifespan only runs during a real stdio session).
-    fetcher = ContentFetcher(_cfg.data_dir)
-    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy))  # type: ignore[reportPrivateUsage]
+    default_policy = FetchPolicy()
+    fetcher = ContentFetcher(_cfg.data_dir, default_policy=default_policy)
+    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=default_policy))
 
 
 def main() -> None:

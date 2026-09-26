@@ -4,9 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 
-Lisa is a portable framework for building *modal* agent hosts and *packs*,
-that contain the modes, operations, tools, proxies, and servers they use.
-It's built to be extremely composable and connectable.
+Lisa is a portable harness for building agent hosts, *modal* agents and *packs*,
+containing modes, operations, tools, proxies, and MCP servers.
 
 The [kernel](kernel) defines the turn loop,
 model context,
@@ -17,11 +16,12 @@ It does that by managing packs.
 Packs contain any combination of content, i.e., prompts,
 agent modes, operations, tools, MCP servers and proxies,
 e.g., the *core* pack contains system-prompt and a minimal *session_context*.
-
+The [sdk](sdk) contains the core, memory, introspect, and recovery packs.
+It contains most of the code comprising the built-in MCP servers.
+It also contains the CEL-based [model router](sdk/src/sdk/router/) the host uses.
 The [host](host) loads packs and registers their modes, operations, and tools in the kernel.
 It also bootstraps [first-](mcp_server) and third-party MCP servers and proxies.
-The [sdk](sdk) contains the core, memory, introspect, and recovery packs.
-It also contains the CEL-based [model router](sdk/src/sdk/router/) the host uses.
+
 There is also the `packstest` harness that verifies content packs in-process,
 from source, with no model calls.
 
@@ -288,7 +288,8 @@ uv run ruff check .
 uv run python scripts/check_direct_io_policy.py
 
 # Type check (all public packages)
-uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
+$env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [IO.Path]::PathSeparator
+uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
 # Dead code check
 uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py

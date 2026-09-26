@@ -34,16 +34,19 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic import BaseModel
 from sdk.layout import CACHE_DIR
 
-try:
+if TYPE_CHECKING:
     from diskcache import Cache as _DiskCache
-except ImportError:  # pragma: no cover - diskcache is a hard dep of lisa-harness-sdk
-    _DiskCache = None  # type: ignore[assignment]
+else:
+    try:
+        from diskcache import Cache as _DiskCache
+    except ImportError:  # pragma: no cover - diskcache is a hard dep of lisa-harness-sdk
+        _DiskCache = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

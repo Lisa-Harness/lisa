@@ -478,9 +478,10 @@ def _build_gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def _openai_tool_to_gemini_function(tool: dict[str, Any]) -> dict[str, Any]:
     """Convert one OpenAI-format tool to Gemini ``functionDeclarations`` entry."""
 
-    function_payload: dict[str, Any] = (
-        tool.get("function") if isinstance(tool.get("function"), dict) else tool
-    )
+    function_payload: dict[str, Any] = tool
+    nested_payload = tool.get("function")
+    if isinstance(nested_payload, dict):
+        function_payload = nested_payload
     return {
         "name": str(function_payload.get("name", "")),
         "description": str(function_payload.get("description", "")),

@@ -5,37 +5,103 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
-  build-and-publish:
-    name: Build and publish to PyPI
+  ci:
+    name: Validate release commit
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build distributions
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
 
-      - name: Set up Python
-        run: uv python install 3.12
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag and package versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          packages = {
+              "kernel": "lisa-harness-kernel",
+              "sdk": "lisa-harness-sdk",
+              "mcp_server": "lisa-harness-mcp-servers",
+              "sdk/packs/core": "lisa-pack-core",
+              "sdk/packs/introspect": "lisa-pack-introspect",
+              "sdk/packs/memory": "lisa-pack-memory",
+              "sdk/packs/recovery": "lisa-pack-recovery",
+              "host": "lisa-harness-runtime",
+          }
+          tag = os.environ["RELEASE_TAG"]
+          for directory, expected_name in packages.items():
+              project = tomllib.loads(Path(directory, "pyproject.toml").read_text())["project"]
+              if project["name"] != expected_name:
+                  raise SystemExit(
+                      f"{directory}: expected distribution {expected_name!r}, "
+                      f"found {project['name']!r}"
+                  )
+              expected_tag = f"v{project['version']}"
+              if tag != expected_tag:
+                  raise SystemExit(
+                      f"release tag {tag!r} does not match {expected_name} version "
+                      f"{project['version']!r} (expected {expected_tag!r})"
+                  )
+          PY
 
       - name: Build packages
         run: |
-          uv build --package lisa-harness-kernel
-          uv build --package lisa-harness-sdk
-          uv build --package lisa-harness-mcp-servers
-          uv build --package lisa-pack-core
-          uv build --package lisa-pack-introspect
-          uv build --package lisa-pack-memory
-          uv build --package lisa-pack-recovery
-          uv build --package lisa-harness-runtime
+          uv build --no-cache --out-dir dist --package lisa-harness-kernel
+          uv build --no-cache --out-dir dist --package lisa-harness-sdk
+          uv build --no-cache --out-dir dist --package lisa-harness-mcp-servers
+          uv build --no-cache --out-dir dist --package lisa-pack-core
+          uv build --no-cache --out-dir dist --package lisa-pack-introspect
+          uv build --no-cache --out-dir dist --package lisa-pack-memory
+          uv build --no-cache --out-dir dist --package lisa-pack-recovery
+          uv build --no-cache --out-dir dist --package lisa-harness-runtime
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Verify build outputs
+        run: |
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

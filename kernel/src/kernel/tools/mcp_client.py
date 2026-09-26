@@ -1360,9 +1360,11 @@ class MCPToolPool:
 
         assert config.url is not None
         auth = config.auth
-        metadata = OAuthClientMetadata(
-            client_name=auth.client_id or "lisa",
-            redirect_uris=["http://127.0.0.1:8765/callback"],
+        metadata = OAuthClientMetadata.model_validate(
+            {
+                "client_name": auth.client_id or "lisa",
+                "redirect_uris": ["http://127.0.0.1:8765/callback"],
+            }
         )
 
         async def _redirect(uri: str) -> None:
@@ -1460,7 +1462,8 @@ class MCPToolPool:
         import httpx
         import mcp_types as _types
 
-        if not config.url:
+        url = config.url
+        if not url:
             raise RuntimeError(f"lenient list_tools requires an HTTP url for {server_id!r}")
 
         # Reuse the same auth/header resolution as _connect_http so the raw
@@ -1485,7 +1488,7 @@ class MCPToolPool:
                 "params": params,
             }
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(config.url, json=payload, headers=headers)
+                resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 body = resp.json()
                 if isinstance(body, list):
@@ -1513,7 +1516,7 @@ class MCPToolPool:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(
-                    config.url,
+                    url,
                     json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                     headers=headers,
                 )
@@ -1566,7 +1569,8 @@ class MCPToolPool:
         import httpx
         import mcp_types as _types
 
-        if not config.url:
+        url = config.url
+        if not url:
             raise RuntimeError(f"lenient call_tool requires an HTTP url for {server_id!r}")
 
         headers = self._resolved_http_headers(config)
@@ -1583,7 +1587,7 @@ class MCPToolPool:
             request_id += 1
             payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
             async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(config.url, json=payload, headers=headers)
+                resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 body = resp.json()
                 if isinstance(body, list):
@@ -1615,7 +1619,7 @@ class MCPToolPool:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(
-                    config.url,
+                    url,
                     json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                     headers=headers,
                 )
@@ -1639,9 +1643,7 @@ class MCPToolPool:
         result = _types.CallToolResult(
             content=content_blocks,
             is_error=bool(call_result.get("isError", False)),
-            cache_scope=call_result.get("cacheScope", "public"),
             result_type=call_result.get("resultType", "complete"),
-            ttl_ms=call_result.get("ttlMs", 0),
         )
         logger.info(
             "MCP server %r tool %r succeeded via lenient raw POST",

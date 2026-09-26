@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kernel.context.extension_item import NoOpExtensionItemBuilder
@@ -81,6 +81,7 @@ def build_ambient_facts(
     now_utc = now.astimezone(UTC) if now is not None else datetime.now(UTC)
     configured_timezone = (timezone or "UTC").strip() or "UTC"
     timezone_used = configured_timezone
+    target_zone: tzinfo
     try:
         target_zone = ZoneInfo(configured_timezone)
     except ZoneInfoNotFoundError:

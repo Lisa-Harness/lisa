@@ -22,18 +22,22 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from host.code_artifacts import FileCodeChangeArtifactStore
-
     from kernel.approval import ApprovalService
-    from kernel.capability_manifest import CapabilityManifest
     from kernel.context.models import ContextBudgetSnapshot
     from kernel.delegation import DelegationResult, DelegationSpec
-    from kernel.models import ForkResult, ForkSpec, IntrospectSnapshot, OperationResult
+    from kernel.models import (
+        CapabilityManifest,
+        ForkResult,
+        ForkSpec,
+        IntrospectSnapshot,
+        OperationResult,
+    )
     from kernel.pack_configuration import SessionPackConfigurationResolver
     from kernel.recovery import RecoveryService
     from kernel.seams.protocols import RouteCoordinator, StateProvider
     from kernel.slice import SliceOutcome, SlicePolicy, SliceTuning
     from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+    from kernel.turn_runner._seams import ContextSeams
     from kernel.workflow_position import WorkflowPosition
 
 
@@ -207,7 +211,7 @@ class HostServiceHandles:
     #: Host-owned store for pack-neutral local coding-workflow artifacts.
     #: Structural seam — annotated against the concrete host store so readers
     #: see the real surface; the kernel never imports host types at runtime.
-    code_change_artifact_store: FileCodeChangeArtifactStore | None = None
+    code_change_artifact_store: Any = None
 
     #: Canonical host data root, injected by the host and threaded into every
     #: operation/tool context. There is deliberately no fallback — a host
@@ -298,7 +302,7 @@ class TurnHooks:
     #: Context-layer seams (content registry, model policy, provider gateways,
     #: event bus, data sanitizer). Kept as a direct field to preserve the
     #: existing ``kernel.context`` default wiring contract.
-    context_seams: Any = None
+    context_seams: ContextSeams = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         # Lazy import to keep the kernel's default context seams out of the

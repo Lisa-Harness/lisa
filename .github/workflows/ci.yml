@@ -1,12 +1,48 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
 jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Direct I/O policy (allowlist)
+        run: uv run python scripts/check_direct_io_policy.py
+
+      - name: Type check (mypy — all public packages)
+        env:
+          MYPYPATH: typings:kernel/src:sdk/src:mcp_server/src
+        run: uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
+
+      - name: Dead code (vulture)
+        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
+
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
@@ -29,21 +65,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
-
-      - name: Format check (ruff)
-        run: uv run ruff format --check .
-
-      - name: Lint (ruff)
-        run: uv run ruff check .
-
-      - name: Direct I/O policy (allowlist)
-        run: uv run python scripts/check_direct_io_policy.py
-
-      - name: Type check (mypy — all public packages)
-        run: uv run mypy kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
-
-      - name: Dead code (vulture)
-        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
 
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v

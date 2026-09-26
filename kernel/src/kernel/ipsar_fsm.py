@@ -488,7 +488,7 @@ class _ModeOperationBindings:
     """Parsed operation/tool binding fields from one mode's front matter."""
 
     entry_operation_ids: list[str]
-    entry_op_kind: str
+    entry_op_kind: Literal["work", "routing"]
     pre_turn_operation_ids: list[str]
     post_turn_operation_ids: list[str]
     allowed_operation_ids: list[str]
@@ -522,8 +522,12 @@ def _parse_mode_operation_bindings(
     entry_operation_ids = [
         str(operation_id) for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
     ]
-    entry_op_kind = str(mode_front_matter.get("entry_op_kind", "work") or "work")
-    if entry_op_kind not in ("work", "routing"):
+    entry_op_kind_raw = str(mode_front_matter.get("entry_op_kind", "work") or "work")
+    if entry_op_kind_raw == "work":
+        entry_op_kind: Literal["work", "routing"] = "work"
+    elif entry_op_kind_raw == "routing":
+        entry_op_kind = "routing"
+    else:
         raise WorkflowValidationError(
             f"entry_op_kind must be 'work' or 'routing' in {mode_config_path}"
         )

@@ -49,7 +49,7 @@ def set_content_registry(registry: ContentRegistry) -> None:
     read_no_write_warning.cache_clear()
 
 
-class _MissingKeyDict(dict):
+class _MissingKeyDict(dict[str, object]):
     """``str.format_map`` mapping that leaves unfilled placeholders visible.
 
     Per the pack-content rule, unfilled placeholders remain visible instead of
@@ -57,7 +57,7 @@ class _MissingKeyDict(dict):
     model rather than crashing the turn.
     """
 
-    def __missing__(self, key: str) -> str:  # type: ignore[override]
+    def __missing__(self, key: str) -> str:
         return "{" + key + "}"
 
 

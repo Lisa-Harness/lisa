@@ -8,7 +8,7 @@ implemented locally — this module has no ``openai`` SDK dependency.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeGuard
 
 from pydantic import BaseModel
 
@@ -65,11 +65,11 @@ def _strict_incompatible(schema: Any) -> bool:
 # See: https://platform.openai.com/docs/guides/structured-outputs
 
 
-def _is_dict(obj: object) -> bool:
-    return isinstance(obj, dict)
+def _is_dict(obj: object) -> TypeGuard[dict[str, Any]]:
+    return isinstance(obj, dict) and all(isinstance(key, str) for key in obj)
 
 
-def _is_list(obj: object) -> bool:
+def _is_list(obj: object) -> TypeGuard[list[Any]]:
     return isinstance(obj, list)
 
 
@@ -78,12 +78,14 @@ def _resolve_ref(*, root: dict[str, object], ref: str) -> dict[str, Any]:
         raise ValueError(f"Unexpected $ref format {ref!r}; Does not start with #/")
 
     path = ref[2:].split("/")
-    resolved: Any = root
+    resolved: object = root
     for key in path:
-        resolved = resolved[key]  # type: ignore[index]
         if not _is_dict(resolved):
             raise TypeError(f"Encountered non-dictionary entry while resolving {ref}")
-    return resolved  # type: ignore[return-value]
+        resolved = resolved[key]
+    if not _is_dict(resolved):
+        raise TypeError(f"Encountered non-dictionary entry while resolving {ref}")
+    return resolved
 
 
 def _has_more_than_n_keys(obj: dict[str, object], n: int) -> bool:
@@ -143,7 +145,7 @@ def _ensure_strict_json_schema(
     if not _is_dict(json_schema):
         raise TypeError(f"Expected {json_schema} to be a dictionary; path={path}")
 
-    schema: dict[str, Any] = json_schema  # type: ignore[assignment]
+    schema = json_schema
 
     _inline_nested_defs(schema, path=path, root=root)
 
