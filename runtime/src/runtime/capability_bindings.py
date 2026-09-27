@@ -18,10 +18,12 @@ class SessionCapabilityBindings(CapabilityBindingProvider):
         self,
         configuration: Mapping[str, Mapping[str, Any]] | None = None,
         capabilities: Iterable[CapabilityRef] | None = None,
+        declared_owners: Iterable[str] = (),
     ) -> None:
         raw = configuration or {}
         capability_list = tuple(capabilities) if capabilities is not None else None
         known_owners = {capability.owner_id for capability in capability_list or ()}
+        known_owners.update(declared_owners)
         unknown_owners = set(raw) - known_owners if capability_list else set()
         if unknown_owners:
             raise ValueError(

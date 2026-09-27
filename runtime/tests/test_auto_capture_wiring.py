@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from kernel.capability_binding import CapabilityRef
+from kernel.models import OperationDefinition
 from runtime.turn_hooks_builder import build_turn_hooks
 
 from runtime import HostRuntime
@@ -59,8 +60,6 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
 def _seed_pack_config(runtime: HostRuntime, pack_config: dict[str, Any]) -> None:
     """Put a ``lisa-pack-memory`` configuration block into the session plan."""
 
-    from kernel.session_plan import ResourceSelection
-
     manifest = runtime.session_plan.manifest
     packs = manifest.resources.packs
     manifest = manifest.model_copy(
@@ -70,15 +69,43 @@ def _seed_pack_config(runtime: HostRuntime, pack_config: dict[str, Any]) -> None
                     "packs": packs.model_copy(
                         update={
                             "configuration": {"lisa-pack-memory": pack_config},
-                            "include": list(packs.include) or ["lisa-pack-memory"],
                         }
                     ),
+                }
+            ),
+            "providers": manifest.providers.model_copy(
+                update={
+                    "capabilities": {
+                        **manifest.providers.capabilities,
+                        "memory": "lisa-pack-memory",
+                    }
                 }
             ),
         }
     )
     runtime.session_plan = runtime.session_plan.model_copy(update={"manifest": manifest})
-    _ = ResourceSelection  # silence linters: imported for the block above
+
+
+def test_memory_provider_config_without_catalog_capabilities_builds_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    _seed_pack_config(runtime, {"memory_distill_max_tokens": 5000})
+    monkeypatch.setattr(
+        "kernel.operations.registry.get_operation_catalog",
+        lambda: {
+            "other_operation": OperationDefinition(
+                operation_id="other_operation", owner_id="lisa-pack-other"
+            )
+        },
+    )
+
+    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+
+    assert hooks.services.capability_binding_provider is not None
+    assert hooks.services.capability_binding_provider.binding_for(
+        CapabilityRef("operation", "missing", "lisa-pack-memory")
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -96,6 +123,15 @@ async def test_auto_capture_context_carries_pack_config_resolver_and_router(
     """
     runtime = _make_runtime(tmp_path)
     _seed_pack_config(runtime, {"memory_distill_max_tokens": 5000})
+    monkeypatch.setattr(
+        "kernel.operations.registry.get_operation_catalog",
+        lambda: {
+            "synthesize_and_store_learning": OperationDefinition(
+                operation_id="synthesize_and_store_learning",
+                owner_id="lisa-pack-memory",
+            )
+        },
+    )
     hooks = build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks.lifecycle is not None
 

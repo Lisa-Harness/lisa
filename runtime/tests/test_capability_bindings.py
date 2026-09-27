@@ -37,3 +37,13 @@ def test_bindings_reject_unknown_configured_owner() -> None:
             {"lisa-pack-unknown": {"enabled": True}},
             capabilities=[CapabilityRef("tool", "known", "lisa-pack-known")],
         )
+
+
+def test_bindings_accept_declared_provider_without_catalog_capabilities() -> None:
+    bindings = SessionCapabilityBindings(
+        {"lisa-pack-memory": {"memory_distill_max_tokens": 5000}},
+        capabilities=[CapabilityRef("tool", "known", "lisa-pack-known")],
+        declared_owners={"lisa-pack-memory"},
+    )
+
+    assert bindings.binding_for(CapabilityRef("tool", "missing", "lisa-pack-memory")) is None
