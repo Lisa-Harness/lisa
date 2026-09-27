@@ -24,6 +24,7 @@ before the event loop starts. The install core
 
 from __future__ import annotations
 
+import importlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -189,6 +190,29 @@ def _looks_like_path(raw: str) -> bool:
     return bool("/" in raw or "\\" in raw)
 
 
+def _activate_packs_venv(runtime: HostRuntime) -> None:
+    """Make freshly installed packs importable for the rest of this boot.
+
+    The CLI injects the packs venv site-packages at startup, but on a first
+    launch that directory does not exist yet — the injection no-ops and every
+    later ``import lisa_packs.<name>`` fails, emptying the tool/operation
+    catalog for the whole session. Re-inject after auto-install created and
+    populated the venv.
+    """
+    try:
+        from runtime.paths import inject_packs_venv_site_packages, packs_venv_for
+
+        injected = inject_packs_venv_site_packages(packs_venv_for(runtime.paths.data_dir))
+    except Exception:  # pragma: no cover - defensive; restart still recovers
+        logger.warning("auto-install: packs venv activation raised", exc_info=True)
+        return
+    if injected is None:
+        return
+    # The site dir was absent when the import system last looked; drop the
+    # cached negative path finders so the new modules resolve.
+    importlib.invalidate_caches()
+
+
 def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
     """Install any missing ``required`` packs before content-root discovery.
 
@@ -244,6 +268,7 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
             logger.error("auto-install: failed to install %r:\n%s", pack_name, detail)
 
     if installed_now:
+        _activate_packs_venv(runtime)
         logger.info(
             "auto-install: installed %d pack(s): %s",
             len(installed_now),

@@ -273,13 +273,18 @@ def packs_venv_site_packages(venv_path: Path) -> Path:
     return venv_path / "lib" / _venv_python_dir(venv_path) / "site-packages"
 
 
-def inject_packs_venv_site_packages() -> Path | None:
+def inject_packs_venv_site_packages(venv: Path | None = None) -> Path | None:
     """Insert the packs venv site-packages into ``sys.path`` if it exists.
 
     Called at CLI startup **before** any ``importlib.metadata.entry_points``
     call so that packs installed into the packs venv are discoverable via
     entry points. Returns the injected path, or ``None`` if the packs venv
     does not exist yet (first launch — no packs installed).
+
+    ``venv`` overrides the env-based :func:`default_packs_venv` resolution;
+    pass a :func:`packs_venv_for` result when a resolved ``data_dir`` is
+    available. Callers that re-invoke this after installing packs (boot
+    auto-install) get the site dir activated for the rest of the process.
 
     Uses ``site.addsitedir()`` (not just ``sys.path.insert``) so that
     ``.pth`` files in the packs venv site-packages are processed. This is
@@ -291,7 +296,8 @@ def inject_packs_venv_site_packages() -> Path | None:
     """
     import site as _site
 
-    venv = default_packs_venv()
+    if venv is None:
+        venv = default_packs_venv()
     site_packages = packs_venv_site_packages(venv)
     if site_packages.is_dir():
         site_str = str(site_packages)

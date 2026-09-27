@@ -10,6 +10,9 @@ Verifies that ``runtime.pack_autoinstall.auto_install_required_packs``:
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ from runtime.pack_autoinstall import (
     _resolve_auto_install_spec,
     auto_install_required_packs,
 )
+from runtime.paths import packs_venv_for, packs_venv_site_packages
 from runtime.runtime import HostRuntime
 
 
@@ -176,6 +180,43 @@ def test_auto_install_installs_missing_required_pack(
     ]
     # The caller (discover_framework) requests the restart, not this function.
     assert runtime.session.restart_required is False
+
+
+def test_auto_install_activates_packs_venv_created_during_boot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The packs venv created by auto-install becomes importable this boot.
+
+    On a first launch the CLI's startup injection no-ops (no venv yet); the
+    install then creates it, so auto-install must re-inject or every
+    ``lisa_packs.*`` import fails for the whole session.
+    """
+    runtime = _make_runtime(tmp_path, required=["lisa-pack-cloudflare"])
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+
+    site_packages = packs_venv_site_packages(packs_venv_for(tmp_path))
+
+    def _fake_install_sync(
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
+    ) -> tuple[bool, str]:
+        (site_packages / "lisa_packs_probe").mkdir(parents=True)
+        (site_packages / "lisa_packs_probe" / "__init__.py").write_text("", encoding="utf-8")
+        return True, "Installed."
+
+    monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
+    original_path = list(sys.path)
+    try:
+        assert auto_install_required_packs(runtime) == ["lisa-pack-cloudflare"]
+        assert str(site_packages) in sys.path
+        assert importlib.util.find_spec("lisa_packs_probe") is not None
+    finally:
+        sys.path[:] = original_path
+        sys.modules.pop("lisa_packs_probe", None)
+        importlib.invalidate_caches()
 
 
 def test_auto_install_raises_on_install_failure(
