@@ -399,9 +399,9 @@ def test_validate_export_boundaries_rejects_non_exported_cross_pack_reference(
     op = SimpleNamespace(
         operation_id="private_op",
         pack_id="",
+        owner_id="lisa-pack-b",
         provider_id="lisa-pack-b",
         exportable=False,
-        effective_provider_id=lambda: "lisa-pack-b",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -437,9 +437,9 @@ def test_validate_export_boundaries_allows_exported_cross_pack_reference(
     op = SimpleNamespace(
         operation_id="recall_memory",
         pack_id="",
+        owner_id="lisa-pack-memory",
         provider_id="lisa-pack-memory",
         exportable=True,
-        effective_provider_id=lambda: "lisa-pack-memory",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -475,9 +475,9 @@ def test_validate_export_boundaries_allows_same_pack_reference(
     op = SimpleNamespace(
         operation_id="native_op",
         pack_id="",
+        owner_id="lisa-pack-a",
         provider_id="lisa-pack-a",
         exportable=False,
-        effective_provider_id=lambda: "lisa-pack-a",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -516,9 +516,9 @@ def test_validate_export_boundaries_allows_same_pack_with_prefix_mismatch(
     op = SimpleNamespace(
         operation_id="coding_list_directory",
         pack_id="",
+        owner_id="coding",
         provider_id="coding",
         exportable=False,
-        effective_provider_id=lambda: "coding",
     )
     mode = SimpleNamespace(
         mode_id="coding",
@@ -554,9 +554,9 @@ def test_backfill_provider_id_prefers_authored_pack_id_over_inferred(tmp_path: P
     Regression: when a tool YAML specifies ``pack_id: lisa-pack-coding`` but
     not ``tool_provider_id``, the backfill used the inferred id from the
     directory structure (e.g. "lisa-packs" from the parent dir name) instead
-    of the authoritative pack_id. This caused resolver.for_pack() lookups to
-    fail because the session plan config key ("lisa-pack-coding") didn't
-    match the tool's effective_provider_id ("lisa-packs"), leaving the tool
+    of the authoritative pack_id. This keeps the owner_id aligned with the
+    session plan config key ("lisa-pack-coding") when a synthetic root has no
+    distribution metadata, leaving the tool
     with empty pack configuration.
     """
     from sdk.content._catalog import _backfill_provider_ids
@@ -609,3 +609,20 @@ def test_backfill_provider_id_respects_explicitly_set_provider_id() -> None:
     )
     assert cap_dict["tool_provider_id"] == "lisa-pack-b"
     assert cap_dict["pack_id"] == "lisa-pack-a"
+
+
+def test_backfill_rejects_conflicting_claim_when_owner_is_verified() -> None:
+    """A packaged root cannot relabel a capability as another owner."""
+    from sdk.content._catalog import _backfill_provider_ids
+
+    with pytest.raises(ValueError, match="does not match discovered owner"):
+        _backfill_provider_ids(
+            {
+                "tool_id": "custom_tool",
+                "pack_id": "lisa-pack-other",
+                "tool_provider_id": "",
+            },
+            inferred_provider_id="lisa-pack-owner",
+            provider_field="tool_provider_id",
+            owner_verified=True,
+        )

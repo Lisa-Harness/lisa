@@ -93,7 +93,7 @@ class ToolExecutionContext(BaseModel):
     query: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
     pack_config: Any = Field(default_factory=dict, exclude=True)
-    pack_configuration_resolver: Any = Field(default=None, exclude=True)
+    capability_binding_provider: Any = Field(default=None, exclude=True)
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
@@ -135,6 +135,7 @@ class ToolDefinition(BaseModel):
 
     tool_id: str
     description: str = ""
+    owner_id: str = ""
     pack_id: str = ""
     # The full distribution-package name that owns this tool (e.g.
     # ``lisa-pack-search``), inferred from the content-root path during SDK
@@ -205,19 +206,6 @@ class ToolDefinition(BaseModel):
     # invisible until dispatch completes.
     stream_output: bool = False
 
-    def effective_provider_id(self) -> str:
-        """Return the canonical owning-provider id for this tool.
-
-        The single accessor for all provider-id comparisons (export
-        boundaries, pack-config lookups, telemetry). Prefers the
-        fully-qualified ``provider_id`` (inferred from the content root
-        during SDK catalog build) and falls back to the raw authored
-        ``pack_id`` slug. After SDK load both are populated, so the
-        fallback is belt-and-suspenders; callers should never read
-        ``provider_id``/``pack_id`` directly for comparison.
-        """
-        return self.provider_id or self.pack_id
-
 
 class OperationExecutionContext(BaseModel):
     """Execution context passed to every internal operation."""
@@ -242,7 +230,7 @@ class OperationExecutionContext(BaseModel):
     stage_id: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
     pack_config: Any = Field(default_factory=dict, exclude=True)
-    pack_configuration_resolver: Any = Field(default=None, exclude=True)
+    capability_binding_provider: Any = Field(default=None, exclude=True)
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
@@ -305,6 +293,7 @@ class OperationDefinition(BaseModel):
 
     operation_id: str
     description: str = ""
+    owner_id: str = ""
     pack_id: str = ""
     # The full distribution-package name that owns this operation (e.g.
     # ``lisa-pack-memory``), inferred from the content-root path during SDK
@@ -351,19 +340,6 @@ class OperationDefinition(BaseModel):
     default_available: bool = False
     instruction_body: str = Field(default="", exclude=True)
     implementation_module: Any = Field(default=None, exclude=True)
-
-    def effective_provider_id(self) -> str:
-        """Return the canonical owning-provider id for this operation.
-
-        The single accessor for all provider-id comparisons (export
-        boundaries, pack-config lookups, telemetry). Prefers the
-        fully-qualified ``provider_id`` (inferred from the content root
-        during SDK catalog build) and falls back to the raw authored
-        ``pack_id`` slug. After SDK load both are populated, so the
-        fallback is belt-and-suspenders; callers should never read
-        ``provider_id``/``pack_id`` directly for comparison.
-        """
-        return self.provider_id or self.pack_id
 
 
 class CapabilityConstraint(BaseModel):

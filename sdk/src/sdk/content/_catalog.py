@@ -659,7 +659,7 @@ def _infer_content_provider_id(root: Path) -> str:
     ``lisa-pack-memory``). The session manifest's
     ``resources.packs.configuration`` block is keyed by that same distribution
     name, and runtime configuration lookup uses the operation's
-    ``effective_provider_id()``. When inference returned the bare directory
+    ``owner_id``. When inference returned the bare directory
     slug (``memory``) instead of the distribution name (``lisa-pack-memory``),
     the resolver silently dropped the pack's config — which left
     ``synthesize_and_store_learning`` with the 512-token module fallback
@@ -725,6 +725,7 @@ def _backfill_provider_ids(
     inferred_provider_id: str,
     *,
     provider_field: str,
+    owner_verified: bool = False,
 ) -> None:
     """Populate both provider-id fields on a capability dict in place.
 
@@ -734,19 +735,47 @@ def _backfill_provider_ids(
     filled from the other when one is authored and the other is not, and
     both fall back to the content-root-inferred id. This removes the
     ``provider_id or pack_id`` fallback chains in kernel consumers: after
-    load, ``ToolDefinition.effective_provider_id()`` /
-    ``OperationDefinition.effective_provider_id()`` always return a
-    populated value for a capability that belongs to a discoverable pack.
+    load, ``ToolDefinition.owner_id`` /
+    ``OperationDefinition.owner_id`` always contain the discovered owner for
+    a capability that belongs to a discoverable pack.
     """
     authored_pack_id = str(cap_dict.get("pack_id", "") or "").strip()
+    authored_provider_id = str(cap_dict.get(provider_field, "") or "").strip()
+    owner_id = (
+        inferred_provider_id
+        if owner_verified
+        else authored_pack_id or authored_provider_id or inferred_provider_id
+    )
+    for claim in (authored_pack_id, authored_provider_id):
+        if owner_verified and claim and owner_id and not _same_provider_id(claim, owner_id):
+            raise ValueError(
+                f"Capability owner claim '{claim}' does not match discovered owner '{owner_id}'."
+            )
+    cap_dict["owner_id"] = owner_id
     if not cap_dict.get(provider_field):
         # The authored pack_id is authoritative (e.g. "lisa-pack-coding").
         # The content-root-inferred id is a fallback guess from the directory
         # structure (e.g. "lisa-packs") and may not match session plan config
-        # keys. Prefer pack_id so resolver.for_pack() lookups succeed.
+        # keys. Prefer pack_id when the root has no authoritative distribution
+        # metadata, so synthetic and source-tree roots remain addressable.
         cap_dict[provider_field] = authored_pack_id or inferred_provider_id
     if not authored_pack_id:
         cap_dict["pack_id"] = cap_dict[provider_field]
+
+
+def _same_provider_id(left: str, right: str) -> bool:
+    """Return whether two owner claims identify the same distribution."""
+    prefix = "lisa-pack-"
+    normalized = []
+    for value in (left, right):
+        candidate = _normalize_provider_id(value)
+        normalized.append(candidate.removeprefix(prefix))
+    return normalized[0] == normalized[1]
+
+
+def _has_authoritative_owner(root: Path) -> bool:
+    """Return whether a content root declares a distribution name."""
+    return bool(_read_distribution_name(root.resolve().parent / "pyproject.toml"))
 
 
 def _resolve_catalog_candidates(
@@ -1044,6 +1073,7 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
         for op_id, op_dict in _load_operations_from_root(
             root,
             inferred_provider_id=inferred_provider_id,
+            owner_verified=_has_authoritative_owner(root),
         ).items():
             candidates_by_id.setdefault(op_id, []).append(op_dict)
     merged = {
@@ -1065,6 +1095,7 @@ def _load_operations_from_root(
     root: Path,
     *,
     inferred_provider_id: str,
+    owner_verified: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Load all operations from one root directory."""
 
@@ -1075,7 +1106,10 @@ def _load_operations_from_root(
         op_dict = _load_markdown_operation(md_path)
         if op_dict is not None:
             _backfill_provider_ids(
-                op_dict, inferred_provider_id, provider_field="operation_provider_id"
+                op_dict,
+                inferred_provider_id,
+                provider_field="operation_provider_id",
+                owner_verified=owner_verified,
             )
             catalog[op_dict["operation_id"]] = op_dict
 
@@ -1088,7 +1122,10 @@ def _load_operations_from_root(
         op_dict = _load_runtime_operation(py_path, yml_path, root)
         if op_dict is not None:
             _backfill_provider_ids(
-                op_dict, inferred_provider_id, provider_field="operation_provider_id"
+                op_dict,
+                inferred_provider_id,
+                provider_field="operation_provider_id",
+                owner_verified=owner_verified,
             )
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
@@ -1407,6 +1444,7 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
         for tool_id, tool_dict in _load_tools_from_root(
             root,
             inferred_provider_id=inferred_provider_id,
+            owner_verified=_has_authoritative_owner(root),
         ).items():
             candidates_by_id.setdefault(tool_id, []).append(tool_dict)
     merged = {
@@ -1428,6 +1466,7 @@ def _load_tools_from_root(
     root: Path,
     *,
     inferred_provider_id: str,
+    owner_verified: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Load all internal tools from one root directory."""
 
@@ -1440,7 +1479,10 @@ def _load_tools_from_root(
         tool_dict = _load_runtime_tool(py_path, yml_path, root)
         if tool_dict is not None:
             _backfill_provider_ids(
-                tool_dict, inferred_provider_id, provider_field="tool_provider_id"
+                tool_dict,
+                inferred_provider_id,
+                provider_field="tool_provider_id",
+                owner_verified=owner_verified,
             )
             catalog[tool_dict["tool_id"]] = tool_dict
     return catalog

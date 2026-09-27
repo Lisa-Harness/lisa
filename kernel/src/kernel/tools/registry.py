@@ -45,6 +45,7 @@ from kernel.approval import (
     ApprovalRequired,
     build_approval_invocation,
 )
+from kernel.capability_binding import CapabilityRef
 from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
@@ -271,6 +272,7 @@ async def execute_tool(
         raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
     ctx.tool_id = tool_id
     _resolve_execution_configuration(definition, ctx)
+    ctx.capability_binding_provider = None
     _validate_parameters(definition, ctx)
     await _require_approval(definition, ctx)
     module = definition.implementation_module
@@ -291,12 +293,21 @@ def _resolve_execution_configuration(
 ) -> None:
     """Attach only the target pack's immutable session configuration."""
 
-    resolver = ctx.pack_configuration_resolver
-    pack_key = definition.effective_provider_id()
-    if not pack_key or resolver is None:
+    provider = ctx.capability_binding_provider
+    owner_id = definition.owner_id
+    if not owner_id or provider is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
     else:
-        ctx.pack_config = resolver(pack_key)
+        binding = provider.binding_for(CapabilityRef("tool", definition.tool_id, owner_id))
+        if binding is None:
+            raise ToolExecutionError(
+                f"Tool '{definition.tool_id}' has no active capability binding."
+            )
+        if binding.owner_id != owner_id:
+            raise ToolExecutionError(
+                f"Tool '{definition.tool_id}' binding owner does not match its catalog owner."
+            )
+        ctx.pack_config = binding.configuration
     # Propagate the catalog-declared streaming posture onto the call context
     # so tools don't have to re-resolve the catalog to know whether they may
     # publish incremental output. The host subscribes only for tools that
@@ -344,7 +355,7 @@ async def _require_approval(
     invocation = build_approval_invocation(
         target_kind="tool",
         target_id=definition.tool_id,
-        pack_id=definition.pack_id,
+        pack_id=definition.owner_id,
         effect=definition.effect,
         parameters=ctx.parameters,
         identity=identity,

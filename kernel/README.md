@@ -212,7 +212,7 @@ sequenceDiagram
 | Hook | Purpose |
 | --- | --- |
 | `state_provider` | Returns a `UnifiedState` for the current host session. |
-| `pack_configuration_resolver` | Session-owned resolver for immutable pack configuration. |
+| `capability_binding_provider` | Session-owned provider for immutable bindings of catalog capabilities. |
 | `approval_service` | Host-owned persistence for exact-action approval. |
 | `code_change_artifact_store` | Host-owned store for coding workflow artifacts. |
 | `introspect` | Returns an `IntrospectSnapshot` from the host's live runtime. |

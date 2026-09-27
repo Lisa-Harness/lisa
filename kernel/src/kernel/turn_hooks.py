@@ -17,12 +17,13 @@ intelligence" or "self-model context."
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kernel.approval import ApprovalService
+    from kernel.capability_binding import CapabilityBindingProvider
     from kernel.context.models import ContextBudgetSnapshot
     from kernel.delegation import DelegationResult, DelegationSpec
     from kernel.models import (
@@ -198,8 +199,8 @@ class HostServiceHandles:
     #: that need cached runtime state can read it.
     state_provider: StateProvider | None = None
 
-    #: Session-owned resolver for immutable, target-pack configuration.
-    pack_configuration_resolver: Callable[[str], Mapping[str, Any]] | None = None
+    #: Session-owned binding provider for concrete catalog capabilities.
+    capability_binding_provider: CapabilityBindingProvider | None = None
 
     #: Host-owned persistence + receipt service for exact-action approval.
     approval_service: ApprovalService | None = None

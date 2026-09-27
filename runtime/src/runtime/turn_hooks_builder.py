@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
+from kernel.capability_binding import CapabilityRef
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
@@ -46,6 +47,7 @@ from sdk.context.extension_item_builder import (
     EntryPointExtensionItemBuilder,
 )
 
+from runtime.capability_bindings import SessionCapabilityBindings
 from runtime.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
@@ -53,7 +55,6 @@ from runtime.context_assembly import (
 )
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
-from runtime.pack_configuration import SessionPackConfigurationResolver
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
 from runtime.thread import build_recent_thread_excerpt
 
@@ -371,7 +372,7 @@ async def _maybe_auto_capture(
     messages: list[dict[str, Any]],
     effect_receipts: list[Any],
     ctx_dict: dict[str, Any],
-    pack_configuration_resolver: Any,
+    capability_binding_provider: Any,
     model_router: Any,
     provider_gateways: Any,
     resolve_model: Callable[[str], Any],
@@ -423,7 +424,7 @@ async def _maybe_auto_capture(
             # ``memory_distill_max_tokens``; without the router, an
             # operation-scoped rule (e.g. finances-profile routing of
             # learning distills) never applied on the auto-capture path.
-            pack_configuration_resolver=pack_configuration_resolver,
+            capability_binding_provider=capability_binding_provider,
             model_router=model_router,
             host=build_callable_host(
                 gateway_provider_fn=provider_gateways,
@@ -782,13 +783,13 @@ class _WiredHooks:
         "approval_service",
         "assemble_system_prompt",
         "assemble_user_context",
+        "capability_binding_provider",
         "complete_stream",
         "execute_operation",
         "explicit_slice",
         "last_slice_finished_at",
         "on_stage",
         "on_turn_complete",
-        "pack_configuration_resolver",
         "post_turn_slice",
         "pre_turn_slice",
         "resolve_model",
@@ -811,7 +812,7 @@ class _WiredHooks:
         pre_turn_slice: Any,
         post_turn_slice: Any,
         explicit_slice: Any,
-        pack_configuration_resolver: Any,
+        capability_binding_provider: Any,
         approval_service: Any,
         last_slice_finished_at: Any,
         slice_tuning: Any,
@@ -828,7 +829,7 @@ class _WiredHooks:
         self.pre_turn_slice = pre_turn_slice
         self.post_turn_slice = post_turn_slice
         self.explicit_slice = explicit_slice
-        self.pack_configuration_resolver = pack_configuration_resolver
+        self.capability_binding_provider = capability_binding_provider
         self.approval_service = approval_service
         self.last_slice_finished_at = last_slice_finished_at
         self.slice_tuning = slice_tuning
@@ -884,7 +885,7 @@ def _assemble_turn_hooks(*, runtime: HostRuntime, wired: _WiredHooks) -> TurnHoo
         ),
         services=HostServiceHandles(
             state_provider=wired.state_provider,
-            pack_configuration_resolver=wired.pack_configuration_resolver,
+            capability_binding_provider=wired.capability_binding_provider,
             approval_service=wired.approval_service,
             recovery_service=runtime.services.recovery_service,
             code_change_artifact_store=runtime.services.code_change_artifact_store,
@@ -1129,9 +1130,23 @@ def build_turn_hooks(
         A ``TurnHooks`` ready to pass to ``kernel.turn_runner.run_turn``.
     """
     ctx_dict = context if context is not None else {}
-    pack_configuration_resolver = SessionPackConfigurationResolver(
-        runtime.session_plan.manifest.resources.packs.configuration
-    ).for_pack
+    from kernel.operations.registry import get_operation_catalog
+    from kernel.tools.registry import get_tool_catalog
+
+    capability_refs = [
+        CapabilityRef("operation", definition.operation_id, definition.owner_id)
+        for definition in get_operation_catalog().values()
+        if definition.owner_id
+    ]
+    capability_refs.extend(
+        CapabilityRef("tool", definition.tool_id, definition.owner_id)
+        for definition in get_tool_catalog().values()
+        if definition.owner_id
+    )
+    capability_binding_provider = SessionCapabilityBindings(
+        runtime.session_plan.manifest.resources.packs.configuration,
+        capabilities=capability_refs or None,
+    )
     approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
@@ -1281,7 +1296,7 @@ def build_turn_hooks(
             messages=messages,
             effect_receipts=effect_receipts,
             ctx_dict=ctx_dict,
-            pack_configuration_resolver=pack_configuration_resolver,
+            capability_binding_provider=capability_binding_provider,
             model_router=_auto_capture_model_router,
             provider_gateways=_auto_capture_provider_gateways,
             resolve_model=_resolve_model,
@@ -1374,7 +1389,7 @@ def build_turn_hooks(
             pre_turn_slice=_pre_turn_slice_chained,
             post_turn_slice=_post_turn_slice_chained,
             explicit_slice=_explicit_slice_chained,
-            pack_configuration_resolver=pack_configuration_resolver,
+            capability_binding_provider=capability_binding_provider,
             approval_service=approval_service,
             last_slice_finished_at=persisted_last_slice_finished_at,
             slice_tuning=slice_tuning,

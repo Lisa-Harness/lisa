@@ -26,6 +26,7 @@ from kernel.approval import (
     ApprovalRequired,
     build_approval_invocation,
 )
+from kernel.capability_binding import CapabilityRef
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.models import (
     OperationDefinition,
@@ -136,6 +137,7 @@ def _build_tool_schemas(tool_ids: list[str]) -> list[dict[str, Any]]:
 def _wrap_declarative_tool_executor(
     definition: OperationDefinition,
     execute_tool_fn: Any,
+    capability_binding_provider: Any = None,
 ) -> Any:
     """Return a tool executor that only allows declared tools for prompt operations."""
     if definition.execution_kind != "prompt" or execute_tool_fn is None:
@@ -149,7 +151,11 @@ def _wrap_declarative_tool_executor(
                 f"Declarative operation '{definition.operation_id}' cannot call "
                 f"undeclared tool '{tool_id}'."
             )
-        return await execute_tool_fn(tool_id, ctx)
+        ctx.capability_binding_provider = capability_binding_provider
+        try:
+            return await execute_tool_fn(tool_id, ctx)
+        finally:
+            ctx.capability_binding_provider = None
 
     return _execute_allowed_tool
 
@@ -338,7 +344,7 @@ def validate_export_boundaries(
             op = ops.get(op_id)
             if op is None:
                 continue  # unknown-id check is owned by validate_operation_catalog
-            op_provider = _provider_slug(op.effective_provider_id())
+            op_provider = _provider_slug(op.owner_id)
             if op_provider and op_provider != mode_provider and not op.exportable:
                 raise OperationValidationError(
                     f"Mode '{mode.mode_id}' (provider '{mode_provider}') "
@@ -350,7 +356,7 @@ def validate_export_boundaries(
             tool = tools.get(tool_id)
             if tool is None:
                 continue
-            tool_provider = _provider_slug(tool.effective_provider_id())
+            tool_provider = _provider_slug(tool.owner_id)
             if (
                 tool_provider
                 and tool_provider != mode_provider
@@ -721,6 +727,7 @@ def _rebuild_host_with_tool_wrapper(
     _wrapped_tool_fn = _wrap_declarative_tool_executor(
         definition,
         _existing_host.execute_tool if _existing_host is not None else None,
+        ctx.capability_binding_provider,
     )
     ctx.host = build_callable_host(
         complete_fn=_existing_host._complete_fn if _existing_host is not None else None,
@@ -918,6 +925,7 @@ async def execute_operation(
     ctx.preferred_model_id = _resolve_operation_model(definition, ctx)
     ctx.tool_schemas = _build_tool_schemas(definition.tool_ids)
     _rebuild_host_with_tool_wrapper(definition, ctx)
+    ctx.capability_binding_provider = None
     module = definition.implementation_module
     if module is None:
         raise OperationExecutionError(f"Operation '{operation_id}' has no implementation module.")
@@ -986,12 +994,21 @@ def _resolve_execution_configuration(
     """Attach only the target pack's immutable session configuration."""
     # ...existing code...
 
-    resolver = ctx.pack_configuration_resolver
-    pack_key = definition.effective_provider_id()
-    if not pack_key or resolver is None:
+    provider = ctx.capability_binding_provider
+    owner_id = definition.owner_id
+    if not owner_id or provider is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
         return
-    ctx.pack_config = resolver(pack_key)
+    binding = provider.binding_for(CapabilityRef("operation", definition.operation_id, owner_id))
+    if binding is None:
+        raise OperationExecutionError(
+            f"Operation '{definition.operation_id}' has no active capability binding."
+        )
+    if binding.owner_id != owner_id:
+        raise OperationExecutionError(
+            f"Operation '{definition.operation_id}' binding owner does not match its catalog owner."
+        )
+    ctx.pack_config = binding.configuration
 
 
 def _validate_parameters(
@@ -1037,7 +1054,7 @@ async def _require_approval(
     invocation = build_approval_invocation(
         target_kind="operation",
         target_id=definition.operation_id,
-        pack_id=definition.pack_id,
+        pack_id=definition.owner_id,
         effect=definition.effect,
         parameters=ctx.params,
         identity=identity,

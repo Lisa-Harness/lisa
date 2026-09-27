@@ -1,7 +1,7 @@
 """Auto-capture operation-context wiring (2026-09-23 finances-profile incident).
 
 The post-turn auto-capture path built its ``OperationExecutionContext``
-WITHOUT ``pack_configuration_resolver`` and ``model_router`` — unlike every
+WITHOUT ``capability_binding_provider`` and ``model_router`` — unlike every
 turn-loop dispatch site (``_build_entry_ctx``, the approval-resume ``common``
 context, the mid-turn operation dispatch). Consequences, observed on the
 finances profile:
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kernel.capability_binding import CapabilityRef
 from runtime.turn_hooks_builder import build_turn_hooks
 
 from runtime import HostRuntime
@@ -143,10 +144,12 @@ async def test_auto_capture_context_carries_pack_config_resolver_and_router(
     ctx = captured.get("ctx")
     assert ctx is not None, "auto-capture must dispatch synthesize_and_store_learning"
 
-    # Pack config resolver: must be the session resolver, NOT the empty mapping.
-    resolver = getattr(ctx, "pack_configuration_resolver", None)
-    assert resolver is not None, "capture context must wire pack_configuration_resolver"
-    config = resolver("lisa-pack-memory")
+    # Pack config binding: must be session configuration, not an empty mapping.
+    resolver = getattr(ctx, "capability_binding_provider", None)
+    assert resolver is not None, "capture context must wire capability_binding_provider"
+    config = resolver.binding_for(
+        CapabilityRef("operation", "synthesize_and_store_learning", "lisa-pack-memory")
+    ).configuration
     assert dict(config).get("memory_distill_max_tokens") == 5000, (
         "resolver must surface the session's lisa-pack-memory configuration"
     )

@@ -240,7 +240,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         query=getattr(ctx, "query", ""),
         parameters=getattr(ctx, "parameters", {}) or {},
         pack_config=getattr(ctx, "pack_config", {}),
-        pack_configuration_resolver=getattr(ctx, "pack_configuration_resolver", None),
+        capability_binding_provider=getattr(ctx, "capability_binding_provider", None),
         approval_service=getattr(ctx, "approval_service", None),
         approval_request_id=getattr(ctx, "approval_request_id", ""),
         session_plan_digest=getattr(ctx, "session_plan_digest", ""),

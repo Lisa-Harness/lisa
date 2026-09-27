@@ -4,9 +4,8 @@ Covers the three concerns audited in the ``*_id`` resolution audit:
 
 1. ``kernel.capability`` — ``resolve_capability`` precedence (operations before
    tools on id collision), per-catalog entry points, and None for unknown ids.
-2. ``effective_provider_id()`` — the canonical accessor on
-   ``ToolDefinition`` / ``OperationDefinition`` that prefers the fully-qualified
-   ``provider_id`` and falls back to the raw ``pack_id`` slug.
+2. ``owner_id`` — the catalog-owned canonical identity on
+    ``ToolDefinition`` / ``OperationDefinition``.
 3. ``validate_export_boundaries`` — loud failure (``OperationValidationError``)
    when a mode with an empty ``mode_provider_id`` references any capability,
    instead of silently flagging every reference as cross-pack.
@@ -42,6 +41,7 @@ def _tool(
     return ToolDefinition(
         tool_id=tool_id,
         description=description,
+        owner_id=provider_id or pack_id,
         pack_id=pack_id,
         provider_id=provider_id,
         exportable=exportable,
@@ -61,6 +61,7 @@ def _operation(
     return OperationDefinition(
         operation_id=operation_id,
         description=description,
+        owner_id=provider_id or pack_id,
         pack_id=pack_id,
         provider_id=provider_id,
         exportable=exportable,
@@ -90,33 +91,33 @@ def _mode(
     )
 
 
-# ── effective_provider_id ────────────────────────────────────────────────
+# ── owner_id ──────────────────────────────────────────────────────────────
 
 
-def test_effective_provider_id_prefers_provider_id() -> None:
-    """effective_provider_id() returns provider_id when both fields are set."""
+def test_owner_id_is_canonical() -> None:
+    """Definitions expose the catalog-owned identity directly."""
     tool = _tool("t", provider_id="lisa-pack-coding", pack_id="coding")
-    assert tool.effective_provider_id() == "lisa-pack-coding"
+    assert tool.owner_id == "lisa-pack-coding"
 
 
-def test_effective_provider_id_falls_back_to_pack_id() -> None:
-    """effective_provider_id() falls back to pack_id when provider_id is empty."""
+def test_owner_id_falls_back_only_in_test_factory() -> None:
+    """The test factory supplies an owner when authored metadata is absent."""
     tool = _tool("t", provider_id="", pack_id="coding")
-    assert tool.effective_provider_id() == "coding"
+    assert tool.owner_id == "coding"
 
 
-def test_effective_provider_id_empty_when_both_empty() -> None:
-    """effective_provider_id() returns '' when neither field is populated."""
+def test_owner_id_empty_when_definition_is_unbound() -> None:
+    """Definitions without catalog attribution remain visibly unbound."""
     tool = _tool("t")
-    assert tool.effective_provider_id() == ""
+    assert tool.owner_id == ""
 
 
-def test_effective_provider_id_works_for_operations() -> None:
-    """OperationDefinition.effective_provider_id() mirrors the tool accessor."""
+def test_owner_id_works_for_operations() -> None:
+    """Operations expose the same canonical owner field."""
     op = _operation("o", provider_id="lisa-pack-memory", pack_id="memory")
-    assert op.effective_provider_id() == "lisa-pack-memory"
+    assert op.owner_id == "lisa-pack-memory"
     op_bare = _operation("o", pack_id="memory")
-    assert op_bare.effective_provider_id() == "memory"
+    assert op_bare.owner_id == "memory"
 
 
 # ── resolve_capability precedence ────────────────────────────────────────

@@ -57,7 +57,7 @@ _MAP = _FoldMap(
         "workflow_position_updater": "workflow",
         "route_coordinator": "workflow",
         "state_provider": "services",
-        "pack_configuration_resolver": "services",
+        "capability_binding_provider": "services",
         "approval_service": "services",
         "recovery_service": "services",
         "code_change_artifact_store": "services",

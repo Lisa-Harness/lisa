@@ -1951,7 +1951,7 @@ def _build_tool_execution_context(
         mode_id=ctx.mode_id,
         query=ctx.query,
         pack_config=ctx.pack_config,
-        pack_configuration_resolver=ctx.pack_configuration_resolver,
+        capability_binding_provider=ctx.capability_binding_provider,
         approval_service=ctx.approval_service,
         approval_request_id=ctx.approval_request_id,
         session_plan_digest=ctx.session_plan_digest,

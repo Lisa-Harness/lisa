@@ -173,7 +173,7 @@ class TestContextFlag:
         from kernel.tools.registry import _resolve_execution_configuration
 
         definition = ToolDefinition(tool_id="bash_run", stream_output=True)
-        ctx = _ctx(tool_id="bash_run", pack_configuration_resolver=None)
+        ctx = _ctx(tool_id="bash_run", capability_binding_provider=None)
         _resolve_execution_configuration(definition, ctx)
         assert ctx.stream_output is True
 
@@ -182,7 +182,7 @@ class TestContextFlag:
         from kernel.tools.registry import _resolve_execution_configuration
 
         definition = ToolDefinition(tool_id="quiet_tool")
-        ctx = _ctx(tool_id="quiet_tool", pack_configuration_resolver=None)
+        ctx = _ctx(tool_id="quiet_tool", capability_binding_provider=None)
         _resolve_execution_configuration(definition, ctx)
         assert ctx.stream_output is False
 

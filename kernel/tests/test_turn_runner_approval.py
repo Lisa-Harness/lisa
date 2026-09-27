@@ -136,7 +136,7 @@ async def test_run_turn_pauses_when_operation_calls_effectful_tool(
                 memory_scope=ctx.memory_scope,
                 mode_id=ctx.mode_id,
                 parameters={"path": "src/a.py"},
-                pack_configuration_resolver=ctx.pack_configuration_resolver,
+                capability_binding_provider=ctx.capability_binding_provider,
                 approval_service=ctx.approval_service,
                 session_plan_digest=ctx.session_plan_digest,
             ),

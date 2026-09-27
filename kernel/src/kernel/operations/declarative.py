@@ -269,7 +269,7 @@ async def _execute_declarative_tool_call(
                     mode_id=ctx.mode_id,
                     query=_resolve_tool_query(ctx.query, tool_arguments),
                     parameters=tool_arguments,
-                    pack_configuration_resolver=ctx.pack_configuration_resolver,
+                    capability_binding_provider=ctx.capability_binding_provider,
                     approval_service=ctx.approval_service,
                     approval_request_id=ctx.approval_request_id,
                     session_plan_digest=ctx.session_plan_digest,
