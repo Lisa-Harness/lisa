@@ -19,7 +19,7 @@ shape of the ``router:`` block in ``models.yaml``:
         }
 
 The host merges pack-declared router configs with the user's manifest at
-model-discovery time (:func:`host.model_discovery.manifest.build_manifest_payload`):
+model-discovery time (:func:`runtime.model_discovery.manifest.build_manifest_payload`):
 
 - A user-provided ``router:`` block in ``models.yaml`` always wins (user
   wins). The pack default is only seeded when the user has not written one.

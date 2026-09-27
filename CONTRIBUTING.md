@@ -29,7 +29,7 @@ $env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [I
 uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
 # 5. Dead code check
-uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
+uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
 
 # 6. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
@@ -79,9 +79,9 @@ eval cases.
 | `lisa-harness-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
 | `lisa-harness-packstest` | `packstest/` | In-process pack test/eval harness (see `packstest/README.md`) |
-| `lisa-harness-runtime` | `host/` | Transport-neutral host runtime |
+| `lisa-harness-runtime` | `runtime/` | Transport-neutral host runtime |
 | `lisa-harness-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
-| `lisa-host` | `../lisa-hosts/packaging/lisa-host/` | Meta-package (`uv tool install lisa-host`) |
+| `lisa-host` | `../lisa-hosts/packaging/lisa-runtime/` | Meta-package (`uv tool install lisa-host`) |
 
 ## Commit Conventions
 

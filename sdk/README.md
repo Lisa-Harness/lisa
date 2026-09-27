@@ -8,7 +8,7 @@ The SDK holds **domain logic for everything the first-party MCP servers expose**
 
 Key principles:
 
-- **Generic and dependency-light**: SDK abstractions must work for any host. The SDK may import from `kernel`, never from hosts.
+- **Generic and dependency-light**: SDK abstractions must work for any runtime. The SDK may import from `kernel`, never from `runtime`.
 - **Import-safe public helpers**: no registration, environment reads, or I/O at module import time. Resolved configuration is accepted explicitly.
 - **Server boundary**: file I/O goes through the storage sandbox (relative paths only, deny-glob policy); SSRF protections and the response-size ceiling in the fetch primitive are non-bypassable. Environment translation belongs in host or tool adapters, not in the primitives.
 - **Namespace package**: `sdk` is a PEP 420 namespace shared with the bundled packs under `sdk/packs/`, which ship their own wheels. The `sdk` content root is exported from [`src/sdk/_content_root.py`](src/sdk/_content_root.py).
@@ -30,7 +30,7 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `memory/` | SQLite-backed memory store library (vec0 embeddings, backups). The `lisa-memory` MCP server wraps it. |
-| `thread/` | Lossless, segmented conversation-thread store (`ThreadStore`): three-tier layout (active/sealed segments + sparse index) with zstd sidecars and redaction policy. Owns the read path; the write path stays in `host.thread`. |
+| `thread/` | Lossless, segmented conversation-thread store (`ThreadStore`): three-tier layout (active/sealed segments + sparse index) with zstd sidecars and redaction policy. Owns the read path; the write path stays in `runtime.thread`. |
 | `storage/` | Sandboxed file I/O: `StorageBackend` owns the files sandbox, deny-glob policy, and model-manifest read/write. The `lisa-storage` MCP server wraps it. |
 | `workproducts.py` | Typed, pack-neutral `WorkProduct` contract plus `WorkProductStore` protocol — durable, approvable units of work shared across packs (cross-pack imports are forbidden, so the contract sits on neutral SDK ground). The host injects the file-based implementation. |
 

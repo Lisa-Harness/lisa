@@ -335,7 +335,7 @@ def get_resume_phrases() -> tuple[str, ...]:
     """Return the active resume-phrase vocabulary.
 
     Returns the session-injected list. The detectors in
-    ``host.handle_message`` (affirmative resume) and ``kernel.turn_runner``
+    ``runtime.handle_message`` (affirmative resume) and ``kernel.turn_runner``
     (continuation query) read this so the vocabulary stays in one place.
     Entries are lowercased, stripped, and applied as prefix matches on the
     lowered message. Raises ``RuntimeError`` when no session vocabulary

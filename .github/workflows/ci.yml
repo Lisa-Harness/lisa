@@ -41,7 +41,7 @@ jobs:
         run: uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
       - name: Dead code (vulture)
-        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
+        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
 
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python }})

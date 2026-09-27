@@ -24,7 +24,7 @@ This pack provides the operator UX for inspecting and resolving those records:
 | --- | --- | --- |
 | `kernel/recovery.py` | Recovery contracts (`RecoveryRecord`, `RecoveryIdentity`, `RecoveryService` protocol), state/retry/scope enums | Persistence, operator UX |
 | `kernel/turn_runner.py` | Write-ahead lifecycle instrumentation, startup reconciliation | Replay execution |
-| `host/recovery.py` | File-backed durable store (`FileRecoveryService`) | Command vocabulary, rendering |
+| `runtime/recovery.py` | File-backed durable store (`FileRecoveryService`) | Command vocabulary, rendering |
 | `sdk/packs/recovery/` (this pack) | Operator commands, rendering, retry gating | Durable state, kernel contracts |
 
 ## Retry safety

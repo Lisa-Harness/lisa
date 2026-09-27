@@ -92,7 +92,7 @@ REGISTRY: list[Endpoint] = [
         group="lisa.extensions.processing_loops",
         contract_module="kernel.intake.contracts",
         contract_name="ProcessingLoop",
-        consumer_site="host.intake._discover_processing_loops",
+        consumer_site="runtime.intake._discover_processing_loops",
         description=(
             "Background processing chain triggered after signal collection. "
             "Each loop takes ``ProcessContext`` (with collection results) and "

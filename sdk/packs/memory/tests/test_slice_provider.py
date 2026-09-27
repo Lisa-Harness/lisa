@@ -103,7 +103,7 @@ class _FakeHooks:
 class _ErrorHooks(_FakeHooks):
     """Hooks view whose memory.count and memory.list return ToolResult-shaped errors.
 
-    Mirrors what ``host.turn_hooks_builder._execute_tool`` now produces when
+    Mirrors what ``runtime.turn_hooks_builder._execute_tool`` now produces when
     the MCP pool returns an error: an object with a non-empty ``error`` and an
     empty ``output_text``. The slice must treat this as "no count" rather
     than attempting to parse an error string as JSON.
@@ -293,7 +293,7 @@ async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
 async def test_mines_new_sealed_segments(tmp_path: Path) -> None:
     """A newly sealed thread segment is mined into semantic memories exactly once."""
     # Build a real sealed thread segment.
-    from host.thread import append_thread_entry
+    from runtime.thread import append_thread_entry
 
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir(parents=True)
@@ -342,7 +342,7 @@ async def test_mining_disabled_when_mine_on_segment_seal_false(tmp_path: Path) -
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir(parents=True)
     thread_path = threads_dir / "adam"
-    from host.thread import append_thread_entry
+    from runtime.thread import append_thread_entry
 
     for i in range(5):
         append_thread_entry(

@@ -23,7 +23,7 @@ def test_settings_constructs_from_defaults() -> None:
 
 
 def test_context_budget_lane_fields_are_host_owned() -> None:
-    """The per-lane context budgets migrated to ``host.config``; the kernel
+    """The per-lane context budgets migrated to ``runtime.config``; the kernel
     keeps only the shared chars-per-token estimate and the mapper scoring
     weights. This pins the migration so accidental re-imports surface here.
     """

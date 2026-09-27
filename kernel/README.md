@@ -34,7 +34,7 @@ The `lisa-harness-runtime` hosts the kernel and loads packs containing concrete 
 | --- | --- |
 | `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. Supports pack exclusion via `excluded_packs`. |
 | `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by key, model_id, alias, or display_alias. Supports per-mode model overrides via `mode_models`. |
-| `config.py` | Kernel-owned settings: `sdk_content_roots`, declarative-completion defaults, turn-runner iteration budgets, guard caps, mapper scoring weights, and the shared chars-per-token estimate. Loads from environment with unknown-key filtering and an optional `LISA_` prefix. Surface identity defaults and per-lane context budgets live on the host (`host/config.py`). |
+| `config.py` | Kernel-owned settings: `sdk_content_roots`, declarative-completion defaults, turn-runner iteration budgets, guard caps, mapper scoring weights, and the shared chars-per-token estimate. Loads from environment with unknown-key filtering and an optional `LISA_` prefix. Surface identity defaults and per-lane context budgets live on the host (`runtime/config.py`). |
 | `pack_activation.py` | Shared helpers for reading disabled-pack state from `installed-packs.json` and `LISA_DISABLED_PACKS` env var. Used by all entry-point discovery mechanisms. |
 | `pack_configuration.py` | Immutable, pack-scoped configuration resolved from a session plan. `SessionPackConfigurationResolver` freezes configuration at construction time. |
 | `session_plan.py` | Strict session-manifest contracts (`SessionManifestV2`) and deterministic plan compilation. Defines `SessionPlan`, `PackSelection`, `ResourceSelection`, `ContextPlan`, and related models. |
@@ -402,7 +402,7 @@ A real host must inject concrete implementations for these seams:
 | Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
 
-The shared host runtime (`host`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI and web transport hosts.
+The shared runtime package (`runtime`) is the reference runtime. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI and web transport hosts.
 
 ## Privacy Model
 
@@ -605,11 +605,11 @@ purposes:
    `OperationExecutionContext.tool_schemas` from those declared tools so the
    operation's own LLM calls see the right function schemas.
 2. **Enforcement for declarative operations** — the registry wraps
-   `ctx.host.execute_tool` with `_wrap_declarative_tool_executor`, which rejects any
+   `ctx.runtime.execute_tool` with `_wrap_declarative_tool_executor`, which rejects any
    tool call outside the declared set at runtime
    (`kernel/operations/registry.py: _wrap_declarative_tool_executor`).
 
-Runtime operations receive the same `ctx.host.execute_tool`, but Python code is not
+Runtime operations receive the same `ctx.runtime.execute_tool`, but Python code is not
 mechanically prevented from calling an undeclared tool through other paths. Honor the
 contract; it is the basis for capability auditing.
 
@@ -654,7 +654,7 @@ provider selection in `LISA_SESSION_PROVIDER_SELECTIONS`; the catalog loader rai
 2. Checks mode permission via `_is_operation_allowed_for_mode`.
 3. Injects `ctx.preferred_model_id` from the definition.
 4. Builds `ctx.tool_schemas` from declared `tool_ids`.
-5. Wraps `ctx.host.execute_tool` to enforce the tool allowlist (declarative only).
+5. Wraps `ctx.runtime.execute_tool` to enforce the tool allowlist (declarative only).
 6. Calls `definition.implementation_module.execute(ctx)` under `asyncio.wait_for`
    when `timeout_seconds > 0`.
 7. Emits a `ToolExecutionTelemetry` event via `ctx.event_bus` with duration and status.
@@ -668,7 +668,7 @@ provider selection in `LISA_SESSION_PROVIDER_SELECTIONS`; the catalog loader rai
 | **Author format** | `.yml` + `.py` or `.operation.md` | `.tool.yml` + `.py` |
 | **Discovered from** | `operations/` subdirs in content roots | `tools/` subdirs in content roots |
 | **Model-callable** | When listed in `allowed_operation_ids` | When listed in `allowed_tool_ids` |
-| **Can call tools** | Yes, via `ctx.host.execute_tool` | No |
+| **Can call tools** | Yes, via `ctx.runtime.execute_tool` | No |
 | **LLM turn** | Optional (prompt ops use the model internally) | Never (pure Python) |
 | **Return type** | `OperationResult` | `ToolResult` |
 | **Execution kind** | `"runtime"` or `"prompt"` | `"runtime"` only |
@@ -681,5 +681,5 @@ checklist see [`../sdk/AUTHORING.md`](../sdk/AUTHORING.md).
 - [`docs/BOUNDARIES.md`](../docs/BOUNDARIES.md) — public/private boundary definition
 - [`sdk/README.md`](../sdk/README.md) — the SDK's role in the architecture and its module map
 - [`docs/PACK_AUTHORING_GUIDE.md`](../docs/PACK_AUTHORING_GUIDE.md) — how to create modes, operations, content packs, signal connectors, and processing loops
-- [`host/`](../host/) — transport-neutral runtime; CLI host usage lives in [`lisa-harness-cli`](https://github.com/Lisa-Harness/lisa-host-cli) and `../lisa-hosts/` docs
+- [`runtime/`](../runtime/) — transport-neutral runtime; CLI host usage lives in [`lisa-harness-cli`](https://github.com/Lisa-Harness/lisa-host-cli) and `../lisa-hosts/` docs
 - [`packstest/README.md`](../packstest/README.md) — in-process pack test/eval harness for verifying pack changes

@@ -217,7 +217,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not isinstance(result, ForkResult):
         return OperationResult(
             output_text=(
-                "host.fork returned an unexpected result type "
+                "runtime.fork returned an unexpected result type "
                 f"({type(result).__name__}); expected ForkResult."
             ),
             output_json={

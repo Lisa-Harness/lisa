@@ -296,9 +296,9 @@ The Markdown body is the **primary instruction body** — it is always included.
 
 The session-owned context mapper policy. This is the sole control surface for how evidence from intake, packs, and history is admitted, ranked, budgeted, and rendered into the prompt each turn.
 
-**Wiring.** The `context:` block compiles to `SessionPlan.manifest.context` (a `ContextPlan` in `kernel/session_plan.py`). At turn time, `host/turn_hooks_builder.py` reads `runtime.session_plan.manifest.context` and passes it through `assemble_dynamic_user_context` → `build_brokered_context_markdown` → `build_session_mapped_context_markdown` → `ContextMapper.map(...)`. The MCP `broker_context` tool (`mcp_server/context/server.py`) accepts the same `context_plan` over the wire and routes through the same `ContextMapper`. There is no second, parallel routing system — the legacy namespace-based `context_routing` block was removed; the `ContextPlan` is the only engine.
+**Wiring.** The `context:` block compiles to `SessionPlan.manifest.context` (a `ContextPlan` in `kernel/session_plan.py`). At turn time, `runtime/turn_hooks_builder.py` reads `runtime.session_plan.manifest.context` and passes it through `assemble_dynamic_user_context` → `build_brokered_context_markdown` → `build_session_mapped_context_markdown` → `ContextMapper.map(...)`. The MCP `broker_context` tool (`mcp_server/context/server.py`) accepts the same `context_plan` over the wire and routes through the same `ContextMapper`. There is no second, parallel routing system — the legacy namespace-based `context_routing` block was removed; the `ContextPlan` is the only engine.
 
-**Data flow.** `build_unified_state` (in `host/state_provider.py`) collects `ContextItem` records from intake and the extension-item hook into `UnifiedState.context_items` — a single flat feed. The mapper walks that feed against your `context.sources` rules, gates and ranks matches with your `context.ranking` weights, fits them to the model-aware window via `context.budget`, and renders the survivors into lane-ordered Markdown. The state carries no routing policy of its own; all policy lives here.
+**Data flow.** `build_unified_state` (in `runtime/state_provider.py`) collects `ContextItem` records from intake and the extension-item hook into `UnifiedState.context_items` — a single flat feed. The mapper walks that feed against your `context.sources` rules, gates and ranks matches with your `context.ranking` weights, fits them to the model-aware window via `context.budget`, and renders the survivors into lane-ordered Markdown. The state carries no routing policy of its own; all policy lives here.
 
 #### `context.models`
 
@@ -475,7 +475,7 @@ Provider IDs are normalized: `lisa-pack-brave`, `brave`, and `brave_pack` all ma
 
 ## Resolution and Loading
 
-The host resolves a session context source at startup via `host.session_context.resolve_session_context_source` — from local disk only:
+The host resolves a session context source at startup via `runtime.session_context.resolve_session_context_source` — from local disk only:
 
 1. **Explicit path** (`--session-context <file>.md`): must exist and be a Markdown file; a missing file is an error, not a fallthrough.
 2. **`LISA_SESSION_CONTEXT_PATH` env var**: an explicit `.md` path. When set, the file must exist — a configured-but-missing path raises instead of silently falling back.
@@ -547,7 +547,7 @@ body:
 
 ### Resolution order
 
-`from:`/`body:` are resolved by `host.session_from_resolver.resolve_session_from_directives` after source resolution and before `compile_session_plan`. Pack discovery runs lazily — only when a directive is actually present — so sessions without directives pay zero discovery cost. When no directive is present, the resolver is a passthrough and existing sessions behave identically.
+`from:`/`body:` are resolved by `runtime.session_from_resolver.resolve_session_from_directives` after source resolution and before `compile_session_plan`. Pack discovery runs lazily — only when a directive is actually present — so sessions without directives pay zero discovery cost. When no directive is present, the resolver is a passthrough and existing sessions behave identically.
 
 ---
 

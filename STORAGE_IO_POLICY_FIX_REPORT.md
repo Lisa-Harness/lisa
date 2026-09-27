@@ -40,54 +40,54 @@ Net effect: 25 insertions, 28 deletions, `_ALLOWLIST` 21 keys → 20 keys,
 -        "resolved.write_text(",
 -        "path.write_text(",
 -    ),
-     "host/src/host/content_roots.py": (
+     "runtime/src/runtime/content_roots.py": (
          "path.write_text(",
          "path.parent.mkdir(parents=True, exist_ok=True)",
      ),
--    "host/src/host/turn_hooks_builder.py": (
+-    "runtime/src/runtime/turn_hooks_builder.py": (
 -        "thread_path.write_text(",
 -        "thread_path.parent.mkdir(parents=True, exist_ok=True)",
 -    ),
-     "host/src/host/code_artifacts.py": (
+     "runtime/src/runtime/code_artifacts.py": (
          "temporary_path.write_text(",
          "os.replace(temporary_path, self._path)",
 @@ -99,35 +91,42 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
      ),
-     "host/src/host/intake.py": (
+     "runtime/src/runtime/intake.py": (
          "state_path.write_text(",
 -        "data_dir.mkdir(parents=True, exist_ok=True)",
 +        "state_path.parent.mkdir(parents=True, exist_ok=True)",
      ),
-     "host/src/host/recovery.py": (
+     "runtime/src/runtime/recovery.py": (
          "self._path.parent.mkdir(parents=True, exist_ok=True)",
          "temp_path.write_text(",
          "os.replace(temp_path, self._path)",
      ),
--    "host/src/host/state_provider.py": (
+-    "runtime/src/runtime/state_provider.py": (
 -        "digest_path.write_text(",
 -        "self._thread_path.write_text(",
 -    ),
-     "host/src/host/model_discovery/manifest.py": (
+     "runtime/src/runtime/model_discovery/manifest.py": (
          "tmp.write_text(",
          "path.parent.mkdir(parents=True, exist_ok=True)",
          "tmp.unlink(missing_ok=True)",
      ),
--    "host/src/host/session_context_fetch.py": (
+-    "runtime/src/runtime/session_context_fetch.py": (
 -        "cache_meta.write_text(",
 -        "cache_md.write_bytes(",
 -        "cache_md.parent.mkdir(parents=True, exist_ok=True)",
 -    ),
--    "host/src/host/thread.py": (
+-    "runtime/src/runtime/thread.py": (
 -        'thread_path.open("a"',
-+    "host/src/host/thread/__init__.py": (
++    "runtime/src/runtime/thread/__init__.py": (
          "thread_path.parent.mkdir(parents=True, exist_ok=True)",
 +        "paths.current.parent.mkdir(parents=True, exist_ok=True)",
      ),
--    "host/src/host/workflow_instance_store.py": (
+-    "runtime/src/runtime/workflow_instance_store.py": (
 -        "self._path.parent.mkdir(parents=True, exist_ok=True)",
 -        "temp_path.write_text(",
 -        "os.replace(temp_path, self._path)",
-+    "host/src/host/thread/_store.py": (
++    "runtime/src/runtime/thread/_store.py": (
 +        "index_path.parent.mkdir(parents=True, exist_ok=True)",
 +        "dict_path.parent.mkdir(parents=True, exist_ok=True)",
 +        "dict_path.write_bytes(dict_data.as_bytes())",
@@ -95,11 +95,11 @@ Net effect: 25 insertions, 28 deletions, `_ALLOWLIST` 21 keys → 20 keys,
 +        "sealed_path.write_bytes(compressed)",
 +        "paths.current.unlink()",
 +    ),
-+    "host/src/host/policy.py": (
++    "runtime/src/runtime/policy.py": (
 +        "path.parent.mkdir(parents=True, exist_ok=True)",
 +        "path.write_text(header + body, encoding=\"utf-8\")",
 +    ),
-+    "host/src/host/testing/runtime_factory.py": (
++    "runtime/src/runtime/testing/runtime_factory.py": (
 +        "manifest_dir.mkdir(parents=True, exist_ok=True)",
 +        "(manifest_dir / \"models.yaml\").write_text(",
 +    ),
@@ -108,7 +108,7 @@ Net effect: 25 insertions, 28 deletions, `_ALLOWLIST` 21 keys → 20 keys,
 +        "path.write_text(",
 +        "path.write_text(seg_id, encoding=\"utf-8\")",
      ),
-     "host/src/host/commands/_packs.py": (
+     "runtime/src/runtime/commands/_packs.py": (
          "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
 @@ -159,14 +158,12 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
          "target_dir.mkdir(parents=True, exist_ok=True)",
@@ -139,13 +139,13 @@ why that matters.
 | Entry | Action |
 | --- | --- |
 | `mcp_server/src/mcp_server/storage/server.py` (both snippets) | Delete key — implementation moved to `sdk/` |
-| `host/src/host/turn_hooks_builder.py` (both) | Delete key — file has no I/O left |
-| `host/src/host/state_provider.py` (both) | Delete key — file has no I/O left |
-| `host/src/host/session_context_fetch.py` | Delete key — file deleted |
-| `host/src/host/thread.py` | Delete key — moved to `thread/` package |
-| `host/src/host/workflow_instance_store.py` | Delete key — file deleted |
+| `runtime/src/runtime/turn_hooks_builder.py` (both) | Delete key — file has no I/O left |
+| `runtime/src/runtime/state_provider.py` (both) | Delete key — file has no I/O left |
+| `runtime/src/runtime/session_context_fetch.py` | Delete key — file deleted |
+| `runtime/src/runtime/thread.py` | Delete key — moved to `thread/` package |
+| `runtime/src/runtime/workflow_instance_store.py` | Delete key — file deleted |
 | `sdk/.../_backend.py`: `_CHECKPOINTS_SUBDIR` line, `checkpoints_root.mkdir(...)`, `path.write_text(json.dumps(bundle, ...))` | Delete — checkpoint store removed |
-| `host/src/host/intake.py`: `data_dir.mkdir(...)` | Replace with `state_path.parent.mkdir(...)` |
+| `runtime/src/runtime/intake.py`: `data_dir.mkdir(...)` | Replace with `state_path.parent.mkdir(...)` |
 
 Result after applying: `uv run python scripts/check_direct_io_policy.py`
 → exit **0**, no in-tree violations, and the unused-snippet diagnostic
@@ -180,22 +180,22 @@ elsewhere and is unallowlisted.
 
 | Dead key | Deleted by |
 | --- | --- |
-| `host/src/host/thread.py` | `d257af7` (2026-09-13) "refactor(host): split host/thread.py into a thread package" |
-| `host/src/host/session_context_fetch.py` | `d839887` (2026-09-19) "refactor!(host): local-only session context; drop resume + refresh knobs" |
-| `host/src/host/workflow_instance_store.py` | `d839887` (2026-09-19) |
+| `runtime/src/runtime/thread.py` | `d257af7` (2026-09-13) "refactor(host): split runtime/thread.py into a thread package" |
+| `runtime/src/runtime/session_context_fetch.py` | `d839887` (2026-09-19) "refactor!(host): local-only session context; drop resume + refresh knobs" |
+| `runtime/src/runtime/workflow_instance_store.py` | `d839887` (2026-09-19) |
 
 ### Fix
 
 Move each entry's snippets to the file that inherited the code:
 
-- `thread.py` → **`host/src/host/thread/__init__.py`** and
-  **`host/src/host/thread/_store.py`**
+- `thread.py` → **`runtime/src/runtime/thread/__init__.py`** and
+  **`runtime/src/runtime/thread/_store.py`**
 - `session_context_fetch.py` / `workflow_instance_store.py` → confirm whether
   the writers were deleted outright (then drop the keys) or relocated (then
   re-point them). `d839887` dropped a lot of persistence, so deletion is
   likely for at least one.
 
-Note the current key for `host/src/host/thread.py` only allowlists
+Note the current key for `runtime/src/runtime/thread.py` only allowlists
 `thread_path.open("a"` and `thread_path.parent.mkdir(...)`, but the refactor
 split the writer across two files with 8 new callsites. A path-keyed
 allowlist does not survive file→package refactors; see the recommendation at
@@ -205,12 +205,12 @@ the end.
 
 ## 2. Allowlist snippet drift (file allowlisted, snippet no longer matches)
 
-### 2.1 `host/src/host/intake.py:409` — the mkdir target was renamed
+### 2.1 `runtime/src/runtime/intake.py:409` — the mkdir target was renamed
 
 **Allowlist says:**
 
 ```python
-"host/src/host/intake.py": (
+"runtime/src/runtime/intake.py": (
     "state_path.write_text(",
     "data_dir.mkdir(parents=True, exist_ok=True)",
 ),
@@ -294,19 +294,19 @@ other 8 snippets are still live — leave them.
 
 | File | Lines | Nature | Recommendation |
 | --- | --- | --- | --- |
-| `host/src/host/thread/_store.py` | 122, 197, 198, 286, 287, 311 | Thread store: index mkdir, compaction dict write, sealed-segment write, unlink on rotate | **Allowlist** — inherits the old `thread.py` carve-out |
-| `host/src/host/thread/__init__.py` | 163, 207 | Thread path mkdir, current-path mkdir | **Allowlist** — same inheritance |
-| `host/src/host/policy.py` | 471, 490, 516 | Policy rule store: mkdir ×2, `path.write_text(header + body, ...)` | **Allowlist** — host-internal config writer, added in `845cb39` (2026-09-05) |
-| `host/src/host/testing/runtime_factory.py` | 75, 76 | Test-runtime fixture writing `models.yaml` | **Allowlist or exclude** — test-support module inside a shipped package |
+| `runtime/src/runtime/thread/_store.py` | 122, 197, 198, 286, 287, 311 | Thread store: index mkdir, compaction dict write, sealed-segment write, unlink on rotate | **Allowlist** — inherits the old `thread.py` carve-out |
+| `runtime/src/runtime/thread/__init__.py` | 163, 207 | Thread path mkdir, current-path mkdir | **Allowlist** — same inheritance |
+| `runtime/src/runtime/policy.py` | 471, 490, 516 | Policy rule store: mkdir ×2, `path.write_text(header + body, ...)` | **Allowlist** — host-internal config writer, added in `845cb39` (2026-09-05) |
+| `runtime/src/runtime/testing/runtime_factory.py` | 75, 76 | Test-runtime fixture writing `models.yaml` | **Allowlist or exclude** — test-support module inside a shipped package |
 | `sdk/packs/memory/src/sdk/packs/memory/slice_provider.py` | 159, 160, 328, 329 | Turn-counter sidecar read/write | **Allowlist** — see note below |
 
 ### Note on `runtime_factory.py`
 
 `_is_runtime_python` excludes paths containing `/tests/` and filenames
-starting with `test_`, but `host/src/host/testing/runtime_factory.py` is
+starting with `test_`, but `runtime/src/runtime/testing/runtime_factory.py` is
 neither. It is test-support code that ships inside the host package.
 
-Either add a `host/testing/` exclusion to `_is_runtime_python`, or allowlist
+Either add a `runtime/testing/` exclusion to `_is_runtime_python`, or allowlist
 the two snippets. Excluding is cleaner — nothing in that module is a
 production writer — but it widens the exclusion surface, so allowlisting is
 the lower-risk change.
@@ -345,14 +345,14 @@ allowlist keys: 21   snippets: 53   unused: 19
 
 FULLY DEAD KEYS (6):
   mcp_server/src/mcp_server/storage/server.py     [2/2]
-  host/src/host/turn_hooks_builder.py             [2/2]
-  host/src/host/state_provider.py                 [2/2]
-  host/src/host/session_context_fetch.py          [3/3]   <- FILE DELETED
-  host/src/host/thread.py                         [2/2]   <- FILE DELETED
-  host/src/host/workflow_instance_store.py        [3/3]   <- FILE DELETED
+  runtime/src/runtime/turn_hooks_builder.py             [2/2]
+  runtime/src/runtime/state_provider.py                 [2/2]
+  runtime/src/runtime/session_context_fetch.py          [3/3]   <- FILE DELETED
+  runtime/src/runtime/thread.py                         [2/2]   <- FILE DELETED
+  runtime/src/runtime/workflow_instance_store.py        [3/3]   <- FILE DELETED
 
 PARTIALLY DEAD (2):
-  host/src/host/intake.py                         [1/2]
+  runtime/src/runtime/intake.py                         [1/2]
   sdk/src/sdk/storage/_backend.py                 [4/10]
 ```
 
@@ -370,9 +370,9 @@ Most of this is benign cleanup, but three entries are informative:
   implementation moved to `sdk/src/sdk/storage/_backend.py`. This was the
   *intended* carve-out for the storage server; the entry now carves out
   nothing, and the live code needs new entries instead (section 2.2).
-- **`host/src/host/turn_hooks_builder.py`, `state_provider.py`** — the files
+- **`runtime/src/runtime/turn_hooks_builder.py`, `state_provider.py`** — the files
   still exist but contain **zero** I/O primitives; their writes moved into
-  `host/thread/` (verified: `index_path` / `digest_path` writers now live in
+  `runtime/thread/` (verified: `index_path` / `digest_path` writers now live in
   `thread/_store.py`). These are dead keys pointing at files that merely
   stopped doing I/O.
 - **`sdk/src/sdk/storage/_backend.py`** — 4/10 unused. Two are the drift
@@ -440,7 +440,7 @@ Two options, in increasing order of durability:
 2. **Key carve-outs by directory, not by file + line text.** Every current
    violation is a host-internal lifecycle-category writer (`state/`, `run/`,
    `cache/`, `config/`). A small set of declared roots — e.g. "everything
-   under `host/src/host/thread/`", "`host/policy.py`",
+   under `runtime/src/runtime/thread/`", "`runtime/policy.py`",
    "`sdk/src/sdk/storage/_backend.py`" — survives file moves and snippet
    rewrites and would have produced zero false positives across all four
    refactors.

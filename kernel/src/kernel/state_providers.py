@@ -62,7 +62,7 @@ class BlankStateProvider:
     This is the right provider for hosts that have not yet wired
     opportunistic house-keeping: they get the slot, the cost is
     effectively zero, and a future change can swap in a richer
-    provider (e.g. :class:`host.state_provider.FileBackedStateProvider`)
+    provider (e.g. :class:`runtime.state_provider.FileBackedStateProvider`)
     without touching the turn runner.
     """
 

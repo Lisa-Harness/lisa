@@ -226,12 +226,12 @@ def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
     stays pack-encapsulated (no reference to external search provider packs).
     """
     # Resolve through the same entry-point path the host uses
-    # (``host.session_context.bundled_default_session_path``) so the test
+    # (``runtime.session_context.bundled_default_session_path``) so the test
     # follows the src-layout / wheel layout instead of a hardcoded
     # pre-src-layout relative path. Falls back to a repo-relative guess
     # when the host package is not importable (kernel-only venvs).
     try:
-        from host.session_context import bundled_default_session_path
+        from runtime.session_context import bundled_default_session_path
 
         default_session_path = bundled_default_session_path()
     except ImportError:

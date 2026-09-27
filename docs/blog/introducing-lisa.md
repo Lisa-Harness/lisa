@@ -33,7 +33,7 @@ Lisa is a layered Python framework (uv workspace) for building agent **hosts** a
 | `kernel` | Runtime-neutral contracts, the IPSAR FSM, the operation registry, tool and storage protocols, and per-iteration model-router discovery |
 | `sdk` | Author-facing helpers, rendering, pack composition, and a CEL-based model router |
 | `sdk/packs` | Bundled reference packs: core, memory, introspect, recovery |
-| `host` | Transport-neutral runtime—typed config, mutable state, provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence |
+| `runtime` | Transport-neutral runtime—typed config, mutable state, provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence |
 | `mcp_server` | First-party MCP servers that expose Lisa's surface-scoped tools over stdio |
 
 A real host injects concrete implementations for model completion, tool execution, storage, memory, transport, and scheduled work. The kernel and SDK stay neutral; you can plug in a Teams transport, a CLI REPL, or a headless scheduler without forking the framework.

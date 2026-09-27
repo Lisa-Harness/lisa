@@ -1,9 +1,9 @@
 """Lossless segmented thread-store read backend.
 
-Extracted from ``host.thread``: the segment-path derivation, sparse
+Extracted from ``runtime.thread``: the segment-path derivation, sparse
 index parsing, zstd decompression, and the public read operations
 (``load_recent``, ``load_range``, ``build_recent_excerpt``,
-``build_manifest``). The write path stays in ``host.thread`` because it
+``build_manifest``). The write path stays in ``runtime.thread`` because it
 owns the per-turn response and effect-receipt persistence and the
 host-command query check used by ``build_recent_excerpt``.
 
@@ -209,7 +209,7 @@ class ThreadStore:
       segment recording ``seg_id`` and the turn/timestamp range it covers.
 
     The write path (append, seal, dictionary training) stays in
-    ``host.thread``; this class is the read-only contract shared by the
+    ``runtime.thread``; this class is the read-only contract shared by the
     MCP server and the host's context-assembly layer.
     """
 
@@ -274,7 +274,7 @@ class ThreadStore:
     def next_turn_index(self) -> int:
         """Return the 0-based global turn index the next appended entry will receive.
 
-        Same derivation ``host.thread.append_thread_entry`` uses to stamp the
+        Same derivation ``runtime.thread.append_thread_entry`` uses to stamp the
         ``turn`` field at append time: the sum of all sealed-segment turn
         spans plus the current active-segment entry count. Computing this at
         turn start (before the turn runs) lets the host annotate the model
@@ -338,7 +338,7 @@ class ThreadStore:
         ``is_host_command`` is an optional callable ``(query: str) -> bool``
         used to strip host-only command entries (``/pack disable github``,
         ``/help``, ``/tokens``, ...) — operator UI gestures, not dialogue.
-        The host passes ``host.host_commands.is_host_command_query``; the
+        The host passes ``runtime.host_commands.is_host_command_query``; the
         MCP server passes ``None`` (keep all entries).
         """
         raw_limit = max(limit, min(limit * 4, 200))

@@ -217,7 +217,7 @@ class MCPClientConfig:
             ``None`` for configs constructed before the compiler passed it
             through; introspection surfaces fall back to deriving transport
             from ``url``/``command`` in that case. Used by the MCP
-            introspection surface (:func:`host.introspect.gather_introspection`)
+            introspection surface (:func:`runtime.introspect.gather_introspection`)
             so the operator sees the real launch kind, not a derived
             ``http|stdio`` binary.
     """
@@ -530,7 +530,7 @@ class MCPToolPool:
         Mirrors :meth:`warm_failed_ids` for the cold-server failure set so
         the introspection surface can distinguish "cold and not yet tried"
         from "cold and tried-and-failed" — the latter reports ``failed``,
-        not ``cold``, in :func:`host.introspect.gather_introspection`.
+        not ``cold``, in :func:`runtime.introspect.gather_introspection`.
         """
         return sorted(self._cold_failed)
 

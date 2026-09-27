@@ -80,7 +80,7 @@ routing:
   # "proceed with the current step" matches "proceed". Keep entries to
   # unambiguous imperatives; avoid common words like "ok" or "yes" that
   # false-positive on normal conversation (those are handled by the exact-
-  # match set in host.handle_message).
+  # match set in runtime.handle_message).
   resume_phrases:
     - proceed
     - continue

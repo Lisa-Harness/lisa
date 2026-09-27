@@ -487,7 +487,7 @@ class TestDiscoverCopilotCustomizations:
             "engineering/debugging.instructions.md",
             "engineering/pack-content.instructions.md",
             "engineering/workflow.instructions.md",
-            "architecture/host.instructions.md",
+            "architecture/runtime.instructions.md",
             "architecture/kernel.instructions.md",
             "architecture/mcp.instructions.md",
             "architecture/packs.instructions.md",

@@ -4,8 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
 
-Lisa is a portable harness for building agent hosts, *modal* agents and *packs*,
-containing modes, operations, tools, proxies, and MCP servers.
+Lisa is a portable AI LLM harness for building agent hosts, *modal* agents and *packs*,
+containing *modes*, *operations*, *tools*, model proxies, and MCP servers.
 
 The [kernel](kernel) defines the turn loop,
 model context,
@@ -16,16 +16,15 @@ It does that by managing packs.
 Packs contain any combination of content, i.e., prompts,
 agent modes, operations, tools, MCP servers and proxies,
 e.g., the *core* pack contains system-prompt and a minimal *session_context*.
-The [sdk](sdk) contains the core, memory, introspect, and recovery packs.
-It contains most of the code comprising the built-in MCP servers.
-It also contains the CEL-based [model router](sdk/src/sdk/router/) the host uses.
-The [host](host) loads packs and registers their modes, operations, and tools in the kernel.
-It also bootstraps [first-](mcp_server) and third-party MCP servers and proxies.
-
-There is also the `packstest` harness that verifies content packs in-process,
+The [sdk](sdk) contains the *core*, *memory*, *introspect*, and *recovery* packs.
+It also contains most of the code comprising the [built-in](mcp_server) MCP servers,
+and the CEL-based model [`router`](sdk/src/sdk/router/) the runtime uses.
+The [runtime](runtime) loads packs and registers their modes, operations, and tools in the kernel.
+It also bootstraps first- and third-party MCP servers and proxies.
+There is also the [packstest](packstest) harness that verifies content packs in-process,
 from source, with no model calls.
 
-The [`lisa-harness-cli`][lisa-host-cli] contains the runnable CLI tool.
+To run Lisa, install [lisa-cli](../lisa-cli).
 
 ## Table of contents
 
@@ -47,15 +46,17 @@ The [`lisa-harness-cli`][lisa-host-cli] contains the runnable CLI tool.
 
 ## Architecture
 
-Lisa is based on the classic kernel + SDK = host architecture.
+Lisa is based on the kernel + SDK + runtime architecture.
 The idea is to abstract the core behavior in the kernel,
-a basic structure in the (still abstract) host runtime,
-and a concrete but completely composable runtime via packs.
+a basic structure in the (still abstract) runtime,
+and composable (concrete) interfaces via host runtime and packs.
+Lisa modes and operations use MCP server tools natively.
+However Lisa tools are Python + YAML.
 
 ```mermaid
 flowchart TB
-    T["Your transport<br/>CLI · chat · headless scheduler"] -->|"implements TransportCallbacks"| HOST
-    subgraph HOST["host — abstract runtime"]
+    T["Your transport<br/>CLI · chat · headless scheduler"] -->|"implements TransportCallbacks"| RUNTIME
+    subgraph RUNTIME["runtime — abstract runtime"]
         HM["handle_message dispatch · commands · MCP pool ·<br/>approval policy · model discovery · thread store"]
     end
     subgraph CORE["context, tools, and loop"]
@@ -68,12 +69,12 @@ flowchart TB
     end
     HARN["packstest — in-process pack test/eval harness (dev only)"]
 
-    HOST -->|"wires TurnHooks + ContextSeams"| K
-    HOST -->|"thread read path · content roots"| S
+    RUNTIME -->|"wires TurnHooks + ContextSeams"| K
+    RUNTIME -->|"thread read path · content roots"| S
     P --> S
     S --> K
-    P -.->|"lazy: host.thread reads"| HOST
-    HOST -->|"compiles pool, spawns servers"| M
+    P -.->|"lazy: runtime.thread reads"| RUNTIME
+    RUNTIME -->|"compiles pool, spawns servers"| M
     K -.->|"catalog + content · external tools over MCP"| M
     HARN -.-> K
     HARN -.-> S
@@ -86,8 +87,8 @@ infrastructural seams rather than whole-layer import dependencies.
 | --- | --- | --- | --- |
 | `kernel` | The turn loop (`turn_runner`, `turn_phases`), mode routing and workflow FSMs (`ipsar`, `ipsar_fsm`), the operation and tool registries, the capability manifest, session-plan contracts and their compiler, approval and recovery contracts, the slicing system, and entry-point discovery for content roots, host commands, routers, slice providers, and provider gateways | Nothing in-repo | Host transports, production deployment, model policy, proprietary app behavior |
 | `sdk` | Content discovery, tool cataloging, model routing (`lisa-router`), provider gateways, the SQLite memory store, the thread read/storage/fetch primitives | `kernel` | Host wiring, private model policy, production storage |
-| `sdk/packs` | Bundled reference packs — `core`, `memory`, `introspect`, `recovery` — contributing modes, operations, tools, authored content, slice providers, and pack-registered slash commands; the memory pack also provides the default memory MCP backend | `kernel`, `sdk` (bundled packs may lazily import `host.thread`) | Product strategy, private app behavior, cross-pack imports |
-| `host` | Abstract runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), `handle_message` dispatch and host commands, MCP pool compilation and launch policy, the approval policy engine (`config/policy.yaml`), model discovery, context assembly, the thread store write path, recovery records, and pack management | `kernel`, `sdk`, the bundled packs, `mcp_server` (launch config) | Chat transport, durable memory backends, production-grade model policy |
+| `sdk/packs` | Bundled reference packs — `core`, `memory`, `introspect`, `recovery` — contributing modes, operations, tools, authored content, slice providers, and pack-registered slash commands; the memory pack also provides the default memory MCP backend | `kernel`, `sdk` (bundled packs may lazily import `runtime.thread`) | Product strategy, private app behavior, cross-pack imports |
+| `runtime` | Abstract runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), `handle_message` dispatch and host commands, MCP pool compilation and launch policy, the approval policy engine (`config/policy.yaml`), model discovery, context assembly, the thread store write path, recovery records, and pack management | `kernel`, `sdk`, the bundled packs, `mcp_server` (launch config) | Chat transport, durable memory backends, production-grade model policy |
 | `mcp_server` | First-party MCP servers exposing Lisa's surface-scoped tools over stdio — thin facades; domain logic stays in the SDK | `kernel`, `sdk` | Transport, host wiring, cross-server imports |
 | `packstest` | The in-process pack test/eval harness: `validate_pack` structure checks, `run_tool`/`run_scenario` behavior driving, diffable `Trajectory` reports, offline git fixtures, and deterministic `eval` cases | `kernel`, `sdk` only | Anything at runtime — pack repos consume it as the dev dependency `lisa-harness-packstest` |
 
@@ -121,7 +122,7 @@ packages together.
 │   │   ├── introspect/  #   operational self-model and reflective assessment
 │   │   └── recovery/    #   thread-based /resume and recovery records
 │   └── router/          # CEL-based model router (lisa-router) and runtime support
-├── host/                # Transport-neutral host runtime
+├── runtime/                # Transport-neutral host runtime
 ├── mcp_server/          # First-party MCP servers (catalog, content, context, ...)
 ├── packstest/           # In-process pack test/eval harness (dev-only)
 ├── artifacts/           # Generated manifests, thread store, token usage, overlays
@@ -148,7 +149,7 @@ uv tool install lisa-harness-cli
 ```
 
 This provides the `lisa` entry point, which wraps the transport-neutral
-`host` runtime with console rendering and a REPL loop.
+`runtime` package with console rendering and a REPL loop.
 
 ## Quick start
 
@@ -292,7 +293,7 @@ $env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [I
 uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
 
 # Dead code check
-uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server host/src/host vulture_allowlist.py
+uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
 
 # Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
@@ -307,7 +308,7 @@ Focused sanity checks:
 uv run python -c "import kernel, sdk; print(kernel.__file__); print(sdk.__file__)"
 uv run lisa modes
 uv run lisa models
-uv run pytest kernel/tests sdk/tests host/tests -m "not live" -q --tb=short
+uv run pytest kernel/tests sdk/tests runtime/tests -m "not live" -q --tb=short
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server host
 ```
 

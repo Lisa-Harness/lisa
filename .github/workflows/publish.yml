@@ -48,7 +48,7 @@ jobs:
               "sdk/packs/introspect": "lisa-pack-introspect",
               "sdk/packs/memory": "lisa-pack-memory",
               "sdk/packs/recovery": "lisa-pack-recovery",
-              "host": "lisa-harness-runtime",
+              "runtime": "lisa-harness-runtime",
           }
           tag = os.environ["RELEASE_TAG"]
           for directory, expected_name in packages.items():

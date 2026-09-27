@@ -1,6 +1,6 @@
 """Recovery-pack slash-command handlers.
 
-These handlers live in the pack (not in ``host``) because they
+These handlers live in the pack (not in ``runtime``) because they
 delegate to the recovery service owned by the host runtime. The host
 discovers them through the ``lisa.extensions.host_commands`` entry-point
 group and dispatches ``/stalls``, ``/stall``, ``/retry``, ``/retry-safe``,
@@ -371,7 +371,7 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     operator can resolve them with ``/retry``, ``/skip``, or ``/cancel``.
     """
     del message
-    from host.thread import load_recent_thread_entries
+    from runtime.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
     yielded_entry: dict[str, Any] | None = None

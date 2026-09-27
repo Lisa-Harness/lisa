@@ -393,7 +393,7 @@ def _looks_like_continuation_query(query: str) -> bool:
     The vocabulary is session-authored via ``routing.resume_phrases`` in
     ``session_context.md``; the historical default is used when no session
     vocabulary is wired. This keeps the detector in lock-step with the
-    host's affirmative-resume path (``host.handle_message``), which
+    host's affirmative-resume path (``runtime.handle_message``), which
     reads the same registry.
     """
     lowered = (query or "").strip().lower()

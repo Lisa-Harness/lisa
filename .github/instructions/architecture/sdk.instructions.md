@@ -8,7 +8,7 @@ description: Architecture boundaries for the SDK package.
 
 - The SDK package holds reusable content discovery, customization parsing, and repository-facing helpers.
 - Keep SDK abstractions generic and dependency-light.
-- The SDK may import from `kernel`, never from hosts. Avoid circular dependencies between SDK subpackages; promote shared contracts to the kernel when necessary.
+- The SDK may import from `kernel`, never from `runtime`. Avoid circular dependencies between SDK subpackages; promote shared contracts to the kernel when necessary.
 - Public helpers must be import-safe: no registration or environment reads at module import time. Accept resolved configuration explicitly and use explicit re-exports.
 
 ## SDK and server boundary

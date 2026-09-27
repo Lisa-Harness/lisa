@@ -7,7 +7,7 @@ description: Architecture boundaries for the packs layer.
 # Packs architecture
 
 - Packs provide capability extensions and should remain composable rather than entangled with host behavior.
-- Packs may import from `kernel` and `sdk`, never hosts. Avoid cross-pack imports; promote shared helpers to the SDK.
+- Packs may import from `kernel` and `sdk`, never `runtime`. Avoid cross-pack imports; promote shared helpers to the SDK.
 - Discovery and entry points must be side-effect-free. Hosts inject credentials and resolved configuration.
 - Prefer declarative mode and operation content. Runtime handlers are thin callables that accept `OperationExecutionContext` and return `OperationResult`; they do not own routing or framework state.
 

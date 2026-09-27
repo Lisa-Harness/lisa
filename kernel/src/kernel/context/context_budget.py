@@ -2,7 +2,7 @@
 
 This module keeps per-turn prompt assembly frugal by applying lane-specific
 budgets and a total token ceiling across optional context blocks. The
-budgets themselves are host-owned (see ``host.config``); the kernel provides
+budgets themselves are host-owned (see ``runtime.config``); the kernel provides
 only the allocation mechanics plus a shared chars-per-token estimate.
 """
 

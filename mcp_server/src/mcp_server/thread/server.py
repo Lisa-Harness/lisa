@@ -8,7 +8,7 @@ exposes two tools so the model can pull older thread entries on demand:
 - ``thread_read_recent`` — read the most recent N entries (compact form).
 
 The write path (append, seal, dictionary training) stays in
-``host.thread``; this server is read-only.
+``runtime.thread``; this server is read-only.
 
 The server resolves the thread base path from ``--thread-dir`` and
 ``--user-slug`` CLI args (the host's ``runtime.paths.thread_path`` property
@@ -17,8 +17,8 @@ produces ``thread_dir / user_slug``). No env-var path resolution.
 **Redaction**: the store is built with the ``ThreadRedactionPolicy``
 resolved from ``LISA_THREAD_REDACTION_ENABLED`` /
 ``LISA_THREAD_REDACTION_PATTERNS`` (the same env contract
-``host.config`` uses for the host's in-process reads). The host
-propagates both variables to this subprocess in ``host.mcp_pool``;
+``runtime.config`` uses for the host's in-process reads). The host
+propagates both variables to this subprocess in ``runtime.mcp_pool``;
 unset/pattern-less means framework defaults (``DEFAULT_REDACTION_PATTERNS``),
 ``LISA_THREAD_REDACTION_PATTERNS=none`` or ``LISA_THREAD_REDACTION_ENABLED=0``
 disables. Without this, the model could pull its own prior harness-authored

@@ -182,7 +182,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not isinstance(result, DelegationResult):
         return OperationResult(
             output_text=(
-                "host.delegate returned an unexpected result type "
+                "runtime.delegate returned an unexpected result type "
                 f"({type(result).__name__}); expected DelegationResult."
             ),
             output_json={

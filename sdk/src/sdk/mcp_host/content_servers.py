@@ -11,8 +11,8 @@ host-owned because anyio cancel scopes bind to the host's event loop.
 
 The builders accept the packs venv site-packages path as an explicit
 argument (``packs_venv_site_packages``) so this module has no dependency
-on ``host.paths``. Hosts resolve that path via their own path
-machinery (``host.paths.packs_venv_site_packages`` in this repo;
+on ``runtime.paths``. Hosts resolve that path via their own path
+machinery (``runtime.paths.packs_venv_site_packages`` in this repo;
 external hosts bring their own) and pass it in.
 """
 

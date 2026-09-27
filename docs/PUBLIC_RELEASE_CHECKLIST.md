@@ -48,7 +48,7 @@ Legend: ✅ verified done · ⚠️ needs attention · ❌ missing/broken
 
 - [ ] Delete `/home/adam/…` hardcodes in [packstest/run_all_validations.py](../packstest/run_all_validations.py#L12) (`REPOS`, `sys.path`, `PY`) — parameterize or fail loudly.
 - [ ] Scrub personal anecdotes from [CHANGELOG.md](../CHANGELOG.md#L480) ("p920 stuck-loop") → neutral wording ("a stuck-loop where Lisa ended eight …").
-- [ ] `little-lisa` references — verify current scope: [CHANGELOG.md](../CHANGELOG.md#L1249) entries are history (OK), but [host/memory_aliases.py](../host/src/host/memory_aliases.py#L60) docstring + [test_proxy_policy.py](../kernel/tests/test_proxy_policy.py#L255) fixtures still use the retired name — confirm they're examples-only, not live behavior.
+- [ ] `little-lisa` references — verify current scope: [CHANGELOG.md](../CHANGELOG.md#L1249) entries are history (OK), but [runtime/memory_aliases.py](../runtime/src/runtime/memory_aliases.py#L60) docstring + [test_proxy_policy.py](../kernel/tests/test_proxy_policy.py#L255) fixtures still use the retired name — confirm they're examples-only, not live behavior.
 - [ ] Add **SECURITY.md** (vuln-report policy) and **CODE_OF_CONDUCT.md**. RELEASE_CHECKLIST requires CoC; neither exists.
 - [ ] GitHub settings: branch protection on `main`, repo description/topics, issue & PR templates.
 - [ ] Confirm `.coverage` (tracked, 1 file) should stay in git — it's a local artifact; likely `git rm` + ignore.

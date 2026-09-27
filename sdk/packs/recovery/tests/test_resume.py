@@ -85,9 +85,9 @@ async def test_resume_surfaces_yield_question_when_present(
         return list(entries)
 
     # handle_resume imports load_recent_thread_entries lazily from
-    # host.thread; patch it there so the in-function import sees the stub.
+    # runtime.thread; patch it there so the in-function import sees the stub.
     monkeypatch.setattr(
-        "host.thread.load_recent_thread_entries",
+        "runtime.thread.load_recent_thread_entries",
         _fake_load,
         raising=False,
     )
@@ -115,7 +115,7 @@ async def test_resume_returns_no_yield_message_when_absent(
         return list(entries)
 
     monkeypatch.setattr(
-        "host.thread.load_recent_thread_entries",
+        "runtime.thread.load_recent_thread_entries",
         _fake_load,
         raising=False,
     )
@@ -144,7 +144,7 @@ async def test_resume_with_reply_sets_pending_resume_message(
         return list(entries)
 
     monkeypatch.setattr(
-        "host.thread.load_recent_thread_entries",
+        "runtime.thread.load_recent_thread_entries",
         _fake_load,
         raising=False,
     )

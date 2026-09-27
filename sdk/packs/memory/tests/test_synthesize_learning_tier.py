@@ -3,7 +3,7 @@
 Verifies that the model-called path (no ``memory_tier`` in params) defaults
 to ``daily`` — not ``long_term`` — so workflow-state captures expire quickly
 rather than polluting long-term recall. The auto-capture path
-(``host.turn_hooks._auto_capture``) always supplies an explicit,
+(``runtime.turn_hooks._auto_capture``) always supplies an explicit,
 salience-graded tier; this default only binds when the model invokes the
 operation directly without specifying a tier.
 """

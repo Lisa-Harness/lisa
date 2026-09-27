@@ -17,7 +17,7 @@ Layout (per data dir — the base or a ``profiles/<name>`` root)::
 
 ``.env`` and the packs ``venv/`` stay at the data-dir root; they are
 contracts, not data (see hosts/cli .env loading and
-``host.paths.packs_venv_for``).
+``runtime.paths.packs_venv_for``).
 """
 
 from __future__ import annotations

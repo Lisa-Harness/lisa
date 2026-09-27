@@ -4,7 +4,7 @@ Covers tool registration and the ``thread_search`` tool's behavioral
 contract using MCPServer's in-process ``call_tool`` API. The read-range
 and read-recent tools are thin facades over ``ThreadStore`` and are
 covered by the SDK-level ``sdk/tests/test_thread_search.py`` and
-``host/tests/test_thread.py`` suites.
+``runtime/tests/test_thread.py`` suites.
 """
 
 from __future__ import annotations

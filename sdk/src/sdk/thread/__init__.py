@@ -13,7 +13,7 @@ The ``lisa-thread`` MCP server (``mcp_server/thread/server.py``) wraps
 this; hosts or tools that want in-process thread access can use the
 store directly without spawning the MCP server.
 
-This module owns the pure read path. The host's ``host.thread`` module
+This module owns the pure read path. The host's ``runtime.thread`` module
 keeps the write path and a thin re-export of the read functions for
 backward compatibility.
 """

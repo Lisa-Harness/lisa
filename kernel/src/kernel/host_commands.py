@@ -4,7 +4,7 @@ Packs register slash commands through the ``lisa.extensions.host_commands``
 entry-point group. Each entry point returns a ``HostCommandHandler`` instance
 that the host dispatch layer consults after its own built-in commands.
 
-This keeps pack-owned behavior out of ``host`` — the host owns only the
+This keeps pack-owned behavior out of ``runtime`` — the runtime owns only the
 dispatch mechanism and host-intrinsic commands (``/help``, ``/tokens``,
 ``/debug``, etc.). Pack-owned commands live in the pack that owns
 the operations they call.

@@ -3,7 +3,7 @@
 This module intentionally contains only settings consumed by `kernel/**`.
 Public packs and extensions use `sdk.config`; hosts own their wiring and
 product settings (surface identity, per-lane context budgets) in
-`host.config`.
+`runtime.config`.
 """
 
 from __future__ import annotations

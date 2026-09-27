@@ -40,7 +40,7 @@ members = [
     "sdk/packs/introspect",
     "sdk/packs/memory",
     "sdk/packs/recovery",
-    "host",
+    "runtime",
     "packstest",
 ]
 
@@ -60,7 +60,7 @@ pythonpath = [
     "kernel/src",
     "sdk/src",
     "mcp_server/src",
-    "host/src",
+    "runtime/src",
     "packstest/src",
     "sdk/packs/core/src",
     "sdk/packs/introspect/src",
@@ -77,7 +77,7 @@ testpaths = [
     "mcp_server/src/mcp_server/fetch/tests",
     "mcp_server/src/mcp_server/memory/tests",
     "mcp_server/src/mcp_server/thread/tests",
-    "host/tests",
+    "runtime/tests",
     "packstest/tests",
 ]
 addopts = "--import-mode=importlib"
@@ -101,7 +101,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
 # PLC0415 (import-outside-top-level): function-local imports are a
 # deliberate codebase pattern — cycle-breaking between co-dependent
 # modules (turn_runner ↔ turn_phases), startup-latency control
-# (host.__getattr__ lazy loaders), and test patch seams. Sites that
+# (runtime.__getattr__ lazy loaders), and test patch seams. Sites that
 # exist only for cycle reasons carry an inline `noqa: PLC0415` with a
 # rationale comment; the pattern itself is allowed.
 # RUF001/RUF002/RUF003 (ambiguous-unicode): the house style uses
@@ -189,7 +189,7 @@ ignore_decorators = [
 # import-linter — enforces the architectural boundaries documented in
 # docs/BOUNDARIES.md.  Run with:  uv run lint-imports
 #
-# The codebase uses root-level import paths (kernel, sdk, host, mcp_server)
+# The codebase uses root-level import paths (kernel, sdk, runtime, mcp_server)
 # rather than installed distribution names, so we use those here.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
@@ -197,22 +197,22 @@ root_packages = [
     "kernel",
     "sdk",
     "mcp_server",
-    "host",
+    "runtime",
 ]
 
 # Kernel is runtime-neutral — must never import from the host layer.
 # (kernel → sdk and kernel → mcp_server are allowed; sdk/mcp_server depend on
 # kernel, not the other way around.)
 [[tool.importlinter.contracts]]
-name = "Kernel runtime-neutrality (kernel imports nothing from host)"
+name = "Kernel runtime-neutrality (kernel imports nothing from runtime)"
 type = "forbidden"
 source_modules = ["kernel"]
 forbidden_modules = [
-    "host",
+    "runtime",
 ]
 
 # SDK must not import mcp_server internals.
-# SDK and packs may import host (transport-neutral runtime services:
+# SDK and packs may import runtime (transport-neutral runtime services:
 # thread, model_runtime, state_provider, turn_hooks_builder). See
 # docs/BOUNDARIES.md "Packs have host bindings".
 [[tool.importlinter.contracts]]

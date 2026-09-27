@@ -7,7 +7,7 @@ description: Architecture boundaries for the kernel package.
 # Kernel architecture
 
 - The kernel package owns orchestration, routing, policy, and execution-state concepts.
-- Do not import from `hosts`, `sdk`, or host applications. Hosts inject wiring; kernel modules define contracts.
+- Do not import from `runtime`, `sdk`, or host applications. Hosts inject wiring; kernel modules define contracts.
 - Public state and extension points use typed models, dataclasses, or protocols. Do not replace them with mutable `dict[str, Any]` bags.
 - Registration and operation discovery must be side-effect-free on import.
 

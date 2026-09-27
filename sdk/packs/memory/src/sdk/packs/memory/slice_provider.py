@@ -383,7 +383,7 @@ class MemoryConsolidationSlice:
         Uses the thread store's ``load_range`` with the segment's exact
         turn span from the index — only that segment is decompressed.
         """
-        from host.thread import load_thread_range
+        from runtime.thread import load_thread_range
 
         try:
             return load_thread_range(

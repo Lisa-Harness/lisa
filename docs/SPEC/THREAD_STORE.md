@@ -1,10 +1,10 @@
 # Thread Store Format Specification
 
 > **Status:** Active. Introduced 2026-08-10.
-> **Implementation:** write path in `host/thread.py`; read path (segment derival,
+> **Implementation:** write path in `runtime/thread.py`; read path (segment derival,
 > sparse-index parsing, zstd decompress, recent-N / range reads) in
 > `sdk/thread/_backend.py` (wrapped by `mcp_server.thread.server` and used by
-> `host/state_provider.py`).
+> `runtime/state_provider.py`).
 
 ## Overview
 
@@ -234,7 +234,7 @@ byte-offset range reads within a compressed file without full
 decompress. This is deferred until segment size grows beyond ~1000 turns
 or decompress latency exceeds ~50ms. The deferral is marked with inline
 `# TODO(seekable-frames):` comments at the compress/decompress call sites
-in `host/thread.py` so a later agent can find it.
+in `runtime/thread.py` so a later agent can find it.
 
 ### Future generalization
 

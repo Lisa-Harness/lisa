@@ -2,8 +2,8 @@
 
 `config/policy.yaml` decides which actions need operator approval before they
 run. This guide is the authoring reference for the file. The engine is
-canonical in [`host/src/host/policy.py`](../host/src/host/policy.py); its
-decision ladder is pinned by `host/tests/test_policy.py`.
+canonical in [`runtime/src/runtime/policy.py`](../runtime/src/runtime/policy.py); its
+decision ladder is pinned by `runtime/tests/test_policy.py`.
 
 ---
 
@@ -17,10 +17,10 @@ The policy sits in the config category of the active data dir:
 
 The data dir is `artifacts/` in a repo checkout, the `LISA_DATA_DIR` pin, a
 `profiles/<name>` root when `LISA_PROFILE` is set, or `~/.lisa` by default —
-see `HostConfig.from_env` in `host/config.py` for the precedence chain.
+see `HostConfig.from_env` in `runtime/config.py` for the precedence chain.
 
 The engine re-reads the file on **every approval request**
-(`host/policy_service.py`), so hand edits take effect immediately — no
+(`runtime/policy_service.py`), so hand edits take effect immediately — no
 process restart, even mid-session.
 
 ## The document at a glance
@@ -203,12 +203,12 @@ The same `/policy` grammar is reachable one-shot from the CLI host as
 shape and dispatches it through the same host path.
 
 The **host owns every policy write**: transports send command text and the
-host serializes the document through `host.policy.write_policy`, which
+host serializes the document through `runtime.policy.write_policy`, which
 rewrites the file with the standard commented header — a mode flip never
 drops rules. Auto-approvals mint real, auditable receipts (records
 transition to `approved`; the host's post-turn hook drives the
 execute-continue loop) — never a silent skip — and are capped at
-`host.policy.AUTO_APPROVE_TURN_CAP` (10) per turn. Beyond the cap the host
+`runtime.policy.AUTO_APPROVE_TURN_CAP` (10) per turn. Beyond the cap the host
 prompts instead of burning the receipt ledger on a runaway loop.
 
 ## Fail-closed behavior
@@ -227,9 +227,9 @@ prompts instead of burning the receipt ledger on a runaway loop.
 The engine's contract is pinned by tests; consult them as executable
 examples when authoring rules:
 
-- `host/tests/test_policy.py` — rule matching, the ladder, the downgrade,
+- `runtime/tests/test_policy.py` — rule matching, the ladder, the downgrade,
   the bare guard, fail-closed loading, `--remember` writes.
-- `host/tests/test_policy_command.py` — `/policy` render, mode dial, bare
+- `runtime/tests/test_policy_command.py` — `/policy` render, mode dial, bare
   toggle, and a round-trip through `decide()`.
-- `host/tests/test_policy_approvals.py` — the policy-decorating approval
+- `runtime/tests/test_policy_approvals.py` — the policy-decorating approval
   service and receipt minting for auto-approvals.

@@ -1055,7 +1055,7 @@ requires-dist = [
     { name = "lisa-harness-kernel", editable = "kernel" },
     { name = "lisa-harness-mcp-servers", editable = "mcp_server" },
     { name = "lisa-harness-packstest", editable = "packstest" },
-    { name = "lisa-harness-runtime", editable = "host" },
+    { name = "lisa-harness-runtime", editable = "runtime" },
     { name = "lisa-harness-sdk", editable = "sdk" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
@@ -1183,7 +1183,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-harness-runtime"
 version = "0.1.0"
-source = { editable = "host" }
+source = { editable = "runtime" }
 dependencies = [
     { name = "cel-python" },
     { name = "httpx" },

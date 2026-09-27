@@ -6,7 +6,7 @@ allowlisted by file + snippet, or migrated behind the storage seam.
 
 Scope
 -----
-In-tree packages (``kernel/``, ``host/``, ``sdk/``, ``mcp_server/``): scans
+In-tree packages (``kernel/``, ``runtime/``, ``sdk/``, ``mcp_server/``): scans
 write/mutation primitives only. Reads are a separate, larger follow-up because
 the codebase has dozens of legitimate read callsites.
 
@@ -89,57 +89,59 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "resolved.write_text(",
         "path.write_text(",
     ),
-    "host/src/host/content_roots.py": (
+    "runtime/src/runtime/content_roots.py": (
         "path.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/turn_hooks_builder.py": (
+    "runtime/src/runtime/turn_hooks_builder.py": (
         "thread_path.write_text(",
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/code_artifacts.py": (
+    "runtime/src/runtime/code_artifacts.py": (
         "temporary_path.write_text(",
         "os.replace(temporary_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/approvals.py": (
+    "runtime/src/runtime/approvals.py": (
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/intake.py": (
+    "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/recovery.py": (
+    "runtime/src/runtime/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "host/src/host/state_provider.py": (
+    "runtime/src/runtime/state_provider.py": (
         "digest_path.write_text(",
         "self._thread_path.write_text(",
     ),
-    "host/src/host/model_discovery/manifest.py": (
+    "runtime/src/runtime/model_discovery/manifest.py": (
         "tmp.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
         "tmp.unlink(missing_ok=True)",
     ),
-    "host/src/host/session_context_fetch.py": (
+    "runtime/src/runtime/session_context_fetch.py": (
         "cache_meta.write_text(",
         "cache_md.write_bytes(",
         "cache_md.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/thread.py": (
+    "runtime/src/runtime/thread.py": (
         'thread_path.open("a"',
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "host/src/host/workflow_instance_store.py": (
+    "runtime/src/runtime/workflow_instance_store.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "host/src/host/commands/_packs.py": ("packs_venv.parent.mkdir(parents=True, exist_ok=True)",),
+    "runtime/src/runtime/commands/_packs.py": (
+        "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
+    ),
     "kernel/src/kernel/token_usage.py": (
         'self._path.open("a"',
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
@@ -198,14 +200,14 @@ def _is_runtime_python(path: Path) -> bool:
 
 # In-tree scan roots (relative to repo root). Packages live under <member>/src/
 # but rglob from the member root finds them regardless.
-_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "host", "sdk", "mcp_server")
+_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "runtime", "sdk", "mcp_server")
 
 # External pack repos (relative to repo root's parent).
 _EXTERNAL_PACK_DIRS: tuple[str, ...] = ("lisa-packs", "lisa-packs-wip")
 
 
 def _iter_in_tree_files(root: Path) -> list[Path]:
-    """Runtime .py files in kernel/host/sdk/mcp_server (excl. tests)."""
+    """Runtime .py files in kernel/runtime/sdk/mcp_server (excl. tests)."""
     files: list[Path] = []
     for top in _IN_TREE_ROOTS:
         top_dir = root / top

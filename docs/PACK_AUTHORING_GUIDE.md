@@ -160,7 +160,7 @@ Modes opt out of the ambient merge via `accept_default_capabilities: false` (dis
 MCP-native tools (discovered at runtime from server subprocesses) have no pack `.tool.yml`, so they cannot declare `default_available` in front matter. Instead, the host manifest (`mcp_servers.yaml`) declares ambient MCP-native tools per server:
 
 ```yaml
-# host/mcp_servers.yaml
+# runtime/mcp_servers.yaml
 - server_id: lisa-storage
   runtime_kind: venv_bin
   venv_dir: "${FRAMEWORK_ROOT}"
@@ -487,7 +487,7 @@ Keep imports limited to `kernel`, `sdk`, and package-local modules. Add import-b
 5. Run deterministic unit tests without live APIs; drive tools in-process via `packstest.runner.run_tool`.
 6. Run the CLI host for one command path when practical.
 7. Add opt-in live tests only for integrations that need them.
-8. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a host.
+8. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a runtime.
 9. Add import-boundary tests.
 
 The `packstest` harness ([`../packstest/README.md`](../packstest/README.md)) activates packs in-process from source — no install step, no catalog subprocess, no model calls. Eval files live in the pack under `tests/evals/` with the `eval` marker.
