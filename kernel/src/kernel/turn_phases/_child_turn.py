@@ -321,6 +321,24 @@ def classify_child_turn(
             usage_kwargs=_usage_kwargs,
         )
 
+    if child_result.operator_exit:
+        _clog.warning(
+            "child turn mode=%s exited via the turn lifecycle (%s); classifying as interrupted",
+            mode_id,
+            child_result.operator_exit,
+        )
+        return _child_outcome(
+            child_result=child_result,
+            mode_id=mode_id,
+            elapsed_ms=elapsed_ms,
+            status="interrupted",
+            error_message=(
+                f"child turn {mode_id} exited via the turn lifecycle "
+                f"({child_result.operator_exit}) before completing its work."
+            ),
+            usage_kwargs=_usage_kwargs,
+        )
+
     # 2/3. Yield handling (model-emitted yield or harness force-yield).
     if child_result.yielded is not None:
         _yield_outcome = _classify_yielded_child(

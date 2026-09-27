@@ -4261,6 +4261,69 @@ async def _run_mid_turn_pre_turn_operations(
         )
 
 
+def _advance_handoff_workflow_position(
+    *,
+    hooks: TurnHooks,
+    departing_mode_id: str,
+    target_stage: str,
+    query: str,
+    rationale: str,
+    routing_hint: str,
+    log: logging.Logger,
+) -> None:
+    if hooks.workflow.workflow_position is None:
+        return
+    try:
+        from kernel.workflow_position import (
+            WorkflowPosition,
+            advance_step,
+            compile_steps_from_routing_targets,
+        )
+
+        position = hooks.workflow.workflow_position()
+        from kernel.turn_phases._routing_hint import is_plan_escalation_hint
+
+        updater = hooks.workflow.workflow_position_updater
+        if (
+            position is None
+            and updater is not None
+            and not is_plan_escalation_hint(routing_hint)
+            and "planner" not in get_workflow_catalog()
+        ):
+            steps = compile_steps_from_routing_targets(
+                query=query,
+                routing_targets=get_routing_targets(departing_mode_id),
+                catalog=get_workflow_catalog(),
+            )
+            if len(steps) > 1:
+                position = WorkflowPosition(
+                    declared_steps=steps,
+                    mode_id=departing_mode_id,
+                    spawned_from="adhoc",
+                )
+        if position is not None and position.current_step_id:
+            current_step = position.step_by_id(position.current_step_id)
+            if current_step is not None and current_step.mode_id == departing_mode_id:
+                advanced_position = advance_step(
+                    position,
+                    current_step.step_id,
+                    result_preview=rationale,
+                ).model_copy(update={"mode_id": target_stage})
+                if updater is not None:
+                    updater(advanced_position)
+        elif position is not None and position.declared_steps:
+            first_step = position.declared_steps[0]
+            if first_step.mode_id == target_stage and updater is not None:
+                advanced_position = advance_step(
+                    position,
+                    first_step.step_id,
+                    result_preview=rationale,
+                ).model_copy(update={"mode_id": target_stage})
+                updater(advanced_position)
+    except Exception as exc:  # pylint: disable=broad-except
+        log.warning("workflow position advancement failed: %s", exc)
+
+
 async def _execute_mid_turn_handoff(
     *,
     state: Any,
@@ -4463,55 +4526,15 @@ async def _execute_mid_turn_handoff(
             # post-handoff hint. Otherwise the hint reads the departing
             # step and synthesizes a transition back to it on the next
             # iteration.
-            if hooks.workflow.workflow_position is not None:
-                try:
-                    from kernel.workflow_position import (
-                        WorkflowPosition,
-                        advance_step,
-                        compile_steps_from_routing_targets,
-                    )
-
-                    _position = hooks.workflow.workflow_position()
-                    from kernel.turn_phases._routing_hint import is_plan_escalation_hint
-
-                    if (
-                        _position is None
-                        and hooks.workflow.workflow_position_updater is not None
-                        and not is_plan_escalation_hint(routing_hint)
-                        and "planner" not in get_workflow_catalog()
-                    ):
-                        _steps = compile_steps_from_routing_targets(
-                            query=query,
-                            routing_targets=get_routing_targets(_departing_mode_id),
-                            catalog=get_workflow_catalog(),
-                        )
-                        if len(_steps) > 1:
-                            _position = WorkflowPosition(
-                                declared_steps=_steps,
-                                mode_id=_departing_mode_id,
-                                spawned_from="adhoc",
-                            )
-                    if _position is not None and _position.current_step_id:
-                        _current_step = _position.step_by_id(_position.current_step_id)
-                        if _current_step is not None and _current_step.mode_id == _departing_mode_id:
-                            _advanced_position = advance_step(
-                                _position,
-                                _current_step.step_id,
-                                result_preview=rationale,
-                            ).model_copy(update={"mode_id": target_stage})
-                            if hooks.workflow.workflow_position_updater is not None:
-                                hooks.workflow.workflow_position_updater(_advanced_position)
-                    elif _position is not None and _position.declared_steps:
-                        _first_step = _position.declared_steps[0]
-                        if _first_step.mode_id == target_stage:
-                            _advanced_position = advance_step(
-                                _position,
-                                _first_step.step_id,
-                                result_preview=rationale,
-                            ).model_copy(update={"mode_id": target_stage})
-                            hooks.workflow.workflow_position_updater(_advanced_position)
-                except Exception as exc:  # pylint: disable=broad-except
-                    log.warning("workflow position advancement failed: %s", exc)
+            _advance_handoff_workflow_position(
+                hooks=hooks,
+                departing_mode_id=_departing_mode_id,
+                target_stage=target_stage,
+                query=query,
+                rationale=rationale,
+                routing_hint=routing_hint,
+                log=log,
+            )
             # ── Mid-turn pre-turn operations ────────────
             # Run the new mode's ``pre_turn_operation_ids``
             # exactly as the turn-start path does; lives in
@@ -4808,9 +4831,7 @@ async def _resolve_empty_turn_content(
     if not content:
         if state.fork_results and any(result.status != "ok" for result in state.fork_results):
             _failed_children = [
-                result.target.mode_id
-                for result in state.fork_results
-                if result.status != "ok"
+                result.target.mode_id for result in state.fork_results if result.status != "ok"
             ]
             content = (
                 "Fork child turns failed or were interrupted after read-only calls: "
@@ -4847,7 +4868,10 @@ async def _resolve_empty_turn_content(
         # yield paths entirely when the cap diagnostic has already surfaced.
         elif getattr(state, "capability_limit_hit", False):
             pending_yield = YieldAction(
-                question="I've reached a resource budget for this turn. How would you like me to proceed?",
+                question=(
+                    "I've reached a resource budget for this turn. "
+                    "How would you like me to proceed?"
+                ),
                 context="capability invocation limit reached",
             )
             content = pending_yield.question
@@ -5844,6 +5868,102 @@ class _TransitionIntercept:
     pre_handoff_text: str
 
 
+async def _run_fork_transition(
+    *,
+    target_stage: str,
+    tool_arguments: Any,
+    query: str,
+    state: Any,
+    ctx: Any,
+) -> str:
+    target_ids = [item.strip() for item in target_stage[5:].split(",") if item.strip()]
+    if not target_ids:
+        return "fork transition has no valid targets."
+
+    catalog = get_workflow_catalog()
+    invalid_target = next((item for item in target_ids if item not in catalog), "")
+    if invalid_target:
+        return f"fork target mode '{invalid_target}' is not in the installed catalog."
+
+    queries = tool_arguments.get("queries")
+    targets = [
+        ForkTarget(
+            mode_id=target_id,
+            stage_id=catalog[target_id].start_stage_id,
+            query=str(
+                queries[index] if isinstance(queries, list) and index < len(queries) else query
+            ),
+        )
+        for index, target_id in enumerate(target_ids)
+    ]
+    fork_result = await ctx.host.fork(ForkSpec(targets=targets))
+    state.fork_results = list(fork_result.children)
+    return f"Forked {len(state.fork_results)} child turns."
+
+
+async def _complete_workflow_stage_transition(
+    *,
+    target_stage: str,
+    rationale: str,
+    hooks: TurnHooks,
+    state: Any,
+    messages: list[dict[str, Any]],
+    tool_name: str,
+    tool_call_id: str,
+    tool_calls: list[dict[str, Any]],
+    tool_call: dict[str, Any],
+    emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    tool_dispatch_started: float,
+    log: logging.Logger,
+) -> str:
+    if hooks.workflow.workflow_position is not None:
+        try:
+            position = hooks.workflow.workflow_position()
+            updater = hooks.workflow.workflow_position_updater
+            if position is not None and updater is not None:
+                updater(
+                    position.model_copy(
+                        update={
+                            "stage_id": target_stage,
+                            "turn_count": position.turn_count + 1,
+                        }
+                    )
+                )
+        except Exception as exc:  # pylint: disable=broad-except
+            log.warning("workflow stage transition persistence failed: %s", exc)
+    tool_output = f"Transitioned to stage: {target_stage}." + (
+        f" Rationale: {rationale}" if rationale else ""
+    )
+    await emit_stage(
+        "tool_dispatch_complete",
+        {
+            "tool": tool_name,
+            "tool_kind": "transition",
+            "state.iteration": state.iteration,
+            "tool_calls_so_far": state.total_tool_calls,
+            "ok": True,
+            "transition": "workflow_stage",
+            "transitioned_to": target_stage,
+            "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
+        },
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": tool_output,
+        }
+    )
+    if tool_call != tool_calls[-1]:
+        log.warning(
+            "Model batched %d trailing tool call(s) after stage transition. "
+            "Breaking the dispatch loop to cleanly boot the new stage.",
+            len(tool_calls) - tool_calls.index(tool_call) - 1,
+        )
+    return tool_output
+
+
 async def _intercept_transition_stage(
     *,
     state: Any,
@@ -5943,31 +6063,13 @@ async def _intercept_transition_stage(
         )
         return _ret("continue")
     if target_stage.startswith("fork:"):
-        _target_ids = [item.strip() for item in target_stage[5:].split(",") if item.strip()]
-        if not _target_ids:
-            tool_output = "fork transition has no valid targets."
-        else:
-            _catalog = get_workflow_catalog()
-            _invalid = next((item for item in _target_ids if item not in _catalog), "")
-            if _invalid:
-                tool_output = f"fork target mode '{_invalid}' is not in the installed catalog."
-            else:
-                _queries = tool_arguments.get("queries")
-                _targets = [
-                    ForkTarget(
-                        mode_id=_target_id,
-                        stage_id=_catalog[_target_id].start_stage_id,
-                        query=str(
-                            _queries[_index]
-                            if isinstance(_queries, list) and _index < len(_queries)
-                            else query
-                        ),
-                    )
-                    for _index, _target_id in enumerate(_target_ids)
-                ]
-                _fork_result = await ctx.host.fork(ForkSpec(targets=_targets))
-                state.fork_results = list(_fork_result.children)
-                tool_output = f"Forked {len(state.fork_results)} child turns."
+        tool_output = await _run_fork_transition(
+            target_stage=target_stage,
+            tool_arguments=tool_arguments,
+            query=query,
+            state=state,
+            ctx=ctx,
+        )
         messages.append(
             {
                 "role": "tool",
@@ -6023,50 +6125,20 @@ async def _intercept_transition_stage(
         # and persisted to the active workflow position for the
         # next turn.
         transitioned_to = target_stage
-        if hooks.workflow.workflow_position is not None:
-            try:
-                _position = hooks.workflow.workflow_position()
-                if _position is not None and hooks.workflow.workflow_position_updater is not None:
-                    hooks.workflow.workflow_position_updater(
-                        _position.model_copy(
-                            update={
-                                "stage_id": target_stage,
-                                "turn_count": _position.turn_count + 1,
-                            }
-                        )
-                    )
-            except Exception as exc:  # pylint: disable=broad-except
-                log.warning("workflow stage transition persistence failed: %s", exc)
-        tool_output = f"Transitioned to stage: {target_stage}." + (
-            f" Rationale: {rationale}" if rationale else ""
+        await _complete_workflow_stage_transition(
+            target_stage=target_stage,
+            rationale=rationale,
+            hooks=hooks,
+            state=state,
+            messages=messages,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_calls=tool_calls,
+            tool_call=tool_call,
+            emit_stage=emit_stage,
+            tool_dispatch_started=tool_dispatch_started,
+            log=log,
         )
-        await emit_stage(
-            "tool_dispatch_complete",
-            {
-                "tool": tool_name,
-                "tool_kind": "transition",
-                "state.iteration": state.iteration,
-                "tool_calls_so_far": state.total_tool_calls,
-                "ok": transitioned_to is not None,
-                "transition": "workflow_stage",
-                "transitioned_to": transitioned_to,
-                "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
-            },
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_name,
-                "content": tool_output,
-            }
-        )
-        if tool_call != tool_calls[-1]:
-            log.warning(
-                "Model batched %d trailing tool call(s) after stage transition. "
-                "Breaking the dispatch loop to cleanly boot the new stage.",
-                len(tool_calls) - tool_calls.index(tool_call) - 1,
-            )
         return _ret("break")
 
     # ── Case B: mode handoff (routing FSM) ────────────────

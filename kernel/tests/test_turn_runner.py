@@ -140,8 +140,8 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
 
     from kernel.models import OperationResult
 
-    plan_cfg = WorkflowModeConfig(
-        mode_id="plan",
+    planner_cfg = WorkflowModeConfig(
+        mode_id="planner",
         start_stage_id="none",
         mode_kind="action",
         routable=True,
@@ -151,7 +151,7 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
         routing_intent_tags=["plan"],
     )
     search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
-    patched_catalog = {"plan": plan_cfg, "search": search_cfg}
+    patched_catalog = {"planner": planner_cfg, "search": search_cfg}
 
     captured_modes: list[str] = []
 
@@ -207,7 +207,7 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
         ),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
-        result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
+        result = await run_turn(mode_id="planner", query="search for rust news", hooks=hooks)
 
     # The kernel recursed into search mode and produced its response, not
     # the planner's rationale text.
@@ -5585,9 +5585,28 @@ async def test_handoff_entry_op_failure_blocks_turn() -> None:
     hooks = _build_minimal_hooks(two_step)
     hooks.operations.execute_operation = failing_entry_operation
 
-    result = await run_turn(
-        mode_id="default", query="search for agent frameworks and write a review", hooks=hooks
+    from unittest.mock import patch
+
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    # The ambient synthetic search mode is intentionally generic. Model the
+    # action-mode entry contract this test is exercising without changing
+    # that shared fixture for unrelated routing tests.
+    patched_catalog = dict(get_workflow_catalog())
+    patched_catalog["search"] = patched_catalog["search"].model_copy(
+        update={
+            "mode_kind": "action",
+            "entry_operation_ids": ["web_search"],
+            "entry_op_kind": "work",
+        }
     )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+    ):
+        result = await run_turn(
+            mode_id="default", query="search for agent frameworks and write a review", hooks=hooks
+        )
 
     # The turn must break with a deterministic failure, not continue.
     assert result.blocked is True
@@ -5604,21 +5623,22 @@ async def test_handoff_entry_op_failure_blocks_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
+async def test_planner_entry_op_timeout_marks_model_unreliable() -> None:
     """When ``plan_workflow`` raises during a mid-turn handoff to ``plan``
     (e.g. the operation timed out), the turn must mark the model
     unreliable for planning so the routing-hint generator stops
-    re-escalating to ``plan`` on subsequent turns.
+    re-escalating to ``planner`` on subsequent turns.
 
     Regression for the 2026-07-31 incident: ``plan_workflow`` timed out,
     the entry-op exception branch set ``entry_failed`` but did NOT call
     ``mark_plan_unreliable_for_model``, so the hint generator re-escalated
-    to ``plan`` on the next turn and timed out again identically. The
+    to ``planner`` on the next turn and timed out again identically. The
     "no target" branch already marked unreliable; the exception path
     must mirror it.
     """
     from unittest.mock import patch
 
+    from kernel.ipsar_fsm import get_workflow_catalog
     from kernel.operations.registry import OperationExecutionError
     from kernel.routing_vocabulary import (
         is_plan_reliable_for_model,
@@ -5627,7 +5647,7 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
 
     reset_plan_reliability()
     plan_cfg = WorkflowModeConfig(
-        mode_id="plan",
+        mode_id="planner",
         start_stage_id="none",
         mode_kind="action",
         routable=True,
@@ -5636,10 +5656,11 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
-    patched_catalog = {"plan": plan_cfg}
+    patched_catalog = dict(get_workflow_catalog())
+    patched_catalog["planner"] = plan_cfg
 
     async def two_step(**kwargs: Any) -> _StubCompletion:
-        # First completion: the model hands off to ``plan`` (mid-turn
+        # First completion: the model hands off to ``planner`` (mid-turn
         # handoff, not Phase 1 pre-turn). The routing hint told it to.
         return _StubCompletion(
             content="",
@@ -5648,28 +5669,29 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
                     "id": "call_1",
                     "function": {
                         "name": "transition_stage",
-                        "arguments": '{"target_stage_id": "plan", "rationale": "complex"}',
+                        "arguments": '{"target_stage_id": "planner", "rationale": "complex"}',
                     },
                 }
             ],
         )
 
     async def failing_plan_entry_operation(
-        operation_id: str, _ctx: OperationExecutionContext
+        mode_id: str, _ctx: OperationExecutionContext, **_kwargs: Any
     ) -> OperationResult:
-        # Simulate ``plan_workflow`` timing out: the registry wraps the
-        # operation in ``asyncio.wait_for`` and raises
-        # ``OperationExecutionError`` on expiry.
-        if operation_id == "plan_workflow":
+        # ``run_mode_entry_operations`` receives a mode id, not an
+        # operation id. Simulate its required routing operation timing out.
+        if mode_id == "planner":
             raise OperationExecutionError("Operation 'plan_workflow' timed out")
-        return OperationResult(output_text=f"Executed {operation_id}")
+        return OperationResult(output_text=f"Executed {mode_id}")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.operations.execute_operation = failing_plan_entry_operation
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch(
+            "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+        ),
         patch(
             "kernel.turn_runner.get_mode_system_intro",
             lambda mid, _c=patched_catalog: (
@@ -5700,9 +5722,9 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
     # The turn hard-stops with a deterministic failure (the entry-op
     # exception path sets ``entry_failed`` and breaks the loop).
     assert result.blocked is True
-    assert "plan" in result.response_text.lower()
+    assert "planner" in result.response_text.lower()
     # The model is now marked unreliable for planning so the hint
-    # generator stops escalating to ``plan`` for it on subsequent turns.
+    # generator stops escalating to ``planner`` for it on subsequent turns.
     assert not is_plan_reliable_for_model("test-planner-model")
     reset_plan_reliability()
 
@@ -6024,24 +6046,25 @@ def test_turn_state_has_loop_guard_fields() -> None:
 @pytest.mark.asyncio
 async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
     """When a plan-escalation routing hint is active and the model calls
-    non-``transition_stage`` tools instead of handing off to ``plan``,
-    the kernel forces the plan handoff after
+    non-``transition_stage`` tools instead of handing off to ``planner``,
+    the kernel forces the planner handoff after
     ``forced_action_non_compliant_cap`` non-transition dispatches.
 
     Regression for the 2026-07-30 incident: the model burned 15
     iterations of tool-cycling in ``default`` mode (≈400k tokens) before
-    finally handing off to ``plan``, which then failed to parse. The
+    finally handing off to ``planner``, which then failed to parse. The
     forced-plan enforcer bounds the pre-plan token burn to roughly
     ``cap × per-iteration-tokens`` by synthesizing the
-    ``transition_stage(plan)`` call itself.
+    ``transition_stage(planner)`` call itself.
     """
     from unittest.mock import patch
 
+    from kernel.ipsar_fsm import get_workflow_catalog
     from kernel.models import OperationResult
 
     default_cfg = _mode_config(mode_id="default")
-    plan_cfg = WorkflowModeConfig(
-        mode_id="plan",
+    planner_cfg = WorkflowModeConfig(
+        mode_id="planner",
         start_stage_id="none",
         mode_kind="action",
         routable=True,
@@ -6051,11 +6074,8 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         routing_intent_tags=["plan"],
     )
     search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
-    patched_catalog = {
-        "default": default_cfg,
-        "plan": plan_cfg,
-        "search": search_cfg,
-    }
+    patched_catalog = dict(get_workflow_catalog())
+    patched_catalog.update({"default": default_cfg, "planner": planner_cfg, "search": search_cfg})
 
     call_count = 0
     plan_entry_calls = 0
@@ -6068,7 +6088,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         sys_content = str(kwargs["messages"][0].get("content", ""))
         # In default mode with a plan-escalation hint: the model does
         # read-only fetches instead of calling transition_stage.
-        is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
+        is_plan_mode = "## Handoff Context" in sys_content and "`planner`" in sys_content
         is_search_mode = ("## Handoff Context" in sys_content and "`search`" in sys_content) or (
             "Handed off to mode: search" in str([m.get("content", "") for m in kwargs["messages"]])
         )
@@ -6080,7 +6100,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
             # transition_stage call. Return harmless text.
             return _StubCompletion(content="Planning...")
         # default mode: the model does read-only fetches instead of
-        # handing off to plan. After forced_action_non_compliant_cap
+        # handing off to planner. After forced_action_non_compliant_cap
         # (default 2) non-transition dispatches, the kernel forces the
         # plan handoff.
         return _StubCompletion(
@@ -6111,6 +6131,9 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
         patch(
+            "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+        ),
+        patch(
             "kernel.turn_runner.get_mode_system_intro",
             lambda mid, _c=patched_catalog: (
                 _c.get(mid).instruction_body
@@ -6134,10 +6157,9 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
             hooks=hooks,
         )
 
-    # The kernel forced the plan handoff — the final response came from
-    # the search mode (the plan_workflow target), not from the default
-    # mode's read-only fetches.
-    assert result.response_text == "Search results from web_search."
+    # The kernel forced the planner handoff and the planner-selected
+    # search mode ran; later chain steps may surface the same stub text.
+    assert "Search results from web_search." in result.response_text
     # The planner entry op ran exactly once (for the forced plan handoff).
     assert plan_entry_calls == 1
     # The model did NOT burn the full 15-iteration budget in default mode
@@ -6170,8 +6192,8 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
     from kernel.models import OperationResult
 
     default_cfg = _mode_config(mode_id="default")
-    plan_cfg = WorkflowModeConfig(
-        mode_id="plan",
+    planner_cfg = WorkflowModeConfig(
+        mode_id="planner",
         start_stage_id="none",
         mode_kind="action",
         routable=True,
@@ -6184,15 +6206,17 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
         mode_id="remember",
         satisfies_intents=["remember"],
         routing_intent_tags=["remember"],
+        routing_intent_keywords={"remember": ["remember"]},
     )
     search_cfg = _mode_config(
         mode_id="search",
         satisfies_intents=["research"],
         routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "web", "framework"]},
     )
     patched_catalog = {
         "default": default_cfg,
-        "plan": plan_cfg,
+        "planner": planner_cfg,
         "remember": remember_cfg,
         "search": search_cfg,
     }
@@ -6217,7 +6241,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
                 content="I remembered the framework. Budget exhausted; "
                 "I cannot complete the search step."
             )
-        # default mode: hand off to plan as the hint directs.
+        # default mode: hand off to planner as the hint directs.
         return _StubCompletion(
             content="",
             tool_calls=[
@@ -6226,7 +6250,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
                     "function": {
                         "name": "transition_stage",
                         "arguments": json.dumps(
-                            {"target_stage_id": "plan", "rationale": "escalate"}
+                            {"target_stage_id": "planner", "rationale": "escalate"}
                         ),
                     },
                 }
@@ -6254,6 +6278,9 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch(
+            "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+        ),
         patch(
             "kernel.turn_runner.get_mode_system_intro",
             lambda mid, _c=patched_catalog: (
@@ -6493,12 +6520,17 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
 
     hooks = _build_minimal_hooks(capture_and_finish)
     hooks.operations.execute_operation = _stub_execute_operation
-    result = await run_turn(
-        mode_id="default",
-        query="hello",
-        hooks=hooks,
-        max_tool_iterations=5,
-    )
+    from unittest.mock import patch
+
+    with patch(
+        "kernel.turn_runner.get_mode_system_intro", return_value="Default mode instructions."
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="hello",
+            hooks=hooks,
+            max_tool_iterations=5,
+        )
 
     assert result.response_text == "Done."
     # Two model calls → two captured system prompts.
@@ -6658,9 +6690,8 @@ async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
     The sub-turn contract and the midpoint write-nudge ride the
     system-prompt lifecycle briefing instead.
 
-    The stub model forks to ``remember`` only and then returns a plain
-    completion, so the Phase-5 forced-fork enforcer synthesizes the
-    fan-out to both detected intents (remember + markdown). The invariant
+    The stub model explicitly forks to ``remember`` and ``markdown`` and
+    then returns a plain completion. The invariant
     is checked across every message snapshot the model was called with
     (parent and children share the ``complete`` stub).
     """
@@ -6679,7 +6710,9 @@ async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "fork",
-                            "arguments": '{"targets": [{"mode_id": "remember"}]}',
+                            "arguments": (
+                                '{"targets": [{"mode_id": "remember"}, {"mode_id": "markdown"}]}'
+                            ),
                         },
                     }
                 ],
