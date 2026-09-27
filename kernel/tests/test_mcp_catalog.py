@@ -11,6 +11,8 @@ from kernel.context.mcp_catalog import (
     MCPModeCatalog,
     MCPOperationCatalog,
     MCPToolCatalog,
+    _deserialize_operation,
+    _deserialize_tool,
 )
 from kernel.tools.mcp_client import MCPClientConfig
 
@@ -22,6 +24,28 @@ _CATALOG_CONFIG = MCPClientConfig(
     args=[],
 )
 _CATALOG_ERROR = "Error executing tool: duplicate default mode"
+
+
+def test_deserialized_capabilities_preserve_stamped_owner() -> None:
+    tool = _deserialize_tool(
+        {
+            "tool_id": "coding_status",
+            "owner_id": "lisa-pack-coding",
+            "pack_id": "coding",
+            "tool_provider_id": "lisa-pack-coding",
+        }
+    )
+    operation = _deserialize_operation(
+        {
+            "operation_id": "sandbox_facts",
+            "owner_id": "lisa-pack-bwrap",
+            "pack_id": "bwrap",
+            "operation_provider_id": "lisa-pack-bwrap",
+        }
+    )
+
+    assert tool.owner_id == "lisa-pack-coding"
+    assert operation.owner_id == "lisa-pack-bwrap"
 
 
 @pytest.mark.parametrize(

@@ -337,6 +337,7 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
     return OperationDefinition(
         operation_id=data["operation_id"],
         description=data.get("description", ""),
+        owner_id=str(data.get("owner_id", "") or ""),
         pack_id=str(data.get("pack_id", "") or ""),
         provider_id=str(data.get("operation_provider_id", "") or ""),
         effect=data.get("effect", "read"),
@@ -480,6 +481,7 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
     return ToolDefinition(
         tool_id=data["tool_id"],
         description=data.get("description", ""),
+        owner_id=str(data.get("owner_id", "") or ""),
         pack_id=str(data.get("pack_id", "") or ""),
         provider_id=str(data.get("tool_provider_id", "") or ""),
         effect=data.get("effect", "read"),
