@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from kernel.extension_names import normalize_pack_name
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.intake.contracts import (
     CollectionResult,
@@ -39,9 +40,8 @@ from kernel.intake.contracts import (
     ProcessingLoop,
 )
 from kernel.models import ContextItem, UnifiedState
-from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
 
-from runtime.content_roots import seed_bundled_packs_lock
+from runtime.content_roots import load_disabled_pack_names, seed_bundled_packs_lock
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from kernel.config import settings
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 

@@ -9,11 +9,11 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
-from kernel.layout import DATA_DIR, LOGS_DIR
 from runtime.config_resolver import parse_streaming_option, resolve_timezone
 from runtime.execution_policy import default_interactive_execution_policy
 from runtime.handle_message import handle_message
 from runtime.runtime import TokenCounters, TurnContext
+from sdk.layout import DATA_DIR, LOGS_DIR
 
 from runtime import (
     HostCommandResult,

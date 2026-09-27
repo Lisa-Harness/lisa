@@ -10,8 +10,8 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 
+from kernel.extension_names import normalize_pack_name
 from kernel.host_commands import HostCommandSpec, PackCommandEntry
-from kernel.pack_activation import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 

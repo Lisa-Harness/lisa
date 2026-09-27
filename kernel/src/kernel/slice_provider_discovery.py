@@ -36,7 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 

@@ -7,23 +7,33 @@ servers call :func:`resolve_content_roots` at startup and on each tool
 invocation that needs the root set.
 
 The discovery delegates to :mod:`kernel.content_roots` for entry-point and
-``SDK_CONTENT_ROOTS`` env-var scanning, and :mod:`kernel.pack_activation`
-for disabled-pack filtering. This module is the SDK's single entry point
+``SDK_CONTENT_ROOTS`` env-var scanning. This module is the SDK's single entry point
 for "give me the merged content root list" — callers never touch the
 kernel discovery helpers directly.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from kernel.content_roots import (
     discover_configured_content_roots,
     discover_installed_content_roots,
 )
-from kernel.pack_activation import load_disabled_pack_names_from_env
+from kernel.extension_names import normalize_pack_name
 
 __all__ = ["resolve_content_roots", "roots_fingerprint"]
+
+
+def load_disabled_pack_names_from_env() -> set[str]:
+    """Return normalized names disabled for this content-server subprocess."""
+    raw = os.environ.get("LISA_DISABLED_PACKS", "")
+    return {
+        normalized
+        for part in raw.split(os.pathsep)
+        if (normalized := normalize_pack_name(part.strip()))
+    }
 
 
 def resolve_content_roots(extra_roots: list[Path] | None = None) -> list[Path]:

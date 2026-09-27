@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,7 +15,6 @@ from kernel.models import (
     ToolResult,
 )
 from kernel.operations.registry import OperationExecutionError, execute_operation
-from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.tools.registry import ToolExecutionError, execute_tool
 from pydantic import BaseModel, Field
 
@@ -50,12 +49,13 @@ async def test_tool_receives_only_its_owner_pack_configuration(
         implementation_module=SimpleNamespace(execute=execute),
     )
     monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", {"owner_tool": definition})
-    resolver = SessionPackConfigurationResolver(
-        {
-            "lisa-pack-owner": {"workspace_root": ".", "checks": [{"id": "unit"}]},
-            "lisa-pack-other": {"secret": "not-visible"},
-        }
-    )
+    configs = {
+        "lisa-pack-owner": MappingProxyType({"workspace_root": ".", "checks": ({"id": "unit"},)}),
+        "lisa-pack-other": MappingProxyType({"secret": "not-visible"}),
+    }
+
+    def resolver(pack_id: str) -> Any:
+        return configs.get(pack_id, MappingProxyType({}))
 
     result = await execute_tool(
         "owner_tool",
@@ -126,7 +126,9 @@ async def test_operation_receives_its_owner_pack_configuration(
         "kernel.operations.registry._OPERATION_CATALOG",
         {"owner_operation": definition},
     )
-    resolver = SessionPackConfigurationResolver({"lisa-pack-owner": {"limit": 3}})
+
+    def resolver(pack_id: str) -> dict[str, int]:
+        return {"limit": 3} if pack_id == "lisa-pack-owner" else {}
 
     result = await execute_operation(
         "owner_operation",

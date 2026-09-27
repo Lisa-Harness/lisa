@@ -6,11 +6,12 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
-#### Kernel owns the data-dir layout; host runtime fixes surfaced by test repair
+#### SDK owns the data-dir layout; host runtime fixes surfaced by test repair
 
-- **What:** `kernel.layout` now owns the canonical data-dir constants
+- **What:** `sdk.layout` owns the canonical data-dir constants
   (`CONFIG_DIR`, `DATA_DIR`, `STATE_DIR`, `data_subdir`, ...);
-  `sdk.layout` re-exports them. Host fixes: undeclared session blocks no
+  runtime owns pack activation and session configuration. Host fixes:
+  undeclared session blocks no
   longer silently take defaults; the system timezone resolves from the
   `/etc/localtime` IANA key (`America/New_York`, not `EST5EDT`);
   auto-capture commitment patterns match case-insensitively; recovery

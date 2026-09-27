@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from kernel.content_roots import CONTENT_ROOT_ENTRY_POINT_GROUP
-from kernel.pack_activation import load_disabled_pack_names_from_env
 from sdk.content._catalog import (
     _DECLARATIVE_OPERATION_SUFFIX,
     _MODE_CONFIG_FILENAME,
@@ -23,6 +22,7 @@ from sdk.content._catalog import (
     _TOOL_METADATA_SUFFIX,
 )
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
+from sdk.content._roots import load_disabled_pack_names_from_env
 
 logger = logging.getLogger(__name__)
 

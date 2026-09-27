@@ -146,7 +146,7 @@ async def test_auto_capture_context_carries_pack_config_resolver_and_router(
     # Pack config resolver: must be the session resolver, NOT the empty mapping.
     resolver = getattr(ctx, "pack_configuration_resolver", None)
     assert resolver is not None, "capture context must wire pack_configuration_resolver"
-    config = resolver.for_pack("lisa-pack-memory")
+    config = resolver("lisa-pack-memory")
     assert dict(config).get("memory_distill_max_tokens") == 5000, (
         "resolver must surface the session's lisa-pack-memory configuration"
     )

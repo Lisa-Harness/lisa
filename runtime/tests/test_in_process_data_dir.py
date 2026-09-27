@@ -28,7 +28,6 @@ import os as _os
 from pathlib import Path
 
 import pytest
-from kernel.layout import DATA_DIR
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
@@ -39,6 +38,7 @@ from kernel.tools.mcp_client import (
 )
 from runtime.runtime import HostRuntime, _make_in_process_resolver
 from runtime.testing import build_test_runtime
+from sdk.layout import DATA_DIR
 
 from runtime import mcp_pool
 

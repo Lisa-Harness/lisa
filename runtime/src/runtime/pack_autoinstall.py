@@ -33,7 +33,7 @@ from kernel.content_roots import (
     discover_installed_content_roots,
     discover_packs_venv_content_roots,
 )
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 from kernel.session_plan import PackInstallSpec
 
 if TYPE_CHECKING:

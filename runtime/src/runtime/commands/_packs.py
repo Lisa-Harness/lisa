@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from kernel.content_roots import discover_installed_content_roots
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 
 from runtime.content_roots import (
     always_on_pack_names,

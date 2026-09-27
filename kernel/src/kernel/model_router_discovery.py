@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 
 if TYPE_CHECKING:
     from kernel.model_manifest import ModelManifest

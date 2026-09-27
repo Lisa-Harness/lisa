@@ -18,11 +18,25 @@ from pathlib import Path
 
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
+from sdk.content._roots import load_disabled_pack_names_from_env
 from sdk.mcp_host import (
     build_catalog_mcp_config,
     build_content_mcp_config,
     session_provider_selection_payload,
 )
+
+
+def test_load_disabled_pack_names_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("LISA_DISABLED_PACKS", raising=False)
+    assert load_disabled_pack_names_from_env() == set()
+    monkeypatch.setenv("LISA_DISABLED_PACKS", "")
+    assert load_disabled_pack_names_from_env() == set()
+    monkeypatch.setenv("LISA_DISABLED_PACKS", "lisa-pack-cloudflare")
+    assert load_disabled_pack_names_from_env() == {"lisa-pack-cloudflare"}
+    monkeypatch.setenv(
+        "LISA_DISABLED_PACKS", os.pathsep.join(["Lisa_Pack_Cloudflare", " lisa-pack-stripe "])
+    )
+    assert load_disabled_pack_names_from_env() == {"lisa-pack-cloudflare", "lisa-pack-stripe"}
 
 
 def test_build_content_mcp_config_uses_discovered_roots_and_data_dir(tmp_path: Path) -> None:

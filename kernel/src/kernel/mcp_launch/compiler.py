@@ -220,33 +220,6 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
     env = compile_env(spec.env_policy)
     cwd = compile_cwd(spec.cwd_policy, workspace_root=spec.workspace_root)
 
-    # Default each first-party MCP server's logs to a per-server JSONL file
-    # under its resolved data dir. The first-party servers read
-    # ``LISA_MCP_LOG_PATH`` in ``mcp_server/config/cli.py:configure_logging``
-    # and route through the shared ``sdk.logging_setup`` JSON formatter.
-    # Without this, servers fall back to ``logging.basicConfig`` on stderr,
-    # which the MCP SDK's ``StdioServerParameters`` (no ``stderr=`` field in
-    # this version) inherits into the host terminal — visible on Linux as
-    # stray log lines corrupting the Rich TUI. A spec may override
-    # ``LISA_MCP_LOG_PATH`` via ``env_policy.forced_overrides``; respect that.
-    # Treat a present-but-empty value as unset: an empty ``LISA_MCP_LOG_PATH``
-    # would otherwise fall through to ``configure_logging``'s cwd fallback
-    # and drop a ``<server_name>.jsonl`` in the subprocess's cwd (the
-    # project root when the host launched from there) — the 2026-08-25
-    # stray-jsonl-files-in-root symptom.
-    # In-process servers skip log-path injection: there is no subprocess
-    # and no stderr to leak. The host process already configures logging.
-    if (
-        resolved_data_dir is not None
-        and not env.get("LISA_MCP_LOG_PATH")
-        and spec.runtime_kind is not RuntimeKind.IN_PROCESS
-    ):
-        from kernel.layout import LOGS_DIR, MCP_LOGS_SUBDIR
-
-        env["LISA_MCP_LOG_PATH"] = str(
-            Path(resolved_data_dir) / LOGS_DIR / MCP_LOGS_SUBDIR / f"{spec.server_id}.jsonl"
-        )
-
     return MCPClientConfig(
         server_id=spec.server_id,
         command=command,

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import (
@@ -37,18 +38,19 @@ from kernel.mcp_launch.server_manifest import (
     MemoryBackendConfig,
     load_mcp_server_manifest,
 )
-from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
 from kernel.proxy_launch.compiler import ProxyClientConfig, compile_proxy_registry
 from kernel.proxy_launch.manifest import ProxyServerManifestError, load_proxy_server_manifest
 from kernel.proxy_launch.policy import ProxyServerRegistry
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
+from sdk.layout import LOGS_DIR, MCP_LOGS_SUBDIR
 
 from runtime.config import HostConfig
 from runtime.content_roots import (
     always_on_pack_names,
     host_mcp_manifest_path,
     infer_pack_package_name,
+    load_disabled_pack_names,
     load_installed_packs_lock,
     load_pack_policy_dict,
     sdk_content_roots,
@@ -825,6 +827,26 @@ def _select_memory_owner(
     return memory_config, memory_owner_slug
 
 
+def _with_default_mcp_log_paths(
+    compiled: list[MCPClientConfig], registry: MCPServerRegistry, data_dir: str
+) -> list[MCPClientConfig]:
+    """Set host-owned log paths for spec-driven servers without overriding explicit values."""
+    specs = {spec.server_id: spec for spec in registry.all_specs()}
+    configured: list[MCPClientConfig] = []
+    for config in compiled:
+        spec = specs[config.server_id]
+        env = dict(config.env or {})
+        if config.runtime_kind != "in_process" and not env.get("LISA_MCP_LOG_PATH"):
+            server_data_dir = Path(data_dir)
+            if spec.data_dir_subdir:
+                server_data_dir /= spec.data_dir_subdir
+            env["LISA_MCP_LOG_PATH"] = str(
+                server_data_dir / LOGS_DIR / MCP_LOGS_SUBDIR / f"{config.server_id}.jsonl"
+            )
+        configured.append(dataclasses.replace(config, env=env))
+    return configured
+
+
 def _rewrite_in_process_configs(
     runtime: HostRuntime,
     compiled: list[MCPClientConfig],
@@ -929,6 +951,7 @@ def compile_mcp_configs(
     runtime.services.memory_config_pack_slug = memory_owner_slug
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+    compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
     compiled = _rewrite_in_process_configs(runtime, compiled)
 
     warm = [c for c in compiled if c.warm]

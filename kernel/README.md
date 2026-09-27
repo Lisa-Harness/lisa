@@ -35,8 +35,7 @@ The `lisa-harness-runtime` hosts the kernel and loads packs containing concrete 
 | `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. Supports pack exclusion via `excluded_packs`. |
 | `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by key, model_id, alias, or display_alias. Supports per-mode model overrides via `mode_models`. |
 | `config.py` | Kernel-owned settings: `sdk_content_roots`, declarative-completion defaults, turn-runner iteration budgets, guard caps, mapper scoring weights, and the shared chars-per-token estimate. Loads from environment with unknown-key filtering and an optional `LISA_` prefix. Surface identity defaults and per-lane context budgets live on the host (`runtime/config.py`). |
-| `pack_activation.py` | Shared helpers for reading disabled-pack state from `installed-packs.json` and `LISA_DISABLED_PACKS` env var. Used by all entry-point discovery mechanisms. |
-| `pack_configuration.py` | Immutable, pack-scoped configuration resolved from a session plan. `SessionPackConfigurationResolver` freezes configuration at construction time. |
+| `extension_names.py` | Normalizes distribution names for extension entry-point attribution. Hosts supply disabled-pack exclusions; runtime resolves lock state. |
 | `session_plan.py` | Strict session-manifest contracts (`SessionManifestV2`) and deterministic plan compilation. Defines `SessionPlan`, `PackSelection`, `ResourceSelection`, `ContextPlan`, and related models. |
 
 ### Built-in Capabilities
@@ -371,7 +370,7 @@ Extensions are discovered through their own entry-point groups:
 - `lisa.extensions.model_router_configs` — pack-seeded router config
 - `lisa.extensions.slice_providers` — opportunistic house-keeping slice providers
 
-All discovery mechanisms respect the disabled-pack exclusion set from `pack_activation.py`.
+Discovery mechanisms accept disabled-pack exclusion sets supplied by the runtime.
 
 ## Bottom Half: Intake & Processing
 

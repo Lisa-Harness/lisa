@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from types import MappingProxyType
 from typing import Any, Literal
 
 from kernel.approval import (
@@ -32,11 +33,11 @@ from kernel.models import (
     OperationResult,
     ToolExecutionTelemetry,
 )
-from kernel.pack_configuration import EMPTY_PACK_CONFIGURATION
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
+EMPTY_PACK_CONFIGURATION = MappingProxyType({})
 
 #: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
 #: fire-and-forget telemetry; the set keeps them garbage-collectable only
@@ -990,7 +991,7 @@ def _resolve_execution_configuration(
     if not pack_key or resolver is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
         return
-    ctx.pack_config = resolver.for_pack(pack_key)
+    ctx.pack_config = resolver(pack_key)
 
 
 def _validate_parameters(

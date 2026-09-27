@@ -14,9 +14,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from kernel.extension_names import normalize_pack_name
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import get_operation_catalog
-from kernel.pack_activation import EXCLUDED_PACK_NAMES, normalize_pack_name
 from kernel.tools.registry import get_tool_catalog
 
 from runtime.commands._packs import (
@@ -25,6 +25,7 @@ from runtime.commands._packs import (
 )
 from runtime.commands._routing import mode_support_gap
 from runtime.content_roots import (
+    EXCLUDED_PACK_NAMES,
     always_on_pack_names,
     pack_is_active,
     runtime_enabled_pack_map,

@@ -658,7 +658,7 @@ def _infer_content_provider_id(root: Path) -> str:
     content root's ``pyproject.toml`` (``[project] name``, e.g.
     ``lisa-pack-memory``). The session manifest's
     ``resources.packs.configuration`` block is keyed by that same distribution
-    name, and ``SessionPackConfigurationResolver.for_pack`` looks ops up by
+    name, and runtime configuration lookup uses the operation's
     ``effective_provider_id()``. When inference returned the bare directory
     slug (``memory``) instead of the distribution name (``lisa-pack-memory``),
     the resolver silently dropped the pack's config — which left

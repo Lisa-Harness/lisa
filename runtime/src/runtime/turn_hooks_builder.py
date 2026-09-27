@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any, cast
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
-from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
@@ -54,6 +53,7 @@ from runtime.context_assembly import (
 )
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
+from runtime.pack_configuration import SessionPackConfigurationResolver
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
 from runtime.thread import build_recent_thread_excerpt
 
@@ -1098,7 +1098,7 @@ def _build_item_builder_context(
     source pack name. The runtime context hands pack entry-point
     functions access to host resources.
     """
-    from kernel.pack_activation import load_disabled_pack_names
+    from runtime.content_roots import load_disabled_pack_names
 
     disabled_packs = load_disabled_pack_names(runtime.paths.data_dir)
     item_builder = EntryPointExtensionItemBuilder(
@@ -1131,7 +1131,7 @@ def build_turn_hooks(
     ctx_dict = context if context is not None else {}
     pack_configuration_resolver = SessionPackConfigurationResolver(
         runtime.session_plan.manifest.resources.packs.configuration
-    )
+    ).for_pack
     approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────

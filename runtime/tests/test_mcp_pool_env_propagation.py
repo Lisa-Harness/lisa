@@ -15,9 +15,56 @@ import os
 from pathlib import Path
 
 import pytest
+from kernel.mcp_launch.compiler import compile_registry
+from kernel.mcp_launch.policy import EnvPolicy, MCPServerRegistry, MCPServerSpec, RuntimeKind
 from runtime.runtime import HostRuntime
+from sdk.layout import LOGS_DIR, MCP_LOGS_SUBDIR
 
 from runtime import mcp_pool, pack_autoinstall
+
+
+def test_default_mcp_log_paths_preserve_overrides_and_subdirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LISA_MCP_LOG_PATH", "")
+    registry = MCPServerRegistry()
+    registry.register(
+        MCPServerSpec(
+            server_id="lisa-thread",
+            runtime_kind=RuntimeKind.PYTHON,
+            module="mcp_server.thread.server",
+            data_dir_subdir="private",
+            env_policy=EnvPolicy(inherit_parent=True),
+        )
+    )
+    registry.register(
+        MCPServerSpec(
+            server_id="custom",
+            runtime_kind=RuntimeKind.PYTHON,
+            module="custom.server",
+            env_policy=EnvPolicy(forced_overrides={"LISA_MCP_LOG_PATH": "/custom/log.jsonl"}),
+        )
+    )
+    registry.register(MCPServerSpec(server_id="inline", runtime_kind=RuntimeKind.IN_PROCESS))
+    configs = compile_registry(registry, data_dir=str(tmp_path))
+    result = mcp_pool._with_default_mcp_log_paths(configs, registry, str(tmp_path))
+    by_id = {config.server_id: config for config in result}
+    assert by_id["lisa-thread"].env["LISA_MCP_LOG_PATH"] == str(
+        tmp_path / "private" / LOGS_DIR / MCP_LOGS_SUBDIR / "lisa-thread.jsonl"
+    )
+    assert by_id["custom"].env["LISA_MCP_LOG_PATH"] == "/custom/log.jsonl"
+    assert by_id["inline"].env.get("LISA_MCP_LOG_PATH") == ""
+
+    monkeypatch.setenv("LISA_MCP_LOG_PATH", "/inherited/log.jsonl")
+    inherited = mcp_pool._with_default_mcp_log_paths(
+        compile_registry(registry, data_dir=str(tmp_path)), registry, str(tmp_path)
+    )
+    assert (
+        next(config for config in inherited if config.server_id == "lisa-thread").env[
+            "LISA_MCP_LOG_PATH"
+        ]
+        == "/inherited/log.jsonl"
+    )
 
 
 def _make_runtime(

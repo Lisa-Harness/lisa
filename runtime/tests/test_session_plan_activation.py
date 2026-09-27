@@ -2,12 +2,47 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from kernel.session_plan import compile_session_plan
 
 from runtime import content_roots
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (None, set()),
+        ("{not valid json", set()),
+        ({"packs": []}, set()),
+        ([], set()),
+        ({"packs": [{"package_name": "lisa-pack-cloudflare"}]}, set()),
+        (
+            {"packs": [{"package_name": "lisa-pack-cloudflare", "enabled": True}]},
+            set(),
+        ),
+        (
+            {
+                "packs": [
+                    {"package_name": "Lisa_Pack_Cloudflare", "enabled": False},
+                    {"package_name": "lisa-pack-github", "enabled": True},
+                    {"package_name": "lisa-pack-stripe", "enabled": False},
+                ]
+            },
+            {"lisa-pack-cloudflare", "lisa-pack-stripe"},
+        ),
+    ],
+)
+def test_load_disabled_pack_names(tmp_path: Path, payload: object, expected: set[str]) -> None:
+    if payload is not None:
+        lock = content_roots.runtime_pack_lock_path(tmp_path)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8"
+        )
+    assert content_roots.load_disabled_pack_names(tmp_path) == expected
 
 
 def _plan_with_packs(

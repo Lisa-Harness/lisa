@@ -17,7 +17,7 @@ intelligence" or "self-model context."
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +32,6 @@ if TYPE_CHECKING:
         IntrospectSnapshot,
         OperationResult,
     )
-    from kernel.pack_configuration import SessionPackConfigurationResolver
     from kernel.recovery import RecoveryService
     from kernel.seams.protocols import RouteCoordinator, StateProvider
     from kernel.slice import SliceOutcome, SlicePolicy, SliceTuning
@@ -200,7 +199,7 @@ class HostServiceHandles:
     state_provider: StateProvider | None = None
 
     #: Session-owned resolver for immutable, target-pack configuration.
-    pack_configuration_resolver: SessionPackConfigurationResolver | None = None
+    pack_configuration_resolver: Callable[[str], Mapping[str, Any]] | None = None
 
     #: Host-owned persistence + receipt service for exact-action approval.
     approval_service: ApprovalService | None = None

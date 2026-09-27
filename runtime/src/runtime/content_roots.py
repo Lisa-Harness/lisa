@@ -34,15 +34,12 @@ from kernel.content_roots import (
     discover_installed_content_roots,
     resolve_content_subdir_roots,
 )
-from kernel.pack_activation import (
-    EXCLUDED_PACK_NAMES,
-    load_disabled_pack_names,
-    normalize_pack_name,
-)
+from kernel.extension_names import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
+EXCLUDED_PACK_NAMES: frozenset[str] = frozenset({"lisa-harness-sdk"})
 _DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
     "lisa-pack-core",
     "lisa-pack-introspect",
@@ -169,6 +166,27 @@ def runtime_pack_lock_path(data_dir: Path) -> Path:
     from sdk.layout import STATE_DIR
 
     return data_dir / STATE_DIR / _PACK_LOCK_FILE_NAME
+
+
+def load_disabled_pack_names(data_dir: Path) -> set[str]:
+    """Return normalized names explicitly disabled in the installed-packs lock."""
+    lock_path = runtime_pack_lock_path(data_dir)
+    if not lock_path.exists():
+        return set()
+    try:
+        decoded = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Failed to read pack lock %r", str(lock_path), exc_info=True)
+        return set()
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("packs"), list):
+        return set()
+    disabled: set[str] = set()
+    for item in decoded["packs"]:
+        if isinstance(item, dict) and not bool(item.get("enabled", True)):
+            package_name = normalize_pack_name(str(item.get("package_name") or ""))
+            if package_name:
+                disabled.add(package_name)
+    return disabled
 
 
 def save_installed_packs_lock(data_dir: Path, payload: dict[str, Any]) -> None:

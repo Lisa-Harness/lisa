@@ -17,7 +17,7 @@ import logging
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
-from kernel.pack_activation import normalize_pack_name
+from kernel.extension_names import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
