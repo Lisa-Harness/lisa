@@ -4,10 +4,11 @@ usage() {
 	cat <<EOF
 usage: $(basename $0) [-d DIR] [-p OPTS] [-s OPTS] [-i OPTS]
 
-  -d, --dir DIR       working directory (default: \$PWD)
+  -d, --dir DIR       working directory 
+                        default: \$PWD
   -p, --pull OPTS     extra args appended to 'git pull'
-  -s, --sync OPTS     extra args appended to 'uv sync'
-  -i, --install OPTS  extra args appended to 'uv tool install'
+  -s, --sync OPTS     extra args appended to 'uv sync' 
+                        default: -U when running as ./develop.sh
   -h, --help          show this help
 EOF
 }
