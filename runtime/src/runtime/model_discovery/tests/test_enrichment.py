@@ -138,6 +138,12 @@ class TestAzureEnrichment:
         # omit it.
         assert model.thinking_model is True
 
+    def test_gpt6_uses_responses_api(self) -> None:
+        """gpt-6 chat-completions rejects function tools with default reasoning_effort."""
+        model = _enrich_azure_model("gpt-6-luna", {"model": "gpt-6-luna"})
+        assert model.completion_api == "responses"
+        assert model.thinking_model is True
+
     def test_non_codex_uses_chat_completions(self) -> None:
         """Non-codex deployments keep the default chat-completions endpoint."""
         model = _enrich_azure_model("gpt-5.4", {"model": "gpt-5.4"})

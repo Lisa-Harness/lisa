@@ -208,7 +208,12 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
     # to that chain; the o-series also sets ``thinking_model`` in its own
     # branch below.
     is_codex = "codex" in lowered
-    thinking_model = is_codex
+    # gpt-6 family: default reasoning_effort is non-'none', which Azure
+    # chat-completions rejects alongside function tools, and temperature is
+    # rejected on every endpoint (probed live 2026-09-27).
+    is_gpt6 = lowered.startswith("gpt-6")
+    needs_responses = is_codex or is_gpt6
+    thinking_model = needs_responses
 
     # Parse the Azure catalog capabilities dict if present.
     catalog_caps = _azure_catalog_capabilities(row)
@@ -226,7 +231,7 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
     # operation is unsupported.`` Infer ``completion_api`` so the
     # generated manifest routes them correctly without a hand edit.
     # ``thinking_model`` for codex is set above (near the init).
-    completion_api = "responses" if is_codex else "chat_completions"
+    completion_api = "responses" if needs_responses else "chat_completions"
 
     enrichment = apply_known_override(
         "azure_openai",
