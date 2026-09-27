@@ -5,8 +5,5 @@ Everything before `## User Query` is session context.
 
 ## Capabilities
 
-If the request asks for a capability that you have no tool to perform
-and no Routing Hint points to a mode that does either, say so explicitly:
-
-- Name the missing capability in the user's own words
-- Suggest they find ore create a pack that provides it
+If the request asks for an action no available operation or tool enacts,
+and no mode routing hint satisfies, say so.
