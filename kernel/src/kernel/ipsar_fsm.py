@@ -281,6 +281,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "default_intent_bridges",
         "artifact_type",
         "yield_policy",
+        "approval_continuation",
     }
 )
 # Every front-matter key the loader reads into a typed WorkflowModeConfig field.
@@ -929,6 +930,21 @@ def _parse_yield_and_fork_policy(
     return yield_policy, fork_allowed
 
 
+def _parse_approval_continuation(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> Literal["report", "resume"]:
+    """Parse ``approval_continuation`` (``report`` default, or ``resume``)."""
+    raw = mode_front_matter.get("approval_continuation", "report")
+    if raw == "report":
+        return "report"
+    if raw == "resume":
+        return "resume"
+    raise WorkflowValidationError(
+        f"approval_continuation must be 'report' or 'resume' in {mode_config_path}"
+    )
+
+
 class _ModeFolderSkipped(Exception):
     """Internal control-flow sentinel: non-strict mode folder missing ``_mode.md``.
 
@@ -1009,6 +1025,7 @@ def _load_mode_from_dir(
     routing = _parse_mode_routing_fields(mode_front_matter, mode_config_path)
     default_intent_bridges = _parse_default_intent_bridges(mode_front_matter, mode_config_path)
     yield_policy, fork_allowed = _parse_yield_and_fork_policy(mode_front_matter, mode_config_path)
+    approval_continuation = _parse_approval_continuation(mode_front_matter, mode_config_path)
 
     # Collect app/pack-owned extension keys the kernel does not interpret.
     # Everything in the (possibly overridden) front matter that is not a
@@ -1057,6 +1074,7 @@ def _load_mode_from_dir(
         context_item_packs=[str(p) for p in (mode_front_matter.get("context_item_packs") or [])],
         yield_policy=yield_policy,
         fork_allowed=fork_allowed,
+        approval_continuation=approval_continuation,
         extra_front_matter=extra_front_matter,
     )
     # Synthesize a one-stage graph for stageless (chat/action) modes so

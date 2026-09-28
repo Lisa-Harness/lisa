@@ -57,6 +57,7 @@ from sdk.logging_setup import emit_structured_event
 from runtime.approval import (
     build_approval_data,
     handle_approval_command,
+    is_affirmative_resume,
     maybe_auto_continue_approval,
     try_affirmative_approval_resume,
 )
@@ -83,7 +84,7 @@ from runtime.commands import (
     set_runtime_route_preview,
 )
 from runtime.context_assembly import build_turn_context
-from runtime.thread import append_thread_entry
+from runtime.thread import append_thread_entry, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_hooks_builder import build_turn_hooks
 from runtime.turn_logging import build_turn_completed_payload
@@ -570,6 +571,9 @@ async def _route_model_turn(
             # can hand off to a better-suited mode mid-turn by calling
             # transition_stage. No separate planner call needed.
             mode_id = runtime.session.current_mode_id or "default"
+            # current_mode_id resets per process; a resume after a paused turn must reach its owner.
+            if is_affirmative_resume(message.strip().lower()):
+                mode_id = paused_turn_owner_mode(thread_path=runtime.paths.thread_path) or mode_id
             query = message
             logger.debug(
                 "route_model_turn: natural language -> mode=%s (start_mode=%s)",
@@ -637,13 +641,58 @@ def _log_operator_exit(result: TurnResult, mode_id: str) -> None:
         logger.info("handle_message: turn terminated by operator (mode=%s)", mode_id)
 
 
-def _build_thread_provenance(resolved_model: Any) -> dict[str, Any]:
+def _build_thread_provenance(resolved_model: Any, *, operator_exit: str = "") -> dict[str, Any]:
     """Build the thread-entry provenance dict for one completed turn."""
-    return {
+    provenance: dict[str, Any] = {
         "source": "observed",
         "finish_reason": "unknown",
         "model_id": resolved_model.model_id,
     }
+    if operator_exit:
+        provenance["operator_exit"] = operator_exit
+    return provenance
+
+
+async def _handle_pending_approval(
+    runtime: HostRuntime,
+    result: TurnResult,
+    *,
+    mode_id: str,
+    query: str,
+    resolved_model: Any,
+    turn_index: int,
+    transport: TransportCallbacks,
+) -> HostCommandResult | None:
+    """Persist a turn paused for approval, then auto-continue or return the approval payload."""
+    pending_approval = getattr(result, "pending_approval", None)
+    if pending_approval is None:
+        return None
+    # Persist the paused turn so the post-approval continuation can recover its request.
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
+        mode_id=mode_id,
+        query=query,
+        response_text=result.response_text,
+        provenance={
+            **_build_thread_provenance(resolved_model),
+            "pending_approval_request_id": pending_approval.request_id,
+        },
+        effect_receipts=_serialize_effect_receipts(result),
+        handoff_to=result.handoff_to or "",
+        turn=turn_index,
+    )
+    approved_result = await maybe_auto_continue_approval(
+        runtime,
+        pending_approval,
+        transport,
+        route_model_turn=_route_model_turn,
+    )
+    if approved_result is not None:
+        return approved_result
+    approval_data = build_approval_data(runtime, pending_approval)
+    return HostCommandResult(text=result.response_text, data=approval_data)
 
 
 def _serialize_effect_receipts(result: TurnResult) -> list[dict[str, str]]:
@@ -932,19 +981,17 @@ async def _execute_mode_turn(
     # - still-pending     -> attach a structured ``data["approval"]`` payload
     #   so a panel-capable transport (the CLI) renders a keystroke panel
     #   instead of the bare "run /approve <uuid>" text.
-    pending_approval = getattr(result, "pending_approval", None)
-    if pending_approval is not None:
-        approved_result = await maybe_auto_continue_approval(
-            runtime,
-            pending_approval,
-            transport,
-            route_model_turn=_route_model_turn,
-        )
-        if approved_result is not None:
-            return approved_result
-        approval_data = build_approval_data(runtime, pending_approval)
-        payload_text = result.response_text
-        return HostCommandResult(text=payload_text, data=approval_data)
+    pending_approval_result = await _handle_pending_approval(
+        runtime,
+        result,
+        mode_id=mode.mode_id,
+        query=query or message,
+        resolved_model=resolved_model,
+        turn_index=turn_index,
+        transport=transport,
+    )
+    if pending_approval_result is not None:
+        return pending_approval_result
 
     # Apply token usage accounting.
     # Sync the runtime's stage from the result's terminal transition so the
@@ -979,7 +1026,9 @@ async def _execute_mode_turn(
     _emit_turn_completed_event(mode.mode_id, result)
 
     # Persist the thread entry.
-    provenance: dict[str, Any] = _build_thread_provenance(resolved_model)
+    provenance: dict[str, Any] = _build_thread_provenance(
+        resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
+    )
 
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly

@@ -114,6 +114,17 @@ def load_thread_range(
     return store.load_range(start_turn=start_turn, end_turn=end_turn)
 
 
+def paused_turn_owner_mode(*, thread_path: Path | None) -> str:
+    """Return the mode that owned the latest turn if it ended paused, else ``""``."""
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=1)
+    if not entries:
+        return ""
+    last = entries[-1]
+    if (last.get("provenance") or {}).get("operator_exit") != "paused":
+        return ""
+    return str(last.get("handoff_to") or last.get("mode_id") or "")
+
+
 def next_turn_index(*, thread_path: Path | None) -> int:
     """Return the 0-based global turn index the next appended entry will receive.
 
@@ -305,5 +316,6 @@ __all__ = [
     "load_recent_thread_entries",
     "load_thread_range",
     "next_turn_index",
+    "paused_turn_owner_mode",
     "set_thread_redaction_policy",
 ]

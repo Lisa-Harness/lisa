@@ -36,6 +36,7 @@ from kernel.approval import (
     ApprovalRequired,
     render_approval_request,
 )
+from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.turn_runner import execute_approved_invocation
 
 from runtime.approval.presentation import (
@@ -322,6 +323,43 @@ def _approval_action_receipt_for_thread(invocation: ApprovalInvocation) -> dict[
     return approval_action_receipt(invocation)
 
 
+def _paused_request_query(runtime: HostRuntime, request_id: str) -> str:
+    """Return the query of the thread turn that paused for ``request_id``, or ``""``."""
+    from runtime.thread import (  # lazy: defers runtime.thread import to approval time
+        load_recent_thread_entries,
+    )
+
+    for entry in reversed(load_recent_thread_entries(thread_path=runtime.paths.thread_path)):
+        provenance = entry.get("provenance") or {}
+        if provenance.get("pending_approval_request_id") == request_id:
+            return str(entry.get("query") or "")
+    return ""
+
+
+def _continuation_directive(runtime: HostRuntime, owner_mode: str, request_id: str) -> str:
+    """Return the post-approval directive declared by the owning mode."""
+    mode = get_workflow_catalog().get(owner_mode)
+    if mode is not None and mode.approval_continuation == "resume":
+        original = _paused_request_query(runtime, request_id)
+        request_line = f"The original request was:\n\n{original}\n\n" if original else ""
+        return (
+            "Do not re-run the approved action. "
+            f"{request_line}"
+            "Continue that request from where it paused, using the approved "
+            "action's result."
+        )
+    # Report-only: a one-shot CLI process would pause for another approval on any
+    # new effectful action (the tumbleweed3 double-approve friction).
+    return (
+        "Report the result to the operator in plain prose. Do not call any "
+        "tools in this turn — do not re-run the approved action and do not "
+        "start follow-up commands; the operator is watching and can ask for "
+        "more work explicitly. End your report with the single most likely "
+        "next step as one short prose sentence (no tool calls, no question) "
+        'so the operator can say "go" or redirect.'
+    )
+
+
 async def _record_and_continue_after_approval(
     runtime: HostRuntime,
     invocation: ApprovalInvocation,
@@ -387,21 +425,13 @@ async def _record_and_continue_after_approval(
     # A dedicated thread entry keeps the action output addressable while
     # the synthesis turn carries the query "<target> executed and returned:
     # <output>" so the model treats the output as observed data, not as a
-    # fresh user instruction to re-interpret. The continuation is a REPORT,
-    # not an invitation to plan more work: this host may be a one-shot CLI
-    # process, so any new effectful action the model tries here pauses for
-    # another approval the operator must type by hand — the double-approve
-    # friction observed on tumbleweed3. Report, then stop.
+    # fresh user instruction to re-interpret. The owning mode declares whether
+    # the turn reports and stops or resumes the paused request.
     continuation_query = (
         f"The approved action `{invocation.target_id}` executed successfully "
         f"(approval {invocation.request_id}) and returned this output:\n\n"
         f"{action_text}\n\n"
-        "Report the result to the operator in plain prose. Do not call any "
-        "tools in this turn — do not re-run the approved action and do not "
-        "start follow-up commands; the operator is watching and can ask for "
-        "more work explicitly. End your report with the single most likely "
-        "next step as one short prose sentence (no tool calls, no question) "
-        'so the operator can say "go" or redirect.'
+        f"{_continuation_directive(runtime, owner_mode, invocation.request_id)}"
     )
     runtime.session.current_mode_id = owner_mode
     routed = await route_model_turn(runtime, continuation_query, transport)

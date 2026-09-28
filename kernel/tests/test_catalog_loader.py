@@ -409,6 +409,34 @@ def test_load_catalog_from_disk_rejects_non_mapping_yield_policy(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: approval_continuation
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_approval_continuation_defaults_to_report(
+    tmp_path: Path,
+) -> None:
+    _write_mode(tmp_path)
+    assert _load(tmp_path)["demo"].approval_continuation == "report"
+
+
+def test_load_catalog_from_disk_reads_approval_continuation_resume(tmp_path: Path) -> None:
+    _write_mode(tmp_path, extra_front_matter={"approval_continuation": "resume"})
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].approval_continuation == "resume"
+    assert "approval_continuation" not in catalog["demo"].extra_front_matter
+
+
+def test_load_catalog_from_disk_rejects_unknown_approval_continuation(
+    tmp_path: Path,
+) -> None:
+    _write_mode(tmp_path, extra_front_matter={"approval_continuation": "continue"})
+    with pytest.raises(WorkflowValidationError, match="approval_continuation"):
+        _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: fork_allowed
 # ---------------------------------------------------------------------------
 

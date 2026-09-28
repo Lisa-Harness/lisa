@@ -236,6 +236,10 @@ class Settings(BaseSettings):
     # ``no_tools``. ``0`` disables the pre-cap nudge. Override via
     # ``WRITE_DEADLINE_MARGIN``.
     write_deadline_margin: int = 1
+    # Fire the one-shot read-loop nudge when this many whole-turn tool calls
+    # remain (``TurnBudget.max_tool_calls``). ``0`` disables. Override via
+    # ``BUDGET_NUDGE_REMAINING_CALLS``.
+    budget_nudge_remaining_calls: int = 3
     # Write-rescue forced-transition target. When a write-contract mode
     # is within ``write_deadline_margin`` of the stuck-stage cap with no
     # verified write, the lifecycle resolver transitions the turn to this
@@ -407,6 +411,7 @@ class Settings(BaseSettings):
         "stage_nudge_threshold",
         "stage_nudge_cap",
         "write_deadline_margin",
+        "budget_nudge_remaining_calls",
         "max_handoffs_per_turn",
         "duplicate_hint_limit",
         "hint_cycle_min_len",

@@ -835,6 +835,40 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
     )
 
 
+async def _routed_mode_after(tmp_path: Path, last_provenance: dict[str, str]) -> str:
+    from unittest.mock import AsyncMock, patch
+
+    from runtime.callbacks import NullTransport
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="fix issue 6",
+        response_text="budget exhausted",
+        provenance=last_provenance,
+        handoff_to="worker",
+    )
+    execute_mock = AsyncMock(return_value="ok")
+    with patch.object(handle_message_mod, "_execute_mode_turn", execute_mock):
+        await handle_message(runtime, "continue", NullTransport())
+    return str(execute_mock.call_args.args[2])
+
+
+@pytest.mark.asyncio
+async def test_resume_phrase_routes_to_paused_turn_owner(tmp_path: Path) -> None:
+    mode = await _routed_mode_after(tmp_path, {"source": "observed", "operator_exit": "paused"})
+    assert mode == "worker"
+
+
+@pytest.mark.asyncio
+async def test_resume_phrase_after_completed_turn_stays_in_current_mode(tmp_path: Path) -> None:
+    mode = await _routed_mode_after(tmp_path, {"source": "observed"})
+    assert mode == "default"
+
+
 # ── Token accounting ──────────────────────────────────────────────────
 
 

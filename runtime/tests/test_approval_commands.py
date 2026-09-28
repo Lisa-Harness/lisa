@@ -982,6 +982,78 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
     assert entry["mode_id"] == "shell"
 
 
+async def _continuation_for_declared_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approval_continuation: str,
+) -> str:
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "worker"
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="some_action",
+        pack_id="some-pack",
+        effect="write",
+        parameters={},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
+        mode_id="worker",
+        query="fix issue 6",
+        response_text="needs approval",
+        provenance={"source": "observed", "pending_approval_request_id": invocation.request_id},
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    monkeypatch.setattr(
+        approval_module,
+        "get_workflow_catalog",
+        lambda: {"worker": SimpleNamespace(approval_continuation=approval_continuation)},
+    )
+    queries: list[str] = []
+
+    async def route_model_turn(_runtime: HostRuntime, query: str, _t: object) -> HostCommandResult:
+        queries.append(query)
+        return HostCommandResult(text="continued")
+
+    await approval_module._record_and_continue_after_approval(
+        runtime,
+        invocation,
+        ToolResult(output_text="action output"),
+        transport=NullTransport(),
+        route_model_turn=route_model_turn,
+    )
+    assert len(queries) == 1
+    return queries[0]
+
+
+@pytest.mark.asyncio
+async def test_resume_mode_continuation_carries_paused_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = await _continuation_for_declared_mode(tmp_path, monkeypatch, "resume")
+
+    assert "action output" in query
+    assert "fix issue 6" in query
+    assert "Do not re-run the approved action" in query
+    assert "Do not call any tools" not in query
+
+
+@pytest.mark.asyncio
+async def test_report_mode_continuation_stays_report_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = await _continuation_for_declared_mode(tmp_path, monkeypatch, "report")
+
+    assert "Do not call any tools" in query
+    assert "fix issue 6" not in query
+
+
 @pytest.mark.asyncio
 async def test_approve_reports_decision_state_for_already_denied_request(
     tmp_path: Path,

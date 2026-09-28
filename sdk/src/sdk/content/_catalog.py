@@ -412,6 +412,9 @@ def _load_one_mode(
         ],
         "excluded_tool_ids": [str(t) for t in (front_matter.get("excluded_tool_ids") or [])],
         "entry_failure_policy": str(front_matter.get("entry_failure_policy", "abort") or "abort"),
+        "approval_continuation": str(
+            front_matter.get("approval_continuation", "report") or "report"
+        ),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,

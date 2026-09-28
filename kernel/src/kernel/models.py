@@ -1414,6 +1414,9 @@ class WorkflowModeConfig(BaseModel):
     # propagates to the user through the parent. Authored in ``_mode.md``
     # front matter under ``fork_allowed``.
     fork_allowed: bool = False
+    # What the post-approval turn does in this mode: ``report`` the action's
+    # result and stop, or ``resume`` the request that raised the approval.
+    approval_continuation: Literal["report", "resume"] = "report"
 
 
 # The durable workflow object is ``WorkflowPosition`` (kernel/workflow_position.py):

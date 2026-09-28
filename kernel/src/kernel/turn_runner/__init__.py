@@ -2313,6 +2313,7 @@ def _per_iteration_nudges(
     turns_in_stage: int,
     pending_yield: YieldAction | None,
     log: logging.Logger,
+    max_turn_tool_calls: int = 0,
 ) -> tuple[str, str]:
     """Build this iteration's one-shot midpoint write-nudge and read-loop nudge.
 
@@ -2417,8 +2418,14 @@ def _per_iteration_nudges(
         bare_tool_name(n) in state.action_tool_ids or n in state.action_tool_ids
         for n in state.called_tool_names
     )
+    _near_call_budget = (
+        max_turn_tool_calls > 0
+        and _kernel_settings.budget_nudge_remaining_calls > 0
+        and max_turn_tool_calls - state.total_tool_calls
+        <= _kernel_settings.budget_nudge_remaining_calls
+    )
     if (
-        turns_in_stage >= _kernel_settings.stage_nudge_threshold
+        (turns_in_stage >= _kernel_settings.stage_nudge_threshold or _near_call_budget)
         and not state.read_loop_nudge_fired
         and not state.write_nudge_fired
         and _read_receipts
@@ -8508,6 +8515,7 @@ async def _run_turn_inner(
             turns_in_stage=_turns_in_stage,
             pending_yield=_pending_yield,
             log=_log,
+            max_turn_tool_calls=turn_budget.max_tool_calls if turn_budget is not None else 0,
         )
 
         # Determine effective_tools from the budget/yield state.
