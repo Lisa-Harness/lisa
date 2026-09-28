@@ -84,6 +84,11 @@ class ContextHooks:
     #: Paradox" fix).
     assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
 
+    #: ``prior_messages()`` returns earlier turns' messages (user, assistant,
+    #: tool) to replay verbatim before this turn's user message. Parent turns
+    #: only. Default: none.
+    prior_messages: Callable[[], list[dict[str, Any]]] | None = None
+
     #: Most recent ``ContextBudgetSnapshot`` produced by the host's
     #: context-mapper pass. Mutated by the host after each prompt assembly so
     #: slice providers read actual context-window utilization without

@@ -682,6 +682,8 @@ async def _handle_pending_approval(
         effect_receipts=_serialize_effect_receipts(result),
         handoff_to=result.handoff_to or "",
         turn=turn_index,
+        turn_input={"calls": result.model_requests} if result.model_requests else None,
+        transcript=result.transcript,
     )
     approved_result = await maybe_auto_continue_approval(
         runtime,
@@ -1054,7 +1056,9 @@ async def _execute_mode_turn(
         turn=turn_index,
         yielded=result.yielded is not None,
         yield_question=result.yielded.question if result.yielded else "",
-        turn_input=run_context.get("turn_input")
+        turn_input={"calls": result.model_requests}
+        if result.model_requests
+        else run_context.get("turn_input")
         if isinstance(run_context.get("turn_input"), dict)
         else None,
         # Thread → memory provenance: memory records minted by this turn's
@@ -1062,6 +1066,7 @@ async def _execute_mode_turn(
         memory_ids=run_context.get("memory_ids")
         if isinstance(run_context.get("memory_ids"), list)
         else None,
+        transcript=result.transcript,
     )
 
     # ── Centralized loop decision classification ────────────────────

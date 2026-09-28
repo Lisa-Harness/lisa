@@ -124,6 +124,12 @@ class TurnResult:
     See :class:`kernel.models.YieldAction`."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
+    transcript: list[dict[str, Any]] = field(default_factory=list)
+    """Verbatim non-system messages this turn added (user message, assistant
+    tool calls, tool results), excluding replayed prior messages."""
+    model_requests: list[dict[str, Any]] = field(default_factory=list)
+    """Verbatim request snapshot for every model call this turn (messages,
+    tools, model params), in call order."""
     per_model_usage: list[dict[str, Any]] = field(default_factory=list)
     """Per-model token breakdown for every model that was actually called
     during this turn. Each entry is keyed by the model's ``model_id`` and

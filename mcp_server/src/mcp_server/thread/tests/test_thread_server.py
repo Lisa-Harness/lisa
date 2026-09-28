@@ -88,6 +88,43 @@ async def test_thread_server_lists_three_tools(thread_deps: None) -> None:
     assert {"thread_read_range", "thread_read_recent", "thread_search"} == names
 
 
+@pytest.mark.asyncio
+async def test_thread_read_range_include_transcript_is_full_fidelity(
+    thread_deps: None,
+    tmp_path: Path,
+) -> None:
+    from mcp_server.thread.server import mcp
+    from sdk.thread._backend import _segment_paths
+
+    paths = _segment_paths(tmp_path / "threads" / "tester")
+    paths.current.parent.mkdir(parents=True, exist_ok=True)
+    long_output = "x" * 5000
+    entry = {
+        "mode_id": "worker",
+        "query": "read it",
+        "response_text": long_output,
+        "transcript": [{"role": "tool", "tool_call_id": "c1", "content": long_output}],
+    }
+    paths.current.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    compact = json.loads(
+        _tool_text(await mcp.call_tool("thread_read_range", {"start_turn": 0, "end_turn": 0}))
+    )
+    full = json.loads(
+        _tool_text(
+            await mcp.call_tool(
+                "thread_read_range",
+                {"start_turn": 0, "end_turn": 0, "include_transcript": True},
+            )
+        )
+    )
+
+    assert "transcript" not in compact[0]
+    assert len(compact[0]["response_text"]) < 5000
+    assert full[0]["response_text"] == long_output
+    assert full[0]["transcript"][0]["content"] == long_output
+
+
 # ── thread_search ────────────────────────────────────────────────────
 
 

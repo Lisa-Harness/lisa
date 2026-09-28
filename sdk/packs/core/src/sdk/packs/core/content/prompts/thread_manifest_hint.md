@@ -15,6 +15,7 @@ Pull prior turns when:
 ## How to find the right turns
 
 - **Within this manifest window**: scan the table for queries matching the current topic. Note the turn index, then use `thread_read_range` to pull the full entry.
+- **Tool results from earlier turns**: pass `include_transcript: true` to `thread_read_range` to get every tool call and its full result from those turns instead of calling the tools again.
 - **Beyond this manifest window** (turns older than the last 30): use `thread_search` with a keyword or phrase from the topic you are looking for. It returns matching turn numbers ranked by relevance. Then use `thread_read_range` with those turn numbers to pull full content.
 
 ## What not to do

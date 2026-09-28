@@ -226,10 +226,35 @@ def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, An
     return result
 
 
+def _redact_transcript(transcript: list[Any], redaction: Any) -> list[Any]:
+    """Return a copy of ``transcript`` with message contents and tool arguments redacted."""
+    redacted = json.loads(json.dumps(transcript, default=str))
+    if redaction is None:
+        return redacted
+    for message in redacted:
+        if isinstance(message.get("content"), str):
+            message["content"] = redaction.redact(message["content"])
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if isinstance(function.get("arguments"), str):
+                function["arguments"] = redaction.redact(function["arguments"])
+    return redacted
+
+
+def _full_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, Any]:
+    """Project an entry at full fidelity: untruncated response plus the verbatim transcript."""
+    result = _compact_entry(entry, redaction=redaction)
+    response = str(entry.get("response_text") or "")
+    result["response_text"] = redaction.redact(response) if redaction is not None else response
+    result["transcript"] = _redact_transcript(list(entry.get("transcript") or []), redaction)
+    return result
+
+
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def thread_read_range(
     start_turn: int,
     end_turn: int,
+    include_transcript: bool = False,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
     """Read a range of entries from the conversation thread by global turn index.
@@ -248,13 +273,17 @@ async def thread_read_range(
             inclusive.
         end_turn: The global turn index to stop reading at, inclusive. Use
             a large number for "to the end".
+        include_transcript: When true, return each entry at full fidelity:
+            the untruncated response plus the turn's verbatim transcript
+            (every tool call with its arguments and every tool result).
 
     Returns:
         JSON array of compact thread entries.
     """
     deps = _resolve_deps(ctx)
     entries = deps.store.load_range(start_turn=start_turn, end_turn=end_turn)
-    compact = [_compact_entry(e, redaction=deps.redaction) for e in entries]
+    project = _full_entry if include_transcript else _compact_entry
+    compact = [project(e, redaction=deps.redaction) for e in entries]
     return json.dumps(compact, ensure_ascii=False)
 
 

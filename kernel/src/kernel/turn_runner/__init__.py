@@ -43,6 +43,7 @@ __all__ = [
 ]
 
 
+import copy
 import json
 import logging
 import re
@@ -228,8 +229,34 @@ logger = logging.getLogger(__name__)
 #: Router-reported model reliability at (or above) which the forced-action
 #: non-compliance cap is lifted (frontier/reasoning models self-correct).
 _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
-#: Characters of the last tool result kept for the stuck-diagnosis snippet.
-_TOOL_RESULT_SNIPPET_CHARS = 300
+
+
+def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep replayable messages, pairing every assistant tool call with its result."""
+    answered = {
+        m.get("tool_call_id")
+        for m in prior
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+    issued: set[Any] = set()
+    valid: list[dict[str, Any]] = []
+    for message in prior:
+        role = message.get("role")
+        if role == "assistant":
+            calls = [c for c in message.get("tool_calls") or [] if c.get("id") in answered]
+            if not calls and not message.get("content"):
+                continue
+            kept = {k: v for k, v in message.items() if k != "tool_calls"}
+            if calls:
+                kept["tool_calls"] = calls
+                issued.update(c.get("id") for c in calls)
+            valid.append(kept)
+        elif role == "tool":
+            if message.get("tool_call_id") in issued:
+                valid.append(message)
+        elif role == "user":
+            valid.append(message)
+    return valid
 
 # ── Stalled-write rescue: announcement detection ───────────────────────────
 # Prose that ANNOUNCES a write in future/present-continuous tense while the
@@ -1141,8 +1168,9 @@ async def _run_turn_with_approval(
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
+    capture: list[Any] = []
     try:
-        return await _run_turn_inner(
+        result = await _run_turn_inner(
             mode_id=mode_id,
             query=query,
             hooks=hooks,
@@ -1166,6 +1194,7 @@ async def _run_turn_with_approval(
             sub_turn_kind=sub_turn_kind,
             delegate_depth=delegate_depth,
             stage_id_override=stage_id_override,
+            state_capture=capture,
         )
     except ApprovalRequired as required:
         # Preserve the mid-turn handoff across the approval boundary. The
@@ -1181,11 +1210,27 @@ async def _run_turn_with_approval(
         # differs from the entry mode, so an approval paused in the entry
         # mode does not fabricate a self-handoff.
         owning_mode = required.invocation.identity.mode_id or ""
-        return TurnResult(
-            response_text=render_approval_request(required.invocation),
-            pending_approval=required.invocation,
-            handoff_to=owning_mode if owning_mode and owning_mode != mode_id else None,
+        return _with_transcript(
+            TurnResult(
+                response_text=render_approval_request(required.invocation),
+                pending_approval=required.invocation,
+                handoff_to=owning_mode if owning_mode and owning_mode != mode_id else None,
+            ),
+            capture,
         )
+    return _with_transcript(result, capture)
+
+
+def _with_transcript(result: TurnResult, capture: list[Any]) -> TurnResult:
+    """Attach the captured turn transcript and model requests to ``result``."""
+    if not capture:
+        return result
+    state = capture[0]
+    if state.messages is not None and not result.transcript:
+        result.transcript = copy.deepcopy(state.messages[state.transcript_start :])
+    if not result.model_requests:
+        result.model_requests = list(state.model_requests)
+    return result
 
 
 async def execute_approved_invocation(
@@ -1871,6 +1916,8 @@ def _prepare_turn_messages_and_model(
     # so the rendered prompt stays byte-identical to the historical single
     # string while the stable prefix is never rewritten per-iteration.
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_segments.flatten()}]
+    if hooks.context.prior_messages is not None and not state.sub_turn_kind:
+        messages.extend(_valid_replay_messages(hooks.context.prior_messages()))
 
     # Build user message
     user_parts: list[str] = []
@@ -1883,6 +1930,8 @@ def _prepare_turn_messages_and_model(
     user_parts.append(f"## User Query\n\n{query}")
     user_content = "\n\n".join(user_parts)
     messages.append({"role": "user", "content": user_content})
+    state.messages = messages
+    state.transcript_start = len(messages) - 1
 
     # Resolve preferred model
     preferred_model_id = (
@@ -2738,6 +2787,19 @@ async def _model_completion_for_iteration(
         # flattening the system message from ``messages``, which is
         # byte-identical to the segment-flattened text.
         system_prompt_segments=sys_segments.as_segments_copy(),
+    )
+    state.model_requests.append(
+        {
+            "iteration": state.iteration,
+            "messages": copy.deepcopy(messages),
+            "tools": copy.deepcopy(effective_tools),
+            "model_id": getattr(effective_model_def, "model_id", ""),
+            "provider": getattr(effective_model_def, "provider", ""),
+            "reasoning_model": bool(getattr(effective_model_def, "reasoning_model", False)),
+            "temperature": completion_request.temperature,
+            "max_tokens": completion_request.max_tokens,
+            "response_format": completion_request.response_format,
+        }
     )
 
     _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
@@ -4768,11 +4830,6 @@ def _build_cap_pause_diagnostic(
                 if hasattr(state.effect_receipts[-1], "capability_id")
                 else ""
             )
-        _last_tool_snippet = ""
-        if state.last_tool_result_text:
-            _last_tool_snippet = state.last_tool_result_text[:_TOOL_RESULT_SNIPPET_CHARS]
-            if len(state.last_tool_result_text) > _TOOL_RESULT_SNIPPET_CHARS:
-                _last_tool_snippet += "…"
         _why_clause = ""
         if _last_tool_name:
             _why_clause = f" The last tool I called was `{_last_tool_name}`"
@@ -4783,12 +4840,11 @@ def _build_cap_pause_diagnostic(
             _op_ctx_parts = _structured_operation_failure_context(state)
             if _op_ctx_parts:
                 _why_clause += f" which returned: {'; '.join(_op_ctx_parts)}"
-            elif _last_tool_snippet:
-                _why_clause += f" which returned: {_last_tool_snippet}"
             _why_clause += "."
         content = (
             f"I've hit my iteration budget in {mode_id} "
             f"({cap_pause_reason}).{_why_clause} "
+            f"Every tool call and result from this turn is kept in the thread log. "
             f"I've paused so you can redirect me — reply with instructions "
             f"or a correction and I'll resume from here."
         )
@@ -6921,6 +6977,7 @@ def _prepare_turn_infrastructure(
     sub_turn_kind: str | None,
     delegate_depth: int,
     yield_policy_override: YieldPolicy | None,
+    state_capture: list[Any] | None = None,
 ) -> _TurnInfrastructure:
     """Assemble the turn-scoped infrastructure before the tool loop.
 
@@ -6974,6 +7031,8 @@ def _prepare_turn_infrastructure(
     )
 
     state = _TurnState()
+    if state_capture is not None:
+        state_capture.append(state)
     # Expose the budget caps on the turn state so ``emit_stage`` stamps
     # them on every stage payload. The transport uses them to render
     # graphical counters (pip rows / sparklines) against the correct
@@ -8167,6 +8226,7 @@ async def _run_turn_inner(
     sub_turn_kind: str | None = None,
     delegate_depth: int = 0,
     stage_id_override: str | None = None,
+    state_capture: list[Any] | None = None,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
@@ -8192,6 +8252,7 @@ async def _run_turn_inner(
         sub_turn_kind=sub_turn_kind,
         delegate_depth=delegate_depth,
         yield_policy_override=yield_policy_override,
+        state_capture=state_capture,
     )
     (
         _delegate_fn,

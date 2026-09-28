@@ -39,6 +39,7 @@ from typing import Any
 from sdk.thread import ThreadRedactionPolicy, ThreadStore
 
 from runtime.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
+from runtime.thread._replay import build_open_task_messages
 from runtime.thread._store import (
     _DEFAULT_SEGMENT_TURNS,
     SegmentRecord,
@@ -172,6 +173,7 @@ def _build_thread_entry(
     yield_question: str,
     turn_input: dict[str, Any] | None,
     memory_ids: list[int] | None,
+    transcript: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -198,6 +200,8 @@ def _build_thread_entry(
         content_source=content_source,
         reasoning_text=reasoning_text,
     )
+    if transcript:
+        entry["transcript"] = transcript
     return entry
 
 
@@ -268,6 +272,7 @@ def append_thread_entry(
     yield_question: str = "",
     turn_input: dict[str, Any] | None = None,
     memory_ids: list[int] | None = None,
+    transcript: list[dict[str, Any]] | None = None,
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -301,6 +306,7 @@ def append_thread_entry(
         yield_question=yield_question,
         turn_input=turn_input,
         memory_ids=memory_ids,
+        transcript=transcript,
     )
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +317,7 @@ def append_thread_entry(
 __all__ = [
     "SegmentRecord",
     "append_thread_entry",
+    "build_open_task_messages",
     "build_recent_thread_excerpt",
     "build_thread_manifest",
     "load_recent_thread_entries",

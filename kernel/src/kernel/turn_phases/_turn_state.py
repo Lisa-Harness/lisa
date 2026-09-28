@@ -323,6 +323,12 @@ class _TurnState:
     """``"fork"`` for fork children, ``"delegate"`` for delegate children
     (planned), ``None`` for the parent turn. Drives the sub-turn contract
     block in the budget briefing and the midpoint write-nudge below."""
+    messages: list[dict[str, Any]] | None = None
+    """The live message list of this turn, once assembled."""
+    transcript_start: int = 0
+    """Index in ``messages`` of this turn's own user message."""
+    model_requests: list[dict[str, Any]] = field(default_factory=list)
+    """Verbatim snapshot of every model request issued this turn."""
     action_tool_ids: set[str] = field(default_factory=set)
     """The side-effecting action tools the current mode declares (from
     ``mode_completion_effects``), resolved at turn start for parent and
