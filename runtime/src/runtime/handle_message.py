@@ -84,6 +84,7 @@ from runtime.commands import (
     set_runtime_route_preview,
 )
 from runtime.context_assembly import build_turn_context
+from runtime.execution_policy import resolve_execution_policy
 from runtime.thread import append_thread_entry, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_hooks_builder import build_turn_hooks
@@ -857,6 +858,22 @@ async def _execute_mode_turn(
     """
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
+    execution_policy = resolve_execution_policy(
+        default_policy=runtime.config.execution_policy,
+        session_request=runtime.session_plan.manifest.execution,
+        scope_ids=tuple(
+            scope_id
+            for scope_id in (
+                str(getattr(mode, "mode_provider_id", "") or ""),
+                (
+                    f"{getattr(mode, 'mode_provider_id', '')}:{mode.mode_id}"
+                    if getattr(mode, "mode_provider_id", "")
+                    else mode.mode_id
+                ),
+            )
+            if scope_id
+        ),
+    )
 
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,
@@ -936,7 +953,7 @@ async def _execute_mode_turn(
             query=query or message,
             hooks=hooks,
             preferred_model_id=preferred_model_id,
-            execution_policy=runtime.execution_policy,
+            execution_policy=execution_policy,
         )
     except OperationExecutionError as exc:
         response_text = format_operation_error(exc)

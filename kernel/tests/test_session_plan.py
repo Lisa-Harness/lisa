@@ -170,6 +170,11 @@ def test_compile_session_plan_accepts_execution_request_block() -> None:
             "  capabilities:\n"
             "    fetch_page:\n"
             "      max_invocations_per_turn: 6\n"
+            "  scopes:\n"
+            "    pack.example:\n"
+            "      max_capability_calls: 15\n"
+            "    pack.example:mode:\n"
+            "      max_capability_calls: 10\n"
         )
     )
 
@@ -182,6 +187,8 @@ def test_compile_session_plan_accepts_execution_request_block() -> None:
     assert plan.manifest.execution.max_wall_ms == 180_000
     assert plan.manifest.execution.max_session_tokens == 15_000_000
     assert plan.manifest.execution.capabilities["fetch_page"].max_invocations_per_turn == 6
+    assert plan.manifest.execution.scopes["pack.example"].max_capability_calls == 15
+    assert plan.manifest.execution.scopes["pack.example:mode"].max_capability_calls == 10
 
 
 def test_compile_session_plan_rejects_non_positive_execution_limits() -> None:

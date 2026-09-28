@@ -30,6 +30,7 @@ __all__ = [
     "ProviderSelections",
     "ResourceSelection",
     "SessionCapabilityExecutionRequest",
+    "SessionExecutionLimits",
     "SessionExecutionRequest",
     "SessionInstructionPlan",
     "SessionInstructions",
@@ -291,27 +292,40 @@ class SessionCapabilityExecutionRequest(_StrictSessionModel):
     max_internal_tool_calls: int | None = Field(default=None, ge=1)
 
 
-class SessionExecutionRequest(_StrictSessionModel):
-    """Optional session-authored execution-policy requests.
-
-    Hosts treat these as tighten-only requests relative to their resolved
-    runtime defaults.
-    """
+class SessionExecutionLimits(_StrictSessionModel):
+    """Tighten-only execution limits for a session or an opaque scope."""
 
     max_model_calls: int | None = Field(default=None, ge=1)
     max_capability_calls: int | None = Field(default=None, ge=1)
     max_total_tokens: int | None = Field(default=None, ge=1)
     max_completion_tokens: int | None = Field(default=None, ge=1)
     max_wall_ms: int | None = Field(default=None, ge=1)
-    max_session_tokens: int | None = Field(default=None, ge=1)
     force_final_on_exhausted: bool | None = None
     capabilities: dict[str, SessionCapabilityExecutionRequest] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _validate_capability_keys(self) -> SessionExecutionRequest:
+    def _validate_capability_keys(self) -> SessionExecutionLimits:
         for capability_id in self.capabilities:
             if not capability_id.strip():
                 raise ValueError("execution.capabilities keys must be non-empty")
+        return self
+
+
+class SessionExecutionRequest(SessionExecutionLimits):
+    """Optional session-authored execution-policy requests.
+
+    Hosts treat these as tighten-only requests relative to their resolved
+    runtime defaults.
+    """
+
+    max_session_tokens: int | None = Field(default=None, ge=1)
+    scopes: dict[str, SessionExecutionLimits] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_scope_keys(self) -> SessionExecutionRequest:
+        for scope_id in self.scopes:
+            if not scope_id.strip():
+                raise ValueError("execution.scopes keys must be non-empty")
         return self
 
 

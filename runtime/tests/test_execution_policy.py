@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
-from kernel.session_plan import SessionCapabilityExecutionRequest, SessionExecutionRequest
+from kernel.session_plan import (
+    SessionCapabilityExecutionRequest,
+    SessionExecutionLimits,
+    SessionExecutionRequest,
+)
 from runtime.execution_policy import (
     default_interactive_execution_policy,
     resolve_execution_policy,
@@ -59,3 +63,37 @@ def test_resolve_execution_policy_cannot_loosen_host_limits() -> None:
 
     assert resolved.max_model_calls == 8
     assert resolved.max_capability_calls == 9
+
+
+def test_resolve_execution_policy_tightens_matching_pack_and_mode_scopes() -> None:
+    base = ExecutionPolicy(max_capability_calls=500)
+    request = SessionExecutionRequest(
+        max_capability_calls=450,
+        scopes={
+            "pack.example": SessionExecutionLimits(max_capability_calls=300),
+            "pack.example:mode": SessionExecutionLimits(max_capability_calls=200),
+        },
+    )
+
+    resolved = resolve_execution_policy(
+        default_policy=base,
+        session_request=request,
+        scope_ids=("pack.example", "pack.example:mode"),
+    )
+
+    assert resolved.max_capability_calls == 200
+
+
+def test_resolve_execution_policy_ignores_unmatched_scopes() -> None:
+    base = ExecutionPolicy(max_capability_calls=500)
+    request = SessionExecutionRequest(
+        scopes={"pack.example:other": SessionExecutionLimits(max_capability_calls=1)}
+    )
+
+    resolved = resolve_execution_policy(
+        default_policy=base,
+        session_request=request,
+        scope_ids=("pack.example", "pack.example:mode"),
+    )
+
+    assert resolved.max_capability_calls == 500
