@@ -124,6 +124,9 @@ class WorkProductStore(Protocol):
     async def get(self, artifact_id: str) -> WorkProduct | None:
         """Read one WorkProduct by stable ID."""
 
+    async def list_owned(self, ctx: object) -> list[WorkProduct]:
+        """List WorkProducts owned by the exact execution identity in ``ctx``."""
+
     async def save(self, artifact: WorkProduct) -> WorkProduct:
         """Atomically replace one WorkProduct's state."""
 

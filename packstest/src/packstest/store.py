@@ -35,6 +35,15 @@ class MemoryWorkProductStore:
         artifact = self._artifacts.get(artifact_id)
         return artifact.model_copy(deep=True) if artifact is not None else None
 
+    async def list_owned(self, ctx: object) -> list[WorkProduct]:
+        """List deep copies owned by the exact execution identity in ``ctx``."""
+
+        return [
+            artifact.model_copy(deep=True)
+            for artifact in self._artifacts.values()
+            if artifact.belongs_to(ctx)
+        ]
+
     async def save(self, artifact: WorkProduct) -> WorkProduct:
         """Atomically replace one WorkProduct's state."""
 

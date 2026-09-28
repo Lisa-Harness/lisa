@@ -38,6 +38,10 @@ class FileCodeChangeArtifactStore:
         async with self._lock:
             return self._load().get(artifact_id)
 
+    async def list_owned(self, ctx: object) -> list[WorkProduct]:
+        async with self._lock:
+            return [artifact for artifact in self._load().values() if artifact.belongs_to(ctx)]
+
     async def save(self, artifact: WorkProduct) -> WorkProduct:
         async with self._lock:
             artifacts = self._load()
