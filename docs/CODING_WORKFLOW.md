@@ -2,22 +2,29 @@
 
 `lisa-pack-coding` owns local workspace inspection and Git changes. The
 separate `lisa-pack-github` owns credentials, repository reads, and pull
-request creation. They share only the host-owned `CodeChangeArtifact` contract.
+request creation. They share the host-owned `WorkProduct` contract.
 
 ## Workflow
 
 1. Inspect the configured workspace with bounded read tools.
 2. Create an isolated worktree on an owned feature branch.
 3. Apply a validated unified diff in that worktree.
-4. Run named, session-configured command vectors.
-5. Commit explicit changed paths only after required checks pass for the current revision.
-6. Push the owned branch without any force option.
-7. Open a pull request from the pushed artifact.
-8. Remove the clean owned worktree when it is no longer needed.
+4. Run named, session-configured checks inside the bwrap sandbox with the owned
+   worktree bound writable (`direct-write`). Missing or degraded containment
+   fails the check; it never falls back to host execution.
+5. Commit only after every required check passes for the current revision and
+   candidate Git tree. The host verifies a real changed commit at `HEAD`, the
+   required check fingerprints, the task-owned artifact, and a clean worktree
+   before the executor can report completion.
+6. Push the branch, open a pull request, or clean up only on a separate
+   operator request. None is part of the default finish line.
 
 Each patch increments the artifact revision and clears prior check records.
 Checks therefore cannot authorize a later patch. Pull-request publication also
 requires the recorded `head_sha`, `commit_sha`, and `pushed_sha` to agree.
+Existing artifacts without a creation-task ID or check-tree fingerprint cannot
+certify a new task. A task with no configured required checks may finish with a
+real changed commit and a clean owned worktree.
 
 ## Session Policy
 
@@ -27,7 +34,7 @@ Commands are argv vectors, never shell strings.
 ```yaml
 resources:
   packs:
-    include: [lisa-pack-coding, lisa-pack-github]
+    include: [lisa-pack-coding, lisa-pack-bwrap, lisa-pack-github]
     configuration:
       lisa-pack-coding:
         workspace_root: "."
@@ -39,6 +46,14 @@ resources:
         branch_prefix: "lisa/"
         protected_branches: [main, master, develop, prod, production]
         push_remote: origin
+      lisa-pack-bwrap:
+        sandbox:
+          floor:
+            execution: sandbox
+            persistence: direct-write
+            network: deny
+            paths:
+              /path/to/worktree-parent/.lisa-worktrees: rw
       lisa-pack-github:
         base_branch: main
         allowed_base_branches: [main]
@@ -48,6 +63,9 @@ resources:
 
 The GitHub token and repository remain extension-owned settings (`GITHUB_TOKEN`
 and `GITHUB_REPO`); they are not session-plan values.
+Replace the bwrap path with the directory adjacent to `workspace_root` where
+the coding pack creates its owned worktrees. A narrower `ro` bind there takes
+precedence and prevents checks from running.
 
 ## Approval
 

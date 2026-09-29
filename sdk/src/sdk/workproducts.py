@@ -58,6 +58,7 @@ class WorkProductCheck(BaseModel):
 
     check_id: str
     revision: int
+    checked_tree_sha: str = ""
     status: WorkProductCheckStatus = "pending"
     argv: list[str] = Field(default_factory=list)
     duration_ms: int = 0
@@ -70,6 +71,7 @@ class WorkProduct(BaseModel):
     """Durable state shared between a producing pack and a publishing pack."""
 
     artifact_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    task_id: str = ""
     workspace_id: str
     user_id: str
     user_slug: str

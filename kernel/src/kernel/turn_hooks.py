@@ -120,6 +120,24 @@ class OperationHooks:
 
 
 # ── LifecycleHooks ──────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class TaskCompletionRequest:
+    """Opaque task and producer receipts the host must verify against durable state."""
+
+    task_id: str
+    origin_tool_id: str
+    receipt_artifact_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TaskCompletionEvidence:
+    """Host verdict about whether this task owns a current checked commit."""
+
+    verified: bool
+    reason: str = ""
+    artifact_id: str = ""
+
+
 @dataclass
 class LifecycleHooks:
     """Turn lifecycle: completion side effects, slices, stage telemetry,
@@ -217,6 +235,9 @@ class HostServiceHandles:
     #: Structural seam — annotated against the concrete host store so readers
     #: see the real surface; the kernel never imports host types at runtime.
     code_change_artifact_store: Any = None
+    verify_task_completion: (
+        Callable[[TaskCompletionRequest], Awaitable[TaskCompletionEvidence]] | None
+    ) = None
 
     #: Canonical host data root, injected by the host and threaded into every
     #: operation/tool context. There is deliberately no fallback — a host
@@ -244,6 +265,7 @@ class TurnIdentity:
     surface_id: str = "default"
     memory_scope: str = "personal"
     session_plan_digest: str = ""
+    task_id: str = ""
 
 
 # ── RecallHooks ─────────────────────────────────────────────────────────
@@ -325,6 +347,8 @@ __all__ = [
     "ModelHooks",
     "OperationHooks",
     "RecallHooks",
+    "TaskCompletionEvidence",
+    "TaskCompletionRequest",
     "ToolHooks",
     "TurnHooks",
     "TurnIdentity",

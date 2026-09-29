@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from kernel.approval import EffectKind
+from kernel.capability_binding import ExecutionFloorView
 
 if TYPE_CHECKING:
     pass  # forward-ref imports only
@@ -94,8 +96,17 @@ class ToolExecutionContext(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     pack_config: Any = Field(default_factory=dict, exclude=True)
     capability_binding_provider: Any = Field(default=None, exclude=True)
+    execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
+        default=None, exclude=True
+    )
+    delegated_tool_dispatch: Callable[
+        [str, Mapping[str, Any]], Awaitable[ToolResult]
+    ] | None = Field(
+        default=None, exclude=True
+    )
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
+    task_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
     code_change_artifact_store: Any = Field(default=None, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
@@ -231,8 +242,12 @@ class OperationExecutionContext(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     pack_config: Any = Field(default_factory=dict, exclude=True)
     capability_binding_provider: Any = Field(default=None, exclude=True)
+    execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
+        default=None, exclude=True
+    )
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
+    task_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
     code_change_artifact_store: Any = Field(default=None, exclude=True)
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -1417,6 +1432,8 @@ class WorkflowModeConfig(BaseModel):
     # What the post-approval turn does in this mode: ``report`` the action's
     # result and stop, or ``resume`` the request that raised the approval.
     approval_continuation: Literal["report", "resume"] = "report"
+    task_completion: Literal["none", "checked_commit"] = "none"
+    task_artifact_tool_id: str = ""
 
 
 # The durable workflow object is ``WorkflowPosition`` (kernel/workflow_position.py):

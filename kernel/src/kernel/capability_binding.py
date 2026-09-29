@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -31,6 +31,15 @@ class CapabilityBinding:
         object.__setattr__(self, "configuration", _freeze(self.configuration))
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionFloorView:
+    """Non-secret execution posture exposed to a composing capability."""
+
+    execution: str | None = None
+    persistence: str | None = None
+    paths: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+
+
 @runtime_checkable
 class CapabilityBindingProvider(Protocol):
     """Resolve one concrete catalog capability for the active session."""
@@ -54,5 +63,6 @@ __all__ = [
     "CapabilityBindingProvider",
     "CapabilityKind",
     "CapabilityRef",
+    "ExecutionFloorView",
     "OwnerId",
 ]

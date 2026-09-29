@@ -272,6 +272,7 @@ async def _execute_declarative_tool_call(
                     capability_binding_provider=ctx.capability_binding_provider,
                     approval_service=ctx.approval_service,
                     approval_request_id=ctx.approval_request_id,
+                    task_id=ctx.task_id,
                     session_plan_digest=ctx.session_plan_digest,
                     code_change_artifact_store=ctx.code_change_artifact_store,
                     event_bus=ctx.event_bus,

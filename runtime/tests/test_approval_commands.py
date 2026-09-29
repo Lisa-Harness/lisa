@@ -14,7 +14,13 @@ from kernel.approval import (
     ApprovalRequired,
     build_approval_invocation,
 )
-from kernel.models import MemoryScope, ToolDefinition, ToolExecutionContext, ToolResult
+from kernel.models import (
+    MemoryScope,
+    OperationResult,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolResult,
+)
 from kernel.tools.registry import execute_tool
 from kernel.turn_hooks import (
     HostServiceHandles,
@@ -69,7 +75,7 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
             "    reasoning_model: true",
         ]
     )
-    return build_test_runtime(
+    runtime = build_test_runtime(
         tmp_path,
         models_yaml=models_yaml,
         user_slug="user",
@@ -77,6 +83,24 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
         surface_id="surface",
         **config_kwargs,
     )
+    manifest = runtime.session_plan.manifest
+    packs = manifest.resources.packs
+    runtime.session_plan = runtime.session_plan.model_copy(
+        update={
+            "manifest": manifest.model_copy(
+                update={
+                    "resources": manifest.resources.model_copy(
+                        update={
+                            "packs": packs.model_copy(
+                                update={"include": (*packs.include, "lisa-pack-bwrap")}
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    )
+    return runtime
 
 
 async def _unused_route(
@@ -706,6 +730,32 @@ async def test_approve_settles_paired_stalled_recovery_record(
         last_error="approval required",
         retry_policy="confirm",
     )
+    unrelated = await runtime.services.recovery_service.begin(
+        RecoveryRecord(
+            identity=recovery_identity,
+            mode_id="coding",
+            target_kind="pack_tool",
+            target_id="coding_create_worktree",
+            effect="write",
+            parameters={"summary": "different request"},
+        )
+    )
+    await runtime.services.recovery_service.settle(
+        unrelated.work_item_id, recovery_identity, state="stalled", last_error="approval required"
+    )
+    from runtime.thread import append_thread_entry
+
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="coding",
+        query="learn the repo",
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": invocation.request_id,
+            "pending_approval_recovery_item_id": started.work_item_id,
+        },
+    )
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
         _ = hooks
@@ -743,6 +793,88 @@ async def test_approve_settles_paired_stalled_recovery_record(
     settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "succeeded"
+    other_record = await runtime.services.recovery_service.get(
+        unrelated.work_item_id, recovery_identity
+    )
+    assert other_record is not None
+    assert other_record.state == "stalled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action_result",
+    [
+        ToolResult(error="sandbox unavailable", output_json={"artifact_id": "false-success"}),
+        OperationResult(status="degraded", error_detail="partial write"),
+    ],
+)
+async def test_approved_returned_failure_does_not_continue_or_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action_result: ToolResult | OperationResult
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="write_file",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"path": "src/a.py"},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    await runtime.services.approval_service.request(invocation)
+    from kernel.recovery import RecoveryIdentity, RecoveryRecord
+    from runtime.thread import append_thread_entry, load_recent_thread_entries
+
+    recovery_identity = RecoveryIdentity(
+        workspace_id=invocation.identity.workspace_id,
+        user_id=invocation.identity.user_id,
+        user_slug=invocation.identity.user_slug,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
+    )
+    started = await runtime.services.recovery_service.begin(
+        RecoveryRecord(
+            identity=recovery_identity,
+            target_kind="pack_tool",
+            target_id="write_file",
+            effect="write",
+        )
+    )
+    await runtime.services.recovery_service.settle(
+        started.work_item_id, recovery_identity, state="stalled", last_error="approval required"
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id=invocation.identity.mode_id,
+        query="fix issue 6",
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": invocation.request_id,
+            "pending_approval_recovery_item_id": started.work_item_id,
+        },
+    )
+
+    async def execute_saved(
+        *, invocation: ApprovalInvocation, hooks: object
+    ) -> ToolResult | OperationResult:
+        return action_result
+
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
+    continuation_queries = _stub_continuation_turn(monkeypatch)
+
+    response = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert "Approved action failed" in response.text
+    assert continuation_queries == []
+    settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
+    assert settled is not None and settled.state == "stalled"
+    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path)
+    assert all(
+        (entry.get("provenance") or {}).get("source") != "host-approved" for entry in entries
+    )
 
 
 @pytest.mark.asyncio
@@ -801,6 +933,19 @@ async def test_deny_settles_paired_stalled_recovery_record(
         state="stalled",
         last_error="approval required",
         retry_policy="confirm",
+    )
+    from runtime.thread import append_thread_entry
+
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="coding",
+        query="learn the repo",
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": invocation.request_id,
+            "pending_approval_recovery_item_id": started.work_item_id,
+        },
     )
 
     approval_module = importlib.import_module("runtime.approval.orchestration")
@@ -954,7 +1099,7 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
 
     async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
         _ = hooks
-        return ToolResult(output_text="root")
+        return ToolResult(output_text="root", output_json={"artifact_id": "artifact-7"})
 
     approval_module = importlib.import_module("runtime.approval.orchestration")
     monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
@@ -974,7 +1119,7 @@ async def test_approve_records_action_in_thread_with_effect_receipt(
     # The receipt carries the executed capability and its effect kind so the
     # completion contract counts the action as done.
     assert entry["effect_receipts"] == [
-        {"capability_id": "bash_run", "effect": "execute", "artifact_id": ""}
+        {"capability_id": "bash_run", "effect": "execute", "artifact_id": "artifact-7"}
     ]
     assert entry["response_text"] == "root"
     assert entry["provenance"]["approval_request_id"] == invocation.request_id
@@ -1030,6 +1175,122 @@ async def _continuation_for_declared_mode(
     )
     assert len(queries) == 1
     return queries[0]
+
+
+@pytest.mark.asyncio
+async def test_approved_worktree_receipt_keeps_paused_task_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.thread import append_thread_entry, load_recent_thread_entries
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "executor"
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_create_worktree",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=1,
+        mode_id="executor",
+        query="fix the bug",
+        response_text="needs approval",
+        provenance={
+            "source": "observed",
+            "task_id": "task-original",
+            "pending_approval_request_id": invocation.request_id,
+        },
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=1,
+        mode_id="executor",
+        query="other request",
+        response_text="old result",
+        provenance={"source": "observed", "task_id": "other-task"},
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    monkeypatch.setattr(
+        approval_module,
+        "get_workflow_catalog",
+        lambda: {"executor": SimpleNamespace(approval_continuation="resume")},
+    )
+    resumed_ids: list[str] = []
+
+    async def route_model_turn(
+        _runtime: HostRuntime, _query: str, _transport: object, *, task_id: str = ""
+    ) -> HostCommandResult:
+        resumed_ids.append(task_id)
+        return HostCommandResult(text="resumed")
+
+    await approval_module._record_and_continue_after_approval(
+        runtime,
+        invocation,
+        ToolResult(output_json={"artifact_id": "owned-worktree"}),
+        transport=NullTransport(),
+        route_model_turn=route_model_turn,
+    )
+    approved = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=1)[0]
+    assert approved["provenance"]["task_id"] == "task-original"
+    assert approved["effect_receipts"][0]["artifact_id"] == "owned-worktree"
+    assert resumed_ids == ["task-original"]
+
+
+@pytest.mark.asyncio
+async def test_approved_tool_executes_with_original_task_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "executor"
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_create_worktree",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="executor",
+        query="fix the bug",
+        response_text="needs approval",
+        provenance={
+            "source": "observed",
+            "task_id": "task-original",
+            "pending_approval_request_id": invocation.request_id,
+        },
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    seen_task_ids: list[str] = []
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        seen_task_ids.append(hooks.identity.task_id)
+        return ToolResult(output_text="worktree created")
+
+    async def settle(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", execute_saved)
+    monkeypatch.setattr(approval_module, "settle_paired_recovery_record", settle)
+    await approval_module._execute_approved_with_settlement(
+        runtime,
+        SimpleNamespace(invocation=invocation),
+        request_id=invocation.request_id,
+        transport=NullTransport(),
+    )
+    assert seen_task_ids == ["task-original"]
 
 
 @pytest.mark.asyncio
@@ -1127,6 +1388,19 @@ async def test_approve_reports_expiry_for_expired_request(
         state="stalled",
         last_error="approval required",
         retry_policy="confirm",
+    )
+    from runtime.thread import append_thread_entry
+
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="shell",
+        query="run hostname",
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": invocation.request_id,
+            "pending_approval_recovery_item_id": started.work_item_id,
+        },
     )
 
     # Backdate past the TTL so is_expired() fires inside approve().

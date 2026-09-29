@@ -12,8 +12,18 @@ from kernel.approval import (
     InMemoryApprovalService,
     build_approval_invocation,
 )
-from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
+from kernel.capability_binding import CapabilityBinding
+from kernel.models import (
+    OperationDefinition,
+    OperationExecutionContext,
+    OperationResult,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolResult,
+)
+from kernel.operations.registry import execute_operation
 from kernel.tools.registry import ToolExecutionError, execute_tool
+from kernel.turn_phases._post_turn import _to_tool_context
 from pydantic import BaseModel
 
 
@@ -30,6 +40,118 @@ def _identity() -> ApprovalIdentity:
         mode_id="coding",
         session_plan_digest="plan-a",
     )
+
+
+def test_nested_tool_context_keeps_task_identity() -> None:
+    operation = OperationExecutionContext(task_id="task-7")
+
+    assert _to_tool_context("coding_create_worktree", operation).task_id == "task-7"
+
+
+@pytest.mark.asyncio
+async def test_nested_tool_uses_its_own_owner_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def parent(ctx: ToolExecutionContext) -> ToolResult:
+        assert ctx.pack_config["parent_secret"] == "only parent"
+        floor = ctx.execution_floor_for("sandbox")
+        assert floor is not None and floor.execution == "sandbox"
+        assert not hasattr(floor, "child_secret")
+        assert ctx.delegated_tool_dispatch is not None
+        return await ctx.delegated_tool_dispatch("sandbox", {"argv": ["true"]})
+
+    async def sandbox(ctx: ToolExecutionContext) -> ToolResult:
+        assert ctx.pack_config["child_secret"] == "only child"
+        assert "parent_secret" not in ctx.pack_config
+        assert ctx.parameters == {"argv": ["true"]}
+        return ToolResult(output_text="contained")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "parent": ToolDefinition(
+                tool_id="parent",
+                owner_id="parent-owner",
+                implementation_module=SimpleNamespace(execute=parent),
+            ),
+            "sandbox": ToolDefinition(
+                tool_id="sandbox",
+                owner_id="child-owner",
+                implementation_module=SimpleNamespace(execute=sandbox),
+            ),
+        },
+    )
+    bindings = {
+        "parent-owner": CapabilityBinding("parent-owner", {"parent_secret": "only parent"}),
+        "child-owner": CapabilityBinding(
+            "child-owner",
+            {"child_secret": "only child", "sandbox": {"floor": {"execution": "sandbox"}}},
+        ),
+    }
+    context = ToolExecutionContext(
+        tool_id="parent",
+        capability_binding_provider=SimpleNamespace(
+            binding_for=lambda ref: bindings.get(ref.owner_id)
+        ),
+    )
+
+    result = await execute_tool("parent", context)
+
+    assert result.output_text == "contained"
+
+
+@pytest.mark.asyncio
+async def test_operation_sees_child_floor_without_private_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def prewarm(ctx: OperationExecutionContext) -> OperationResult:
+        assert ctx.pack_config["parent_secret"] == "only parent"
+        assert ctx.execution_floor_for is not None
+        floor = ctx.execution_floor_for("sandbox")
+        assert floor is not None and floor.persistence == "direct-write"
+        assert floor.paths == {"/workspace": "rw"}
+        assert not hasattr(floor, "child_secret")
+        return OperationResult(output_text="primed")
+
+    monkeypatch.setattr(
+        "kernel.operations.registry._OPERATION_CATALOG",
+        {
+            "prewarm": OperationDefinition(
+                operation_id="prewarm",
+                owner_id="parent-owner",
+                implementation_module=SimpleNamespace(execute=prewarm),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {"sandbox": ToolDefinition(tool_id="sandbox", owner_id="child-owner")},
+    )
+    bindings = {
+        "parent-owner": CapabilityBinding("parent-owner", {"parent_secret": "only parent"}),
+        "child-owner": CapabilityBinding(
+            "child-owner",
+            {
+                "child_secret": "only child",
+                "sandbox": {
+                    "floor": {
+                        "execution": "sandbox",
+                        "persistence": "direct-write",
+                        "paths": {"/workspace": "rw"},
+                    }
+                },
+            },
+        ),
+    }
+    result = await execute_operation(
+        "prewarm",
+        OperationExecutionContext(
+            capability_binding_provider=SimpleNamespace(
+                binding_for=lambda ref: bindings.get(ref.owner_id)
+            ),
+        ),
+    )
+    assert result.output_text == "primed"
 
 
 @pytest.mark.asyncio

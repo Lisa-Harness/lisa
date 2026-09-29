@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from kernel.tools.mcp_client import bare_tool_name
 
@@ -36,6 +36,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "AcceptTurn",
+    "BlockNoCheckedCommit",
     "BlockNoVerifiedWrite",
     "ChatReadFootnote",
     "ChatSoftAccept",
@@ -130,6 +131,17 @@ class BlockNoVerifiedWrite:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class BlockNoCheckedCommit:
+    """An opted-in coding task lacks a verified commit on its owned worktree."""
+
+    reason: str = ""
+
+    @property
+    def block_message(self) -> str:
+        return self.reason or "No current checked commit for this task."
+
+
 CompletionContractDecision = (
     AcceptTurn
     | PreexistingFailureBlock
@@ -137,6 +149,7 @@ CompletionContractDecision = (
     | ChatSoftAccept
     | ChatReadFootnote
     | BlockNoVerifiedWrite
+    | BlockNoCheckedCommit
 )
 
 
@@ -149,6 +162,7 @@ def _check_exemption(
     sub_turn_kind: str | None,
     yielded: bool,
     action_set: frozenset[str],
+    has_task_goal: bool = False,
 ) -> CompletionContractDecision | None:
     """Return an Accept/Block decision if the turn is exempt or blocked upstream."""
     if preexisting_block:
@@ -157,7 +171,7 @@ def _check_exemption(
         return AcceptTurn(reason="sub-turn validated by child classifier")
     if yielded:
         return AcceptTurn(reason="turn yielded to operator")
-    if not action_set:
+    if not action_set and not has_task_goal:
         return AcceptTurn(reason="no write contract declared")
     return None
 
@@ -221,6 +235,9 @@ def resolve_completion_contract(
     routing_misfire_prose: bool = False,
     dense_content_min_chars: int = 1500,
     preexisting_block: bool = False,
+    task_completion: Literal["none", "checked_commit"] = "none",
+    checked_commit_verified: bool = False,
+    checked_commit_reason: str = "",
 ) -> CompletionContractDecision:
     """Evaluate the post-loop completion contract for a turn.
 
@@ -245,9 +262,14 @@ def resolve_completion_contract(
         sub_turn_kind=sub_turn_kind,
         yielded=yielded,
         action_set=action_set,
+        has_task_goal=task_completion == "checked_commit",
     )
     if exemption is not None:
         return exemption
+    if task_completion == "checked_commit":
+        if checked_commit_verified:
+            return AcceptTurn(reason="task's checked commit verified")
+        return BlockNoCheckedCommit(reason=checked_commit_reason)
 
     write_landed, read_work, write_attempted = _check_receipt_satisfaction(
         action_set=action_set,

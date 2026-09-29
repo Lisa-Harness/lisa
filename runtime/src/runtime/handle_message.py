@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
@@ -85,7 +86,7 @@ from runtime.commands import (
 )
 from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
-from runtime.thread import append_thread_entry, paused_turn_owner_mode
+from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_hooks_builder import build_turn_hooks
 from runtime.turn_logging import build_turn_completed_payload
@@ -533,6 +534,8 @@ async def _route_model_turn(
     runtime: HostRuntime,
     message: str,
     transport: TransportCallbacks,
+    *,
+    task_id: str = "",
 ) -> str:
     """Handle model-backed routing: mode dispatch and run_turn execution.
 
@@ -582,7 +585,7 @@ async def _route_model_turn(
                 runtime.start_mode_id,
             )
 
-    return await _execute_mode_turn(runtime, message, mode_id, query, transport)
+    return await _execute_mode_turn(runtime, message, mode_id, query, transport, task_id=task_id)
 
 
 # ── Turn execution ────────────────────────────────────────────────────
@@ -654,6 +657,27 @@ def _build_thread_provenance(resolved_model: Any, *, operator_exit: str = "") ->
     return provenance
 
 
+def _resumable_task_id(thread_path: Any, message: str) -> str:
+    """Reuse a task only for a recorded unfinished turn and a matching reply."""
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=1)
+    if not entries:
+        return ""
+    entry = entries[-1]
+    provenance = entry.get("provenance") or {}
+    task_id = str(provenance.get("task_id") or "")
+    if not task_id:
+        return ""
+    if is_affirmative_resume(message.strip().lower()) and (
+        entry.get("yielded")
+        or provenance.get("source") == "host-approved"
+        or provenance.get("operator_exit") == "paused"
+        or provenance.get("pending_approval_request_id")
+        or provenance.get("block_origin") == "task_completion"
+    ):
+        return task_id
+    return ""
+
+
 async def _handle_pending_approval(
     runtime: HostRuntime,
     result: TurnResult,
@@ -662,6 +686,7 @@ async def _handle_pending_approval(
     query: str,
     resolved_model: Any,
     turn_index: int,
+    task_id: str,
     transport: TransportCallbacks,
 ) -> HostCommandResult | None:
     """Persist a turn paused for approval, then auto-continue or return the approval payload."""
@@ -678,7 +703,10 @@ async def _handle_pending_approval(
         response_text=result.response_text,
         provenance={
             **_build_thread_provenance(resolved_model),
+            "task_id": task_id,
             "pending_approval_request_id": pending_approval.request_id,
+            "pending_approval_tool_call_id": result.pending_approval_tool_call_id,
+            "pending_approval_recovery_item_id": result.pending_approval_recovery_item_id,
         },
         effect_receipts=_serialize_effect_receipts(result),
         handoff_to=result.handoff_to or "",
@@ -738,7 +766,11 @@ def _record_operation_error_thread_entry(
         mode_id=mode.mode_id,
         query=query or message,
         response_text=response_text,
-        provenance={"source": "system-verified", "finish_reason": "error"},
+        provenance={
+            "source": "system-verified",
+            "finish_reason": "error",
+            "task_id": run_context.get("task_id", ""),
+        },
         turn=turn_index,
     )
 
@@ -848,6 +880,8 @@ async def _execute_mode_turn(
     mode_id: str,
     query: str,
     transport: TransportCallbacks,
+    *,
+    task_id: str = "",
 ) -> HostCommandResult | str:
     """Resolve mode, build context, and run the turn through the kernel.
 
@@ -909,6 +943,7 @@ async def _execute_mode_turn(
     from runtime.thread import next_turn_index
 
     turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
+    task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
 
     # Build the turn context dict.
     run_context = build_turn_context(
@@ -920,6 +955,7 @@ async def _execute_mode_turn(
         mode=mode,
     )
     run_context["turn_index"] = turn_index
+    run_context["task_id"] = task_id
 
     _set_turn_context(runtime, run_context)
 
@@ -1007,6 +1043,7 @@ async def _execute_mode_turn(
         query=query or message,
         resolved_model=resolved_model,
         turn_index=turn_index,
+        task_id=task_id,
         transport=transport,
     )
     if pending_approval_result is not None:
@@ -1048,6 +1085,9 @@ async def _execute_mode_turn(
     provenance: dict[str, Any] = _build_thread_provenance(
         resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
     )
+    provenance["task_id"] = task_id
+    if result.block_origin:
+        provenance["block_origin"] = result.block_origin
 
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly

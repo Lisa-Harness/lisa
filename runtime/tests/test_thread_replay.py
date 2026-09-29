@@ -74,6 +74,65 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     assert all(cid.startswith("t") for cid in call_ids)
 
 
+def test_approved_action_replays_as_original_tool_result(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    _append(
+        thread,
+        "fix issue 6",
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": "approval-1",
+            "pending_approval_tool_call_id": "call-2",
+        },
+        transcript=[
+            {"role": "user", "content": "fix issue 6"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "file contents"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {"name": "write", "arguments": "{}"},
+                    }
+                ],
+            },
+        ],
+    )
+    _append(
+        thread,
+        "/approve approval-1",
+        response_text="saved file",
+        provenance={
+            "source": "host-approved",
+            "approval_request_id": "approval-1",
+            "target_id": "write",
+        },
+        effect_receipts=[{"capability_id": "write", "effect": "write", "artifact_id": "doc-1"}],
+    )
+
+    messages = build_open_task_messages(thread_path=thread)
+
+    assert [message["role"] for message in messages] == [
+        "user", "assistant", "tool", "assistant", "tool"
+    ]
+    assert messages[-1]["tool_call_id"] == messages[-2]["tool_calls"][0]["id"]
+    assert messages[-1]["content"] == "saved file"
+    assert all("/approve" not in str(message.get("content", "")) for message in messages)
+
+
 def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(

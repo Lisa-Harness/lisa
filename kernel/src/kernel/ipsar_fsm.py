@@ -282,6 +282,8 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "artifact_type",
         "yield_policy",
         "approval_continuation",
+        "task_completion",
+        "task_artifact_tool_id",
     }
 )
 # Every front-matter key the loader reads into a typed WorkflowModeConfig field.
@@ -1075,6 +1077,8 @@ def _load_mode_from_dir(
         yield_policy=yield_policy,
         fork_allowed=fork_allowed,
         approval_continuation=approval_continuation,
+        task_completion=mode_front_matter.get("task_completion", "none"),
+        task_artifact_tool_id=str(mode_front_matter.get("task_artifact_tool_id", "") or ""),
         extra_front_matter=extra_front_matter,
     )
     # Synthesize a one-stage graph for stageless (chat/action) modes so
@@ -1972,6 +1976,7 @@ def _build_tool_execution_context(
         capability_binding_provider=ctx.capability_binding_provider,
         approval_service=ctx.approval_service,
         approval_request_id=ctx.approval_request_id,
+        task_id=ctx.task_id,
         session_plan_digest=ctx.session_plan_digest,
         code_change_artifact_store=ctx.code_change_artifact_store,
         event_bus=ctx.event_bus,

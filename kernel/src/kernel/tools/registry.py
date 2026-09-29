@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -45,7 +46,7 @@ from kernel.approval import (
     ApprovalRequired,
     build_approval_invocation,
 )
-from kernel.capability_binding import CapabilityRef
+from kernel.capability_binding import CapabilityRef, ExecutionFloorView
 from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
@@ -66,6 +67,7 @@ _PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
 __all__ = [
     "execute_tool",
     "get_tool_catalog",
+    "project_execution_floor",
     "register_tool_mcp",
     "validate_tool_catalog",
 ]
@@ -271,8 +273,25 @@ async def execute_tool(
     if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
         raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
     ctx.tool_id = tool_id
+    provider = ctx.capability_binding_provider
     _resolve_execution_configuration(definition, ctx)
     ctx.capability_binding_provider = None
+    if provider is not None:
+        ctx.execution_floor_for = lambda child_id: project_execution_floor(provider, child_id)
+
+        async def dispatch_child(child_id: str, parameters: Mapping[str, Any]) -> ToolResult:
+            child_ctx = ctx.model_copy(
+                update={
+                    "tool_id": child_id,
+                    "parameters": dict(parameters),
+                    "pack_config": EMPTY_PACK_CONFIGURATION,
+                    "capability_binding_provider": provider,
+                    "approval_request_id": "",
+                }
+            )
+            return await execute_tool(child_id, child_ctx)
+
+        ctx.delegated_tool_dispatch = dispatch_child
     _validate_parameters(definition, ctx)
     await _require_approval(definition, ctx)
     module = definition.implementation_module
@@ -285,6 +304,30 @@ async def execute_tool(
 
     result = await _execute_under_tracer(tool_id, definition, execute_fn, ctx)
     return _coerce_tool_result(tool_id, result)
+
+
+def project_execution_floor(provider: Any, tool_id: str) -> ExecutionFloorView | None:
+    """Expose only a child's execution posture, not its pack configuration."""
+    definition = _TOOL_CATALOG.get(tool_id)
+    if definition is None or not definition.owner_id:
+        return None
+    binding = provider.binding_for(CapabilityRef("tool", tool_id, definition.owner_id))
+    if binding is None or binding.owner_id != definition.owner_id:
+        return None
+    sandbox = binding.configuration.get("sandbox")
+    floor = sandbox.get("floor") if isinstance(sandbox, Mapping) else None
+    if not isinstance(floor, Mapping):
+        return None
+    paths = floor.get("paths")
+    return ExecutionFloorView(
+        execution=floor.get("execution") if isinstance(floor.get("execution"), str) else None,
+        persistence=floor.get("persistence") if isinstance(floor.get("persistence"), str) else None,
+        paths=MappingProxyType(
+            {str(path): str(access) for path, access in paths.items()}
+        )
+        if isinstance(paths, Mapping)
+        else MappingProxyType({}),
+    )
 
 
 def _resolve_execution_configuration(

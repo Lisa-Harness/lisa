@@ -36,3 +36,16 @@ def test_approval_continuation_survives_catalog_round_trip(
     catalog = json.loads(build_mode_catalog_json(resolve_mode_roots([tmp_path])))
 
     assert _deserialize_mode(catalog["demo"]).approval_continuation == expected
+
+
+def test_checked_commit_goal_survives_catalog_round_trip(tmp_path: Path) -> None:
+    _write_mode(
+        tmp_path,
+        "task_completion: checked_commit\ntask_artifact_tool_id: create_worktree",
+    )
+
+    catalog = json.loads(build_mode_catalog_json(resolve_mode_roots([tmp_path])))
+    mode = _deserialize_mode(catalog["demo"])
+
+    assert mode.task_completion == "checked_commit"
+    assert mode.task_artifact_tool_id == "create_worktree"

@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from kernel.approval import ApprovalIdentity, ApprovalInvocation
+from kernel.models import OperationResult, ToolResult
 
 # Parameter keys whose values are withheld from the transport approval payload:
 # they are the most likely carriers of secrets or huge bodies, and the panel
@@ -125,7 +126,9 @@ def decision_state_text(record: Any) -> str:
     return f"its state is {state or 'unknown'}"
 
 
-def approval_action_receipt(invocation: ApprovalInvocation) -> dict[str, str]:
+def approval_action_receipt(
+    invocation: ApprovalInvocation, result: ToolResult | OperationResult
+) -> dict[str, str]:
     """Build the effect-receipt dict for one approved invocation.
 
     The completion contract counts receipts, not tool names, so an action
@@ -136,10 +139,16 @@ def approval_action_receipt(invocation: ApprovalInvocation) -> dict[str, str]:
     even though the approval had already executed it).
     """
 
+    output_json = result.output_json or {}
     return {
         "capability_id": str(invocation.target_id or ""),
         "effect": str(invocation.effect or ""),
-        "artifact_id": "",
+        "artifact_id": str(
+            output_json.get("artifact_id")
+            or output_json.get("document_id")
+            or output_json.get("memory_id")
+            or ""
+        ),
     }
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from kernel.models import EffectReceipt
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
+    BlockNoCheckedCommit,
     BlockNoVerifiedWrite,
     ChatReadFootnote,
     ChatSoftAccept,
@@ -43,6 +44,37 @@ def test_yielded_turn_is_exempt() -> None:
     )
     assert isinstance(decision, AcceptTurn)
     assert "yielded" in decision.reason
+
+
+def test_checked_commit_goal_precedes_chat_soft_accept_and_write_receipt() -> None:
+    decision = resolve_completion_contract(
+        mode_id="executor",
+        mode_kind="chat",
+        content="Looks complete. " * 120,
+        action_tool_ids={"create_worktree"},
+        effect_receipts=[EffectReceipt(effect="write", capability_id="create_worktree")],
+        total_tool_calls=2,
+        task_completion="checked_commit",
+        checked_commit_verified=False,
+        checked_commit_reason="No current checked commit for this task.",
+    )
+    assert isinstance(decision, BlockNoCheckedCommit)
+    assert "No current checked commit" in decision.block_message
+
+    satisfied = resolve_completion_contract(
+        mode_id="executor",
+        task_completion="checked_commit",
+        checked_commit_verified=True,
+    )
+    assert isinstance(satisfied, AcceptTurn)
+
+    yielded = resolve_completion_contract(
+        mode_id="executor",
+        task_completion="checked_commit",
+        checked_commit_verified=False,
+        yielded=True,
+    )
+    assert isinstance(yielded, AcceptTurn)
 
 
 def test_mode_without_write_contract_is_exempt() -> None:

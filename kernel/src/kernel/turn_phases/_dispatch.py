@@ -262,6 +262,20 @@ def _resolve_dispatch_metadata(
     return dispatched_effect, dispatched_artifact_id
 
 
+def _returned_error(
+    op_result: OperationResult | None,
+    tool_result: ToolResult | None,
+    mcp_result: Any | None,
+) -> str:
+    if op_result is not None and not op_result.is_success:
+        return op_result.error_detail or op_result.output_text or f"Operation {op_result.status}."
+    if tool_result is not None and tool_result.error.strip():
+        return tool_result.error.strip()
+    if mcp_result is not None and getattr(mcp_result, "is_error", False):
+        return str(getattr(mcp_result, "output_text", "") or "MCP tool returned an error.")
+    return ""
+
+
 def _handle_write_receipt(
     *,
     tool_name: str,
@@ -362,14 +376,17 @@ def _capture_effect_receipt(
     pool: MCPToolPool,
     state: _TurnState,
     logger: logging.Logger,
-) -> tuple[str, str, bool]:
+ ) -> tuple[str, str, bool, str]:
     """Capture effect receipt and enforce write receipt invariant."""
     receipts_before = len(state.effect_receipts)
     dispatched_effect, dispatched_artifact_id = _resolve_dispatch_metadata(
         tool_name, operation_catalog, tool_catalog, op_result, tool_result
     )
+    returned_error = _returned_error(op_result, tool_result, mcp_result)
 
-    if dispatched_effect in ("write", "external_write"):
+    if returned_error:
+        dispatched_succeeded = False
+    elif dispatched_effect in ("write", "external_write"):
         dispatched_succeeded = _handle_write_receipt(
             tool_name=tool_name,
             dispatched_effect=dispatched_effect,
@@ -402,8 +419,10 @@ def _capture_effect_receipt(
     if receipt_error is not None:
         logger.error("%s", receipt_error)
         tool_output = receipt_error
+        returned_error = receipt_error
+        dispatched_succeeded = False
 
-    return tool_output, dispatched_effect, dispatched_succeeded
+    return tool_output, dispatched_effect, dispatched_succeeded, returned_error
 
 
 def _track_consecutive_errors(
@@ -506,6 +525,7 @@ async def dispatch_capability(
     mcp_result: Any | None = None
     delegate_yield: YieldAction | None = None
     rec_identity = build_recovery_identity_fn(hooks) if build_recovery_identity_fn else None
+    dispatch_error = ""
 
     try:
         if tool_name in operation_catalog:
@@ -536,7 +556,12 @@ async def dispatch_capability(
         state.called_tool_names.add(tool_name)
         ledger.record(tool_name)
 
-        tool_output, dispatched_effect, dispatched_succeeded = _capture_effect_receipt(
+        (
+            tool_output,
+            dispatched_effect,
+            dispatched_succeeded,
+            dispatch_error,
+        ) = _capture_effect_receipt(
             tool_name=tool_name,
             tool_output=tool_output,
             op_result=op_result,
@@ -564,10 +589,12 @@ async def dispatch_capability(
             hooks,
             recovery_item_id,
             rec_identity,
-            state="succeeded",
+            state="succeeded" if dispatched_succeeded else "stalled",
             tool_name=tool_name,
             logger=logger,
-            result_preview=str(tool_output)[:240],
+            result_preview=str(tool_output)[:240] if dispatched_succeeded else "",
+            last_error=dispatch_error,
+            retry_policy=cast(Any, recovery_retry_policy) if dispatch_error else None,
         )
 
     except ApprovalRequired:
@@ -590,6 +617,7 @@ async def dispatch_capability(
         ledger.record(tool_name)
         logger.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
         tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+        dispatch_error = str(exc)
         await _settle_recovery(
             hooks,
             recovery_item_id,
@@ -602,7 +630,7 @@ async def dispatch_capability(
         )
 
     duration_ms = int((time.monotonic() - tool_dispatch_started) * 1000)
-    is_ok = not tool_output.startswith("Tool execution failed:")
+    is_ok = not dispatch_error
 
     return CapabilityDispatchOutcome(
         tool_output=tool_output,

@@ -20,6 +20,7 @@ happen". Three behaviors pinned here:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -27,14 +28,18 @@ from unittest.mock import patch
 
 import pytest
 from kernel.models import (
+    CallLedger,
     EffectReceipt,
     OperationExecutionContext,
     OperationResult,
+    ToolResult,
     WorkflowModeConfig,
 )
 from kernel.tools.mcp_client import MCPToolResult
 from kernel.turn_hooks import ModelHooks, OperationHooks, ToolHooks
+from kernel.turn_phases._dispatch import _capture_effect_receipt, dispatch_capability
 from kernel.turn_phases._dispatch import enforce_write_receipt as _enforce_write_receipt
+from kernel.turn_phases._turn_state import _TurnState
 from kernel.turn_runner import (
     TurnHooks,
     run_turn,
@@ -107,6 +112,94 @@ def test_enforce_write_receipt_only_counts_this_dispatch() -> None:
         receipts_before=1,  # the existing receipt predates this dispatch
     )
     assert marker is not None
+
+
+def test_failed_execute_tool_does_not_emit_receipt() -> None:
+    state = _TurnState()
+    _, effect, succeeded, returned_error = _capture_effect_receipt(
+        tool_name="run_check",
+        tool_output="Error: sandbox unavailable",
+        op_result=None,
+        tool_result=ToolResult(tool_id="run_check", error="sandbox unavailable"),
+        mcp_result=None,
+        operation_catalog={},
+        tool_catalog={"run_check": SimpleNamespace(effect="execute")},
+        pool=SimpleNamespace(),
+        state=state,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert effect == "execute"
+    assert succeeded is False
+    assert returned_error == "sandbox unavailable"
+    assert state.effect_receipts == []
+
+
+def test_failed_mcp_write_does_not_emit_receipt() -> None:
+    state = _TurnState()
+    _, effect, succeeded, returned_error = _capture_effect_receipt(
+        tool_name="remote_write",
+        tool_output="remote failed",
+        op_result=None,
+        tool_result=None,
+        mcp_result=MCPToolResult(
+            tool_id="remote_write", output_text="remote failed", is_error=True
+        ),
+        operation_catalog={},
+        tool_catalog={"remote_write": SimpleNamespace(effect="write")},
+        pool=SimpleNamespace(),
+        state=state,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert effect == "write"
+    assert succeeded is False
+    assert returned_error == "remote failed"
+    assert state.effect_receipts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", ["read", "write"])
+@pytest.mark.parametrize("status", ["error", "degraded"])
+async def test_returned_operation_failure_stalls_recovery(effect: str, status: str) -> None:
+    settlements: list[dict[str, Any]] = []
+
+    async def settle(_work_item_id: str, _identity: object, **kwargs: Any) -> None:
+        settlements.append(kwargs)
+
+    async def execute_operation(
+        _operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(
+            status=status,
+            output_text="operation did not complete",
+            error_detail="unavailable",
+        )
+
+    hooks = TurnHooks()
+    hooks.services.recovery_service = SimpleNamespace(settle=settle)
+    state = _TurnState()
+    outcome = await dispatch_capability(
+        tool_name="test_operation",
+        tool_arguments={},
+        tool_kind="operation",
+        ctx=OperationExecutionContext(),
+        state=state,
+        ledger=CallLedger(),
+        pool=SimpleNamespace(),
+        operation_catalog={"test_operation": SimpleNamespace(effect=effect)},
+        tool_catalog={},
+        exec_op=execute_operation,
+        hooks=hooks,
+        recovery_item_id="work-1",
+        build_recovery_identity_fn=lambda _hooks: object(),
+    )
+
+    assert outcome.is_ok is False
+    assert state.effect_receipts == []
+    assert settlements == [
+        {"state": "stalled", "last_error": "unavailable", "retry_policy": "confirm"}
+    ]
 
 
 # ── Parent-turn validation (scripted turns) ───────────────────────────
@@ -754,20 +847,11 @@ async def test_parent_turn_dense_content_zero_tool_calls_blocked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parent_turn_zero_tool_calls_backstop_synthesizes_dispatch() -> None:
-    """Zero-tool prose on a chat write-contract mode triggers the backstop.
+async def test_parent_turn_unknown_action_backstop_does_not_fabricate_dispatch() -> None:
+    """An unknown action schema cannot justify a fake write or success.
 
-    Regression for the 2026-08-24 cloudservers stall: a ``chat``-kind mode
-    with a side-effecting completion contract whose model returned prose
-    with ZERO tool calls on its first iteration used to block as
-    ``no_tools`` — the chat-mode softening cannot rescue it because every
-    softening branch is gated on ``_did_work`` (the 2026-08-14 proceed-loop
-    guard, intentionally strict on zero-tool turns). The write-contract
-    empty-completion backstop arms ``forced_work_tool`` with the mode's
-    first action tool and synthesizes a real dispatch instead of accepting
-    the hallucinated prose. After the synth dispatch the turn has
-    ``total_tool_calls > 0`` and the chat-mode softening can accept the
-    follow-up response (or the failed-write block fires honestly).
+    The backstop reminds the model once, never fabricates a tool call, and
+    retains the strict no-tools block if the model still makes no write.
     """
     from kernel.tools.mcp_client import MCPToolResult
 
@@ -801,8 +885,7 @@ async def test_parent_turn_zero_tool_calls_backstop_synthesizes_dispatch() -> No
         if call_count == 1:
             # Zero tool calls: announcement prose. The backstop must arm.
             return _StubCompletion(content="I'll check the servers for you now.")
-        # Second completion (after the synthesized dispatch returned a
-        # tool result): dense prose that the chat-mode softening accepts.
+        # The model persists after the reminder without dispatching a tool.
         return _StubCompletion(
             content=(
                 "I checked the servers and gathered the status. The bind "
@@ -853,15 +936,33 @@ async def test_parent_turn_zero_tool_calls_backstop_synthesizes_dispatch() -> No
     finally:
         mp.undo()
 
-    # The backstop synthesized a dispatch (call_count > 1) and the
-    # follow-up dense prose was accepted by the chat-mode softening —
-    # NOT blocked as no_tools.
-    assert call_count >= 2, "backstop did not synthesize a dispatch"
-    assert result.blocked is False
-    assert result.block_origin == ""
-    assert "checked the servers" in result.response_text
-    # A real tool call was dispatched (the synth counts as a tool call).
-    assert result.tool_call_count >= 1
+    assert call_count == 3
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
+    assert "unverified" in result.response_text
+    assert result.tool_call_count == 0
+    assert all(not message.get("tool_calls") for message in result.transcript)
+
+
+def test_work_backstop_can_only_synthesize_proven_zero_arg_tool() -> None:
+    from kernel.models import ToolDefinition
+    from kernel.turn_runner import _work_tool_accepts_empty_arguments
+    from pydantic import BaseModel
+
+    class _NoParameters(BaseModel):
+        pass
+
+    catalog = {
+        "write_file": ToolDefinition(
+            tool_id="write_file", parameters_schema=_NoParameters, effect="write"
+        )
+    }
+    assert _work_tool_accepts_empty_arguments(
+        "write_file", operation_catalog={}, tool_catalog=catalog
+    )
+    assert not _work_tool_accepts_empty_arguments(
+        "unknown", operation_catalog={}, tool_catalog=catalog
+    )
 
 
 # ── Regression: read-only MCP tool must not emit a write receipt ──────

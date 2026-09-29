@@ -415,6 +415,8 @@ def _load_one_mode(
         "approval_continuation": str(
             front_matter.get("approval_continuation", "report") or "report"
         ),
+        "task_completion": str(front_matter.get("task_completion", "none") or "none"),
+        "task_artifact_tool_id": str(front_matter.get("task_artifact_tool_id", "") or ""),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,

@@ -53,6 +53,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
+from pydantic import BaseModel
+
 from kernel.approval import (
     ApprovalInvocation,
     ApprovalRequired,
@@ -133,9 +135,10 @@ from kernel.tools.schema_translator import (
     is_truncated_tool_arguments,
     openai_tool_call_to_mcp,
 )
-from kernel.turn_hooks import TurnHooks
+from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest, TurnHooks
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
+    BlockNoCheckedCommit,
     BlockNoVerifiedWrite,
     ChatReadFootnote,
     ChatSoftAccept,
@@ -381,6 +384,27 @@ def _synthesized_call_missing_all_required(
         return False
     supplied = {k for k, v in (tool_arguments or {}).items() if v is not None}
     return not any(name in supplied for name in required_names)
+
+
+def _work_tool_accepts_empty_arguments(
+    tool_name: str,
+    *,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+) -> bool:
+    bare = bare_tool_name(tool_name)
+    definition = (
+        operation_catalog.get(tool_name)
+        or tool_catalog.get(tool_name)
+        or operation_catalog.get(bare)
+        or tool_catalog.get(bare)
+    )
+    schema = getattr(definition, "parameters_schema", None)
+    return (
+        isinstance(schema, type)
+        and issubclass(schema, BaseModel)
+        and not any(field.is_required() for field in schema.model_fields.values())
+    )
 
 
 #: Maximum characters of the operator-visible tool display label emitted in
@@ -1214,6 +1238,15 @@ async def _run_turn_with_approval(
             TurnResult(
                 response_text=render_approval_request(required.invocation),
                 pending_approval=required.invocation,
+                tool_call_count=capture[0].total_tool_calls if capture else 0,
+                called_tool_names=set(capture[0].called_tool_names) if capture else set(),
+                effect_receipts=list(capture[0].effect_receipts) if capture else [],
+                pending_approval_tool_call_id=capture[0].pending_approval_tool_call_id
+                if capture
+                else "",
+                pending_approval_recovery_item_id=capture[0].pending_approval_recovery_item_id
+                if capture
+                else "",
                 handoff_to=owning_mode if owning_mode and owning_mode != mode_id else None,
             ),
             capture,
@@ -1293,6 +1326,7 @@ async def execute_approved_invocation(
             "capability_binding_provider": hooks.services.capability_binding_provider,
             "approval_service": hooks.services.approval_service,
             "approval_request_id": invocation.request_id,
+            "task_id": hooks.identity.task_id,
             "session_plan_digest": hooks.identity.session_plan_digest,
             "code_change_artifact_store": hooks.services.code_change_artifact_store,
             "data_dir": hooks.services.data_dir,
@@ -1508,6 +1542,7 @@ async def _pre_turn_memory_recall(
                 surface_type=hooks.identity.surface_type,
                 surface_id=hooks.identity.surface_id,
                 memory_scope=hooks.identity.memory_scope,
+                task_id=hooks.identity.task_id,
                 session_plan_digest=hooks.identity.session_plan_digest,
                 data_dir=hooks.services.data_dir,
                 delegate_fn=delegate_fn,
@@ -2031,6 +2066,7 @@ def _apply_turn_completion_contract(
     mode_config: Any,
     content: str,
     yielded: bool,
+    checked_commit_evidence: TaskCompletionEvidence | None,
     log: logging.Logger,
 ) -> tuple[str, bool, str]:
     """Apply the parent-turn completion contract (Phase 8) to the final content.
@@ -2059,6 +2095,15 @@ def _apply_turn_completion_contract(
             or state.plan_failed
             or (state.fork_results and any(r.status != "ok" for r in (state.fork_results or [])))
         ),
+        task_completion=mode_config.task_completion if mode_config else "none",
+        checked_commit_verified=(
+            checked_commit_evidence.verified if checked_commit_evidence is not None else False
+        ),
+        checked_commit_reason=(
+            checked_commit_evidence.reason
+            if checked_commit_evidence is not None
+            else "No current checked commit for this task."
+        ),
     )
 
     turn_blocked = False
@@ -2066,6 +2111,10 @@ def _apply_turn_completion_contract(
 
     if isinstance(contract_decision, PreexistingFailureBlock):
         turn_blocked = True
+    elif isinstance(contract_decision, BlockNoCheckedCommit):
+        content = contract_decision.block_message
+        turn_blocked = True
+        block_origin = "task_completion"
     elif isinstance(contract_decision, SurfaceProseWithFootnote):
         log.warning(
             "parent turn mode=%s aborted a synthesized action-tool "
@@ -2966,6 +3015,8 @@ def _synthesize_empty_completion_call(
     completion: Any,
     assistant_msg: dict[str, Any],
     pre_handoff_text: str,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
     log: logging.Logger,
 ) -> tuple[list[dict[str, Any]], bool, str]:
     """Synthesize the forced/work tool call for an empty-completion iteration.
@@ -3045,6 +3096,14 @@ def _synthesize_empty_completion_call(
         # subsequent empty completion is not re-synthesized into a
         # loop (the 2026-08-15 researcher no-verified-write block).
         _work_tool = state.forced_work_tool
+        if not _work_tool_accepts_empty_arguments(
+            _work_tool,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
+        ):
+            state.unfillable_work_tool = _work_tool
+            state.forced_work_tool = ""
+            return [], False, pre_handoff_text
         log.warning(
             "model returned no tool calls with a do-the-work "
             "backstop pending (mode=%s, iteration=%d); kernel "
@@ -3576,6 +3635,7 @@ def _arm_write_contract_backstop(
         and not _has_read_receipt
         and state.total_tool_calls == 0
         and not state.forced_work_tool
+        and not state.write_backstop_reminded
         and not budget_forces_final()
     ):
         _work_target = next(iter(sorted(state.action_tool_ids)))
@@ -6427,6 +6487,7 @@ def _wire_build_entry_ctx(
             surface_type=hooks.identity.surface_type,
             surface_id=hooks.identity.surface_id,
             memory_scope=hooks.identity.memory_scope,
+            task_id=hooks.identity.task_id,
             session_plan_digest=hooks.identity.session_plan_digest,
             data_dir=hooks.services.data_dir,
             delegate_fn=delegate_fn,
@@ -6689,6 +6750,8 @@ async def _process_empty_completion(
     stalled_write_guidance: str,
     budget_forces_final: Callable[[], bool],
     mode_config: Any,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
     turns_in_stage: int,
     max_tool_iterations: int,
     log: logging.Logger,
@@ -6719,6 +6782,8 @@ async def _process_empty_completion(
         completion=completion,
         assistant_msg=assistant_msg,
         pre_handoff_text=pre_handoff_text,
+        operation_catalog=operation_catalog,
+        tool_catalog=tool_catalog,
         log=log,
     )
 
@@ -6784,6 +6849,31 @@ async def _process_empty_completion(
                 True,
                 stalled_write_guidance,
                 "break",
+            )
+
+        if state.unfillable_work_tool and not state.write_backstop_reminded:
+            state.write_backstop_reminded = True
+            stalled_write_guidance = (
+                f"Call {state.unfillable_work_tool} with complete arguments to do the requested "
+                "work, or ask the user for missing details. Do not claim a write without a result."
+            )
+            return (
+                tool_calls,
+                synthesized_forced,
+                pre_handoff_text,
+                content,
+                content_source,
+                turn_reasoning_text,
+                False,
+                stalled_write_guidance,
+                "continue",
+            )
+        if state.unfillable_work_tool and state.total_tool_calls == 0:
+            state.routing_misfire_prose = _synthesized_call_missing_all_required(
+                state.unfillable_work_tool,
+                {},
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
             )
 
         # ── Write-contract empty-completion backstop ──────────────
@@ -7636,6 +7726,8 @@ async def _resolve_empty_completion_for_dispatch(
     stalled_write_guidance: str,
     budget_forces_final: Callable[[], bool],
     mode_config: Any,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
     turns_in_stage: int,
     max_tool_iterations: int,
     log: logging.Logger,
@@ -7676,6 +7768,8 @@ async def _resolve_empty_completion_for_dispatch(
         stalled_write_guidance=stalled_write_guidance,
         budget_forces_final=budget_forces_final,
         mode_config=mode_config,
+        operation_catalog=operation_catalog,
+        tool_catalog=tool_catalog,
         turns_in_stage=turns_in_stage,
         max_tool_iterations=max_tool_iterations,
         log=log,
@@ -7824,6 +7918,8 @@ async def _execute_prepared_tool_call(
             loop_state.yielded = True
             return "break"
     except ApprovalRequired:
+        state.pending_approval_tool_call_id = prepared.tool_call_id
+        state.pending_approval_recovery_item_id = prepared.recovery_item_id or ""
         raise
 
     tool_result_msg: dict[str, Any] = {
@@ -8137,12 +8233,52 @@ async def _finalize_turn_result(
     if terminal_content:
         content = terminal_content
 
+    checked_commit_evidence: TaskCompletionEvidence | None = None
+    if mode_config is not None and mode_config.task_completion == "checked_commit" and not yielded:
+        producer = mode_config.task_artifact_tool_id
+        receipt_artifact_ids = tuple(
+            sorted(
+                {
+                    receipt.artifact_id
+                    for receipt in state.effect_receipts
+                    if receipt.artifact_id and bare_tool_name(receipt.capability_id) == producer
+                }
+            )
+        )
+        verifier = hooks.services.verify_task_completion
+        if not producer or len(receipt_artifact_ids) > 1:
+            checked_commit_evidence = TaskCompletionEvidence(
+                verified=False, reason="Cannot identify one worktree for this task."
+            )
+        elif not hooks.identity.task_id or verifier is None:
+            checked_commit_evidence = TaskCompletionEvidence(
+                verified=False, reason="Task identity or checked-commit verifier is unavailable."
+            )
+        else:
+            try:
+                checked_commit_evidence = await verifier(
+                    TaskCompletionRequest(
+                        task_id=hooks.identity.task_id,
+                        origin_tool_id=producer,
+                        receipt_artifact_ids=receipt_artifact_ids,
+                    )
+                )
+            except Exception:
+                log.exception(
+                    "checked-commit verification failed for task %s", hooks.identity.task_id
+                )
+                checked_commit_evidence = TaskCompletionEvidence(
+                    verified=False,
+                    reason="Could not verify a current checked commit for this task.",
+                )
+
     content, turn_blocked, block_origin = _apply_turn_completion_contract(
         state=state,
         mode_id=mode_id,
         mode_config=mode_config,
         content=content,
         yielded=yielded,
+        checked_commit_evidence=checked_commit_evidence,
         log=log,
     )
     content, turn_blocked, block_origin = await _apply_output_guard(
@@ -8696,6 +8832,8 @@ async def _run_turn_inner(
             stalled_write_guidance=_stalled_write_guidance,
             budget_forces_final=_budget_forces_final,
             mode_config=mode_config,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
             turns_in_stage=_turns_in_stage,
             max_tool_iterations=max_tool_iterations,
             log=_log,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from kernel.approval import (
@@ -25,6 +26,7 @@ from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
     ToolResult,
+    WorkflowModeConfig,
 )
 from kernel.operations.declarative import execute_declarative_operation
 from kernel.seams.host_adapter import build_callable_host
@@ -32,6 +34,7 @@ from kernel.tools.registry import execute_tool
 from kernel.turn_hooks import (
     HostServiceHandles,
     ModelHooks,
+    TaskCompletionEvidence,
     TurnIdentity,
 )
 from kernel.turn_runner import TurnHooks, execute_approved_invocation, run_turn
@@ -55,6 +58,17 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
     """The model turn stops before the side effect and exposes one request ID."""
 
     executed = False
+    started: list[Any] = []
+
+    async def begin(record: Any) -> Any:
+        started.append(record)
+        return record
+
+    async def settle(_work_item_id: str, _identity: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def mark_running_indeterminate(_identity: Any) -> int:
+        return 0
 
     async def execute(_ctx: ToolExecutionContext) -> ToolResult:
         nonlocal executed
@@ -92,6 +106,11 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
             ),
             services=HostServiceHandles(
                 approval_service=InMemoryApprovalService(),
+                recovery_service=SimpleNamespace(
+                    begin=begin,
+                    settle=settle,
+                    mark_running_indeterminate=mark_running_indeterminate,
+                ),
             ),
             identity=TurnIdentity(
                 workspace_id="workspace",
@@ -105,8 +124,75 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
 
     assert result.pending_approval is not None
     assert result.pending_approval.target_id == "write_file"
+    assert result.pending_approval_tool_call_id == "call-1"
+    assert len(started) == 1
+    assert result.pending_approval_recovery_item_id == started[0].work_item_id
     assert "/approve " in result.response_text
     assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_approval_preserves_earlier_effect_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def read_file(_ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(output_text="file contents")
+
+    async def write_file(_ctx: ToolExecutionContext) -> ToolResult:
+        raise AssertionError("write ran before approval")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "read_file": ToolDefinition(
+                tool_id="read_file",
+                pack_id="lisa-pack-coding",
+                effect="read",
+                implementation_module=SimpleNamespace(execute=read_file),
+            ),
+            "write_file": ToolDefinition(
+                tool_id="write_file",
+                pack_id="lisa-pack-coding",
+                parameters_schema=_Parameters,
+                effect="write",
+                approval_required=True,
+                implementation_module=SimpleNamespace(execute=write_file),
+            ),
+        },
+    )
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        return _Completion(
+            tool_calls=[
+                {"id": "call-1", "function": {"name": "read_file", "arguments": "{}"}},
+                {
+                    "id": "call-2",
+                    "function": {"name": "write_file", "arguments": '{"path":"src/a.py"}'},
+                },
+            ]
+        )
+
+    result = await run_turn(
+        mode_id="default",
+        query="change the file",
+        hooks=TurnHooks(
+            models=ModelHooks(complete=complete),
+            services=HostServiceHandles(approval_service=InMemoryApprovalService()),
+            identity=TurnIdentity(
+                workspace_id="workspace",
+                user_id="user",
+                user_slug="user",
+                surface_id="surface",
+                session_plan_digest="plan-a",
+            ),
+        ),
+    )
+
+    assert result.pending_approval_tool_call_id == "call-2"
+    assert [(receipt.capability_id, receipt.effect) for receipt in result.effect_receipts] == [
+        ("read_file", "read")
+    ]
+    assert result.transcript[-1]["tool_call_id"] == "call-1"
 
 
 @pytest.mark.asyncio
@@ -426,3 +512,97 @@ async def test_execute_approved_invocation_consumes_the_real_registry_receipt(
     record = await service.get(invocation.request_id)
     assert record is not None
     assert record.state == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_runner_uses_host_evidence_before_finishing() -> None:
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        return _Completion(content="Implementation complete.")
+
+    verified = False
+
+    async def verify(request: Any) -> TaskCompletionEvidence:
+        assert request.task_id == "task-one"
+        assert request.origin_tool_id == "create_worktree"
+        return TaskCompletionEvidence(
+            verified=verified,
+            reason="No current checked commit for this task.",
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value={}),
+    ):
+        blocked = await run_turn(mode_id="executor", query="implement it", hooks=hooks)
+        verified = True
+        done = await run_turn(mode_id="executor", query="continue", hooks=hooks)
+
+    assert blocked.blocked is True
+    assert "No current checked commit" in blocked.response_text
+    assert done.blocked is False
+    assert "Implementation complete" in done.response_text
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_backstop_reminds_once_without_fabricating_work() -> None:
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            task_artifact_tool_id="create_worktree",
+            authored_allowed_tool_ids=["create_worktree"],
+            allowed_tool_ids=["create_worktree"],
+        )
+    }
+    tool_catalog = {
+        "create_worktree": ToolDefinition(
+            tool_id="create_worktree",
+            effect="write",
+            parameters_schema=_Parameters,
+        )
+    }
+    model_requests: list[str] = []
+
+    async def complete(**kwargs: Any) -> _Completion:
+        model_requests.append(str(kwargs))
+        return _Completion(content="I will make the change.")
+
+    async def verify(_request: Any) -> TaskCompletionEvidence:
+        return TaskCompletionEvidence(verified=False, reason="No current checked commit.")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value=tool_catalog),
+        patch("kernel.tools.registry.get_tool_catalog", return_value=tool_catalog),
+    ):
+        result = await run_turn(mode_id="executor", query="implement it", hooks=hooks)
+
+    assert len(model_requests) == 3
+    assert sum("complete arguments" in request for request in model_requests) == 1
+    assert result.tool_call_count == 0
+    assert all(not message.get("tool_calls") for message in result.transcript)
+    assert result.block_origin == "task_completion"

@@ -243,6 +243,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         capability_binding_provider=getattr(ctx, "capability_binding_provider", None),
         approval_service=getattr(ctx, "approval_service", None),
         approval_request_id=getattr(ctx, "approval_request_id", ""),
+        task_id=getattr(ctx, "task_id", ""),
         session_plan_digest=getattr(ctx, "session_plan_digest", ""),
         code_change_artifact_store=getattr(ctx, "code_change_artifact_store", None),
         event_bus=getattr(ctx, "event_bus", None),

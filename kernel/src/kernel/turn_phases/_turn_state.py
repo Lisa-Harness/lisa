@@ -297,6 +297,8 @@ class _TurnState:
     ``authored_allowed_*``-only detector is correctly counted as having
     completed. See ``kernel.models.EffectReceipt``."""
     forced_work_tool: str = ""
+    unfillable_work_tool: str = ""
+    write_backstop_reminded: bool = False
     """A single action-tool id the kernel will synthesize when the model
     returns an empty completion on a plan-self-handoff iteration (the
     2026-08-15 ``no_tools`` block: the routing hint and the plan-driven
@@ -327,6 +329,8 @@ class _TurnState:
     """The live message list of this turn, once assembled."""
     transcript_start: int = 0
     """Index in ``messages`` of this turn's own user message."""
+    pending_approval_tool_call_id: str = ""
+    pending_approval_recovery_item_id: str = ""
     model_requests: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim snapshot of every model request issued this turn."""
     action_tool_ids: set[str] = field(default_factory=set)

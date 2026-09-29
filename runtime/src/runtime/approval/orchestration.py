@@ -37,6 +37,7 @@ from kernel.approval import (
     render_approval_request,
 )
 from kernel.ipsar_fsm import get_workflow_catalog
+from kernel.models import OperationResult, ToolResult
 from kernel.turn_runner import execute_approved_invocation
 
 from runtime.approval.presentation import (
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 # Callable that routes a continuation query through a fresh model turn in the
 # approval's owning mode, returning ``str | HostCommandResult``. Wired by the
 # caller (``runtime.handle_message``) so this module never imports the dispatcher.
-RouteModelTurnFn = Callable[["HostRuntime", str, "TransportCallbacks"], Awaitable[Any]]
+RouteModelTurnFn = Callable[..., Awaitable[Any]]
 
 
 def approval_identity(runtime: HostRuntime) -> ApprovalIdentity:
@@ -318,22 +319,37 @@ async def maybe_auto_continue_approval(
     return _HostCommandResult(text=str(result))
 
 
-def _approval_action_receipt_for_thread(invocation: ApprovalInvocation) -> dict[str, str]:
+def _approval_action_receipt_for_thread(
+    invocation: ApprovalInvocation, result: ToolResult | OperationResult
+) -> dict[str, str]:
     """Thread-form of the approved-invocation effect receipt."""
-    return approval_action_receipt(invocation)
+    return approval_action_receipt(invocation, result)
+
+
+def _paused_approval_entry(runtime: HostRuntime, request_id: str) -> dict[str, Any] | None:
+    """Return the persisted turn that paused for this approval request."""
+    from runtime.thread import (  # lazy: defers runtime.thread import to approval time
+        load_thread_range,
+        next_turn_index,
+    )
+
+    for entry in reversed(
+        load_thread_range(
+            thread_path=runtime.paths.thread_path,
+            start_turn=0,
+            end_turn=next_turn_index(thread_path=runtime.paths.thread_path),
+        )
+    ):
+        provenance = entry.get("provenance") or {}
+        if provenance.get("pending_approval_request_id") == request_id:
+            return entry
+    return None
 
 
 def _paused_request_query(runtime: HostRuntime, request_id: str) -> str:
     """Return the query of the thread turn that paused for ``request_id``, or ``""``."""
-    from runtime.thread import (  # lazy: defers runtime.thread import to approval time
-        load_recent_thread_entries,
-    )
-
-    for entry in reversed(load_recent_thread_entries(thread_path=runtime.paths.thread_path)):
-        provenance = entry.get("provenance") or {}
-        if provenance.get("pending_approval_request_id") == request_id:
-            return str(entry.get("query") or "")
-    return ""
+    entry = _paused_approval_entry(runtime, request_id)
+    return str(entry.get("query") or "") if entry is not None else ""
 
 
 def _continuation_directive(runtime: HostRuntime, owner_mode: str, request_id: str) -> str:
@@ -394,6 +410,8 @@ async def _record_and_continue_after_approval(
 
     action_text = approval_result_text(result)
     owner_mode = invocation.identity.mode_id or runtime.session.current_mode_id or "default"
+    paused_entry = _paused_approval_entry(runtime, invocation.request_id)
+    task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
 
     # ── Thread record for the approved action ────────────────────────
     # No model call was made (the registry executed the saved invocation
@@ -412,10 +430,11 @@ async def _record_and_continue_after_approval(
             "finish_reason": "approved-action",
             "model_id": "",
             "approval_request_id": invocation.request_id,
+            "task_id": task_id,
             "target_kind": invocation.target_kind,
             "target_id": invocation.target_id,
         },
-        effect_receipts=[_approval_action_receipt_for_thread(invocation)],
+        effect_receipts=[_approval_action_receipt_for_thread(invocation, result)],
         handoff_to=""
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
@@ -434,7 +453,10 @@ async def _record_and_continue_after_approval(
         f"{_continuation_directive(runtime, owner_mode, invocation.request_id)}"
     )
     runtime.session.current_mode_id = owner_mode
-    routed = await route_model_turn(runtime, continuation_query, transport)
+    if task_id:
+        routed = await route_model_turn(runtime, continuation_query, transport, task_id=task_id)
+    else:
+        routed = await route_model_turn(runtime, continuation_query, transport)
     # ``route_model_turn`` returns a ``HostCommandResult`` on the normal
     # turn path and a bare ``str`` on the early-exit paths (budget gate,
     # unsupported mode) — normalize so the command dispatcher always has a
@@ -612,7 +634,9 @@ async def _execute_approved_with_settlement(
         The invocation result, or a plain ``str`` the caller should return
         immediately (re-approval request or failure text).
     """
-    hooks = build_turn_hooks(runtime, context={}, transport=transport)
+    paused_entry = _paused_approval_entry(runtime, request_id)
+    task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
+    hooks = build_turn_hooks(runtime, context={"task_id": task_id}, transport=transport)
     try:
         result = await execute_approved_invocation(invocation=record.invocation, hooks=hooks)
     except ApprovalRequired as required:
@@ -623,6 +647,16 @@ async def _execute_approved_with_settlement(
             runtime, record.invocation, state="stalled", last_error=f"{type(exc).__name__}: {exc}"
         )
         return f"Approved action failed: {type(exc).__name__}: {exc}"
+    error = ""
+    if isinstance(result, ToolResult):
+        error = result.error.strip()
+    elif isinstance(result, OperationResult) and not result.is_success:
+        error = result.error_detail or result.output_text or f"Operation {result.status}."
+    if error:
+        await settle_paired_recovery_record(
+            runtime, record.invocation, state="stalled", last_error=error
+        )
+        return f"Approved action failed: {error}"
     # The approved action executed against the real registry, which consumes
     # the receipt. But the *model-turn* path that originally raised
     # ``ApprovalRequired`` also settled a paired recovery record as
@@ -781,48 +815,46 @@ async def settle_paired_recovery_record(
 ) -> None:
     """Settle the recovery record paired to an approved invocation.
 
-    The model-turn path raises ``ApprovalRequired`` *after* the recovery
-    service has already ``begin``-ed a record for the same target. Approving
-    via ``/approve`` re-executes through a fresh registry path that does not
-    touch the recovery service, so the original record stays ``stalled`` —
-    the stalled record that re-yields on every subsequent turn. This
-    correlates by ``target_id`` + identity and settles the first open
-    stalled match. Correlation is deliberately by target id, not approval
-    request id: the two stores never share an id.
+    The paused turn persists the recovery work-item ID alongside the approval
+    request ID. Never settle by target alone: separate approvals can target
+    the same capability within the same session.
     """
 
     recovery_service = runtime.services.recovery_service
-    if recovery_service is None or not hasattr(recovery_service, "list_open"):
+    if recovery_service is None:
         return
     recovery_identity = _recovery_identity_for_invocation(runtime, invocation)
     if recovery_identity is None:
         return
+    paused = _paused_approval_entry(runtime, invocation.request_id)
+    provenance = (paused or {}).get("provenance") or {}
+    work_item_id = str(provenance.get("pending_approval_recovery_item_id") or "")
+    if not work_item_id:
+        logger.warning("approval %s has no paired recovery work item", invocation.request_id)
+        return
     try:
-        open_records = await recovery_service.list_open(recovery_identity)
+        record = await recovery_service.get(work_item_id, recovery_identity)
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("paired-recovery list_open failed for %s: %s", invocation.request_id, exc)
+        logger.warning("paired-recovery get failed for %s: %s", invocation.request_id, exc)
         return
-    for open_record in open_records:
-        if open_record.target_id != invocation.target_id:
-            continue
-        if getattr(open_record, "state", "") != "stalled":
-            continue
-        try:
-            await recovery_service.settle(
-                open_record.work_item_id,
-                recovery_identity,
-                state=state,  # type: ignore[arg-type]
-                last_error=last_error,
-                result_preview=result_preview,
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "paired-recovery settle failed for %s (work item %s): %s",
-                invocation.request_id,
-                open_record.work_item_id,
-                exc,
-            )
+    if record is None or record.state != "stalled" or record.target_id != invocation.target_id:
+        logger.warning("approval %s has no matching stalled recovery item", invocation.request_id)
         return
+    try:
+        await recovery_service.settle(
+            work_item_id,
+            recovery_identity,
+            state=state,  # type: ignore[arg-type]
+            last_error=last_error,
+            result_preview=result_preview,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "paired-recovery settle failed for %s (work item %s): %s",
+            invocation.request_id,
+            work_item_id,
+            exc,
+        )
 
 
 def _recovery_identity_for_invocation(

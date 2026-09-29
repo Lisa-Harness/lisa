@@ -48,6 +48,7 @@ from sdk.context.extension_item_builder import (
 )
 
 from runtime.capability_bindings import SessionCapabilityBindings
+from runtime.code_artifacts import verify_checked_commit
 from runtime.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
@@ -836,12 +837,28 @@ class _WiredHooks:
         self.wire_context_seams = wire_context_seams
 
 
-def _assemble_turn_hooks(*, runtime: HostRuntime, wired: _WiredHooks) -> TurnHooks:
+def _assemble_turn_hooks(
+    *, runtime: HostRuntime, wired: _WiredHooks, task_id: str = ""
+) -> TurnHooks:
     """Compose the final ``TurnHooks`` dataclass from the wired callables.
 
     Pure assembly: every hook callable was built by ``build_turn_hooks``;
     this function only maps them onto the kernel's hook dataclasses.
     """
+    turn_identity = TurnIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        user_name=runtime.config.user_slug,
+        principal_key=runtime.config.user_slug,
+        conversation_id=runtime.config.surface_id,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
+        task_id=task_id,
+    )
+    artifact_store = runtime.services.code_change_artifact_store
     return TurnHooks(
         models=ModelHooks(
             resolve_model=wired.resolve_model,
@@ -891,21 +908,16 @@ def _assemble_turn_hooks(*, runtime: HostRuntime, wired: _WiredHooks) -> TurnHoo
             capability_binding_provider=wired.capability_binding_provider,
             approval_service=wired.approval_service,
             recovery_service=runtime.services.recovery_service,
-            code_change_artifact_store=runtime.services.code_change_artifact_store,
+            code_change_artifact_store=artifact_store,
+            verify_task_completion=partial(
+                verify_checked_commit,
+                store=artifact_store,
+                thread_path=runtime.paths.thread_path,
+                identity=turn_identity,
+            ) if artifact_store is not None else None,
             data_dir=str(runtime.paths.data_dir),
         ),
-        identity=TurnIdentity(
-            workspace_id=runtime.session_plan.manifest.name,
-            user_id=runtime.config.user_slug,
-            user_slug=runtime.config.user_slug,
-            user_name=runtime.config.user_slug,
-            principal_key=runtime.config.user_slug,
-            conversation_id=runtime.config.surface_id,
-            surface_type=runtime.config.surface_type,
-            surface_id=runtime.config.surface_id,
-            memory_scope=runtime.config.memory_scope,
-            session_plan_digest=runtime.session_plan.plan_digest,
-        ),
+        identity=turn_identity,
         recall=RecallHooks(
             enabled=runtime.config.memory_recall_enabled,
             limit=runtime.config.memory_recall_pre_turn_limit,
@@ -1394,6 +1406,7 @@ def build_turn_hooks(
 
     return _assemble_turn_hooks(
         runtime=runtime,
+        task_id=str(ctx_dict.get("task_id") or ""),
         wired=_WiredHooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,

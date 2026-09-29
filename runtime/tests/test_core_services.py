@@ -1971,38 +1971,69 @@ async def test_handle_message_requires_models_before_running_turn(
 
 
 @pytest.mark.asyncio
-async def test_build_turn_hooks_wires_recall_hook(tmp_path: Path) -> None:
+async def test_build_turn_hooks_wires_recall_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Turn hooks build cleanly with learning-owned memory behavior."""
-    runtime = _make_runtime(tmp_path)
+    from kernel.tools import registry as tool_registry
+
+    monkeypatch.setattr(tool_registry, "_TOOL_CATALOG", tool_registry.get_tool_catalog())
+    runtime = _make_hooks_runtime(tmp_path)
     # setup_framework wires the content registry so content_loader(runtime) works.
     mcp_pool.setup_framework(runtime)
-    turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(
+        runtime, {"mode_id": "default", "task_id": "task-7"}
+    )
+    assert hooks.identity.task_id == "task-7"
+    assert hooks.services.verify_task_completion is not None
+
+
+def _make_hooks_runtime(tmp_path: Path, **config_kwargs: object) -> HostRuntime:
+    runtime = _make_runtime(tmp_path, **config_kwargs)
+    manifest = runtime.session_plan.manifest
+    packs = manifest.resources.packs
+    runtime.session_plan = runtime.session_plan.model_copy(
+        update={
+            "manifest": manifest.model_copy(
+                update={
+                    "resources": manifest.resources.model_copy(
+                        update={
+                            "packs": packs.model_copy(
+                                update={"include": (*packs.include, "lisa-pack-bwrap")}
+                            )
+                        }
+                    )
+                }
+            )
+        }
+    )
+    return runtime
 
 
 def test_build_turn_hooks_wires_complete_stream_for_text_mode(tmp_path: Path) -> None:
     """When streaming mode is text/hybrid, complete_stream is wired on the hooks."""
-    runtime = _make_runtime(tmp_path, streaming="text:30")
+    runtime = _make_hooks_runtime(tmp_path, streaming="text:30")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_wires_complete_stream_for_hybrid_mode(tmp_path: Path) -> None:
     """Hybrid streaming also wires complete_stream."""
-    runtime = _make_runtime(tmp_path, streaming="hybrid")
+    runtime = _make_hooks_runtime(tmp_path, streaming="hybrid")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -> None:
     """Stage-only streaming does NOT wire complete_stream (stage uses on_stage, not chunks)."""
-    runtime = _make_runtime(tmp_path, streaming="stage")
+    runtime = _make_hooks_runtime(tmp_path, streaming="stage")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks.models.complete_stream is None
 
 
 def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
     """With streaming disabled, complete_stream stays None (non-streaming path)."""
-    runtime = _make_runtime(tmp_path, streaming="none")
+    runtime = _make_hooks_runtime(tmp_path, streaming="none")
     hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks.models.complete_stream is None
 

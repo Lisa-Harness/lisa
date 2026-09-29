@@ -63,7 +63,12 @@ def _replay_message(message: dict[str, Any], prefix: str, redaction: Any) -> dic
     return replayed
 
 
-def _entry_messages(entry: dict[str, Any], redaction: Any) -> list[dict[str, Any]]:
+def _entry_messages(
+    entry: dict[str, Any],
+    redaction: Any,
+    *,
+    approved_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     # Tool-call ids are only unique within one turn; prefix them per turn.
     prefix = f"t{entry.get('turn', 'x')}_"
     messages = [{"role": "user", "content": _redact(str(entry.get("query") or ""), redaction)}]
@@ -72,6 +77,9 @@ def _entry_messages(entry: dict[str, Any], redaction: Any) -> list[dict[str, Any
     if transcript and transcript[0].get("role") == "user":
         transcript = transcript[1:]
     messages.extend(_replay_message(m, prefix, redaction) for m in transcript)
+    if approved_result is not None:
+        messages.append(_replay_message(approved_result, prefix, redaction))
+        return messages
     response = str(entry.get("response_text") or "")
     last_message = transcript[-1] if transcript else None
     if response and not (
@@ -83,12 +91,62 @@ def _entry_messages(entry: dict[str, Any], redaction: Any) -> list[dict[str, Any
     return messages
 
 
+def _paired_approval_result(
+    paused: dict[str, Any], approvals: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    provenance = paused.get("provenance") or {}
+    request_id = str(provenance.get("pending_approval_request_id") or "")
+    call_id = str(provenance.get("pending_approval_tool_call_id") or "")
+    approved = approvals.get(request_id) if request_id and call_id else None
+    if approved is None:
+        return None
+    calls = [
+        call
+        for message in paused.get("transcript") or []
+        for call in message.get("tool_calls") or []
+        if call.get("id") == call_id
+    ]
+    if len(calls) != 1:
+        return None
+    tool_name = str((calls[0].get("function") or {}).get("name") or "")
+    if tool_name != (approved.get("provenance") or {}).get("target_id"):
+        return None
+    if not any(
+        receipt.get("capability_id") == tool_name
+        for receipt in approved.get("effect_receipts") or []
+    ):
+        return None
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "name": tool_name,
+        "content": str(approved.get("response_text") or ""),
+    }
+
+
 def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]]:
     """Return the latest turn and its unfinished task as replayable messages."""
     from runtime.thread import _thread_redaction, load_recent_thread_entries
 
-    entries = load_recent_thread_entries(thread_path=thread_path, limit=_SCAN_LIMIT)
+    entries = _open_task_span(
+        load_recent_thread_entries(thread_path=thread_path, limit=_SCAN_LIMIT)
+    )
+    approvals = {
+        str(provenance["approval_request_id"]): entry
+        for entry in entries
+        if (provenance := entry.get("provenance") or {}).get("source") == "host-approved"
+        and provenance.get("approval_request_id")
+    }
     messages: list[dict[str, Any]] = []
-    for entry in _open_task_span(entries):
-        messages.extend(_entry_messages(entry, _thread_redaction))
+    paired_ids: set[str] = set()
+    for entry in entries:
+        provenance = entry.get("provenance") or {}
+        if provenance.get("source") == "host-approved":
+            if provenance.get("approval_request_id") not in paired_ids:
+                messages.extend(_entry_messages(entry, _thread_redaction))
+            continue
+        approved_result = _paired_approval_result(entry, approvals)
+        if approved_result is not None:
+            paired_ids.add(str(provenance["pending_approval_request_id"]))
+        messages.extend(_entry_messages(entry, _thread_redaction, approved_result=approved_result))
     return messages

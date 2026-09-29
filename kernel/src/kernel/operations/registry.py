@@ -36,6 +36,7 @@ from kernel.models import (
 )
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
+from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION = MappingProxyType({})
@@ -912,6 +913,9 @@ async def execute_operation(
 
     ctx.operation_id = operation_id
     _resolve_execution_configuration(definition, ctx)
+    provider = ctx.capability_binding_provider
+    if provider is not None:
+        ctx.execution_floor_for = lambda child_id: project_execution_floor(provider, child_id)
     _validate_parameters(definition, ctx)
     await _require_approval(definition, ctx)
 

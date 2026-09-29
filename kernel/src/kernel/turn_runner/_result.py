@@ -124,6 +124,8 @@ class TurnResult:
     See :class:`kernel.models.YieldAction`."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
+    pending_approval_tool_call_id: str = ""
+    pending_approval_recovery_item_id: str = ""
     transcript: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim non-system messages this turn added (user message, assistant
     tool calls, tool results), excluding replayed prior messages."""

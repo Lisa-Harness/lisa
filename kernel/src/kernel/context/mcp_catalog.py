@@ -209,6 +209,8 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         excluded_tool_ids=data.get("excluded_tool_ids", []),
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
         approval_continuation=data.get("approval_continuation", "report"),
+        task_completion=data.get("task_completion", "none"),
+        task_artifact_tool_id=data.get("task_artifact_tool_id", ""),
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
         context_item_packs=[str(p) for p in (data.get("context_item_packs") or [])],

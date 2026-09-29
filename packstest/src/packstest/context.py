@@ -9,12 +9,15 @@ provider, data dir) is wired with deterministic in-memory doubles.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kernel.models import ToolExecutionContext
+from kernel.capability_binding import ExecutionFloorView
+from kernel.models import ToolExecutionContext, ToolResult
 from kernel.testing.stubs import NullEventBus, StaticStateProvider
+from sdk.workproducts import WorkProductStore
 
 from packstest.store import MemoryWorkProductStore
 
@@ -59,10 +62,12 @@ class ToolContextFactory:
     pack_config: dict[str, Any]
     identity: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_IDENTITY))
     data_dir: Path | None = None
-    artifact_store: MemoryWorkProductStore = field(default_factory=MemoryWorkProductStore)
+    artifact_store: WorkProductStore = field(default_factory=MemoryWorkProductStore)
     parameters: dict[str, Any] = field(default_factory=dict)
     mode_id: str = "packstest"
     tool_id: str = "packstest-tool"
+    execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = None
+    delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = None
 
     def context(
         self,
@@ -82,9 +87,11 @@ class ToolContextFactory:
             mode_id=self.mode_id,
             parameters=merged,
             pack_config=dict(self.pack_config),
-            pack_configuration_resolver=_StaticResolver(dict(self.pack_config)),
+            execution_floor_for=self.execution_floor_for,
+            delegated_tool_dispatch=self.delegated_tool_dispatch,
             approval_service=None,
             approval_request_id=approval_request_id,
+            task_id=self.identity.get("task_id", ""),
             session_plan_digest=self.identity["session_plan_digest"],
             code_change_artifact_store=self.artifact_store,
             event_bus=NullEventBus(),
@@ -98,19 +105,6 @@ class ToolContextFactory:
             surface_id=self.identity["surface_id"],
             memory_scope=self.identity["memory_scope"],  # type: ignore[arg-type]
         )
-
-
-class _StaticResolver:
-    """Resolver that returns the same mapping for every pack id."""
-
-    __slots__ = ("_config",)
-
-    def __init__(self, config: dict[str, Any]) -> None:
-        self._config = config
-
-    def for_pack(self, pack_id: str) -> dict[str, Any]:
-        del pack_id
-        return dict(self._config)
 
 
 def make_workspace(tmp_path: Path, *, name: str = "source") -> Path:
