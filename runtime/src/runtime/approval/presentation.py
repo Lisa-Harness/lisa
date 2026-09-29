@@ -113,7 +113,7 @@ def decision_state_text(record: Any) -> str:
 
     state = str(getattr(record, "state", "") or "")
     if state == "expired":
-        return "it has expired"
+        return "it has expired; repeat the request to get a fresh approval"
     decision = getattr(record, "decision", None)
     decision_state = str(getattr(decision, "state", "") or "") if decision is not None else ""
     if state == "approved" or decision_state == "approved":

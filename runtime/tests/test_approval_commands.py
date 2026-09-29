@@ -1084,7 +1084,7 @@ async def test_approve_reports_decision_state_for_already_denied_request(
 async def test_approve_reports_expiry_for_expired_request(
     tmp_path: Path,
 ) -> None:
-    """Approving an expired request says "expired" instead of "not pending"."""
+    """An expired approval reports expiry and clears its paired recovery stall."""
 
     runtime = _make_runtime(tmp_path)
     identity = _identity(runtime)
@@ -1099,6 +1099,36 @@ async def test_approve_reports_expiry_for_expired_request(
     )
     await runtime.services.approval_service.request(invocation)
 
+    from kernel.recovery import RecoveryIdentity, RecoveryRecord
+
+    recovery_identity = RecoveryIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
+    )
+    started = await runtime.services.recovery_service.begin(
+        RecoveryRecord(
+            identity=recovery_identity,
+            mode_id="shell",
+            stage_id="run",
+            target_kind="pack_tool",
+            target_id="bash_run",
+            effect="execute",
+            parameters={"command": "hostname"},
+            retry_policy="confirm",
+        )
+    )
+    await runtime.services.recovery_service.settle(
+        started.work_item_id,
+        recovery_identity,
+        state="stalled",
+        last_error="approval required",
+        retry_policy="confirm",
+    )
+
     # Backdate past the TTL so is_expired() fires inside approve().
     import json as _json  # local to this one-off store backdate
 
@@ -1111,6 +1141,10 @@ async def test_approve_reports_expiry_for_expired_request(
 
     assert "expired" in result.text
     assert "not pending" not in result.text
+    assert "fresh approval" in result.text
+    settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
+    assert settled is not None
+    assert settled.state == "cancelled"
 
 
 @pytest.mark.asyncio

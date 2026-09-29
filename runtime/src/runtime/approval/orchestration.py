@@ -732,6 +732,14 @@ async def handle_approval_command(
         runtime, record, request_id=request_id, identity=identity
     )
     if receipt_error is not None:
+        fresh = await runtime.services.approval_service.get(request_id)
+        if fresh is not None and fresh.state == "expired":
+            await settle_paired_recovery_record(
+                runtime,
+                record.invocation,
+                state="cancelled",
+                last_error="approval expired",
+            )
         return receipt_error
 
     result = await _execute_approved_with_settlement(
