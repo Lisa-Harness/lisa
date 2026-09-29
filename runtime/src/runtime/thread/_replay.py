@@ -16,6 +16,7 @@ from typing import Any
 from runtime.host_commands import is_host_command_query
 
 _SCAN_LIMIT = 50
+_APPROVAL_SOURCES = frozenset({"host-approved", "host-approved-failed"})
 
 
 def _is_task_link(entry: dict[str, Any]) -> bool:
@@ -23,7 +24,7 @@ def _is_task_link(entry: dict[str, Any]) -> bool:
     return bool(
         provenance.get("operator_exit") == "paused"
         or provenance.get("pending_approval_request_id")
-        or provenance.get("source") == "host-approved"
+        or provenance.get("source") in _APPROVAL_SOURCES
     )
 
 
@@ -32,7 +33,7 @@ def _open_task_span(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     relevant = [
         e
         for e in entries
-        if (e.get("provenance") or {}).get("source") == "host-approved"
+        if (e.get("provenance") or {}).get("source") in _APPROVAL_SOURCES
         or not is_host_command_query(str(e.get("query") or ""))
     ]
     if not relevant:
@@ -111,7 +112,8 @@ def _paired_approval_result(
     tool_name = str((calls[0].get("function") or {}).get("name") or "")
     if tool_name != (approved.get("provenance") or {}).get("target_id"):
         return None
-    if not any(
+    failed = (approved.get("provenance") or {}).get("source") == "host-approved-failed"
+    if not failed and not any(
         receipt.get("capability_id") == tool_name
         for receipt in approved.get("effect_receipts") or []
     ):
@@ -134,14 +136,14 @@ def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]
     approvals = {
         str(provenance["approval_request_id"]): entry
         for entry in entries
-        if (provenance := entry.get("provenance") or {}).get("source") == "host-approved"
+        if (provenance := entry.get("provenance") or {}).get("source") in _APPROVAL_SOURCES
         and provenance.get("approval_request_id")
     }
     messages: list[dict[str, Any]] = []
     paired_ids: set[str] = set()
     for entry in entries:
         provenance = entry.get("provenance") or {}
-        if provenance.get("source") == "host-approved":
+        if provenance.get("source") in _APPROVAL_SOURCES:
             if provenance.get("approval_request_id") not in paired_ids:
                 messages.extend(_entry_messages(entry, _thread_redaction))
             continue

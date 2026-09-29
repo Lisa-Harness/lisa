@@ -878,6 +878,116 @@ async def test_approved_returned_failure_does_not_continue_or_receipt(
 
 
 @pytest.mark.asyncio
+async def test_policy_approved_failure_resumes_with_error_not_success_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kernel.models import WorkflowModeConfig
+    from runtime.approval.orchestration import maybe_auto_continue_approval
+    from runtime.thread import append_thread_entry, load_recent_thread_entries
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "executor"
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"artifact_id": "artifact-one", "patch": "*** Begin Patch\n*** End Patch"},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    await runtime.services.approval_service.request(invocation)
+    await runtime.services.approval_service.approve(invocation.request_id, invocation.identity)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="executor",
+        query="fix issue 6",
+        response_text="approval required",
+        provenance={"task_id": "task-one", "pending_approval_request_id": invocation.request_id},
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    mode = WorkflowModeConfig(
+        mode_id="executor", start_stage_id="none", approval_continuation="resume"
+    )
+    monkeypatch.setattr(approval_module, "get_workflow_catalog", lambda: {"executor": mode})
+    error = "Patch must contain at least one unified diff file path."
+
+    async def failed_action(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        return ToolResult(error=error, output_json={"artifact_id": "not-a-success"})
+
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", failed_action)
+    queries: list[str] = []
+
+    async def resume(
+        host: HostRuntime, query: str, transport: object, *, task_id: str
+    ) -> HostCommandResult:
+        assert host.session.current_mode_id == "executor"
+        assert task_id == "task-one"
+        queries.append(query)
+        return HostCommandResult(text="corrected invocation requested")
+
+    result = await maybe_auto_continue_approval(
+        runtime, invocation, NullTransport(), route_model_turn=resume
+    )
+
+    assert result is not None and result.text == "corrected invocation requested"
+    assert len(queries) == 1 and error in queries[0] and "fix issue 6" in queries[0]
+    assert "executed successfully" not in queries[0]
+    entry = load_recent_thread_entries(thread_path=runtime.paths.thread_path)[-1]
+    assert entry["provenance"]["finish_reason"] == "approved-action-failed"
+    assert entry["provenance"]["task_id"] == "task-one"
+    assert not entry.get("effect_receipts")
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_approvals_share_one_user_message_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kernel.models import WorkflowModeConfig
+    from kernel.turn_runner import TurnResult
+
+    runtime = _make_runtime(tmp_path)
+    turn_module = importlib.import_module("runtime.handle_message")
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    mode = WorkflowModeConfig(
+        mode_id="default", start_stage_id="none", mode_kind="chat", approval_continuation="resume"
+    )
+    monkeypatch.setattr(turn_module, "get_workflow_catalog", lambda: {"default": mode})
+    monkeypatch.setattr(approval_module, "get_workflow_catalog", lambda: {"default": mode})
+    monkeypatch.setattr(approval_module, "AUTO_APPROVE_TURN_CAP", 2)
+    task_ids: list[str] = []
+    executed: list[str] = []
+
+    async def run_turn(*, hooks: object, **kwargs: object) -> TurnResult:
+        task_ids.append(hooks.identity.task_id)
+        assert len(task_ids) <= 3, "auto-approval budget reset during continuation"
+        invocation = build_approval_invocation(
+            target_kind="tool", target_id="coding_apply_patch", pack_id="lisa-pack-coding",
+            effect="write", parameters={"patch": f"attempt-{len(task_ids)}"},
+            identity=_identity(runtime), pack_config={},
+        )
+        await runtime.services.approval_service.request(invocation)
+        await runtime.services.approval_service.approve(invocation.request_id, invocation.identity)
+        return TurnResult(response_text="approval required", pending_approval=invocation)
+
+    async def failed_action(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        executed.append(invocation.request_id)
+        return ToolResult(error="invalid patch")
+
+    monkeypatch.setattr(turn_module, "run_turn", run_turn)
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", failed_action)
+    runtime.session.auto_approved_this_turn = 99
+
+    result = await handle_message(runtime, "fix the code", NullTransport())
+
+    assert len(executed) == 2
+    assert len(task_ids) == 3 and len(set(task_ids)) == 1
+    assert result.data is not None and result.data["request_id"] not in executed
+    assert runtime.session.auto_approved_this_turn == 2
+
+
+@pytest.mark.asyncio
 async def test_deny_settles_paired_stalled_recovery_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

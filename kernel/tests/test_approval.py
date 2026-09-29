@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -225,6 +226,12 @@ def _invocation(
         pack_config={"workspace_root": "."},
         safe_preview="write the test value",
     )
+
+
+def test_default_approval_lifetime_is_thirty_minutes() -> None:
+    invocation = _invocation()
+
+    assert invocation.expires_at - invocation.created_at == timedelta(minutes=30)
 
 
 @pytest.mark.asyncio

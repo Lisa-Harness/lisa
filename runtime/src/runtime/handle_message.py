@@ -243,6 +243,7 @@ async def handle_message(
     from runtime.callbacks import NullTransport
 
     tport: TransportCallbacks = transport or NullTransport()
+    runtime.session.auto_approved_this_turn = 0
     stripped = message.strip()
     lowered = stripped.lower()
 
@@ -1006,11 +1007,6 @@ async def _execute_mode_turn(
         await transport.on_error(f"Operation error: {exc}", exc)
         runtime.session.operator_signal_value = ""
         return response_text
-
-    # Reset the per-turn auto-approval cap counter before we consult
-    # ``pending_approval`` — this turn's budget of unattended auto-continues
-    # starts here (see ``runtime.approval.maybe_auto_continue_approval``).
-    runtime.session.auto_approved_this_turn = 0
 
     # Clear the operator signal after the turn ends so the next turn starts
     # clean (the signal is one-shot; the transport re-sets it on the next

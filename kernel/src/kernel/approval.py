@@ -36,7 +36,7 @@ __all__ = [
 EffectKind = Literal["read", "write", "execute", "external_write"]
 ApprovalState = Literal["pending", "approved", "denied", "consumed", "expired"]
 
-_DEFAULT_APPROVAL_TTL = timedelta(minutes=10)
+_DEFAULT_APPROVAL_TTL = timedelta(minutes=30)
 
 
 class _FrozenApprovalModel(BaseModel):

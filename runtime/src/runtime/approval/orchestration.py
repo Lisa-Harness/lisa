@@ -383,6 +383,7 @@ async def _record_and_continue_after_approval(
     *,
     transport: TransportCallbacks,
     route_model_turn: RouteModelTurnFn,
+    error: str = "",
 ) -> HostCommandResult:
     """Record an approved action in the thread, then run a synthesis turn.
 
@@ -408,8 +409,13 @@ async def _record_and_continue_after_approval(
         append_thread_entry,
     )
 
-    action_text = approval_result_text(result)
+    action_text = f"Approved action failed: {error}" if error else approval_result_text(result)
     owner_mode = invocation.identity.mode_id or runtime.session.current_mode_id or "default"
+    mode = get_workflow_catalog().get(owner_mode)
+    if error and (mode is None or mode.approval_continuation != "resume"):
+        from runtime.types import HostCommandResult
+
+        return HostCommandResult(text=action_text, is_error=True)
     paused_entry = _paused_approval_entry(runtime, invocation.request_id)
     task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
 
@@ -426,15 +432,15 @@ async def _record_and_continue_after_approval(
         query=f"/approve {invocation.request_id}",
         response_text=action_text,
         provenance={
-            "source": "host-approved",
-            "finish_reason": "approved-action",
+            "source": "host-approved-failed" if error else "host-approved",
+            "finish_reason": "approved-action-failed" if error else "approved-action",
             "model_id": "",
             "approval_request_id": invocation.request_id,
             "task_id": task_id,
             "target_kind": invocation.target_kind,
             "target_id": invocation.target_id,
         },
-        effect_receipts=[_approval_action_receipt_for_thread(invocation, result)],
+        effect_receipts=[] if error else [_approval_action_receipt_for_thread(invocation, result)],
         handoff_to=""
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
@@ -452,6 +458,17 @@ async def _record_and_continue_after_approval(
         f"{action_text}\n\n"
         f"{_continuation_directive(runtime, owner_mode, invocation.request_id)}"
     )
+    if error:
+        original_query = _paused_request_query(runtime, invocation.request_id)
+        continuation_query = (
+            f"The approved action `{invocation.target_id}` failed "
+            f"(approval {invocation.request_id}):\n\n{error}\n\n"
+            f"The original request was:\n\n{original_query}\n\n"
+            "Continue from this failure. Inspect any partial effects before retrying; "
+            "correct the invocation using the tool's documented schema, or report a blocker. "
+            "Do not repeat the unchanged failed action or claim it succeeded. "
+            "Any new action must pass normal policy and approval checks."
+        )
     runtime.session.current_mode_id = owner_mode
     if task_id:
         routed = await route_model_turn(runtime, continuation_query, transport, task_id=task_id)
@@ -616,6 +633,14 @@ async def _acquire_approval_receipt(
     return receipt, None
 
 
+def _approved_action_error(result: Any) -> str:
+    if isinstance(result, ToolResult):
+        return result.error.strip()
+    if isinstance(result, OperationResult) and not result.is_success:
+        return result.error_detail or result.output_text or f"Operation {result.status}."
+    return ""
+
+
 async def _execute_approved_with_settlement(
     runtime: HostRuntime,
     record: Any,
@@ -647,16 +672,12 @@ async def _execute_approved_with_settlement(
             runtime, record.invocation, state="stalled", last_error=f"{type(exc).__name__}: {exc}"
         )
         return f"Approved action failed: {type(exc).__name__}: {exc}"
-    error = ""
-    if isinstance(result, ToolResult):
-        error = result.error.strip()
-    elif isinstance(result, OperationResult) and not result.is_success:
-        error = result.error_detail or result.output_text or f"Operation {result.status}."
+    error = _approved_action_error(result)
     if error:
         await settle_paired_recovery_record(
             runtime, record.invocation, state="stalled", last_error=error
         )
-        return f"Approved action failed: {error}"
+        return result
     # The approved action executed against the real registry, which consumes
     # the receipt. But the *model-turn* path that originally raised
     # ``ApprovalRequired`` also settled a paired recovery record as
@@ -782,12 +803,13 @@ async def handle_approval_command(
     if isinstance(result, str):
         return result
 
+    error = _approved_action_error(result)
     # `--remember`: persist an allow rule so future runs of this command are
     # auto-approved. Default prefix = the executed command's first token (the
     # program / program+subcommand, e.g. "git status" from "git status -sb"),
     # which is the natural "this thing, repeatedly" scope; an explicit flag
     # value overrides it. Host-side write — the CLI never edits policy.yaml.
-    if approve and "--remember" in command:
+    if not error and approve and "--remember" in command:
         _remember_allow_rule(runtime, record.invocation, remember)
 
     # ── Post-approval continuation ───────────────────────────────────
@@ -802,6 +824,7 @@ async def handle_approval_command(
         result,
         transport=transport,
         route_model_turn=route_model_turn,
+        error=error,
     )
 
 

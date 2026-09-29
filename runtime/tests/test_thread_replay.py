@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from runtime.host_commands import register_builtin_host_commands
 from runtime.thread import (
     append_thread_entry,
@@ -74,7 +75,8 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     assert all(cid.startswith("t") for cid in call_ids)
 
 
-def test_approved_action_replays_as_original_tool_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failed", [False, True])
+def test_approved_action_replays_as_original_tool_result(tmp_path: Path, failed: bool) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -114,13 +116,16 @@ def test_approved_action_replays_as_original_tool_result(tmp_path: Path) -> None
     _append(
         thread,
         "/approve approval-1",
-        response_text="saved file",
+        response_text="Approved action failed: invalid patch" if failed else "saved file",
         provenance={
-            "source": "host-approved",
+            "source": "host-approved-failed" if failed else "host-approved",
+            "finish_reason": "approved-action-failed" if failed else "approved-action",
             "approval_request_id": "approval-1",
             "target_id": "write",
         },
-        effect_receipts=[{"capability_id": "write", "effect": "write", "artifact_id": "doc-1"}],
+        effect_receipts=[] if failed else [
+            {"capability_id": "write", "effect": "write", "artifact_id": "doc-1"}
+        ],
     )
 
     messages = build_open_task_messages(thread_path=thread)
@@ -129,7 +134,8 @@ def test_approved_action_replays_as_original_tool_result(tmp_path: Path) -> None
         "user", "assistant", "tool", "assistant", "tool"
     ]
     assert messages[-1]["tool_call_id"] == messages[-2]["tool_calls"][0]["id"]
-    assert messages[-1]["content"] == "saved file"
+    expected = "Approved action failed: invalid patch" if failed else "saved file"
+    assert messages[-1]["content"] == expected
     assert all("/approve" not in str(message.get("content", "")) for message in messages)
 
 
