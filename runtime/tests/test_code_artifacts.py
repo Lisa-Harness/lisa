@@ -16,7 +16,7 @@ from runtime.handle_message import _resumable_task_id
 from runtime.runtime import HostRuntime
 from runtime.testing import build_test_runtime
 from runtime.thread import append_thread_entry, load_thread_range, next_turn_index
-from sdk.workproducts import WorkProduct, WorkProductCheck
+from sdk.workproducts import WorkProduct, WorkProductCheck, WorkProductPreparation
 
 
 @pytest.mark.asyncio
@@ -45,12 +45,24 @@ async def test_file_store_round_trips_updated_artifact(tmp_path: Path) -> None:
         status="passed",
         argv=["uv", "run", "pytest"],
     )
+    artifact.preparation = WorkProductPreparation(
+        status="ready",
+        recipe_id="python-uv",
+        recipe_digest="recipe",
+        dependency_manifest_digest="manifest",
+        environment_path="C:/repo/.venv",
+        python_path="C:/repo/.venv/Scripts/python.exe",
+        baseline_tree_sha="tree",
+    )
     await store.save(artifact)
 
     loaded = await store.get(artifact.artifact_id)
     assert loaded is not None
     assert loaded.revision == 1
     assert loaded.checks["unit"].status == "passed"
+    assert loaded.preparation is not None
+    assert loaded.preparation.status == "ready"
+    assert loaded.preparation.python_path.endswith("python.exe")
     assert await store.delete(artifact.artifact_id) is True
     assert await store.get(artifact.artifact_id) is None
 

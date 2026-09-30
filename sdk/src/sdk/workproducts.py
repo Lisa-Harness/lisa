@@ -37,11 +37,14 @@ __all__ = [
     "WorkProduct",
     "WorkProductCheck",
     "WorkProductCheckStatus",
+    "WorkProductPreparation",
+    "WorkProductPreparationStatus",
     "WorkProductStatus",
     "WorkProductStore",
 ]
 
 WorkProductCheckStatus = Literal["pending", "passed", "failed", "timed_out"]
+WorkProductPreparationStatus = Literal["pending", "ready", "failed", "stale"]
 WorkProductStatus = Literal[
     "created",
     "patched",
@@ -67,6 +70,22 @@ class WorkProductCheck(BaseModel):
     completed_at: datetime | None = None
 
 
+class WorkProductPreparation(BaseModel):
+    """Evidence that a WorkProduct environment was prepared for execution."""
+
+    status: WorkProductPreparationStatus = "pending"
+    recipe_id: str = ""
+    recipe_digest: str = ""
+    dependency_manifest_digest: str = ""
+    environment_path: str = ""
+    python_path: str = ""
+    baseline_tree_sha: str = ""
+    baseline_checks: dict[str, WorkProductCheck] = Field(default_factory=dict)
+    probe_stdout: str = ""
+    probe_stderr: str = ""
+    completed_at: datetime | None = None
+
+
 class WorkProduct(BaseModel):
     """Durable state shared between a producing pack and a publishing pack."""
 
@@ -86,6 +105,7 @@ class WorkProduct(BaseModel):
     revision: int = 0
     changed_paths: list[str] = Field(default_factory=list)
     checks: dict[str, WorkProductCheck] = Field(default_factory=dict)
+    preparation: WorkProductPreparation | None = None
     required_check_ids: list[str] = Field(default_factory=list)
     commit_sha: str = ""
     pushed_sha: str = ""
