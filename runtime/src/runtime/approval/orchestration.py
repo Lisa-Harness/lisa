@@ -311,6 +311,7 @@ async def maybe_auto_continue_approval(
         approve=True,
         transport=transport,
         route_model_turn=route_model_turn,
+        auto_approved=True,
     )
     from runtime.types import HostCommandResult as _HostCommandResult
 
@@ -352,10 +353,12 @@ def _paused_request_query(runtime: HostRuntime, request_id: str) -> str:
     return str(entry.get("query") or "") if entry is not None else ""
 
 
-def _continuation_directive(runtime: HostRuntime, owner_mode: str, request_id: str) -> str:
-    """Return the post-approval directive declared by the owning mode."""
+def _continuation_directive(
+    runtime: HostRuntime, owner_mode: str, request_id: str, *, auto_approved: bool = False
+) -> str:
+    """Resume policy-approved actions; otherwise follow the owning mode's directive."""
     mode = get_workflow_catalog().get(owner_mode)
-    if mode is not None and mode.approval_continuation == "resume":
+    if auto_approved or (mode is not None and mode.approval_continuation == "resume"):
         original = _paused_request_query(runtime, request_id)
         request_line = f"The original request was:\n\n{original}\n\n" if original else ""
         return (
@@ -384,6 +387,7 @@ async def _record_and_continue_after_approval(
     transport: TransportCallbacks,
     route_model_turn: RouteModelTurnFn,
     error: str = "",
+    auto_approved: bool = False,
 ) -> HostCommandResult:
     """Record an approved action in the thread, then run a synthesis turn.
 
@@ -442,7 +446,9 @@ async def _record_and_continue_after_approval(
         else runtime.session.current_mode_id,
     )
 
-    if error and (mode is None or mode.approval_continuation != "resume"):
+    if error and not (
+        auto_approved or (mode is not None and mode.approval_continuation == "resume")
+    ):
         from runtime.types import HostCommandResult
 
         return HostCommandResult(text=action_text, is_error=True)
@@ -451,13 +457,16 @@ async def _record_and_continue_after_approval(
     # A dedicated thread entry keeps the action output addressable while
     # the synthesis turn carries the query "<target> executed and returned:
     # <output>" so the model treats the output as observed data, not as a
-    # fresh user instruction to re-interpret. The owning mode declares whether
-    # the turn reports and stops or resumes the paused request.
+    # fresh user instruction to re-interpret. Manual approvals follow the owning
+    # mode; policy-approved actions resume the paused request.
+    directive = _continuation_directive(
+        runtime, owner_mode, invocation.request_id, auto_approved=auto_approved
+    )
     continuation_query = (
         f"The approved action `{invocation.target_id}` executed successfully "
         f"(approval {invocation.request_id}) and returned this output:\n\n"
         f"{action_text}\n\n"
-        f"{_continuation_directive(runtime, owner_mode, invocation.request_id)}"
+        f"{directive}"
     )
     if error:
         original_query = _paused_request_query(runtime, invocation.request_id)
@@ -751,6 +760,7 @@ async def handle_approval_command(
     approve: bool,
     transport: TransportCallbacks,
     route_model_turn: RouteModelTurnFn,
+    auto_approved: bool = False,
 ) -> str | HostCommandResult:
     """Approve or deny one persisted invocation without asking the model.
 
@@ -768,6 +778,8 @@ async def handle_approval_command(
     Returns a plain ``str`` for the deny and failure paths; a successful
     approve returns a ``HostCommandResult`` from the post-approval
     continuation turn so ``operator_exit`` survives the command dispatch.
+    The internal ``auto_approved`` path resumes after a policy-approved action
+    even when the owning mode reports after manual approvals.
     """
 
     request_id, remember = _parse_approval_command(command, approve=approve)
@@ -826,6 +838,7 @@ async def handle_approval_command(
         transport=transport,
         route_model_turn=route_model_turn,
         error=error,
+        auto_approved=auto_approved,
     )
 
 

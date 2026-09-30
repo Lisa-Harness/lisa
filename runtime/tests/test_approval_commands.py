@@ -990,6 +990,71 @@ async def test_approved_returned_failure_does_not_continue_or_receipt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action_result",
+    [ToolResult(output_text="patch applied"), ToolResult(error="invalid patch")],
+)
+async def test_policy_approved_action_resumes_even_when_mode_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action_result: ToolResult
+) -> None:
+    from kernel.models import WorkflowModeConfig
+    from runtime.approval.orchestration import maybe_auto_continue_approval
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "executor"
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"artifact_id": "artifact-one", "patch": "diff --git a/a b/a"},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    await runtime.services.approval_service.request(invocation)
+    await runtime.services.approval_service.approve(invocation.request_id, invocation.identity)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="executor",
+        query="fix issue 6",
+        response_text="approval required",
+        provenance={"task_id": "task-one", "pending_approval_request_id": invocation.request_id},
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+    mode = WorkflowModeConfig(mode_id="executor", start_stage_id="none")
+    monkeypatch.setattr(approval_module, "get_workflow_catalog", lambda: {"executor": mode})
+
+    async def saved_action(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        return action_result
+
+    monkeypatch.setattr(approval_module, "execute_approved_invocation", saved_action)
+    queries: list[str] = []
+
+    async def resume(
+        host: HostRuntime, query: str, transport: object, *, task_id: str
+    ) -> HostCommandResult:
+        assert host.session.current_mode_id == "executor"
+        assert task_id == "task-one"
+        queries.append(query)
+        return HostCommandResult(text="continued")
+
+    result = await maybe_auto_continue_approval(
+        runtime, invocation, NullTransport(), route_model_turn=resume
+    )
+
+    assert result is not None and result.text == "continued"
+    assert len(queries) == 1
+    if action_result.error:
+        assert "invalid patch" in queries[0]
+        assert "Continue from this failure" in queries[0]
+    else:
+        assert "patch applied" in queries[0]
+        assert "Continue that request from where it paused" in queries[0]
+
+
+@pytest.mark.asyncio
 async def test_policy_approved_failure_resumes_with_error_not_success_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
