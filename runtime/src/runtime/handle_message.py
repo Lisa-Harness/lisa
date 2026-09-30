@@ -556,6 +556,11 @@ async def _route_model_turn(
     if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
+        resumed_mode, resumed_task_id = _resumable_task_context(
+            runtime.paths.thread_path, message
+        )
+        if not task_id:
+            task_id = resumed_task_id
         # Check for start_mode override from session-context front matter.
         # When set to a real owning mode (learn, coding, etc.), bypass and
         # go directly to the declared mode — this keeps the user pinned
@@ -577,8 +582,12 @@ async def _route_model_turn(
             # transition_stage. No separate planner call needed.
             mode_id = runtime.session.current_mode_id or "default"
             # current_mode_id resets per process; a resume after a paused turn must reach its owner.
-            if is_affirmative_resume(message.strip().lower()):
-                mode_id = paused_turn_owner_mode(thread_path=runtime.paths.thread_path) or mode_id
+            if _is_task_resume_request(message):
+                mode_id = (
+                    resumed_mode
+                    or paused_turn_owner_mode(thread_path=runtime.paths.thread_path)
+                    or mode_id
+                )
             query = message
             logger.debug(
                 "route_model_turn: natural language -> mode=%s (start_mode=%s)",
@@ -660,23 +669,47 @@ def _build_thread_provenance(resolved_model: Any, *, operator_exit: str = "") ->
 
 def _resumable_task_id(thread_path: Any, message: str) -> str:
     """Reuse a task only for a recorded unfinished turn and a matching reply."""
-    entries = load_recent_thread_entries(thread_path=thread_path, limit=1)
-    if not entries:
-        return ""
-    entry = entries[-1]
-    provenance = entry.get("provenance") or {}
-    task_id = str(provenance.get("task_id") or "")
-    if not task_id:
-        return ""
-    if is_affirmative_resume(message.strip().lower()) and (
-        entry.get("yielded")
-        or provenance.get("source") == "host-approved"
-        or provenance.get("operator_exit") == "paused"
-        or provenance.get("pending_approval_request_id")
-        or provenance.get("block_origin") == "task_completion"
-    ):
-        return task_id
-    return ""
+    return _resumable_task_context(thread_path, message)[1]
+
+
+def _is_task_resume_request(message: str) -> bool:
+    """Recognize explicit task continuation without treating it as approval."""
+    lowered = " ".join(message.strip().lower().rstrip(".!?").split()).replace("'", "")
+    return is_affirmative_resume(lowered) or any(
+        lowered.startswith(phrase)
+        for phrase in (
+            "pick up where we left off",
+            "lets pick up where we left off",
+            "let us pick up where we left off",
+            "continue where we left off",
+            "resume where we left off",
+        )
+    )
+
+
+def _resumable_task_context(thread_path: Any, message: str) -> tuple[str, str]:
+    """Recover the owner and task ID across repeated explicit resume turns."""
+    if not _is_task_resume_request(message):
+        return "", ""
+    for entry in reversed(load_recent_thread_entries(thread_path=thread_path, limit=50)):
+        provenance = entry.get("provenance") or {}
+        source = provenance.get("source")
+        if (
+            entry.get("yielded")
+            or source in {"host-approved", "host-approved-failed"}
+            or provenance.get("operator_exit") == "paused"
+            or provenance.get("pending_approval_request_id")
+            or provenance.get("block_origin") == "task_completion"
+        ):
+            owner_mode = (
+                str(entry.get("mode_id") or "")
+                if source in {"host-approved", "host-approved-failed"}
+                else str(entry.get("handoff_to") or entry.get("mode_id") or "")
+            )
+            return owner_mode, str(provenance.get("task_id") or "")
+        if not _is_task_resume_request(str(entry.get("query") or "")):
+            break
+    return "", ""
 
 
 async def _handle_pending_approval(
@@ -694,6 +727,12 @@ async def _handle_pending_approval(
     pending_approval = getattr(result, "pending_approval", None)
     if pending_approval is None:
         return None
+    # A turn can pause for approval after a handoff to a different mode.
+    # Update the live session mode before returning so the completion and
+    # approval-continuation flows keep the owning mode instead of reverting
+    # to the entry mode on the next turn.
+    if result.handoff_to:
+        runtime.session.current_mode_id = result.handoff_to
     # Persist the paused turn so the post-approval continuation can recover its request.
     append_thread_entry(
         thread_path=runtime.paths.thread_path,

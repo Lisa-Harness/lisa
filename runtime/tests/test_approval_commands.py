@@ -26,7 +26,7 @@ from kernel.turn_hooks import (
     HostServiceHandles,
     TurnIdentity,
 )
-from kernel.turn_runner import TurnHooks
+from kernel.turn_runner import TurnHooks, TurnResult
 from pydantic import BaseModel
 from runtime.approvals import FileApprovalService
 from runtime.handle_message import handle_message
@@ -192,6 +192,113 @@ async def test_approve_dispatches_only_the_saved_invocation(
     persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_handoff_updates_session_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A paused approval must carry the mode handoff forward so the next turn resumes in the owning mode."""
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "default"
+    identity = ApprovalIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        mode_id="executor",
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={},
+    )
+    result = TurnResult(response_text="approval required", pending_approval=invocation, handoff_to="executor")
+
+    async def _continue(_runtime: HostRuntime, _message: str, _transport: object, *, task_id: str = "") -> HostCommandResult:
+        assert _runtime.session.current_mode_id == "executor"
+        assert task_id == "task-1"
+        return HostCommandResult(text="continuation synthesized")
+
+    monkeypatch.setattr("runtime.handle_message._route_model_turn", _continue)
+
+    response = await importlib.import_module("runtime.handle_message")._handle_pending_approval(
+        runtime,
+        result,
+        mode_id="default",
+        query="fix it",
+        resolved_model=SimpleNamespace(model_id="m", provider="p", reasoning_model=False),
+        turn_index=7,
+        task_id="task-1",
+        transport=NullTransport(),
+    )
+
+    assert response is not None
+    assert runtime.session.current_mode_id == "executor"
+    assert response.text == "approval required"
+
+
+@pytest.mark.asyncio
+async def test_explicit_pick_up_resumes_pending_task_in_owning_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "default"
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="fix issue 6",
+        response_text="approval required",
+        handoff_to="executor",
+        provenance={"task_id": "task-1", "pending_approval_request_id": "approval-1"},
+    )
+    for task_id in ("task-2", "task-3"):
+        append_thread_entry(
+            thread_path=runtime.paths.thread_path,
+            user_slug=runtime.config.user_slug,
+            mode_id="default",
+            query="lets pick up where we left off.",
+            response_text="The patch is still waiting for approval.",
+            provenance={"task_id": task_id},
+        )
+    turn_module = importlib.import_module("runtime.handle_message")
+    captured: dict[str, str] = {}
+
+    async def ensure_pool_ready() -> None:
+        return None
+
+    async def execute_mode_turn(
+        _runtime: HostRuntime,
+        _message: str,
+        mode_id: str,
+        _query: str,
+        _transport: object,
+        *,
+        task_id: str = "",
+    ) -> str:
+        captured.update(mode_id=mode_id, task_id=task_id)
+        return "routed"
+
+    monkeypatch.setattr(runtime, "ensure_pool_ready", ensure_pool_ready)
+    monkeypatch.setattr(turn_module, "_execute_mode_turn", execute_mode_turn)
+
+    result = await turn_module._route_model_turn(
+        runtime, "lets pick up where we left off.", NullTransport()
+    )
+
+    assert result == "routed"
+    assert captured == {"mode_id": "executor", "task_id": "task-1"}
 
 
 @pytest.mark.asyncio
@@ -872,9 +979,14 @@ async def test_approved_returned_failure_does_not_continue_or_receipt(
     settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None and settled.state == "stalled"
     entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path)
-    assert all(
-        (entry.get("provenance") or {}).get("source") != "host-approved" for entry in entries
-    )
+    failed_entries = [
+        entry
+        for entry in entries
+        if (entry.get("provenance") or {}).get("source") == "host-approved-failed"
+    ]
+    assert len(failed_entries) == 1
+    assert failed_entries[0]["provenance"]["finish_reason"] == "approved-action-failed"
+    assert not failed_entries[0].get("effect_receipts")
 
 
 @pytest.mark.asyncio

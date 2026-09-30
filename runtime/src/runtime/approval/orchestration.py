@@ -412,10 +412,6 @@ async def _record_and_continue_after_approval(
     action_text = f"Approved action failed: {error}" if error else approval_result_text(result)
     owner_mode = invocation.identity.mode_id or runtime.session.current_mode_id or "default"
     mode = get_workflow_catalog().get(owner_mode)
-    if error and (mode is None or mode.approval_continuation != "resume"):
-        from runtime.types import HostCommandResult
-
-        return HostCommandResult(text=action_text, is_error=True)
     paused_entry = _paused_approval_entry(runtime, invocation.request_id)
     task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
 
@@ -445,6 +441,11 @@ async def _record_and_continue_after_approval(
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
     )
+
+    if error and (mode is None or mode.approval_continuation != "resume"):
+        from runtime.types import HostCommandResult
+
+        return HostCommandResult(text=action_text, is_error=True)
 
     # ── Continuation turn in the owning mode ─────────────────────────
     # A dedicated thread entry keeps the action output addressable while

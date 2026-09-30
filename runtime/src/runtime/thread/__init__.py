@@ -121,7 +121,14 @@ def paused_turn_owner_mode(*, thread_path: Path | None) -> str:
     if not entries:
         return ""
     last = entries[-1]
-    if (last.get("provenance") or {}).get("operator_exit") != "paused":
+    provenance = last.get("provenance") or {}
+    source = provenance.get("source")
+    if source in {"host-approved", "host-approved-failed"}:
+        return str(last.get("mode_id") or "")
+    if not (
+        provenance.get("operator_exit") == "paused"
+        or provenance.get("pending_approval_request_id")
+    ):
         return ""
     return str(last.get("handoff_to") or last.get("mode_id") or "")
 
