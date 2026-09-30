@@ -187,7 +187,10 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
     assert (await verify("task-one")).verified is True
 
 
-def test_task_identity_resumes_only_recorded_unfinished_work(tmp_path: Path) -> None:
+@pytest.mark.parametrize("terminal_response", ["completed", "still working", ""])
+def test_task_identity_resumes_only_recorded_unfinished_work(
+    tmp_path: Path, terminal_response: str
+) -> None:
     thread_path = tmp_path / "thread.jsonl"
     append_thread_entry(
         thread_path=thread_path,
@@ -204,6 +207,17 @@ def test_task_identity_resumes_only_recorded_unfinished_work(tmp_path: Path) -> 
     assert _resumable_task_id(thread_path, "continue") == "task-one"
     assert _resumable_task_id(thread_path, "fix a different bug") == ""
 
+    for detour_task_id in ("task-detour-one", "task-detour-two"):
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="user",
+            mode_id="default",
+            query="continue",
+            response_text=terminal_response,
+            provenance={"source": "observed", "task_id": detour_task_id},
+        )
+    assert _resumable_task_id(thread_path, "continue") == "task-one"
+
     append_thread_entry(
         thread_path=thread_path,
         user_slug="user",
@@ -219,7 +233,7 @@ def test_task_identity_resumes_only_recorded_unfinished_work(tmp_path: Path) -> 
         user_slug="user",
         mode_id="executor",
         query="continue",
-        response_text="completed",
+        response_text=terminal_response,
         provenance={"source": "observed", "task_id": "task-one"},
     )
     assert _resumable_task_id(thread_path, "continue") == ""
@@ -309,7 +323,11 @@ def test_restart_recovers_plan_and_receipts_outside_recent_tail(
                 if ending in {"new-plan", "new-plan-complete"}
                 else "## Plan\nNo parseable steps"
             ),
-            provenance={"source": "observed", "task_id": "task-original"},
+            provenance={
+                "source": "observed",
+                "task_id": "task-original",
+                **({"block_origin": "task_completion"} if ending == "invalid" else {}),
+            },
             effect_receipts=(
                 [{"capability_id": "coding_commit", "effect": "write", "artifact_id": "owned"}]
                 if ending == "complete"

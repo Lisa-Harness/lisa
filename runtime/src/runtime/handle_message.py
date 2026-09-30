@@ -556,9 +556,7 @@ async def _route_model_turn(
     if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
-        resumed_mode, resumed_task_id = _resumable_task_context(
-            runtime.paths.thread_path, message
-        )
+        resumed_mode, resumed_task_id = _resumable_task_context(runtime.paths.thread_path, message)
         if not task_id:
             task_id = resumed_task_id
         # Check for start_mode override from session-context front matter.
@@ -691,9 +689,11 @@ def _resumable_task_context(thread_path: Any, message: str) -> tuple[str, str]:
     """Recover the owner and task ID across repeated explicit resume turns."""
     if not _is_task_resume_request(message):
         return "", ""
+    closed_task_ids: set[str] = set()
     for entry in reversed(load_recent_thread_entries(thread_path=thread_path, limit=50)):
         provenance = entry.get("provenance") or {}
         source = provenance.get("source")
+        task_id = str(provenance.get("task_id") or "")
         if (
             entry.get("yielded")
             or source in {"host-approved", "host-approved-failed"}
@@ -701,12 +701,16 @@ def _resumable_task_context(thread_path: Any, message: str) -> tuple[str, str]:
             or provenance.get("pending_approval_request_id")
             or provenance.get("block_origin") == "task_completion"
         ):
+            if task_id in closed_task_ids:
+                break
             owner_mode = (
                 str(entry.get("mode_id") or "")
                 if source in {"host-approved", "host-approved-failed"}
                 else str(entry.get("handoff_to") or entry.get("mode_id") or "")
             )
-            return owner_mode, str(provenance.get("task_id") or "")
+            return owner_mode, task_id
+        if task_id:
+            closed_task_ids.add(task_id)
         if not _is_task_resume_request(str(entry.get("query") or "")):
             break
     return "", ""
