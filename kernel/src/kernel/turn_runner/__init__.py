@@ -237,9 +237,7 @@ _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
 def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep replayable messages, pairing every assistant tool call with its result."""
     answered = {
-        m.get("tool_call_id")
-        for m in prior
-        if m.get("role") == "tool" and m.get("tool_call_id")
+        m.get("tool_call_id") for m in prior if m.get("role") == "tool" and m.get("tool_call_id")
     }
     issued: set[Any] = set()
     valid: list[dict[str, Any]] = []
@@ -260,6 +258,7 @@ def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif role == "user":
             valid.append(message)
     return valid
+
 
 # ── Stalled-write rescue: announcement detection ───────────────────────────
 # Prose that ANNOUNCES a write in future/present-continuous tense while the
@@ -6874,6 +6873,38 @@ async def _process_empty_completion(
                 {},
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,
+            )
+
+        # ── Truncated-completion abort ────────────────────────────
+        # The model produced prose but stopped at the token cap without
+        # emitting a tool call, and the rescue above already retried at a
+        # doubled budget. Arming the backstop here synthesizes an
+        # argument-less dispatch that can only fail, fail the approval, and
+        # re-enter the loop (2026-09-30: four retry cycles, 220k-token
+        # prompts, zero bytes written). Name the real cause instead. An
+        # empty truncated completion still falls through to the yield.
+        if content and not tool_calls and getattr(completion, "finish_reason", None) == "length":
+            log.warning(
+                "completion truncated at the token cap with no tool calls "
+                "(mode=%s iteration=%d); ending the turn instead of synthesizing "
+                "a dispatch the model never emitted",
+                mode_id,
+                state.iteration,
+            )
+            content = (
+                "The model reached its token cap before emitting a tool call, so "
+                f"nothing was dispatched. Its partial response follows.\n\n{content}"
+            )
+            return (
+                tool_calls,
+                synthesized_forced,
+                pre_handoff_text,
+                content,
+                content_source,
+                turn_reasoning_text,
+                False,
+                stalled_write_guidance,
+                "break",
             )
 
         # ── Write-contract empty-completion backstop ──────────────

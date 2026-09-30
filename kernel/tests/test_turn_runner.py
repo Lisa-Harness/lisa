@@ -2250,6 +2250,38 @@ async def test_empty_natural_completion_logs_diagnostic_warning(
 
 
 @pytest.mark.asyncio
+async def test_truncated_prose_ends_the_turn_instead_of_arming_the_backstop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Truncated prose with zero tool calls ends the turn, naming the cap.
+
+    The 2026-09-30 approval loop: every executor completion capped at
+    ``length`` with prose and no tool call, the write-contract backstop
+    synthesized an argument-less ``coding_apply_patch``, the approval failed,
+    and the host replayed the failure as a fresh turn — four cycles,
+    220k-token prompts, zero bytes written.
+    """
+
+    async def truncated_prose(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="Let me apply the patch now",
+            finish_reason="length",
+            completion_tokens=980,
+        )
+
+    hooks = _build_minimal_hooks(truncated_prose)
+    with caplog.at_level("WARNING", logger="kernel.turn_runner"):
+        result = await run_turn(mode_id="default", query="fix the imports", hooks=hooks)
+
+    assert "reached its token cap" in result.response_text
+    assert "Let me apply the patch now" in result.response_text
+    assert result.tool_call_count == 0
+    assert any(
+        "ending the turn instead of synthesizing" in rec.getMessage() for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_natural_completion_with_content_logs_no_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

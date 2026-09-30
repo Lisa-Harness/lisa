@@ -6,6 +6,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Truncated prose ends the turn instead of arming the write backstop
+
+- **What:** A completion that stops at the token cap with prose and no tool
+  call now ends the turn and names the cap, after the existing rescue has
+  already retried at a doubled budget. Previously it fell through to the
+  write-contract backstop, which synthesized an argument-less action-tool
+  dispatch. An empty truncated completion still yields as before.
+- **Why:** The synthesized dispatch could only fail validation, fail its
+  approval, and be replayed by the host as a fresh turn — the 2026-09-30
+  executor loop: four cycles, 220k-token prompts, zero bytes written.
+- **Tests:** `test_truncated_prose_ends_the_turn_instead_of_arming_the_backstop`;
+  `test_empty_natural_completion_logs_diagnostic_warning` still pins the yield.
+
 #### Failed-approval retries no longer nest the continuation query
 
 - **What:** The continuation query for a failed approved action quoted the
