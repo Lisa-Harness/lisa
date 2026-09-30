@@ -28,6 +28,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from pkgutil import extend_path
 from typing import Any
 
 import yaml
@@ -258,6 +259,10 @@ def _ensure_source_importable(pack_path: Path) -> list[Path]:
         if candidate.is_dir() and resolved not in sys.path:
             sys.path.insert(0, resolved)
             added.append(candidate)
+    importlib.invalidate_caches()
+    namespace = sys.modules.get("lisa_packs")
+    if namespace is not None and hasattr(namespace, "__path__"):
+        namespace.__path__ = extend_path(list(namespace.__path__), namespace.__name__)
     return added
 
 

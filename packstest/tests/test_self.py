@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from packstest.catalog import (
+    activate_tool,
     build_tool_catalog,
     load_pack_content_root,
     validate_pack,
@@ -86,6 +87,34 @@ def test_build_tool_catalog_uses_sdk_scanner(synthetic_pack: Path) -> None:
     assert tool["tool_provider_id"] == "lisa-pack-synthetic"
     assert tool["effect"] == "read"
     assert tool["module_path"].startswith("lisa_packs.synthetic.tools.")
+
+
+@pytest.mark.parametrize("path_kind", ["list", "tuple"])
+def test_activate_additional_pack_after_namespace_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_kind: str
+) -> None:
+    """A second source checkout is visible to an already-imported pack namespace."""
+
+    import sys
+
+    import lisa_packs
+
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    namespace_path = list(lisa_packs.__path__)
+    monkeypatch.setattr(
+        lisa_packs, "__path__", tuple(namespace_path) if path_kind == "tuple" else namespace_path
+    )
+    pack = tmp_path / "late-loaded"
+    package = pack / "lisa_packs" / "late_loaded"
+    package.mkdir(parents=True)
+    (pack / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-late_loaded"\n', encoding="utf-8"
+    )
+    _write_tool(package, "late_loaded_hello", "lisa-pack-late_loaded")
+
+    catalog = build_tool_catalog(pack)
+
+    assert callable(activate_tool(catalog["late_loaded_hello"]))
 
 
 def test_validate_pack_passes_synthetic_pack(synthetic_pack: Path) -> None:
