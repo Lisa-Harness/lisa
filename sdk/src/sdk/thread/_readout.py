@@ -1,0 +1,335 @@
+"""Bounded, restorable model-facing views of the lossless thread archive."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from sdk.thread._backend import ThreadStore
+from sdk.thread.redaction import ThreadRedactionPolicy
+
+DEFAULT_READOUT_BYTES = 16384
+MAX_READOUT_BYTES = 32768
+_INLINE_BYTES = 600
+_HEAD_CHARS = 120
+_TAIL_CHARS = 60
+_CURSOR_RESERVE_BYTES = 256
+_REASONING_CHARS = 800
+_MAX_SEARCH_RESULTS = 20
+_MAX_RECENT_ENTRIES = 50
+_MAX_REFERENCE_CHARS = 128
+_RANGE_CURSOR = re.compile(r"(range|recent)\.(\d{1,20})\.(\d{1,20})\.(\d{1,20})\.(-?\d{1,20})")
+_SEARCH_CURSOR = re.compile(r"search\.(-?\d{1,20})\.(\d{1,20})\.([a-f0-9]{16})")
+_REFERENCE = re.compile(r"t(\d{1,20})(?:\.m(\d{1,20}))?(?:\.([a-z_]+))?")
+_ENTRY_FIELDS = ("mode_id", "query", "response_text", "handoff_to", "transitioned_to")
+_MESSAGE_FIELDS = ("role", "name", "tool_call_id", "id", "content", "tool_calls", "is_error")
+
+
+def _encode(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _byte_size(value: Any) -> int:
+    return len(_encode(value).encode("utf-8"))
+
+
+def _budget(requested: int) -> int:
+    if requested <= 0:
+        raise ValueError("budget_bytes must be positive")
+    return max(DEFAULT_READOUT_BYTES, min(requested, MAX_READOUT_BYTES))
+
+
+def _page() -> dict[str, Any]:
+    return {"entries": [], "next_cursor": None, "has_more": False}
+
+
+def _finish(page: dict[str, Any], cursor: str | None = None) -> str:
+    page["next_cursor"] = cursor
+    page["has_more"] = cursor is not None
+    return _encode(page)
+
+
+def _fits(page: dict[str, Any], budget: int) -> bool:
+    return _byte_size(page) + _CURSOR_RESERVE_BYTES <= budget
+
+
+@dataclass(frozen=True)
+class ThreadReader:
+    """Project archive content without mutating it or exposing raw reasoning fields."""
+
+    store: ThreadStore
+    redaction: ThreadRedactionPolicy | None = None
+
+    def _redact(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self.redaction.redact(value) if self.redaction is not None else value
+        if isinstance(value, list):
+            return [self._redact(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._redact(item) for key, item in value.items()}
+        return value
+
+    def _preview(self, value: Any, ref: str) -> Any:
+        permitted = self._redact(value)
+        if _byte_size(permitted) <= _INLINE_BYTES:
+            return permitted
+        text = permitted if isinstance(permitted, str) else _encode(permitted)
+        head_chars = min(_HEAD_CHARS, len(text))
+        tail_chars = min(_TAIL_CHARS, len(text) - head_chars)
+        return {
+            "ref": ref,
+            "total_chars": len(text),
+            "abbreviated": True,
+            "head": text[:head_chars],
+            "tail": text[-tail_chars:] if tail_chars else "",
+            "omitted_chars": len(text) - head_chars - tail_chars,
+        }
+
+    def _entry(self, entry: dict[str, Any], turn: int) -> dict[str, Any]:
+        result = {"turn": turn, "transcript_count": len(entry.get("transcript") or [])}
+        for field in _ENTRY_FIELDS:
+            result[field] = self._preview(entry.get(field), f"t{turn}.{field}")
+        caps = self._receipt_caps(entry)
+        result["receipt_capability_ids"] = self._preview(caps, f"t{turn}.receipt_capability_ids")
+        source = entry.get("content_source")
+        reasoning = entry.get("reasoning_text")
+        if source and reasoning:
+            result["content_source"] = self._preview(source, f"t{turn}.content_source")
+            permitted = str(self._redact(str(reasoning)))
+            result["reasoning_excerpt"] = permitted[-_REASONING_CHARS:]
+            result["reasoning_omitted_chars"] = max(0, len(permitted) - _REASONING_CHARS)
+        return result
+
+    @staticmethod
+    def _receipt_caps(entry: dict[str, Any]) -> list[str]:
+        return [
+            str(receipt.get("capability_id") or "")
+            for receipt in entry.get("effect_receipts") or []
+            if isinstance(receipt, dict)
+        ]
+
+    def _message(self, message: Any, turn: int, index: int) -> dict[str, Any]:
+        ref = f"t{turn}.m{index}"
+        result: dict[str, Any] = {"ref": ref}
+        if not isinstance(message, dict):
+            result["content"] = self._preview(message, ref)
+            return result
+        for field in _MESSAGE_FIELDS:
+            if field in message:
+                result[field] = self._preview(message[field], f"{ref}.{field}")
+        return result
+
+    def read_range(
+        self,
+        start_turn: int,
+        end_turn: int,
+        *,
+        include_transcript: bool = False,
+        cursor: str | None = None,
+        budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ) -> str:
+        """Read a fixed archive window; cursors can continue inside a transcript."""
+        if start_turn < 0 or end_turn < start_turn:
+            raise ValueError("Require 0 <= start_turn <= end_turn")
+        bounds = (start_turn, min(end_turn, self.store.next_turn_index() - 1))
+        if cursor is not None:
+            parsed = self._range_cursor(cursor, "range")
+            if parsed[0] != start_turn or parsed[1] > end_turn:
+                raise ValueError("Cursor does not belong to this range")
+            bounds = parsed[:2]
+        return self._read_window(bounds, "range", include_transcript, cursor, _budget(budget_bytes))
+
+    def read_recent(
+        self,
+        limit: int = 10,
+        *,
+        include_transcript: bool = False,
+        cursor: str | None = None,
+        budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ) -> str:
+        """Read a recent window anchored at the first page's archive tail."""
+        capped_limit = max(1, min(limit, _MAX_RECENT_ENTRIES))
+        end = self.store.next_turn_index() - 1
+        bounds = (max(0, end - capped_limit + 1), end)
+        if cursor is not None:
+            bounds = self._range_cursor(cursor, "recent")[:2]
+        return self._read_window(
+            bounds, "recent", include_transcript, cursor, _budget(budget_bytes)
+        )
+
+    @staticmethod
+    def _range_cursor(cursor: str, kind: str) -> tuple[int, int, int, int]:
+        match = _RANGE_CURSOR.fullmatch(cursor)
+        if match is None or match[1] != kind:
+            raise ValueError("Invalid thread cursor")
+        start, end, turn, position = (int(value) for value in match.groups()[1:])
+        if not start <= turn <= end or position < -1:
+            raise ValueError("Invalid thread cursor position")
+        return start, end, turn, position
+
+    def _read_window(
+        self,
+        bounds: tuple[int, int],
+        kind: str,
+        include_transcript: bool,
+        cursor: str | None,
+        budget: int,
+    ) -> str:
+        start, end = bounds
+        turn, position = start, -1
+        if cursor is not None:
+            _, _, turn, position = self._range_cursor(cursor, kind)
+        if position >= 0 and not include_transcript:
+            raise ValueError("Transcript cursor requires include_transcript=true")
+        page = _page()
+        for ordinal, entry in self.store.iter_range(start_turn=turn, end_turn=end):
+            projected = (
+                self._entry(entry, ordinal)
+                if position == -1
+                else {"turn": ordinal, "transcript_start": position}
+            )
+            if include_transcript:
+                projected["transcript_start"] = max(0, position)
+                projected["transcript_count"] = len(entry.get("transcript") or [])
+                projected["transcript"] = []
+            page["entries"].append(projected)
+            if not _fits(page, budget):
+                page["entries"].pop()
+                return _finish(page, f"{kind}.{start}.{end}.{ordinal}.{position}")
+            if include_transcript:
+                next_position = self._append_messages(page, entry, ordinal, position, budget)
+                if next_position is not None:
+                    return _finish(page, f"{kind}.{start}.{end}.{ordinal}.{next_position}")
+            position = -1
+        return _finish(page)
+
+    def _append_messages(
+        self,
+        page: dict[str, Any],
+        entry: dict[str, Any],
+        turn: int,
+        position: int,
+        budget: int,
+    ) -> int | None:
+        transcript = entry.get("transcript") or []
+        if position > len(transcript):
+            raise ValueError("Cursor exceeds transcript length")
+        messages = page["entries"][-1]["transcript"]
+        for index in range(max(0, position), len(transcript)):
+            messages.append(self._message(transcript[index], turn, index))
+            if not _fits(page, budget):
+                messages.pop()
+                return index
+        return None
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        cursor: str | None = None,
+        budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ) -> str:
+        """Return bounded ranked matches with expandable query and response previews."""
+        budget = _budget(budget_bytes)
+        capped_limit = max(1, min(limit, _MAX_SEARCH_RESULTS))
+        signature = hashlib.sha256(_encode([query, capped_limit]).encode("utf-8")).hexdigest()[:16]
+        end, position = self.store.next_turn_index() - 1, 0
+        if cursor is not None:
+            match = _SEARCH_CURSOR.fullmatch(cursor)
+            if match is None or match[3] != signature:
+                raise ValueError("Cursor does not belong to this search")
+            end, position = int(match[1]), int(match[2])
+        matches = self.store.search(query=query, limit=capped_limit, end_turn=end)
+        if position > len(matches):
+            raise ValueError("Cursor exceeds search results")
+        page = _page()
+        for index in range(position, len(matches)):
+            match = matches[index]
+            turn = match["turn"]
+            raw = self.store.load_range(start_turn=turn, end_turn=turn)[0]
+            projected = self._entry(raw, turn)
+            projected["response_preview"] = projected.pop("response_text")
+            projected["score"] = match["score"]
+            page["entries"].append(projected)
+            if not _fits(page, budget):
+                page["entries"].pop()
+                return _finish(page, f"search.{end}.{index}.{signature}")
+        return _finish(page)
+
+    def read_content(
+        self,
+        ref: str,
+        offset_chars: int = 0,
+        limit_chars: int = 4000,
+        *,
+        budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ) -> str:
+        """Page a complete permitted value; offsets count Unicode characters after redaction."""
+        if len(ref) > _MAX_REFERENCE_CHARS or offset_chars < 0 or limit_chars <= 0:
+            raise ValueError("Invalid reference, offset_chars, or limit_chars")
+        permitted = self._redact(self._resolve(ref))
+        text = permitted if isinstance(permitted, str) else _encode(permitted)
+        if offset_chars > len(text):
+            raise ValueError("offset_chars exceeds content length")
+        budget = _budget(budget_bytes)
+        lower, upper = 0, min(limit_chars, MAX_READOUT_BYTES, len(text) - offset_chars)
+        while lower < upper:
+            length = (lower + upper + 1) // 2
+            candidate = self._content_page(ref, text, offset_chars, length)
+            if _byte_size(candidate) <= budget:
+                lower = length
+            else:
+                upper = length - 1
+        return _encode(self._content_page(ref, text, offset_chars, lower))
+
+    @staticmethod
+    def _content_page(ref: str, text: str, offset: int, length: int) -> dict[str, Any]:
+        next_offset = offset + length
+        has_more = next_offset < len(text)
+        return {
+            "ref": ref,
+            "content": text[offset:next_offset],
+            "offset_chars": offset,
+            "total_chars": len(text),
+            "next_offset_chars": next_offset if has_more else None,
+            "has_more": has_more,
+        }
+
+    def _resolve(self, ref: str) -> Any:
+        match = _REFERENCE.fullmatch(ref)
+        if match is None:
+            raise ValueError("Invalid thread reference")
+        turn = int(match[1])
+        entries = self.store.load_range(start_turn=turn, end_turn=turn)
+        if not entries:
+            raise ValueError("Thread reference not found")
+        entry = entries[0]
+        field = match[3]
+        if match[2] is not None:
+            transcript = entry.get("transcript") or []
+            index = int(match[2])
+            if index >= len(transcript):
+                raise ValueError("Transcript reference not found")
+            message = transcript[index]
+            if field is None:
+                return (
+                    {key: value for key, value in message.items() if key in _MESSAGE_FIELDS}
+                    if isinstance(message, dict)
+                    else message
+                )
+            if (
+                field not in _MESSAGE_FIELDS
+                or not isinstance(message, dict)
+                or field not in message
+            ):
+                raise ValueError("Message field not found")
+            return message[field]
+        if field == "receipt_capability_ids":
+            return self._receipt_caps(entry)
+        if field not in (*_ENTRY_FIELDS, "content_source") or field not in entry:
+            raise ValueError("Entry field not found or not available for expansion")
+        return entry[field]

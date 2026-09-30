@@ -21,11 +21,15 @@ backward compatibility.
 from __future__ import annotations
 
 from sdk.thread._backend import SegmentRecord, ThreadStore
+from sdk.thread._readout import DEFAULT_READOUT_BYTES, MAX_READOUT_BYTES, ThreadReader
 from sdk.thread.redaction import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
 __all__ = [
+    "DEFAULT_READOUT_BYTES",
     "DEFAULT_REDACTION_PATTERNS",
+    "MAX_READOUT_BYTES",
     "SegmentRecord",
+    "ThreadReader",
     "ThreadRedactionPolicy",
     "ThreadStore",
 ]

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp_server.thread.server import mcp
 
 
 def _tool_text(result: Any) -> str:
@@ -76,20 +77,39 @@ def thread_deps(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_thread_read_range_bounds_total_output(thread_deps: None, tmp_path: Path) -> None:
+    thread_path = tmp_path / "threads" / "tester"
+    for turn in range(376):
+        _write_active_entry(thread_path, query="q" * 10000, response_text=str(turn) * 1000)
+
+    text = _tool_text(await mcp.call_tool("thread_read_range", {"start_turn": 0, "end_turn": 375}))
+    assert len(text.encode("utf-8")) <= 16384
+    page = json.loads(text)
+    assert page["has_more"] is True
+    assert page["next_cursor"] is not None
+    assert page["entries"][0]["query"]["abbreviated"] is True
+
+
 # ── Tool registration ────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_thread_server_lists_three_tools(thread_deps: None) -> None:
+async def test_thread_server_lists_four_tools(thread_deps: None) -> None:
     from mcp_server.thread.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    assert {"thread_read_range", "thread_read_recent", "thread_search"} == names
+    assert {
+        "thread_read_range",
+        "thread_read_recent",
+        "thread_search",
+        "thread_read_content",
+    } == names
 
 
 @pytest.mark.asyncio
-async def test_thread_read_range_include_transcript_is_full_fidelity(
+async def test_thread_read_range_include_transcript_is_restorable(
     thread_deps: None,
     tmp_path: Path,
 ) -> None:
@@ -119,10 +139,21 @@ async def test_thread_read_range_include_transcript_is_full_fidelity(
         )
     )
 
-    assert "transcript" not in compact[0]
-    assert len(compact[0]["response_text"]) < 5000
-    assert full[0]["response_text"] == long_output
-    assert full[0]["transcript"][0]["content"] == long_output
+    assert "transcript" not in compact["entries"][0]
+    projected = full["entries"][0]
+    assert projected["response_text"]["abbreviated"] is True
+    stub = projected["transcript"][0]["content"]
+    assert stub["abbreviated"] is True
+    restored = json.loads(
+        _tool_text(
+            await mcp.call_tool(
+                "thread_read_content",
+                {"ref": stub["ref"], "limit_chars": 10000},
+            )
+        )
+    )
+    assert restored["content"] == long_output
+    assert restored["has_more"] is False
 
 
 # ── thread_search ────────────────────────────────────────────────────
@@ -152,10 +183,9 @@ async def test_thread_search_returns_matching_entries(
         {"query": "router bug"},
     )
     data = json.loads(_tool_text(result))
-    assert isinstance(data, list)
-    assert len(data) == 2
-    assert data[0]["query"] == "fix the router bug"
-    assert data[0]["score"] > data[1]["score"]
+    assert len(data["entries"]) == 2
+    assert data["entries"][0]["query"] == "fix the router bug"
+    assert data["entries"][0]["score"] > data["entries"][1]["score"]
 
 
 @pytest.mark.asyncio
@@ -174,10 +204,10 @@ async def test_thread_search_empty_query_returns_recent(
         {"query": ""},
     )
     data = json.loads(_tool_text(result))
-    assert len(data) == 2
+    assert len(data["entries"]) == 2
     # Recency fallback: most recent first.
-    assert data[0]["query"] == "second"
-    assert data[1]["query"] == "first"
+    assert data["entries"][0]["query"] == "second"
+    assert data["entries"][1]["query"] == "first"
 
 
 @pytest.mark.asyncio
@@ -191,7 +221,7 @@ async def test_thread_search_empty_store_returns_empty_array(
         {"query": "anything"},
     )
     data = json.loads(_tool_text(result))
-    assert data == []
+    assert data == {"entries": [], "next_cursor": None, "has_more": False}
 
 
 @pytest.mark.asyncio
@@ -214,7 +244,7 @@ async def test_thread_search_limit_capped(
         {"query": "shared topic", "limit": 100},
     )
     data = json.loads(_tool_text(result))
-    assert len(data) == 20
+    assert len(data["entries"]) == 20
 
 
 @pytest.mark.asyncio
@@ -237,8 +267,8 @@ async def test_thread_search_result_shape(
         {"query": "test"},
     )
     data = json.loads(_tool_text(result))
-    assert len(data) == 1
-    entry = data[0]
+    assert len(data["entries"]) == 1
+    entry = data["entries"][0]
     assert entry["query"] == "test query"
     assert entry["mode_id"] == "planner"
     assert entry["response_preview"] == "test response body"
@@ -265,9 +295,9 @@ async def test_thread_read_range_returns_entries(
         {"start_turn": 0, "end_turn": 999},
     )
     data = json.loads(_tool_text(result))
-    assert len(data) == 2
-    assert data[0]["query"] == "q0"
-    assert data[1]["query"] == "q1"
+    assert len(data["entries"]) == 2
+    assert data["entries"][0]["query"] == "q0"
+    assert data["entries"][1]["query"] == "q1"
 
 
 @pytest.mark.asyncio
@@ -299,7 +329,7 @@ async def test_thread_read_range_bounds_reasoning_text_playback(
         "thread_read_range",
         {"start_turn": 0, "end_turn": 999},
     )
-    data = json.loads(_tool_text(result))
+    data = json.loads(_tool_text(result))["entries"]
     assert data[0]["content_source"] == "reasoning_tail"
     excerpt = data[0]["reasoning_excerpt"]
     # Bounded: at most 800 chars (plus the ellipsis prefix).
@@ -333,7 +363,7 @@ async def test_thread_read_recent_returns_entries(
         {"limit": 5},
     )
     data = json.loads(_tool_text(result))
-    assert len(data) == 2
+    assert len(data["entries"]) == 2
 
 
 # ── Read-path redaction ──────────────────────────────────────────────
@@ -371,7 +401,7 @@ async def test_thread_read_range_redacts_default_patterns_by_default(
         "thread_read_range",
         {"start_turn": 0, "end_turn": 999},
     )
-    data = json.loads(_tool_text(result))
+    data = json.loads(_tool_text(result))["entries"]
     assert len(data) == 2
     assert "I've hit my iteration budget" not in data[0]["response_text"]
     assert "stuck in default for 6 iterations" not in data[0]["response_text"]
@@ -410,7 +440,7 @@ async def test_thread_read_recent_env_patterns_override_defaults(
     )
 
     result = await mcp.call_tool("thread_read_recent", {"limit": 5})
-    data = json.loads(_tool_text(result))
+    data = json.loads(_tool_text(result))["entries"]
     # Custom pattern fired; the default cap-fire pattern did NOT.
     assert "hunter2" not in data[0]["query"]
     assert "I've hit my iteration budget" in data[0]["response_text"]
@@ -442,5 +472,5 @@ async def test_thread_read_range_redaction_disabled_via_env(
         "thread_read_range",
         {"start_turn": 0, "end_turn": 999},
     )
-    data = json.loads(_tool_text(result))
+    data = json.loads(_tool_text(result))["entries"]
     assert "stuck in default for 6 iterations (cap)" in data[0]["response_text"]

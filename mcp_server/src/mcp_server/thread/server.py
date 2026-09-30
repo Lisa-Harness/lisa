@@ -2,10 +2,12 @@
 
 This is the read-only thread-access server. It wraps the SDK's
 ``ThreadStore`` (segmented, zstd-sealed, lossless conversation log) and
-exposes two tools so the model can pull older thread entries on demand:
+exposes bounded views so the model can pull older entries on demand:
 
 - ``thread_read_range`` — read entries by global turn index range.
 - ``thread_read_recent`` — read the most recent N entries (compact form).
+- ``thread_search`` — find prior turns by lexical relevance.
+- ``thread_read_content`` — expand a referenced value through bounded pages.
 
 The write path (append, seal, dictionary training) stays in
 ``runtime.thread``; this server is read-only.
@@ -32,7 +34,6 @@ contract treats them as reads, not writes.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -46,7 +47,13 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from sdk.layout import DATA_DIR
-from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy, ThreadStore
+from sdk.thread import (
+    DEFAULT_READOUT_BYTES,
+    DEFAULT_REDACTION_PATTERNS,
+    ThreadReader,
+    ThreadRedactionPolicy,
+    ThreadStore,
+)
 
 __all__ = ["ThreadDeps", "init_thread", "main", "mcp", "set_deps_for_test"]
 
@@ -177,178 +184,133 @@ mcp = MCPServer(
 # ── Tools ────────────────────────────────────────────────────────────────
 
 
-def _compact_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, Any]:
-    """Project a full thread entry to a compact form for the model.
-
-    When ``redaction`` is a :class:`ThreadRedactionPolicy`, ``query`` and
-    ``response_text`` are redacted at projection time — the raw store
-    entry is never mutated, and harness-authored budget/cap prose never
-    reaches the model through this tool.
-
-    Entries stamped ``content_source == "reasoning_tail"`` carry the model's
-    FULL reasoning under ``reasoning_text`` (the thread log is exhaustive
-    at rest). Playback bounds that field to a short excerpt and applies
-    the same redaction policy — the raw thinking never reaches the model
-    or UI verbatim through this tool.
-    """
-    response = str(entry.get("response_text") or "")
-    query = str(entry.get("query") or "")
-    if redaction is not None:
-        response = redaction.redact(response)
-        query = redaction.redact(query)
-    max_chars = 2000
-    if len(response) > max_chars:
-        response = response[:max_chars] + "\n[…truncated…]"
-    receipts = entry.get("effect_receipts") or []
-    receipt_caps = [str(r.get("capability_id") or "") for r in receipts if isinstance(r, dict)]
-    result = {
-        "turn": entry.get("turn"),
-        "mode_id": entry.get("mode_id"),
-        "query": query,
-        "response_text": response,
-        "handoff_to": entry.get("handoff_to"),
-        "transitioned_to": entry.get("transitioned_to"),
-        "receipt_capability_ids": receipt_caps,
-    }
-    content_source = str(entry.get("content_source") or "")
-    reasoning = str(entry.get("reasoning_text") or "")
-    if content_source and reasoning:
-        # Playback bound: quote at most 800 chars of the reasoning tail and
-        # redact it under the same policy as the response. The store keeps
-        # the full text; this projection is what playback surfaces see.
-        reasoning_max_chars = 800
-        if len(reasoning) > reasoning_max_chars:
-            reasoning = "…" + reasoning[-reasoning_max_chars:]
-        if redaction is not None:
-            reasoning = redaction.redact(reasoning)
-        result["content_source"] = content_source
-        result["reasoning_excerpt"] = reasoning
-    return result
-
-
-def _redact_transcript(transcript: list[Any], redaction: Any) -> list[Any]:
-    """Return a copy of ``transcript`` with message contents and tool arguments redacted."""
-    redacted = json.loads(json.dumps(transcript, default=str))
-    if redaction is None:
-        return redacted
-    for message in redacted:
-        if isinstance(message.get("content"), str):
-            message["content"] = redaction.redact(message["content"])
-        for call in message.get("tool_calls") or []:
-            function = call.get("function") or {}
-            if isinstance(function.get("arguments"), str):
-                function["arguments"] = redaction.redact(function["arguments"])
-    return redacted
-
-
-def _full_entry(entry: dict[str, Any], redaction: Any = None) -> dict[str, Any]:
-    """Project an entry at full fidelity: untruncated response plus the verbatim transcript."""
-    result = _compact_entry(entry, redaction=redaction)
-    response = str(entry.get("response_text") or "")
-    result["response_text"] = redaction.redact(response) if redaction is not None else response
-    result["transcript"] = _redact_transcript(list(entry.get("transcript") or []), redaction)
-    return result
-
-
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def thread_read_range(
     start_turn: int,
     end_turn: int,
+    *,
     include_transcript: bool = False,
+    cursor: str | None = None,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Read a range of entries from the conversation thread by global turn index.
+    """Read a bounded range of thread entries by inclusive global turn index.
 
-    Use this to recall prior turns beyond the recent excerpt and thread
-    manifest injected in the system prompt. Returns a JSON array of thread
-    entries, each containing mode_id, query, response_text (truncated to
-    2000 chars), handoff_to, transitioned_to, and receipt_capability_ids.
+    Search with thread_search first, then read the relevant turn range.
+    Returns {entries, next_cursor, has_more}. Small fields remain inline;
+    large fields have {ref, head, tail, total_chars, omitted_chars} previews.
+    Expand a ref with thread_read_content to obtain the complete permitted
+    value through pages. The archive is lossless; previews are not full data.
 
-    Pass start_turn=0 and a large end_turn (e.g. 999999) for the full
-    thread. Use ``thread_search`` to find turn numbers for topics beyond
-    the manifest window, then pull those turns with this tool.
-
-    Args:
-        start_turn: The global (0-based) turn index to start reading from,
-            inclusive.
-        end_turn: The global turn index to stop reading at, inclusive. Use
-            a large number for "to the end".
-        include_transcript: When true, return each entry at full fidelity:
-            the untruncated response plus the turn's verbatim transcript
-            (every tool call with its arguments and every tool result).
-
-    Returns:
-        JSON array of compact thread entries.
+    include_transcript adds tool calls/results as bounded message previews.
+    Follow next_cursor with the same range and include_transcript setting;
+    a page may continue within a turn (transcript_start gives its position).
+    budget_bytes defaults to 16384 serialized UTF-8 bytes, clamped to
+    16384-32768 including metadata. Cursors anchor the original turn window.
     """
     deps = _resolve_deps(ctx)
-    entries = deps.store.load_range(start_turn=start_turn, end_turn=end_turn)
-    project = _full_entry if include_transcript else _compact_entry
-    compact = [project(e, redaction=deps.redaction) for e in entries]
-    return json.dumps(compact, ensure_ascii=False)
+    try:
+        return ThreadReader(deps.store, deps.redaction).read_range(
+            start_turn,
+            end_turn,
+            include_transcript=include_transcript,
+            cursor=cursor,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def thread_read_recent(
     limit: int = 10,
+    include_transcript: bool = False,
+    cursor: str | None = None,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Read the most recent N thread entries in compact form.
+    """Read a bounded recent window, oldest-first (limit defaults to 10, capped at 50).
 
-    Returns the same compact JSON shape as ``thread_read_range``, but for
-    the most recent ``limit`` entries (default 10). Useful when the system
-    prompt's recent excerpt (3 entries) is not enough and you need a few
-    more turns of context. For content-based lookups across deeper
-    history, use ``thread_search`` instead.
-
-    Args:
-        limit: Maximum number of recent entries to return (default 10,
-            capped at 50).
-
-    Returns:
-        JSON array of compact thread entries (oldest-first).
+    Returns {entries, next_cursor, has_more} as in thread_read_range.
+    Large fields are explicit previews; expand refs with thread_read_content.
+    include_transcript adds bounded tool call/result previews. Continue with
+    next_cursor and the same include_transcript setting; later appends do not
+    shift the window. budget_bytes defaults to 16384, clamped to 16384-32768
+    serialized UTF-8 bytes including metadata. Use thread_search for topics.
     """
     deps = _resolve_deps(ctx)
-    capped_limit = max(1, min(limit, 50))
-    entries = deps.store.load_recent(limit=capped_limit)
-    compact = [_compact_entry(e, redaction=deps.redaction) for e in entries]
-    return json.dumps(compact, ensure_ascii=False)
+    try:
+        return ThreadReader(deps.store, deps.redaction).read_recent(
+            limit,
+            include_transcript=include_transcript,
+            cursor=cursor,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def thread_search(
     query: str,
     limit: int = 10,
+    cursor: str | None = None,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Search the conversation thread by content and return ranked matches.
+    """Find prior turns by lexical overlap in query, response, and mode.
 
-    Use this to find prior turns by topic when the thread manifest (last
-    30 turns) does not cover what you need. Returns a JSON array of search
-    results ranked by lexical relevance, each containing turn, mode_id,
-    query (full text), response_preview (first 200 chars), handoff_to,
-    transitioned_to, and score (match confidence, 0–1).
-
-    After finding the right turn numbers with this tool, use
-    ``thread_read_range`` to pull the full entry content for those turns.
-
-    An empty query returns the most recent entries (recency fallback),
-    which is useful for a quick "what just happened" check without
-    scanning the manifest.
-
-    Args:
-        query: Search text. Matched against the query, response_text, and
-            mode_id of every thread entry using whitespace-tokenized
-            lexical overlap.
-        limit: Maximum number of results to return (default 10, capped at
-            20).
-
-    Returns:
-        JSON array of search result objects (oldest match first within
-        equal-score ties).
+    Returns {entries, next_cursor, has_more}, ranked by relevance then
+    recency, with turn numbers, query/response previews, and score (0-1).
+    Use thread_read_range for the relevant turns (include_transcript=true
+    for tool calls/results), or thread_read_content to expand a preview ref.
+    An empty query returns recent matches. limit defaults to 10, capped at 20.
+    Continue with next_cursor and the same query/limit. budget_bytes defaults
+    to 16384, clamped to 16384-32768 serialized UTF-8 bytes including metadata.
     """
     deps = _resolve_deps(ctx)
-    results = deps.store.search(query=query, limit=limit)
-    return json.dumps(results, ensure_ascii=False)
+    try:
+        return ThreadReader(deps.store, deps.redaction).search(
+            query,
+            limit,
+            cursor=cursor,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def thread_read_content(
+    ref: str,
+    offset_chars: int = 0,
+    limit_chars: int = 4000,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ctx: Context[ThreadDeps, Any] | None = None,
+) -> str:
+    """Expand a thread preview ref without dumping unrelated history.
+
+    Returns {ref, content, offset_chars, total_chars, next_offset_chars,
+    has_more}. Follow next_offset_chars with the same ref to recover the
+    complete permitted value. Offsets count Unicode characters AFTER
+    redaction; structured values are serialized JSON. limit_chars defaults
+    to 4000. budget_bytes defaults to 16384, clamped to 16384-32768 UTF-8
+    bytes including metadata; a page may contain fewer characters than asked.
+
+    Refs are scoped to this thread: t391.query, t391.response_text,
+    t391.m20.content, t391.m19.tool_calls, or t391.m20 for a full message.
+    Full reasoning_text and raw turn_input are not available through this tool.
+    """
+    deps = _resolve_deps(ctx)
+    try:
+        return ThreadReader(deps.store, deps.redaction).read_content(
+            ref,
+            offset_chars,
+            limit_chars,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────

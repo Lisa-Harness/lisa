@@ -14,9 +14,10 @@ Pull prior turns when:
 
 ## How to find the right turns
 
-- **Within this manifest window**: scan the table for queries matching the current topic. Note the turn index, then use `thread_read_range` to pull the full entry.
-- **Tool results from earlier turns**: pass `include_transcript: true` to `thread_read_range` to get every tool call and its full result from those turns instead of calling the tools again.
-- **Beyond this manifest window** (turns older than the last 30): use `thread_search` with a keyword or phrase from the topic you are looking for. It returns matching turn numbers ranked by relevance. Then use `thread_read_range` with those turn numbers to pull full content.
+- **Within this manifest window**: scan the table for queries matching the current topic. Use `thread_read_range` for the relevant turn numbers.
+- **Tool results from earlier turns**: pass `include_transcript: true` to get tool call/result previews. Large values carry a `ref`, head/tail excerpts, and an omitted-character count; they are not full results. Use `thread_read_content(ref=...)` to expand only the value you need instead of calling the original tool again.
+- **Beyond this manifest window** (turns older than the last 30): use `thread_search` with a keyword or phrase, then read the matching turns. Do not scan the whole thread to find a specific result.
+- **Continue a read**: responses contain `entries`, `next_cursor`, and `has_more`. Follow `next_cursor` using the same tool and inputs. Expansion pages use `next_offset_chars` with the same `ref`; offsets count Unicode characters after redaction. The complete permitted content remains recoverable from the lossless archive.
 
 ## What not to do
 

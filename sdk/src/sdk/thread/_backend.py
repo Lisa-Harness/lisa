@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -295,10 +296,13 @@ class ThreadStore:
         overlapping segments; only those are decompressed. The active segment
         is read directly for its in-range tail.
         """
+        return [entry for _, entry in self.iter_range(start_turn=start_turn, end_turn=end_turn)]
+
+    def iter_range(self, *, start_turn: int, end_turn: int) -> Iterator[tuple[int, dict[str, Any]]]:
+        """Yield entries with their stable global ordinals without building a range list."""
         if start_turn > end_turn:
-            return []
+            return
         records = _read_index(self._paths.index_path)
-        results: list[dict[str, Any]] = []
         for record in records:
             if record.turn_hi < start_turn or record.turn_lo > end_turn:
                 continue
@@ -314,14 +318,13 @@ class ThreadStore:
             for offset, entry in enumerate(entries):
                 global_turn = record.turn_lo + offset
                 if start_turn <= global_turn <= end_turn:
-                    results.append(entry)
+                    yield global_turn, entry
         # Active (unsealed) tail: its turn range starts after the last sealed.
         active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
         for offset, entry in enumerate(_read_active_entries(self._paths.current)):
             global_turn = active_turn_lo + offset
             if start_turn <= global_turn <= end_turn:
-                results.append(entry)
-        return results
+                yield global_turn, entry
 
     def build_recent_excerpt(
         self,
@@ -453,6 +456,7 @@ class ThreadStore:
         query: str,
         limit: int = 10,
         is_host_command: Any | None = None,
+        end_turn: int | None = None,
     ) -> list[dict[str, Any]]:
         """Search all thread entries by content and return ranked matches.
 
@@ -496,6 +500,8 @@ class ThreadStore:
             sealed_entries = self._load_sealed_entries(sealed_path, record.seg_id)
             for offset, entry in enumerate(sealed_entries):
                 global_turn = record.turn_lo + offset
+                if end_turn is not None and global_turn > end_turn:
+                    continue
                 scored = self._score_entry(entry, global_turn, tokens, is_host_command)
                 if scored is not None:
                     candidates.append(scored)
@@ -503,6 +509,8 @@ class ThreadStore:
         active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
         for offset, entry in enumerate(_read_active_entries(self._paths.current)):
             global_turn = active_turn_lo + offset
+            if end_turn is not None and global_turn > end_turn:
+                continue
             scored = self._score_entry(entry, global_turn, tokens, is_host_command)
             if scored is not None:
                 candidates.append(scored)

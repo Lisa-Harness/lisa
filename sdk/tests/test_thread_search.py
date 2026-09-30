@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sdk.thread import ThreadStore
+from sdk.thread import (
+    DEFAULT_READOUT_BYTES,
+    MAX_READOUT_BYTES,
+    ThreadReader,
+    ThreadRedactionPolicy,
+    ThreadStore,
+)
 from sdk.thread._backend import _read_index, _sealed_segment_path, _segment_paths
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -34,6 +40,7 @@ def _write_active_entry(
     mode_id: str = "default",
     turn: int | None = None,
     handoff_to: str = "",
+    transcript: list[dict[str, Any]] | None = None,
 ) -> None:
     """Append one entry to the active segment (``.current.jsonl``)."""
     paths = _segment_paths(thread_path)
@@ -46,6 +53,8 @@ def _write_active_entry(
     }
     if turn is not None:
         entry["turn"] = turn
+    if transcript is not None:
+        entry["transcript"] = transcript
     with paths.current.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -103,6 +112,248 @@ def _seal_active(thread_path: Path) -> None:
 def _is_host_cmd(query: str) -> bool:
     """Trivial host-command filter for testing."""
     return query.startswith("/")
+
+
+class TestThreadReader:
+    @pytest.mark.parametrize("kind", ["range", "recent", "search"])
+    def test_pages_are_bounded_and_snapshot_stable(self, tmp_path: Path, kind: str) -> None:
+        thread_path = tmp_path / "thread"
+        control_text = "\x01" * 10000
+        for turn in range(30):
+            _write_active_entry(
+                thread_path,
+                query=control_text,
+                response_text=control_text,
+                mode_id=control_text,
+                handoff_to=control_text,
+                turn=turn + 999,
+            )
+        reader = ThreadReader(ThreadStore(thread_path))
+        seen: list[int] = []
+        cursor = None
+        cursors: set[str] = set()
+        while True:
+            if kind == "range":
+                text = reader.read_range(0, 999, cursor=cursor)
+            elif kind == "recent":
+                text = reader.read_recent(30, cursor=cursor)
+            else:
+                text = reader.search("", 20, cursor=cursor)
+            assert len(text.encode("utf-8")) <= DEFAULT_READOUT_BYTES
+            page = json.loads(text)
+            assert page["entries"]
+            seen.extend(entry["turn"] for entry in page["entries"])
+            if cursor is None:
+                assert page["has_more"]
+                _write_active_entry(thread_path, query="later append", response_text="new")
+            if not page["has_more"]:
+                break
+            cursor = page["next_cursor"]
+            assert cursor not in cursors
+            cursors.add(cursor)
+        expected = list(range(29, 9, -1)) if kind == "search" else list(range(30))
+        assert seen == expected
+
+    @pytest.mark.parametrize("kind", ["range", "recent"])
+    def test_transcript_can_continue_inside_one_turn(self, tmp_path: Path, kind: str) -> None:
+        thread_path = tmp_path / "thread"
+        transcript = [
+            {"role": "tool", "tool_call_id": f"call_{index}", "content": str(index) * 1000}
+            for index in range(200)
+        ]
+        _write_active_entry(thread_path, query="tools", transcript=transcript)
+        reader = ThreadReader(ThreadStore(thread_path))
+        refs: list[str] = []
+        cursor = None
+        positions: set[str] = set()
+        while True:
+            if kind == "range":
+                text = reader.read_range(0, 0, include_transcript=True, cursor=cursor)
+            else:
+                text = reader.read_recent(include_transcript=True, cursor=cursor)
+            assert len(text.encode("utf-8")) <= DEFAULT_READOUT_BYTES
+            page = json.loads(text)
+            for entry in page["entries"]:
+                refs.extend(message["ref"] for message in entry["transcript"])
+            if not page["has_more"]:
+                break
+            cursor = page["next_cursor"]
+            assert cursor not in positions
+            positions.add(cursor)
+        assert positions
+        assert refs == [f"t0.m{index}" for index in range(len(transcript))]
+
+    @pytest.mark.parametrize("fragment", ["\U0001f642", "\x00", '"\\', "e\u0301"])
+    def test_expansion_reconstructs_unicode_and_escaped_content(
+        self, tmp_path: Path, fragment: str
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        original = fragment * 10000
+        _write_active_entry(
+            thread_path,
+            query="read",
+            transcript=[{"role": "tool", "content": original}],
+        )
+        paths = _segment_paths(thread_path)
+        raw_before = paths.current.read_bytes()
+        reader = ThreadReader(ThreadStore(thread_path))
+        view = json.loads(reader.read_range(0, 0, include_transcript=True))
+        stub = view["entries"][0]["transcript"][0]["content"]
+        assert stub["abbreviated"]
+        assert stub["total_chars"] == len(original)
+        assert stub["omitted_chars"] >= 0
+        offset = 0
+        pieces: list[str] = []
+        while True:
+            text = reader.read_content(stub["ref"], offset, 1000000, budget_bytes=1000000)
+            assert len(text.encode("utf-8")) <= MAX_READOUT_BYTES
+            page = json.loads(text)
+            assert page["offset_chars"] == offset
+            assert page["content"]
+            pieces.append(page["content"])
+            if not page["has_more"]:
+                break
+            assert page["next_offset_chars"] > offset
+            offset = page["next_offset_chars"]
+        assert "".join(pieces) == original
+        assert paths.current.read_bytes() == raw_before
+
+    def test_redaction_precedes_paging_and_covers_both_tool_call_shapes(
+        self, tmp_path: Path
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        sensitive = "before secret-value after"
+        calls = [
+            {"id": "nested", "function": {"name": "read", "arguments": sensitive}},
+            {"id": "flat", "name": "read", "arguments": sensitive},
+        ]
+        transcript = [
+            {"role": "tool", "content": sensitive},
+            {"role": "assistant", "tool_calls": calls},
+        ]
+        _write_active_entry(
+            thread_path,
+            query=sensitive,
+            response_text=sensitive,
+            transcript=transcript,
+        )
+        policy = ThreadRedactionPolicy.from_patterns(("secret-value",))
+        reader = ThreadReader(ThreadStore(thread_path), policy)
+        assert "secret-value" not in reader.read_range(0, 0, include_transcript=True)
+        assert "secret-value" not in reader.search("secret-value")
+        refs = ["t0.query", "t0.response_text", "t0.m0.content", "t0.m1.tool_calls"]
+        for ref in refs:
+            offset = 0
+            restored: list[str] = []
+            while True:
+                page = json.loads(reader.read_content(ref, offset, 5))
+                restored.append(page["content"])
+                if not page["has_more"]:
+                    break
+                offset = page["next_offset_chars"]
+            text = "".join(restored)
+            assert "secret-value" not in text
+            if ref.endswith("tool_calls"):
+                decoded = json.loads(text)
+                assert decoded[0]["function"]["arguments"] == policy.redact(sensitive)
+                assert decoded[1]["arguments"] == policy.redact(sensitive)
+            else:
+                assert text == policy.redact(sensitive)
+        raw = ThreadStore(thread_path).load_range(start_turn=0, end_turn=0)
+        assert raw[0]["query"] == sensitive
+
+    @pytest.mark.skipif(not _zstd_available(), reason="zstandard not installed")
+    def test_references_and_cursors_survive_sealing_and_reader_restart(
+        self, tmp_path: Path
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        original = "result" * 1000
+        transcript = [{"role": "tool", "content": original} for _ in range(100)]
+        _write_active_entry(thread_path, query="old", response_text=original, transcript=transcript)
+        reader = ThreadReader(ThreadStore(thread_path))
+        first = json.loads(reader.read_range(0, 999, include_transcript=True))
+        assert first["has_more"]
+        first_refs = [message["ref"] for message in first["entries"][0]["transcript"]]
+        _seal_active(thread_path)
+        _write_active_entry(thread_path, query="new", response_text="active tail")
+        restarted = ThreadReader(ThreadStore(thread_path))
+        content = json.loads(restarted.read_content("t0.response_text", limit_chars=10000))
+        assert content["content"] == original
+        assert json.loads(restarted.read_content("t1.query"))["content"] == "new"
+        cursor = first["next_cursor"]
+        refs = first_refs
+        while cursor is not None:
+            page = json.loads(restarted.read_range(0, 999, include_transcript=True, cursor=cursor))
+            assert all(entry["turn"] == 0 for entry in page["entries"])
+            refs.extend(
+                message["ref"] for entry in page["entries"] for message in entry["transcript"]
+            )
+            cursor = page["next_cursor"]
+        assert refs == [f"t0.m{index}" for index in range(100)]
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "../other",
+            "t999.query",
+            "t0.m999.content",
+            "t0.reasoning_text",
+            "t0.turn_input",
+            "t0.m0.reasoning_content",
+            "t0",
+            "t0.query/../../other",
+        ],
+    )
+    def test_invalid_or_private_references_are_rejected(self, tmp_path: Path, ref: str) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="visible",
+            transcript=[
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning_content": "private",
+                }
+            ],
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        with pytest.raises(ValueError):
+            reader.read_content(ref)
+        message = json.loads(json.loads(reader.read_content("t0.m0"))["content"])
+        assert message == {"role": "assistant", "content": "answer"}
+
+    def test_cursor_and_offset_errors_are_explicit(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(thread_path, query="visible")
+        reader = ThreadReader(ThreadStore(thread_path))
+        with pytest.raises(ValueError, match="cursor"):
+            reader.read_range(0, 0, cursor="invalid")
+        with pytest.raises(ValueError, match="Transcript cursor"):
+            reader.read_range(0, 0, cursor="range.0.0.0.1")
+        with pytest.raises(ValueError, match="this search"):
+            reader.search("other", cursor="search.0.0.0000000000000000")
+        with pytest.raises(ValueError, match="content length"):
+            reader.read_content("t0.query", offset_chars=999)
+        with pytest.raises(ValueError, match="Invalid reference"):
+            reader.read_content("t0.query", offset_chars=-1)
+        with pytest.raises(ValueError, match="Invalid reference"):
+            reader.read_content("t0.query", limit_chars=0)
+        with pytest.raises(ValueError, match="budget_bytes"):
+            reader.read_range(0, 0, budget_bytes=0)
+
+    def test_empty_views_and_terminal_content_offset(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        reader = ThreadReader(ThreadStore(thread_path))
+        empty = {"entries": [], "next_cursor": None, "has_more": False}
+        assert json.loads(reader.read_range(0, 999)) == empty
+        assert json.loads(reader.read_recent()) == empty
+        assert json.loads(reader.search("")) == empty
+        _write_active_entry(thread_path, query="done")
+        terminal = json.loads(reader.read_content("t0.query", offset_chars=4))
+        assert terminal["content"] == ""
+        assert terminal["next_offset_chars"] is None
+        assert terminal["has_more"] is False
 
 
 # ── search() — basic ranking ─────────────────────────────────────────
