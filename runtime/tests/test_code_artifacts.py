@@ -10,12 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 from kernel.turn_hooks import TaskCompletionRequest
+from packstest.context import ToolContextFactory
 from packstest.git import git_repo
 from runtime.code_artifacts import FileCodeChangeArtifactStore, verify_checked_commit
 from runtime.handle_message import _resumable_task_id
 from runtime.runtime import HostRuntime
 from runtime.testing import build_test_runtime
 from runtime.thread import append_thread_entry, load_thread_range, next_turn_index
+from runtime.turn_hooks_builder import _derive_view
 from sdk.workproducts import WorkProduct, WorkProductCheck, WorkProductPreparation
 
 
@@ -247,6 +249,102 @@ def test_task_identity_resumes_only_recorded_unfinished_work(tmp_path: Path) -> 
     assert _resumable_task_id(thread_path, "implement another feature") == ""
 
 
+@pytest.mark.parametrize("padding_turns", [35, 270])
+@pytest.mark.parametrize(
+    "ending", ["unfinished", "invalid", "complete", "new-plan", "new-plan-complete"]
+)
+def test_restart_recovers_plan_and_receipts_outside_recent_tail(
+    tmp_path: Path, padding_turns: int, ending: str
+) -> None:
+    original = _host_with_declared_bwrap(tmp_path)
+    thread_path = original.paths.thread_path
+    append_thread_entry(
+        thread_path=thread_path,
+        user_slug="user",
+        segment_turns=32,
+        mode_id="executor",
+        query="fix bug",
+        response_text=(
+            "## Plan\n"
+            "1. executor - Edit the owned worktree\n_writes: coding_edit_files_\n"
+            "2. executor - Verify and commit\n_writes: coding_commit_\n"
+        ),
+        provenance={"source": "observed", "task_id": "task-original"},
+    )
+    append_thread_entry(
+        thread_path=thread_path,
+        user_slug="user",
+        segment_turns=32,
+        mode_id="executor",
+        query="continue",
+        response_text="Applied the edit, awaiting verification.",
+        provenance={"source": "observed", "task_id": "task-original"},
+        effect_receipts=[
+            {"capability_id": "coding_edit_files", "effect": "write", "artifact_id": "owned"}
+        ],
+    )
+    for _ in range(padding_turns):
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="user",
+            segment_turns=32,
+            mode_id="executor",
+            query="continue",
+            response_text="Waiting for verification.",
+            provenance={
+                "source": "observed",
+                "task_id": "task-original",
+                "block_origin": "task_completion",
+            },
+        )
+    if ending != "unfinished":
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="user",
+            segment_turns=32,
+            mode_id="executor",
+            query="continue",
+            response_text=(
+                "## Plan\n1. executor - Publish a different task\n_writes: coding_push_"
+                if ending in {"new-plan", "new-plan-complete"}
+                else "## Plan\nNo parseable steps"
+            ),
+            provenance={"source": "observed", "task_id": "task-original"},
+            effect_receipts=(
+                [{"capability_id": "coding_commit", "effect": "write", "artifact_id": "owned"}]
+                if ending == "complete"
+                else []
+            ),
+        )
+    if ending == "new-plan-complete":
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="user",
+            segment_turns=32,
+            mode_id="executor",
+            query="continue",
+            response_text="The newer plan is finished.",
+            provenance={"source": "observed", "task_id": "task-original"},
+            effect_receipts=[
+                {"capability_id": "coding_push", "effect": "external_write", "artifact_id": "owned"}
+            ],
+        )
+    restarted = _host_with_declared_bwrap(tmp_path)
+    view = _derive_view(restarted)
+    if ending in {"complete", "new-plan-complete"}:
+        assert view is None
+        return
+    assert view is not None
+    if ending == "new-plan":
+        assert view.completed_steps == ()
+        assert view.declared_steps[0].write_capability == "coding_push"
+        return
+    assert view.completed_steps == ("executor_0",)
+    assert view.current_step_id == "executor_1"
+    assert view.declared_steps[0].completing_turn == 1
+    assert _resumable_task_id(thread_path, "continue") == "task-original"
+
+
 def _host_with_declared_bwrap(data_dir: Path) -> HostRuntime:
     runtime = build_test_runtime(
         data_dir, user_slug="user", surface_type="personal_dm", surface_id="surface"
@@ -335,7 +433,7 @@ def _coding_catalog(
 
     request.addfinalizer(restore_pack_imports)
     monkeypatch.syspath_prepend(str(pack_path))
-    return build_tool_catalog(pack_path, ensure_importable=False)
+    return build_tool_catalog(pack_path)
 
 
 @pytest.mark.asyncio
@@ -362,9 +460,7 @@ async def test_host_turn_allocates_and_persists_task_identity(
 
     monkeypatch.setattr(turn_module, "run_turn", fake_run_turn)
     for query in ("fix the code", "continue", "implement another change"):
-        await turn_module._execute_mode_turn(
-            runtime, query, "default", query, NullTransport()
-        )
+        await turn_module._execute_mode_turn(runtime, query, "default", query, NullTransport())
 
     entries = load_thread_range(
         thread_path=runtime.paths.thread_path,
@@ -376,6 +472,52 @@ async def test_host_turn_allocates_and_persists_task_identity(
     assert [entry["provenance"]["task_id"] for entry in entries] == seen_task_ids
     assert seen_task_ids[0] == seen_task_ids[1]
     assert seen_task_ids[2] != seen_task_ids[0]
+
+
+async def _restart_edited_candidate(
+    data_dir: Path,
+    repo: object,
+    catalog: dict[str, dict[str, object]],
+    artifact_id: str,
+    *,
+    prior_factory: ToolContextFactory,
+) -> ToolContextFactory:
+    from packstest.runner import run_tool
+
+    patch = "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-hello\n+fixed\n"
+    for tool_id, parameters in (
+        ("coding_apply_patch", {"artifact_id": artifact_id, "patch": patch}),
+        ("coding_run_check", {"artifact_id": artifact_id, "check_id": "smoke"}),
+    ):
+        step = await run_tool(catalog, tool_id, prior_factory, parameters)
+        assert step.result.error == "", step.result.error
+    edited = await prior_factory.artifact_store.get(artifact_id)
+    assert edited is not None and edited.checks["smoke"].status == "passed"
+    (Path(edited.worktree_path) / "app.txt").write_text("fixed after restart\n", encoding="utf-8")
+    restarted = _host_with_declared_bwrap(data_dir)
+    assert _resumable_task_id(restarted.paths.thread_path, "continue") == "task-original"
+    factory = _coding_factory_for_host(restarted, repo)
+    artifact = await factory.artifact_store.get(artifact_id)
+    assert artifact is not None and artifact.revision == 1
+    worktree = Path(artifact.worktree_path)
+    assert (worktree / "app.txt").read_text(encoding="utf-8") == "fixed after restart\n"
+    read = await run_tool(catalog, "coding_read_file", factory, {"path": "app.txt"})
+    assert read.result.error == ""
+    assert read.result.output_json["scope"] == "worktree"
+    assert read.result.output_json["artifact_id"] == artifact_id
+    assert read.result.output_json["content_sha256"]
+    blocked = await run_tool(
+        catalog, "coding_commit", factory, {"artifact_id": artifact_id, "message": "unchecked"}
+    )
+    assert "Every required check must pass" in blocked.result.error
+    factory.identity["session_plan_digest"] = "changed-session-plan"
+    denied = await run_tool(
+        catalog, "coding_read_file", factory, {"artifact_id": artifact_id, "path": "app.txt"}
+    )
+    assert "does not belong" in denied.result.error
+    factory.identity["session_plan_digest"] = restarted.session_plan.plan_digest
+    assert len(await factory.artifact_store.list_owned(factory.context())) == 1
+    return factory
 
 
 @pytest.mark.asyncio
@@ -391,6 +533,7 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
     from runtime.types import HostCommandResult
 
     repo = await git_repo(tmp_path, with_remote=False)
+    source_head = await repo.head()
     catalog = _coding_catalog(monkeypatch, request)
     host_dir = tmp_path / "host"
 
@@ -425,6 +568,10 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
 
     async def approved_action(*, invocation: object, hooks: object) -> ToolResult:
         assert hooks.identity.task_id == "task-original"
+        receipt = await restarted.services.approval_service.consume(
+            invocation.request_id, invocation
+        )
+        assert receipt is not None
         created = await run_tool(catalog, "coding_create_worktree", factory, {"summary": "fix bug"})
         assert created.result.error == ""
         return created.result
@@ -446,13 +593,14 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
         verify = hooks.services.verify_task_completion
         assert verify is not None and not (await verify(request)).verified
 
-        patch = "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-hello\n+fixed\n"
+        resumed_factory = await _restart_edited_candidate(
+            host_dir, repo, catalog, committed_artifact_id, prior_factory=factory
+        )
         for tool_id, parameters in (
-            ("coding_apply_patch", {"artifact_id": committed_artifact_id, "patch": patch}),
             ("coding_run_check", {"artifact_id": committed_artifact_id, "check_id": "smoke"}),
             ("coding_commit", {"artifact_id": committed_artifact_id, "message": "Fix bug"}),
         ):
-            step = await run_tool(catalog, tool_id, factory, parameters)
+            step = await run_tool(catalog, tool_id, resumed_factory, parameters)
             assert step.result.error == "", step.result.error
 
         assert (await verify(request)).verified is True
@@ -477,4 +625,14 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
         route_model_turn=continue_task,
     )
     assert result.text == "work completed"
-    assert committed_artifact_id
+    repeated = await handle_approval_command(
+        _host_with_declared_bwrap(host_dir),
+        f"/approve {invocation.request_id}",
+        approve=True,
+        transport=NullTransport(),
+        route_model_turn=continue_task,
+    )
+    assert isinstance(repeated, str) and "already executed" in repeated
+    assert len(await factory.artifact_store.list_owned(factory.context())) == 1
+    assert await repo.head() == source_head
+    assert (repo.root / "app.txt").read_text(encoding="utf-8") == "hello\n"

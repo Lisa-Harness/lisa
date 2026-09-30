@@ -34,6 +34,7 @@ from kernel.workflow_position import WorkflowStep
 __all__ = [
     "WorkflowView",
     "derive_workflow_view",
+    "has_workflow_plan",
     "is_complete",
     "remaining_steps",
     "render_workflow_progress",
@@ -146,6 +147,11 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | N
 
 
 # ── WorkflowView model ────────────────────────────────────────────────
+
+
+def has_workflow_plan(text: str) -> bool:
+    """Return whether text contains a parseable plan, not just a plan heading."""
+    return _parse_plan_block(text) is not None
 
 
 class WorkflowView(BaseModel):

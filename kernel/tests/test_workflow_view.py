@@ -11,9 +11,11 @@ disk I/O, no host wiring. Covers:
 
 from __future__ import annotations
 
+import pytest
 from kernel.workflow_view import (
     WorkflowView,
     derive_workflow_view,
+    has_workflow_plan,
     is_complete,
     remaining_steps,
     render_workflow_progress,
@@ -69,6 +71,20 @@ _PLAN_3_STEP = """\
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("", False),
+        ("## Plan\nNo parseable steps", False),
+        ("### Plan\n1. executor - Edit the worktree", False),
+        ("## Plan\n1. executor - Edit the worktree\n_writes: coding_edit_files_", True),
+        (_PLAN_3_STEP, True),
+    ],
+)
+def test_has_workflow_plan_requires_parseable_steps(text: str, expected: bool) -> None:
+    assert has_workflow_plan(text) is expected
 
 
 class TestDeriveWorkflowView:

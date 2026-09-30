@@ -134,16 +134,25 @@ class _SliceProviderHooksView:
 
 
 def _derive_view(runtime: HostRuntime) -> Any:
-    """Derive the workflow view from the thread tail.
+    """Derive the workflow view from the latest plan and subsequent thread entries.
 
     A pure read from the lossless thread log — no mutable position store.
     Returns a ``WorkflowView`` or ``None`` when no active workflow exists.
     """
-    from kernel.workflow_view import derive_workflow_view
+    from kernel.workflow_view import derive_workflow_view, has_workflow_plan
 
-    from runtime.thread import load_recent_thread_entries
+    from runtime.thread import load_thread_range, next_turn_index
 
-    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
+    thread_path = runtime.paths.thread_path
+    end_turn = next_turn_index(thread_path=thread_path) - 1
+    entries: list[dict[str, Any]] = []
+    while end_turn >= 0:
+        start_turn = max(0, end_turn - 255)
+        chunk = load_thread_range(thread_path=thread_path, start_turn=start_turn, end_turn=end_turn)
+        entries = chunk + entries
+        if any(has_workflow_plan(str(entry.get("response_text") or "")) for entry in chunk):
+            break
+        end_turn = start_turn - 1
     return derive_workflow_view(entries)
 
 
@@ -692,19 +701,15 @@ def _assemble_dynamic_user_context(
         pre_turn_briefing = f"Turn {turn_index}\n\n{pre_turn_briefing}"
 
     # ── Workflow progress summary ────────────────────────────────
-    # Derive the workflow view from the thread tail — the thread is
+    # Derive the workflow view from thread history — the thread is
     # the single source of truth. The view is rebuilt every turn from
     # the append-only log; no mutable position store.
     from kernel.workflow_view import (
-        derive_workflow_view,
         render_workflow_progress,
     )
 
-    from runtime.thread import load_recent_thread_entries
-
     progress = ""
-    thread_entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
-    view = derive_workflow_view(thread_entries)
+    view = _derive_view(runtime)
     if view is not None:
         progress = render_workflow_progress(view)
     if progress:
@@ -879,9 +884,7 @@ def _assemble_turn_hooks(
             # _snapshot_sink wired into _assemble_user_context. Utilization-
             # aware slice providers read this via hooks.context.last_context_snapshot.
             last_context_snapshot=runtime.session.last_context_snapshot,
-            prior_messages=lambda: build_open_task_messages(
-                thread_path=runtime.paths.thread_path
-            ),
+            prior_messages=lambda: build_open_task_messages(thread_path=runtime.paths.thread_path),
         ),
         lifecycle=LifecycleHooks(
             on_turn_complete=wired.on_turn_complete,
@@ -914,7 +917,9 @@ def _assemble_turn_hooks(
                 store=artifact_store,
                 thread_path=runtime.paths.thread_path,
                 identity=turn_identity,
-            ) if artifact_store is not None else None,
+            )
+            if artifact_store is not None
+            else None,
             data_dir=str(runtime.paths.data_dir),
         ),
         identity=turn_identity,
