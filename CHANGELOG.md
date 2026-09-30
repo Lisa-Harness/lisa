@@ -4,6 +4,37 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Failed-approval retries no longer nest the continuation query
+
+- **What:** The continuation query for a failed approved action quoted the
+  paused turn's query. On a retry that turn *is* the previous synthesized
+  continuation, so each cycle nested the whole failure preamble one level
+  deeper. `_origin_request_query` now resolves the first non-command turn
+  sharing the paused turn's `provenance.task_id`, for both the failure and
+  the success (`_continuation_directive`) paths.
+- **Why:** Observed live: four retry cycles grew a single turn's prompt from
+  24k to 220k tokens, each model call capping at 32768 completion tokens and
+  taking up to 177s, while the real user request sank to the bottom of a
+  three-deep nest. No bytes were ever written.
+- **Tests:**
+  `test_failed_continuation_quotes_the_task_origin_not_the_previous_retry`
+  builds a two-deep retry chain and pins a single `The original request was:`.
+
+#### Configured-but-absent pack owners are inert, not fatal
+
+- **What:** `SessionCapabilityBindings` raised `ValueError` when session
+  configuration named an owner with no catalog capabilities. It now logs a
+  warning and leaves the configuration inert.
+- **Why:** The shipped default session plan sets a sandbox floor for
+  `lisa-pack-bwrap` without requiring or including it, so `build_turn_hooks`
+  crashed on every turn whenever that optional pack was not installed. This
+  matches the documented `include`-but-not-installed contract: absent packs
+  are silently skipped, not a startup error.
+- **Tests:** `test_bindings_warn_and_ignore_unknown_configured_owner` pins
+  the warning and the inert binding; `test_slice_view_wiring` passes again.
+
 ### Changed
 
 #### SDK owns the data-dir layout; host runtime fixes surfaced by test repair

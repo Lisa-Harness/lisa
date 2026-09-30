@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from kernel.capability_binding import CapabilityRef
 from runtime.capability_bindings import SessionCapabilityBindings
@@ -31,12 +33,18 @@ def test_bindings_freeze_snapshot_and_reject_unknown_capabilities() -> None:
     assert bindings.binding_for(CapabilityRef("operation", "missing", "missing")) is None
 
 
-def test_bindings_reject_unknown_configured_owner() -> None:
-    with pytest.raises(ValueError, match="unknown capability owners"):
-        SessionCapabilityBindings(
+def test_bindings_warn_and_ignore_unknown_configured_owner(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="runtime.capability_bindings"):
+        bindings = SessionCapabilityBindings(
             {"lisa-pack-unknown": {"enabled": True}},
             capabilities=[CapabilityRef("tool", "known", "lisa-pack-known")],
         )
+
+    assert "lisa-pack-unknown" in caplog.text
+    assert bindings.binding_for(CapabilityRef("tool", "known", "lisa-pack-known")) is not None
+    assert bindings.binding_for(CapabilityRef("tool", "gone", "lisa-pack-unknown")) is None
 
 
 def test_bindings_accept_declared_provider_without_catalog_capabilities() -> None:

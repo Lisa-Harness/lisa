@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Any
 
 from kernel.capability_binding import CapabilityBinding, CapabilityBindingProvider, CapabilityRef
+
+logger = logging.getLogger(__name__)
 
 EMPTY_CAPABILITY_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
 
@@ -26,9 +29,13 @@ class SessionCapabilityBindings(CapabilityBindingProvider):
         known_owners.update(declared_owners)
         unknown_owners = set(raw) - known_owners if capability_list else set()
         if unknown_owners:
-            raise ValueError(
-                "Session configuration names unknown capability owners: "
-                + ", ".join(sorted(unknown_owners))
+            # Session plans configure optional packs (the shipped default sets a
+            # sandbox floor for lisa-pack-bwrap), so an absent owner is inert,
+            # not fatal — same contract as an uninstalled `include` entry.
+            logger.warning(
+                "Session configuration names capability owners absent from the catalog: %s "
+                "— their configuration is inert this session.",
+                ", ".join(sorted(unknown_owners)),
             )
         owner_bindings: Mapping[str, CapabilityBinding] = MappingProxyType(
             {

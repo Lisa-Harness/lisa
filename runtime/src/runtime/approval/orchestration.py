@@ -327,30 +327,61 @@ def _approval_action_receipt_for_thread(
     return approval_action_receipt(invocation, result)
 
 
-def _paused_approval_entry(runtime: HostRuntime, request_id: str) -> dict[str, Any] | None:
-    """Return the persisted turn that paused for this approval request."""
+def _thread_entries(runtime: HostRuntime) -> list[dict[str, Any]]:
+    """Return every persisted turn in the active thread, oldest first."""
     from runtime.thread import (  # lazy: defers runtime.thread import to approval time
         load_thread_range,
         next_turn_index,
     )
 
-    for entry in reversed(
+    return list(
         load_thread_range(
             thread_path=runtime.paths.thread_path,
             start_turn=0,
             end_turn=next_turn_index(thread_path=runtime.paths.thread_path),
         )
-    ):
+    )
+
+
+def _paused_approval_entry(runtime: HostRuntime, request_id: str) -> dict[str, Any] | None:
+    """Return the persisted turn that paused for this approval request."""
+    for entry in reversed(_thread_entries(runtime)):
         provenance = entry.get("provenance") or {}
         if provenance.get("pending_approval_request_id") == request_id:
             return entry
     return None
 
 
-def _paused_request_query(runtime: HostRuntime, request_id: str) -> str:
-    """Return the query of the thread turn that paused for ``request_id``, or ``""``."""
-    entry = _paused_approval_entry(runtime, request_id)
-    return str(entry.get("query") or "") if entry is not None else ""
+def _origin_request_query(runtime: HostRuntime, request_id: str) -> str:
+    """Return the user request that started the paused turn's task.
+
+    The paused turn is often itself a host-synthesized continuation (a retry
+    after a failed approved action). Quoting *its* query back into the next
+    continuation nests the whole failure preamble one level deeper on every
+    retry, so the prompt grows without bound and the real request sinks out
+    of the model's attention. Anchoring on the task's first turn keeps the
+    quoted request constant across the retry chain.
+    """
+    entries = _thread_entries(runtime)
+    paused: dict[str, Any] | None = None
+    for entry in reversed(entries):
+        provenance = entry.get("provenance") or {}
+        if provenance.get("pending_approval_request_id") == request_id:
+            paused = entry
+            break
+    if paused is None:
+        return ""
+    task_id = str((paused.get("provenance") or {}).get("task_id") or "")
+    if not task_id:
+        return str(paused.get("query") or "")
+    for entry in entries:
+        if str((entry.get("provenance") or {}).get("task_id") or "") != task_id:
+            continue
+        query = str(entry.get("query") or "")
+        if query.startswith("/"):  # host commands such as ``/approve <id>``
+            continue
+        return query
+    return str(paused.get("query") or "")
 
 
 def _continuation_directive(
@@ -359,7 +390,7 @@ def _continuation_directive(
     """Resume policy-approved actions; otherwise follow the owning mode's directive."""
     mode = get_workflow_catalog().get(owner_mode)
     if auto_approved or (mode is not None and mode.approval_continuation == "resume"):
-        original = _paused_request_query(runtime, request_id)
+        original = _origin_request_query(runtime, request_id)
         request_line = f"The original request was:\n\n{original}\n\n" if original else ""
         return (
             "Do not re-run the approved action. "
@@ -469,7 +500,7 @@ async def _record_and_continue_after_approval(
         f"{directive}"
     )
     if error:
-        original_query = _paused_request_query(runtime, invocation.request_id)
+        original_query = _origin_request_query(runtime, invocation.request_id)
         continuation_query = (
             f"The approved action `{invocation.target_id}` failed "
             f"(approval {invocation.request_id}):\n\n{error}\n\n"

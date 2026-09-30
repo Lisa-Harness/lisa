@@ -6473,6 +6473,8 @@ async def test_tool_calls_preserve_prior_yield_state() -> None:
         stalled_write_guidance="",
         budget_forces_final=lambda: False,
         mode_config=None,
+        operation_catalog={},
+        tool_catalog={},
         turns_in_stage=0,
         max_tool_iterations=10,
         log=logging.getLogger(__name__),
