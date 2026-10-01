@@ -245,6 +245,56 @@ def _verify_write_contract(
     return None
 
 
+def _interrupted_outcome(
+    child_result: TurnResult,
+    *,
+    mode_id: str,
+    elapsed_ms: int,
+    usage_kwargs: dict[str, Any],
+) -> ChildTurnOutcome | None:
+    """Classify a child that stopped before finishing: approval pause or operator exit."""
+    _clog = logging.getLogger(__name__)
+    # A sub-turn cannot resume after an approval: the host resumes the paused
+    # invocation in the owning (parent) turn. Reporting it as ``complete`` led
+    # the parent to yield the raw "/approve <id>" text (2026-10-01 e2e run 7).
+    pending = getattr(child_result, "pending_approval", None)
+    if pending is not None:
+        target = str(getattr(pending, "target_id", "") or "an action")
+        message = (
+            f"child turn {mode_id} paused for approval of {target}; sub-turns "
+            f"cannot request approval. Hand off to {mode_id} with "
+            "transition_stage so the action can be approved and resumed."
+        )
+        _clog.warning("child turn mode=%s paused for approval of %s", mode_id, target)
+        return _child_outcome(
+            child_result=child_result,
+            mode_id=mode_id,
+            elapsed_ms=elapsed_ms,
+            status="blocked",
+            error_message=message,
+            block_diagnostic=BlockDiagnostic(reason="lifecycle_failure", message=message),
+            usage_kwargs=usage_kwargs,
+        )
+    if child_result.operator_exit:
+        _clog.warning(
+            "child turn mode=%s exited via the turn lifecycle (%s); classifying as interrupted",
+            mode_id,
+            child_result.operator_exit,
+        )
+        return _child_outcome(
+            child_result=child_result,
+            mode_id=mode_id,
+            elapsed_ms=elapsed_ms,
+            status="interrupted",
+            error_message=(
+                f"child turn {mode_id} exited via the turn lifecycle "
+                f"({child_result.operator_exit}) before completing its work."
+            ),
+            usage_kwargs=usage_kwargs,
+        )
+    return None
+
+
 def classify_child_turn(
     *,
     child_result: TurnResult,
@@ -321,23 +371,11 @@ def classify_child_turn(
             usage_kwargs=_usage_kwargs,
         )
 
-    if child_result.operator_exit:
-        _clog.warning(
-            "child turn mode=%s exited via the turn lifecycle (%s); classifying as interrupted",
-            mode_id,
-            child_result.operator_exit,
-        )
-        return _child_outcome(
-            child_result=child_result,
-            mode_id=mode_id,
-            elapsed_ms=elapsed_ms,
-            status="interrupted",
-            error_message=(
-                f"child turn {mode_id} exited via the turn lifecycle "
-                f"({child_result.operator_exit}) before completing its work."
-            ),
-            usage_kwargs=_usage_kwargs,
-        )
+    interrupted_outcome = _interrupted_outcome(
+        child_result, mode_id=mode_id, elapsed_ms=elapsed_ms, usage_kwargs=_usage_kwargs
+    )
+    if interrupted_outcome is not None:
+        return interrupted_outcome
 
     # 2/3. Yield handling (model-emitted yield or harness force-yield).
     if child_result.yielded is not None:
