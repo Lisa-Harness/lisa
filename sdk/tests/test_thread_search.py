@@ -222,8 +222,8 @@ class TestThreadReader:
             handoff_to="coding",
             task_id="task-1",
             effect_receipts=[
-                {"capability_id": "files.write", "target_id": "src/parser.py"},
-                {"capability_id": "files.write", "target_id": "src/lexer.py"},
+                {"capability_id": "files.write", "effect": "write", "artifact_id": "parser"},
+                {"capability_id": "files.write", "effect": "write", "artifact_id": "lexer"},
             ],
             transcript=[
                 {
@@ -251,18 +251,26 @@ class TestThreadReader:
         assert view["task_id"] == "task-1"
         assert view["turns"] == 3
         assert view["status"] == "awaiting_approval"
-        assert view["blocker"] == {"kind": "approval", "request_id": "req-9"}
+        assert view["blocker"] == {
+            "kind": "approval",
+            "request_id": "req-9",
+            "request_id_ref": "t3.pending_approval_request_id",
+        }
         assert view["objective"]["text"] == "refactor the parser"
         assert view["objective_ref"] == "t2.query"
         assert view["modes"] == ["default", "coding"]
         assert view["effects"] == [
             {
                 "capability_id": "files.write",
+                "effect": "write",
                 "count": 2,
-                "targets": ["src/parser.py", "src/lexer.py"],
+                "artifact_ids": ["parser", "lexer"],
             }
         ]
-        assert view["evidence"] == [ref]
+        assert view["evidence"] == ["t2.m0.content"]
+        assert json.loads(reader.read_content(view["evidence"][0]))["content"] == json.dumps(
+            {"ref": ref, "abbreviated": True}
+        )
         assert view["latest"]["text"] == "paused for approval"
         assert (
             json.loads(reader.read_content(view["objective_ref"]))["content"]
@@ -299,6 +307,133 @@ class TestThreadReader:
         assert view["objective"]["abbreviated"] is True
         assert view["evidence_truncated"] is True
         assert len(view["evidence"]) < len(refs)
+
+    @pytest.mark.parametrize("budget", [1024, 2048, 8192])
+    @pytest.mark.parametrize("blocker", ["question", "approval"])
+    @pytest.mark.parametrize(
+        "large_text",
+        ["x" * 20000, "\x01" * 20000, "\U0001f642" * 20000],
+        ids=["ascii", "escaped", "unicode"],
+    )
+    def test_task_view_bounds_all_metadata(
+        self, tmp_path: Path, budget: int, large_text: str, blocker: str
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query=large_text,
+            response_text=large_text,
+            mode_id=large_text,
+            task_id=large_text,
+            provenance={"pending_approval_request_id": large_text} if blocker == "approval" else {},
+            effect_receipts=[
+                {"capability_id": large_text, "effect": "write", "artifact_id": large_text}
+            ],
+            yielded=blocker == "question",
+            yield_question=large_text,
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        text = reader.task_view(budget_bytes=budget)
+        assert len(text.encode("utf-8")) <= budget
+        view = json.loads(text)
+        assert view["status"] == ("awaiting_user" if blocker == "question" else "awaiting_approval")
+        assert view["blocker"]["kind"] == blocker
+        field = "question" if blocker == "question" else "request_id"
+        assert json.loads(reader.read_content(view["blocker"][f"{field}_ref"]))[
+            "total_chars"
+        ] == len(large_text)
+        assert view["task_id"]["abbreviated"] is True
+        assert view["task_id_ref"] == "t0.task_id"
+        assert view["objective_ref"] == "t0.query"
+        assert view["latest_ref"] == "t0.response_text"
+        assert json.loads(reader.read_content(view["objective_ref"]))["total_chars"] == len(
+            large_text
+        )
+
+    def test_task_view_redacts_all_metadata_without_changing_storage(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="secret objective",
+            response_text="secret response",
+            mode_id="secret mode",
+            task_id="secret task",
+            provenance={"pending_approval_request_id": "secret approval"},
+            effect_receipts=[
+                {
+                    "capability_id": "secret tool",
+                    "effect": "secret effect",
+                    "artifact_id": "secret artifact",
+                }
+            ],
+        )
+        policy = ThreadRedactionPolicy.from_patterns(("secret",))
+        store = ThreadStore(thread_path)
+        reader = ThreadReader(store, policy)
+        assert "secret" not in reader.task_view("secret task")
+        assert "secret" not in reader.task_view("secret missing task")
+        _write_active_entry(
+            thread_path,
+            query="continue",
+            task_id="secret task",
+            yielded=True,
+            yield_question="secret question",
+        )
+        assert "secret" not in reader.task_view("secret task")
+        assert store.load_range(start_turn=0, end_turn=0)[0]["query"] == "secret objective"
+
+    def test_task_view_distinguishes_recorded_effects_for_one_capability(
+        self, tmp_path: Path
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="update",
+            task_id="task-1",
+            effect_receipts=[
+                {"capability_id": "files.tool", "effect": "read", "artifact_id": ""},
+                {"capability_id": "files.tool", "effect": "write", "artifact_id": "change-1"},
+                {"capability_id": "files.tool", "effect": "write", "artifact_id": "change-1"},
+            ],
+        )
+        view = json.loads(ThreadReader(ThreadStore(thread_path)).task_view())
+        assert view["effects"] == [
+            {"capability_id": "files.tool", "effect": "read", "count": 1, "artifact_ids": []},
+            {
+                "capability_id": "files.tool",
+                "effect": "write",
+                "count": 2,
+                "artifact_ids": ["change-1"],
+            },
+        ]
+
+    def test_task_view_keeps_latest_task_across_host_commands_and_reports_window(
+        self, tmp_path: Path
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(thread_path, query="objective", task_id="task-1")
+        _write_active_entry(thread_path, query="continue", task_id="task-1")
+        _write_active_entry(thread_path, query="/debug")
+        reader = ThreadReader(ThreadStore(thread_path))
+        complete = json.loads(reader.task_view())
+        assert complete["task_id"] == "task-1"
+        assert complete["objective"]["text"] == "objective"
+        assert complete["history_may_be_incomplete"] is False
+        partial = json.loads(reader.task_view(scan_limit=2))
+        assert partial["history_may_be_incomplete"] is True
+        assert partial["objective"]["text"] == "continue"
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_task_view_missing_task_stays_bounded(self, tmp_path: Path, existing: bool) -> None:
+        thread_path = tmp_path / "thread"
+        if existing:
+            _write_active_entry(thread_path, query="other task", task_id="other")
+        reader = ThreadReader(ThreadStore(thread_path))
+        text = reader.task_view("unknown-" * 5000, budget_bytes=1024)
+        assert len(text.encode("utf-8")) <= 1024
+        assert json.loads(text)["status"] == "empty"
+        with pytest.raises(ValueError, match="positive"):
+            reader.task_view(budget_bytes=0)
 
     def test_search_finds_filtered_tool_result_with_expandable_match(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"

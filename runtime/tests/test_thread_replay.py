@@ -46,6 +46,51 @@ def _read_turn(turn_query: str, output: str, call_id: str = "c1") -> list[dict[s
     ]
 
 
+def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    original = "FULL FILE DATA " * 800
+    transcript = _read_turn("update parser", original)
+    projected = project_thread_messages(transcript, "task-1", thread_path=thread)
+    assert json.loads(projected[-1]["content"])["abbreviated"] is True
+    _append(
+        thread,
+        "update parser",
+        provenance={"task_id": "task-1", "pending_approval_request_id": "approval-1"},
+        transcript=transcript,
+        effect_receipts=[{"capability_id": "files.read", "effect": "read", "artifact_id": ""}],
+    )
+    _append(
+        thread,
+        "/approve approval-1",
+        response_text="parser updated",
+        provenance={"task_id": "task-1", "source": "host-approved"},
+        effect_receipts=[
+            {"capability_id": "files.write", "effect": "write", "artifact_id": "change-1"}
+        ],
+    )
+    reader = ThreadReader(ThreadStore(thread))
+    view = json.loads(reader.task_view("task-1"))
+    assert view["status"] == "open"
+    assert "blocker" not in view
+    assert view["objective"]["text"] == "update parser"
+    assert view["effects"] == [
+        {"capability_id": "files.read", "effect": "read", "count": 1, "artifact_ids": []},
+        {
+            "capability_id": "files.write",
+            "effect": "write",
+            "count": 1,
+            "artifact_ids": ["change-1"],
+        },
+    ]
+    assert view["evidence"] == ["t0.m2.content", "t1.response_text"]
+    restored = [
+        json.loads(reader.read_content(ref, limit_chars=20000))["content"]
+        for ref in view["evidence"]
+    ]
+    assert restored == [original, "parser updated"]
+    assert ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]["transcript"] == transcript
+
+
 def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(thread, "unrelated earlier", response_text="done")

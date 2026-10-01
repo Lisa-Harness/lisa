@@ -285,12 +285,14 @@ class ThreadReader:
         budget_bytes: int = DEFAULT_TASK_VIEW_BYTES,
     ) -> str:
         """Summarize one task's recorded state from a bounded recent scan."""
+        if budget_bytes <= 0 or scan_limit <= 0:
+            raise ValueError("budget_bytes and scan_limit must be positive")
+        budget = max(1024, min(budget_bytes, MAX_READOUT_BYTES))
         end = self.store.next_turn_index() - 1
         if end < 0:
-            return _encode(build_task_view([], task_id, self.redaction))
+            return _encode(build_task_view([], task_id, self.redaction, budget_bytes=budget))
         start = max(0, end - max(1, min(scan_limit, _TASK_SCAN_LIMIT)) + 1)
         entries = list(self.store.iter_range(start_turn=start, end_turn=end))
-        budget = max(1024, min(budget_bytes, MAX_READOUT_BYTES))
         return _encode(build_task_view(entries, task_id, self.redaction, budget_bytes=budget))
 
     def read_content(
@@ -397,10 +399,17 @@ class ThreadReader:
             return self._resolve_call(entry, int(match[2]), int(match[3]), field)
         if match[2] is not None:
             return self._resolve_message(entry, int(match[2]), field)
+        return self._resolve_entry_field(entry, field)
+
+    def _resolve_entry_field(self, entry: dict[str, Any], field: str | None) -> Any:
         if field == "receipt_capability_ids":
             return self._receipt_caps(entry)
         if field == "task_id":
             return entry_task_id(entry)
+        if field == "pending_approval_request_id":
+            return (entry.get("provenance") or {}).get(field) or ""
+        if field == "yield_question":
+            return entry.get(field) or ""
         if field not in (*_ENTRY_FIELDS, "content_source") or field not in entry:
             raise ValueError("Entry field not found or not available for expansion")
         return entry[field]

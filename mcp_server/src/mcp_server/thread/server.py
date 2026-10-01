@@ -376,14 +376,16 @@ async def thread_task_view(
 ) -> str:
     """Summarize one task's recorded state instead of replaying its history.
 
-    task_id defaults to the most recent task. Returns a bounded view:
-    objective (+objective_ref), status, turns, turn_range, modes, effects
-    (capability_id, count, targets), evidence (r<sha256> refs to expand with
-    thread_read_content/thread_find_content), latest (+latest_ref), and a
-    blocker when the task is paused or awaiting approval. Every field is
-    derived from recorded provenance, effect receipts, and transcript stubs;
-    nothing is summarized by a model. Use this first on resume, then expand
-    only the objective, latest response, or evidence you actually need.
+    task_id defaults to the most recent recorded task identity. Scans at
+    most 200 recent entries. Returns objective/latest previews and refs,
+    blocking status, modes, receipt groups (capability_id, effect, count,
+    artifact_ids), and archive evidence refs for thread_read_content or
+    thread_find_content. Fields derive from recorded state, not model summaries.
+    history_may_be_incomplete warns that the objective or earlier work may lie
+    outside the scan; use task-filtered thread_search for older evidence.
+    Truncation flags and identity previews mark omitted text. Expand refs
+    rather than treating shortened IDs as complete. budget_bytes is positive,
+    clamped to 1024-32768 UTF-8 bytes including metadata.
     """
     deps = _resolve_deps(ctx)
     try:
