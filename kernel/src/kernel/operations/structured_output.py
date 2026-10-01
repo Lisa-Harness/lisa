@@ -242,7 +242,9 @@ def parse_structured_payload(
         try:
             return response_format_model.model_validate_json(extracted_json)
         except ValidationError as extracted_exc:
-            raise direct_exc from extracted_exc
+            # The extracted object's schema errors are the actionable ones; the
+            # direct error only says the fenced text was not bare JSON.
+            raise extracted_exc from direct_exc
 
 
 def json_only_instruction(response_format_model: type[BaseModel]) -> str:

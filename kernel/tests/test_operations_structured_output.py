@@ -223,6 +223,15 @@ def test_parse_structured_payload_malformed_non_empty_raises_validation_error() 
         parse_structured_payload(_SamplePayload, '{"query": "missing close bracket"')
 
 
+def test_parse_structured_payload_fenced_schema_error_reports_schema_problem() -> None:
+    """When fenced JSON parses but fails the schema, the raised error names
+    the schema problem, not "Invalid JSON" for the fence."""
+    with pytest.raises(ValidationError) as excinfo:
+        parse_structured_payload(_SamplePayload, '```json\n{"results": ["a"]}\n```')
+    assert "query" in str(excinfo.value)
+    assert "json_invalid" not in str(excinfo.value)
+
+
 # ── extract_json_object ────────────────────────────────────────────────
 
 

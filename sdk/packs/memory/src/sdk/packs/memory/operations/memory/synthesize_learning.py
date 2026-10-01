@@ -192,7 +192,8 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             raise RuntimeError(
                 "synthesize_and_store_learning: model returned JSON-shaped "
                 "output that failed validation; refusing to fall back to prose "
-                f"parsing. Raw output: {normalized[:200]!r}"
+                f"parsing. Validation: {_validation_summary(direct_exc)}. "
+                f"Raw output: {normalized[:200]!r}"
             ) from direct_exc
         bullet_facts = _parse_bullet_facts(normalized)
         if bullet_facts:
@@ -204,6 +205,14 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             return DistilledLearning(facts=sentence_facts)
 
         raise direct_exc
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    """One-line ``loc: type`` list, e.g. ``facts: too_long`` or ``json_invalid``."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}"
+        for err in exc.errors()
+    )
 
 
 def _looks_like_json(text: str) -> bool:
