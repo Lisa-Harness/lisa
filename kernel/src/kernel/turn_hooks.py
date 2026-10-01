@@ -69,7 +69,11 @@ class ModelHooks:
 # ── ContextHooks ────────────────────────────────────────────────────────
 @dataclass
 class ContextHooks:
-    """Pre-turn prompt/context assembly callables."""
+    """Prompt assembly and provider-only message projection.
+
+    project_messages receives raw messages and task_id; it must not mutate
+    inputs. Raw turn recording remains separate from the provider request.
+    """
 
     #: ``assemble_system_prompt(mode_instruction, stage_instruction=None)``
     #: returns the full system prompt. Default: ``mode_instruction`` only.
@@ -88,6 +92,8 @@ class ContextHooks:
     #: tool) to replay verbatim before this turn's user message. Parent turns
     #: only. Default: none.
     prior_messages: Callable[[], list[dict[str, Any]]] | None = None
+
+    project_messages: Callable[[list[dict[str, Any]], str], list[dict[str, Any]]] | None = None
 
     #: Most recent ``ContextBudgetSnapshot`` produced by the host's
     #: context-mapper pass. Mutated by the host after each prompt assembly so

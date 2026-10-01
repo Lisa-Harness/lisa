@@ -22,14 +22,21 @@ from __future__ import annotations
 
 from sdk.thread._backend import SegmentRecord, ThreadStore
 from sdk.thread._readout import DEFAULT_READOUT_BYTES, MAX_READOUT_BYTES, ThreadReader
+from sdk.thread._results import load_result_object, project_tool_messages, result_object_path
+from sdk.thread._taskview import DEFAULT_TASK_VIEW_BYTES, build_task_view
 from sdk.thread.redaction import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
 __all__ = [
     "DEFAULT_READOUT_BYTES",
     "DEFAULT_REDACTION_PATTERNS",
+    "DEFAULT_TASK_VIEW_BYTES",
     "MAX_READOUT_BYTES",
     "SegmentRecord",
     "ThreadReader",
     "ThreadRedactionPolicy",
     "ThreadStore",
+    "build_task_view",
+    "load_result_object",
+    "project_tool_messages",
+    "result_object_path",
 ]

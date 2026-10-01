@@ -52,7 +52,7 @@ def _redact(value: str, redaction: Any) -> str:
 
 def _replay_message(message: dict[str, Any], prefix: str, redaction: Any) -> dict[str, Any]:
     replayed = copy.deepcopy(message)
-    if isinstance(replayed.get("content"), str):
+    if isinstance(replayed.get("content"), str) and replayed.get("role") != "tool":
         replayed["content"] = _redact(replayed["content"], redaction)
     if replayed.get("tool_call_id"):
         replayed["tool_call_id"] = f"{prefix}{replayed['tool_call_id']}"
@@ -128,7 +128,11 @@ def _paired_approval_result(
 
 def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]]:
     """Return the latest turn and its unfinished task as replayable messages."""
-    from runtime.thread import _thread_redaction, load_recent_thread_entries
+    from runtime.thread import (
+        _thread_redaction,
+        load_recent_thread_entries,
+        project_thread_messages,
+    )
 
     entries = _open_task_span(
         load_recent_thread_entries(thread_path=thread_path, limit=_SCAN_LIMIT)
@@ -145,10 +149,22 @@ def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]
         provenance = entry.get("provenance") or {}
         if provenance.get("source") in _APPROVAL_SOURCES:
             if provenance.get("approval_request_id") not in paired_ids:
-                messages.extend(_entry_messages(entry, _thread_redaction))
+                messages.extend(
+                    project_thread_messages(
+                        _entry_messages(entry, _thread_redaction),
+                        str(provenance.get("task_id") or ""),
+                        thread_path=thread_path,
+                    )
+                )
             continue
         approved_result = _paired_approval_result(entry, approvals)
         if approved_result is not None:
             paired_ids.add(str(provenance["pending_approval_request_id"]))
-        messages.extend(_entry_messages(entry, _thread_redaction, approved_result=approved_result))
+        messages.extend(
+            project_thread_messages(
+                _entry_messages(entry, _thread_redaction, approved_result=approved_result),
+                str(provenance.get("task_id") or ""),
+                thread_path=thread_path,
+            )
+        )
     return messages

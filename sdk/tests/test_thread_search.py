@@ -41,6 +41,11 @@ def _write_active_entry(
     turn: int | None = None,
     handoff_to: str = "",
     transcript: list[dict[str, Any]] | None = None,
+    task_id: str = "",
+    provenance: dict[str, Any] | None = None,
+    effect_receipts: list[dict[str, Any]] | None = None,
+    yielded: bool = False,
+    yield_question: str = "",
 ) -> None:
     """Append one entry to the active segment (``.current.jsonl``)."""
     paths = _segment_paths(thread_path)
@@ -55,6 +60,17 @@ def _write_active_entry(
         entry["turn"] = turn
     if transcript is not None:
         entry["transcript"] = transcript
+    merged_provenance = dict(provenance or {})
+    if task_id:
+        merged_provenance["task_id"] = task_id
+    if merged_provenance:
+        entry["provenance"] = merged_provenance
+    if effect_receipts is not None:
+        entry["effect_receipts"] = effect_receipts
+    if yielded:
+        entry["yielded"] = True
+        if yield_question:
+            entry["yield_question"] = yield_question
     with paths.current.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -115,6 +131,207 @@ def _is_host_cmd(query: str) -> bool:
 
 
 class TestThreadReader:
+    @pytest.mark.parametrize("nested", [True, False])
+    def test_search_does_not_match_an_excluded_call_in_a_batch(
+        self, tmp_path: Path, nested: bool
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        functions = [
+            {"name": "read", "arguments": '{"path":"src/needle.py"}'},
+            {"name": "exec", "arguments": '{"command":"forbidden unique evidence"}'},
+        ]
+        calls = [
+            {"id": str(index), **({"function": function} if nested else function)}
+            for index, function in enumerate(functions)
+        ]
+        _write_active_entry(
+            thread_path,
+            query="batch",
+            transcript=[
+                {
+                    "role": "assistant",
+                    "tool_calls": calls,
+                }
+            ],
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        assert (
+            json.loads(reader.search("forbidden unique evidence", tool_name="read"))["entries"]
+            == []
+        )
+        match = json.loads(reader.search("needle", tool_name="read"))["entries"][0]["matches"][0]
+        assert match["ref"] == "t0.m0.c0.arguments"
+        assert json.loads(reader.read_content(match["ref"]))["content"] == functions[0]["arguments"]
+
+    def test_search_filters_actual_task_identity_and_turn_window(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        for task in ("task-a", "task-b", "task-a"):
+            _write_active_entry(thread_path, query="shared needle", task_id=task)
+        reader = ThreadReader(ThreadStore(thread_path))
+        entries = json.loads(reader.search("needle", task_id="task-b", start_turn=1, end_turn=1))[
+            "entries"
+        ]
+        assert [entry["turn"] for entry in entries] == [1]
+        assert entries[0]["task_id"] == "task-b"
+        assert json.loads(reader.read_content("t1.task_id"))["content"] == "task-b"
+        assert json.loads(reader.search("needle", task_id="not-a-task"))["entries"] == []
+
+    def test_find_content_pages_literal_matches_after_redaction(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        original = "secret " + ("\U0001f642 prefix a.*b suffix " * 5)
+        _write_active_entry(thread_path, query=original)
+        policy = ThreadRedactionPolicy.from_patterns(("secret",))
+        reader = ThreadReader(ThreadStore(thread_path), policy)
+        offset = 0
+        positions = []
+        while True:
+            text = reader.find_content("t0.query", "a.*b", offset, 2)
+            assert len(text.encode("utf-8")) <= DEFAULT_READOUT_BYTES
+            page = json.loads(text)
+            for match in page["matches"]:
+                positions.append(match["match_offset_chars"])
+                assert "a.*b" in match["excerpt"]
+                expanded = json.loads(reader.read_content("t0.query", match["offset_chars"]))
+                assert "a.*b" in expanded["content"]
+            if not page["has_more"]:
+                break
+            assert page["next_offset_chars"] > offset
+            offset = page["next_offset_chars"]
+        assert len(positions) == len(set(positions)) == 5
+        permitted = policy.redact(original)
+        assert all(permitted[position : position + 4] == "a.*b" for position in positions)
+        assert json.loads(reader.find_content("t0.query", "secret"))["matches"] == []
+
+    def test_task_view_summarizes_scoped_state_with_expandable_references(
+        self, tmp_path: Path
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        ref = "r" + "a" * 64
+        _write_active_entry(thread_path, query="unrelated", task_id="task-other")
+        _write_active_entry(
+            thread_path,
+            query="/approve xyz",
+            response_text="ignored host command",
+            task_id="task-1",
+        )
+        _write_active_entry(
+            thread_path,
+            query="refactor the parser",
+            response_text="started work",
+            mode_id="default",
+            handoff_to="coding",
+            task_id="task-1",
+            effect_receipts=[
+                {"capability_id": "files.write", "target_id": "src/parser.py"},
+                {"capability_id": "files.write", "target_id": "src/lexer.py"},
+            ],
+            transcript=[
+                {
+                    "role": "tool",
+                    "tool_call_id": "c1",
+                    "content": json.dumps(
+                        {
+                            "ref": ref,
+                            "abbreviated": True,
+                        }
+                    ),
+                },
+            ],
+        )
+        _write_active_entry(
+            thread_path,
+            query="keep going",
+            response_text="paused for approval",
+            mode_id="coding",
+            task_id="task-1",
+            provenance={"pending_approval_request_id": "req-9"},
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        view = json.loads(reader.task_view("task-1"))
+        assert view["task_id"] == "task-1"
+        assert view["turns"] == 3
+        assert view["status"] == "awaiting_approval"
+        assert view["blocker"] == {"kind": "approval", "request_id": "req-9"}
+        assert view["objective"]["text"] == "refactor the parser"
+        assert view["objective_ref"] == "t2.query"
+        assert view["modes"] == ["default", "coding"]
+        assert view["effects"] == [
+            {
+                "capability_id": "files.write",
+                "count": 2,
+                "targets": ["src/parser.py", "src/lexer.py"],
+            }
+        ]
+        assert view["evidence"] == [ref]
+        assert view["latest"]["text"] == "paused for approval"
+        assert (
+            json.loads(reader.read_content(view["objective_ref"]))["content"]
+            == "refactor the parser"
+        )
+
+    def test_task_view_defaults_to_latest_task_and_bounds_output(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        refs = ["r" + f"{index:064x}" for index in range(40)]
+        _write_active_entry(thread_path, query="old task", task_id="task-old")
+        _write_active_entry(
+            thread_path,
+            query="current objective " + "x" * 2000,
+            response_text="y" * 2000,
+            task_id="task-new",
+            transcript=[
+                {
+                    "role": "tool",
+                    "tool_call_id": f"c{i}",
+                    "content": json.dumps(
+                        {
+                            "ref": ref,
+                            "abbreviated": True,
+                        }
+                    ),
+                }
+                for i, ref in enumerate(refs)
+            ],
+        )
+        view_text = ThreadReader(ThreadStore(thread_path)).task_view(budget_bytes=2048)
+        assert len(view_text.encode("utf-8")) <= 2048
+        view = json.loads(view_text)
+        assert view["task_id"] == "task-new"
+        assert view["objective"]["abbreviated"] is True
+        assert view["evidence_truncated"] is True
+        assert len(view["evidence"]) < len(refs)
+
+    def test_search_finds_filtered_tool_result_with_expandable_match(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        content = "padding " * 1000 + "valid check_ids: unit, lint" + " tail" * 1000
+        _write_active_entry(
+            thread_path,
+            query="run checks",
+            transcript=[
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "check",
+                            "function": {
+                                "name": "coding_run_check",
+                                "arguments": '{"path":"src/main.py"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "check", "content": content},
+            ],
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        text = reader.search("valid check_ids", tool_name="coding_run_check", path="src/main.py")
+        page = json.loads(text)
+        assert len(text.encode("utf-8")) <= DEFAULT_READOUT_BYTES
+        match = page["entries"][0]["matches"][0]
+        assert match["ref"] == "t0.m1.content"
+        assert "valid check_ids" in match["excerpt"]
+        expanded = json.loads(reader.read_content(match["ref"], match["offset_chars"], 400))
+        assert "valid check_ids" in expanded["content"]
+
     @pytest.mark.parametrize("kind", ["range", "recent", "search"])
     def test_pages_are_bounded_and_snapshot_stable(self, tmp_path: Path, kind: str) -> None:
         thread_path = tmp_path / "thread"

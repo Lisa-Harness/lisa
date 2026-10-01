@@ -57,7 +57,11 @@ from runtime.context_assembly import (
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
-from runtime.thread import build_open_task_messages, build_recent_thread_excerpt
+from runtime.thread import (
+    build_open_task_messages,
+    build_recent_thread_excerpt,
+    project_thread_messages,
+)
 
 if TYPE_CHECKING:
     from runtime.callbacks import TransportCallbacks
@@ -885,6 +889,9 @@ def _assemble_turn_hooks(
             # aware slice providers read this via hooks.context.last_context_snapshot.
             last_context_snapshot=runtime.session.last_context_snapshot,
             prior_messages=lambda: build_open_task_messages(thread_path=runtime.paths.thread_path),
+            project_messages=partial(
+                project_thread_messages, thread_path=runtime.paths.thread_path
+            ),
         ),
         lifecycle=LifecycleHooks(
             on_turn_complete=wired.on_turn_complete,

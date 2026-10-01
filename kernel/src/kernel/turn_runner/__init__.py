@@ -2818,7 +2818,11 @@ async def _model_completion_for_iteration(
             f"{getattr(effective_model_def, 'model_id', '')!r} cannot be completed."
         )
     completion_request = CompletionRequest(
-        messages=messages,
+        messages=(
+            hooks.context.project_messages(messages, hooks.identity.task_id)
+            if hooks.context.project_messages is not None
+            else messages
+        ),
         model_def=effective_model_def,
         # Reasoning-aware budget: reasoning models bill their
         # chain-of-thought against ``max_tokens`` on some providers,
@@ -2839,7 +2843,7 @@ async def _model_completion_for_iteration(
     state.model_requests.append(
         {
             "iteration": state.iteration,
-            "messages": copy.deepcopy(messages),
+            "messages": copy.deepcopy(completion_request.messages),
             "tools": copy.deepcopy(effective_tools),
             "model_id": getattr(effective_model_def, "model_id", ""),
             "provider": getattr(effective_model_def, "provider", ""),

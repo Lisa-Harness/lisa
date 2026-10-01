@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 import pytest
 from kernel.provider_contracts import flatten_system_prompt_segments
 from kernel.testing.gateway_stub import StubGatewayProvider
-from kernel.turn_hooks import ModelHooks, OperationHooks, TurnHooks
+from kernel.turn_hooks import ContextHooks, ModelHooks, OperationHooks, TurnHooks, TurnIdentity
 from kernel.turn_runner import ContextSeams, run_turn
 
 
@@ -140,3 +140,53 @@ async def test_flattened_prompt_is_byte_identical_to_messages_system() -> None:
     request = last.last_request
     segments = tuple(request.system_prompt_segments)
     assert flatten_system_prompt_segments(segments) == str(request.messages[0].get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_model_projection_preserves_raw_history_and_records_actual_request() -> None:
+    raw = "full tool output " * 1000
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "old",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "old", "content": raw},
+    ]
+    tasks: list[str] = []
+
+    def project(messages: list[dict[str, Any]], task_id: str) -> list[dict[str, Any]]:
+        tasks.append(task_id)
+        return [
+            {**message, "content": "recoverable preview"}
+            if message.get("role") == "tool"
+            else dict(message)
+            for message in messages
+        ]
+
+    async def complete_fn(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="ok")
+
+    provider = StubGatewayProvider(complete_fn)
+    hooks = TurnHooks(
+        context=ContextHooks(prior_messages=lambda: history, project_messages=project),
+        identity=TurnIdentity(task_id="task-1"),
+        context_seams=ContextSeams(provider_gateways=provider),
+    )
+    result = await run_turn(mode_id="default", query="continue", hooks=hooks)
+    assert tasks == ["task-1"]
+    assert history[-1]["content"] == raw
+    assert provider.last_gateway is not None
+    request = provider.last_gateway.last_request
+    assert request is not None
+    assert (
+        next(message for message in request.messages if message.get("role") == "tool")["content"]
+        == "recoverable preview"
+    )
+    assert result.model_requests[0]["messages"] == request.messages

@@ -46,6 +46,8 @@ def _write_active_entry(
     mode_id: str = "default",
     content_source: str = "",
     reasoning_text: str = "",
+    transcript: list[dict[str, Any]] | None = None,
+    task_id: str = "",
 ) -> None:
     """Append one entry to the active segment (``.current.jsonl``)."""
     from sdk.thread._backend import _segment_paths
@@ -61,6 +63,10 @@ def _write_active_entry(
         entry["content_source"] = content_source
     if reasoning_text:
         entry["reasoning_text"] = reasoning_text
+    if transcript is not None:
+        entry["transcript"] = transcript
+    if task_id:
+        entry["provenance"] = {"task_id": task_id}
     with paths.current.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -95,7 +101,7 @@ async def test_thread_read_range_bounds_total_output(thread_deps: None, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_thread_server_lists_four_tools(thread_deps: None) -> None:
+async def test_thread_server_lists_five_tools(thread_deps: None) -> None:
     from mcp_server.thread.server import mcp
 
     tools = await mcp.list_tools()
@@ -105,6 +111,8 @@ async def test_thread_server_lists_four_tools(thread_deps: None) -> None:
         "thread_read_recent",
         "thread_search",
         "thread_read_content",
+        "thread_find_content",
+        "thread_task_view",
     } == names
 
 
@@ -157,6 +165,96 @@ async def test_thread_read_range_include_transcript_is_restorable(
 
 
 # ── thread_search ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_thread_filtered_evidence_can_be_found_and_expanded(
+    thread_deps: None,
+    tmp_path: Path,
+) -> None:
+    thread_path = tmp_path / "threads" / "tester"
+    content = "padding " * 3000 + "inside-result evidence"
+    transcript = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call",
+                    "function": {"name": "files.read", "arguments": '{"path":"src/needle.py"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call", "content": content},
+    ]
+    for task_id in ("task-other", "task-1"):
+        _write_active_entry(thread_path, query="read", transcript=transcript, task_id=task_id)
+    search = json.loads(
+        _tool_text(
+            await mcp.call_tool(
+                "thread_search",
+                {
+                    "query": "inside-result",
+                    "tool_name": "read",
+                    "path": "src/needle.py",
+                    "task_id": "task-1",
+                    "start_turn": 1,
+                    "end_turn": 1,
+                },
+            )
+        )
+    )
+    assert [entry["turn"] for entry in search["entries"]] == [1]
+    match = search["entries"][0]["matches"][0]
+    assert match["ref"] == "t1.m1.content"
+    found = json.loads(
+        _tool_text(
+            await mcp.call_tool(
+                "thread_find_content",
+                {
+                    "ref": match["ref"],
+                    "query": "inside-result",
+                },
+            )
+        )
+    )
+    location = found["matches"][0]
+    assert location["match_offset_chars"] == content.index("inside-result")
+    restored = json.loads(
+        _tool_text(
+            await mcp.call_tool(
+                "thread_read_content",
+                {
+                    "ref": match["ref"],
+                    "offset_chars": location["offset_chars"],
+                    "limit_chars": 320,
+                },
+            )
+        )
+    )
+    assert restored["content"] == content[location["offset_chars"] :][:320]
+    assert "inside-result evidence" in restored["content"]
+
+
+@pytest.mark.asyncio
+async def test_thread_task_view_summarizes_active_task(
+    thread_deps: None,
+    tmp_path: Path,
+) -> None:
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="add the endpoint",
+        response_text="done wiring",
+        task_id="task-1",
+    )
+    view = json.loads(_tool_text(await mcp.call_tool("thread_task_view", {})))
+    assert view["task_id"] == "task-1"
+    assert view["objective"]["text"] == "add the endpoint"
+    assert view["status"] == "open"
+    restored = json.loads(
+        _tool_text(await mcp.call_tool("thread_read_content", {"ref": view["objective_ref"]}))
+    )
+    assert restored["content"] == "add the endpoint"
 
 
 @pytest.mark.asyncio

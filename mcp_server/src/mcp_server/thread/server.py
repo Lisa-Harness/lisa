@@ -8,6 +8,8 @@ exposes bounded views so the model can pull older entries on demand:
 - ``thread_read_recent`` — read the most recent N entries (compact form).
 - ``thread_search`` — find prior turns by lexical relevance.
 - ``thread_read_content`` — expand a referenced value through bounded pages.
+- ``thread_find_content`` — locate literal evidence inside a referenced value.
+- ``thread_task_view`` — summarize one task's recorded state and evidence.
 
 The write path (append, seal, dictionary training) stays in
 ``runtime.thread``; this server is read-only.
@@ -254,11 +256,17 @@ async def thread_read_recent(
 async def thread_search(
     query: str,
     limit: int = 10,
+    *,
     cursor: str | None = None,
     budget_bytes: int = DEFAULT_READOUT_BYTES,
+    tool_name: str | None = None,
+    path: str | None = None,
+    task_id: str | None = None,
+    start_turn: int = 0,
+    end_turn: int | None = None,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Find prior turns by lexical overlap in query, response, and mode.
+    """Find prior turns and tool evidence by literal phrase/token matches.
 
     Returns {entries, next_cursor, has_more}, ranked by relevance then
     recency, with turn numbers, query/response previews, and score (0-1).
@@ -267,6 +275,11 @@ async def thread_search(
     An empty query returns recent matches. limit defaults to 10, capped at 20.
     Continue with next_cursor and the same query/limit. budget_bytes defaults
     to 16384, clamped to 16384-32768 serialized UTF-8 bytes including metadata.
+    Search includes tool arguments/results. Filter by exact tool_name, path
+    substring in structured arguments, task_id, and inclusive start/end_turn.
+    Each match has ref, excerpt, and offset_chars for thread_read_content.
+    All filters must remain the same when following next_cursor. Use
+    thread_find_content to locate text inside a particular large result.
     """
     deps = _resolve_deps(ctx)
     try:
@@ -275,6 +288,11 @@ async def thread_search(
             limit,
             cursor=cursor,
             budget_bytes=budget_bytes,
+            tool_name=tool_name,
+            path=path,
+            task_id=task_id,
+            start_turn=start_turn,
+            end_turn=end_turn,
         )
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
@@ -299,6 +317,10 @@ async def thread_read_content(
 
     Refs are scoped to this thread: t391.query, t391.response_text,
     t391.m20.content, t391.m19.tool_calls, or t391.m20 for a full message.
+    Search can also return t391.m19.c0.arguments or .name for one call.
+    Live/replayed result previews carry r<sha256> refs, available before
+    the current turn completes and after restart. inventory_ref points to
+    omitted tool groups with their arguments and full-result references.
     Full reasoning_text and raw turn_input are not available through this tool.
     """
     deps = _resolve_deps(ctx)
@@ -307,6 +329,66 @@ async def thread_read_content(
             ref,
             offset_chars,
             limit_chars,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def thread_find_content(
+    ref: str,
+    query: str,
+    *,
+    offset_chars: int = 0,
+    limit: int = 10,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ctx: Context[ThreadDeps, Any] | None = None,
+) -> str:
+    """Find literal text inside a referenced value, case-insensitively.
+
+    Returns bounded {ref, matches, next_offset_chars, has_more, total_chars}.
+    Matches give excerpt, offset_chars, and match_offset_chars after redaction.
+    Read the relevant span with thread_read_content(ref, offset_chars).
+    Follow next_offset_chars with the same ref/query to find further matches.
+    limit defaults to 10, capped at 20; budget_bytes is clamped to 16384-32768.
+    No regex execution or raw-policy bypass is available.
+    """
+    deps = _resolve_deps(ctx)
+    try:
+        return ThreadReader(deps.store, deps.redaction).find_content(
+            ref,
+            query,
+            offset_chars,
+            limit,
+            budget_bytes=budget_bytes,
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def thread_task_view(
+    task_id: str = "",
+    *,
+    budget_bytes: int = DEFAULT_READOUT_BYTES,
+    ctx: Context[ThreadDeps, Any] | None = None,
+) -> str:
+    """Summarize one task's recorded state instead of replaying its history.
+
+    task_id defaults to the most recent task. Returns a bounded view:
+    objective (+objective_ref), status, turns, turn_range, modes, effects
+    (capability_id, count, targets), evidence (r<sha256> refs to expand with
+    thread_read_content/thread_find_content), latest (+latest_ref), and a
+    blocker when the task is paused or awaiting approval. Every field is
+    derived from recorded provenance, effect receipts, and transcript stubs;
+    nothing is summarized by a model. Use this first on resume, then expand
+    only the objective, latest response, or evidence you actually need.
+    """
+    deps = _resolve_deps(ctx)
+    try:
+        return ThreadReader(deps.store, deps.redaction).task_view(
+            task_id,
             budget_bytes=budget_bytes,
         )
     except ValueError as exc:

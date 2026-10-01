@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,10 @@ from runtime.host_commands import register_builtin_host_commands
 from runtime.thread import (
     append_thread_entry,
     build_open_task_messages,
+    project_thread_messages,
     set_thread_redaction_policy,
 )
-from sdk.thread import ThreadRedactionPolicy
+from sdk.thread import ThreadReader, ThreadRedactionPolicy, ThreadStore, result_object_path
 
 register_builtin_host_commands()
 
@@ -123,15 +125,19 @@ def test_approved_action_replays_as_original_tool_result(tmp_path: Path, failed:
             "approval_request_id": "approval-1",
             "target_id": "write",
         },
-        effect_receipts=[] if failed else [
-            {"capability_id": "write", "effect": "write", "artifact_id": "doc-1"}
-        ],
+        effect_receipts=[]
+        if failed
+        else [{"capability_id": "write", "effect": "write", "artifact_id": "doc-1"}],
     )
 
     messages = build_open_task_messages(thread_path=thread)
 
     assert [message["role"] for message in messages] == [
-        "user", "assistant", "tool", "assistant", "tool"
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
     ]
     assert messages[-1]["tool_call_id"] == messages[-2]["tool_calls"][0]["id"]
     expected = "Approved action failed: invalid patch" if failed else "saved file"
@@ -172,3 +178,144 @@ def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path)
     messages = build_open_task_messages(thread_path=thread)
 
     assert [message["role"] for message in messages] == ["user", "assistant"]
+
+
+def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    original = "full output " * 10000
+    transcript = _read_turn("read", original)
+    live = project_thread_messages(transcript, "task-1", thread_path=thread)
+    stub = json.loads(live[-1]["content"])
+    assert stub["abbreviated"]
+    assert len(live[-1]["content"].encode("utf-8")) < 8192
+    assert transcript[-1]["content"] == original
+    assert project_thread_messages(transcript, "task-1", thread_path=thread) == live
+    _append(thread, "read", transcript=transcript, provenance={"task_id": "task-1"})
+    replayed = build_open_task_messages(thread_path=thread)
+    replay_stub = json.loads(
+        next(message for message in replayed if message["role"] == "tool")["content"]
+    )
+    assert replay_stub["abbreviated"]
+    assert replay_stub["ref"] == stub["ref"]
+    stored = json.loads(result_object_path(thread, stub["ref"]).read_text())
+    assert stored["task_id"] == "task-1"
+    reader = ThreadReader(ThreadStore(thread))
+    offset = 0
+    restored: list[str] = []
+    while True:
+        page = json.loads(reader.read_content(stub["ref"], offset))
+        restored.append(page["content"])
+        if not page["has_more"]:
+            break
+        offset = page["next_offset_chars"]
+    assert "".join(restored) == original
+    raw = ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]
+    assert raw["transcript"][-1]["content"] == original
+
+
+def test_live_result_redaction_and_integrity_are_enforced(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    original = "secret " * 5000
+    policy = ThreadRedactionPolicy.from_patterns(("secret",))
+    set_thread_redaction_policy(policy)
+    try:
+        projected = project_thread_messages(_read_turn("read", original), thread_path=thread)
+    finally:
+        set_thread_redaction_policy(None)
+    stub = json.loads(projected[-1]["content"])
+    assert "secret" not in projected[-1]["content"]
+    reader = ThreadReader(ThreadStore(thread), policy)
+    assert "secret" not in reader.read_content(stub["ref"])
+    assert json.loads(reader.find_content(stub["ref"], "secret"))["matches"] == []
+    path = result_object_path(thread, stub["ref"])
+    assert json.loads(path.read_text())["content"] == original
+    assert path.stat().st_mode & 0o777 == 0o600
+    path.write_text('{"content":"tampered"}')
+    with pytest.raises(ValueError, match="integrity"):
+        reader.read_content(stub["ref"])
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["thread_search", "thread_read_content", "thread_find_content"]
+)
+def test_bounded_retrieval_pages_remain_readable(tmp_path: Path, tool_name: str) -> None:
+    thread = tmp_path / "threads" / "tester"
+    content = "bounded requested evidence " * 400
+    messages = _read_turn("read", content)
+    messages[1]["tool_calls"][0]["function"]["name"] = f"lisa-thread.{tool_name}"
+    projected = project_thread_messages(messages, thread_path=thread)
+    assert projected[-1]["content"] == content
+
+
+def test_tool_context_compaction_preserves_pairing_and_inventory(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    raw = []
+    for index in range(200):
+        raw.extend(_read_turn("read", f"result {index} " * 100, call_id=f"call-{index}")[1:])
+    projected = project_thread_messages(raw, "task-1", thread_path=thread)
+    tool_bytes = sum(
+        len(message["content"].encode("utf-8"))
+        for message in projected
+        if message["role"] == "tool"
+    )
+    assert tool_bytes <= 65536
+    calls = [call["id"] for message in projected for call in message.get("tool_calls") or []]
+    results = [message["tool_call_id"] for message in projected if message["role"] == "tool"]
+    assert calls == results
+    assert len(calls) < 200
+    marker = next(message for message in projected if "inventory_ref" in message.get("content", ""))
+    inventory_ref = json.loads(marker["content"])["inventory_ref"]
+    reader = ThreadReader(ThreadStore(thread))
+    inventory_page = json.loads(reader.read_content(inventory_ref))
+    assert inventory_page["content"].startswith('[{"tool_calls":')
+    assert inventory_page["has_more"]
+    assert json.loads(reader.find_content(inventory_ref, "call-0"))["matches"]
+    inventory = json.loads(result_object_path(thread, inventory_ref).read_text())["content"]
+    groups = json.loads(inventory)
+    assert len(groups) + len(calls) == 200
+    first_ref = groups[0]["results"][0]["ref"]
+    first = json.loads(reader.read_content(first_ref))
+    assert first["content"] == raw[1]["content"]
+    assert raw[1]["content"].startswith("result 0 ")
+
+
+def test_result_refs_cannot_follow_symlinks_or_cross_threads(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    projected = project_thread_messages(_read_turn("read", "data " * 3000), thread_path=first)
+    ref = json.loads(projected[-1]["content"])["ref"]
+    with pytest.raises(ValueError, match="not found"):
+        ThreadReader(ThreadStore(second)).read_content(ref)
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"content":"outside"}')
+    second_path = result_object_path(second, ref)
+    second_path.parent.mkdir()
+    second_path.symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes"):
+        ThreadReader(ThreadStore(second)).read_content(ref)
+
+
+def test_reprojection_reuses_original_result_references_under_pressure(tmp_path: Path) -> None:
+    thread = tmp_path / "thread"
+    replayed = []
+    original_refs = set()
+    for index in range(200):
+        turn = _read_turn("read", f"large result {index} " * 2000, call_id=f"call-{index}")[1:]
+        preview = project_thread_messages(turn, "task-1", thread_path=thread)
+        original_refs.add(json.loads(preview[-1]["content"])["ref"])
+        replayed.extend(preview)
+    projected = project_thread_messages(replayed, "task-1", thread_path=thread)
+    for message in projected:
+        if message.get("role") == "tool":
+            assert json.loads(message["content"])["ref"] in original_refs
+    marker = next(message for message in projected if "inventory_ref" in message.get("content", ""))
+    inventory_ref = json.loads(marker["content"])["inventory_ref"]
+    groups = json.loads(
+        json.loads(result_object_path(thread, inventory_ref).read_text())["content"]
+    )
+    assert all(result["ref"] in original_refs for group in groups for result in group["results"])
+    reader = ThreadReader(ThreadStore(thread))
+    assert json.loads(reader.read_content(groups[0]["results"][0]["ref"]))["content"].startswith(
+        "large result 0 "
+    )
+    assert project_thread_messages(projected, "task-1", thread_path=thread) == projected

@@ -36,10 +36,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sdk.thread import ThreadRedactionPolicy, ThreadStore
+from sdk.thread import ThreadRedactionPolicy, ThreadStore, load_result_object, project_tool_messages
 
 from runtime.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
 from runtime.thread._replay import build_open_task_messages
+from runtime.thread._results import _persist_result
 from runtime.thread._store import (
     _DEFAULT_SEGMENT_TURNS,
     SegmentRecord,
@@ -70,6 +71,24 @@ def set_thread_redaction_policy(policy: ThreadRedactionPolicy | None) -> None:
     """
     global _thread_redaction  # noqa: PLW0603 — module-level singleton seam
     _thread_redaction = policy
+
+
+def project_thread_messages(
+    messages: list[dict[str, Any]],
+    task_id: str = "",
+    *,
+    thread_path: Path | None,
+) -> list[dict[str, Any]]:
+    """Persist large raw results before sending recoverable previews to a model."""
+    if thread_path is None:
+        raise ValueError("Tool-result projection requires a thread storage path")
+    return project_tool_messages(
+        messages,
+        task_id,
+        lambda result: _persist_result(thread_path, result),
+        _thread_redaction,
+        lambda ref: load_result_object(thread_path, ref),
+    )
 
 
 def _thread_store(thread_path: Path | None) -> ThreadStore | None:
@@ -126,8 +145,7 @@ def paused_turn_owner_mode(*, thread_path: Path | None) -> str:
     if source in {"host-approved", "host-approved-failed"}:
         return str(last.get("mode_id") or "")
     if not (
-        provenance.get("operator_exit") == "paused"
-        or provenance.get("pending_approval_request_id")
+        provenance.get("operator_exit") == "paused" or provenance.get("pending_approval_request_id")
     ):
         return ""
     return str(last.get("handoff_to") or last.get("mode_id") or "")

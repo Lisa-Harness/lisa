@@ -152,3 +152,5 @@ servers:
       - thread_read_recent
       - thread_search
       - thread_read_content
+      - thread_find_content
+      - thread_task_view
