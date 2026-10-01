@@ -13,6 +13,7 @@ dependencies = [
     "lisa-pack-recovery",
     "lisa-harness-runtime",
     "lisa-harness-packstest",
+    "lisa-harness-e2e",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +43,7 @@ members = [
     "sdk/packs/recovery",
     "runtime",
     "packstest",
+    "e2etest",
 ]
 
 [tool.uv.sources]
@@ -54,6 +56,7 @@ lisa-pack-introspect = { workspace = true }
 lisa-pack-recovery = { workspace = true }
 lisa-harness-runtime = { workspace = true }
 lisa-harness-packstest = { workspace = true }
+lisa-harness-e2e = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -62,6 +65,7 @@ pythonpath = [
     "mcp_server/src",
     "runtime/src",
     "packstest/src",
+    "e2etest/src",
     "sdk/packs/core/src",
     "sdk/packs/introspect/src",
     "sdk/packs/memory/src",
@@ -79,6 +83,7 @@ testpaths = [
     "mcp_server/src/mcp_server/thread/tests",
     "runtime/tests",
     "packstest/tests",
+    "e2etest/tests",
 ]
 addopts = "--import-mode=importlib"
 consider_namespace_packages = true

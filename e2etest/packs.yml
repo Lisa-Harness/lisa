@@ -1,0 +1,16 @@
+# Pack sources installed (editable) into the e2e packs venv.
+# Paths are relative to this file. Editable installs mean a pack fix is live on
+# the next scenario run without a reinstall.
+framework:
+  - ../kernel
+  - ../sdk
+  - ../mcp_server
+packs:
+  lisa-pack-bash: ../../lisa-packs/bash
+  lisa-pack-bwrap: ../../lisa-packs/bwrap
+  lisa-pack-coding: ../../packs-wip/coding
+  lisa-pack-finances: ../../packs-wip/finances
+  lisa-pack-markdown: ../../lisa-packs/markdown
+  lisa-pack-personas: ../../lisa-packs/personas
+  lisa-pack-search: ../../lisa-packs/search
+  lisa-pack-serper: ../../lisa-packs/serper

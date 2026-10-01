@@ -27,3 +27,4 @@ htmlcov/
 
 # Outputs
 artifacts/
+.e2e/
