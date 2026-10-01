@@ -6,15 +6,9 @@ description: >
   (single handoff or sequential first-target). Parallel fan-out is owned
   by the ``fork`` operation.
 effect: read
-# 90, not 45: ``plan_workflow.execute`` runs TWO model calls under this
-# timeout — the structured first attempt and the JSON-only retry (see
-# ``_json_only_retry``). Reasoning models routed through Ollama
-# (kimi-k2.6, glm-5.2) spend 20-30s per attempt on internal reasoning
-# before emitting visible content; 45s was calibrated on a single fast
-# call and timed out on the 2026-07-31 complex-prompt incident when the
-# first attempt + retry together exceeded the envelope. 90s covers both
-# attempts on a loaded/queued Ollama without making the user wait
-# unbounded.
-timeout_seconds: 90
+# Covers TWO model calls (structured attempt + JSON-only retry) at the
+# 32768-token planning budget; reasoning models take ~40s per 8k tokens on
+# Ollama, so 90s timed out (2026-10-01 e2e run 8).
+timeout_seconds: 300
 max_calls_per_turn: 1
 preferred_model_id: default

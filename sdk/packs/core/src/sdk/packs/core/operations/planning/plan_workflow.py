@@ -574,15 +574,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         {"role": "user", "content": user_content},
     ]
 
-    # 8192, not 4096: reasoning models routed through Ollama (kimi-k2.6,
-    # glm-5.2) spend their token budget on internal reasoning before
-    # emitting visible content. 4096 was calibrated on a SIMPLE probe prompt
-    # (836 completion_tokens, finish_reason=stop). Complex multi-step prompts
-    # need more reasoning room — the 2026-07-30 complex-prompt incident showed
-    # plan_workflow returning empty content on the retry at 4096 because the
-    # model exhausted its budget on reasoning. The visible JSON answer is
-    # tiny (~2 fields); the budget is for the model's thinking room.
-    plan_max_tokens = 8192
+    # 32768: reasoning models spend the completion budget on thinking before
+    # emitting the small JSON plan. 8192 truncated glm-5.3 at the length limit
+    # (2026-10-01 e2e run 8); 32768 matches the turn loop's truncation ceiling.
+    plan_max_tokens = 32768
 
     parsed = await _structured_plan_call(ctx, messages, model_def, plan_max_tokens)
     if parsed is None:
