@@ -529,10 +529,11 @@ async def _restart_edited_candidate(
     )
     assert "Every required check must pass" in blocked.result.error
     factory.identity["session_plan_digest"] = "changed-session-plan"
-    denied = await run_tool(
+    survived = await run_tool(
         catalog, "coding_read_file", factory, {"artifact_id": artifact_id, "path": "app.txt"}
     )
-    assert "does not belong" in denied.result.error
+    assert survived.result.error == "", survived.result.error
+    assert len(await factory.artifact_store.list_owned(factory.context())) == 1
     factory.identity["session_plan_digest"] = restarted.session_plan.plan_digest
     assert len(await factory.artifact_store.list_owned(factory.context())) == 1
     return factory

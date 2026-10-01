@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
+from sdk.identity import execution_scope
 
 __all__ = [
     "WorkProduct",
@@ -119,21 +120,18 @@ class WorkProduct(BaseModel):
     def belongs_to(self, ctx: object) -> bool:
         """Return whether this WorkProduct is owned by the current host identity.
 
-        The single canonical ownership check for the artifact handoff: an exact
-        match on workspace, user, surface, and session plan digest. Both the
+        The single canonical ownership check for the artifact handoff. Both the
         producing pack (coding) and the publishing pack (github) call this so
-        the identity rule cannot drift between them. ``ctx`` is a
-        ``kernel.models.ToolExecutionContext``; typed as ``object`` here because
-        the SDK must not import the kernel's higher-level models.
+        the identity rule cannot drift between them. Scope comes from
+        :func:`sdk.identity.execution_scope`, which documents why
+        ``session_plan_digest`` is not part of it; use
+        :meth:`session_plan_matches` to report that drift instead.
         """
-        return (
-            self.workspace_id == getattr(ctx, "workspace_id", None)
-            and self.user_id == getattr(ctx, "user_id", None)
-            and self.user_slug == getattr(ctx, "user_slug", None)
-            and self.surface_type == getattr(ctx, "surface_type", None)
-            and self.surface_id == getattr(ctx, "surface_id", None)
-            and self.session_plan_digest == getattr(ctx, "session_plan_digest", None)
-        )
+        return execution_scope(self) == execution_scope(ctx)
+
+    def session_plan_matches(self, ctx: object) -> bool:
+        """Return whether this WorkProduct was produced under ``ctx``'s session plan."""
+        return self.session_plan_digest == getattr(ctx, "session_plan_digest", None)
 
 
 @runtime_checkable

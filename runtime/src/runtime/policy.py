@@ -35,7 +35,6 @@ pack code. See :func:`read_containment` for the contract.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import shlex
@@ -46,6 +45,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+from sdk.identity import execution_scope_key
 
 logger = logging.getLogger(__name__)
 
@@ -522,27 +522,12 @@ def _write_policy(path: Path, doc: PolicyDocument) -> None:
 def sandbox_session_key(identity: Any) -> str:
     """Recompute the bash session key from an approval identity.
 
-    The bash pack keys its sessions by
-    ``sha256(workspace_id/user_slug/session_plan_digest/surface_id)[:16]``. All
-    four inputs are present on :class:`~kernel.approval.ApprovalIdentity`, so
-    the engine can find the pack's containment fact without importing pack
-    code. This function is the single shared definition of that key — keep it
-    in lockstep with the pack's ``_session_key`` (same inputs, same order).
+    The bash pack keys its sessions by :func:`sdk.identity.execution_scope_key`,
+    so the engine can find the pack's containment fact without importing pack
+    code. Both sides call the one SDK definition; this wrapper only names the
+    engine-side intent.
     """
-    raw = (
-        "/".join(
-            part
-            for part in (
-                getattr(identity, "workspace_id", "") or "",
-                getattr(identity, "user_slug", "") or "",
-                getattr(identity, "session_plan_digest", "") or "",
-                getattr(identity, "surface_id", "") or "",
-            )
-            if part
-        )
-        or "default"
-    )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return execution_scope_key(identity)
 
 
 def read_containment(data_dir: Path, identity: Any) -> dict[str, str]:
