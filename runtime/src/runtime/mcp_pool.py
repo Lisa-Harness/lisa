@@ -202,7 +202,9 @@ def discover_framework(
     if installed_packs:
         runtime.session.request_restart(reason=f"auto-install: {', '.join(installed_packs)}")
     plan_packs = runtime.session_plan.manifest.resources.packs
-    session_pack_include = (*plan_packs.include, *plan_packs.required)
+    # Provider owners count as included: selecting a pack as the memory/mode
+    # owner while leaving it out of `required` must not drop its MCP manifest.
+    session_pack_include = tuple(sorted(runtime.session_plan.manifest.declared_pack_owners()))
     session_pack_exclude = plan_packs.exclude
     roots = sdk_content_roots(
         runtime.paths.data_dir,

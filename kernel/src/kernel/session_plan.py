@@ -562,6 +562,18 @@ class SessionManifestV2(_StrictSessionModel):
     instructions: SessionInstructions = Field(default_factory=SessionInstructions)
     context: ContextPlan = Field(default_factory=ContextPlan)
 
+    def declared_pack_owners(self) -> set[str]:
+        """Packs the plan activates: included, required, or selected as a provider owner."""
+        owners = set(self.resources.packs.include) | set(self.resources.packs.required)
+        for selections in (
+            self.providers.modes,
+            self.providers.operations,
+            self.providers.tools,
+            self.providers.capabilities,
+        ):
+            owners.update(selections.values())
+        return owners
+
 
 class SessionInstructionPlan(_StrictSessionModel):
     """Compiled stable instruction content and provenance."""

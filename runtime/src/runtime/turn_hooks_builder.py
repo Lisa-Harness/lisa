@@ -1140,16 +1140,7 @@ def _build_item_builder_context(
 
 
 def _declared_config_owners(runtime: HostRuntime) -> set[str]:
-    manifest = runtime.session_plan.manifest
-    owners = set(manifest.resources.packs.include) | set(manifest.resources.packs.required)
-    for selections in (
-        manifest.providers.modes,
-        manifest.providers.operations,
-        manifest.providers.tools,
-        manifest.providers.capabilities,
-    ):
-        owners.update(selections.values())
-    return owners
+    return runtime.session_plan.manifest.declared_pack_owners()
 
 
 def build_turn_hooks(

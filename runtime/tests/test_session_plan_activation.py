@@ -128,6 +128,36 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
     assert core_root in excluded_roots
 
 
+def test_provider_owner_packs_are_session_included() -> None:
+    """A pack selected only as a provider owner (memory capability, default
+    mode) must be activated, or its MCP manifest (the memory backend) is
+    never compiled and memory writes silently go nowhere."""
+    plan = compile_session_plan(
+        text=(
+            "---\n"
+            "schema_version: 2\n"
+            "name: activation-test\n"
+            "surface: { type: personal_dm, id: host-console, memory_scope: testing }\n"
+            "resources:\n"
+            "  packs:\n"
+            "    required: [lisa-pack-coding]\n"
+            "providers:\n"
+            "  capabilities: { memory: lisa-pack-memory }\n"
+            "  modes: { default: lisa-pack-memory }\n"
+            "  tools: { web_search: lisa-pack-serper }\n"
+            "---\n"
+            "# Session\n"
+        ),
+        source_uri="workspace:activation-test.md",
+    )
+
+    assert plan.manifest.declared_pack_owners() == {
+        "lisa-pack-coding",
+        "lisa-pack-memory",
+        "lisa-pack-serper",
+    }
+
+
 def test_infer_pack_package_name_maps_lisa_packs_site_packages_to_canonical_name(
     tmp_path: Path,
 ) -> None:
