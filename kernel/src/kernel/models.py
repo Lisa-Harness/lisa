@@ -1447,8 +1447,8 @@ class WorkflowTransitionRequest(BaseModel):
 
     target_stage_id: str = Field(
         description=(
-            "The target to move to. One of two forms: a mode id "
-            "(e.g. `coding`, `search`, `markdown`) to hand off mid-turn; "
+            "The target to move to. One of two forms: a routable mode id "
+            "(listed in the tool description) to hand off mid-turn; "
             "or a workflow stage id to advance the current mode's FSM. "
             "Parallel fan-out is owned by the `fork` operation."
         )

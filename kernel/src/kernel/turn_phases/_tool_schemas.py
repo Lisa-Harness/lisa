@@ -382,10 +382,10 @@ async def build_tool_surface(
         if mode_config
         else False
     )
-    has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
-    allow_transition_stage = has_stage_edges or has_routing_targets
+    routing_targets = get_routing_targets(mode_id) if mode_config else []
+    allow_transition_stage = has_stage_edges or bool(routing_targets)
     if allow_transition_stage:
-        tool_schemas.extend(get_transition_tool_schema())
+        tool_schemas.extend(get_transition_tool_schema(routing_targets))
     if yield_policy.allowed or yield_policy.fallback_mode:
         tool_schemas.extend(get_yield_tool_schema())
 

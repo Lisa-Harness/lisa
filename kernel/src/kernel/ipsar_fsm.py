@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -1740,18 +1740,28 @@ def get_routing_targets(
     return transitions.get(mode_id, [])
 
 
-def get_transition_tool_schema() -> list[dict[str, object]]:
-    """Return the structured tool schema used for stage transitions."""
+def get_transition_tool_schema(
+    routing_targets: Sequence[str] = (),
+) -> list[dict[str, object]]:
+    """Return the structured tool schema used for stage transitions.
+
+    ``routing_targets`` are the mode ids the current mode may hand off to;
+    they are listed verbatim so the model never guesses a mode id.
+    """
+    if routing_targets:
+        targets = ", ".join(f"`{m}`" for m in routing_targets)
+        mode_form = f"(1) one of these routable mode ids: {targets} to "
+    else:
+        mode_form = "(1) no mode handoff is available from this mode; "
     return [
         build_strict_openai_function_tool(
             name="transition_stage",
             description=(
                 "Switch modes or advance a workflow stage. Use "
                 "`target_stage_id` with one of two forms: "
-                "(1) a mode id like `coding`, `search`, or `markdown` to "
+                f"{mode_form}"
                 "hand off the rest of this turn to that mode (use this "
-                "when the current mode lacks the tools the request needs "
-                "— e.g. hand off to `markdown` to write a document); "
+                "when the current mode lacks the tools the request needs); "
                 "(2) a workflow stage id to advance the current mode's "
                 "FSM. Pass `delegated_goal` and `context_payload` to "
                 "tell the receiving mode exactly what to do and what "
