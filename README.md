@@ -107,6 +107,14 @@ not part of any runtime: it imports `kernel` and `sdk` only, and pack
 repositories consume it as a dev dependency.
 See [`packstest/README.md`](packstest/README.md) for the full API.
 
+### The e2e scenario harness
+
+`e2etest` (`lisa-e2e`) is the live counterpart: it boots a real runtime in an
+isolated data dir, plays a pack's scripted scenario against a live model,
+answers approvals, and judges the outcome from receipts, memory, and git
+state. Scenarios live in each pack under `tests/e2e/`. See
+[`e2etest/README.md`](e2etest/README.md).
+
 ## Repository layout
 
 This is a [uv][uv] workspace; the root `pyproject.toml` ties the member

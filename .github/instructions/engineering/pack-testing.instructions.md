@@ -1,7 +1,7 @@
 ---
 name: Pack Testing
-applyTo: "packstest/**,sdk/packs/**,../lisa-packs*/**"
-description: "Use when testing or debugging content packs; mandates the packstest in-process harness as the first verification loop."
+applyTo: "packstest/**,e2etest/**,sdk/packs/**,../lisa-packs*/**"
+description: "Use when testing or debugging content packs; mandates the packstest in-process harness as the first verification loop and an e2e scenario for each pack workflow."
 ---
 
 # Pack testing
@@ -11,3 +11,5 @@ description: "Use when testing or debugging content packs; mandates the packstes
 - Pack tests must not import `runtime` or any private runtime module — use `packstest.store.MemoryWorkProductStore` where pack code expects a `WorkProductStore`. Packs import `kernel` and `sdk` only.
 - The harness calls the real SDK catalog scanners; do not add parallel path-inference or provider-id logic to it. Validate tool `effect` values via `kernel.approval.EffectKind`, not hardcoded sets.
 - When an eval fails, fix the pack (or, if the harness itself mis-modeled a production contract, fix the harness and add a self-test) — never loosen the assertion to force green.
+- When creating a pack or adding a user-facing workflow, add a live scenario in the pack's `tests/e2e/` (scenario YAML, `session_context.md` template, tiny fixture, `conftest.py` ignoring `fixtures/*`) and register the pack in `e2etest/packs.yml`. Assert outcomes from evidence, prove the fixture with a baseline oracle, and verify the end state outside Lisa. Format and oracles: `e2etest/README.md`.
+- Debug a failed scenario from its bundle (`verdict.json` → `transcript.md` → `data/`), reproduce the failing piece deterministically, fix the root cause, and add the regression test at the lowest layer that reproduces it before rerunning the scenario.

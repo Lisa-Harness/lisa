@@ -522,6 +522,7 @@ Keep imports limited to `kernel`, `sdk`, and package-local modules. Add import-b
 7. Add opt-in live tests only for integrations that need them.
 8. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a runtime.
 9. Add import-boundary tests.
+10. Ship at least one live end-to-end scenario under `tests/e2e/` that drives the pack's primary workflow and verifies the outcome outside Lisa; run it with `uv run --frozen lisa-e2e run <scenario.yml>`. See [`../e2etest/README.md`](../e2etest/README.md).
 
 The `packstest` harness ([`../packstest/README.md`](../packstest/README.md)) activates packs in-process from source — no install step, no catalog subprocess, no model calls. Eval files live in the pack under `tests/evals/` with the `eval` marker.
 
@@ -535,3 +536,15 @@ uv run pytest ../lisa-packs-wip/stripe/tests -m "not live" -q
 ```
 
 Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.
+
+### End-to-end scenarios
+
+`packstest` proves each tool honors its contract; it cannot prove a model can
+finish the workflow through routing, handoffs, approvals, memory, and the
+sandbox. A pack's `tests/e2e/*.scenario.yml` does that: `lisa-e2e` boots a
+real runtime in an isolated data dir, plays scripted turns against a live
+model, answers approvals with real `/approve` commands, and judges the result
+from receipts, stored records, and git state. The scenario format, oracle
+reference, debugging loop, and fixture conventions are in
+[`../e2etest/README.md`](../e2etest/README.md). Like other live tests,
+scenarios are opt-in and stay out of default CI.
