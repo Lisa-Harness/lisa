@@ -47,7 +47,8 @@ _SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
 # Local OpenAI-compatible providers (Ollama) frequently truncate the JSON
 # envelope + 3 facts mid-array when the budget is too small, which the
 # ``_looks_like_json`` guard correctly refuses to fall back to prose.
-_DISTILL_MAX_TOKENS = 512
+# Reasoning models (glm-5.3) also spend this budget thinking first.
+_DISTILL_MAX_TOKENS = 16384
 
 
 @dataclass(frozen=True)
