@@ -21,7 +21,12 @@ from typing import Any
 
 from kernel.tools.mcp_client import MCPToolPool, SyntheticToolSpec
 
-__all__ = ["mcp_alias_tool"]
+__all__ = ["AliasTargetError", "mcp_alias_tool"]
+
+
+class AliasTargetError(RuntimeError):
+    """The aliased MCP tool reported an error; raised so the pool marks the call failed."""
+
 
 #: The default empty-schema for synthetic alias tools that forward their
 #: arguments verbatim. Callers should pass a real schema when possible.
@@ -92,6 +97,8 @@ def mcp_alias_tool(
             mapped,
             server_id=target_server_id,
         )
+        if result.is_error:
+            raise AliasTargetError(result.output_text)
         if result_map is not None:
             return result_map(result.output_text)
         return result.output_text

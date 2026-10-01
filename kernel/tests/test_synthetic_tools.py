@@ -516,6 +516,34 @@ async def test_mcp_alias_tool_target_server_id_routes_scoped(
     await pool.aclose()
 
 
+@pytest.mark.asyncio
+async def test_mcp_alias_tool_surfaces_target_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An alias pinned to a server that is not in the pool must fail, not
+    return the error text as a successful result (memory.add reported
+    "stored" while no memory backend was registered)."""
+    _patch_connect(monkeypatch)
+    _patch_refresh_with(monkeypatch, {})
+    pool = MCPToolPool([_config_named("other")])
+    await pool.start()
+    pool.add_synthetic_tools(
+        [
+            mcp_alias_tool(
+                name="memory.add",
+                description="generic alias",
+                pool=pool,
+                target_tool="add_memory",
+                target_server_id="lisa-memory",
+            )
+        ]
+    )
+
+    result = await pool.call_tool("memory.add", {"content": "hi"})
+
+    assert result.is_error is True
+    assert "Unknown MCP server 'lisa-memory'" in result.output_text
+    await pool.aclose()
+
+
 # ── tool_policy vs internal dispatch ───────────────────────────────────────
 
 
