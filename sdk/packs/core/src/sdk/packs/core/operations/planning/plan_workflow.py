@@ -46,6 +46,19 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["PlanStep", "PlanWorkflowOutput", "execute"]
 
+# Default for ``resources.packs.configuration.lisa-pack-core.plan_max_tokens``.
+# Reasoning models spend this budget thinking before emitting the small JSON
+# plan; 8192 truncated glm-5.3 at the length limit (2026-10-01 e2e run 8).
+_PLAN_MAX_TOKENS = 32768
+
+
+def _plan_max_tokens(ctx: OperationExecutionContext) -> int:
+    """Return the session's planning budget, rejecting malformed values."""
+    raw = (ctx.pack_config or {}).get("plan_max_tokens", _PLAN_MAX_TOKENS)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise ValueError(f"lisa-pack-core plan_max_tokens must be a positive integer, got {raw!r}")
+    return raw
+
 
 def _compact_json_schema(schema: dict[str, Any]) -> None:
     """Strip non-essential schema metadata for structured-output providers."""
@@ -574,10 +587,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         {"role": "user", "content": user_content},
     ]
 
-    # 32768: reasoning models spend the completion budget on thinking before
-    # emitting the small JSON plan. 8192 truncated glm-5.3 at the length limit
-    # (2026-10-01 e2e run 8); 32768 matches the turn loop's truncation ceiling.
-    plan_max_tokens = 32768
+    plan_max_tokens = _plan_max_tokens(ctx)
 
     parsed = await _structured_plan_call(ctx, messages, model_def, plan_max_tokens)
     if parsed is None:
