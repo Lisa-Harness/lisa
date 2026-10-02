@@ -114,23 +114,6 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
         },
     )
     await store.create(artifact)
-    thread_path = tmp_path / "thread.jsonl"
-    append_thread_entry(
-        thread_path=thread_path,
-        user_slug="user",
-        segment_turns=30,
-        mode_id="executor",
-        query="implement",
-        response_text="worktree created",
-        provenance={"source": "observed", "task_id": "task-one"},
-        effect_receipts=[
-            {
-                "capability_id": "create_worktree",
-                "effect": "write",
-                "artifact_id": artifact.artifact_id,
-            }
-        ],
-    )
     identity = SimpleNamespace(
         workspace_id="workspace",
         user_id="user",
@@ -144,12 +127,13 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
         return await verify_checked_commit(
             TaskCompletionRequest(task_id=task_id, origin_tool_id="create_worktree"),
             store=store,
-            thread_path=thread_path,
             identity=identity,
         )
 
     assert (await verify("task-one")).verified is True
-    assert (await verify("old-task")).verified is False
+    assert (await verify("old-task")).reason == (
+        "This task has not created or worked on a worktree."
+    )
     assert (
         await verify_checked_commit(
             TaskCompletionRequest(
@@ -158,10 +142,17 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
                 receipt_artifact_ids=(artifact.artifact_id,),
             ),
             store=store,
-            thread_path=thread_path,
             identity=identity,
         )
     ).verified is False
+
+    artifact.status = "patched"
+    await store.save(artifact)
+    assert (await verify("task-one")).reason == (
+        f"Worktree {artifact.artifact_id} is patched, not committed."
+    )
+    artifact.status = "committed"
+    await store.save(artifact)
 
     (worktree / "unchecked.txt").write_text("dirty\n", encoding="utf-8")
     assert (await verify("task-one")).verified is False
@@ -185,6 +176,61 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
     artifact.checks = {}
     await store.save(artifact)
     assert (await verify("task-one")).verified is True
+
+    # A later task that advances the same worktree takes over its completion.
+    assert artifact.claim_for_task(SimpleNamespace(task_id="task-two")) is True
+    await store.save(artifact)
+    assert (await verify("task-two")).verified is True
+    assert (await verify("task-one")).verified is False
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_reports_ambiguous_task_worktrees(tmp_path: Path) -> None:
+    store = FileCodeChangeArtifactStore(tmp_path / "code-changes.json")
+    identity = SimpleNamespace(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+    )
+    for status in ("patched", "committed", "cleaned"):
+        await store.create(
+            WorkProduct(
+                task_id="task",
+                session_plan_digest="plan",
+                source_root=str(tmp_path),
+                status=status,
+                **vars(identity),
+            )
+        )
+
+    evidence = await verify_checked_commit(
+        TaskCompletionRequest(task_id="task", origin_tool_id="create_worktree"),
+        store=store,
+        identity=identity,
+    )
+
+    assert evidence.verified is False
+    assert evidence.reason.startswith("This task is working on 2 worktrees")
+
+
+def test_claim_for_task_ignores_missing_or_unchanged_task() -> None:
+    artifact = WorkProduct(
+        task_id="task-one",
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        session_plan_digest="plan",
+        source_root="/repo",
+    )
+
+    assert artifact.claim_for_task(SimpleNamespace(task_id="")) is False
+    assert artifact.claim_for_task(SimpleNamespace()) is False
+    assert artifact.claim_for_task(SimpleNamespace(task_id="task-one")) is False
+    assert artifact.task_id == "task-one"
 
 
 @pytest.mark.parametrize("terminal_response", ["completed", "still working", ""])

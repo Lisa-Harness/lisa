@@ -16,54 +16,18 @@ from typing import Any
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest
 from sdk.workproducts import WorkProduct
 
-from runtime.thread import load_thread_range, next_turn_index
-
 __all__ = ["FileCodeChangeArtifactStore", "verify_checked_commit"]
 
 
-def _task_artifact_ids(
-    request: TaskCompletionRequest, *, thread_path: Path | None
-) -> set[str]:
-    """Read only exact task-linked producer receipts from durable thread entries."""
-    ids = set(request.receipt_artifact_ids)
-    if thread_path is None:
-        return ids
-    entries = load_thread_range(
-        thread_path=thread_path,
-        start_turn=0,
-        end_turn=next_turn_index(thread_path=thread_path),
-    )
-    pending = {
-        str(provenance["pending_approval_request_id"]): provenance
-        for entry in entries
-        if isinstance(provenance := entry.get("provenance"), dict)
-        and provenance.get("task_id") == request.task_id
-        and provenance.get("pending_approval_request_id")
-    }
-    for entry in entries:
-        provenance = entry.get("provenance") or {}
-        if provenance.get("task_id") != request.task_id:
-            continue
-        source = provenance.get("source")
-        if source == "host-approved":
-            approval_id = str(provenance.get("approval_request_id") or "")
-            if (
-                approval_id not in pending
-                or provenance.get("target_kind") != "tool"
-                or provenance.get("target_id") != request.origin_tool_id
-            ):
-                continue
-        elif source != "observed":
-            continue
-        for receipt in entry.get("effect_receipts") or []:
-            if (
-                isinstance(receipt, dict)
-                and receipt.get("capability_id") == request.origin_tool_id
-                and receipt.get("effect") in ("write", "external_write")
-                and receipt.get("artifact_id")
-            ):
-                ids.add(str(receipt["artifact_id"]))
-    return ids
+async def _task_artifact_ids(
+    request: TaskCompletionRequest, *, store: FileCodeChangeArtifactStore, identity: Any
+) -> list[str]:
+    """Select WorkProducts this task created or claimed (the store is the durable record)."""
+    ids = dict.fromkeys(request.receipt_artifact_ids)
+    for artifact in await store.list_owned(identity):
+        if artifact.task_id == request.task_id and artifact.status != "cleaned":
+            ids.setdefault(artifact.artifact_id)
+    return list(ids)
 
 
 async def _git_read(root: Path, *args: str) -> str | None:
@@ -120,43 +84,30 @@ async def _committed_tree(artifact: WorkProduct) -> str | None:
     return tree
 
 
-async def verify_checked_commit(
-    request: TaskCompletionRequest,
-    *,
-    store: FileCodeChangeArtifactStore,
-    thread_path: Path | None,
-    identity: Any,
-) -> TaskCompletionEvidence:
-    """Verify a real, clean committed tree for exactly this task's owned artifact."""
-    failure = TaskCompletionEvidence(
-        verified=False,
-        reason="This task has no owned worktree with a current checked commit.",
-    )
-    if not request.task_id or not request.origin_tool_id:
-        return failure
-    artifact_ids = _task_artifact_ids(request, thread_path=thread_path)
-    if len(artifact_ids) != 1:
-        return failure
-    artifact_id = next(iter(artifact_ids))
-    artifact = await store.get(artifact_id)
+def _record_problem(artifact: WorkProduct, *, task_id: str, identity: Any) -> str:
+    """Return why the stored record cannot be this task's commit, or ``""``."""
+    artifact_id = artifact.artifact_id
+    if not artifact.belongs_to(identity):
+        return f"Worktree {artifact_id} is not owned by this session."
+    if artifact.task_id != task_id:
+        return f"Worktree {artifact_id} has been claimed by another task."
+    if artifact.status not in ("committed", "pushed", "pr_opened"):
+        return f"Worktree {artifact_id} is {artifact.status}, not committed."
+    if artifact.revision < 1 or not artifact.changed_paths:
+        return f"Worktree {artifact_id} has no changes."
     if (
-        artifact is None
-        or not artifact.belongs_to(identity)
-        or artifact.task_id != request.task_id
-        or artifact.status not in ("committed", "pushed", "pr_opened")
-        or artifact.revision < 1
-        or not artifact.changed_paths
-        or not artifact.commit_sha
+        not artifact.commit_sha
         or artifact.commit_sha == artifact.base_sha
         or artifact.head_sha != artifact.commit_sha
         or not artifact.branch
         or not artifact.worktree_path
     ):
-        return failure
+        return f"Worktree {artifact_id} has no recorded commit for its changes."
+    return ""
 
-    tree = await _committed_tree(artifact)
-    if tree is None:
-        return failure
+
+def _unchecked_required(artifact: WorkProduct, *, tree: str) -> str:
+    """Return the first required check that did not pass on ``tree``, or ``""``."""
     for check_id in artifact.required_check_ids:
         check = artifact.checks.get(check_id)
         if (
@@ -166,8 +117,51 @@ async def verify_checked_commit(
             or check.revision != artifact.revision
             or check.checked_tree_sha != tree
         ):
-            return failure
-    return TaskCompletionEvidence(verified=True, artifact_id=artifact_id)
+            return check_id
+    return ""
+
+
+async def verify_checked_commit(
+    request: TaskCompletionRequest,
+    *,
+    store: FileCodeChangeArtifactStore,
+    identity: Any,
+) -> TaskCompletionEvidence:
+    """Verify a real, clean committed tree for exactly this task's owned artifact."""
+
+    if not request.task_id or not request.origin_tool_id:
+        reason = "Task identity is unavailable, so no worktree can be verified."
+        return TaskCompletionEvidence(verified=False, reason=reason)
+    artifact_ids = await _task_artifact_ids(request, store=store, identity=identity)
+    artifact = await store.get(artifact_ids[0]) if len(artifact_ids) == 1 else None
+    if not artifact_ids:
+        reason = "This task has not created or worked on a worktree."
+    elif len(artifact_ids) > 1:
+        reason = (
+            f"This task is working on {len(artifact_ids)} worktrees "
+            f"({', '.join(artifact_ids)}); finish or clean up all but one."
+        )
+    elif artifact is None:
+        reason = f"Worktree {artifact_ids[0]} is not owned by this session."
+    else:
+        reason = _record_problem(artifact, task_id=request.task_id, identity=identity)
+    if reason or artifact is None:
+        return TaskCompletionEvidence(verified=False, reason=reason)
+
+    tree = await _committed_tree(artifact)
+    if tree is None:
+        reason = (
+            f"Worktree {artifact.artifact_id} does not match its recorded commit "
+            "(uncommitted edits, a moved HEAD or branch, or extra commits)."
+        )
+    elif check_id := _unchecked_required(artifact, tree=tree):
+        reason = (
+            f"Required check '{check_id}' has not passed on the committed tree "
+            f"of worktree {artifact.artifact_id}."
+        )
+    if reason:
+        return TaskCompletionEvidence(verified=False, reason=reason)
+    return TaskCompletionEvidence(verified=True, artifact_id=artifact.artifact_id)
 
 
 class FileCodeChangeArtifactStore:

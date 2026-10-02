@@ -922,7 +922,6 @@ def _assemble_turn_hooks(
             verify_task_completion=partial(
                 verify_checked_commit,
                 store=artifact_store,
-                thread_path=runtime.paths.thread_path,
                 identity=turn_identity,
             )
             if artifact_store is not None

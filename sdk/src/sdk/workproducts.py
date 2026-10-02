@@ -91,6 +91,7 @@ class WorkProduct(BaseModel):
     """Durable state shared between a producing pack and a publishing pack."""
 
     artifact_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    #: The task currently responsible for this WorkProduct (see :meth:`claim_for_task`).
     task_id: str = ""
     workspace_id: str
     user_id: str
@@ -132,6 +133,21 @@ class WorkProduct(BaseModel):
     def session_plan_matches(self, ctx: object) -> bool:
         """Return whether this WorkProduct was produced under ``ctx``'s session plan."""
         return self.session_plan_digest == getattr(ctx, "session_plan_digest", None)
+
+    def claim_for_task(self, ctx: object) -> bool:
+        """Make ``ctx``'s task responsible for this WorkProduct; return whether it moved.
+
+        Tasks are per-intent and short-lived; WorkProducts outlive them. A
+        producing pack calls this whenever a task advances an owned
+        WorkProduct, so completion is judged against the task doing the work
+        rather than the one that happened to create it. Callers must have
+        already checked :meth:`belongs_to`.
+        """
+        task_id = str(getattr(ctx, "task_id", "") or "")
+        if not task_id or task_id == self.task_id:
+            return False
+        self.task_id = task_id
+        return True
 
 
 @runtime_checkable
