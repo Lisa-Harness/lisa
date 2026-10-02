@@ -356,7 +356,7 @@ class ThreadStore:
         # summary, while a preamble before the data gets blurred into
         # the data itself (2026-08-22 "dogmatic about old history"
         # symptom).
-        lines = ["Recent thread context:"]
+        lines = ["Recorded thread context:"]
         emitted = 0
         for entry in reversed(entries):
             if emitted >= limit:
@@ -377,19 +377,21 @@ class ThreadStore:
                     f"{body} [system_provenance: {prov.get('source', 'observed')}, "
                     f"model_id: {prov.get('model_id', 'unknown')}]"
                 )
-            lines.append(f"- {query or 'unknown'}: {body}")
+            timestamp = str(entry.get("timestamp_utc") or "unknown")
+            if self._redaction is not None:
+                timestamp = self._redaction.redact(timestamp)
+                body = self._redaction.redact(body)
+            lines.append(f"- [recorded at {timestamp}] {query or 'unknown'}: {body}")
             emitted += 1
         if emitted == 0:
             return ""
         # Post-hoc footer: lands after the data so the model treats it
         # as a closing directive, not a preamble that gets absorbed.
-        lines.append("")
-        lines.append(
-            "The entries above are resolved past exchanges — the user is "
-            "now responding to the most recent one. Do not re-raise or "
-            "re-narrate resolved issues from earlier rows."
+        footer = (
+            "These are recorded past exchanges, not the active request; "
+            "they do not establish current task status."
         )
-        return "\n".join([lines[0], *reversed(lines[1:])])
+        return "\n".join([lines[0], *reversed(lines[1:]), "", footer])
 
     def build_manifest(self, *, limit: int = 30) -> str:
         """Build a compact structured manifest of recent thread entries.
@@ -402,8 +404,8 @@ class ThreadStore:
         Each manifest line shows: turn index, mode_id, query preview
         (truncated), write-receipt capability ids, and handoff target.
 
-        The final (most recent) row is annotated ``← current`` so the model
-        can anchor on the latest exchange instead of treating the flat
+        The final (most recent) row is annotated ``← latest recorded`` so the model
+        can anchor on the latest recorded exchange instead of treating the flat
         table as equal-weight history (the 2026-08-14 "bringing back old
         ideas" symptom: every row looked identical, so the model re-raised
         stale queries).
@@ -413,9 +415,9 @@ class ThreadStore:
         entries = self.load_recent(limit=limit)
         if not entries:
             return ""
-        lines = ["## Thread Manifest", ""]
-        lines.append("| Turn | Mode | Query | Writes | Handoff |")
-        lines.append("| --- | --- | --- | --- | --- |")
+        lines = ["## Thread Manifest (Recorded History)", ""]
+        lines.append("| Turn | Recorded At (UTC) | Mode | Query | Writes | Handoff |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
         # ``load_recent`` returns oldest-first; the last entry is the most
         # recent turn. Derive a stable 1-based turn index from position so
         # the column is meaningful even when the stored entry lacks a
@@ -433,6 +435,10 @@ class ThreadStore:
             query = str(entry.get("query") or "").strip()
             if self._redaction is not None:
                 query = self._redaction.redact(query)
+            timestamp = str(entry.get("timestamp_utc") or "unknown")
+            if self._redaction is not None:
+                timestamp = self._redaction.redact(timestamp)
+            timestamp = timestamp.replace("|", "\\|")
             if len(query) > _MANIFEST_QUERY_PREVIEW_CHARS:
                 query = query[: _MANIFEST_QUERY_PREVIEW_CHARS - 3] + "…"
             # Escape pipes in query for markdown table safety.
@@ -445,9 +451,11 @@ class ThreadStore:
             ]
             writes = ", ".join(sorted(set(write_caps))) or "-"
             handoff = str(entry.get("handoff_to") or entry.get("transitioned_to") or "-")
-            is_current = offset == total - 1
-            row_marker = " ← current" if is_current else ""
-            lines.append(f"| {turn} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |")
+            is_latest = offset == total - 1
+            row_marker = " ← latest recorded" if is_latest else ""
+            lines.append(
+                f"| {turn} | {timestamp} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |"
+            )
         return "\n".join(lines)
 
     def search(

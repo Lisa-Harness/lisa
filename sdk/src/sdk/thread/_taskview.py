@@ -16,6 +16,9 @@ _MAX_EFFECTS = 12
 _MAX_ARTIFACTS = 6
 _MAX_EVIDENCE = 16
 DEFAULT_TASK_VIEW_BYTES = 8192
+RECORDED_HISTORY_LABEL = (
+    "Recorded exchanges, not the active request; earlier instructions and diagnoses are historical."
+)
 
 
 def _text(value: Any, redaction: ThreadRedactionPolicy | None) -> str:
@@ -137,7 +140,14 @@ def _compact_text(value: Any, limit: int) -> Any:
         record = cast(dict[str, Any], value)
         compacted: dict[str, Any] = {}
         for key, item in record.items():
-            if key.endswith("_ref") or key in ("status", "kind"):
+            if key.endswith("_ref") or key in (
+                "status",
+                "kind",
+                "scope",
+                "selection",
+                "interpretation",
+                "status_basis",
+            ):
                 compacted[key] = item
             elif key in ("task_id", "request_id") and isinstance(item, str) and len(item) > limit:
                 compacted[key] = _preview(item, limit)
@@ -179,8 +189,18 @@ def build_task_view(
     """Assemble one task's recorded state into a bounded, reference-carrying view."""
     ordered = list(entries)
     budget = max(1024, budget_bytes)
+    recorded = {
+        "scope": "recorded_history",
+        "interpretation": RECORDED_HISTORY_LABEL,
+        "selection": "explicit_task_id" if task_id else "latest_recorded",
+        "status_basis": "recorded_observation_not_live_state",
+        "as_of_utc": None,
+    }
     if not ordered:
-        return _trim({"task_id": _text(task_id, redaction), "status": "empty", "turns": 0}, budget)
+        return _trim(
+            {**recorded, "task_id": _text(task_id, redaction), "status": "empty", "turns": 0},
+            budget,
+        )
     target = task_id
     if not target:
         for _, entry in reversed(ordered):
@@ -195,6 +215,7 @@ def build_task_view(
     if not scoped:
         return _trim(
             {
+                **recorded,
                 "task_id": _text(target, redaction),
                 "status": "empty",
                 "turns": 0,
@@ -207,6 +228,8 @@ def build_task_view(
     latest = _text(latest_entry.get("response_text"), redaction)
     evidence = _evidence(scoped)
     view: dict[str, Any] = {
+        **recorded,
+        "as_of_utc": redact_value(latest_entry.get("timestamp_utc"), redaction),
         "task_id": _text(target, redaction),
         "task_id_ref": f"t{latest_turn}.task_id",
         "status": _status(latest_entry),

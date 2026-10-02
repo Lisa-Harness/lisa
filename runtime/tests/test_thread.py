@@ -167,7 +167,7 @@ class TestBuildRecentThreadExcerpt:
             response_text="here is my reflection",
         )
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=3)
-        assert "Recent thread context" in excerpt
+        assert "Recorded thread context" in excerpt
         # The recency preamble must frame the list as past exchanges.
         assert "past exchanges" in excerpt
         # The /pack command must NOT appear in the excerpt.
@@ -227,13 +227,13 @@ class TestBuildRecentThreadExcerpt:
 
 
 class TestBuildThreadManifest:
-    def test_marks_most_recent_row_as_current(self, tmp_path: Path) -> None:
-        """The final (most recent) row is annotated ``← current``.
+    def test_marks_most_recent_row_as_latest_recorded(self, tmp_path: Path) -> None:
+        """The final (most recent) row is annotated ``← latest recorded``.
 
         Regression for the 2026-08-14 "bringing back old ideas" symptom:
         the manifest was a flat table of identical-looking rows, so the
-        model re-raised stale queries. The current marker anchors the
-        model on the latest exchange.
+        model re-raised stale queries. The marker anchors the
+        model on the latest recorded exchange, not the live request.
         """
         thread_path = tmp_path / "thread"
         _write_entry(thread_path, query="older question", response_text="older answer")
@@ -245,18 +245,18 @@ class TestBuildThreadManifest:
         assert len(rows) == 4
         # The most recent (last) data row carries the current marker; the
         # older row does not.
-        assert "← current" not in rows[2]
-        assert "← current" in rows[3]
+        assert "← latest recorded" not in rows[2]
+        assert "← latest recorded" in rows[3]
         assert "newer question" in rows[3]
 
-    def test_single_entry_is_current(self, tmp_path: Path) -> None:
+    def test_single_entry_is_latest_recorded(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"
         _write_entry(thread_path, query="only question", response_text="only answer")
         manifest = build_thread_manifest(thread_path=thread_path, limit=30)
         rows = [line for line in manifest.splitlines() if line.startswith("| ")]
         # Header + separator + 1 data row.
         assert len(rows) == 3
-        assert "← current" in rows[2]
+        assert "← latest recorded" in rows[2]
 
     def test_empty_thread_returns_empty_string(self, tmp_path: Path) -> None:
         assert build_thread_manifest(thread_path=tmp_path / "missing", limit=30) == ""

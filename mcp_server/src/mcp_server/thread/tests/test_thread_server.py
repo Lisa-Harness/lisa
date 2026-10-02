@@ -44,6 +44,7 @@ def _write_active_entry(
     query: str = "",
     response_text: str = "",
     mode_id: str = "default",
+    timestamp_utc: str | None = None,
     content_source: str = "",
     reasoning_text: str = "",
     transcript: list[dict[str, Any]] | None = None,
@@ -56,6 +57,7 @@ def _write_active_entry(
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     entry: dict[str, object] = {
         "mode_id": mode_id,
+        "timestamp_utc": timestamp_utc,
         "query": query,
         "response_text": response_text,
     }
@@ -162,6 +164,9 @@ async def test_thread_read_range_include_transcript_is_restorable(
     )
     assert restored["content"] == long_output
     assert restored["has_more"] is False
+    assert restored["source"]["scope"] == "recorded_history"
+    assert restored["source"]["timestamp_utc"] is None
+    assert restored["source"]["source_kind"] == "tool"
 
 
 # ── thread_search ────────────────────────────────────────────────────
@@ -236,7 +241,7 @@ async def test_thread_filtered_evidence_can_be_found_and_expanded(
 
 
 @pytest.mark.asyncio
-async def test_thread_task_view_summarizes_active_task(
+async def test_thread_task_view_summarizes_latest_recorded_task(
     thread_deps: None,
     tmp_path: Path,
 ) -> None:
@@ -246,15 +251,22 @@ async def test_thread_task_view_summarizes_active_task(
         query="add the endpoint",
         response_text="done wiring",
         task_id="task-1",
+        timestamp_utc="2026-10-02T16:39:06+00:00",
     )
     view = json.loads(_tool_text(await mcp.call_tool("thread_task_view", {})))
     assert view["task_id"] == "task-1"
     assert view["objective"]["text"] == "add the endpoint"
     assert view["status"] == "open"
+    assert view["scope"] == "recorded_history"
+    assert view["selection"] == "latest_recorded"
+    assert view["status_basis"] == "recorded_observation_not_live_state"
+    assert view["as_of_utc"] == "2026-10-02T16:39:06+00:00"
     restored = json.loads(
         _tool_text(await mcp.call_tool("thread_read_content", {"ref": view["objective_ref"]}))
     )
     assert restored["content"] == "add the endpoint"
+    assert restored["source"]["timestamp_utc"] == view["as_of_utc"]
+    assert restored["source"]["source_kind"] == "user"
 
 
 @pytest.mark.asyncio
@@ -274,6 +286,7 @@ async def test_thread_search_returns_matching_entries(
         thread_path,
         query="fix the router bug",
         response_text="patched the routing logic",
+        timestamp_utc="2026-10-02T16:39:06+00:00",
     )
 
     result = await mcp.call_tool(
@@ -284,6 +297,8 @@ async def test_thread_search_returns_matching_entries(
     assert len(data["entries"]) == 2
     assert data["entries"][0]["query"] == "fix the router bug"
     assert data["entries"][0]["score"] > data["entries"][1]["score"]
+    assert data["scope"] == "recorded_history"
+    assert data["entries"][0]["timestamp_utc"] == "2026-10-02T16:39:06+00:00"
 
 
 @pytest.mark.asyncio
@@ -319,7 +334,16 @@ async def test_thread_search_empty_store_returns_empty_array(
         {"query": "anything"},
     )
     data = json.loads(_tool_text(result))
-    assert data == {"entries": [], "next_cursor": None, "has_more": False}
+    assert data == {
+        "scope": "recorded_history",
+        "interpretation": (
+            "Recorded exchanges, not the active request; "
+            "earlier instructions and diagnoses are historical."
+        ),
+        "entries": [],
+        "next_cursor": None,
+        "has_more": False,
+    }
 
 
 @pytest.mark.asyncio

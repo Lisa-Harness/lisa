@@ -196,10 +196,13 @@ async def thread_read_range(
     budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Read a bounded range of thread entries by inclusive global turn index.
+    """Read recorded past exchanges by inclusive global turn index, not the active request.
 
     Search with thread_search first, then read the relevant turn range.
-    Returns {entries, next_cursor, has_more}. Small fields remain inline;
+    Returns {scope, interpretation, entries, next_cursor, has_more}.
+    Entries carry recorded timestamps (null if unknown) and provenance sources.
+    Earlier instructions and diagnoses are historical, not live runtime state.
+    Small fields remain inline;
     large fields have {ref, head, tail, total_chars, omitted_chars} previews.
     Expand a ref with thread_read_content to obtain the complete permitted
     value through pages. The archive is lossless; previews are not full data.
@@ -231,9 +234,10 @@ async def thread_read_recent(
     budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Read a bounded recent window, oldest-first (limit defaults to 10, capped at 50).
+    """Read recorded history, oldest-first (limit defaults to 10, capped at 50).
 
-    Returns {entries, next_cursor, has_more} as in thread_read_range.
+    Returns the labeled history envelope as in thread_read_range, including
+    recorded timestamps and provenance sources. Latest recorded is not current.
     Large fields are explicit previews; expand refs with thread_read_content.
     include_transcript adds bounded tool call/result previews. Continue with
     next_cursor and the same include_transcript setting; later appends do not
@@ -268,7 +272,9 @@ async def thread_search(
 ) -> str:
     """Find prior turns and tool evidence by literal phrase/token matches.
 
-    Returns {entries, next_cursor, has_more}, ranked by relevance then
+    Returns a recorded_history envelope with timestamps and provenance sources,
+    not live task state. Earlier instructions and diagnoses are historical.
+    Entries are ranked by relevance then
     recency, with turn numbers, query/response previews, and score (0-1).
     Use thread_read_range for the relevant turns (include_transcript=true
     for tool calls/results), or thread_read_content to expand a preview ref.
@@ -308,7 +314,7 @@ async def thread_read_content(
 ) -> str:
     """Expand a thread preview ref without dumping unrelated history.
 
-    Returns {ref, content, offset_chars, total_chars, next_offset_chars,
+    Returns {ref, source, content, offset_chars, total_chars, next_offset_chars,
     has_more}. Follow next_offset_chars with the same ref to recover the
     complete permitted value. Offsets count Unicode characters AFTER
     redaction; structured values are serialized JSON. limit_chars defaults
@@ -322,6 +328,8 @@ async def thread_read_content(
     the current turn completes and after restart. inventory_ref points to
     omitted tool groups with their arguments and full-result references.
     Full reasoning_text and raw turn_input are not available through this tool.
+    Turn refs retain historical source labels and recorded timestamps. Hash refs
+    are stored tool output with unknown timing; they may come from a live turn.
     """
     deps = _resolve_deps(ctx)
     try:
@@ -347,7 +355,8 @@ async def thread_find_content(
 ) -> str:
     """Find literal text inside a referenced value, case-insensitively.
 
-    Returns bounded {ref, matches, next_offset_chars, has_more, total_chars}.
+    Returns bounded {ref, source, matches, next_offset_chars, has_more, total_chars}.
+    Source labels distinguish recorded history from stored tool output of unknown timing.
     Matches give excerpt, offset_chars, and match_offset_chars after redaction.
     Read the relevant span with thread_read_content(ref, offset_chars).
     Follow next_offset_chars with the same ref/query to find further matches.
@@ -377,7 +386,10 @@ async def thread_task_view(
     """Summarize one task's recorded state instead of replaying its history.
 
     task_id defaults to the most recent recorded task identity. Scans at
-    most 200 recent entries. Returns objective/latest previews and refs,
+    most 200 recent entries. This is NOT the active invocation's task identity.
+    scope, selection, and as_of_utc label the view as recorded history;
+    status and blockers are recorded observations, not verified live state.
+    Returns objective/latest previews and refs,
     blocking status, modes, receipt groups (capability_id, effect, count,
     artifact_ids), and archive evidence refs for thread_read_content or
     thread_find_content. Fields derive from recorded state, not model summaries.

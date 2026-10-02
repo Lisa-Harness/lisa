@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from sdk.thread import (
     ThreadReader,
     ThreadRedactionPolicy,
     ThreadStore,
+    result_object_path,
 )
 from sdk.thread._backend import _read_index, _sealed_segment_path, _segment_paths
 
@@ -38,6 +40,7 @@ def _write_active_entry(
     query: str = "",
     response_text: str = "",
     mode_id: str = "default",
+    timestamp_utc: str | None = None,
     turn: int | None = None,
     handoff_to: str = "",
     transcript: list[dict[str, Any]] | None = None,
@@ -52,6 +55,7 @@ def _write_active_entry(
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     entry: dict[str, Any] = {
         "mode_id": mode_id,
+        "timestamp_utc": timestamp_utc,
         "query": query,
         "response_text": response_text,
         "handoff_to": handoff_to,
@@ -131,6 +135,171 @@ def _is_host_cmd(query: str) -> bool:
 
 
 class TestThreadReader:
+    def test_stored_result_refs_do_not_infer_origin_time(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        original = "sensitive tool output " * 100
+        payload = json.dumps(
+            {"content": original, "task_id": "older", "tool_name": "read"}
+        ).encode()
+        ref = "r" + hashlib.sha256(payload).hexdigest()
+        path = result_object_path(thread_path, ref)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(payload)
+        policy = ThreadRedactionPolicy.from_patterns(["sensitive"])
+        reader = ThreadReader(ThreadStore(thread_path), policy)
+        page = json.loads(reader.read_content(ref, limit_chars=100))
+        found = json.loads(reader.find_content(ref, "tool"))
+        assert page["source"] == found["source"]
+        assert page["source"]["scope"] == "stored_tool_result"
+        assert page["source"]["timestamp_utc"] is None
+        assert "active request are unknown" in page["source"]["interpretation"]
+        assert page["content"] == policy.redact(original)[:100]
+        assert found["matches"][0]["match_offset_chars"] == policy.redact(original).index("tool")
+        assert path.read_bytes() == payload
+
+    def test_reference_metadata_is_redacted_and_expandable(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            response_text="sensitive historical claim",
+            timestamp_utc="sensitive timestamp " * 200,
+            provenance={"source": "host-approved-sensitive"},
+        )
+        policy = ThreadRedactionPolicy.from_patterns(["sensitive"])
+        reader = ThreadReader(ThreadStore(thread_path), policy)
+        text = reader.read_content("t0.response_text")
+        page = json.loads(text)
+        assert "sensitive" not in text
+        assert page["source"]["source_kind"] == "host"
+        stamp = page["source"]["timestamp_utc"]
+        assert stamp["abbreviated"] is True
+        restored = json.loads(reader.read_content(stamp["ref"]))
+        assert restored["content"] == policy.redact("sensitive timestamp " * 200)
+        assert json.loads(reader.read_content("t0.provenance_source"))["content"] == policy.redact(
+            "host-approved-sensitive"
+        )
+
+    def test_text_history_labels_latest_recorded_exchange(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(thread_path, query="first request", response_text="first reply")
+        timestamp = "2026-10-02T16:39:06+00:00"
+        _write_active_entry(
+            thread_path,
+            query="second request",
+            response_text="second reply",
+            timestamp_utc=timestamp,
+        )
+        store = ThreadStore(thread_path)
+        excerpt = store.build_recent_excerpt(limit=2)
+        assert excerpt.index("first request") < excerpt.index("second request")
+        assert "recorded at unknown" in excerpt
+        assert timestamp in excerpt
+        assert excerpt.endswith("they do not establish current task status.")
+        assert "resolved past exchanges" not in excerpt
+        manifest = store.build_manifest(limit=2)
+        assert "Recorded History" in manifest
+        assert "Recorded At (UTC)" in manifest
+        assert timestamp in manifest
+        assert manifest.count("latest recorded") == 1
+        assert "← current" not in manifest
+
+    @pytest.mark.parametrize("timestamp", ["2026-10-02T16:39:06+00:00", None])
+    def test_references_preserve_historical_source(
+        self, tmp_path: Path, timestamp: str | None
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        content = "Historical ownership claim: no owned worktree. " * 10
+        _write_active_entry(
+            thread_path,
+            query="past request",
+            response_text=content,
+            timestamp_utc=timestamp,
+            provenance={"source": "observed"},
+            transcript=[{"role": "tool", "content": "recorded tool output"}],
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        offset = 0
+        chunks = []
+        while True:
+            page = json.loads(reader.read_content("t0.response_text", offset, 45))
+            assert page["source"] == {
+                "scope": "recorded_history",
+                "interpretation": (
+                    "Recorded exchanges, not the active request; "
+                    "earlier instructions and diagnoses are historical."
+                ),
+                "turn": 0,
+                "timestamp_utc": timestamp,
+                "provenance_source": "observed",
+                "source_kind": "assistant",
+            }
+            chunks.append(page["content"])
+            if not page["has_more"]:
+                break
+            offset = page["next_offset_chars"]
+        assert "".join(chunks) == content
+        found = json.loads(reader.find_content("t0.response_text", "ownership"))
+        assert found["source"] == page["source"]
+        assert found["matches"][0]["match_offset_chars"] == content.index("ownership")
+        assert json.loads(reader.read_content("t0.query"))["source"]["source_kind"] == "user"
+        assert json.loads(reader.read_content("t0.m0.content"))["source"]["source_kind"] == "tool"
+        assert (
+            json.loads(reader.read_content("t0.timestamp_utc"))["source"]["source_kind"]
+            == "entry_metadata"
+        )
+
+    @pytest.mark.parametrize("budget", [1024, 2048, 8192])
+    def test_task_view_labels_recorded_selection(self, tmp_path: Path, budget: int) -> None:
+        thread_path = tmp_path / "thread"
+        old_time = "2026-10-01T00:00:00+00:00"
+        latest_time = "2026-10-02T00:00:00+00:00"
+        _write_active_entry(thread_path, query="old", task_id="old", timestamp_utc=old_time)
+        _write_active_entry(
+            thread_path,
+            query="previous request " * 2000,
+            task_id="previous",
+            timestamp_utc=latest_time,
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        for task_id, selection, timestamp in (
+            ("", "latest_recorded", latest_time),
+            ("old", "explicit_task_id", old_time),
+            ("live-not-yet-recorded", "explicit_task_id", None),
+        ):
+            text = reader.task_view(task_id, budget_bytes=budget)
+            assert len(text.encode("utf-8")) <= budget
+            view = json.loads(text)
+            assert view["scope"] == "recorded_history"
+            assert view["selection"] == selection
+            assert view["status_basis"] == "recorded_observation_not_live_state"
+            assert view["as_of_utc"] == timestamp
+            assert "not the active request" in view["interpretation"]
+
+    @pytest.mark.parametrize("timestamp", ["2026-10-02T16:39:06+00:00", None])
+    def test_archive_views_label_recorded_entries(
+        self, tmp_path: Path, timestamp: str | None
+    ) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="historical needle",
+            timestamp_utc=timestamp,
+            provenance={"source": "observed"},
+        )
+        reader = ThreadReader(ThreadStore(thread_path))
+        for text in (reader.read_range(0, 0), reader.read_recent(), reader.search("needle")):
+            page = json.loads(text)
+            assert page["scope"] == "recorded_history"
+            assert "not the active request" in page["interpretation"]
+            assert page["entries"][0]["timestamp_utc"] == timestamp
+            assert page["entries"][0]["provenance_source"] == "observed"
+
+        policy = ThreadRedactionPolicy.from_patterns(["historical", "2026", "observed"])
+        redacted = json.loads(ThreadReader(ThreadStore(thread_path), policy).read_recent())
+        assert "observed" not in redacted["entries"][0]["provenance_source"]
+        assert "2026" not in str(redacted["entries"][0]["timestamp_utc"])
+        assert ThreadStore(thread_path).load_recent(limit=1)[0]["timestamp_utc"] == timestamp
+
     @pytest.mark.parametrize("nested", [True, False])
     def test_search_does_not_match_an_excluded_call_in_a_batch(
         self, tmp_path: Path, nested: bool
@@ -697,7 +866,16 @@ class TestThreadReader:
     def test_empty_views_and_terminal_content_offset(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"
         reader = ThreadReader(ThreadStore(thread_path))
-        empty = {"entries": [], "next_cursor": None, "has_more": False}
+        empty = {
+            "scope": "recorded_history",
+            "interpretation": (
+                "Recorded exchanges, not the active request; "
+                "earlier instructions and diagnoses are historical."
+            ),
+            "entries": [],
+            "next_cursor": None,
+            "has_more": False,
+        }
         assert json.loads(reader.read_range(0, 999)) == empty
         assert json.loads(reader.read_recent()) == empty
         assert json.loads(reader.search("")) == empty

@@ -11,7 +11,7 @@ from typing import Any
 from sdk.thread._backend import ThreadStore
 from sdk.thread._results import load_result_object
 from sdk.thread._search import SearchFilters, entry_task_id, redact_value, search_entries
-from sdk.thread._taskview import DEFAULT_TASK_VIEW_BYTES, build_task_view
+from sdk.thread._taskview import DEFAULT_TASK_VIEW_BYTES, RECORDED_HISTORY_LABEL, build_task_view
 from sdk.thread.redaction import ThreadRedactionPolicy
 
 DEFAULT_READOUT_BYTES = 16384
@@ -47,7 +47,13 @@ def _budget(requested: int) -> int:
 
 
 def _page() -> dict[str, Any]:
-    return {"entries": [], "next_cursor": None, "has_more": False}
+    return {
+        "scope": "recorded_history",
+        "interpretation": RECORDED_HISTORY_LABEL,
+        "entries": [],
+        "next_cursor": None,
+        "has_more": False,
+    }
 
 
 def _finish(page: dict[str, Any], cursor: str | None = None) -> str:
@@ -88,6 +94,12 @@ class ThreadReader:
 
     def _entry(self, entry: dict[str, Any], turn: int) -> dict[str, Any]:
         result = {"turn": turn, "transcript_count": len(entry.get("transcript") or [])}
+        result["timestamp_utc"] = self._preview(
+            entry.get("timestamp_utc"), f"t{turn}.timestamp_utc"
+        )
+        result["provenance_source"] = self._preview(
+            (entry.get("provenance") or {}).get("source"), f"t{turn}.provenance_source"
+        )
         for field in _ENTRY_FIELDS:
             result[field] = self._preview(entry.get(field), f"t{turn}.{field}")
         caps = self._receipt_caps(entry)
@@ -306,7 +318,8 @@ class ThreadReader:
         """Page a complete permitted value; offsets count Unicode characters after redaction."""
         if len(ref) > _MAX_REFERENCE_CHARS or offset_chars < 0 or limit_chars <= 0:
             raise ValueError("Invalid reference, offset_chars, or limit_chars")
-        permitted = self._redact(self._resolve(ref))
+        value, source = self._resolve(ref)
+        permitted = self._redact(value)
         text = permitted if isinstance(permitted, str) else _encode(permitted)
         if offset_chars > len(text):
             raise ValueError("offset_chars exceeds content length")
@@ -314,12 +327,12 @@ class ThreadReader:
         lower, upper = 0, min(limit_chars, MAX_READOUT_BYTES, len(text) - offset_chars)
         while lower < upper:
             length = (lower + upper + 1) // 2
-            candidate = self._content_page(ref, text, offset_chars, length)
+            candidate = self._content_page(ref, text, offset_chars, length, source)
             if _byte_size(candidate) <= budget:
                 lower = length
             else:
                 upper = length - 1
-        return _encode(self._content_page(ref, text, offset_chars, lower))
+        return _encode(self._content_page(ref, text, offset_chars, lower, source))
 
     def find_content(
         self,
@@ -333,7 +346,8 @@ class ThreadReader:
         """Find literal text inside one permitted value without paging through all of it."""
         if not query or offset_chars < 0 or len(ref) > _MAX_REFERENCE_CHARS:
             raise ValueError("Require a nonempty query, valid ref, and nonnegative offset")
-        value = self._redact(self._resolve(ref))
+        raw, source = self._resolve(ref)
+        value = self._redact(raw)
         text = value if isinstance(value, str) else _encode(value)
         if offset_chars > len(text):
             raise ValueError("offset_chars exceeds content length")
@@ -341,6 +355,7 @@ class ThreadReader:
         pattern = re.compile(re.escape(query), re.I)
         page: dict[str, Any] = {
             "ref": ref,
+            "source": source,
             "matches": [],
             "next_offset_chars": None,
             "has_more": False,
@@ -369,11 +384,14 @@ class ThreadReader:
         return _encode(page)
 
     @staticmethod
-    def _content_page(ref: str, text: str, offset: int, length: int) -> dict[str, Any]:
+    def _content_page(
+        ref: str, text: str, offset: int, length: int, source: dict[str, Any]
+    ) -> dict[str, Any]:
         next_offset = offset + length
         has_more = next_offset < len(text)
         return {
             "ref": ref,
+            "source": source,
             "content": text[offset:next_offset],
             "offset_chars": offset,
             "total_chars": len(text),
@@ -381,9 +399,17 @@ class ThreadReader:
             "has_more": has_more,
         }
 
-    def _resolve(self, ref: str) -> Any:
+    def _resolve(self, ref: str) -> tuple[Any, dict[str, Any]]:
         if ref.startswith("r"):
-            return load_result_object(self.store.base_path, ref)["content"]
+            return load_result_object(self.store.base_path, ref)["content"], {
+                "scope": "stored_tool_result",
+                "source_kind": "tool",
+                "timestamp_utc": None,
+                "interpretation": (
+                    "Stored tool output; its time and relationship "
+                    "to the active request are unknown."
+                ),
+            }
         match = _REFERENCE.fullmatch(ref)
         if match is None:
             raise ValueError("Invalid thread reference")
@@ -393,15 +419,46 @@ class ThreadReader:
             raise ValueError("Thread reference not found")
         entry = entries[0]
         field = match[4]
+        provenance = (entry.get("provenance") or {}).get("source")
+        source = {
+            "scope": "recorded_history",
+            "interpretation": RECORDED_HISTORY_LABEL,
+            "turn": turn,
+            "timestamp_utc": self._preview(entry.get("timestamp_utc"), f"t{turn}.timestamp_utc"),
+            "provenance_source": self._preview(provenance, f"t{turn}.provenance_source"),
+            "source_kind": "entry_metadata",
+        }
         if match[3] is not None:
             if match[2] is None:
                 raise ValueError("Call reference requires a message index")
-            return self._resolve_call(entry, int(match[2]), int(match[3]), field)
+            value = self._resolve_call(entry, int(match[2]), int(match[3]), field)
+            source["source_kind"] = "assistant_tool_call"
+            return value, source
         if match[2] is not None:
-            return self._resolve_message(entry, int(match[2]), field)
-        return self._resolve_entry_field(entry, field)
+            index = int(match[2])
+            value = self._resolve_message(entry, index, field)
+            message = entry["transcript"][index]
+            role = message.get("role") if isinstance(message, dict) else None
+            source["source_kind"] = (
+                role if role in ("user", "assistant", "tool", "system") else "message"
+            )
+            return value, source
+        value = self._resolve_entry_field(entry, field)
+        if field == "query":
+            source["source_kind"] = "user"
+        elif field == "response_text":
+            source["source_kind"] = (
+                "host" if str(provenance or "").startswith("host-") else "assistant"
+            )
+        return value, source
 
     def _resolve_entry_field(self, entry: dict[str, Any], field: str | None) -> Any:
+        if field in ("timestamp_utc", "provenance_source"):
+            return (
+                entry.get(field)
+                if field == "timestamp_utc"
+                else (entry.get("provenance") or {}).get("source")
+            )
         if field == "receipt_capability_ids":
             return self._receipt_caps(entry)
         if field == "task_id":
