@@ -722,11 +722,17 @@ def _assemble_dynamic_user_context(
     # Build the UnifiedState from the runtime snapshot for the broker.
     # The item builder is invoked inside build_unified_state to
     # populate ``context_items`` — the single feed the
-    # session-owned context mapper walks.
+    # session-owned context mapper walks. Thread-derived digest items
+    # (task state, recent history, open objectives) join the same feed so
+    # the retrieval lane renders them at turn start.
+    from runtime.thread import get_thread_redaction_policy
+
     state = build_unified_state(
         state_snapshot=runtime.session.state_snapshot,
         item_builder=item_builder,
         runtime_context=runtime_context,
+        thread_path=runtime.paths.thread_path,
+        thread_redaction=get_thread_redaction_policy(),
     )
 
     def _session_context_loader() -> str:
@@ -972,10 +978,14 @@ def _bind_state_provider(
     """
 
     def _state_provider() -> Any:
+        from runtime.thread import get_thread_redaction_policy
+
         return build_unified_state(
             state_snapshot=runtime.session.state_snapshot,
             item_builder=item_builder,
             runtime_context=runtime_context,
+            thread_path=runtime.paths.thread_path,
+            thread_redaction=get_thread_redaction_policy(),
         )
 
     return _state_provider

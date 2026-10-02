@@ -2535,20 +2535,29 @@ def _per_iteration_nudges(
         and pending_yield is None
     ):
         state.read_loop_nudge_fired = True
+        _retrieval_calls = getattr(state, "retrieval_calls", 0)
+        _retrieval_distinct = len(getattr(state, "retrieval_distinct_args", ()) or ())
+        _retrieval_repeats = max(0, _retrieval_calls - _retrieval_distinct)
         log.info(
             "read-loop nudge (mode=%s iteration=%d turns_in_stage=%d "
-            "read_receipts=True zero_writes); nudging to synthesize and land",
+            "read_receipts=True zero_writes retrieval_calls=%d "
+            "retrieval_repeats=%d); nudging to synthesize and land",
             mode_id,
             state.iteration,
             turns_in_stage,
+            _retrieval_calls,
+            _retrieval_repeats,
         )
         _read_loop_nudge_text = (
             "READ-LOOP BUDGET WARNING. You have spent many iterations on "
-            "read-only calls without landing your findings. Synthesize "
-            "what you have now: call your mode's write/document tool "
-            "with the evidence collected so far, or hand off to the "
-            "mode that can. Do not issue more of the same read calls "
-            "without a new, specific reason."
+            "read-only calls without landing your findings. "
+            f"So far this turn: {_retrieval_calls} thread-archive reads, "
+            f"{_retrieval_repeats} of them repeating calls you already made. "
+            "Each read re-bills the context it adds on every later iteration. "
+            "Synthesize what you have now: call your mode's write/document tool "
+            "with the evidence collected so far, delegate the gathering to a "
+            "child, or hand off to the mode that can. Do not issue more of "
+            "the same read calls without a new, specific reason."
         )
     return _midpoint_nudge_text, _read_loop_nudge_text
 

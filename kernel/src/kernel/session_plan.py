@@ -452,6 +452,25 @@ def _default_context_lanes() -> tuple[ContextLanePlan, ...]:
     )
 
 
+def _default_context_sources() -> tuple[ContextSourceRule, ...]:
+    """Default admission rules: thread digest → retrieval; the rest → history.
+
+    Without any source rule the mapper drops every candidate
+    (``no_matching_source_rule``) — an authored ``context.sources`` block
+    replaces these defaults wholesale (hard cutover, same contract as the
+    rest of the plan), so a session that authors rules keeps full control.
+    """
+    return (
+        ContextSourceRule(
+            rule_id="thread_digest",
+            lane_id="retrieval",
+            evidence_types=("task_state", "recent_history", "open_objectives"),
+            priority=100,
+        ),
+        ContextSourceRule(rule_id="history_fallback", lane_id="history", fallback=True),
+    )
+
+
 class ModelManifestRef(_StrictSessionModel):
     """A reference to a model manifest file (``models.yaml``).
 
@@ -520,7 +539,7 @@ class ContextPlan(_StrictSessionModel):
     """The session-owned context mapper policy."""
 
     lanes: tuple[ContextLanePlan, ...] = Field(default_factory=_default_context_lanes)
-    sources: tuple[ContextSourceRule, ...] = ()
+    sources: tuple[ContextSourceRule, ...] = Field(default_factory=_default_context_sources)
     ranking: ContextRankingPlan = Field(default_factory=ContextRankingPlan)
     budget: ContextBudgetPlan = Field(default_factory=ContextBudgetPlan)
     history: ContextHistoryPlan = Field(default_factory=ContextHistoryPlan)

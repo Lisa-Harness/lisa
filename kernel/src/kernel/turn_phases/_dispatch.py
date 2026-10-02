@@ -46,11 +46,41 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "CapabilityDispatchOutcome",
+    "_track_retrieval_call",
     "dispatch_capability",
     "enforce_write_receipt",
     "format_read_abbreviation",
     "read_cache_signature",
 ]
+
+#: Thread-archive tools whose repeated identical calls signal paging in
+#: circles rather than gathering (the 2026-10-02 reviewer burn: 23
+#: thread_read_content calls, many repeating earlier pages).
+_RETRIEVAL_TOOL_SUFFIXES = (
+    "thread_read_content",
+    "thread_read_range",
+    "thread_read_recent",
+    "thread_find_content",
+    "thread_search",
+    "thread_task_view",
+)
+
+
+def _track_retrieval_call(state: Any, tool_name: str, tool_arguments: Any) -> None:
+    """Count a retrieval-tool call and its distinct argument signature.
+
+    Paired fields on ``_TurnState`` give the read-loop nudge its factual
+    basis: how many retrieval calls happened and how many repeated
+    arguments the model already held.
+    """
+    if tool_name.rsplit(".", 1)[-1] not in _RETRIEVAL_TOOL_SUFFIXES:
+        return
+    state.retrieval_calls += 1
+    try:
+        signature = json.dumps(tool_arguments, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        signature = repr(tool_arguments)
+    state.retrieval_distinct_args.add(f"{tool_name}:{signature}")
 
 
 def read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str:
@@ -376,7 +406,7 @@ def _capture_effect_receipt(
     pool: MCPToolPool,
     state: _TurnState,
     logger: logging.Logger,
- ) -> tuple[str, str, bool, str]:
+) -> tuple[str, str, bool, str]:
     """Capture effect receipt and enforce write receipt invariant."""
     receipts_before = len(state.effect_receipts)
     dispatched_effect, dispatched_artifact_id = _resolve_dispatch_metadata(
@@ -554,6 +584,7 @@ async def dispatch_capability(
         state.total_tool_calls += 1
         state.step_tool_calls += 1
         state.called_tool_names.add(tool_name)
+        _track_retrieval_call(state, tool_name, tool_arguments)
         ledger.record(tool_name)
 
         (
@@ -614,6 +645,7 @@ async def dispatch_capability(
         state.total_tool_calls += 1
         state.step_tool_calls += 1
         state.called_tool_names.add(tool_name)
+        _track_retrieval_call(state, tool_name, tool_arguments)
         ledger.record(tool_name)
         logger.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
         tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"

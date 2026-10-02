@@ -205,6 +205,35 @@ class TestThreadReader:
         assert "← current" not in manifest
 
     @pytest.mark.parametrize("timestamp", ["2026-10-02T16:39:06+00:00", None])
+    def test_page_cache_serves_repeat_reads_as_cached_hits(
+        self, tmp_path: Path, timestamp: str | None
+    ) -> None:
+        """Thread refs are immutable; a bounded cache serves repeat reads cheaply."""
+        from sdk.thread import PageCache
+
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="cached request",
+            response_text="cached body " * 400,
+            timestamp_utc=timestamp,
+        )
+        reader = ThreadReader(ThreadStore(thread_path), page_cache=PageCache(max_pages=8))
+        first = json.loads(reader.read_content("t0.response_text", 0, 400))
+        repeat = json.loads(reader.read_content("t0.response_text", 0, 400))
+        other_limit = json.loads(reader.read_content("t0.response_text", 0, 200))
+
+        assert "cached" not in first
+        assert repeat["cached"] is True
+        assert repeat["content"] == first["content"]
+        assert repeat["source"] == first["source"]
+        assert other_limit["content"] != first["content"]
+        found_first = json.loads(reader.find_content("t0.response_text", "cached"))
+        found_repeat = json.loads(reader.find_content("t0.response_text", "cached"))
+        assert found_repeat["cached"] is True
+        assert found_repeat["matches"] == found_first["matches"]
+
+    @pytest.mark.parametrize("timestamp", ["2026-10-02T16:39:06+00:00", None])
     def test_references_preserve_historical_source(
         self, tmp_path: Path, timestamp: str | None
     ) -> None:

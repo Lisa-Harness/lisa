@@ -56,6 +56,8 @@ def build_unified_state(
     state_snapshot: dict[str, Any] | None,
     item_builder: ExtensionItemBuilder | None = None,
     runtime_context: Any = None,
+    thread_path: Path | None = None,
+    thread_redaction: Any = None,
 ) -> UnifiedState:
     """Return a compiled :class:`UnifiedState` for operations and the context mapper.
 
@@ -63,9 +65,10 @@ def build_unified_state(
     ``--state-snapshot``). Intake-produced context items (signals, intel,
     alerts) are merged with hook-produced extension items
     (``item_builder.build_extension_context_items(runtime_context, state)``)
-    into ``context_items`` — the single feed the session-owned
-    context mapper walks to produce ranked, lane-ordered context without a
-    live MCP round-trip.
+    and thread-derived digest items (task state, recent history, open
+    objectives — :mod:`runtime.thread_digest`) into ``context_items`` —
+    the single feed the session-owned context mapper walks to produce
+    ranked, lane-ordered context without a live MCP round-trip.
 
     Context admission and ordering policy is not carried on the state: it
     lives in the session plan's ``context`` block (``ContextPlan``), which the
@@ -110,7 +113,29 @@ def build_unified_state(
                 state.context_items.append(item)
                 existing_ids.add(item.item_id)
 
+    # Thread-derived digest items (task state, recent history, open
+    # objectives) join the same single feed. They carry no pack so the
+    # mapper's pack gating cannot drop them for any mode; admission and
+    # ordering remain owned by the session plan's context block.
+    if thread_path is not None:
+        _merge_thread_digest_items(state, thread_path, thread_redaction)
+
     return state
+
+
+def _merge_thread_digest_items(
+    state: UnifiedState,
+    thread_path: Path,
+    thread_redaction: Any,
+) -> None:
+    """Append thread-digest context items to the single candidate feed."""
+    from runtime.thread_digest import build_thread_context_items
+
+    existing_ids = {item.item_id for item in state.context_items}
+    for item in build_thread_context_items(thread_path, redaction=thread_redaction):
+        if item.item_id not in existing_ids:
+            state.context_items.append(item)
+            existing_ids.add(item.item_id)
 
 
 def load_state_snapshot(

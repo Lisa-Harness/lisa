@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,12 +67,50 @@ def _fits(page: dict[str, Any], budget: int) -> bool:
     return _byte_size(page) + _CURSOR_RESERVE_BYTES <= budget
 
 
+@dataclass
+class PageCache:
+    """Bounded LRU for pages of immutable thread refs.
+
+    ``t<turn>`` refs are append-only history and ``r<hash>`` refs are
+    content-addressed by payload digest, so a page fetched for
+    ``(ref, offset, limit)`` can never change while the process lives.
+    The cache is read-path only; the lossless archive is never mutated.
+    """
+
+    def __init__(self, max_pages: int = 256, max_bytes: int = 524_288) -> None:
+        self._max_pages = max(1, max_pages)
+        self._max_bytes = max(1, max_bytes)
+        self._entries: OrderedDict[tuple[str, int, int, str], dict[str, Any]] = OrderedDict()
+        self._bytes = 0
+
+    def get(self, key: tuple[str, int, int, str]) -> dict[str, Any] | None:
+        page = self._entries.get(key)
+        if page is None:
+            return None
+        self._entries.move_to_end(key)
+        return page
+
+    def put(self, key: tuple[str, int, int, str], page: dict[str, Any]) -> None:
+        size = _byte_size(page)
+        if size > self._max_bytes:
+            return
+        while self._entries and (
+            len(self._entries) >= self._max_pages or self._bytes + size > self._max_bytes
+        ):
+            _, evicted = self._entries.popitem(last=False)
+            self._bytes -= _byte_size(evicted)
+        self._entries[key] = page
+        self._bytes += size
+        self._entries.move_to_end(key)
+
+
 @dataclass(frozen=True)
 class ThreadReader:
     """Project archive content without mutating it or exposing raw reasoning fields."""
 
     store: ThreadStore
     redaction: ThreadRedactionPolicy | None = None
+    page_cache: PageCache | None = None
 
     def _redact(self, value: Any) -> Any:
         return redact_value(value, self.redaction)
@@ -318,6 +357,12 @@ class ThreadReader:
         """Page a complete permitted value; offsets count Unicode characters after redaction."""
         if len(ref) > _MAX_REFERENCE_CHARS or offset_chars < 0 or limit_chars <= 0:
             raise ValueError("Invalid reference, offset_chars, or limit_chars")
+        key = (ref, offset_chars, limit_chars, "read")
+        cached = self.page_cache.get(key) if self.page_cache is not None else None
+        if cached is not None:
+            cached = dict(cached)
+            cached["cached"] = True
+            return _encode(cached)
         value, source = self._resolve(ref)
         permitted = self._redact(value)
         text = permitted if isinstance(permitted, str) else _encode(permitted)
@@ -332,7 +377,10 @@ class ThreadReader:
                 lower = length
             else:
                 upper = length - 1
-        return _encode(self._content_page(ref, text, offset_chars, lower, source))
+        page = self._content_page(ref, text, offset_chars, lower, source)
+        if self.page_cache is not None:
+            self.page_cache.put(key, page)
+        return _encode(page)
 
     def find_content(
         self,
@@ -346,6 +394,12 @@ class ThreadReader:
         """Find literal text inside one permitted value without paging through all of it."""
         if not query or offset_chars < 0 or len(ref) > _MAX_REFERENCE_CHARS:
             raise ValueError("Require a nonempty query, valid ref, and nonnegative offset")
+        key = (ref, offset_chars, limit, "find:" + query)
+        cached = self.page_cache.get(key) if self.page_cache is not None else None
+        if cached is not None:
+            cached = dict(cached)
+            cached["cached"] = True
+            return _encode(cached)
         raw, source = self._resolve(ref)
         value = self._redact(raw)
         text = value if isinstance(value, str) else _encode(value)
@@ -381,6 +435,8 @@ class ThreadReader:
                     page["next_offset_chars"] = position
                     page["has_more"] = True
                 break
+        if self.page_cache is not None:
+            self.page_cache.put(key, page)
         return _encode(page)
 
     @staticmethod

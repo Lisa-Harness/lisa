@@ -368,6 +368,15 @@ class _TurnState:
     the stage cap). This nudge fires once at the stage threshold for
     turns with read/execute receipts and zero write attempts, telling
     the model to synthesize what it has and land it or yield."""
+    retrieval_calls: int = 0
+    """Count of retrieval-tool calls (thread read/search/find) dispatched
+    this turn. Paired with ``retrieval_distinct_args`` to give the read-loop
+    nudge its factual basis: repeats of the same call are the cheap signal
+    that the model is paging in circles instead of gathering."""
+    retrieval_distinct_args: set[str] = field(default_factory=set)
+    """Distinct serialization of retrieval-tool call arguments this turn.
+    A call whose arguments repeat an earlier one re-delivers content the
+    model already holds; the nudge reports the repeat count."""
     consecutive_tool_errors: int = 0
     """Count of trailing dispatches to the same tool that returned an
     error (``ToolResult.error`` non-empty, ``OperationResult`` not

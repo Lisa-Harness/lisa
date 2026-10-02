@@ -52,6 +52,7 @@ from sdk.layout import DATA_DIR
 from sdk.thread import (
     DEFAULT_READOUT_BYTES,
     DEFAULT_REDACTION_PATTERNS,
+    PageCache,
     ThreadReader,
     ThreadRedactionPolicy,
     ThreadStore,
@@ -123,6 +124,14 @@ class ThreadDeps:
 
     store: ThreadStore
     redaction: ThreadRedactionPolicy | None = None
+    page_cache: PageCache | None = None
+
+
+def _reader(deps: ThreadDeps) -> ThreadReader:
+    """Build a reader over the deps store, sharing the bounded page cache."""
+    if deps.page_cache is None:
+        deps.page_cache = PageCache()
+    return ThreadReader(deps.store, deps.redaction, page_cache=deps.page_cache)
 
 
 # Test seam: populated by the lifespan in production, or by
@@ -215,7 +224,7 @@ async def thread_read_range(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).read_range(
+        return _reader(deps).read_range(
             start_turn,
             end_turn,
             include_transcript=include_transcript,
@@ -246,7 +255,7 @@ async def thread_read_recent(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).read_recent(
+        return _reader(deps).read_recent(
             limit,
             include_transcript=include_transcript,
             cursor=cursor,
@@ -289,7 +298,7 @@ async def thread_search(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).search(
+        return _reader(deps).search(
             query,
             limit,
             cursor=cursor,
@@ -333,7 +342,7 @@ async def thread_read_content(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).read_content(
+        return _reader(deps).read_content(
             ref,
             offset_chars,
             limit_chars,
@@ -365,7 +374,7 @@ async def thread_find_content(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).find_content(
+        return _reader(deps).find_content(
             ref,
             query,
             offset_chars,
@@ -401,7 +410,7 @@ async def thread_task_view(
     """
     deps = _resolve_deps(ctx)
     try:
-        return ThreadReader(deps.store, deps.redaction).task_view(
+        return _reader(deps).task_view(
             task_id,
             budget_bytes=budget_bytes,
         )

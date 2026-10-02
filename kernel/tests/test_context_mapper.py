@@ -139,6 +139,47 @@ def test_mapper_gates_inactive_packs_maps_lanes_and_renders_provenance() -> None
     assert '<authoritative source="test:alert">' in result.rendered_context
 
 
+def test_default_context_sources_admit_digest_items_without_authored_rules() -> None:
+    """A plan with no authored ``sources`` still renders digest candidates.
+
+    Without default rules the mapper dropped every candidate
+    (``no_matching_source_rule``), leaving the retrieval lane permanently
+    empty — the 2026-10-02 finding behind the push-don't-pull design.
+    """
+    plan = ContextPlan()
+    assert [rule.rule_id for rule in plan.sources] == [
+        "thread_digest",
+        "history_fallback",
+    ]
+
+    digest = _candidate(
+        "thread:task_state",
+        "Recorded task state for the latest recorded task.",
+        evidence_type="task_state",
+    )
+    other = _candidate("alert", "A critical alert fired.", evidence_type="alert")
+
+    request = ContextMapperRequest(
+        context_plan=plan,
+        query="continue the coding work",
+        mode_id="default",
+        candidates=(digest, other),
+        active_packs=frozenset(),
+        model_context_window_tokens=100_000,
+        stable_prefix_tokens=0,
+        conversation_tokens=0,
+        tool_schema_tokens=0,
+        now=_NOW,
+    )
+    result = ContextMapper().map(request)
+
+    selected = {selection.candidate.candidate_id: selection for selection in result.selections}
+    assert "thread:task_state" in selected
+    assert selected["thread:task_state"].lane_id == "retrieval"
+    assert "alert" in selected
+    assert selected["alert"].lane_id == "history"
+
+
 def test_raw_item_adapter_ignores_broker_scores_and_preserves_identity() -> None:
     item = ContextItem(
         item_id="collector:cloudflare",

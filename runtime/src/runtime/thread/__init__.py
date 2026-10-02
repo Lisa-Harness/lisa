@@ -73,6 +73,11 @@ def set_thread_redaction_policy(policy: ThreadRedactionPolicy | None) -> None:
     _thread_redaction = policy
 
 
+def get_thread_redaction_policy() -> ThreadRedactionPolicy | None:
+    """Return the module-level thread redaction policy (``None`` = disabled)."""
+    return _thread_redaction
+
+
 def project_thread_messages(
     messages: list[dict[str, Any]],
     task_id: str = "",
