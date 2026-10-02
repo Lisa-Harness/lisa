@@ -48,6 +48,42 @@ def test_unlisted_approval_target_is_denied(tmp_path: Path) -> None:
     assert load_scenario(path).approvals.decide("b") == "deny"
 
 
+def test_scenario_resolves_data_files_fixture(tmp_path: Path) -> None:
+    (tmp_path / "seed").mkdir()
+    path = _write_scenario(
+        tmp_path, "session_context: ctx.md\nturns: [x]\nfixture: {data_files: seed}\n"
+    )
+    scenario = load_scenario(path)
+    assert scenario.fixture_data_files == (tmp_path / "seed").resolve()
+    assert scenario.fixture_repo is None
+    missing = _write_scenario(
+        tmp_path, "session_context: ctx.md\nturns: [x]\nfixture: {data_files: nope}\n"
+    )
+    with pytest.raises(ScenarioError, match=r"fixture\.data_files"):
+        load_scenario(missing)
+
+
+def test_data_check_runs_in_storage_root_with_placeholders(tmp_path: Path) -> None:
+    files = tmp_path / "data" / "data" / "files"
+    files.mkdir(parents=True)
+    (files / "ledger.txt").write_text("balanced\n", encoding="utf-8")
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    (scenario_dir / "check.sh").write_text('grep -q "$1" ledger.txt\n', encoding="utf-8")
+    paths = RunPaths(tmp_path, tmp_path / "data", None, None, "", scenario_dir)
+    evidence = Evidence(paths, DriverOutcome())
+    argv = ["sh", "${SCENARIO_DIR}/check.sh"]
+    results = evaluate(
+        (_spec("data_check", argv=[*argv, "balanced"]), _spec("data_check", argv=[*argv, "x"])),
+        evidence,
+    )
+    assert [r.passed for r in results] == [True, False]
+    assert "exit=1" in results[1].detail
+    empty = Evidence(RunPaths(tmp_path, tmp_path / "none", None, None, ""), DriverOutcome())
+    (missing,) = evaluate((_spec("data_check", argv=["true"]),), empty)
+    assert not missing.passed and "storage sandbox missing" in missing.detail
+
+
 def test_scenario_rejects_missing_turns(tmp_path: Path) -> None:
     path = _write_scenario(tmp_path, "session_context: ctx.md\nturns: []\n")
     with pytest.raises(ScenarioError, match="turns"):

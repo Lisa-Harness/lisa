@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from string import Template
 from typing import Any
 
 from e2etest.driver import DriverOutcome
@@ -286,6 +287,25 @@ def _independent_check(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
         return False, "no committed artifact"
     code, out = _run_at(ev, art["commit_sha"], list(args["argv"]), args.get("timeout_s", 120))
     return code == 0, f"exit={code} at {art['commit_sha'][:10]}\n{out}"
+
+
+# ── data-dir outcome (packs whose work product lives in lisa-storage) ───
+
+
+@oracle("data_check")
+def _data_check(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Run ``argv`` in the storage sandbox root; ``${SCENARIO_DIR}``/``${FILES}`` expand."""
+    files = ev.paths.files_root
+    if not files.is_dir():
+        return False, f"storage sandbox missing: {files}"
+    values = {
+        "SCENARIO_DIR": str(ev.paths.scenario_dir or ""),
+        "FILES": str(files),
+        "RUN_DIR": str(ev.paths.run_dir),
+    }
+    argv = [Template(str(a)).safe_substitute(values) for a in args["argv"]]
+    proc = _run_argv(argv, files, args.get("timeout_s", 120))
+    return proc.returncode == 0, f"exit={proc.returncode}\n{_tail(proc.stdout + proc.stderr)}"
 
 
 def evaluate(specs: tuple[OracleSpec, ...], evidence: Evidence) -> list[OracleResult]:

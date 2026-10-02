@@ -32,7 +32,8 @@ flowchart LR
    It is rebuilt only when the pack set or source paths change.
 2. **Run dir** — `.e2e/runs/<scenario-id>/<UTC stamp>/` (gitignored). Contains
    a fresh `data/` dir used as `LISA_DATA_DIR`, the fixture repo copied to
-   `workspace/<name>` with a git history and a bare `remote.git`.
+   `workspace/<name>` with a git history and a bare `remote.git`, and any
+   `fixture.data_files` tree copied into the storage sandbox (`data/data/files`).
    Only `config/models.yaml` and `.env` are read from the base data dir
    (`~/.lisa`, override with `LISA_E2E_BASE_DATA_DIR`).
 3. **Driver** — boots the runtime in-process, sends each scripted turn, then
@@ -58,6 +59,7 @@ uv run --frozen lisa-e2e run ../packs-wip/coding/lisa_packs/coding/tests/e2e/rev
 | Scenario | Workflow |
 | --- | --- |
 | `coding/review-fix-commit` | knowledge-capturing review → worktree → patch → required check → commit, verified by re-running the tests outside Lisa |
+| `finances/categorize-and-close` | import bank + card exports → survey + proposed categories → user decisions (incl. a new category) → final ledger, verified by re-reading the ledger outside Lisa |
 
 Options:
 
@@ -120,6 +122,7 @@ id: <pack>/<workflow>            # bundle dir name; defaults to the file stem
 session_context: session_context.md
 fixture:
   repo: fixtures/<repo>          # optional; becomes a git repo with a bare origin
+  data_files: fixtures/<tree>    # optional; copied into <data_dir>/data/files
 packs: [lisa-pack-...]           # keys of e2etest/packs.yml installed into the venv
 policy: policy.yaml              # optional; default is empty `mode: ask`
 env: {NAME: value}               # optional extra process env
@@ -178,6 +181,12 @@ Code change (coding pack WorkProduct + git; needs a `fixture.repo`):
 | `worktree_clean` | — | the owned worktree is clean and at the commit |
 | `baseline_fails` | `argv`, `timeout_s` | `argv` fails on the fixture baseline (the defect is real) |
 | `independent_check` | `argv`, `timeout_s` | `argv` passes on a fresh checkout of the commit, outside Lisa |
+
+Storage sandbox (packs whose work product lives under `data/files`):
+
+| Oracle | Args | Passes when |
+| --- | --- | --- |
+| `data_check` | `argv`, `timeout_s` | `argv` exits 0 with cwd at the storage root; `${SCENARIO_DIR}`, `${FILES}`, `${RUN_DIR}` expand |
 
 An unknown oracle name fails the run, so typos surface immediately.
 

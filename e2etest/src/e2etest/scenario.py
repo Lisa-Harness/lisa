@@ -57,6 +57,7 @@ class Scenario:
     source: Path
     session_context: Path
     fixture_repo: Path | None
+    fixture_data_files: Path | None
     policy: Path | None
     packs: tuple[str, ...]
     turns: tuple[str, ...]
@@ -120,6 +121,9 @@ def load_scenario(path: Path) -> Scenario:
         source=source,
         session_context=session_context,
         fixture_repo=_resolve(base, fixture.get("repo"), key="fixture.repo", required=False),
+        fixture_data_files=_resolve(
+            base, fixture.get("data_files"), key="fixture.data_files", required=False
+        ),
         policy=_resolve(base, raw.get("policy"), key="policy", required=False),
         packs=tuple(str(p) for p in raw.get("packs") or ()),
         turns=tuple(turns),

@@ -46,10 +46,16 @@ class RunPaths:
     workspace: Path | None
     remote: Path | None
     initial_main_sha: str
+    scenario_dir: Path | None = None
 
     @property
     def session_context(self) -> Path:
         return self.data_dir / "config" / "session_context.md"
+
+    @property
+    def files_root(self) -> Path:
+        """The lisa-storage sandbox root (``StorageBackend.files_root()``)."""
+        return self.data_dir / "data" / "files"
 
 
 def base_data_dir() -> Path:
@@ -105,7 +111,9 @@ def prepare_run(scenario: Scenario, run_dir: Path, packs_venv: Path) -> RunPaths
     (config_dir / "policy.yaml").write_text(policy_text, encoding="utf-8")
 
     workspace, remote, initial_sha = _seed_fixture(scenario, run_dir)
-    paths = RunPaths(run_dir, data_dir, workspace, remote, initial_sha)
+    paths = RunPaths(run_dir, data_dir, workspace, remote, initial_sha, scenario.base_dir)
+    if scenario.fixture_data_files is not None:
+        shutil.copytree(scenario.fixture_data_files, paths.files_root)
     template = Template(scenario.session_context.read_text(encoding="utf-8"))
     paths.session_context.write_text(
         template.substitute(
