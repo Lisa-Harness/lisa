@@ -13,6 +13,7 @@ from typing import Any
 from sdk.thread.redaction import ThreadRedactionPolicy
 
 _RESULT_REFERENCE = re.compile(r"r[a-f0-9]{64}")
+_THREAD_REFERENCE = re.compile(r"t\d{1,20}(?:\.m\d{1,20})?(?:\.c\d{1,20})?(?:\.[a-z_]+)?$")
 _INLINE_RESULT_BYTES = 8192
 _MAX_RETRIEVAL_BYTES = 32768
 _TOOL_CONTEXT_BYTES = 65536
@@ -89,6 +90,17 @@ def project_tool_messages(
             content = existing[1]["content"]
         permitted = redaction.redact(content) if redaction is not None else content
         retrieval_page = name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOLS
+        pointer = (
+            _retrieval_pointer(content, permitted)
+            if pressure and retrieval_page and existing is None
+            else None
+        )
+        if pointer is not None:
+            # A page of an already-stored value re-expands the original ref;
+            # persisting the page again would wrap the ref in another ref.
+            refs[index] = pointer["ref"]
+            message["content"] = json.dumps(pointer, ensure_ascii=False, separators=(",", ":"))
+            continue
         if (
             retrieval_page
             and len(content.encode("utf-8")) <= _MAX_RETRIEVAL_BYTES
@@ -107,6 +119,56 @@ def project_tool_messages(
         refs[index] = ref
         message["content"] = _preview(ref, permitted, pressure)
     return _compact_groups(messages, projected, refs, task_id, persist) if pressure else projected
+
+
+def _retrieval_pointer(content: str, permitted: str) -> dict[str, Any] | None:
+    """Return a pointer to an already-stored value when content is its page.
+
+    Retrieval tools return envelopes like ``{ref, content, offset_chars, …}``.
+    When the envelope's ``ref`` addresses an existing stored object or thread
+    entry, the page adds nothing the model cannot recover by expanding that
+    ref, so projection emits a compact pointer instead of persisting a copy.
+    """
+
+    if not content.startswith("{") or '"ref"' not in content:
+        return None
+    try:
+        envelope = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    ref = envelope.get("ref")
+    # A mid-value page carries progress the original ref cannot reconstruct.
+    if not isinstance(ref, str) or envelope.get("has_more") is True:
+        return None
+    if _RESULT_REFERENCE.fullmatch(ref) or _THREAD_REFERENCE.match(ref):
+        return _page_pointer(ref, permitted)
+    return None
+
+
+def _page_pointer(ref: str, permitted: str) -> dict[str, Any]:
+    stored: dict[str, Any] = {"ref": ref, "page_omitted": True, "expand": "thread_read_content"}
+    excerpt = permitted[:120]
+    if excerpt:
+        stored["head"] = excerpt
+    return stored
+
+
+def _existing_pointer(
+    preview: dict[str, Any],
+    load: Callable[[str], dict[str, Any]],
+    redaction: ThreadRedactionPolicy | None,
+) -> tuple[str, dict[str, Any]] | None:
+    ref = preview["ref"]
+    if _RESULT_REFERENCE.fullmatch(ref) is None:
+        return None
+    result = load(ref)
+    permitted = redaction.redact(result["content"]) if redaction else result["content"]
+    head = preview.get("head", "")
+    if head and not permitted.startswith(head):
+        return None
+    return ref, result
 
 
 def _preview(ref: str, content: str, pressure: bool) -> str:
@@ -133,10 +195,16 @@ def _existing_result(
     load: Callable[[str], dict[str, Any]] | None,
     redaction: ThreadRedactionPolicy | None,
 ) -> tuple[str, dict[str, Any]] | None:
-    if load is None or not content.startswith('{"ref":"r'):
+    if load is None or not content.startswith('{"'):
         return None
     try:
         preview = json.loads(content)
+        if (
+            isinstance(preview, dict)
+            and preview.get("page_omitted") is True
+            and isinstance(preview.get("ref"), str)
+        ):
+            return _existing_pointer(preview, load, redaction)
         ref = preview["ref"]
         if preview.get("abbreviated") is not True or _RESULT_REFERENCE.fullmatch(ref) is None:
             return None

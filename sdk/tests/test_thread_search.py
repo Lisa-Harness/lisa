@@ -30,6 +30,7 @@ from sdk.thread import (
     result_object_path,
 )
 from sdk.thread._backend import _read_index, _sealed_segment_path, _segment_paths
+from sdk.thread._results import _TOOL_CONTEXT_BYTES
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -884,6 +885,116 @@ class TestThreadReader:
         assert terminal["content"] == ""
         assert terminal["next_offset_chars"] is None
         assert terminal["has_more"] is False
+
+
+# ── project_tool_messages() — retrieval pages under pressure ─────────
+
+
+class TestProjectionRetrievalPages:
+    @staticmethod
+    def _envelope(ref: str, content: str) -> str:
+        return json.dumps(
+            {"ref": ref, "content": content, "has_more": False},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def test_pressure_pointer_replaces_page_without_persisting(self, tmp_path: Path) -> None:
+        from sdk.thread._results import project_tool_messages, result_object_path
+
+        original = "stored worktree state " * 200
+        stored_ref = "r" + f"{1:064x}"
+        path = result_object_path(tmp_path, stored_ref)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(
+            json.dumps(
+                {"content": original, "task_id": "task", "tool_name": "coding_status"}
+            ).encode()
+        )
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            digest = hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            ref = "r" + digest
+            persisted.setdefault(ref, result)
+            return ref
+
+        def load(ref: str) -> dict[str, Any]:
+            if ref == stored_ref:
+                return {"content": original, "task_id": "task", "tool_name": "coding_status"}
+            return persisted[ref]
+
+        page = self._envelope(stored_ref, original[:50])
+        filler = "x" * (_TOOL_CONTEXT_BYTES + 1)
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "p", "function": {"name": "thread_read_content"}}],
+            },
+            {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
+            {"role": "assistant", "tool_calls": [{"id": "f", "function": {"name": "big_tool"}}]},
+            {"role": "tool", "tool_call_id": "f", "name": "big_tool", "content": filler},
+        ]
+        projected = project_tool_messages(messages, "task", persist, None, load)
+        pointer = json.loads(projected[1]["content"])
+        assert pointer["ref"] == stored_ref
+        assert pointer["page_omitted"] is True
+        assert "expand" in pointer
+        assert not any(
+            result.get("tool_name") == "thread_read_content" for result in persisted.values()
+        )
+
+    def test_pointer_projection_is_idempotent(self, tmp_path: Path) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        original = "stored worktree state " * 200
+        stored_ref = "r" + f"{2:064x}"
+
+        def load(ref: str) -> dict[str, Any]:
+            return {"content": original, "task_id": "task", "tool_name": "coding_status"}
+
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            digest = hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            ref = "r" + digest
+            persisted.setdefault(ref, result)
+            return ref
+
+        page = self._envelope(stored_ref, original[:50])
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "p", "function": {"name": "thread_read_content"}}],
+            },
+            {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
+        ]
+        first = project_tool_messages(messages, "task", persist, None, load)
+        second = project_tool_messages(first, "task", persist, None, load)
+        assert first[1]["content"] == second[1]["content"]
+        assert not persisted
+
+    def test_no_pressure_projection_is_unchanged(self, tmp_path: Path) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        original = "stored worktree state " * 200
+        stored_ref = "r" + f"{3:064x}"
+
+        def load(ref: str) -> dict[str, Any]:
+            return {"content": original, "task_id": "task", "tool_name": "coding_status"}
+
+        page = self._envelope(stored_ref, original[:50])
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "p", "function": {"name": "thread_read_content"}}],
+            },
+            {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
+        ]
+        projected = project_tool_messages(
+            messages, "task", lambda result: "r" + "0" * 64, None, load
+        )
+        assert projected[1]["content"] == page
 
 
 # ── search() — basic ranking ─────────────────────────────────────────

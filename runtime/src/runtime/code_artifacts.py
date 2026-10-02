@@ -49,7 +49,12 @@ async def _git_read(root: Path, *args: str) -> str | None:
 
 
 async def _committed_tree(artifact: WorkProduct) -> str | None:
-    """Read the owned worktree's unchanged commit tree from Git itself."""
+    """Read the owned worktree's unchanged commit tree from Git itself.
+
+    A reused worktree may stack several task commits on the recorded base, so
+    the base must be an ancestor of HEAD (not necessarily its parent) and the
+    committed paths span every commit since the base.
+    """
     source = Path(artifact.source_root).resolve()
     worktree = Path(artifact.worktree_path).resolve()
     if not source.is_dir() or not worktree.is_dir() or not (worktree / ".git").exists():
@@ -62,21 +67,25 @@ async def _committed_tree(artifact: WorkProduct) -> str | None:
         return None
 
     head = await _git_read(worktree, "rev-parse", "HEAD")
-    parent = await _git_read(worktree, "rev-parse", "HEAD^")
     tree = await _git_read(worktree, "rev-parse", "HEAD^{tree}")
     parent_tree = await _git_read(worktree, "rev-parse", "HEAD~1^{tree}")
     branch = await _git_read(worktree, "branch", "--show-current")
     dirty = await _git_read(worktree, "status", "--porcelain", "--untracked-files=all")
+    base_is_ancestor = await _git_read(
+        worktree, "merge-base", "--is-ancestor", artifact.base_sha, "HEAD"
+    )
     if (
         head != artifact.commit_sha
-        or parent != artifact.base_sha
+        or base_is_ancestor is None
         or not tree
         or tree == parent_tree
         or branch != artifact.branch
         or dirty != ""
     ):
         return None
-    committed_paths = await _git_read(worktree, "diff", "--name-only", "-z", "HEAD^", "HEAD", "--")
+    committed_paths = await _git_read(
+        worktree, "diff", "--name-only", "-z", artifact.base_sha, "HEAD", "--"
+    )
     if committed_paths is None or not set(artifact.changed_paths).issubset(
         set(committed_paths.rstrip("\0").split("\0"))
     ):
@@ -152,7 +161,8 @@ async def verify_checked_commit(
     if tree is None:
         reason = (
             f"Worktree {artifact.artifact_id} does not match its recorded commit "
-            "(uncommitted edits, a moved HEAD or branch, or extra commits)."
+            "(uncommitted edits, a moved HEAD or branch, or a history that no "
+            "longer contains the recorded base commit)."
         )
     elif check_id := _unchecked_required(artifact, tree=tree):
         reason = (

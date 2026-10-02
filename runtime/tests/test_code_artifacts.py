@@ -185,6 +185,97 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_checked_commit_accepts_stacked_commits_on_one_worktree(tmp_path: Path) -> None:
+    """A reused worktree verifies when commits stack on the recorded base."""
+    repo = await git_repo(tmp_path, with_remote=False)
+    worktree = tmp_path / "owned-worktree"
+    await repo._run("worktree", "add", "-b", "lisa/task", str(worktree))
+    base = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    # First commit: one file. Second commit: another file on top.
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+    await repo._run("add", "app.txt", cwd=worktree)
+    await repo._run("commit", "-m", "first change", cwd=worktree)
+    (worktree / "notes.txt").write_text("stacked\n", encoding="utf-8")
+    await repo._run("add", "notes.txt", cwd=worktree)
+    await repo._run("commit", "-m", "second change", cwd=worktree)
+
+    commit_sha = git("rev-parse", "HEAD")
+    tree_sha = git("rev-parse", "HEAD^{tree}")
+    store = FileCodeChangeArtifactStore(tmp_path / "code-changes.json")
+    artifact = WorkProduct(
+        task_id="task-one",
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        session_plan_digest="plan",
+        source_root=str(repo.root),
+        worktree_path=str(worktree),
+        base_sha=base,
+        head_sha=commit_sha,
+        commit_sha=commit_sha,
+        branch="lisa/task",
+        status="committed",
+        revision=2,
+        changed_paths=["app.txt", "notes.txt"],
+        required_check_ids=["unit"],
+        checks={
+            "unit": WorkProductCheck(
+                check_id="unit", revision=2, status="passed", checked_tree_sha=tree_sha
+            )
+        },
+    )
+    await store.create(artifact)
+    identity = SimpleNamespace(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        session_plan_digest="plan",
+    )
+
+    evidence = await verify_checked_commit(
+        TaskCompletionRequest(task_id="task-one", origin_tool_id="create_worktree"),
+        store=store,
+        identity=identity,
+    )
+    assert evidence.verified is True, evidence.reason
+
+    # A history that no longer contains the recorded base fails verification.
+    await repo._run("checkout", "--orphan", "lisa/rebased", cwd=worktree)
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+    await repo._run("add", "app.txt", cwd=worktree)
+    await repo._run("commit", "-m", "unrelated history", cwd=worktree)
+    artifact.commit_sha = git("rev-parse", "HEAD")
+    artifact.head_sha = artifact.commit_sha
+    artifact.branch = "lisa/rebased"
+    await store.save(artifact)
+    evidence = await verify_checked_commit(
+        TaskCompletionRequest(task_id="task-one", origin_tool_id="create_worktree"),
+        store=store,
+        identity=identity,
+    )
+    assert evidence.verified is False
+    assert "no longer contains the recorded base commit" in evidence.reason
+
+
+@pytest.mark.asyncio
 async def test_checked_commit_reports_ambiguous_task_worktrees(tmp_path: Path) -> None:
     store = FileCodeChangeArtifactStore(tmp_path / "code-changes.json")
     identity = SimpleNamespace(
