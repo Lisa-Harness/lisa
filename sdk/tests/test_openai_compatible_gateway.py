@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from kernel.provider_contracts import CompletionRequest
+from pydantic import BaseModel
 from sdk.providers.openai_gateway import (
     OpenAICompatibleGateway,
     extract_openai_content,
@@ -395,3 +396,83 @@ class TestCompleteFinishReasonAndTruncated:
         result = await gateway.complete(_request())
         assert result.finish_reason == "content_filter"
         assert result.truncated is None
+
+
+# ── Structured output: fenced JSON must not raise ──────────────────
+
+
+class _PlanOutput(BaseModel):
+    target_stage_id: str = ""
+    rationale: str = ""
+
+
+class TestStructuredOutputFenceTolerance:
+    """``complete()`` must tolerate fenced JSON in structured-output mode.
+
+    The 2026-10-03 incident: ``plan_workflow``'s structured call raised
+    ``ValidationError: Invalid JSON ... input_value='```json\\n{...\\n}```'``
+    from inside ``ctx.host.complete`` when glm-5.3 returned a fenced JSON
+    object. The gateway routed pydantic ``response_format`` through the
+    SDK's ``beta.chat.completions.parse``, which validates content inside
+    the SDK call and raises on the fence before Lisa's fence-stripping
+    ``normalize_structured_content`` could clean it. The gateway now sends
+    the same strict json_schema wire param via plain ``create`` and lets
+    ``normalize_structured_content`` handle client-side validation.
+    """
+
+    @staticmethod
+    def _fenced_response() -> SimpleNamespace:
+        message = SimpleNamespace(
+            content='```json\n{"target_stage_id": "researcher", "rationale": "needs evidence"}\n```'
+        )
+        choice = SimpleNamespace(message=message, finish_reason="stop")
+        return SimpleNamespace(choices=[choice], id="chat-1", usage=None)
+
+    @staticmethod
+    def _structured_request() -> CompletionRequest:
+        return CompletionRequest(
+            messages=[{"role": "user", "content": "plan it"}],
+            model_def=_model_def(),
+            max_tokens=1024,
+            temperature=0.1,
+            response_format=_PlanOutput,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fenced_json_returns_normalized_content(self) -> None:
+        """A fenced JSON completion parses; no ValidationError escapes."""
+        captured: dict[str, Any] = {}
+        client = _StubClient(self._fenced_response(), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(self._structured_request())
+        assert result.content == '{"target_stage_id":"researcher","rationale":"needs evidence"}'
+
+    @pytest.mark.asyncio
+    async def test_structured_wire_param_is_strict_json_schema(self) -> None:
+        """The wire param matches what ``parse`` sent: strict json_schema."""
+        captured: dict[str, Any] = {}
+        client = _StubClient(self._fenced_response(), captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        await gateway.complete(self._structured_request())
+        wire = captured["kwargs"]["response_format"]
+        assert wire["type"] == "json_schema"
+        assert wire["json_schema"]["name"] == "_PlanOutput"
+        assert wire["json_schema"]["strict"] is True
+        assert wire["json_schema"]["schema"]["additionalProperties"] is False
+
+    @pytest.mark.asyncio
+    async def test_invalid_schema_content_passes_through_unchanged(self) -> None:
+        """Content that fails validation passes through, not raises.
+
+        ``normalize_structured_content`` returns the original content on
+        validation failure so callers can degrade gracefully — the same
+        contract as before the fix.
+        """
+        message = SimpleNamespace(content="plain prose, no JSON here")
+        choice = SimpleNamespace(message=message, finish_reason="stop")
+        response = SimpleNamespace(choices=[choice], id="chat-1", usage=None)
+        captured: dict[str, Any] = {}
+        client = _StubClient(response, captured)
+        gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+        result = await gateway.complete(self._structured_request())
+        assert result.content == "plain prose, no JSON here"

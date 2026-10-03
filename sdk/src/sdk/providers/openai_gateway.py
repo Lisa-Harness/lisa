@@ -32,6 +32,7 @@ from kernel.provider_contracts import (
 )
 from kernel.token_usage import coerce_non_negative_int
 from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai.lib._parsing import type_to_response_format_param
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import ValidationError
 
@@ -482,7 +483,17 @@ def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]
     if request.tools:
         kwargs["tools"] = request.tools
     if request.response_format:
-        kwargs["response_format"] = request.response_format
+        # Pydantic models are converted to the strict json_schema wire
+        # param exactly as ``client.beta.chat.completions.parse`` does
+        # (same ``type_to_response_format_param`` helper), but the call
+        # itself goes through plain ``create``. The ``parse`` wrapper
+        # validates the returned content inside the SDK call and raises
+        # pydantic ``ValidationError`` on fenced JSON (```` ```json ... ````
+        # — glm/kimi via Ollama and OpenRouter do this routinely), escaping
+        # as a gateway error before the fence-tolerant
+        # ``normalize_structured_content`` can clean it. Plain ``create``
+        # leaves client-side validation to ``normalize_structured_content``.
+        kwargs["response_format"] = type_to_response_format_param(request.response_format)
     return kwargs
 
 
@@ -1192,10 +1203,12 @@ class AzureOpenAIGateway:
             else:
                 client = self._complete_client_factory()
                 kwargs = build_openai_completion_kwargs(request)
-                if is_pydantic_model_class(request.response_format):
-                    response = await client.beta.chat.completions.parse(**kwargs)
-                else:
-                    response = await client.chat.completions.create(**kwargs)
+                # Plain ``create`` for structured output too: the strict
+                # json_schema wire param is set in ``build_openai_completion_kwargs``,
+                # and fence/prose tolerance is handled client-side by
+                # ``normalize_structured_content`` instead of raising inside
+                # the SDK's ``parse`` helper.
+                response = await client.chat.completions.create(**kwargs)
                 content = normalize_structured_content(
                     extract_openai_content(response), request.response_format
                 )
@@ -1301,10 +1314,12 @@ class OpenAICompatibleGateway:
             }
         )
         try:
-            if is_pydantic_model_class(request.response_format):
-                response = await client.beta.chat.completions.parse(**kwargs)
-            else:
-                response = await client.chat.completions.create(**kwargs)
+            # Plain ``create`` for structured output too: the strict
+            # json_schema wire param is set in ``build_openai_completion_kwargs``,
+            # and fence/prose tolerance is handled client-side by
+            # ``normalize_structured_content`` instead of raising inside
+            # the SDK's ``parse`` helper.
+            response = await client.chat.completions.create(**kwargs)
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {
