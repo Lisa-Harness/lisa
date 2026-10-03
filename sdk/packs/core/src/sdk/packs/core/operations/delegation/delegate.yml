@@ -8,7 +8,7 @@ description: >
 pack_id: lisa-pack-core
 effect: read
 execution_kind: runtime
-timeout_seconds: 120
+timeout_seconds: 300
 max_calls_per_turn: 5
 preferred_model_id: default
 exportable: true
