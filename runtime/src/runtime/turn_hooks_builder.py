@@ -1065,7 +1065,7 @@ def _build_slice_callables(
     async def _post_turn_slice(policy: Any) -> Any:
         outcome = await file_state_provider.slice(ctx=None, policy=policy)
         runtime.session.last_slice_finished_at = __import__("time").monotonic()
-        return await _compose_self_model_outcome(outcome, await _run_self_model_slice())
+        return _compose_self_model_outcome(outcome, await _run_self_model_slice())
 
     async def _explicit_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
