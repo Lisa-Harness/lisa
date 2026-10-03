@@ -51,6 +51,7 @@ __all__ = [
     "enforce_write_receipt",
     "format_read_abbreviation",
     "read_cache_signature",
+    "summarize_json_result",
 ]
 
 #: Thread-archive tools whose repeated identical calls signal paging in
@@ -64,6 +65,116 @@ _RETRIEVAL_TOOL_SUFFIXES = (
     "thread_search",
     "thread_task_view",
 )
+
+
+_RESULT_PREVIEW_CHARS = 200
+"""Length cap for the ``tool_dispatch_complete`` result preview.
+
+Bound to the operator-facing row/summary contract, not to any model-facing
+envelope: the transport's ``-v`` detail line and the recovery record's
+``result_preview`` both stop at 200 (240) chars, so a longer preview would
+be re-truncated downstream anyway."""
+
+_SCALAR_PREVIEW_CHARS = 32
+"""Per-field cap for the compact ``key=value`` scalars appended after the
+quoted payload. Longer values are dropped — the payload quote carries the
+information; long hashes and prose labels are not worth the budget."""
+
+_MIN_QUOTE_CHARS = 80
+"""Minimum payload-quote length once the scalars are appended. When the
+scalars would leave the quote fewer characters than this, the quote keeps
+the full preview budget and the scalars truncate off the end instead —
+a ``content=`` fragment below ~80 chars conveys too little to be worth
+squeezing onto one line."""
+
+
+def _quote_key_and_value(result: dict[str, Any]) -> tuple[str, str]:
+    """Pick the payload string to quote first: records beat prose, prose beats ids.
+
+    Envelope tools serialize their data after metadata — scope, source
+    provenance, interpretation prose — so the informative string is the
+    longest string in the first element of the first list of records
+    (``entries``, ``matches``, …), else the longest top-level string.
+    Within top-level strings, prose-like values (containing whitespace)
+    win over single-token identifiers: a 65-char ``r<sha256>`` ref is
+    longer than a short content field yet carries nothing an operator
+    can read, so length alone must not let an opaque id crowd it out.
+    """
+    quote_key, quote_value = "", ""
+    for _key, value in result.items():
+        if not isinstance(value, list) or not value or not isinstance(value[0], dict):
+            continue
+        nested = [
+            (str(nested_key), nested_value)
+            for nested_key, nested_value in value[0].items()
+            if isinstance(nested_value, str) and nested_value.strip()
+        ]
+        if nested:
+            nested_key, nested_value = max(nested, key=lambda pair: len(pair[1]))
+            if len(nested_value) > len(quote_value):
+                quote_key, quote_value = nested_key, nested_value
+    top_strings = [
+        (str(key), value)
+        for key, value in result.items()
+        if isinstance(value, str) and value.strip() and len(value) > len(quote_value)
+    ]
+    prose = [pair for pair in top_strings if any(c.isspace() for c in pair[1])]
+    pool = prose if prose else top_strings
+    if pool:
+        quote_key, quote_value = max(pool, key=lambda pair: len(pair[1]))
+    return quote_key, quote_value
+
+
+def summarize_json_result(tool_output: str) -> str:
+    """Render a JSON-object tool result as a compact, payload-first line.
+
+    JSON envelope tools (the thread archive's read/search pages, task
+    views, and other structured outputs) serialize their payload after
+    metadata — scope, source provenance, interpretation prose — so a raw
+    ``str(output)[:200]`` preview spends its entire window on keys and
+    labels before any content. This summary quotes the payload string
+    first (``content=<text>``, the longest string in the first list
+    record, …), then short scalars (``offset_chars=0``,
+    ``total_chars=9874``, ``has_more=true``, ``entries=3``) in document
+    order; the quote yields budget so the scalars fit inside
+    ``_RESULT_PREVIEW_CHARS``. Falls back to the raw text when the output
+    is not a JSON object — plain-text results keep their legacy preview
+    behavior, and the caller applies the final length cap.
+    """
+    text = tool_output.strip()
+    if not text.startswith("{"):
+        return tool_output
+    try:
+        result = json.loads(text)
+    except ValueError:
+        return tool_output
+    if not isinstance(result, dict) or not result:
+        return tool_output
+    quote_key, quote_value = _quote_key_and_value(result)
+    scalars: list[str] = []
+    for key, value in result.items():
+        if value is None or isinstance(value, dict) or (
+            quote_value and value == quote_value
+        ):
+            continue
+        if isinstance(value, list):
+            rendered = str(len(value))
+        elif isinstance(value, str):
+            rendered = value
+        else:
+            rendered = json.dumps(value, default=str)
+        if len(rendered) > _SCALAR_PREVIEW_CHARS:
+            continue
+        scalars.append(f"{key}={rendered}")
+    if not quote_value:
+        summary = " ".join(scalars)
+        return summary[:_RESULT_PREVIEW_CHARS] if summary else tool_output
+    tail = " ".join(scalars)
+    room = _RESULT_PREVIEW_CHARS - len(tail) - len(quote_key) - 2
+    quote_chars = room if room >= _MIN_QUOTE_CHARS else (
+        _RESULT_PREVIEW_CHARS - len(quote_key) - 1
+    )
+    return f"{quote_key}={quote_value[:quote_chars]} {tail}".rstrip()
 
 
 def _track_retrieval_call(state: Any, tool_name: str, tool_arguments: Any) -> None:
@@ -623,7 +734,9 @@ async def dispatch_capability(
             state="succeeded" if dispatched_succeeded else "stalled",
             tool_name=tool_name,
             logger=logger,
-            result_preview=str(tool_output)[:240] if dispatched_succeeded else "",
+            result_preview=(
+                summarize_json_result(tool_output)[:240] if dispatched_succeeded else ""
+            ),
             last_error=dispatch_error,
             retry_policy=cast(Any, recovery_retry_policy) if dispatch_error else None,
         )

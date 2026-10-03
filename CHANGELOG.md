@@ -6,6 +6,28 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Verbose tool previews lead with payload, not envelope JSON
+
+- **What:** `tool_dispatch_complete`'s `result_preview` is now a compact
+  payload-first `key=value` summary for JSON-object tool outputs (content
+  quoted first, then short scalars like `total_chars`/`has_more`), instead
+  of the raw first 200 chars. The event also carries `result_chars`, the
+  true output size, and `_settle_recovery` stores the same summary in
+  `RecoveryRecord.result_preview` (which feeds
+  `WorkflowPosition.step_results`). Plain-text outputs keep the legacy
+  raw-truncation behavior.
+- **Why:** The 2026-10-02 thread-provenance work serializes `ref` and
+  `source` metadata ahead of `content` in every read/search envelope, so
+  `lisa prompt -v` rendered raw JSON labels — for `r<sha256>` refs the
+  65-char hash plus interpretation prose consumed the entire 200-char
+  window and no content ever showed.
+- **Tests:** `kernel/tests/test_turn_runner_tool_dispatch.py`
+  `test_summarize_json_result_*`;
+  `kernel/tests/test_turn_runner.py`
+  `test_run_turn_emits_summarized_json_result_preview`; the CLI pins
+  both the `⎿ 5.412k chars` true-size row summary and the payload-first
+  detail line in `hosts/cli/tests/test_prompt_transport.py`.
+
 #### Truncated prose ends the turn instead of arming the write backstop
 
 - **What:** A completion that stops at the token cap with prose and no tool

@@ -3293,6 +3293,71 @@ async def test_run_turn_emits_tool_dispatch_stage_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_emits_summarized_json_result_preview() -> None:
+    """tool_dispatch_complete carries a payload-first preview for JSON outputs.
+
+    Envelope tools (thread archive pages) serialize metadata before
+    content; the completion event's ``result_preview`` must lead with the
+    payload, and ``result_chars`` must report the true output size (the
+    transport's ``⎿ N chars`` row summary scales with the whole result,
+    not the 200-char preview).
+    """
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    json_page = json.dumps(
+        {
+            "ref": "r" + "a" * 64,
+            "source": {"scope": "stored_tool_result"},
+            "content": "actual page content the operator needs",
+            "total_chars": 5412,
+        }
+    )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return await complete()
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(two_step)
+
+    async def execute_operation(operation_id: str, _ctx: Any) -> OperationResult:
+        return OperationResult(output_text=json_page)
+
+    hooks.operations.execute_operation = execute_operation
+    hooks.lifecycle.on_stage = on_stage
+
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert result.tool_call_count == 1
+    complete_data = next(e[1] for e in events if e[0] == "tool_dispatch_complete")
+    assert complete_data["result_preview"].startswith("content=actual page content")
+    assert "stored_tool_result" not in complete_data["result_preview"]
+    assert complete_data["result_chars"] == len(json_page)
+
+
+@pytest.mark.asyncio
 async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
     """The on_stage hook fires fork_start, one fork_child_start and one
     fork_child_complete per child, then fork_complete — so a transport

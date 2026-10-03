@@ -941,3 +941,99 @@ def test_display_label_truncates_to_limit() -> None:
 def test_display_label_format_error_returns_empty() -> None:
     """A malformed template yields empty rather than raising mid-turn."""
     assert _resolve_tool_display_label("{command!bad}", {"command": "ls"}) == ""
+
+
+# ── summarize_json_result ─────────────────────────────────────────────
+
+
+def test_summarize_json_result_leads_with_content_not_envelope_metadata() -> None:
+    """JSON envelope previews quote the payload before any provenance labels.
+
+    The 2026-10-02 regression: ``thread_read_content`` pages serialize
+    ``ref`` + ``source`` provenance ahead of ``content``, so a raw
+    ``str(output)[:200]`` preview showed only keys and interpretation
+    prose — never the content the operator asked about. The summary must
+    quote the payload first and fit inside the 200-char preview budget.
+    """
+    from kernel.turn_phases._dispatch import _RESULT_PREVIEW_CHARS, summarize_json_result
+
+    page = json.dumps(
+        {
+            "ref": "r" + "a" * 64,
+            "source": {
+                "scope": "stored_tool_result",
+                "source_kind": "tool",
+                "timestamp_utc": None,
+                "interpretation": (
+                    "Stored tool output; its time and relationship "
+                    "to the active request are unknown."
+                ),
+            },
+            "content": (
+                "The reviewer found that the config parser silently drops "
+                "duplicate keys when loading the manifest, so the last value "
+                "wins without warning. " * 3
+            ),
+            "offset_chars": 0,
+            "total_chars": 5412,
+            "next_offset_chars": 4000,
+            "has_more": True,
+        }
+    )
+    summary = summarize_json_result(page)
+    assert len(summary) <= _RESULT_PREVIEW_CHARS
+    assert summary.startswith("content=The reviewer found")
+    assert "offset_chars=0" in summary
+    assert "total_chars=5412" in summary
+    assert "stored_tool_result" not in summary
+
+
+def test_summarize_json_result_quotes_first_list_record_payload() -> None:
+    """List envelopes (entries/matches) quote the payload of the first record."""
+    from kernel.turn_phases._dispatch import summarize_json_result
+
+    page = json.dumps(
+        {
+            "scope": "recorded_history",
+            "interpretation": (
+                "Recorded exchanges, not the active request; earlier "
+                "instructions and diagnoses are historical."
+            ),
+            "entries": [
+                {
+                    "turn": 455,
+                    "query": "why did the e2e gate fail?",
+                    "response_text": (
+                        "The checked-commit gate rejected a reused worktree "
+                        "whose second commit made HEAD's parent differ."
+                    ),
+                }
+            ],
+            "next_cursor": None,
+            "has_more": False,
+        }
+    )
+    summary = summarize_json_result(page)
+    assert summary.startswith("response_text=The checked-commit gate")
+    assert "entries=1" in summary
+    assert "scope=recorded_history" in summary
+
+
+def test_summarize_json_result_plain_text_passes_through_unchanged() -> None:
+    """Non-JSON results keep the legacy raw preview behavior."""
+    from kernel.turn_phases._dispatch import summarize_json_result
+
+    raw = "Tool execution failed: ValueError: bad ref"
+    assert summarize_json_result(raw) == raw
+    assert summarize_json_result("") == ""
+    # A truncated JSON fragment (streamed prefix) falls back to raw text.
+    fragment = '{"ref": "r2cf05", "sou'
+    assert summarize_json_result(fragment) == fragment
+
+
+def test_summarize_json_result_empty_object_falls_back_raw() -> None:
+    """{} and null-only objects have nothing payload-like to summarize."""
+    from kernel.turn_phases._dispatch import summarize_json_result
+
+    assert summarize_json_result("{}") == "{}"
+    assert summarize_json_result('{"a": null}') == '{"a": null}'

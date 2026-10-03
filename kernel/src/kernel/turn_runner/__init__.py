@@ -146,7 +146,11 @@ from kernel.turn_phases._completion_contract import (
     SurfaceProseWithFootnote,
     resolve_completion_contract,
 )
-from kernel.turn_phases._dispatch import _track_consecutive_errors, dispatch_capability
+from kernel.turn_phases._dispatch import (
+    _track_consecutive_errors,
+    dispatch_capability,
+    summarize_json_result,
+)
 from kernel.turn_phases._entry import execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context
 from kernel.turn_phases._lifecycle import (
@@ -6411,6 +6415,7 @@ async def _dispatch_capability_and_track(
     )
     tool_output = _outcome.tool_output
 
+    result_summary = summarize_json_result(tool_output)
     await emit_stage(
         "tool_dispatch_complete",
         {
@@ -6420,7 +6425,8 @@ async def _dispatch_capability_and_track(
             "tool_calls_so_far": state.total_tool_calls,
             "ok": _outcome.is_ok,
             "duration_ms": _outcome.duration_ms,
-            "result_preview": str(tool_output)[:200],
+            "result_preview": result_summary[:200],
+            "result_chars": len(tool_output),
         },
     )
 
