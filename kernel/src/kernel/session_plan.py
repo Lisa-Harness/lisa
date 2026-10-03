@@ -429,6 +429,23 @@ class ContextBudgetPlan(_StrictSessionModel):
     max_materialized_candidates: int = Field(default=32, ge=1)
 
 
+class ThreadDigestPlan(_StrictSessionModel):
+    """Session-owned knobs for the thread digest pushed into the retrieval lane.
+
+    The digest (``runtime.thread_digest``) derives bounded task-state,
+    recent-history, and open-objective context items from the lossless
+    thread tail each turn so the model starts knowing its recorded state
+    instead of re-reading it through tools. ``enabled: false`` means the
+    model falls back to tool pulls only.
+    """
+
+    enabled: bool = True
+    recent_entries: int = Field(default=10, ge=1, le=40)
+    recent_body_chars: int = Field(default=1800, ge=200, le=8000)
+    task_view_budget_bytes: int = Field(default=4096, ge=1024, le=16384)
+    max_open_objective_lines: int = Field(default=3, ge=1, le=10)
+
+
 class ContextHistoryPlan(_StrictSessionModel):
     """Conversation sources for context assembly.
 
@@ -441,6 +458,7 @@ class ContextHistoryPlan(_StrictSessionModel):
     include_recent_conversation: bool = True
     include_reflection: bool = False
     recent_message_limit: int = Field(default=6, ge=0)
+    digest: ThreadDigestPlan = Field(default_factory=ThreadDigestPlan)
 
 
 def _default_context_lanes() -> tuple[ContextLanePlan, ...]:

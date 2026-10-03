@@ -41,6 +41,28 @@ def _write_entry(
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def test_digest_settings_disable_and_resize_the_push(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    thread_path = tmp_path / "thread"
+    _write_entry(thread_path, query="turn one", response_text="one", task_id="t")
+    _write_entry(thread_path, query="turn two", response_text="two", task_id="t")
+
+    disabled = SimpleNamespace(enabled=False)
+    assert build_thread_context_items(thread_path, settings=disabled) == []
+
+    tight = SimpleNamespace(
+        enabled=True,
+        recent_entries=1,
+        recent_body_chars=200,
+        task_view_budget_bytes=2048,
+        max_open_objective_lines=1,
+    )
+    items = build_thread_context_items(thread_path, settings=tight)
+    history = next(item for item in items if item.item_id == "thread:recent_history")
+    assert history.body == "- turn two: two"
+
+
 def test_digest_returns_empty_without_thread(tmp_path: Path) -> None:
     assert build_thread_context_items(None) == []
     assert build_thread_context_items(tmp_path / "missing") == []

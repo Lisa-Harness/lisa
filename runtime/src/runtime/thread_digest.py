@@ -35,6 +35,8 @@ __all__ = ["build_thread_context_items"]
 
 _DIGEST_NAMESPACE = "thread_history"
 _DIGEST_SOURCE = "lisa_thread_digest"
+#: Defaults mirror ``kernel.session_plan.ThreadDigestPlan``; the session
+#: plan's ``context.history.digest`` block overrides them.
 _RECENT_ENTRY_LIMIT = 10
 _RECENT_BODY_CHARS = 1800
 _TASK_VIEW_BUDGET_BYTES = 4096
@@ -49,20 +51,28 @@ def build_thread_context_items(
     thread_path: Path | None,
     *,
     redaction: Any = None,
+    settings: Any = None,
 ) -> list[ContextItem]:
     """Derive retrieval-lane context items from the lossless thread tail.
 
     Returns up to three items — recorded task state, recent history, and
-    open objectives — or an empty list when no store exists. Redaction is
-    applied to the recorded text via the same policy the read tools use.
+    open objectives — or an empty list when no store exists. ``settings``
+    is the session plan's ``context.history.digest`` block (None →
+    defaults). Redaction is applied to the recorded text via the same
+    policy the read tools use.
     """
     if thread_path is None:
         return []
+    if settings is not None and not getattr(settings, "enabled", True):
+        return []
+    recent_limit = _setting(settings, "recent_entries", _RECENT_ENTRY_LIMIT)
+    body_chars = _setting(settings, "recent_body_chars", _RECENT_BODY_CHARS)
+    view_budget = _setting(settings, "task_view_budget_bytes", _TASK_VIEW_BUDGET_BYTES)
+    objective_lines = _setting(settings, "max_open_objective_lines", _MAX_OPEN_OBJECTIVE_LINES)
     try:
         store = ThreadStore(thread_path, redaction=redaction)
         entries = [
-            (turn, entry)
-            for turn, entry in enumerate(store.load_recent(limit=_RECENT_ENTRY_LIMIT * 4))
+            (turn, entry) for turn, entry in enumerate(store.load_recent(limit=recent_limit * 4))
         ]
     except (OSError, ValueError):
         logger.debug("thread digest: could not read recent entries", exc_info=True)
@@ -70,10 +80,15 @@ def build_thread_context_items(
     if not entries:
         return []
     items: list[ContextItem] = []
-    _append_task_state_item(items, entries, redaction)
-    _append_recent_history_item(items, entries, redaction)
-    _append_open_objectives_item(items, entries, redaction)
+    _append_task_state_item(items, entries, redaction, view_budget)
+    _append_recent_history_item(items, entries, redaction, recent_limit, body_chars)
+    _append_open_objectives_item(items, entries, redaction, objective_lines)
     return items
+
+
+def _setting(settings: Any, name: str, default: int) -> int:
+    value = getattr(settings, name, None) if settings is not None else None
+    return int(value) if isinstance(value, int) and value > 0 else default
 
 
 def _turn_of(entry: dict[str, Any]) -> int:
@@ -85,11 +100,12 @@ def _append_task_state_item(
     items: list[ContextItem],
     entries: list[tuple[int, dict[str, Any]]],
     redaction: Any,
+    view_budget: int,
 ) -> None:
     view = build_task_view(
         entries,
         redaction=redaction,
-        budget_bytes=_TASK_VIEW_BUDGET_BYTES,
+        budget_bytes=view_budget,
     )
     if view.get("status") == "empty" and not str(view.get("task_id") or ""):
         return
@@ -137,8 +153,10 @@ def _append_recent_history_item(
     items: list[ContextItem],
     entries: list[tuple[int, dict[str, Any]]],
     redaction: Any,
+    recent_limit: int,
+    body_chars: int,
 ) -> None:
-    body = _render_recent_history(entries, redaction)
+    body = _render_recent_history(entries, redaction, recent_limit, body_chars)
     if not body:
         return
     items.append(
@@ -159,10 +177,17 @@ def _append_recent_history_item(
     )
 
 
-def _render_recent_history(entries: list[tuple[int, dict[str, Any]]], redaction: Any) -> str:
+def _render_recent_history(
+    entries: list[tuple[int, dict[str, Any]]],
+    redaction: Any,
+    recent_limit: int,
+    body_chars: int,
+) -> str:
     lines: list[str] = []
-    budget = _RECENT_BODY_CHARS
-    for _, entry in entries:
+    budget = body_chars
+    # Newest-first truncation: ``recent_entries`` bounds how many of the
+    # most recent exchanges appear, not the oldest ones in the window.
+    for _, entry in reversed(entries[-recent_limit:]):
         query = str(entry.get("query") or "").strip()
         if not query:
             continue
@@ -176,7 +201,7 @@ def _render_recent_history(entries: list[tuple[int, dict[str, Any]]], redaction:
             break
         lines.append(line)
         budget -= len(line) + 1
-        if len(lines) >= _RECENT_ENTRY_LIMIT:
+        if len(lines) >= recent_limit:
             break
     return "\n".join(lines)
 
@@ -185,6 +210,7 @@ def _append_open_objectives_item(
     items: list[ContextItem],
     entries: list[tuple[int, dict[str, Any]]],
     redaction: Any,
+    objective_lines: int,
 ) -> None:
     lines: list[str] = []
     for _, entry in reversed(entries):
@@ -202,7 +228,7 @@ def _append_open_objectives_item(
             lines.append(f"- blocked turn ({blocked}): {query[:160]} → {response[:200]}")
         else:
             lines.append(f"- awaiting user: {query[:160]} → {response[:200]}")
-        if len(lines) >= _MAX_OPEN_OBJECTIVE_LINES:
+        if len(lines) >= objective_lines:
             break
     if not lines:
         return

@@ -733,6 +733,7 @@ def _assemble_dynamic_user_context(
         runtime_context=runtime_context,
         thread_path=runtime.paths.thread_path,
         thread_redaction=get_thread_redaction_policy(),
+        thread_digest_settings=runtime.session_plan.manifest.context.history.digest,
     )
 
     def _session_context_loader() -> str:
@@ -986,6 +987,7 @@ def _bind_state_provider(
             runtime_context=runtime_context,
             thread_path=runtime.paths.thread_path,
             thread_redaction=get_thread_redaction_policy(),
+            thread_digest_settings=runtime.session_plan.manifest.context.history.digest,
         )
 
     return _state_provider

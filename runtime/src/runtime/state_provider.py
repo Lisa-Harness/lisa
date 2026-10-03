@@ -58,6 +58,7 @@ def build_unified_state(
     runtime_context: Any = None,
     thread_path: Path | None = None,
     thread_redaction: Any = None,
+    thread_digest_settings: Any = None,
 ) -> UnifiedState:
     """Return a compiled :class:`UnifiedState` for operations and the context mapper.
 
@@ -118,7 +119,7 @@ def build_unified_state(
     # mapper's pack gating cannot drop them for any mode; admission and
     # ordering remain owned by the session plan's context block.
     if thread_path is not None:
-        _merge_thread_digest_items(state, thread_path, thread_redaction)
+        _merge_thread_digest_items(state, thread_path, thread_redaction, thread_digest_settings)
 
     return state
 
@@ -127,12 +128,15 @@ def _merge_thread_digest_items(
     state: UnifiedState,
     thread_path: Path,
     thread_redaction: Any,
+    settings: Any,
 ) -> None:
     """Append thread-digest context items to the single candidate feed."""
     from runtime.thread_digest import build_thread_context_items
 
     existing_ids = {item.item_id for item in state.context_items}
-    for item in build_thread_context_items(thread_path, redaction=thread_redaction):
+    for item in build_thread_context_items(
+        thread_path, redaction=thread_redaction, settings=settings
+    ):
         if item.item_id not in existing_ids:
             state.context_items.append(item)
             existing_ids.add(item.item_id)

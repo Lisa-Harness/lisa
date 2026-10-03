@@ -119,6 +119,15 @@ context:
     - rule_id: fallback
       lane_id: general
       fallback: true
+  history:
+    recent_message_limit: 6
+    # Thread digest pushed into the retrieval lane each turn (all defaults shown)
+    digest:
+      enabled: true            # false → tool pulls only, nothing pushed
+      recent_entries: 10       # exchanges summarized in the recent-history item
+      recent_body_chars: 1800  # char budget for that summary
+      task_view_budget_bytes: 4096
+      max_open_objective_lines: 3
   ranking:
     relevance: 0.40
     mode_affinity: 0.15
