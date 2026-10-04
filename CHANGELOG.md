@@ -4,6 +4,41 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Bulk dismiss commands for the recovery pack
+
+- **What:** Two new operator slash commands, `/skip-all` and `/cancel-all`,
+  settle every open (stalled, indeterminate) recovery work item in one
+  command regardless of retry policy, mirroring the per-id `/skip <id>` and
+  `/cancel <id>` semantics. Running items — mid-flight for the current turn
+  — are deliberately left alone.
+- **Why:** Clearing a backlog of stalls previously required one `/skip <id>`
+  per item, each requiring a fresh message; there was no scriptable bulk
+  remediation except `/retry-safe`, which only covers read-only items.
+- **Tests:** `sdk/packs/recovery/tests/test_recovery_commands.py`
+  `test_skip_all_settles_every_open_item`, `test_cancel_all_settles_every_open_item`,
+  `test_bulk_dismiss_skips_running_items`, `test_bulk_dismiss_no_open_items_returns_message`.
+- **E2E:** `skipped 1/1 … [skipped/confirm]` verified by the new live
+  scenario `sdk/packs/recovery/tests/e2e/skip_all.scenario.yml`.
+
+### Fixed
+
+#### `/retry-safe` (and other bulk command prefixes) were unreachable
+
+- **What:** The host's pack-command dispatch matches `lowered.startswith(prefix)`
+  in registration order. The recovery pack registered `/retry-safe` *after*
+  `/retry`, so `/retry-safe` always matched `/retry` and returned
+  `Usage: /retry <work_item_id>` — the documented bulk-retry command could
+  never run. The pack now registers longer prefixes before their shorter
+  shadows (`/retry-safe` before `/retry`; the same guard applies to the new
+  `/skip-all` vs `/skip` and `/cancel-all` vs `/cancel` pairs).
+- **Why:** Silent shadowing between sibling prefix commands: the handler
+  chain never reached the batch handler, so `/retry-safe` stalls persisted.
+- **Tests:** `sdk/packs/recovery/tests/test_recovery_commands.py`
+  `test_get_host_commands_orders_longest_prefixes_first` (fails against the
+  old registration order, in which `/retry` preceded `/retry-safe`).
+
 ### Fixed
 
 #### Recovery-stall workflow gate works again after checkpoint trim

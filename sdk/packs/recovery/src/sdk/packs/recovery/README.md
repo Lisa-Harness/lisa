@@ -16,7 +16,14 @@ This pack provides the operator UX for inspecting and resolving those records:
 | `/retry-safe` | Retry all safe (read-only) stalled items in one command. |
 | `/skip <id>` | Mark one item as skipped, unblocking dependent workflow steps. |
 | `/cancel <id>` | Mark one item as cancelled, unblocking dependent workflow steps. |
+| `/skip-all` | Mark every open (stalled, indeterminate) item as skipped in one command. Running items are left untouched. |
+| `/cancel-all` | Mark every open (stalled, indeterminate) item as cancelled in one command. Running items are left untouched. |
 | `/resume [reply]` | Resume from the most recent yielded turn. |
+
+Slash prefixes are matched by the host with leading-prefix matching in
+registration order, so every bulk form (`/retry-safe`, `/skip-all`,
+`/cancel-all`) is registered before its shorter shadow (`/retry`, `/skip`,
+`/cancel`).
 
 ## Architecture boundary
 

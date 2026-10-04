@@ -4,7 +4,7 @@ These handlers live in the pack (not in ``runtime``) because they
 delegate to the recovery service owned by the host runtime. The host
 discovers them through the ``lisa.extensions.host_commands`` entry-point
 group and dispatches ``/stalls``, ``/stall``, ``/retry``, ``/retry-safe``,
-``/skip``, and ``/cancel`` to these handlers.
+``/skip``, ``/skip-all``, ``/cancel``, and ``/cancel-all`` to these handlers.
 
 Design notes:
 - ``/stalls`` and ``/stall <id>`` are read-only inspection commands.
@@ -17,6 +17,11 @@ Design notes:
   in one command.
 - ``/skip <id>`` and ``/cancel <id>`` settle the record as skipped or
   cancelled, unblocking dependent workflow steps.
+- ``/skip-all`` and ``/cancel-all`` are the bulk forms: they settle every
+  open item in one command regardless of retry policy, so operators can
+  dismiss a backlog without typing one ``/skip`` per id. They never
+  settle ``running`` items — those are mid-flight in this very turn —
+  and they distinguish "dismissed" from "resolved", unlike ``/retry-safe``.
 
 HostRuntime is typed as ``Any`` here (same pattern as the checkpoint
 pack). These handlers need host-layer services (recovery service, model
@@ -40,10 +45,12 @@ _CMD_ID_ARG_MIN_PARTS = 2
 __all__ = [
     "get_host_commands",
     "handle_cancel",
+    "handle_cancel_all",
     "handle_resume",
     "handle_retry",
     "handle_retry_safe",
     "handle_skip",
+    "handle_skip_all",
     "handle_stall",
     "handle_stalls",
 ]
@@ -69,8 +76,29 @@ def _recovery_service(runtime: Any) -> Any:
 
 
 def get_host_commands() -> list[HostCommandSpec]:
-    """Return the slash-command specs this pack registers."""
+    """Return the slash-command specs this pack registers.
+
+    Specs are ordered longest-prefix-first: the host dispatch layer matches
+    ``lowered.startswith(spec.prefix)`` in registration order, so a bare
+    ``/retry`` would shadow ``/retry-safe`` (and ``/skip`` would shadow
+    ``/skip-all``) if the short prefix were registered first.
+    """
     return [
+        HostCommandSpec(
+            prefix="/retry-safe",
+            handler=handle_retry_safe,
+            help_text="Retry all safe (read-only) stalled work items.",
+        ),
+        HostCommandSpec(
+            prefix="/skip-all",
+            handler=handle_skip_all,
+            help_text="Mark all open work items as skipped, unblocking the workflow.",
+        ),
+        HostCommandSpec(
+            prefix="/cancel-all",
+            handler=handle_cancel_all,
+            help_text="Mark all open work items as cancelled, unblocking the workflow.",
+        ),
         HostCommandSpec(
             prefix="/stalls",
             handler=handle_stalls,
@@ -85,11 +113,6 @@ def get_host_commands() -> list[HostCommandSpec]:
             prefix="/retry",
             handler=handle_retry,
             help_text="Retry one stalled work item (approval-gated for effectful actions).",
-        ),
-        HostCommandSpec(
-            prefix="/retry-safe",
-            handler=handle_retry_safe,
-            help_text="Retry all safe (read-only) stalled work items.",
         ),
         HostCommandSpec(
             prefix="/skip",
@@ -288,6 +311,64 @@ async def handle_retry_safe(runtime: Any, stripped: str, message: str) -> str:
             logger.warning("retry-safe settle failed for %s: %s", record.work_item_id, exc)
 
     return f"Retried {settled}/{len(safe_records)} safe work items."
+
+
+# ── /skip-all and /cancel-all ─────────────────────────────────────────
+
+
+async def _bulk_dismiss(
+    runtime: Any,
+    state: str,
+    error_note: str,
+) -> str:
+    """Settle every open (stalled, indeterminate) work item at once.
+
+    Shared body for ``/skip-all`` and ``/cancel-all``. Never touches
+    ``running`` items — those are mid-flight for the current turn, and
+    settling them would race the live dispatch. Items already settled by
+    a concurrent command are counted and reported rather than failed.
+    """
+    service = _recovery_service(runtime)
+    if service is None or not hasattr(service, "list_open"):
+        return "Recovery service is not available in this host runtime."
+
+    try:
+        records = await service.list_open(_recovery_identity(runtime))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("%s list failed: %s", state, exc)
+        return f"Failed to list stalled work: {type(exc).__name__}: {exc}"
+
+    dismissible = [r for r in records if r.state in ("stalled", "indeterminate")]
+    if not dismissible:
+        return "No stalled or indeterminate work items to dismiss."
+
+    settled = 0
+    for record in dismissible:
+        try:
+            updated = await service.settle(
+                record.work_item_id,
+                _recovery_identity(runtime),
+                state=state,
+                last_error=error_note,
+            )
+            if updated is not None:
+                settled += 1
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("%s settle failed for %s: %s", state, record.work_item_id, exc)
+
+    return f"{state.capitalize()} {settled}/{len(dismissible)} work items."
+
+
+async def handle_skip_all(runtime: Any, stripped: str, message: str) -> str:
+    """Handle ``/skip-all`` — mark every open work item as skipped."""
+    del stripped, message
+    return await _bulk_dismiss(runtime, "skipped", "skipped by operator")
+
+
+async def handle_cancel_all(runtime: Any, stripped: str, message: str) -> str:
+    """Handle ``/cancel-all`` — mark every open work item as cancelled."""
+    del stripped, message
+    return await _bulk_dismiss(runtime, "cancelled", "cancelled by operator")
 
 
 # ── /skip <id> ────────────────────────────────────────────────────────

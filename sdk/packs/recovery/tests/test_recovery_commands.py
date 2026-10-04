@@ -7,7 +7,10 @@ Covers:
 - ``/retry-safe`` batches all safe items
 - ``/skip <id>`` settles as skipped
 - ``/cancel <id>`` settles as cancelled
-- ``get_host_commands`` returns all six specs
+- ``/skip-all`` and ``/cancel-all`` batch-dismiss every open item
+- prefix shadowing: longer prefixes must be matched before shorter ones
+
+``get_host_commands`` returns all nine specs
 """
 
 from __future__ import annotations
@@ -17,9 +20,11 @@ from kernel.recovery import RecoveryIdentity, RecoveryRecord
 from sdk.packs.recovery.commands import (
     get_host_commands,
     handle_cancel,
+    handle_cancel_all,
     handle_retry,
     handle_retry_safe,
     handle_skip,
+    handle_skip_all,
     handle_stall,
     handle_stalls,
 )
@@ -125,10 +130,38 @@ def _make_record(
 # ── get_host_commands ─────────────────────────────────────────────────
 
 
-def test_get_host_commands_returns_all_seven_specs() -> None:
+def test_get_host_commands_returns_all_nine_specs() -> None:
     specs = get_host_commands()
     prefixes = {s.prefix for s in specs}
-    assert prefixes == {"/stalls", "/stall", "/retry", "/retry-safe", "/skip", "/cancel", "/resume"}
+    assert prefixes == {
+        "/stalls",
+        "/stall",
+        "/retry",
+        "/retry-safe",
+        "/skip",
+        "/skip-all",
+        "/cancel",
+        "/cancel-all",
+        "/resume",
+    }
+
+
+def test_get_host_commands_orders_longest_prefixes_first() -> None:
+    """Regression: the runtime dispatch matches ``startswith`` in order, so
+    ``/retry`` registered before ``/retry-safe`` made ``/retry-safe``
+    unreachable (it always hit the ``/retry`` usage message). The pack must
+    register longer prefixes before their shorter shadows.
+    """
+    prefixes = [s.prefix for s in get_host_commands()]
+    shadow_pairs = (
+        ("/retry", "/retry-safe"),
+        ("/skip", "/skip-all"),
+        ("/cancel", "/cancel-all"),
+    )
+    for short, long_ in shadow_pairs:
+        assert prefixes.index(long_) < prefixes.index(short), (
+            f"{long_} must be registered before {short}"
+        )
 
 
 # ── /stalls ───────────────────────────────────────────────────────────
@@ -302,3 +335,109 @@ async def test_cancel_settles_as_cancelled() -> None:
     settled = await service.get(record.work_item_id, _identity())
     assert settled is not None
     assert settled.state == "cancelled"
+
+
+# ── stall → inspect → skip lifecycle ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stall_inspect_skip_lifecycle_clears_open_item() -> None:
+    """Full recovery contract on one shared service (Rec-6 deterministic guard).
+
+    A stalled record must appear in ``/stalls``, render via ``/stall <id>``,
+    settle as skipped via ``/skip <id>``, and then drop off ``/stalls`` —
+    all deterministic (in-memory service, no live model). This complements the
+    e2e ``stall_inspect_skip.scenario.yml``, which exercises the same contract
+    against a live model.
+    """
+    service = _FakeService()
+    runtime = _FakeRuntime(service)
+    record = await service.begin(
+        _make_record(target_id="bash_run", retry_policy="confirm", state="stalled")
+    )
+    item_id = record.work_item_id
+
+    listed = await handle_stalls(runtime, "/stalls", "/stalls")
+    assert item_id in listed and "state=stalled" in listed
+
+    detail = await handle_stall(runtime, f"/stall {item_id}", f"/stall {item_id}")
+    assert "state: stalled" in detail
+
+    skipped = await handle_skip(runtime, f"/skip {item_id}", f"/skip {item_id}")
+    assert f"Skipped work item {item_id}" in skipped
+
+    settled = await service.get(item_id, _identity())
+    assert settled is not None and settled.state == "skipped"
+    assert (
+        await handle_stalls(runtime, "/stalls", "/stalls")
+        == "No stalled or indeterminate work items."
+    )
+
+
+# ── /skip-all and /cancel-all ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_skip_all_settles_every_open_item() -> None:
+    service = _FakeService()
+    r_safe = await service.begin(_make_record(target_id="safe_a", retry_policy="safe"))
+    r_confirm = await service.begin(
+        _make_record(target_id="confirm_b", retry_policy="confirm", effect="write")
+    )
+    r_never = await service.begin(_make_record(target_id="never_c", retry_policy="never"))
+    runtime = _FakeRuntime(service)
+
+    result = await handle_skip_all(runtime, "/skip-all", "/skip-all")
+
+    assert "3/3" in result
+    for record in (r_safe, r_confirm, r_never):
+        settled = await service.get(record.work_item_id, _identity())
+        assert settled is not None and settled.state == "skipped"
+    assert (
+        await handle_stalls(runtime, "/stalls", "/stalls")
+        == "No stalled or indeterminate work items."
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_settles_every_open_item() -> None:
+    service = _FakeService()
+    r_confirm = await service.begin(
+        _make_record(target_id="confirm_a", retry_policy="confirm", effect="execute")
+    )
+    runtime = _FakeRuntime(service)
+
+    result = await handle_cancel_all(runtime, "/cancel-all", "/cancel-all")
+
+    assert "1/1" in result
+    settled = await service.get(r_confirm.work_item_id, _identity())
+    assert settled is not None and settled.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_bulk_dismiss_skips_running_items() -> None:
+    """A mid-flight (running) item is this turn's own dispatch; bulk commands
+    must leave it alone so a running dispatch is not settled underneath it.
+    """
+    service = _FakeService()
+    running = await service.begin(_make_record(target_id="busy", state="running"))
+    stalled = await service.begin(_make_record(target_id="stuck", state="stalled"))
+    runtime = _FakeRuntime(service)
+
+    result = await handle_skip_all(runtime, "/skip-all", "/skip-all")
+
+    assert "1/1" in result
+    untouched = await service.get(running.work_item_id, _identity())
+    assert untouched is not None and untouched.state == "running"
+    settled = await service.get(stalled.work_item_id, _identity())
+    assert settled is not None and settled.state == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_bulk_dismiss_no_open_items_returns_message() -> None:
+    service = _FakeService()
+    runtime = _FakeRuntime(service)
+
+    result = await handle_cancel_all(runtime, "/cancel-all", "/cancel-all")
+
+    assert result == "No stalled or indeterminate work items to dismiss."
