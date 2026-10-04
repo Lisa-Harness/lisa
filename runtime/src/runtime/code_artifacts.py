@@ -33,7 +33,10 @@ async def _task_artifact_ids(
 async def _git_read(root: Path, *args: str) -> str | None:
     try:
         process = await asyncio.create_subprocess_exec(
-            "git", "-C", str(root), *args,
+            "git",
+            "-C",
+            str(root),
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

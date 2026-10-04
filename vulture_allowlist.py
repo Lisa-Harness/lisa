@@ -95,3 +95,29 @@ kernel.state_providers.BlankStateProvider.__call__  # noqa: Vulture
 
 # reason: EmbeddingProvider Protocol parameter — interface contract
 sdk.memory.store.EmbeddingProvider.embed.texts  # noqa: Vulture
+
+# ──────────────────────────────────────────────────────────────────────────
+# MCP lifespan context-manager parameters — the ``app`` argument is part of
+# the ``@asynccontextmanager`` lifespan signature MCPServer hands us; the
+# catalog/content/context/fetch/guard/memory/storage servers don't read it.
+# ──────────────────────────────────────────────────────────────────────────
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.catalog.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.content.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.context.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.fetch.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.guard.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.memory.server._lifespan.app  # noqa: Vulture
+
+# reason: MCPServer lifespan signature requires ``app``; value not read
+mcp_server.storage.server._lifespan.app  # noqa: Vulture

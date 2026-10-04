@@ -91,7 +91,8 @@ confirm a fix with more than one passing run before calling it done.
 
    ```python
    rt = build_runtime(host_kind="e2e", data_dir=..., session_context=..., in_process_mcp=True)
-   await rt.start(); await rt.resources.mcp_tool_pool.call_tool("memory.add", {...})
+   await rt.start()
+   await rt.resources.mcp_tool_pool.call_tool("memory.add", {...})
    ```
 
 5. Fix the root cause (pack, kernel, or runtime), add a regression test at the

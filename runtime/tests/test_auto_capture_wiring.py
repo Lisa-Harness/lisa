@@ -103,9 +103,12 @@ def test_memory_provider_config_without_catalog_capabilities_builds_hooks(
     hooks = build_turn_hooks(runtime, {"mode_id": "default"})
 
     assert hooks.services.capability_binding_provider is not None
-    assert hooks.services.capability_binding_provider.binding_for(
-        CapabilityRef("operation", "missing", "lisa-pack-memory")
-    ) is None
+    assert (
+        hooks.services.capability_binding_provider.binding_for(
+            CapabilityRef("operation", "missing", "lisa-pack-memory")
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

@@ -211,8 +211,7 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
 def _validation_summary(exc: ValidationError) -> str:
     """One-line ``loc: type`` list, e.g. ``facts: too_long`` or ``json_invalid``."""
     return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}"
-        for err in exc.errors()
+        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}" for err in exc.errors()
     )
 
 

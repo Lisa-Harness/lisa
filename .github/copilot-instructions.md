@@ -7,9 +7,16 @@ name: Project Contract
 Use the repository customization taxonomy in this order:
 
 1. Always-on project contract: this file and the package-scoped guidance below.
-2. Engineering standards: workflow, Python, content-authoring, and file-format rules.
-3. Architecture boundaries: package ownership and dependency rules for kernel, SDK, packs, MCP servers, and hosts.
-4. Customization governance: how to author instructions, agents, prompts, and skills without bloating the prompt.
+2. **Active policy:** `kernel/`, `runtime/`, `sdk/`, `mcp_server/` are under a
+   behavior freeze (declared 2026-10-04). Only bug fixes with regression
+   tests, and tests, may land there. Full rules:
+   `docs/CODING_WORKFLOW.md` § Freeze and
+   `.github/instructions/engineering/freeze.instructions.md`. Refuse feature
+   or refactor work in those trees unless the operator explicitly lifts the
+   freeze.
+3. Engineering standards: workflow, Python, content-authoring, and file-format rules.
+4. Architecture boundaries: package ownership and dependency rules for kernel, SDK, packs, MCP servers, and hosts.
+5. Customization governance: how to author instructions, agents, prompts, and skills without bloating the prompt.
 
 ## Operating defaults
 

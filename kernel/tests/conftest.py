@@ -78,6 +78,54 @@ def _bridge_turnhooks_complete_to_gateway() -> Any:
             TurnHooks.__init__ = _ORIGINAL_TURNHOOKS_INIT  # type: ignore[method-assign]
 
 
+# ── Settings hermeticity guard ──────────────────────────────────────
+#
+# ``kernel.config.settings`` is a module-level singleton. Tests that mutate
+# one of its fields and forget to restore it (or restore it via an exception
+# path) poison every later test in the process, producing the classic
+# "passes in isolation, fails in the full suite" flakiness that plagued the
+# 2026-09 baselines. Under the 2026-10-04 kernel freeze the suite must be
+# hermetic by construction, not by convention. This autouse snapshot/restore
+# wrapper makes that a gate: any test that leaves the singleton dirty fails
+# with a diff of the polluted fields, and every test runs against the
+# pristine pre-suite snapshot.
+#
+# Keep this cheap: one ``model_dump`` per test, no deep-copying beyond what
+# ``model_copy(deep=True)`` already does.
+
+
+@pytest.fixture(autouse=True)
+def _settings_hermeticity_guard() -> Any:
+    """Snapshot/restore ``kernel.config.settings`` and fail on leaks."""
+
+    from kernel.config import settings
+
+    snapshot = settings.model_copy(deep=True)
+    yield
+
+    leaked: dict[str, tuple[Any, Any]] = {}
+    for field, value in settings.__dict__.items():
+        if field not in snapshot.__dict__:
+            leaked[field] = (None, value)
+        elif snapshot.__dict__[field] != value:
+            leaked[field] = (snapshot.__dict__[field], value)
+
+    for field, value in snapshot.__dict__.items():
+        object.__setattr__(settings, field, value)
+
+    if leaked:
+        diff = "\n".join(
+            f"  {field}: snapshot={before!r} leaked={after!r}"
+            for field, (before, after) in sorted(leaked.items())
+        )
+        raise AssertionError(
+            "Test mutated kernel.config.settings without restoring it.\n"
+            "The freeze requires a hermetic suite; wrap mutations in\n"
+            "try/finally (or use monkeypatch) so later tests are isolated.\n"
+            f"Leaked fields:\n{diff}"
+        )
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _wire_sub_turn_content_registry() -> None:
     """Wire a directory-based content registry for the sub-turn contract assets.

@@ -132,7 +132,7 @@ class ThreadReader:
         }
 
     def _entry(self, entry: dict[str, Any], turn: int) -> dict[str, Any]:
-        result = {"turn": turn, "transcript_count": len(entry.get("transcript") or [])}
+        result: dict[str, Any] = {"turn": turn, "transcript_count": len(entry.get("transcript") or [])}
         result["timestamp_utc"] = self._preview(
             entry.get("timestamp_utc"), f"t{turn}.timestamp_utc"
         )
@@ -148,9 +148,9 @@ class ThreadReader:
         reasoning = entry.get("reasoning_text")
         if source and reasoning:
             result["content_source"] = self._preview(source, f"t{turn}.content_source")
-            permitted = str(self._redact(str(reasoning)))
-            result["reasoning_excerpt"] = permitted[-_REASONING_CHARS:]
-            result["reasoning_omitted_chars"] = max(0, len(permitted) - _REASONING_CHARS)
+            reasoning_text = str(self._redact(str(reasoning)))
+            result["reasoning_excerpt"] = reasoning_text[-_REASONING_CHARS:]
+            result["reasoning_omitted_chars"] = max(0, len(reasoning_text) - _REASONING_CHARS)
         return result
 
     @staticmethod
@@ -184,7 +184,7 @@ class ThreadReader:
         """Read a fixed archive window; cursors can continue inside a transcript."""
         if start_turn < 0 or end_turn < start_turn:
             raise ValueError("Require 0 <= start_turn <= end_turn")
-        bounds = (start_turn, min(end_turn, self.store.next_turn_index() - 1))
+        bounds: tuple[int, int] = (start_turn, min(end_turn, self.store.next_turn_index() - 1))
         if cursor is not None:
             parsed = self._range_cursor(cursor, "range")
             if parsed[0] != start_turn or parsed[1] > end_turn:
@@ -212,10 +212,10 @@ class ThreadReader:
 
     @staticmethod
     def _range_cursor(cursor: str, kind: str) -> tuple[int, int, int, int]:
-        match = _RANGE_CURSOR.fullmatch(cursor)
-        if match is None or match[1] != kind:
+        cursor_match = _RANGE_CURSOR.fullmatch(cursor)
+        if cursor_match is None or cursor_match[1] != kind:
             raise ValueError("Invalid thread cursor")
-        start, end, turn, position = (int(value) for value in match.groups()[1:])
+        start, end, turn, position = (int(value) for value in cursor_match.groups()[1:])
         if not start <= turn <= end or position < -1:
             raise ValueError("Invalid thread cursor position")
         return start, end, turn, position
@@ -236,7 +236,7 @@ class ThreadReader:
             raise ValueError("Transcript cursor requires include_transcript=true")
         page = _page()
         for ordinal, entry in self.store.iter_range(start_turn=turn, end_turn=end):
-            projected = (
+            projected: dict[str, Any] = (
                 self._entry(entry, ordinal)
                 if position == -1
                 else {"turn": ordinal, "transcript_start": position}
@@ -244,7 +244,8 @@ class ThreadReader:
             if include_transcript:
                 projected["transcript_start"] = max(0, position)
                 projected["transcript_count"] = len(entry.get("transcript") or [])
-                projected["transcript"] = []
+                transcript: list[Any] = []
+                projected["transcript"] = transcript
             page["entries"].append(projected)
             if not _fits(page, budget):
                 page["entries"].pop()
@@ -300,10 +301,10 @@ class ThreadReader:
             end = min(end, end_turn)
         position = 0
         if cursor is not None:
-            match = _SEARCH_CURSOR.fullmatch(cursor)
-            if match is None or match[3] != signature:
+            cursor_match = _SEARCH_CURSOR.fullmatch(cursor)
+            if cursor_match is None or cursor_match[3] != signature:
                 raise ValueError("Cursor does not belong to this search")
-            end, position = int(match[1]), int(match[2])
+            end, position = int(cursor_match[1]), int(cursor_match[2])
         matches = search_entries(
             self.store.iter_range(start_turn=start_turn, end_turn=end),
             query,
@@ -315,13 +316,13 @@ class ThreadReader:
             raise ValueError("Cursor exceeds search results")
         page = _page()
         for index in range(position, len(matches)):
-            match = matches[index]
-            turn = match["turn"]
+            candidate = matches[index]
+            turn = candidate["turn"]
             raw = self.store.load_range(start_turn=turn, end_turn=turn)[0]
             projected = self._entry(raw, turn)
             projected["response_preview"] = projected.pop("response_text")
-            projected["score"] = match["score"]
-            projected["matches"] = match["matches"]
+            projected["score"] = candidate["score"]
+            projected["matches"] = candidate["matches"]
             page["entries"].append(projected)
             if not _fits(page, budget):
                 page["entries"].pop()

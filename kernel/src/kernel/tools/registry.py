@@ -57,7 +57,7 @@ from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
-EMPTY_PACK_CONFIGURATION = MappingProxyType({})
+EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
 
 #: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
 #: fire-and-forget telemetry; the set keeps them garbage-collectable only
@@ -322,9 +322,7 @@ def project_execution_floor(provider: Any, tool_id: str) -> ExecutionFloorView |
     return ExecutionFloorView(
         execution=floor.get("execution") if isinstance(floor.get("execution"), str) else None,
         persistence=floor.get("persistence") if isinstance(floor.get("persistence"), str) else None,
-        paths=MappingProxyType(
-            {str(path): str(access) for path, access in paths.items()}
-        )
+        paths=MappingProxyType({str(path): str(access) for path, access in paths.items()})
         if isinstance(paths, Mapping)
         else MappingProxyType({}),
     )

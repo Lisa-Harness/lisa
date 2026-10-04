@@ -153,9 +153,7 @@ def summarize_json_result(tool_output: str) -> str:
     quote_key, quote_value = _quote_key_and_value(result)
     scalars: list[str] = []
     for key, value in result.items():
-        if value is None or isinstance(value, dict) or (
-            quote_value and value == quote_value
-        ):
+        if value is None or isinstance(value, dict) or (quote_value and value == quote_value):
             continue
         if isinstance(value, list):
             rendered = str(len(value))
@@ -171,9 +169,7 @@ def summarize_json_result(tool_output: str) -> str:
         return summary[:_RESULT_PREVIEW_CHARS] if summary else tool_output
     tail = " ".join(scalars)
     room = _RESULT_PREVIEW_CHARS - len(tail) - len(quote_key) - 2
-    quote_chars = room if room >= _MIN_QUOTE_CHARS else (
-        _RESULT_PREVIEW_CHARS - len(quote_key) - 1
-    )
+    quote_chars = room if room >= _MIN_QUOTE_CHARS else (_RESULT_PREVIEW_CHARS - len(quote_key) - 1)
     return f"{quote_key}={quote_value[:quote_chars]} {tail}".rstrip()
 
 

@@ -110,6 +110,32 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",
+        "state_path.parent.mkdir(parents=True, exist_ok=True)",
+    ),
+    "runtime/src/runtime/policy.py": (
+        "path.parent.mkdir(parents=True, exist_ok=True)",
+        'path.write_text(header + body, encoding="utf-8")',
+    ),
+    "runtime/src/runtime/testing/runtime_factory.py": (
+        "manifest_dir.mkdir(parents=True, exist_ok=True)",
+        '(manifest_dir / "models.yaml").write_text(',
+    ),
+    "runtime/src/runtime/thread/__init__.py": (
+        "thread_path.parent.mkdir(parents=True, exist_ok=True)",
+        "paths.current.parent.mkdir(parents=True, exist_ok=True)",
+    ),
+    "runtime/src/runtime/thread/_results.py": (
+        "path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)",
+        "os.replace(temporary_path, path)",
+        "temporary_path.unlink(missing_ok=True)",
+    ),
+    "runtime/src/runtime/thread/_store.py": (
+        "index_path.parent.mkdir(parents=True, exist_ok=True)",
+        "dict_path.parent.mkdir(parents=True, exist_ok=True)",
+        "dict_path.write_bytes(dict_data.as_bytes())",
+        "sealed_path.parent.mkdir(parents=True, exist_ok=True)",
+        "sealed_path.write_bytes(compressed)",
+        "paths.current.unlink()",
     ),
     "runtime/src/runtime/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
@@ -165,6 +191,8 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "sdk/src/sdk/storage/_backend.py": (
         "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
+        "(data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
+        "shutil.rmtree(legacy_checkpoints)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
         'resolved.write_text(content, encoding="utf-8")',
         "resolved.unlink()",
@@ -173,6 +201,11 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         'path.write_text(json.dumps(bundle, default=str, indent=2), encoding="utf-8")',
         "path.parent.mkdir(parents=True, exist_ok=True)",
         'path.write_text(content, encoding="utf-8")',
+    ),
+    "sdk/packs/memory/src/sdk/packs/memory/slice_provider.py": (
+        "path.parent.mkdir(parents=True, exist_ok=True)",
+        "path.write_text(",
+        'path.write_text(seg_id, encoding="utf-8")',
     ),
 }
 

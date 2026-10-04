@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -39,7 +40,7 @@ from kernel.tools.mcp_client import MCPClientConfig
 from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
-EMPTY_PACK_CONFIGURATION = MappingProxyType({})
+EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
 
 #: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
 #: fire-and-forget telemetry; the set keeps them garbage-collectable only

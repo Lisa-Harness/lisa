@@ -99,10 +99,8 @@ class ToolExecutionContext(BaseModel):
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
         default=None, exclude=True
     )
-    delegated_tool_dispatch: Callable[
-        [str, Mapping[str, Any]], Awaitable[ToolResult]
-    ] | None = Field(
-        default=None, exclude=True
+    delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = (
+        Field(default=None, exclude=True)
     )
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)

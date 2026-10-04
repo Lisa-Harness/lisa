@@ -135,7 +135,7 @@ def _compact_text(value: Any, limit: int) -> Any:
     if isinstance(value, str):
         return value[:limit]
     if isinstance(value, list):
-        return [_compact_text(item, limit) for item in cast(list[Any], value)]
+        return [_compact_text(item, limit) for item in value]
     if isinstance(value, dict):
         record = cast(dict[str, Any], value)
         compacted: dict[str, Any] = {}

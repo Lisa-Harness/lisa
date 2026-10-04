@@ -517,8 +517,6 @@ async def _dispatch_host_command(
 
     return None
 
-    return None
-
 
 # ── Approval flow (moved to ``runtime.approval``) ────────────────────────
 # The identity rebuild, affirmative-resume detection, policy auto-continue,
