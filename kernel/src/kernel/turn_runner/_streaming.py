@@ -17,12 +17,15 @@ class StreamedCompletionAdapter:
     full ``CompletionResult``.
 
     For gpt-5.x reasoning models the visible ``content`` can be empty while
-    the model's substantive answer lives in ``reasoning_content``. We fold
-    reasoning into ``content`` here (when content is empty) so the rest of
-    the turn runner — which reads ``completion.content`` — sees the model's
-    actual answer instead of falling through to "did not produce a final
-    response." The raw reasoning is still available via
-    ``self.reasoning_content`` for callers that want to distinguish the two.
+    the model's substantive answer lives in ``reasoning_content``. This
+    adapter keeps the two SEPARATE: ``content`` stays the visible answer and
+    ``reasoning_content`` carries the thinking. Folding reasoning into
+    ``content`` here would defeat the kernel's user-facing guards, which rely
+    on distinguishing a real answer from leaked chain-of-thought so they can
+    bound it (the 2026-10-04 non-streaming 119KB monologue incident). Callers
+    that need the folded view (structured-output parsers) use
+    ``completion_content``, which folds ``reasoning_content`` when ``content``
+    is empty.
     """
 
     __slots__ = (
@@ -37,8 +40,10 @@ class StreamedCompletionAdapter:
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated
         self.reasoning_content = aggregated.reasoning_content
-        # Fold reasoning into content when the visible answer is empty.
-        self.content = aggregated.content or aggregated.reasoning_content
+        # Keep the visible answer and the reasoning SEPARATE — the kernel's
+        # display sites bound leaked reasoning via ``reasoning_tail_excerpt``,
+        # which only fires when ``content`` is empty for a reasoning-only turn.
+        self.content = aggregated.content
         self.tool_calls = aggregated.tool_calls
         self.usage = aggregated.usage
         # Surfaced flat for the turn-runner's duration extraction; the stream

@@ -2361,6 +2361,39 @@ async def test_reasoning_only_completion_truncation_clause_on_length() -> None:
 
 
 @pytest.mark.asyncio
+async def test_large_reasoning_only_completion_is_bounded_not_dumped_raw() -> None:
+    """A huge reasoning-only completion surfaces BOUNDED, not raw.
+
+    Regression for the 2026-10-04 incident: a non-streaming reasoning model
+    burned its whole completion budget on thinking. The gateway folded that
+    reasoning into ``content``, so ``reasoning_tail_excerpt`` saw "visible
+    text" and returned a 119KB raw monologue unbounded. With the gateway
+    keeping reasoning on ``reasoning_content``, the tail-quote guard bounds
+    the surfaced text and stamps the ``reasoning_tail`` marker.
+    """
+
+    huge_reasoning = "deliberation line\n" * 2000  # ~34KB of thinking
+
+    async def reasoning_only(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            reasoning_content=huge_reasoning + "the answer is 42",
+            finish_reason="length",
+        )
+
+    hooks = _build_minimal_hooks(reasoning_only)
+    result = await run_turn(mode_id="default", query="status?", hooks=hooks)
+
+    # Surfaced text is a bounded quote, not the whole monologue.
+    assert result.content_source == "reasoning_tail"
+    assert len(result.response_text) < 2000
+    # The tail (closest to the answer) is quoted, not flooded with the head.
+    assert result.reasoning_text == huge_reasoning + "the answer is 42"
+    # The full reasoning still rides the result for the exhaustive thread log.
+    assert result.reasoning_text.startswith("deliberation line")
+
+
+@pytest.mark.asyncio
 async def test_normal_completion_has_no_reasoning_tail_marker() -> None:
     """A normal visible answer keeps the default empty content_source and
     empty reasoning_text — the marker only fires on the degraded path."""

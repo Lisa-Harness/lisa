@@ -130,6 +130,23 @@ def test_streamed_completion_adapter_fields() -> None:
     assert adapter.usage.prompt_tokens == 5
 
 
+def test_streamed_completion_adapter_keeps_reasoning_separate() -> None:
+    """Reasoning-only stream surfaces EMPTY content + reasoning_content.
+
+    The adapter must not fold reasoning into ``content`` — the kernel's
+    ``reasoning_tail_excerpt`` display guard only bounds leaked thinking when
+    ``content`` is empty (2026-10-04 non-streaming 119KB monologue incident).
+    """
+    sc = StreamedCompletion(
+        content="",
+        reasoning_content="thinking about it",
+        finish_reason="length",
+    )
+    adapter = StreamedCompletionAdapter(sc)
+    assert adapter.content == ""
+    assert adapter.reasoning_content == "thinking about it"
+
+
 # ── Turn runner streaming path ───────────────────────────────────────────
 
 

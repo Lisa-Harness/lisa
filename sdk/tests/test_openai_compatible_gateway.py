@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sdk.providers.openai_gateway import (
     OpenAICompatibleGateway,
     extract_openai_content,
+    extract_openai_reasoning,
     sanitize_chat_history_tool_names,
     sanitize_chat_tool_names,
 )
@@ -216,17 +217,20 @@ async def test_complete_stream_sanitizes_wire_names() -> None:
     assert captured["kwargs"]["tools"][0]["function"]["name"] == "lisa-storage_read_file"
 
 
-# ── Reasoning-field fallbacks (2026-09-02 empty-turn incident) ────────
+# ── Reasoning-field separation (2026-10-04 monologue incident) ────────
 
 
 class TestOllamaReasoningFieldFallback:
     """Ollama names the reasoning field ``reasoning``, not ``reasoning_content``.
 
     The openai SDK preserves the extra attribute (``model_config
-    extra="allow"``), so both names must be read. Without the fallback,
-    reasoning models served through Ollama that exhaust their completion
-    budget on thinking return ``content=""`` and the turn yields
-    "empty response" (the 2026-09-02 glm-5.3-flash:cloud incident).
+    extra="allow"``), so both names must be read. The gateway keeps reasoning
+    SEPARATE from visible content: ``extract_openai_content`` returns only the
+    visible answer (empty when the model produced none), and
+    ``extract_openai_reasoning`` returns the thinking — so the kernel can tell a
+    real answer from leaked chain-of-thought and bound it (2026-10-04: a
+    non-streaming reasoning model burned its whole budget thinking; folding it
+    into ``content`` defeated every guard and surfaced a 119KB raw monologue).
     """
 
     @staticmethod
@@ -241,26 +245,46 @@ class TestOllamaReasoningFieldFallback:
         response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
         assert extract_openai_content(response) == "Final answer."
 
-    def test_extract_falls_back_to_reasoning_content(self) -> None:
+    def test_extract_keeps_reasoning_out_of_content(self) -> None:
+        """Visible content is NOT folded from reasoning — the two stay separate.
+
+        Folding reasoning into ``content`` here would defeat the kernel's
+        guard that bounds leaked chain-of-thought (2026-10-04 incident).
+        """
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=self._ollama_message("reasoning_content"))]
         )
-        assert "read the config" in extract_openai_content(response)
+        assert extract_openai_content(response) == ""
 
-    def test_extract_falls_back_to_ollama_reasoning(self) -> None:
+    def test_extract_reasoning_returns_reasoning_content(self) -> None:
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=self._ollama_message("reasoning_content"))]
+        )
+        assert "read the config" in extract_openai_reasoning(response)
+
+    def test_extract_reasoning_falls_back_to_ollama_reasoning(self) -> None:
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=self._ollama_message("reasoning"))]
         )
-        assert "read the config" in extract_openai_content(response)
+        assert "read the config" in extract_openai_reasoning(response)
+
+    def test_extract_reasoning_empty_when_absent(self) -> None:
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Final answer."))]
+        )
+        assert extract_openai_reasoning(response) == ""
 
     def test_extract_returns_empty_when_both_absent(self) -> None:
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=""))])
         assert extract_openai_content(response) == ""
 
     @pytest.mark.asyncio
-    async def test_complete_surfaces_ollama_reasoning_as_content(self) -> None:
+    async def test_complete_keeps_ollama_reasoning_separate_from_content(self) -> None:
         # Simulate the exact Ollama shape: extra ``reasoning`` field on the
         # parsed message (as the openai SDK preserves it via extra="allow").
+        # The gateway must keep it on ``reasoning_content`` and leave the
+        # visible ``content`` empty so the kernel's display guard can bound
+        # it (2026-10-04 119KB monologue incident).
         message = SimpleNamespace(
             content="",
             reasoning="long thinking that consumed the budget",
@@ -273,7 +297,8 @@ class TestOllamaReasoningFieldFallback:
         client = _StubClient(response, {})
         gateway = OpenAICompatibleGateway(client_factory=lambda: client)
         result = await gateway.complete(_request())
-        assert result.content == "long thinking that consumed the budget"
+        assert result.content == ""
+        assert result.reasoning_content == "long thinking that consumed the budget"
 
     @pytest.mark.asyncio
     async def test_complete_stream_captures_ollama_reasoning_delta(self) -> None:

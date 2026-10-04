@@ -667,22 +667,21 @@ def _stringify_parsed_content(parsed: Any) -> str:
 
 
 def extract_openai_content(response: Any) -> str:
-    """Extract text or parsed JSON content from one OpenAI-compatible response.
+    """Extract VISIBLE text or parsed JSON content from one OpenAI-compatible response.
 
-    For gpt-5.x reasoning models the model's substantive output can land in
-    ``message.reasoning_content`` while ``message.content`` is empty or
-    terse. Fall back to ``reasoning_content`` so the caller sees the model's
-    actual answer instead of an empty string (which the turn runner would
-    otherwise turn into "The model did not produce a final response.").
+    Reasoning text (``reasoning_content`` / Ollama's ``reasoning``) is
+    deliberately NOT folded in here. Keeping the visible answer separate
+    lets the kernel's user-facing display sites tell a real answer apart
+    from leaked chain-of-thought so they can bound it (the 2026-10-04
+    incident: a non-streaming reasoning model burned its whole budget on
+    thinking; folding it into ``content`` defeated every "is this a real
+    answer?" guard and surfaced a 119KB raw monologue). Callers that want
+    the folded view (structured-output parsers) use ``completion_content``
+    / ``extract_openai_reasoning``.
 
-    Ollama's OpenAI-compatible endpoint (and several other OpenAI-compatible
-    servers) name the field ``message.reasoning`` instead of
-    ``reasoning_content``. The openai SDK preserves unknown fields
-    (``model_config extra="allow"``), so the attribute is readable via
-    ``getattr`` — check it as a second fallback so glm/deepseek models served
-    through Ollama do not lose their answer (the 2026-09-02 empty-turn
-    incident: glm-5.3-flash:cloud spent the whole completion budget on
-    reasoning and returned ``content: ""``).
+    Returns the visible answer, or the parsed structured payload when
+    present, or ``""`` when the model produced no visible text (even if
+    it produced reasoning — read that via ``extract_openai_reasoning``).
     """
 
     choices = getattr(response, "choices", [])
@@ -695,9 +694,26 @@ def extract_openai_content(response: Any) -> str:
     parsed = getattr(message, "parsed", None)
     if parsed is not None:
         return _stringify_parsed_content(parsed)
-    # Visible answer empty — fall back to reasoning content for reasoning
-    # models. ``reasoning_content`` is the gpt-5.x wire name; ``reasoning``
-    # is Ollama's. Empty string if neither is present.
+    return ""
+
+
+def extract_openai_reasoning(response: Any) -> str:
+    """Extract reasoning text from one OpenAI-compatible response, safely.
+
+    ``reasoning_content`` is the gpt-5.x wire name; Ollama's
+    OpenAI-compatible endpoint names the same field ``reasoning``. The openai
+    SDK preserves unknown fields (``model_config extra="allow"``), so both
+    are readable via ``getattr``. Returns ``""`` when neither is present.
+
+    The kernel surfaces this under the ``reasoning_tail`` marker (a bounded,
+    labeled quote) instead of presenting raw thought as the answer — see
+    ``kernel.operations.structured_output.reasoning_tail_excerpt``.
+    """
+
+    choices = getattr(response, "choices", [])
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
     for attr in ("reasoning_content", "reasoning"):
         reasoning = getattr(message, attr, None)
         if isinstance(reasoning, str) and reasoning.strip():
@@ -1254,6 +1270,7 @@ class AzureOpenAIGateway:
             request_id=request_id,
             tool_calls=tool_calls,
             usage=usage,
+            reasoning_content=extract_openai_reasoning(response),
             finish_reason=finish_reason,
             truncated=truncated,
         )
@@ -1359,6 +1376,7 @@ class OpenAICompatibleGateway:
             request_id=request_id,
             tool_calls=restore_chat_tool_names(extract_openai_tool_calls(response), name_map),
             usage=extract_openai_completion_usage(response),
+            reasoning_content=extract_openai_reasoning(response),
             finish_reason=finish_reason,
             truncated=truncated,
         )

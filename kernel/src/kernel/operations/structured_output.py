@@ -65,7 +65,10 @@ def completion_content(completion: Any) -> str:
        substantive answer lives in ``reasoning_content`` (gpt-5.x,
        glm-5.2, kimi-k2.6). The reasoning text is folded into the return
        so structured-output parsers see the real answer instead of an
-       empty string.
+       empty string. This is THE canonical fold point — the provider
+       gateways deliberately keep ``content`` and ``reasoning_content``
+       separate so user-facing display sites can distinguish a real
+       answer from leaked chain-of-thought (2026-10-04 incident).
     3. A bare string (some test stubs and thin wrappers).
 
     **Never** falls back to ``str(completion)``. That was the root cause
