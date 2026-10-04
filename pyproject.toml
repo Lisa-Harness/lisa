@@ -82,15 +82,80 @@ testpaths = [
     "mcp_server/src/mcp_server/memory/tests",
     "mcp_server/src/mcp_server/thread/tests",
     "runtime/tests",
+    "runtime/src/runtime/model_discovery/tests",
     "packstest/tests",
     "e2etest/tests",
+    "kernel/src/kernel/context/tests",
+    "sdk/src/sdk/context/tests",
+    "sdk/src/sdk/guard/tests",
+    "sdk/src/sdk/memory/tests",
+    "sdk/src/sdk/storage/tests",
 ]
 addopts = "--import-mode=importlib"
 consider_namespace_packages = true
+# A test marked xfail that unexpectedly passes must fail the suite, so a fixed
+# bug flips its regression guard back on instead of silently staying skipped.
+xfail_strict = true
 markers = [
     "live: hits real external signal or provider APIs and prints a tester-visible summary",
     "integration: multi-module in-process test; may require local services",
     "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
+
+[tool.coverage.run]
+# Branch coverage: partial branches (e.g. an `if` whose else never runs) count
+# as uncovered, which catches the ``if not x: return`` guards line coverage hides.
+branch = true
+relative_files = true
+# Omit test code from measurement entirely so reports and fail_under reflect the
+# shipped source, not the suites exercising it (pytest's pythonpath imports test
+# modules as top-level packages, so omit-by-pattern is required — [paths] alone
+# would still record them).
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/conftest.py",
+]
+source_pkgs = [
+    "kernel",
+    "sdk",
+    "mcp_server",
+    "runtime",
+    "packstest",
+    "e2etest",
+    "sdk.packs",
+]
+
+[tool.coverage.paths]
+# Map installed-package paths (pytest pythonpath roots) and local src/ layout to
+# one logical tree so a run from any interpreter reports the same files.
+source = [
+    "kernel/src",
+    "*/kernel/src",
+    "sdk/src",
+    "*/sdk/src",
+    "mcp_server/src",
+    "*/mcp_server/src",
+    "runtime/src",
+    "*/runtime/src",
+    "packstest/src",
+    "*/packstest/src",
+    "e2etest/src",
+    "*/e2etest/src",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Source-only gate (test code omitted in [tool.coverage.run]). Floors are set ~2
+# points under the measured branch-coverage baseline so they catch real regressions
+# without flapping on platform noise; ratchet them up over time (see
+# docs/tests-review.md §1/§5 for the per-package gaps these guard).
+fail_under = 76
+exclude_also = [
+    # Test code is not part of the shipped surface; measuring it inflates totals.
+    ".*/tests/.*",
+    ".*/test_[^/]*\\.py$",
 ]
 
 [tool.ruff]

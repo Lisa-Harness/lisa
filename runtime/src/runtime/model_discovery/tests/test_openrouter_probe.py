@@ -123,10 +123,13 @@ class TestEnrichment:
             "structured_output",
             "vision",
             "reasoning",
+            "code",
         }
         assert model.thinking_model is True
         assert model.cost_tier == "frontier"
-        assert model.latency_tier == "high"
+        # ``known_models.yaml`` pins gpt-5.4 to medium latency (frontier cost,
+        # low-latency class) — the registry overrides the probe's computed tier.
+        assert model.latency_tier == "medium"
         assert model.description == "OpenAI's frontier model."
 
     def test_no_reasoning_block_not_thinking(self) -> None:

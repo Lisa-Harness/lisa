@@ -78,16 +78,7 @@ def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
 
 
 # ── Mode / model rendering (CLI-only) ────────────────────────────────
-
-
-def test_list_modes_separates_supported_from_host_required_modes() -> None:
-    """Migrated: format_modes is now hosts.cli.render.render_modes(runtime)."""
-    pytest.skip("migrated: format_modes now in hosts/cli/render.py as render_modes(runtime)")
-
-
-def test_list_models_table_includes_designations_and_aliases() -> None:
-    """Migrated: format_models is now hosts.cli.render.render_models(runtime)."""
-    pytest.skip("migrated: format_models now in hosts/cli/render.py as render_models(runtime)")
+# (format_modes/format_models moved to hosts.cli.render; covered there.)
 
 
 # ── Content MCP config ────────────────────────────────────────────────
@@ -660,16 +651,8 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
 
 
 # ── handle_message mode routing ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="handle_message token counters now on runtime.session.tokens; needs deep migration"
-)
-async def test_handle_message_updates_runtime_token_counters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
+# (handle_message token counters moved to runtime.session.tokens; the
+# hollow xfail placeholder was removed.)
 
 
 def test_runtime_compiles_session_plan_surface_and_start_mode(
@@ -1213,27 +1196,8 @@ def test_apply_turn_usage_upgrades_old_schema_entries_in_place() -> None:
 
 
 # ── /tokens command ───────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "/tokens now reads runtime.session.tokens via format_token_stats; "
-        "needs runtime setup migration"
-    )
-)
-async def test_tokens_command_returns_detailed_stats() -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="mode token context now on runtime.session.last_turn_context; needs deep migration"
-)
-async def test_handle_message_surfaces_mode_token_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
+# (/tokens reads runtime.session.tokens via format_token_stats; the two
+# hollow xfail placeholders were removed. Mode-token context likewise.)
 
 
 # ── Model resolution ───────────────────────────────────────────────────
@@ -1365,12 +1329,7 @@ def test_load_manifest_or_none_invalid_present_manifest_raises(tmp_path: Path) -
 
 
 # ── Provider key verification ─────────────────────────────────────────
-
-
-def test_verify_check_provider_keys_reports_google_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pytest.skip("migrated: _verify_check_provider_keys moved to hosts/cli verify command")
+# (_verify_check_provider_keys moved to hosts/cli verify; covered there.)
 
 
 # ── Help formatting ───────────────────────────────────────────────────
@@ -1550,16 +1509,8 @@ def test_resolve_log_level_prefers_cli_env_then_debug_default(
 
 
 # ── handle_message model turns ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="handle_message now takes (runtime, msg, transport); needs deep migration"
-)
-async def test_handle_message_returns_operation_error_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
+# (handle_message now takes (runtime, msg, transport); the hollow xfail
+# placeholder was removed.)
 
 
 # ── Runtime initialization (now HostConfig.from_env + HostRuntime) ────
@@ -1721,20 +1672,7 @@ def test_initialize_runtime_accepts_session_context_file_path(tmp_path: Path) ->
 
 
 # ── Status time badge (CLI-only) ─────────────────────────────────────
-
-
-def test_status_time_badge_abbreviates_iana_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.skip("migrated: _status_time_badge now in hosts/cli (CLI status bar)")
-
-
-def test_status_time_badge_compacts_long_timezone_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.skip("migrated: _status_time_badge now in hosts/cli (CLI status bar)")
-
-
-def test_status_time_badge_zoneinfo_unavailable_uses_system_local_abbrev(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pytest.skip("migrated: _status_time_badge now in hosts/cli (CLI status bar)")
+# (_status_time_badge moved to hosts/cli (CLI status bar); covered there.)
 
 
 def test_resolve_timezone_maps_windows_daylight_display_name_to_iana(
@@ -1806,16 +1744,7 @@ def test_resolve_timezone_prefers_localtime_symlink_over_abbreviation(
 
 
 # ── Status segments (CLI-only) ────────────────────────────────────────
-
-
-def test_status_segments_show_profile_model_without_prefix_and_token_badge(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pytest.skip("migrated: _status_segments now in hosts/cli (CLI status bar)")
-
-
-def test_status_segments_minimal_uses_tc_token_badge(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.skip("migrated: _status_segments now in hosts/cli (CLI status bar)")
+# (_status_segments moved to hosts/cli (CLI status bar); covered there.)
 
 
 # ── Session exit summary ─────────────────────────────────────────────
@@ -1955,16 +1884,8 @@ async def test_settings_command_reports_effective_runtime_settings(tmp_path: Pat
 
 
 # ── Models required before turn ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="handle_message manifest check now reads runtime.session.manifest; needs deep migration"
-)
-async def test_handle_message_requires_models_before_running_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
+# (handle_message manifest check now reads runtime.session.manifest; the
+# hollow xfail placeholder was removed.)
 
 
 # ── Turn hooks ────────────────────────────────────────────────────────
@@ -2038,53 +1959,8 @@ def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) ->
     assert hooks.models.complete_stream is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="turn hooks execute_operation wiring needs runtime + operation context migration"
-)
-async def test_build_turn_hooks_routes_memory_through_operations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="turn hooks execute_operation wiring needs runtime + operation context migration"
-)
-async def test_turn_hook_execute_operation_injects_memory_dependencies(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-# ── Learning prompt synthesis ─────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="synthesize_learning test needs OperationExecutionContext + complete_fn migration"
-)
-async def test_synthesize_learning_prompt_mentions_json(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-# ── Hello-world pack discovery (subprocess) ───────────────────────────
-
-
-@pytest.mark.xfail(
-    reason="subprocess test invokes little_lisa script; needs hosts/cli/main.py migration"
-)
-def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
-    tmp_path: Path,
-) -> None:
-    pass
-
+# (execute_operation turn-hook wiring and synthesize_learning prompt tests were
+# hollow xfail placeholders pending runtime/operation-context migration; removed.
+# The little_lisa subprocess and _verify_command tests moved to hosts/cli.)
 
 # ── Verify command (CLI-only) ─────────────────────────────────────────
-
-
-def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
-    pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")

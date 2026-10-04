@@ -69,3 +69,8 @@ jobs:
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v
 
+      - name: Coverage gate (per-package floors)
+        run: |
+          uv run coverage run -m pytest -m "not live" -q
+          uv run python scripts/check_coverage.py
+

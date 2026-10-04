@@ -121,7 +121,7 @@ tooling) proceeds normally.
    diff, even if the surrounding code has obvious problems.
 
 The full suite (`uv run pytest -m "not live"`) is green as of this
-declaration (2306 passed, 9 skipped, 1 xfailed, 9 xpassed). The kernel and
+declaration (2909 passed, 1 xfailed). The kernel and
 sdk test suites carry autouse settings-hermeticity guards
 (`kernel/tests/conftest.py`, `sdk/tests/conftest.py`) that fail any test
 leaking mutations to the `kernel.config.settings` or `sdk.config.settings`
@@ -140,8 +140,16 @@ All six quality gates pass on commit containing this file:
   — Success: no issues found in 174 source files.
 - `uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py`
   — no findings.
-- `uv run pytest -m "not live" --ignore=e2etest` — 2306 passed, 9 skipped,
-  1 xfailed, 9 xpassed, twice in a row.
+- `uv run pytest -m "not live" --ignore=e2etest` — 2909 passed, 1 xfailed.
+
+> Test-baseline refresh (2026-10-04, test-suite remediation): the six
+> colocated in-src test packages are now wired into `testpaths` (~300
+> recovered tests), the hollow xfail stubs and `migrated…` skip-only tests
+> in `runtime/tests/test_core_services.py` were removed, and
+> `xfail_strict = true` is set — hence zero skips and zero xpassed. A
+> per-package coverage gate now runs in CI (`uv run coverage run -m pytest …`
+> then `uv run python scripts/check_coverage.py`); `fail_under = 76`
+> (branch, source-only) is the suite floor. See `docs/tests-review.md`.
 
 Mypy remediated 12 errors across 4 files by fixing genuine variable-shadowing
 bugs (`match` reused for both cursor regex and search results in
