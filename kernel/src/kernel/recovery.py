@@ -18,6 +18,7 @@ from kernel.approval import EffectKind
 from kernel.models import ConversationSurface, MemoryScope
 
 __all__ = [
+    "RECOVERY_APPROVAL_PENDING_ERROR",
     "RecoveryIdentity",
     "RecoveryRecord",
     "RecoveryRetryPolicy",
@@ -37,6 +38,15 @@ RecoveryState = Literal[
 ]
 RecoveryRetryPolicy = Literal["safe", "confirm", "never"]
 _OPEN_STATES: tuple[RecoveryState, ...] = ("running", "stalled", "indeterminate")
+
+#: ``last_error`` marker written by the dispatch layer when a work item
+#: stalls because it raised ``ApprovalRequired``. The lifecycle resolver
+#: gates its workflow-blocking yield on this value: only approval-pending
+#: stalls block the instance on subsequent turns; ordinary tool failures
+#: return to the model as tool results and must not re-yield. (The
+#: pre-trim ``blocks_workflow`` field carried the same distinction before
+#: being removed as write-only.)
+RECOVERY_APPROVAL_PENDING_ERROR = "approval required"
 
 
 class _FrozenRecoveryModel(BaseModel):

@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import YieldAction, YieldPolicy
+from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 
 _log = logging.getLogger(__name__)
 
@@ -243,14 +244,20 @@ class _WorkflowPositionLike(Protocol):
 
 @runtime_checkable
 class _RecoveryRecordLike(Protocol):
-    """Structural shape the resolver needs from a ``RecoveryRecord``."""
+    """Structural shape the resolver needs from a ``RecoveryRecord``.
+
+    Must be satisfied by the real :class:`kernel.recovery.RecoveryRecord`
+    — the turn runner passes real models from ``recovery_service.list_open``
+    into the resolver, so any ghost attribute here silently disables the
+    matching gate (the removed ``blocks_workflow`` field did exactly that
+    after the checkpoint trim).
+    """
 
     state: str
-    blocks_workflow: bool
     retry_policy: str
+    last_error: str
     target_id: str
     target_kind: str
-    last_error: str
     step_id: str
 
 
@@ -387,19 +394,26 @@ def _stalled_blocking_record(
 ) -> _RecoveryRecordLike | None:
     """Return the first stalled record that blocks the workflow, or None.
 
-    A record blocks when its state is ``stalled`` (open for operator) AND
-    ``blocks_workflow`` is True AND its ``retry_policy`` is ``confirm``
-    (``safe`` records are auto-retried by the dispatcher before the resolver
-    ever sees them; ``never`` records are skipped, not yielded). This is the
-    Phase-3 wiring that makes recovery stalls lifecycle inputs.
+    A record blocks when its state is ``stalled`` (open for operator), its
+    ``retry_policy`` is ``confirm``, and its ``last_error`` is the
+    approval-pending sentinel (``RECOVERY_APPROVAL_PENDING_ERROR``).
+
+    Approval-pending stalls block because the effectful action still needs
+    an operator decision (``/approve``/``/deny`` or a recovery command).
+    Ordinary tool-failure stalls must NOT block: their error already flowed
+    back to the model as a tool result, so the model can adapt — re-yielding
+    on every turn would trap the user in a pre-model prompt loop (the
+    2026-08-06 zombie-stall incident). The checkpoint trim removed the
+    previous ``blocks_workflow`` field as write-only; this sentinel restores
+    the same distinction without reintroducing the field.
     """
     if not recovery_records:
         return None
     for record in recovery_records:
         if (
             getattr(record, "state", "") == "stalled"
-            and getattr(record, "blocks_workflow", False)
             and getattr(record, "retry_policy", "") == "confirm"
+            and getattr(record, "last_error", "") == RECOVERY_APPROVAL_PENDING_ERROR
         ):
             return record
     return None

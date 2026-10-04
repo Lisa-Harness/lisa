@@ -6,6 +6,37 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Recovery-stall workflow gate works again after checkpoint trim
+
+- **What:** The lifecycle resolver's priority-2 recovery-stall yield works
+  against real `RecoveryRecord` models again. The checkpoint trim
+  (2026-08-22) removed `RecoveryRecord.blocks_workflow` as written-but-never-
+  read, but the resolver gate still read it via `getattr(record, "blocks_workflow",
+  False)` — so every real record failed the gate, and approval-pending stalls
+  never re-yielded on subsequent turns. The gate now keys on a new sentinel,
+  `kernel.recovery.RECOVERY_APPROVAL_PENDING_ERROR`, which the dispatch layer
+  writes as `last_error` when a work item stalls on `ApprovalRequired`.
+  Approval-pending stalls block the workflow again (matching pre-trim
+  behavior); ordinary tool-failure stalls still return to the model as tool
+  results and never re-yield.
+- **Why:** Silent death of a priority-2 lifecycle gate with no failure
+  signal — the test suite's duck-typed fixtures still carried the ghost
+  `blocks_workflow` attribute, so 43 resolver tests stayed green while the
+  production path was unreachable. A `_RecoveryRecordLike` protocol-
+  conformance assertion now locks the resolver protocol to the real model.
+- **Tests:** `kernel/tests/test_lifecycle_resolver.py`
+  `test_stalled_blocking_record_forces_yield` (real-model fixture, fails
+  against the ghost gate), `test_tool_failure_stall_does_not_block`,
+  `test_real_record_satisfies_resolver_protocol`. New
+  `runtime/tests/test_recovery_provenance_conformance.py` locks the
+  cross-package string contracts the import-linter cannot see: the
+  thread-provenance keys `handle_message` writes against the readers in
+  `runtime.approval.orchestration` (paired settlement, drift orphans
+  stalls — the 2026-08-06 zombie-stall mechanism), the identity-mirroring
+  between `kernel.turn_runner._build_recovery_identity` and
+  `_recovery_identity_for_invocation`, and the sentinel the kernel
+  settles with.
+
 #### Verbose tool previews lead with payload, not envelope JSON
 
 - **What:** `tool_dispatch_complete`'s `result_preview` is now a compact

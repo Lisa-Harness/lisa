@@ -24,6 +24,7 @@ from kernel.models import (
     ToolResult,
     YieldAction,
 )
+from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import execute_tool
 from kernel.turn_phases._post_turn import (
@@ -745,7 +746,7 @@ async def dispatch_capability(
             state="stalled",
             tool_name=tool_name,
             logger=logger,
-            last_error="approval required",
+            last_error=RECOVERY_APPROVAL_PENDING_ERROR,
             retry_policy=cast(Any, "confirm"),
         )
         raise

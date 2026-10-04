@@ -132,7 +132,10 @@ class ThreadReader:
         }
 
     def _entry(self, entry: dict[str, Any], turn: int) -> dict[str, Any]:
-        result: dict[str, Any] = {"turn": turn, "transcript_count": len(entry.get("transcript") or [])}
+        result: dict[str, Any] = {
+            "turn": turn,
+            "transcript_count": len(entry.get("transcript") or []),
+        }
         result["timestamp_utc"] = self._preview(
             entry.get("timestamp_utc"), f"t{turn}.timestamp_utc"
         )

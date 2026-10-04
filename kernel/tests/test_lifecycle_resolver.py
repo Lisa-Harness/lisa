@@ -16,6 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from kernel.models import YieldAction, YieldPolicy
+from kernel.recovery import (
+    RECOVERY_APPROVAL_PENDING_ERROR,
+    RecoveryIdentity,
+    RecoveryRecord,
+)
 from kernel.turn_phases._lifecycle import (
     ContinueAction,
     FinishAction,
@@ -24,6 +29,7 @@ from kernel.turn_phases._lifecycle import (
     StopAction,
     TerminateAction,
     TransitionAction,
+    _RecoveryRecordLike,
     resolve_lifecycle_action,
 )
 
@@ -101,15 +107,39 @@ class _Router:
     transition_to: str = ""
 
 
-@dataclass
-class _Record:
-    state: str = "running"
-    blocks_workflow: bool = False
-    retry_policy: str = "safe"
-    target_id: str = "web_search"
-    target_kind: str = "pack_tool"
-    last_error: str = ""
-    step_id: str = ""
+def _record_identity() -> RecoveryIdentity:
+    return RecoveryIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        surface_type="personal_dm",
+        surface_id="s",
+        memory_scope="personal",
+    )
+
+
+def _record(
+    *,
+    state: str = "running",
+    retry_policy: str = "safe",
+    last_error: str = "",
+    step_id: str = "",
+    mode_id: str = "search",
+) -> RecoveryRecord:
+    """Build a real ``RecoveryRecord`` — the turn runner passes real models
+    from ``recovery_service.list_open`` into the resolver, so fixtures must
+    match the production shape (a ghost attribute here once disabled the
+    stall gate silently)."""
+    return RecoveryRecord(
+        identity=_record_identity(),
+        mode_id=mode_id,
+        target_kind="pack_tool",
+        target_id="web_search",
+        state=state,
+        retry_policy=retry_policy,
+        last_error=last_error,
+        step_id=step_id,
+    )
 
 
 # ── Default: continue ──────────────────────────────────────────────────────
@@ -158,25 +188,65 @@ def test_router_transition_to_returns_transition() -> None:
 # ── Recovery stall blocks workflow ──────────────────────────────────────────
 
 
+def test_real_record_satisfies_resolver_protocol() -> None:
+    """The resolver protocol must be satisfied by the REAL ``RecoveryRecord``.
+
+    The turn runner passes real models from ``recovery_service.list_open``
+    into the resolver. If this drifts, a gate reading a ghost attribute
+    (defaulting via ``getattr``) silently disables itself instead of
+    failing — exactly what happened when the checkpoint trim removed
+    ``blocks_workflow`` while the stall gate still read it.
+    """
+    record = _record()
+    assert isinstance(record, _RecoveryRecordLike)
+
+
 def test_stalled_blocking_record_forces_yield() -> None:
+    """A stalled confirm-policy record pending approval blocks the workflow.
+
+    Regression for the checkpoint-trim regression: the resolver used to
+    gate on the removed ``blocks_workflow`` attribute, so real records
+    never tripped the priority-2 stall yield.
+    """
+    record = _record(
+        state="stalled",
+        retry_policy="confirm",
+        last_error=RECOVERY_APPROVAL_PENDING_ERROR,
+        step_id="s1",
+    )
     action = resolve_lifecycle_action(
         state=_State(),
         mode_id="search",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=_settings(),
-        recovery_records=[
-            _Record(
-                state="stalled",
-                blocks_workflow=True,
-                retry_policy="confirm",
-                last_error="web_search timed out",
-                step_id="s1",
-            )
-        ],
+        recovery_records=[record],
     )
     assert isinstance(action, YieldAction)
     assert "blocks workflow" in action.context
-    assert "web_search timed out" in action.question
+    assert RECOVERY_APPROVAL_PENDING_ERROR in action.question
+
+
+def test_tool_failure_stall_does_not_block() -> None:
+    """An ordinary tool-failure stall must NOT re-yield on later turns.
+
+    The tool error already flowed back to the model as a tool result, so
+    the model can adapt; re-yielding would trap the user in a pre-model
+    prompt loop. Only the approval-pending sentinel blocks.
+    """
+    record = _record(
+        state="stalled",
+        retry_policy="confirm",
+        last_error="web_search timed out",
+        step_id="s1",
+    )
+    action = resolve_lifecycle_action(
+        state=_State(),
+        mode_id="search",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=_settings(),
+        recovery_records=[record],
+    )
+    assert isinstance(action, ContinueAction)
 
 
 def test_safe_retry_record_does_not_block() -> None:
@@ -186,7 +256,7 @@ def test_safe_retry_record_does_not_block() -> None:
         mode_id="search",
         mode_yield_policy=YieldPolicy(),
         settings=_settings(),
-        recovery_records=[_Record(state="stalled", blocks_workflow=True, retry_policy="safe")],
+        recovery_records=[_record(state="stalled", retry_policy="safe")],
     )
     assert isinstance(action, ContinueAction)
 
@@ -610,11 +680,10 @@ def test_operator_stop_overrides_recovery_stall() -> None:
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=_settings(),
         recovery_records=[
-            _Record(
+            _record(
                 state="stalled",
-                blocks_workflow=True,
                 retry_policy="confirm",
-                last_error="web_search timed out",
+                last_error=RECOVERY_APPROVAL_PENDING_ERROR,
                 step_id="s1",
             )
         ],

@@ -692,8 +692,9 @@ async def _execute_approved_with_settlement(
     """Execute the approved invocation, settling the paired recovery record.
 
     On success the paired recovery record is settled as ``succeeded`` so
-    the workflow unblocks (the model-turn path settled it as ``stalled``
-    with ``blocks_workflow=True``; the two stores share no id). On failure
+    the workflow unblocks (the model-turn path settles it as
+    ``stalled`` with the approval-pending sentinel ``last_error``; the two
+    stores share no id). On failure
     the record is settled as ``stalled`` with the error.
 
     Returns:
@@ -722,7 +723,8 @@ async def _execute_approved_with_settlement(
     # The approved action executed against the real registry, which consumes
     # the receipt. But the *model-turn* path that originally raised
     # ``ApprovalRequired`` also settled a paired recovery record as
-    # ``stalled`` with ``blocks_workflow=True`` (turn_runner.py). The approval
+    # ``stalled`` with the approval-pending sentinel ``last_error``
+    # (turn_phases/_dispatch.py). The approval
     # and recovery stores are independent with no shared id, so approving the
     # action left the stall permanently blocking every subsequent turn. Settle
     # the paired record now so the workflow unblocks.
@@ -745,7 +747,8 @@ async def _deny_approval_record(
     """Deny one approval request and settle its paired recovery record.
 
     Denying the approval also unblocks the paired recovery record: the
-    original model-turn stall was ``blocks_workflow=True`` and would
+    original model-turn stall carries the approval-pending sentinel
+    ``last_error`` and would
     otherwise re-yield on every subsequent turn. Settle it as cancelled
     so the workflow can advance.
     """
