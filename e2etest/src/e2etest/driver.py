@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,6 +116,7 @@ class _Conversation:
     async def send(self, kind: str, message: str) -> Exchange:
         if len(self.outcome.exchanges) >= self.scenario.budgets.max_messages:
             raise _BudgetExceededError(f"max_messages={self.scenario.budgets.max_messages}")
+        message = self._expand_message(message)
         exchange = Exchange(index=len(self.outcome.exchanges), kind=kind, message=message)
         self.outcome.exchanges.append(exchange)
         self.transport.errors = []
@@ -128,6 +130,33 @@ class _Conversation:
         exchange.approval = approval_payload(result)
         exchange.errors = list(self.transport.errors)
         return exchange
+
+    def _expand_message(self, message: str) -> str:
+        """Resolve ``$RECOVERY_OPEN_ID`` from the run's recovery store.
+
+        Substitutes the work-item id of the first open (running/stalled/
+        indeterminate) recovery record, read straight from
+        ``data/state/recovery-items.json``. Left verbatim when there is no
+        open record (the substitution happens at send time, so a stall
+        created by an earlier turn resolves here). Lets scenarios drive
+        deterministic operator remediation by id without parsing model
+        prose.
+        """
+        if "$RECOVERY_OPEN_ID" not in message:
+            return message
+        path = self.runtime.paths.data_dir / "state" / "recovery-items.json"
+        if not path.is_file():
+            return message
+        try:
+            records = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return message
+        if not isinstance(records, dict):
+            return message
+        for record in records.values():
+            if record.get("state") in ("running", "stalled", "indeterminate"):
+                return message.replace("$RECOVERY_OPEN_ID", str(record.get("work_item_id") or ""))
+        return message
 
     async def follow_up(self, exchange: Exchange) -> Exchange | None:
         """Answer whatever left the turn unfinished, or return ``None`` when it finished."""

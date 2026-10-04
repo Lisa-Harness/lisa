@@ -206,3 +206,32 @@ def test_oracles_fail_with_evidence(committed_run: Evidence) -> None:
     assert "pause" in results["no_operator_exit"].detail
     assert "other.txt" in results["diff_touches"].detail
     assert results["nope"].detail == "unknown oracle"
+
+
+def test_recovery_oracles_read_store_and_exchange_evidence(committed_run: Evidence) -> None:
+    state_dir = committed_run.paths.data_dir / "state"
+    (state_dir / "recovery-items.json").write_text(
+        json.dumps(
+            {
+                "w1": {
+                    "work_item_id": "w1",
+                    "state": "skipped",
+                    "retry_policy": "confirm",
+                    "target_id": "bash_run",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    committed_run.outcome.exchanges[0].text = "Open recovery work items: w1 state=stalled"
+    results = evaluate(
+        (
+            _spec("exchange_contains", text="state=stalled"),
+            _spec("recovery_record", retry_policy="confirm"),
+            _spec("recovery_settled", state="skipped"),
+        ),
+        committed_run,
+    )
+    assert all(result.passed for result in results), [
+        (r.name, r.detail) for r in results if not r.passed
+    ]

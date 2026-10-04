@@ -308,6 +308,80 @@ def _data_check(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     return proc.returncode == 0, f"exit={proc.returncode}\n{_tail(proc.stdout + proc.stderr)}"
 
 
+def _recovery_records(ev: Evidence) -> dict[str, dict[str, Any]]:
+    """Load the run's ``recovery-items.json``; empty when the run wrote none."""
+    path = ev.paths.data_dir / "state" / "recovery-items.json"
+    if not path.is_file():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
+
+
+def _matching_recovery_records(ev: Evidence, args: dict[str, Any]) -> list[dict[str, Any]]:
+    """Filter recovery records by ``state``/``retry_policy``/``target_id`` args."""
+    records = _recovery_records(ev).values()
+    state = args.get("state")
+    retry_policy = args.get("retry_policy")
+    target_id = args.get("target_id")
+    matched = []
+    for record in records:
+        if state is not None and record.get("state") != state:
+            continue
+        if retry_policy is not None and record.get("retry_policy") != retry_policy:
+            continue
+        if target_id is not None and record.get("target_id") != target_id:
+            continue
+        matched.append(record)
+    return matched
+
+
+@oracle("recovery_record")
+def _recovery_record(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """At least ``min`` recovery records match the given state filters."""
+    matched = _matching_recovery_records(ev, args)
+    minimum = int(args.get("min", 1))
+    if len(matched) >= minimum:
+        summary = ", ".join(
+            f"{r.get('work_item_id', '?')}[{r.get('state')}/{r.get('retry_policy')}]"
+            for r in matched[:3]
+        )
+        return True, f"{len(matched)} matching record(s): {summary}"
+    total = len(_recovery_records(ev))
+    filters = {k: args[k] for k in ("state", "retry_policy", "target_id") if args.get(k)}
+    return (
+        False,
+        f"{len(matched)} matching (need {minimum}); {total} total records; filters={filters}",
+    )
+
+
+@oracle("recovery_settled")
+def _recovery_settled(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """At least ``min`` records sit in the given terminal state.
+
+    Distinct from ``recovery_record`` semantically: a settlement assertion
+    (the operator resolved the stall), not an existence assertion. Reads
+    the same evidence.
+    """
+    return _recovery_record(ev, args)
+
+
+@oracle("exchange_contains")
+def _exchange_contains(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Some exchange's response text contains the given ``text``.
+
+    Asserts from the driver-recorded conversation. The right evidence for
+    state that is real-time (``/stalls`` output shows a stalled record even
+    though the final ``recovery-items.json`` shows it settled).
+    """
+    needle = str(args.get("text") or "")
+    if not needle:
+        return False, "no 'text' arg given"
+    for exchange in ev.outcome.exchanges:
+        if needle in exchange.text:
+            return True, f"found in exchange[{exchange.index}] {exchange.kind}: {needle[:60]}..."
+    return False, f"no exchange contains {needle[:80]!r}; {len(ev.outcome.exchanges)} exchange(s)"
+
+
 def evaluate(specs: tuple[OracleSpec, ...], evidence: Evidence) -> list[OracleResult]:
     """Run every oracle; an oracle that raises fails with the exception as its detail."""
     results: list[OracleResult] = []
