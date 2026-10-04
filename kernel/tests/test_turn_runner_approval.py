@@ -606,3 +606,78 @@ async def test_checked_commit_backstop_reminds_once_without_fabricating_work() -
     assert result.tool_call_count == 0
     assert all(not message.get("tool_calls") for message in result.transcript)
     assert result.block_origin == "task_completion"
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_block_appends_below_model_prose() -> None:
+    """A checked-commit block must not swallow the surfaced content.
+
+    Regression for the 2026-10-03 turns 477/478 incident: an executor
+    (``task_completion=checked_commit``) turn ended without a verified
+    commit and the block message REPLACED the entire response, so the
+    user saw only "This task has not created or worked on a worktree"
+    — the model's actual status prose was discarded. The block message
+    must ride below the surfaced prose (append, never replace).
+    """
+
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+
+    prose = (
+        "**Issue queue (dnsmasq-web review):** issues 1, 2, 9 committed; "
+        "3(c) in progress — docs note pending."
+    )
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        return _Completion(content=prose)
+
+    async def verify(_request: Any) -> TaskCompletionEvidence:
+        return TaskCompletionEvidence(
+            verified=False, reason="This task has not created or worked on a worktree."
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value={}),
+    ):
+        result = await run_turn(mode_id="executor", query="status?", hooks=hooks)
+
+    assert result.blocked is True
+    assert result.block_origin == "task_completion"
+    # The model's prose survives ABOVE the appended block reason.
+    assert "Issue queue" in result.response_text
+    assert "has not created or worked on a worktree" in result.response_text
+    assert result.response_text.index("Issue queue") < result.response_text.index(
+        "has not created or worked on a worktree"
+    )
+
+
+@pytest.mark.asyncio
+async def test_append_completion_block_preserves_and_appends() -> None:
+    """Unit contract for the block-append helper (2026-10-03 swallow fix).
+
+    ``_append_completion_block`` appends the block message below surfaced
+    content; with no surfaced content (the turn loop's empty-content path
+    usually diverts to a yield/diagnostic before the contract fires) the
+    message stands alone.
+    """
+    from kernel.turn_runner import _append_completion_block
+
+    msg = "This task has not created or worked on a worktree."
+    assert _append_completion_block("Status report.", msg) == f"Status report.\n\n{msg}"
+    assert _append_completion_block("trailing\n", msg) == f"trailing\n\n{msg}"
+    assert _append_completion_block("", msg) == msg
+    assert _append_completion_block("   ", msg) == msg

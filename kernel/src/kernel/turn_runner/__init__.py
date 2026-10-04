@@ -2062,6 +2062,21 @@ def _prepare_turn_messages_and_model(
     return messages, preferred_model_id, model_def, _pregate_iteration1_model, _pregate_decision
 
 
+def _append_completion_block(content: str, block_message: str) -> str:
+    """Append a completion-contract block message below surfaced content.
+
+    Blocks mark the turn ``blocked`` and set ``block_origin``; the message
+    rides as a footnote so surfaced content (the model's prose or a
+    lifecycle diagnostic such as the stuck-in-stage cap-pause) is never
+    swallowed. Regression for the 2026-10-03 turns 477/478 incident: a
+    checked-commit block replaced the cap-pause diagnostic with its
+    one-line reason, hiding why the turn paused.
+    """
+    if not content.strip():
+        return block_message
+    return content.rstrip() + "\n\n" + block_message
+
+
 def _apply_turn_completion_contract(
     *,
     state: Any,
@@ -2077,8 +2092,11 @@ def _apply_turn_completion_contract(
     Resolves the completion contract against the turn's receipts and mutates
     ``content`` / block state accordingly: a pre-existing failure marks the
     turn blocked; surfaced prose, chat-read, and footnote decisions append the
-    authored no-write warning; a hallucinated success replaces the content
-    with the ``no_tools`` block. Returns
+    authored no-write warning; the ``no_tools`` and ``task_completion`` blocks
+    append their failure message below any surfaced content (never replace
+    it — the 2026-10-03 incident: a checked-commit block swallowed the
+    cap-pause diagnostic, hiding why the turn stopped) and stand alone only
+    when the turn surfaced no content. Returns
     ``(content, turn_blocked, block_origin)``.
     """
     contract_decision = resolve_completion_contract(
@@ -2115,7 +2133,7 @@ def _apply_turn_completion_contract(
     if isinstance(contract_decision, PreexistingFailureBlock):
         turn_blocked = True
     elif isinstance(contract_decision, BlockNoCheckedCommit):
-        content = contract_decision.block_message
+        content = _append_completion_block(content, contract_decision.block_message)
         turn_blocked = True
         block_origin = "task_completion"
     elif isinstance(contract_decision, SurfaceProseWithFootnote):
@@ -2156,7 +2174,7 @@ def _apply_turn_completion_contract(
             mode_id,
             sorted(contract_decision.action_tool_ids),
         )
-        content = contract_decision.block_message
+        content = _append_completion_block(content, contract_decision.block_message)
         turn_blocked = True
         block_origin = "no_tools"
     elif isinstance(contract_decision, AcceptTurn):

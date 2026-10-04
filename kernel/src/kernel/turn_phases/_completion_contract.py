@@ -111,8 +111,10 @@ class BlockNoVerifiedWrite:
     """The turn produced no verified write for its action tools (hallucinated success).
 
     The model reported success without landing a required write. The prose is
-    replaced with a deterministic failure message; ``turn_blocked`` is set to
-    True with ``block_origin="no_tools"``.
+    unverified; the turn loop appends the deterministic failure message below
+    it (2026-10-03: append, never replace — the surfaced content rides above
+    the block footnote) and sets ``turn_blocked`` to True with
+    ``block_origin="no_tools"``.
     """
 
     mode_id: str
@@ -133,7 +135,13 @@ class BlockNoVerifiedWrite:
 
 @dataclass(frozen=True, slots=True)
 class BlockNoCheckedCommit:
-    """An opted-in coding task lacks a verified commit on its owned worktree."""
+    """An opted-in coding task lacks a verified commit on its owned worktree.
+
+    The reason rides as a footnote below any surfaced content (model prose or
+    a lifecycle diagnostic such as the stuck-in-stage cap-pause) instead of
+    replacing it — the 2026-10-03 turns 477/478 incident: the block swallowed
+    the cap-pause diagnostic, hiding why the turn paused.
+    """
 
     reason: str = ""
 

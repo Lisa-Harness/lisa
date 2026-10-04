@@ -11,9 +11,9 @@ happen". Three behaviors pinned here:
      applied to the parent: a mode with a side-effecting completion
      contract (``mode_completion_effects`` non-empty) that exits the
      loop with no receipt for its action tools is blocked as
-     ``no_tools`` and its unverified prose is replaced with a
-     deterministic failure message. Chat modes (no contract), yields,
-     and sub-turns are exempt.
+     ``no_tools`` and the deterministic failure message is appended
+     below its unverified prose (2026-10-03: append, never replace).
+     Chat modes (no contract), yields, and sub-turns are exempt.
   3. **Control** — a clean exit in a write-contract mode WITH a receipt
      is not blocked; the receipt rides ``TurnResult.effect_receipts``.
 """
@@ -238,8 +238,10 @@ async def test_parent_turn_no_receipt_blocked_as_no_tools() -> None:
     """Parent-turn analog of the 2026-08-06 remember-child incident.
 
     A mode with a write contract whose model reports success without a
-    single tool call is blocked as ``no_tools``; the unverified prose is
-    replaced with a deterministic failure message.
+    single tool call is blocked as ``no_tools``; the deterministic failure
+    message is appended below the unverified prose (2026-10-03: append,
+    never replace — the block message labels the prose as unverified,
+    it does not swallow it).
     """
 
     async def hallucinating(**_kwargs: Any) -> _StubCompletion:
@@ -270,7 +272,220 @@ async def test_parent_turn_no_receipt_blocked_as_no_tools() -> None:
     assert result.blocked is True
     assert result.block_origin == "no_tools"
     assert "unverified" in result.response_text
-    assert "I wrote the file" not in result.response_text
+    # Append-not-replace contract: the hallucinated prose is surfaced with
+    # the block message appended as a footnote (prose first, block after).
+    assert "I wrote the file" in result.response_text
+    assert result.response_text.index("I wrote the file") < result.response_text.index("unverified")
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_block_appends_below_cap_pause_diagnostic() -> None:
+    """The checked-commit block must not swallow the cap-pause diagnostic.
+
+    Regression for the 2026-10-03 turns 477/478 incident (the slice-loop
+    pause): an executor turn (``task_completion=checked_commit``) looped
+    on read-only calls until the stuck-in-stage cap paused it. The
+    empty-content path surfaced the cap-pause diagnostic ("I've hit my
+    iteration budget in executor … I've paused so you can redirect me"),
+    then the completion contract REPLACED that diagnostic with the
+    checked-commit reason — the user saw only "This task has not
+    created or worked on a worktree" and never learned the turn had
+    paused at the cap. The block reason must ride BELOW the diagnostic.
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+    from kernel.turn_hooks import HostServiceHandles, TaskCompletionEvidence, TurnIdentity
+    from kernel.turn_runner import TurnHooks
+
+    class _ReadPool:
+        """Stub pool whose every tool dispatch succeeds (read receipts)."""
+
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="read result")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=True)
+
+        async def __aenter__(self) -> _ReadPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    # Set a low stage cap so the stuck-in-stage cap fires quickly
+    # (mirrors test_stuck_in_stage_cap_surfaces_diagnostic).
+    from kernel import config as kernel_config
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(kernel_config.settings, "stage_nudge_cap", 3)
+    mp.setattr(kernel_config.settings, "stage_nudge_threshold", 2)
+
+    async def loop_on_read(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "lisa-storage.read_file",
+                        "arguments": '{"path": "README.md"}',
+                    },
+                }
+            ],
+        )
+
+    async def verify(_request: Any) -> TaskCompletionEvidence:
+        return TaskCompletionEvidence(
+            verified=False, reason="This task has not created or worked on a worktree."
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=loop_on_read),
+        tools=ToolHooks(mcp_tool_pool=_ReadPool()),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            task_artifact_tool_id="create_worktree",
+            routable=True,
+            authored_allowed_tool_ids=["lisa-storage.read_file"],
+            allowed_tool_ids=["lisa-storage.read_file"],
+        ),
+    }
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+        ):
+            result = await run_turn(
+                mode_id="executor",
+                query="read the files",
+                hooks=hooks,
+            )
+    finally:
+        mp.undo()
+
+    assert result.operator_exit == "paused"
+    assert result.blocked is True
+    assert result.block_origin == "task_completion"
+    # The cap-pause diagnostic survives ABOVE the appended block reason —
+    # the user sees WHY the turn paused, then the checked-commit reason.
+    assert "iteration budget" in result.response_text.lower()
+    assert "paused" in result.response_text.lower() or "redirect" in result.response_text.lower()
+    assert "has not created or worked on a worktree" in result.response_text
+    assert result.response_text.lower().index("iteration budget") < result.response_text.index(
+        "has not created or worked on a worktree"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_tools_block_appends_below_cap_pause_diagnostic() -> None:
+    """The no_tools block must not swallow the cap-pause diagnostic either.
+
+    The ``no_tools`` variant of the same 2026-10-03 swallow: an
+    ``action``-kind write-contract mode whose model loops on failing
+    tool dispatches to the cap gets the cap-pause diagnostic surfaced,
+    then the completion contract fires ``BlockNoVerifiedWrite`` (no
+    receipts, no write attempt). The block message must ride BELOW the
+    diagnostic.
+    """
+    from kernel import config as kernel_config
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(kernel_config.settings, "stage_nudge_cap", 3)
+    mp.setattr(kernel_config.settings, "stage_nudge_threshold", 2)
+
+    async def loop_on_tool(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=loop_on_tool),
+    )
+    # An action-kind write-contract mode: every dispatch fails (web_search
+    # has no in-process implementation in the stub catalog), so the turn
+    # ends with zero receipts and no write attempt — the strict block.
+    catalog = {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="action",
+            routable=True,
+            authored_allowed_operation_ids=["write_file"],
+            allowed_operation_ids=["write_file"],
+        ),
+    }
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+        ):
+            result = await run_turn(
+                mode_id="writer",
+                query="do the work",
+                hooks=hooks,
+                max_tool_iterations=10,
+            )
+    finally:
+        mp.undo()
+
+    # The writer mode has a write contract and the model made zero write
+    # attempts with zero receipts (every dispatch failed) — the strict
+    # block fires.
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
+    # The cap-pause diagnostic survives ABOVE the appended block message —
+    # the user sees WHY the turn paused, then the unverified-write block.
+    assert "iteration budget" in result.response_text.lower()
+    assert "unverified" in result.response_text
+    assert result.response_text.lower().index("iteration budget") < result.response_text.index(
+        "unverified"
+    )
 
 
 @pytest.mark.asyncio
@@ -573,7 +788,10 @@ async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
     assert result.blocked is True
     assert result.block_origin == "no_tools"
     assert "unverified" in result.response_text
-    assert "I wrote the file" not in result.response_text
+    # Append-not-replace contract: the unverified claim is surfaced with
+    # the block message appended below it.
+    assert "I wrote the file" in result.response_text
+    assert result.response_text.index("I wrote the file") < result.response_text.index("unverified")
 
 
 @pytest.mark.asyncio
@@ -843,7 +1061,13 @@ async def test_parent_turn_dense_content_zero_tool_calls_blocked() -> None:
     assert result.blocked is True
     assert result.block_origin == "no_tools"
     assert "unverified" in result.response_text
-    assert "I'll start the research" not in result.response_text
+    # Append-not-replace contract: the announcement prose is surfaced with
+    # the block message appended below it — the prose never counts as
+    # verified work, but it is not swallowed either.
+    assert "I'll start the research" in result.response_text
+    assert result.response_text.index("I'll start the research") < result.response_text.index(
+        "unverified"
+    )
 
 
 @pytest.mark.asyncio
