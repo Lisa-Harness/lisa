@@ -42,7 +42,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from kernel.models import YieldAction, YieldPolicy
+from kernel.models import (
+    YieldAction,
+    YieldPolicy,
+    YieldRemediation,
+    YieldRemediationAction,
+)
 from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 
 _log = logging.getLogger(__name__)
@@ -564,27 +569,56 @@ def _recovery_stall_action(
     )
     target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
     detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
-    work_item_id = str(getattr(blocking, "work_item_id", "") or "")
-    # Print the literal slash commands with the work-item id so the user
-    # has a concrete, copy-pasteable escape. The historical prompt
-    # ("Retry, skip, or revise?") implied bare words work, but only the
-    # explicit ``/retry|/skip|/cancel <id>`` forms are real commands, and
-    # ``/retry`` on a confirm-policy record directs the user to re-issue
-    # the request or /skip it. Keep the prompt actionable, not a riddle.
-    commands_hint = (
-        f"Run /skip {work_item_id} or /cancel {work_item_id} to dismiss, "
-        f"or /retry {work_item_id} to retry. Otherwise rephrase your request."
-        if work_item_id
-        else "Run /stalls to see open work items, or rephrase your request."
+    # The resolver emits structured remediation (verbs + the work item id);
+    # hosts render operator affordances from it — the runtime turns the verbs
+    # into the installed pack command syntax at its delivery seam. The kernel
+    # never embeds pack command vocabulary in prompts.
+    remediation = _stall_remediation(blocking)
+    question = (
+        f"A previous step stalled and needs your input to continue. Stall: {detail}."
+        if remediation is not None and remediation.actions
+        else (
+            f"A previous step stalled and needs your input to continue. "
+            f"Stall: {detail}. Inspect the open work items or rephrase your request."
+        )
     )
     return YieldAction(
-        question=(
-            f"A previous step stalled and needs your input to continue. "
-            f"Stall: {detail}. {commands_hint}"
-        ),
+        question=question,
         context=f"Recovery record blocks workflow step '{blocking.step_id}'.",
         target_mode_id=target,
+        remediation=remediation,
     )
+
+
+def _stall_remediation(
+    blocking: _RecoveryRecordLike,
+) -> YieldRemediation | None:
+    """Build the structured remediation for one workflow-blocking stall.
+
+    Verb selection mirrors the recovery pack's contract: every stall can be
+    dismissed (skip/cancel) and inspected; retry is offered only when the
+    record's policy is not ``never`` (a confirm-policy retry is surfaced as
+    unsafe so the host asks before replaying — the effect may or may not
+    have happened).
+    """
+    work_item_id = str(getattr(blocking, "work_item_id", "") or "")
+    if not work_item_id:
+        return None
+    retry_policy = str(getattr(blocking, "retry_policy", "") or "")
+    actions: list[YieldRemediationAction] = [
+        YieldRemediationAction(verb="skip", target_id=work_item_id, safe=True),
+        YieldRemediationAction(verb="cancel", target_id=work_item_id, safe=True),
+        YieldRemediationAction(verb="inspect", target_id=work_item_id, safe=True),
+    ]
+    if retry_policy != "never":
+        actions.append(
+            YieldRemediationAction(
+                verb="retry",
+                target_id=work_item_id,
+                safe=retry_policy == "safe",
+            )
+        )
+    return YieldRemediation(actions=actions)
 
 
 def _handoff_loop_action(

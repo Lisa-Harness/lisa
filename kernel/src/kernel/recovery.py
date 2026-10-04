@@ -72,9 +72,9 @@ class RecoveryRecord(_FrozenRecoveryModel):
     mode_id: str = ""
     stage_id: str = ""
     # Current step id within a multi-stage workflow. Empty when no
-    # multi-stage workflow is in flight (single-mode turns). Used by
-    # ``step_blocks_instance`` to decide whether a stalled record blocks
-    # the instance from advancing.
+    # multi-stage workflow is in flight (single-mode turns). Observability
+    # surface: rendered in stall prompts (resolver context) and ``/stall``
+    # detail output.
     step_id: str = ""
     target_kind: RecoveryTargetKind
     target_id: str
@@ -133,27 +133,3 @@ def open_state_records(
         for record in records.values()
         if record.identity == identity and record.open_for_operator()
     ]
-
-
-def step_blocks_instance(record: RecoveryRecord, instance: Any) -> bool:
-    """Return True when a stalled record blocks the instance from advancing.
-
-    A recovery record blocks the workflow instance when its ``step_id`` is a
-    declared step of the instance that has not yet completed, and the record
-    is in an open (running/stalled/indeterminate) state. This lets the host's
-    resume logic decide whether to retry the step (the record blocks) or skip
-    it (the step already completed via another path and the record is stale).
-
-    Returns ``False`` when the record carries no ``step_id`` or the instance
-    is ``None`` (no multi-stage workflow).
-    """
-    if instance is None:
-        return False
-    step_id = record.step_id
-    if not step_id:
-        return False
-    if not record.open_for_operator():
-        return False
-    declared_ids = {getattr(s, "step_id", "") for s in getattr(instance, "declared_steps", ())}
-    completed_ids = set(getattr(instance, "completed_steps", ()))
-    return step_id in declared_ids and step_id not in completed_ids

@@ -269,3 +269,85 @@ async def test_kernel_approval_stall_carries_lifecycle_sentinel(
     assert stalled is not None
     assert stalled.state == "stalled"
     assert stalled.last_error == RECOVERY_APPROVAL_PENDING_ERROR
+
+
+# ── Yield remediation: kernel verbs ↔ runtime command rendering ────────────
+
+
+def test_runtime_renders_kernel_remediation_with_installed_pack_vocabulary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kernel remediation verbs render as installed pack command syntax.
+
+    The recovery pack is installed in this environment, so skip/cancel/
+    inspect/retry verbs map to its slash commands. The kernel ``question``
+    itself must never contain command syntax — the vocabulary lives at the
+    runtime delivery seam.
+    """
+    import importlib
+
+    from kernel.models import YieldAction, YieldRemediation, YieldRemediationAction
+
+    handle_message_module = importlib.import_module("runtime.handle_message")
+    monkeypatch.setattr(handle_message_module, "_pack_command_cache", None)
+
+    runtime = _make_runtime(tmp_path)
+    yielded = YieldAction(
+        question="A previous step stalled and needs your input to continue.",
+        remediation=YieldRemediation(
+            actions=[
+                YieldRemediationAction(verb="skip", target_id="w1", safe=True),
+                YieldRemediationAction(verb="cancel", target_id="w1", safe=True),
+                YieldRemediationAction(verb="inspect", target_id="w1", safe=True),
+                YieldRemediationAction(verb="retry", target_id="w1", safe=False),
+                YieldRemediationAction(verb="approve", target_id="req-1", safe=False),
+            ]
+        ),
+    )
+    payload = handle_message_module._render_yield_remediation(runtime, yielded)
+    commands = payload["remediation"]
+    assert any(c.startswith("/skip ") and c.endswith(" w1") for c in commands)
+    assert any(c.startswith("/cancel ") and c.endswith(" w1") for c in commands)
+    assert any(c.startswith("/stall ") and c.endswith(" w1") for c in commands)
+    assert any(c.startswith("/retry ") and c.endswith(" w1") for c in commands)
+    assert any(c.startswith("/approve ") and c.endswith(" req-1") for c in commands)
+    assert len(commands) == 5
+
+
+def test_runtime_renders_nothing_for_verbs_without_installed_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verb no installed pack exposes renders no line — silent, not wrong."""
+    import importlib
+
+    from kernel.models import YieldAction, YieldRemediation, YieldRemediationAction
+
+    handle_message_module = importlib.import_module("runtime.handle_message")
+    monkeypatch.setattr(handle_message_module, "_pack_command_cache", None)
+
+    runtime = _make_runtime(tmp_path)
+    yielded = YieldAction(
+        question="stalled",
+        remediation=YieldRemediation(
+            actions=[YieldRemediationAction(verb="frobnicate", target_id="w1")]
+        ),
+    )
+    payload = handle_message_module._render_yield_remediation(runtime, yielded)
+    assert payload["remediation"] == []
+
+
+def test_yield_without_remediation_renders_empty_list(
+    tmp_path: Path,
+) -> None:
+    """Plain model yields (no remediation) keep the legacy ``data`` shape."""
+    import importlib
+
+    from kernel.models import YieldAction
+
+    handle_message_module = importlib.import_module("runtime.handle_message")
+    runtime = _make_runtime(tmp_path)
+    yielded = YieldAction(question="what scope?")
+    payload = handle_message_module._render_yield_remediation(runtime, yielded)
+    assert payload["remediation"] == []

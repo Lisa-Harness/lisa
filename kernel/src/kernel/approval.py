@@ -279,12 +279,19 @@ def is_expired(invocation: ApprovalInvocation, *, now: datetime | None = None) -
 
 
 def render_approval_request(invocation: ApprovalInvocation) -> str:
-    """Render the host-neutral user prompt for a paused action."""
+    """Render the host-neutral user prompt for a paused action.
+
+    The kernel states the situation without command syntax: which action is
+    paused and that an operator decision is pending. Hosts own the *how* —
+    the runtime builds the structured ``data["approval"]`` payload (with
+    ``request_id``) for panel transports and appends the installed command
+    hints to the text for plain transports.
+    """
 
     return (
         f"Approval required for {invocation.safe_preview}.\n\n"
-        f"Run `/approve {invocation.request_id}` to continue or "
-        f"`/deny {invocation.request_id}` to cancel."
+        f"This action is paused until you approve or deny it "
+        f"(request {invocation.request_id})."
     )
 
 

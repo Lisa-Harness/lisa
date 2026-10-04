@@ -247,7 +247,11 @@ async def test_pending_approval_handoff_updates_session_mode(
 
     assert response is not None
     assert runtime.session.current_mode_id == "executor"
-    assert response.text == "approval required"
+    # Text keeps the kernel's neutral prompt and gains the runtime-rendered
+    # command hints (vocabulary lives at the runtime seam, not the kernel).
+    assert response.text.startswith("approval required")
+    assert "/approve task-approval" in response.text or "/approve" in response.text
+    assert "/deny" in response.text
 
 
 @pytest.mark.asyncio
@@ -780,7 +784,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
     """``/approve`` unblocks the paired recovery stall left by the model turn.
 
     Regression for the 2026-08-06 zombie-stall incident: the model-turn path
-    settles a recovery record as ``stalled`` with ``blocks_workflow=True``
+    settles a recovery record as ``stalled`` with the approval-pending sentinel
     before raising ``ApprovalRequired``. ``/approve`` re-executes through a
     fresh registry path that never touched the recovery service, so the
     stall stayed and re-yielded on every subsequent turn. The fix links the
@@ -810,7 +814,7 @@ async def test_approve_settles_paired_stalled_recovery_record(
     await runtime.services.approval_service.request(invocation)
 
     # Simulate the model-turn path: it began a recovery record for the same
-    # target, then settled it as ``stalled`` / ``blocks_workflow=True`` when
+    # target, then settled it as an approval-pending ``stalled`` record when
     # the tool raised ``ApprovalRequired``.
     from kernel.recovery import RecoveryIdentity, RecoveryRecord
 

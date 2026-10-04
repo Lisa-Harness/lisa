@@ -127,7 +127,11 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
     assert result.pending_approval_tool_call_id == "call-1"
     assert len(started) == 1
     assert result.pending_approval_recovery_item_id == started[0].work_item_id
-    assert "/approve " in result.response_text
+    assert "Approval required" in result.response_text
+    assert "approve or deny" in result.response_text
+    assert result.pending_approval.request_id in result.response_text
+    assert "/approve" not in result.response_text
+    assert "/deny" not in result.response_text
     assert executed is False
 
 

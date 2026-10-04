@@ -1471,6 +1471,47 @@ class WorkflowTransitionRequest(BaseModel):
     )
 
 
+class YieldRemediationAction(BaseModel):
+    """One structured remediation a stalled step offers the operator.
+
+    The kernel emits *what* can be done (verb + target id), never *how*
+    (command syntax). Hosts and packs own the how: the runtime maps verbs
+    against the installed command set, and other hosts may render buttons,
+    links, or nothing. Deriving from kernel-owned recovery record state —
+    no pack vocabulary crosses this boundary. ``verb`` is an open string
+    so packs can register new remediation verbs without kernel changes;
+    a verb no installed command exposes renders nothing.
+    """
+
+    verb: str = Field(
+        min_length=1,
+        description=(
+            "Remediation verb the operator may perform on the target. Open "
+            "vocabulary: hosts map verbs to their own affordances."
+        ),
+    )
+    target_id: str = Field(
+        description="Identifier the verb applies to (work item id, request id, ...)."
+    )
+    safe: bool = Field(
+        default=False,
+        description=(
+            "Whether the action is safe to perform unprompted (read-only "
+            "retry or dismissal). False means the host should obtain an "
+            "explicit operator decision."
+        ),
+    )
+
+
+class YieldRemediation(BaseModel):
+    """Structured remediation attached to a yield caused by stalled work.
+
+    Rendered by hosts/packs — the kernel does not generate command syntax.
+    """
+
+    actions: list[YieldRemediationAction] = Field(default_factory=list)
+
+
 class YieldAction(BaseModel):
     """First-class "ask the user" terminal action.
 
@@ -1503,6 +1544,15 @@ class YieldAction(BaseModel):
         description=(
             "Optional override of ``yield_policy.fallback_mode``. Empty means "
             "use the policy's default yield target (typically ``discuss``)."
+        ),
+    )
+    remediation: YieldRemediation | None = Field(
+        default=None,
+        description=(
+            "Structured remediation for yields caused by stalled or blocked "
+            "work (verbs + target ids). Hosts render operator affordances "
+            "from this; the kernel never embeds command syntax in "
+            "``question``."
         ),
     )
 

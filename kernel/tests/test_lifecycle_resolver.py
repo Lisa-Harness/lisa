@@ -224,6 +224,70 @@ def test_stalled_blocking_record_forces_yield() -> None:
     assert isinstance(action, YieldAction)
     assert "blocks workflow" in action.context
     assert RECOVERY_APPROVAL_PENDING_ERROR in action.question
+    # Structured remediation carries verbs + the work item id — never slash
+    # syntax (pack vocabulary does not cross the kernel boundary).
+    assert action.remediation is not None
+    verbs = [a.verb for a in action.remediation.actions]
+    assert verbs == ["skip", "cancel", "inspect", "retry"]
+    assert all(a.target_id == record.work_item_id for a in action.remediation.actions)
+    assert "/skip" not in action.question
+    assert "/retry" not in action.question
+    assert "/stalls" not in action.question
+    # A confirm-policy retry is surfaced as unsafe: the host must ask.
+    retry_action = next(a for a in action.remediation.actions if a.verb == "retry")
+    assert retry_action.safe is False
+
+
+def test_stall_remediation_omitted_without_work_item_id() -> None:
+    """A record with no work item id cannot be remediated by id."""
+    record = _record(
+        state="stalled",
+        retry_policy="confirm",
+        last_error=RECOVERY_APPROVAL_PENDING_ERROR,
+        step_id="s1",
+    )
+    record = record.model_copy(update={"work_item_id": ""})
+    action = resolve_lifecycle_action(
+        state=_State(),
+        mode_id="search",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=_settings(),
+        recovery_records=[record],
+    )
+    assert isinstance(action, YieldAction)
+    assert action.remediation is None
+    assert action.question.endswith("rephrase your request.")
+
+
+def test_stall_question_carries_no_command_syntax() -> None:
+    """The kernel-side contract: no slash syntax may appear in the question.
+
+    The stall yield's question is kernel-owned prose; verbs + ids travel in
+    ``remediation``. Guards the boundary the runtime's rendering relies on,
+    since the vocabulary move moves ``/skip`` / ``/cancel`` / ``/retry`` /
+    ``/stalls`` out of the kernel prompt entirely.
+    """
+    from kernel.models import YieldRemediation, YieldRemediationAction
+
+    record = _record(
+        state="stalled",
+        retry_policy="confirm",
+        last_error=RECOVERY_APPROVAL_PENDING_ERROR,
+        step_id="s1",
+    )
+    action = resolve_lifecycle_action(
+        state=_State(),
+        mode_id="search",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=_settings(),
+        recovery_records=[record],
+    )
+    assert isinstance(action, YieldAction)
+    assert isinstance(action.remediation, YieldRemediation)
+    assert action.remediation.actions
+    assert isinstance(action.remediation.actions[0], YieldRemediationAction)
+    for slash in ("/skip", "/cancel", "/retry", "/stalls", "/stall", "/approve", "/deny"):
+        assert slash not in action.question
 
 
 def test_tool_failure_stall_does_not_block() -> None:

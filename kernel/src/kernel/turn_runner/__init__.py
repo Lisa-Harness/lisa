@@ -3813,9 +3813,9 @@ async def _begin_recovery_record(
         recovery_retry_policy = "safe" if effect == "read" else "confirm"
         # ── Durable workflow-position correlation ──────────
         # When a ``WorkflowPosition`` is active, stamp the
-        # recovery record with the current step id so the host
-        # can decide whether a stalled record blocks the
-        # position from advancing (``step_blocks_instance``).
+        # recovery record with the current step id so stall
+        # prompts and operator detail views can attribute the
+        # stalled work to its workflow step.
         _wi_step_id = ""
         if hooks.workflow.workflow_position is not None:
             try:

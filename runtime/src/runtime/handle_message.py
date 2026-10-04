@@ -765,7 +765,19 @@ async def _handle_pending_approval(
     if approved_result is not None:
         return approved_result
     approval_data = build_approval_data(runtime, pending_approval)
-    return HostCommandResult(text=result.response_text, data=approval_data)
+    # Panel transports render a keystroke panel from ``data["approval"]``.
+    # Plain transports only get the text — append the installed command
+    # hints so the operator still has a copy-pasteable escape. Runtime owns
+    # the command vocabulary; the kernel's neutral prompt never mentions it.
+    request_id = str(approval_data.get("request_id") or "")
+    hints = [
+        f"/approve {request_id}" if request_id else "/approve",
+        f"/deny {request_id}" if request_id else "/deny",
+    ]
+    return HostCommandResult(
+        text=f"{result.response_text}\n\nRun {' or '.join(hints)}.",
+        data=approval_data,
+    )
 
 
 def _serialize_effect_receipts(result: TurnResult) -> list[dict[str, str]]:
@@ -1173,6 +1185,14 @@ async def _execute_mode_turn(
     if runtime.config.debug:
         await transport.on_debug_context(run_context)
 
+    # ── Structured yield remediation → operator command hints ────────
+    # The kernel emits verbs + target ids on a yield (see
+    # ``kernel.models.YieldRemediation``); the runtime renders the installed
+    # pack command syntax from the discovered host-command registry. A verb
+    # with no matching installed command renders nothing — the pack that
+    # would own it is not installed.
+    remediation_payload = _render_yield_remediation(runtime, result.yielded)
+
     return HostCommandResult(
         text=result.response_text,
         operator_exit=getattr(result, "operator_exit", ""),
@@ -1182,8 +1202,50 @@ async def _execute_mode_turn(
         # rides both the typed field (one-shot hosts exit non-zero) and
         # ``data["yielded"]`` so panel transports can render it inline.
         yielded_question=(result.yielded.question if result.yielded else ""),
-        data={"yielded": result.yielded.question} if result.yielded else None,
+        data={"yielded": result.yielded.question, **remediation_payload}
+        if result.yielded
+        else None,
     )
+
+
+def _render_yield_remediation(runtime: HostRuntime, yielded: Any) -> dict[str, Any]:
+    """Render kernel remediation verbs as installed command lines.
+
+    Returns ``{"remediation": [line, ...]}`` (empty list when there is
+    nothing to render — no remediation on the yield, or no installed
+    command matches a verb). Carried in ``data`` so panel transports can
+    render buttons/links instead of parsing prose.
+    """
+    remediation = getattr(yielded, "remediation", None)
+    if remediation is None:
+        return {"remediation": []}
+    commands: list[str] = []
+    for action in remediation.actions:
+        prefix = _command_prefix_for_verb(runtime, str(action.verb))
+        if not prefix:
+            continue
+        commands.append(f"{prefix} {action.target_id}")
+    return {"remediation": commands}
+
+
+def _command_prefix_for_verb(runtime: HostRuntime, verb: str) -> str:
+    """Return the installed slash prefix for a remediation verb, or "".
+
+    Resolved from pack-registered host commands (the recovery pack owns
+    ``/stalls``/``/stall``/``/retry``/``/skip``/``/cancel``); host-intrinsic
+    verbs (approve/deny) fall back to the host vocabulary. A verb the
+    installed packs do not expose renders nothing.
+    """
+    verb_to_prefix: dict[str, str] = {}
+    for entry in _pack_host_commands():
+        for spec in entry.specs:
+            verb_to_prefix.setdefault(spec.prefix.lstrip("/").lower(), spec.prefix)
+    verb_to_prefix.setdefault("approve", "/approve")
+    verb_to_prefix.setdefault("deny", "/deny")
+    # ``inspect`` maps to the one-item detail command; the list form would
+    # not accept the target id this renderer appends.
+    verb_to_prefix.setdefault("inspect", verb_to_prefix.get("stall", ""))
+    return verb_to_prefix.get(verb, "")
 
 
 def _handle_unsupported_mode(
