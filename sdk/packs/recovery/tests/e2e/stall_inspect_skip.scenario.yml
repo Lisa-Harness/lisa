@@ -1,0 +1,29 @@
+id: recovery/stall-inspect-skip
+session_context: session_context.md
+packs:
+  - lisa-pack-bash
+  - lisa-pack-bwrap
+  - lisa-pack-markdown
+  - lisa-pack-personas
+  - lisa-pack-recovery
+turns:
+  - >-
+    Run `bash_run` with these exact parameters so I can verify error
+    handling: {"command": "echo hi", "overrides": "not-a-dict"}. Do not fix
+    the parameters; report the outcome of the dispatch.
+  - "/stalls"
+  - "/skip $RECOVERY_OPEN_ID"
+budgets:
+  max_messages: 12
+  max_continues: 2
+  max_yield_replies: 1
+  wall_clock_s: 1200
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_runtime_errors: {}
+  stall:
+    - exchange_contains: {text: "state=stalled"}
+    - recovery_record: {retry_policy: confirm, min: 1}
+  remediation:
+    - recovery_settled: {state: skipped, min: 1}
