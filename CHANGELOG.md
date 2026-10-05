@@ -4,6 +4,70 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Catalog loaders rewrote `timeout_seconds: 0` into the 30s default
+
+- **What:** All three catalog loaders (runtime tool, runtime operation,
+  markdown operation) used
+  `int(metadata.get("timeout_seconds", 30) or 30)`; the falsy coercion
+  rewrote a declared `timeout_seconds: 0` into the 30/60s default before the
+  kernel ever saw it. The loaders now pass the declared value through
+  verbatim; the kernel's documented `0 disables the wrapper timeout` contract
+  (`sdk/AUTHORING.md`) works as written. Negative values still round-trip and
+  are rejected by the kernel's existing catalog validators.
+- **Why:** The 2026-10-05 shell turn lost a command because `bash_run` /
+  `bwrap_run` inherited the 30s wrapper default — the wrapper cancelled the
+  call before the pack's sandboxed auto-background adoption could run, then
+  killed the orphaned bwrap child and aborted the turn. The designed escape
+  hatch for exactly this situation (`0` = tool self-bounds) was silently
+  destroyed by the loader, leaving pack authors no correct way to declare a
+  self-bounding tool.
+- **Tests:** `sdk/tests/test_catalog_timeout_zero.py` (declared 0 and -5
+  round-trip for all three loader paths; omitted keeps the documented
+  defaults).
+
+#### Tool wrapper timeout for streaming tools is now an idle deadline
+
+- **What:** `kernel.tools.registry.execute_tool` wraps every dispatch in a
+  timeout. For tools that declare `stream_output: true` with an event bus
+  wired, the wrapper now applies an *idle* deadline: each incremental output
+  published on the `lisa.tool_output` topic resets the clock, so a tool that
+  keeps producing (a long build streaming its log) runs as long as it stays
+  alive, while a tool that goes silent for the full window is treated as hung
+  and cancelled. Non-streaming tools keep the exact lifetime bound;
+  `timeout_seconds: 0` still disables the wrapper; a streaming call without
+  a bus degrades to the lifetime bound.
+- **Why:** A static per-tool lifetime bound can't distinguish a hung call
+  from legitimate long work, and it can never be sized to work that
+  backgrounds itself — the alignment problem the 2026-10-05 incident exposed
+  (packs forced to guess numbers larger than every internal duration, in
+  order, forever). The progress signal streaming tools already publish is the
+  real distinction; the wrapper now consumes it.
+- **Tests:** `kernel/tests/test_tool_wrapper_timeout.py` (streaming output
+  resets the clock past the declared bound; silent streaming tool is
+  cancelled; non-streaming keeps the lifetime bound; `0` disables the
+  wrapper).
+
+### Changed
+
+#### bash/bwrap packs declare self-bounding tools (`timeout_seconds: 0`)
+
+- **What:** `bash_run.tool.yml` and `bwrap_run.tool.yml` now declare
+  `timeout_seconds: 0` (kernel wrapper disabled) instead of the inherited 30s
+  default. Both tools self-bound on every path — the model's own
+  `timeout_seconds` parameter is the visible wait, the sandboxed
+  auto-background grace window adopts slow commands as jobs, and
+  `stream_output: true` publishes observable progress on `lisa.tool_output`.
+- **Why:** The 2026-10-05 shell turn: the wrapper killed `bash_run` at 30s,
+  then the in-flight `bwrap_run` child at 33s, stranding the command and
+  aborting the turn ("Task exception was never retrieved"). No wrapper
+  number can be sized to work that backgrounds itself; the packs declare the
+  contract instead of the number.
+- **Tests:** `lisa-packs/bash` `tests/test_catalog.py`
+  `test_bash_run_declares_itself_self_bounding`; `lisa-packs/bwrap`
+  `tests/test_catalog.py` `test_bwrap_run_declares_itself_self_bounding`.
+
 ### Added
 
 #### Bulk dismiss commands for the recovery pack
