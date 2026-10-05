@@ -328,3 +328,68 @@ async def test_find_by_search_defensive_parsing_returns_none(raw: str) -> None:
     ctx = _ctx(params={}, execute_tool_fn=execute_tool)
 
     assert await op._find_disputed_record_by_search(ctx, "query") is None
+
+
+# ── lookup helpers: scope parity with recall_memory ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_search_passes_all_scope_fields() -> None:
+    """Dispute must search the same slice recall_memory reads.
+
+    The ``memory.search`` alias forwards only the ``parameters`` dict to the
+    native ``search_memory`` backend, which scopes its WHERE clause on all
+    four identity fields (``user_slug`` / ``workspace_id`` / ``surface_id`` /
+    ``memory_scope``). Passing only ``user_slug`` — as dispute did before —
+    queried a different slice than recall, so records recall surfaced ("skip
+    test/vet check approvals as redundant") could not be disputed: three
+    consecutive dispute attempts failed on the 2026-10-05 thread.
+    """
+
+    async def execute_tool(tool_id: str, tool_ctx: Any) -> ToolResult:
+        assert tool_id == "memory.search"
+        params = dict(getattr(tool_ctx, "parameters", {}) or {})
+        assert params["user_slug"] == "adam"
+        assert params["workspace_id"] == "default"
+        assert params["surface_id"] == "surface"
+        assert params["memory_scope"] == "personal"
+        assert params["query"] == "scope parity query"
+        return _tool_result(
+            tool_id, output_text=json.dumps([_memory_record(record_id=9).model_dump(mode="json")])
+        )
+
+    ctx = _ctx(params={}, execute_tool_fn=execute_tool)
+
+    record = await op._find_disputed_record_by_search(ctx, "scope parity query")
+
+    assert record is not None
+    assert record.id == 9
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_id_passes_all_scope_fields() -> None:
+    """``memory.get`` resolves through the same scoped slice as recall.
+
+    The native ``get_memory`` applies the same four-field scope filter
+    server-side, so a record visible to recall (scoped search) must also be
+    fetchable by id with identical scope parameters.
+    """
+
+    async def execute_tool(tool_id: str, tool_ctx: Any) -> ToolResult:
+        assert tool_id == "memory.get"
+        params = dict(getattr(tool_ctx, "parameters", {}) or {})
+        assert params["user_slug"] == "adam"
+        assert params["workspace_id"] == "default"
+        assert params["surface_id"] == "surface"
+        assert params["memory_scope"] == "personal"
+        assert params["memory_id"] == 5
+        return _tool_result(
+            tool_id, output_text=json.dumps(_memory_record(record_id=5).model_dump(mode="json"))
+        )
+
+    ctx = _ctx(params={}, execute_tool_fn=execute_tool)
+
+    record = await op._find_disputed_record_by_id(ctx, "5")
+
+    assert record is not None
+    assert record.id == 5

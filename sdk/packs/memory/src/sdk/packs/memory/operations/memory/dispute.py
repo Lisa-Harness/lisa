@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+from typing import Any
 
 from kernel.models import (
     MemoryRecord,
@@ -48,6 +49,31 @@ class Parameters(BaseModel):
     )
 
 
+def _scoped_parameters(
+    ctx: OperationExecutionContext,
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    """Build alias-bound parameters carrying the full identity scope.
+
+    The ``memory.get`` / ``memory.search`` synthetic aliases forward only the
+    ``parameters`` dict to the native backend (see
+    ``kernel.tools.synthetic.mcp_alias_tool``), and the native tools scope
+    their WHERE clause on all four identity fields: ``user_slug``,
+    ``workspace_id``, ``surface_id``, ``memory_scope``. Mirrors
+    ``recall_memory``'s ``_build_search_context`` so dispute reads exactly
+    the slice recall surfaces — a scope mismatch here made records recall
+    surfaced undisputable (three failed dispute lookups on the 2026-10-05
+    thread).
+    """
+    return {
+        "user_slug": ctx.user_slug,
+        "workspace_id": ctx.workspace_id,
+        "surface_id": ctx.surface_id,
+        "memory_scope": ctx.memory_scope,
+        **extra,
+    }
+
+
 async def _find_disputed_record_by_id(
     ctx: OperationExecutionContext,
     memory_id: str,
@@ -67,10 +93,7 @@ async def _find_disputed_record_by_id(
             surface_id=ctx.surface_id,
             memory_scope=ctx.memory_scope,
             mode_id=ctx.mode_id,
-            parameters={
-                "memory_id": int(memory_id),
-                "user_slug": ctx.user_slug,
-            },
+            parameters=_scoped_parameters(ctx, {"memory_id": int(memory_id)}),
         ),
     )
     if getattr(get_result, "error", None):
@@ -103,11 +126,7 @@ async def _find_disputed_record_by_search(
             memory_scope=ctx.memory_scope,
             mode_id=ctx.mode_id,
             query=search_query,
-            parameters={
-                "query": search_query,
-                "user_slug": ctx.user_slug,
-                "limit": 1,
-            },
+            parameters=_scoped_parameters(ctx, {"query": search_query, "limit": 1}),
         ),
     )
     if getattr(search_result, "error", None):
