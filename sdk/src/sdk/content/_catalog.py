@@ -1221,7 +1221,7 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "response_output_json_passthrough": _parse_string_mapping(
             metadata.get("response_output_json_passthrough")
         ),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 60)),
+        "timeout_seconds": _timeout_seconds(metadata, default=60),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "completion_max_tokens": int(
             metadata.get("completion_max_tokens", _DEFAULT_COMPLETION_MAX_TOKENS)
@@ -1278,7 +1278,7 @@ def _load_runtime_operation(
         "preferred_model_id": (
             str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
         ),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 60)),
+        "timeout_seconds": _timeout_seconds(metadata, default=60),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "instruction_markdown_path": "",
         "instruction_body": "",
@@ -1418,6 +1418,22 @@ def _parse_string_mapping(raw: Any) -> dict[str, str]:
     for key, value in raw.items():
         result[str(key)] = str(value)
     return result
+
+
+def _timeout_seconds(metadata: dict[str, Any], *, default: int) -> int:
+    """Read ``timeout_seconds`` verbatim; treat a null value as undeclared.
+
+    A declared value passes through unchanged — including ``0``, which
+    disables the kernel wrapper for self-bounding tools, and negatives, which
+    the kernel's catalog validators reject. YAML parses ``timeout_seconds:``
+    (no value) as ``None``, an authoring typo that previously degraded to
+    the default; that stays the behavior rather than crashing the catalog
+    build (2026-10-05 review, C2).
+    """
+    declared = metadata.get("timeout_seconds")
+    if declared is None:
+        return default
+    return int(declared)
 
 
 # ── Tool catalog ─────────────────────────────────────────────────────────────
@@ -1565,7 +1581,7 @@ def _load_runtime_tool(
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "mode_allowlist": mode_allowlist,
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 30)),
+        "timeout_seconds": _timeout_seconds(metadata, default=30),
         "module_path": module_path,
         "exportable": bool(metadata.get("exportable", False)),
         "default_available": bool(metadata.get("default_available", False)),

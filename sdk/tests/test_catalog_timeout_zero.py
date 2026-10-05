@@ -29,7 +29,9 @@ from sdk.content import (
 )
 
 
-def _write_runtime_tool(root: Path, *, timeout_seconds: int | None) -> None:
+def _write_runtime_tool(
+    root: Path, *, timeout_seconds: int | None, null_value: bool = False
+) -> None:
     tools_dir = root / "tools" / "probe"
     tools_dir.mkdir(parents=True, exist_ok=True)
     (tools_dir / "probe.py").write_text(
@@ -53,13 +55,20 @@ def _write_runtime_tool(root: Path, *, timeout_seconds: int | None) -> None:
         'description: "probe tool"',
         "mode_allowlist: null",
     ]
-    if timeout_seconds is not None:
+    if null_value:
+        # `timeout_seconds:` with no value — YAML parses this as None. A
+        # common authoring typo that must degrade to the default, not crash
+        # the whole catalog build (2026-10-05 review, C2/C3).
+        lines.append("timeout_seconds:")
+    elif timeout_seconds is not None:
         lines.append(f"timeout_seconds: {timeout_seconds}")
     lines.append("")
     (tools_dir / "probe.tool.yml").write_text("\n".join(lines), encoding="utf-8")
 
 
-def _write_runtime_operation(root: Path, *, timeout_seconds: int | None) -> None:
+def _write_runtime_operation(
+    root: Path, *, timeout_seconds: int | None, null_value: bool = False
+) -> None:
     ops_dir = root / "operations" / "probe"
     ops_dir.mkdir(parents=True, exist_ok=True)
     (ops_dir / "probe.py").write_text(
@@ -83,13 +92,17 @@ def _write_runtime_operation(root: Path, *, timeout_seconds: int | None) -> None
         'description: "probe op"',
         "mode_allowlist: []",
     ]
-    if timeout_seconds is not None:
+    if null_value:
+        lines.append("timeout_seconds:")
+    elif timeout_seconds is not None:
         lines.append(f"timeout_seconds: {timeout_seconds}")
     lines.append("")
     (ops_dir / "probe.yml").write_text("\n".join(lines), encoding="utf-8")
 
 
-def _write_markdown_operation(root: Path, *, timeout_seconds: int | None) -> None:
+def _write_markdown_operation(
+    root: Path, *, timeout_seconds: int | None, null_value: bool = False
+) -> None:
     ops_dir = root / "operations" / "probe"
     ops_dir.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -100,7 +113,9 @@ def _write_markdown_operation(root: Path, *, timeout_seconds: int | None) -> Non
         "tool_ids: []",
         "mode_allowlist: []",
     ]
-    if timeout_seconds is not None:
+    if null_value:
+        lines.append("timeout_seconds:")
+    elif timeout_seconds is not None:
         lines.append(f"timeout_seconds: {timeout_seconds}")
     lines += ["---", "", "# Probe", "", "Body.", ""]
     (ops_dir / "probe_md.operation.md").write_text("\n".join(lines), encoding="utf-8")
@@ -131,6 +146,16 @@ class TestRuntimeToolTimeoutZero:
         _write_runtime_tool(tmp_path, timeout_seconds=None)
         assert _tool_catalog(tmp_path)["probe"]["timeout_seconds"] == 30
 
+    def test_null_value_degrades_to_default_not_crash(self, tmp_path: Path) -> None:
+        """`timeout_seconds:` with no value (YAML None) keeps the default.
+
+        Regression (2026-10-05 review C2): the verbatim-passthrough fix
+        crashed the entire catalog build with a TypeError on this authoring
+        typo; null must mean undeclared, not raise.
+        """
+        _write_runtime_tool(tmp_path, timeout_seconds=None, null_value=True)
+        assert _tool_catalog(tmp_path)["probe"]["timeout_seconds"] == 30
+
 
 class TestRuntimeOperationTimeoutZero:
     """``.yml`` → operation catalog JSON (runtime operations)."""
@@ -147,6 +172,11 @@ class TestRuntimeOperationTimeoutZero:
         _write_runtime_operation(tmp_path, timeout_seconds=None)
         assert _operation_catalog(tmp_path)["probe_op"]["timeout_seconds"] == 60
 
+    def test_null_value_degrades_to_default_not_crash(self, tmp_path: Path) -> None:
+        """`timeout_seconds:` with no value (YAML None) keeps the default."""
+        _write_runtime_operation(tmp_path, timeout_seconds=None, null_value=True)
+        assert _operation_catalog(tmp_path)["probe_op"]["timeout_seconds"] == 60
+
 
 class TestMarkdownOperationTimeoutZero:
     """``.operation.md`` front matter → operation catalog JSON."""
@@ -161,4 +191,9 @@ class TestMarkdownOperationTimeoutZero:
 
     def test_omitted_keeps_default(self, tmp_path: Path) -> None:
         _write_markdown_operation(tmp_path, timeout_seconds=None)
+        assert _operation_catalog(tmp_path)["probe_md"]["timeout_seconds"] == 60
+
+    def test_null_value_degrades_to_default_not_crash(self, tmp_path: Path) -> None:
+        """`timeout_seconds:` with no value (YAML None) keeps the default."""
+        _write_markdown_operation(tmp_path, timeout_seconds=None, null_value=True)
         assert _operation_catalog(tmp_path)["probe_md"]["timeout_seconds"] == 60
