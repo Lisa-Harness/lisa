@@ -1026,7 +1026,83 @@ class TestProjectionRetrievalPages:
         assert projected[1]["content"] == page
 
 
-# ── search() — basic ranking ─────────────────────────────────────────
+# ── project_tool_messages() — graduated preview collapse ───────────────
+
+
+class TestProjectionGraduatedCollapse:
+    """Preview sizes shrink gradually with overage, not across one cliff.
+
+    Regression shape for the 2026-10-05 turn-524 thrash: tool-result bytes
+    just past ``_TOOL_CONTEXT_BYTES`` used to flip every preview from
+    600+300 to 120+60 chars in one step, so re-expanding evidence through
+    the thread tools re-added bytes and re-triggered full collapse.
+    """
+
+    @staticmethod
+    def _messages(tool_bytes: int) -> list[dict[str, Any]]:
+        big = "x" * (tool_bytes // 2)
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "a", "function": {"name": "tool_a"}}],
+            },
+            {"role": "tool", "tool_call_id": "a", "name": "tool_a", "content": big},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "b", "function": {"name": "tool_b"}}],
+            },
+            {"role": "tool", "tool_call_id": "b", "name": "tool_b", "content": big},
+        ]
+
+    @staticmethod
+    def _preview_sizes(projected: list[dict[str, Any]]) -> list[tuple[int, int]]:
+        sizes: list[tuple[int, int]] = []
+        for message in projected:
+            content = message.get("content")
+            if message.get("role") != "tool" or not isinstance(content, str):
+                continue
+            try:
+                preview = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+            if preview.get("abbreviated") is True:
+                sizes.append((len(preview["head"]), len(preview["tail"])))
+        return sizes
+
+    def test_over_threshold_by_one_byte_is_nominally_shrunk(self) -> None:
+        """One byte past the threshold must not cost 83% of preview fidelity."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        projected = project_tool_messages(
+            self._messages(_TOOL_CONTEXT_BYTES + 2), "task", lambda r: "r" + "0" * 64
+        )
+        sizes = self._preview_sizes(projected)
+        assert sizes, "expected abbreviated previews under pressure"
+        for head, _tail in sizes:
+            assert head >= 500, (
+                f"preview head {head} chars one byte past the threshold "
+                f"(cliff: full collapse to 120)"
+            )
+
+    def test_deep_overage_reaches_the_floor(self) -> None:
+        """Far past the span the legacy 120/60 floor still applies."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        projected = project_tool_messages(
+            self._messages(_TOOL_CONTEXT_BYTES + 200_000), "task", lambda r: "r" + "0" * 64
+        )
+        for head, _tail in self._preview_sizes(projected):
+            assert head <= 120
+
+    def test_below_threshold_previews_keep_full_size(self) -> None:
+        """No overage preserves the legacy 600/300 previews unchanged."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        projected = project_tool_messages(
+            self._messages(_TOOL_CONTEXT_BYTES), "task", lambda r: "r" + "0" * 64
+        )
+        for head, _tail in self._preview_sizes(projected):
+            assert head == 600
 
 
 class TestThreadStoreSearch:

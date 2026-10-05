@@ -20,6 +20,9 @@ _TOOL_CONTEXT_BYTES = 65536
 _INVENTORY_RESERVE_BYTES = 2048
 _HEAD_CHARS = 600
 _TAIL_CHARS = 300
+_PRESSURE_HEAD_CHARS = 120
+_PRESSURE_TAIL_CHARS = 60
+_PRESSURE_SPAN_BYTES = 96 * 1024
 _RETRIEVAL_TOOLS = frozenset(
     {
         "thread_read_range",
@@ -72,6 +75,7 @@ def project_tool_messages(
     )
     pressure = tool_bytes > _TOOL_CONTEXT_BYTES
     latest = tool_indices[-1] if tool_indices else -1
+    scale = _preview_scale(tool_bytes) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
     refs: dict[int, str] = {}
     names: dict[str, str] = {}
     for index, message in enumerate(projected):
@@ -117,7 +121,7 @@ def project_tool_messages(
             else persist({"content": content, "task_id": task_id, "tool_name": name})
         )
         refs[index] = ref
-        message["content"] = _preview(ref, permitted, pressure)
+        message["content"] = _preview(ref, permitted, *scale)
     return _compact_groups(messages, projected, refs, task_id, persist) if pressure else projected
 
 
@@ -171,9 +175,28 @@ def _existing_pointer(
     return ref, result
 
 
-def _preview(ref: str, content: str, pressure: bool) -> str:
-    head_chars = min(120 if pressure else _HEAD_CHARS, len(content))
-    tail_chars = min(60 if pressure else _TAIL_CHARS, len(content) - head_chars)
+def _preview_scale(tool_bytes: int) -> tuple[int, int]:
+    """Map total tool-result bytes to graduated (head, tail) preview sizes.
+
+    Sizes shrink linearly from (_HEAD_CHARS, _TAIL_CHARS) at the pressure
+    threshold to (_PRESSURE_HEAD_CHARS, _PRESSURE_TAIL_CHARS) at span end.
+    Below the threshold the scale is the full values exactly; at and beyond
+    the span end the scale is the floor values exactly. The continuous
+    ramp removes the collapse cliff: a small overage costs proportionally
+    little preview fidelity instead of 83% of it in one step (the
+    2026-10-05 turn-524 thrash, where every re-expansion re-triggered
+    full collapse).
+    """
+    over = max(0, tool_bytes - _TOOL_CONTEXT_BYTES)
+    fraction = min(1.0, over / _PRESSURE_SPAN_BYTES)
+    head = int(_HEAD_CHARS - (_HEAD_CHARS - _PRESSURE_HEAD_CHARS) * fraction)
+    tail = int(_TAIL_CHARS - (_TAIL_CHARS - _PRESSURE_TAIL_CHARS) * fraction)
+    return head, tail
+
+
+def _preview(ref: str, content: str, head_chars: int, tail_chars: int) -> str:
+    head_chars = min(head_chars, len(content))
+    tail_chars = min(tail_chars, len(content) - head_chars)
     return json.dumps(
         {
             "ref": ref,
@@ -211,8 +234,8 @@ def _existing_result(
         result = load(ref)
         permitted = redaction.redact(result["content"]) if redaction else result["content"]
         if preview not in (
-            json.loads(_preview(ref, permitted, False)),
-            json.loads(_preview(ref, permitted, True)),
+            json.loads(_preview(ref, permitted, *_preview_scale(0))),
+            json.loads(_preview(ref, permitted, _PRESSURE_HEAD_CHARS, _PRESSURE_TAIL_CHARS)),
         ):
             return None
         return ref, result
