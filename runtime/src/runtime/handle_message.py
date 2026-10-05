@@ -928,6 +928,24 @@ def _apply_turn_decision(runtime: HostRuntime, mode_id: str, result: TurnResult)
         )
 
 
+async def _resolve_live_workflow_state_for_turn(runtime: HostRuntime) -> Any | None:
+    """Snapshot durable approval state for the recorded blockers in the tail.
+
+    Async seam for the synchronous thread digest: collect the approval
+    request ids the recorded thread tail names, then read each from the
+    live approval store so the digest can annotate blockers the store
+    already settled as superseded (the 2026-10-05 stale-yield loop: a
+    recorded "awaiting your decision" persisted after the continuation
+    turn died, and the model re-yielded the resolved question every turn).
+    """
+    from runtime.thread_digest import recorded_approval_request_ids, resolve_live_workflow_state
+
+    return await resolve_live_workflow_state(
+        runtime,
+        request_ids=recorded_approval_request_ids(runtime.paths.thread_path),
+    )
+
+
 async def _execute_mode_turn(
     runtime: HostRuntime,
     message: str,
@@ -998,6 +1016,14 @@ async def _execute_mode_turn(
 
     turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
     task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
+
+    # Resolve the live approval state for recorded blockers before the
+    # turn starts. The digest builders are synchronous; this is the async
+    # seam where the durable stores are readable. A recorded blocker the
+    # store already settled (consumed / denied / cancelled) is then
+    # annotated as superseded instead of replayed as a live prompt —
+    # the 2026-10-05 stale-yield loop.
+    runtime.session.live_workflow_state = await _resolve_live_workflow_state_for_turn(runtime)
 
     # Build the turn context dict.
     run_context = build_turn_context(

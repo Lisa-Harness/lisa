@@ -12,8 +12,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   markdown operation) used
   `int(metadata.get("timeout_seconds", 30) or 30)`; the falsy coercion
   rewrote a declared `timeout_seconds: 0` into the 30/60s default before the
-  kernel ever saw it. The loaders now pass the declared value through
-  verbatim; the kernel's documented `0 disables the wrapper timeout` contract
+  kernel ever saw it. The loaders now pass declared values through verbatim;
+  a null value (`timeout_seconds:` with no value, a common authoring typo)
+  degrades to the documented default instead of crashing the catalog build.
+  The kernel's documented `0 disables the wrapper timeout` contract
   (`sdk/AUTHORING.md`) works as written. Negative values still round-trip and
   are rejected by the kernel's existing catalog validators.
 - **Why:** The 2026-10-05 shell turn lost a command because `bash_run` /
@@ -24,8 +26,8 @@ All notable changes to the Lisa Harness will be documented in this file.
   destroyed by the loader, leaving pack authors no correct way to declare a
   self-bounding tool.
 - **Tests:** `sdk/tests/test_catalog_timeout_zero.py` (declared 0 and -5
-  round-trip for all three loader paths; omitted keeps the documented
-  defaults).
+  round-trip for all three loader paths; null value degrades to the default;
+  omitted keeps the documented defaults).
 
 #### Tool wrapper timeout for streaming tools is now an idle deadline
 
@@ -44,10 +46,47 @@ All notable changes to the Lisa Harness will be documented in this file.
   (packs forced to guess numbers larger than every internal duration, in
   order, forever). The progress signal streaming tools already publish is the
   real distinction; the wrapper now consumes it.
+- **Composition:** A streaming tool delegating to another streaming tool
+  (bash_run → bwrap_run) keeps its idle deadline across the nested dispatch:
+  the child publishes under its own tool id the parent's subscription cannot
+  match, so `publish_tool_output` also resets the enclosing frame's clock via
+  a context-carried relay (`ToolExecutionContext.idle_progress_relay`). The
+  wrapper's progress subscription is removed when the dispatch ends
+  (`EventBus.unsubscribe` added to the seam), so no handler or context
+  retention leaks per call.
 - **Tests:** `kernel/tests/test_tool_wrapper_timeout.py` (streaming output
   resets the clock past the declared bound; silent streaming tool is
-  cancelled; non-streaming keeps the lifetime bound; `0` disables the
-  wrapper).
+  cancelled; non-streaming keeps the lifetime bound even while publishing on
+  the topic; `0` skips the deadline path entirely; no-bus degrade; subscription
+  removed on success and timeout paths; nested child stream resets the parent
+  clock; relay cleared after the call).
+
+#### Thread digest items replayed recorded state as the live present
+
+- **What:** The thread digest's retrieval-lane items (task state, recent
+  history, open objectives) carried no past/present framing and no
+  reconciliation against durable workflow state. Every digest body now closes
+  with the recorded-past directive (the same framing the
+  `recent_conversation` lane and thread readout pages already carry), history
+  lines carry their recorded-at timestamps, and recorded approval blockers
+  are annotated `[superseded (live approval store: <state>)]` when the
+  approval store shows them consumed / approved / denied / cancelled /
+  expired. The host resolves the live snapshot per turn in the async
+  pre-turn path (`resolve_live_workflow_state`) and threads it through
+  `build_unified_state` to the digest builders.
+- **Why:** The 2026-10-05 turn-510 stale-yield loop: a policy-approved
+  `bash_run` was killed by the wrapper timeout and its continuation turn
+  died with the process, so the thread tail still read "paused awaiting your
+  decision (request 4803a869)". The digest re-quoted that recorded blocker
+  as current on every turn — in the task state, the open objectives, and the
+  recent history — and the model faithfully re-yielded asking the operator
+  to decide an already-consumed approval.
+- **Tests:** `runtime/tests/test_thread_digest.py` (past/present framing on
+  all three items; recorded-at timestamps on history lines; live-state
+  reconciliation annotates superseded blockers and leaves unknown requests
+  untouched; resolver and tail-collector helpers);
+  `runtime/tests/test_state_provider.py` (digest seam threads the live-state
+  snapshot).
 
 ### Changed
 

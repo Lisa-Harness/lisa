@@ -196,6 +196,12 @@ class SessionState:
         # and increments it, and the dispatcher resets it at each turn start.
         self.auto_approved_this_turn: int = 0
 
+        # Pre-turn snapshot of durable approval state for the recorded
+        # blockers named in the thread tail (resolved in the async turn
+        # path; consumed by the synchronous thread digest). ``None`` until
+        # the first turn resolves it.
+        self.live_workflow_state: Any | None = None
+
     def set_last_turn_context(self, ctx: TurnContext) -> None:
         self.last_turn_context = ctx
 

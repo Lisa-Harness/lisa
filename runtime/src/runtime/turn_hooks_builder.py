@@ -734,6 +734,7 @@ def _assemble_dynamic_user_context(
         thread_path=runtime.paths.thread_path,
         thread_redaction=get_thread_redaction_policy(),
         thread_digest_settings=runtime.session_plan.manifest.context.history.digest,
+        live_state=runtime.session.live_workflow_state,
     )
 
     def _session_context_loader() -> str:
@@ -988,6 +989,7 @@ def _bind_state_provider(
             thread_path=runtime.paths.thread_path,
             thread_redaction=get_thread_redaction_policy(),
             thread_digest_settings=runtime.session_plan.manifest.context.history.digest,
+            live_state=runtime.session.live_workflow_state,
         )
 
     return _state_provider

@@ -127,7 +127,7 @@ def test_build_unified_state_merges_thread_digest_items(
     ]
     monkeypatch.setattr(
         "runtime.thread_digest.build_thread_context_items",
-        lambda path, redaction=None, settings=None: iter(digest_items),
+        lambda path, redaction=None, settings=None, live_state=None: iter(digest_items),
     )
     snapshot = {"context_items": [_item_dict("existing")]}
 

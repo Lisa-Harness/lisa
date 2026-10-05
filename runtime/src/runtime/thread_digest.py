@@ -31,7 +31,11 @@ from sdk.thread import ThreadStore, build_task_view
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["build_thread_context_items"]
+__all__ = [
+    "build_thread_context_items",
+    "recorded_approval_request_ids",
+    "resolve_live_workflow_state",
+]
 
 _DIGEST_NAMESPACE = "thread_history"
 _DIGEST_SOURCE = "lisa_thread_digest"
@@ -45,6 +49,18 @@ _SALIENCE_TASK_STATE = 0.9
 _SALIENCE_RECENT_HISTORY = 0.7
 _SALIENCE_OPEN_OBJECTIVES = 0.8
 _CONFIDENCE = 0.9
+#: Closing directive on every digest body — the same past/present framing
+#: the recent_conversation lane and readout pages carry. Post-hoc (after
+#: the data) so a small fast model reads it as a closing directive, not a
+#: preamble it blurs into the data (2026-08-22 "dogmatic about old
+#: history" finding; re-confirmed by the 2026-10-05 turn-510 stale-yield
+#: loop where "status: awaiting_approval" was read as the live present).
+_PAST_PRESENT_DIRECTIVE = (
+    "This is the recorded past as of the timestamped turns above — "
+    "not the live present. Live state is what tools return in the current turn; "
+    "verify any recorded blocker against the approval/recovery state before "
+    "asking the operator to decide it."
+)
 
 
 def build_thread_context_items(
@@ -52,6 +68,7 @@ def build_thread_context_items(
     *,
     redaction: Any = None,
     settings: Any = None,
+    live_state: Any = None,
 ) -> list[ContextItem]:
     """Derive retrieval-lane context items from the lossless thread tail.
 
@@ -60,6 +77,13 @@ def build_thread_context_items(
     is the session plan's ``context.history.digest`` block (None →
     defaults). Redaction is applied to the recorded text via the same
     policy the read tools use.
+
+    ``live_state`` is the host's pre-turn snapshot of durable workflow
+    state (``resolve_live_workflow_state``): recorded approval blockers are
+    reconciled against it so a blocker the store already settled is
+    annotated as superseded instead of being replayed as a live prompt —
+    the failure mode that trapped the 2026-10-05 thread in a stale-yield
+    loop after a crash lost the continuation turn.
     """
     if thread_path is None:
         return []
@@ -80,9 +104,9 @@ def build_thread_context_items(
     if not entries:
         return []
     items: list[ContextItem] = []
-    _append_task_state_item(items, entries, redaction, view_budget)
+    _append_task_state_item(items, entries, redaction, view_budget, live_state)
     _append_recent_history_item(items, entries, redaction, recent_limit, body_chars)
-    _append_open_objectives_item(items, entries, redaction, objective_lines)
+    _append_open_objectives_item(items, entries, redaction, objective_lines, live_state)
     return items
 
 
@@ -96,11 +120,60 @@ def _turn_of(entry: dict[str, Any]) -> int:
     return int(turn) if isinstance(turn, int) else 0
 
 
+def recorded_approval_request_ids(
+    thread_path: Path | None,
+    *,
+    limit: int = 40,
+) -> list[str]:
+    """Return approval request ids named by recorded blockers in the tail.
+
+    The host calls this before the turn (async context) and feeds the ids
+    to :func:`resolve_live_workflow_state` so the digest can reconcile the
+    recorded blockers against the live approval store without the digest
+    itself doing any I/O.
+    """
+    if thread_path is None:
+        return []
+    try:
+        store = ThreadStore(thread_path)
+        entries = store.load_recent(limit=limit)
+    except (OSError, ValueError):
+        return []
+    request_ids: list[str] = []
+    for entry in reversed(entries):
+        request_id = str((entry.get("provenance") or {}).get("pending_approval_request_id") or "")
+        if request_id and request_id not in request_ids:
+            request_ids.append(request_id)
+    return request_ids
+
+
+def _superseded_note(
+    entry: dict[str, Any],
+    live_state: Any,
+) -> str:
+    """Return the live-state reconciliation note for a recorded approval blocker.
+
+    Empty when the recorded entry has no approval blocker, when no live
+    snapshot was supplied, or when the live store has no record for the
+    request id. The note names the store outcome so the model can see the
+    recorded "awaiting your decision" is history, not a live prompt.
+    """
+    request_id = str((entry.get("provenance") or {}).get("pending_approval_request_id") or "")
+    if not request_id or live_state is None:
+        return ""
+    resolved = getattr(live_state, "resolved_approvals", None) or {}
+    outcome = str(resolved.get(request_id) or "").strip()
+    if not outcome:
+        return ""
+    return f" [superseded (live approval store: {outcome})]"
+
+
 def _append_task_state_item(
     items: list[ContextItem],
     entries: list[tuple[int, dict[str, Any]]],
     redaction: Any,
     view_budget: int,
+    live_state: Any = None,
 ) -> None:
     view = build_task_view(
         entries,
@@ -109,7 +182,7 @@ def _append_task_state_item(
     )
     if view.get("status") == "empty" and not str(view.get("task_id") or ""):
         return
-    body = _render_task_state(view)
+    body = _render_task_state(view, entries, live_state)
     items.append(
         ContextItem(
             item_id="thread:task_state",
@@ -132,20 +205,28 @@ def _append_task_state_item(
     )
 
 
-def _render_task_state(view: dict[str, Any]) -> str:
+def _render_task_state(
+    view: dict[str, Any],
+    entries: list[tuple[int, dict[str, Any]]],
+    live_state: Any = None,
+) -> str:
     objective = view.get("objective") or {}
     latest = view.get("latest") or {}
+    turn_range = view.get("turn_range") or [0, 0]
+    latest_entry = entries[-1][1]
+    superseded = _superseded_note(latest_entry, live_state)
     lines = [
         f"task_id: {view.get('task_id', '')}",
         f"status: {view.get('status', '')} (recorded observation; not verified live state)",
-        f"turns: {view.get('turns', 0)} (turn range {view.get('turn_range', [])})",
+        f"recorded at turn {latest_entry.get('turn', turn_range[1])} "
+        f"(turn range {turn_range}); as_of: {view.get('as_of_utc') or 'unknown'})",
         f"objective: {str(objective.get('text') or '')[:400]}",
-        f"latest response: {str(latest.get('text') or '')[:400]}",
+        f"latest response: {str(latest.get('text') or '')[:400]}{superseded}",
     ]
     blocker = view.get("blocker")
     if blocker:
         lines.append(f"blocker: {blocker}")
-    lines.append("Use thread tools for depth; this digest is the recorded state at last turn.")
+    lines.append(_PAST_PRESENT_DIRECTIVE)
     return "\n".join(lines)
 
 
@@ -196,14 +277,19 @@ def _render_recent_history(
             query = redaction.redact(query)
             response = redaction.redact(response)
         preview = response[:160] if response else ""
-        line = f"- {query[:200]}: {preview}".rstrip()
+        timestamp = str(entry.get("timestamp_utc") or "unknown")
+        line = f"- [recorded {timestamp}] {query[:200]}: {preview}".rstrip()
         if budget - len(line) < 0:
             break
         lines.append(line)
         budget -= len(line) + 1
         if len(lines) >= recent_limit:
             break
-    return "\n".join(lines)
+    if not lines:
+        return ""
+    # Post-hoc footer after the data, newest already first in the emitted
+    # block: same past/present framing the readout pages carry.
+    return "\n".join([*lines, "", _PAST_PRESENT_DIRECTIVE])
 
 
 def _append_open_objectives_item(
@@ -211,6 +297,7 @@ def _append_open_objectives_item(
     entries: list[tuple[int, dict[str, Any]]],
     redaction: Any,
     objective_lines: int,
+    live_state: Any = None,
 ) -> None:
     lines: list[str] = []
     for _, entry in reversed(entries):
@@ -224,10 +311,15 @@ def _append_open_objectives_item(
         if redaction is not None:
             query = redaction.redact(query)
             response = redaction.redact(response)
+        note = _superseded_note(entry, live_state)
         if blocked:
-            lines.append(f"- blocked turn ({blocked}): {query[:160]} → {response[:200]}")
+            lines.append(
+                f"- blocked turn ({blocked}) [recorded]: {query[:160]} → {response[:200]}{note}"
+            )
         else:
-            lines.append(f"- awaiting user: {query[:160]} → {response[:200]}")
+            lines.append(
+                f"- awaiting user [recorded]: {query[:160]} → {response[:200]}{note}"
+            )
         if len(lines) >= objective_lines:
             break
     if not lines:
@@ -240,7 +332,7 @@ def _append_open_objectives_item(
             source_type="general",
             evidence_type="open_objectives",
             title="Unfinished turns (blocked or awaiting approval/user)",
-            body="\n".join(lines),
+            body="\n".join([*lines, "", _PAST_PRESENT_DIRECTIVE]),
             collected_at=str(entries[-1][1].get("timestamp_utc") or ""),
             salience_score=_SALIENCE_OPEN_OBJECTIVES,
             confidence=_CONFIDENCE,
@@ -248,3 +340,40 @@ def _append_open_objectives_item(
             metadata={"provenance": "system_observed", "scope": "recorded_history"},
         )
     )
+
+
+async def resolve_live_workflow_state(
+    runtime: Any,
+    *,
+    request_ids: list[str],
+) -> Any | None:
+    """Snapshot the durable approval state for the recorded blockers.
+
+    The digest builders are synchronous, but the approval store is async;
+    the host resolves this snapshot before the turn starts (in the
+    async pre-turn path) and hands it to ``build_thread_context_items``.
+    Reads only the request ids the recorded thread tail actually names so
+    a long approval history costs nothing.
+
+    Returns ``None`` when no request ids are named or the store cannot be
+    read — the digest then preserves its unannotated behavior exactly.
+    """
+    if not request_ids:
+        return None
+    service = getattr(getattr(runtime, "services", None), "approval_service", None)
+    if service is None or not hasattr(service, "get"):
+        return None
+    from types import SimpleNamespace
+
+    resolved: dict[str, str] = {}
+    for request_id in request_ids:
+        try:
+            record = await service.get(request_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("live workflow state: get(%s) failed", request_id, exc_info=True)
+            continue
+        if record is not None:
+            resolved[str(request_id)] = str(record.state or "")
+    if not resolved:
+        return None
+    return SimpleNamespace(resolved_approvals=resolved)
