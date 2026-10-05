@@ -219,9 +219,7 @@ def test_recent_history_lines_carry_recorded_timestamps(tmp_path: Path) -> None:
 # ── live approval reconciliation ───────────────────────────────────────
 
 
-def _live_state(
-    resolved: dict[str, str], stalled: set[str] | None = None
-) -> SimpleNamespace:
+def _live_state(resolved: dict[str, str], stalled: set[str] | None = None) -> SimpleNamespace:
     """Build the live-state snapshot the host resolves before each turn.
 
     ``resolved`` maps approval request_id → live approval-store outcome

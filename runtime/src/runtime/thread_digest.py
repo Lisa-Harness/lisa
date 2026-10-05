@@ -317,9 +317,7 @@ def _append_open_objectives_item(
                 f"- blocked turn ({blocked}) [recorded]: {query[:160]} → {response[:200]}{note}"
             )
         else:
-            lines.append(
-                f"- awaiting user [recorded]: {query[:160]} → {response[:200]}{note}"
-            )
+            lines.append(f"- awaiting user [recorded]: {query[:160]} → {response[:200]}{note}")
         if len(lines) >= objective_lines:
             break
     if not lines:
