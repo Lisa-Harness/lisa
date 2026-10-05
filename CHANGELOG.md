@@ -61,6 +61,27 @@ All notable changes to the Lisa Harness will be documented in this file.
   removed on success and timeout paths; nested child stream resets the parent
   clock; relay cleared after the call).
 
+#### State-settling operator commands left no thread record
+
+- **What:** The operator commands that decide pending work — `/cancel`,
+  `/cancel-all`, `/skip`, `/skip-all`, `/retry`, `/retry-safe`, `/deny` —
+  settled recovery records and approvals on disk but appended no thread
+  entry. The host dispatch layer now records every state-settling command
+  (builtin and pack-registered) with `operator-host-command` provenance and
+  a `state_change` tag (`recovery_settled` / `approval_denied`), so the
+  thread carries the operator's answer with the same durability `/approve`
+  already had. Read-only commands (`/stalls`, `/stall`, `/help`) keep the
+  no-entry behavior.
+- **Why:** The 2026-10-05 stale-yield loop: the operator ran `/cancel-all`
+  at 02:57:51Z, settling the three recovery items that backed the paused
+  approval — but the thread tail still ended at "paused awaiting your
+  decision (request 4803a869)". Nothing the model could read said the
+  decision had been made, so every subsequent turn re-derived the same
+  stale question.
+- **Tests:** `runtime/tests/test_host_command_thread_entry.py` (pack
+  state-settling command records an entry; `/deny` records an entry;
+  read-only `/stalls` records nothing).
+
 #### Thread digest items replayed recorded state as the live present
 
 - **What:** The thread digest's retrieval-lane items (task state, recent

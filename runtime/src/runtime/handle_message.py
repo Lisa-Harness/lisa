@@ -479,6 +479,58 @@ async def _dispatch_pack_command(
     return None
 
 
+_STATE_SETTLING_COMMAND_PREFIXES = (
+    "/cancel",
+    "/skip",
+    "/retry",
+    "/deny",
+)
+
+
+def _is_state_settling_command(lowered: str) -> bool:
+    """True when the operator command settles durable workflow state.
+
+    These commands decide pending work (recovery items, approvals) — the
+    operator's answer to a paused/stalled turn. Their outcome must land in
+    the thread the same way ``/approve`` lands one, or the recorded tail
+    keeps replaying the question the operator already answered
+    (the 2026-10-05 stale-yield loop: ``/cancel-all`` cleaned up the
+    recovery items at 02:57:51Z but the thread tail still ended at
+    "paused awaiting your decision", so every later turn re-yielded the
+    resolved question).
+    """
+    return lowered.startswith(_STATE_SETTLING_COMMAND_PREFIXES)
+
+
+def _record_state_settling_command(
+    runtime: HostRuntime,
+    *,
+    message: str,
+    response_text: str,
+    state_change: str,
+) -> None:
+    """Append the thread entry for a state-settling operator command.
+
+    Read-only commands (``/stalls``, ``/stall``, ``/help``) keep today's
+    behavior — no entry, no noise. State-settling commands record the
+    decision with ``operator-host-command`` provenance so context
+    assembly (and the model reading the thread) sees the operator's
+    answer as history, not a gap.
+    """
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        segment_turns=runtime.config.thread_segment_turns,
+        mode_id=runtime.session.current_mode_id or "cmd",
+        query=message,
+        response_text=response_text,
+        provenance={
+            "source": "operator-host-command",
+            "state_change": state_change,
+        },
+    )
+
+
 async def _dispatch_host_command(
     runtime: HostRuntime,
     stripped: str,
@@ -491,6 +543,11 @@ async def _dispatch_host_command(
     Delegates to the individual command handlers in ``runtime.commands``.
     Each handler returns a plain text string; this function wraps it in a
     ``HostCommandResult`` and emits the transport callback.
+
+    State-settling operator commands (``/cancel``/``/skip``/``/retry``/
+    ``/deny`` and their ``-all`` variants) additionally append a thread
+    entry recording the decision — the durable answer to whatever
+    paused/stalled turn prompted it.
     """
     # Ensure the (possibly deferred) MCP pool is ready before any slash
     # command touches runtime.resources.mcp_tool_pool (/settings, /debug, /pack).
@@ -506,12 +563,28 @@ async def _dispatch_host_command(
         return continuation_result
 
     if response_text is not None:
+        if _is_state_settling_command(lowered):
+            _record_state_settling_command(
+                runtime,
+                message=message,
+                response_text=response_text,
+                state_change=(
+                    "approval_denied" if lowered.startswith("/deny") else "recovery_settled"
+                ),
+            )
         await transport.on_response(response_text)
         return HostCommandResult(text=response_text)
 
     # ── Pack-registered commands ────────────────────────────────────
     pack_response = await _dispatch_pack_command(runtime, stripped, lowered, message)
     if pack_response is not None:
+        if _is_state_settling_command(lowered):
+            _record_state_settling_command(
+                runtime,
+                message=message,
+                response_text=pack_response,
+                state_change="recovery_settled",
+            )
         await transport.on_response(pack_response)
         return HostCommandResult(text=pack_response)
 
@@ -928,6 +1001,22 @@ def _apply_turn_decision(runtime: HostRuntime, mode_id: str, result: TurnResult)
         )
 
 
+def _log_turn_start(mode: Any, resolved_model: Any, query: str) -> None:
+    """Emit the turn-start log pair (info + debug) for the mode turn."""
+    logger.info(
+        "turn started: mode=%s model=%s query=%s",
+        mode.mode_id,
+        resolved_model.model_id,
+        query[:80],
+    )
+    logger.debug(
+        "turn execution starting: mode=%s model=%s provider=%s",
+        mode.mode_id,
+        resolved_model.model_id,
+        resolved_model.provider,
+    )
+
+
 async def _resolve_live_workflow_state_for_turn(runtime: HostRuntime) -> Any | None:
     """Snapshot durable approval state for the recorded blockers in the tail.
 
@@ -1051,18 +1140,7 @@ async def _execute_mode_turn(
 
     # Build turn hooks and execute.
     hooks = build_turn_hooks(runtime, context=run_context, transport=transport)
-    logger.info(
-        "turn started: mode=%s model=%s query=%s",
-        mode.mode_id,
-        resolved_model.model_id,
-        (query or message)[:80],
-    )
-    logger.debug(
-        "turn execution starting: mode=%s model=%s provider=%s",
-        mode.mode_id,
-        resolved_model.model_id,
-        resolved_model.provider,
-    )
+    _log_turn_start(mode, resolved_model, query or message)
     try:
         result: TurnResult = await run_turn(
             mode_id=mode.mode_id,
