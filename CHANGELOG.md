@@ -68,6 +68,16 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_bash_run_declares_itself_self_bounding`; `lisa-packs/bwrap`
   `tests/test_catalog.py` `test_bwrap_run_declares_itself_self_bounding`.
 
+#### packstest accepts self-bounding tool declarations
+
+- **What:** `packstest`'s tool-yaml validation rejected `timeout_seconds <= 0`
+  with "must be > 0", mis-modeling the kernel contract (`0` disables the
+  wrapper; only negatives are invalid). The rule would have failed validation
+  of the packs' self-bounding declarations. It now mirrors the kernel rule.
+- **Tests:** `packstest/tests/test_self.py`
+  `test_validate_pack_accepts_self_bounding_tool_timeout_zero`,
+  `test_validate_pack_rejects_negative_tool_timeout`.
+
 ### Added
 
 #### Bulk dismiss commands for the recovery pack
