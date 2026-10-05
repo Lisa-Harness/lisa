@@ -24,6 +24,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Read-only MCP tools no longer stall workflows as approval-gated work items
+
+- **What:** Recovery records for opaque MCP tools were hardcoded to
+  `effect: execute` with `retry_policy: confirm`, ignoring the
+  server-declared `read_only_hint` on the pool tool spec. The kernel now
+  resolves the effect from the spec: read-only tools (all `lisa-storage`
+  and `lisa-thread` calls) record `effect: read` / `retry_policy: safe`;
+  tools without the hint keep `execute` / `confirm` (fail closed). The
+  record now agrees with the effect receipt the same call already records.
+- **Why:** A stalled `confirm` record blocks the whole workflow behind a
+  confirm gate (`/retry` needs an operator decision), and one-shot hosts
+  (`lisa prompt`) cannot answer approval prompts — every read-only storage
+  or thread call that stalled produced an unresolvable approval loop.
+- **Tests:** `kernel/tests/test_turn_runner_tool_dispatch.py`
+  `test_read_only_mcp_tool_recovery_record_is_read_effect` (fails against
+  the pre-fix code), `test_effectful_mcp_tool_recovery_record_stays_execute`
+  (pins the fail-closed contract).
+
 #### `/retry-safe` (and other bulk command prefixes) were unreachable
 
 - **What:** The host's pack-command dispatch matches `lowered.startswith(prefix)`
