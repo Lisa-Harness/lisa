@@ -102,6 +102,15 @@ class ToolExecutionContext(BaseModel):
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = (
         Field(default=None, exclude=True)
     )
+    # Idle-deadline propagation across composed dispatch: when a streaming
+    # tool delegates to a child tool (e.g. bash_run → bwrap_run), the child's
+    # incremental output must reset the PARENT's idle clock too, or the
+    # parent's wrapper treats legitimate in-flight child work as hung
+    # (2026-10-05 review, O2). The parent's wrapper installs its reset
+    # callback here; ``dispatch_child`` copies it into the child context and
+    # ``publish_tool_output`` calls it synchronously — no bus round-trip, so
+    # no delivery-order race. Hosts and packs never set or call it directly.
+    idle_progress_relay: Callable[[], None] | None = Field(default=None, exclude=True)
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
     task_id: str = Field(default="", exclude=True)

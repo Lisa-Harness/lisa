@@ -178,9 +178,9 @@ async def _run_with_idle_deadline(
     No bus or no subscription (headless hosts) degrades to the lifetime
     bound: without the progress signal the idle deadline cannot be observed.
     """
-    execute_task = asyncio.create_task(execute_fn(ctx))
     bus = ctx.event_bus
     if bus is None or not hasattr(bus, "subscribe"):
+        execute_task = asyncio.create_task(execute_fn(ctx))
         return await asyncio.wait_for(execute_task, timeout=timeout_seconds)
 
     published = asyncio.Event()
@@ -189,7 +189,19 @@ async def _run_with_idle_deadline(
         if payload.get("tool_id") == ctx.tool_id:
             published.set()
 
+    # Subscribe BEFORE starting the tool: a raising host-side subscribe must
+    # not strand an already-running, unwatched tool task (2026-10-05 review,
+    # O1) — the seam is host-overridable and subscribes are treated as
+    # fallible elsewhere (turn_hooks_builder).
     bus.subscribe(TOOL_OUTPUT_TOPIC, _on_progress)
+    execute_task = asyncio.create_task(execute_fn(ctx))
+    # Nested-dispatch relay: composed children publish with their own
+    # tool_id, so the bus filter above never matches them. The wrapper
+    # exposes ``published.set`` on the context; ``publish_tool_output``
+    # calls it synchronously, and ``dispatch_child`` copies it into the child
+    # context, so a streaming child resets the PARENT's idle clock with no
+    # bus round-trip (2026-10-05 review, O2). Cleared in the finally below.
+    ctx.idle_progress_relay = published.set
     try:
         while True:
             published.clear()
@@ -199,12 +211,18 @@ async def _run_with_idle_deadline(
                 if not published.is_set():
                     raise
     finally:
-        # The tool call is over; drop the progress subscription. execute_task
-        # is either complete or being cancelled by the outer handler — the
-        # shield above keeps a pending wait from consuming the result twice.
-        if execute_task.cancelled() or execute_task.done():
-            pass
-        else:
+        # Drop the progress subscription: the call is over, and a leaked
+        # handler both holds the context alive and makes every later
+        # publish on this topic pay an awaited no-op per dead handler
+        # (2026-10-05 review, C1). Best-effort — hosts without an
+        # ``unsubscribe`` (older seam shapes) keep the handler until the
+        # turn's bus is discarded, as before.
+        ctx.idle_progress_relay = None
+        unsubscribe = getattr(bus, "unsubscribe", None)
+        if callable(unsubscribe):
+            with contextlib.suppress(Exception):
+                unsubscribe(TOOL_OUTPUT_TOPIC, _on_progress)
+        if not execute_task.done():
             execute_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await execute_task
@@ -358,6 +376,10 @@ async def execute_tool(
                     "pack_config": EMPTY_PACK_CONFIGURATION,
                     "capability_binding_provider": provider,
                     "approval_request_id": "",
+                    # Carry the enclosing frame's idle-progress relay so a
+                    # streaming child's publishes reset the PARENT's idle
+                    # deadline too (see ToolExecutionContext.idle_progress_relay).
+                    "idle_progress_relay": ctx.idle_progress_relay,
                 }
             )
             return await execute_tool(child_id, child_ctx)

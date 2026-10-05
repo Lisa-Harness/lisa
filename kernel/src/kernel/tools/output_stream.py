@@ -59,6 +59,17 @@ def publish_tool_output(
         return
     if not getattr(ctx, "stream_output", False):
         return
+    # Idle-deadline propagation for composed dispatch (2026-10-05 review,
+    # O2): a streaming child (e.g. bwrap_run under bash_run) publishes with
+    # its own tool_id, so the parent's bus filter cannot match it. The
+    # parent's wrapper installs a relay on the context; ``dispatch_child``
+    # copies it into the child context, and this synchronous call resets the
+    # parent's idle clock directly — no bus round-trip, no delivery-order
+    # race. Best-effort, like everything here.
+    relay = getattr(ctx, "idle_progress_relay", None)
+    if relay is not None:
+        with contextlib.suppress(Exception):
+            relay()
     bus = getattr(ctx, "event_bus", None)
     if bus is None or not hasattr(bus, "publish"):
         return

@@ -8,6 +8,7 @@ that need durable or cross-process events override this seam.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -33,6 +34,15 @@ class InProcessEventBus:
         """Register ``handler`` to receive payloads published to ``topic``."""
 
         self._handlers[topic].append(handler)
+
+    def unsubscribe(self, topic: str, handler: Handler) -> None:
+        """Remove ``handler`` from ``topic``; unknown handlers are ignored."""
+
+        handlers = self._handlers.get(topic)
+        if handlers is None:
+            return
+        with contextlib.suppress(ValueError):
+            handlers.remove(handler)
 
     async def publish(self, topic: str, payload: dict[str, object]) -> None:
         """Deliver one payload to all subscribed handlers for ``topic``."""

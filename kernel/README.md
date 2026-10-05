@@ -326,6 +326,19 @@ build streaming its log) coexist with a hung-call watchdog without forcing
 pack authors to guess a lifetime number larger than every internal duration —
 the 2026-10-05 shell-turn loss came from exactly that sizing problem.
 
+Two details of the composition:
+
+- **Nested dispatch.** A streaming tool that delegates to another streaming
+  tool (bash_run → bwrap_run) keeps its idle deadline across the composed
+  call: the child publishes under its own tool id, which the parent's
+  subscription cannot match, so `publish_tool_output` also resets the
+  enclosing dispatch frame's clock directly through a context-carried relay
+  (`ToolExecutionContext.idle_progress_relay`) — no bus round-trip, no
+  delivery-order race. Hosts and packs never set or call the relay.
+- **Subscription lifetime.** The wrapper removes its progress subscription
+  when the dispatch ends (`EventBus.unsubscribe`); a leaked handler would
+  hold the tool context alive and tax every later `lisa.tool_output` publish.
+
 ## Route Resolution
 
 For natural-language turns (non-slash-commands), the host resolves the mode through `ipsar.parse_route` — a pure-regex matcher. It iterates each mode's `command_pattern` and returns the first match as `(mode_id, query)`; when no pattern matches it falls back unconditionally to `("default", text)`. There is no verifier model and no model-bounded routing retry here.

@@ -445,6 +445,9 @@ class EventBus(Protocol):
     def subscribe(
         self, topic: str, handler: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> None: ...
+    def unsubscribe(
+        self, topic: str, handler: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> None: ...
 
 
 @runtime_checkable
