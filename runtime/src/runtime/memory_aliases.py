@@ -178,6 +178,13 @@ _LISA_MEMORY_IMPLICIT_SPEC = [
 _BACKEND_ID_TO_SERVER_ID: dict[str, str] = {"lisa_memory": "lisa-memory"}
 
 
+def _config_server_id(config: Any) -> str | None:
+    """Return the server id of an MCPClientConfig (attr) or test dict stub."""
+    if isinstance(config, dict):
+        return config.get("server_id")
+    return getattr(config, "server_id", None)
+
+
 def _register_generic_router(
     pool: Any,
     *,
@@ -189,6 +196,20 @@ def _register_generic_router(
     backend_id = default_spec.id
     raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
     server_id = f"{prefix}{raw_server_id}"
+    configs = getattr(pool, "configs", None)
+    if configs is not None and not any(_config_server_id(c) == server_id for c in configs):
+        # The alias would pin to a server the pool never compiled (e.g. the
+        # memory pack is inactive under this session while the implicit
+        # lisa_memory backend is still registered here). Dispatching through
+        # it fails with "Unknown MCP server" (AliasTargetError), so skip the
+        # registration instead of arming calls that cannot succeed.
+        logger.warning(
+            "Skipping memory synthetic alias registration: target server '%s' "
+            "is not in the MCP pool (the memory pack may not be active this "
+            "session).",
+            server_id,
+        )
+        return
     tool_names = dict(default_spec.tool_names)
     (
         add_arg_map,

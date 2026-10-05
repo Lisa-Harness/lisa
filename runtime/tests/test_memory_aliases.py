@@ -57,9 +57,17 @@ class FakeMemoryConfig:
 class FakePool:
     """Captures synthetic tool registrations without a real MCP connection."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        configs: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.registered: list[dict[str, Any]] = []
         self.ambient: dict[str, Any] = {}
+        # Mirrors MCPToolPool.configs: dicts with a ``server_id`` key. An
+        # empty list means no MCP servers are compiled; ``None`` means the
+        # pool does not expose configs (legacy seam) — registration cannot
+        # verify the alias target and keeps the legacy behavior.
+        self.configs = configs
 
     def set_ambient_resolver(self, key: str, resolver: Any) -> None:
         self.ambient[key] = resolver
@@ -91,6 +99,90 @@ class FakePool:
 
 def _registered_names(pool: FakePool) -> list[str]:
     return [r["name"] for r in pool.registered]
+
+
+class TestServerMissingSkipRegistration:
+    """Regression: aliases must not pin to a server the pool didn't compile.
+
+    When no pack contributes the memory backend (e.g. the bundled default
+    session deactivates the memory pack), the pool has no ``lisa-memory``
+    server config. Registering the generic ``memory.*`` aliases anyway pins
+    them to a nonexistent server — every memory call then fails with
+    ``AliasTargetError: Unknown MCP server 'lisa-memory'.`` and the memory-
+    consolidation slice can never count episodic records.
+    """
+
+    def test_skips_registration_when_target_server_absent(self) -> None:
+        pool = FakePool(configs=[{"server_id": "lisa-catalog"}, {"server_id": "lisa-content"}])
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        assert _registered_names(pool) == []
+        # Ambient resolvers stay registered: they are inert without aliases
+        # and let the proxy layer scope any surviving native calls.
+        assert pool.ambient["user_slug"]() == "alice"
+
+    def test_registers_when_target_server_present(self) -> None:
+        pool = FakePool(configs=[{"server_id": "lisa-memory"}])
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        names = _registered_names(pool)
+        assert names == [
+            "memory.add",
+            "memory.search",
+            "memory.list",
+            "memory.get",
+            "memory.delete",
+            "memory.retire",
+            "memory.count",
+        ]
+
+    def test_registers_when_pool_does_not_expose_configs(self) -> None:
+        """Legacy pools without a ``configs`` seam keep the previous behavior."""
+        pool = FakePool(configs=None)
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        assert _registered_names(pool) == [
+            "memory.add",
+            "memory.search",
+            "memory.list",
+            "memory.get",
+            "memory.delete",
+            "memory.retire",
+            "memory.count",
+        ]
+
+    def test_skips_pack_scoped_targets_when_namespaced_server_absent(self) -> None:
+        """A pack-owned backend pins ``<slug>.<server_id>`` — skip when absent."""
+        pool = FakePool(configs=[{"server_id": "lisa-memory"}])
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(
+                default_backend="lisa_memory", backends=(FakeSpec(id="lisa_memory"),)
+            ),
+            memory_config_pack_slug="memory",
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        assert _registered_names(pool) == []
 
 
 class TestImplicitLisaMemoryOnly:
