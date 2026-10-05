@@ -1221,7 +1221,7 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "response_output_json_passthrough": _parse_string_mapping(
             metadata.get("response_output_json_passthrough")
         ),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
+        "timeout_seconds": int(metadata.get("timeout_seconds", 60)),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "completion_max_tokens": int(
             metadata.get("completion_max_tokens", _DEFAULT_COMPLETION_MAX_TOKENS)
@@ -1278,7 +1278,7 @@ def _load_runtime_operation(
         "preferred_model_id": (
             str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
         ),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
+        "timeout_seconds": int(metadata.get("timeout_seconds", 60)),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "instruction_markdown_path": "",
         "instruction_body": "",
@@ -1565,7 +1565,7 @@ def _load_runtime_tool(
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "mode_allowlist": mode_allowlist,
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
-        "timeout_seconds": int(metadata.get("timeout_seconds", 30) or 30),
+        "timeout_seconds": int(metadata.get("timeout_seconds", 30)),
         "module_path": module_path,
         "exportable": bool(metadata.get("exportable", False)),
         "default_available": bool(metadata.get("default_available", False)),
