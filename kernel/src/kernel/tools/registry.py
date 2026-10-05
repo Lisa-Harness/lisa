@@ -35,6 +35,7 @@ from __future__ import annotations
 
 # pylint: disable=global-statement
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Mapping
@@ -55,6 +56,7 @@ from kernel.models import (
 )
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
+from kernel.tools.output_stream import TOOL_OUTPUT_TOPIC
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
@@ -152,6 +154,62 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
         del catalog[tool_id]
 
 
+async def _run_with_idle_deadline(
+    execute_fn: Any,
+    ctx: ToolExecutionContext,
+    *,
+    timeout_seconds: int,
+) -> Any:
+    """Run ``execute_fn`` under an *idle* deadline reset by stream output.
+
+    A tool that declares ``stream_output: true`` publishes incremental
+    operator-visible output on the ``lisa.tool_output`` bus topic while it
+    runs — observable progress. For such tools the wrapper's job is to catch
+    a *hung* call, not to bound its lifetime: each published event resets
+    the clock, so a tool that keeps producing (a long build streaming its
+    log) runs as long as it stays alive. A tool that goes silent for the
+    full window is treated as hung and cancelled.
+
+    Lifetime semantics here re-created the 2026-10-05 shell-turn loss: the
+    wrapper cancelled ``bash_run`` at its 30s default before the pack's
+    auto-background adoption could run — the tool was mid-flight on
+    legitimate long work, not hung, but the wrapper had no way to tell.
+
+    No bus or no subscription (headless hosts) degrades to the lifetime
+    bound: without the progress signal the idle deadline cannot be observed.
+    """
+    execute_task = asyncio.create_task(execute_fn(ctx))
+    bus = ctx.event_bus
+    if bus is None or not hasattr(bus, "subscribe"):
+        return await asyncio.wait_for(execute_task, timeout=timeout_seconds)
+
+    published = asyncio.Event()
+
+    async def _on_progress(payload: dict[str, Any]) -> None:
+        if payload.get("tool_id") == ctx.tool_id:
+            published.set()
+
+    bus.subscribe(TOOL_OUTPUT_TOPIC, _on_progress)
+    try:
+        while True:
+            published.clear()
+            try:
+                return await asyncio.wait_for(asyncio.shield(execute_task), timeout=timeout_seconds)
+            except TimeoutError:
+                if not published.is_set():
+                    raise
+    finally:
+        # The tool call is over; drop the progress subscription. execute_task
+        # is either complete or being cancelled by the outer handler — the
+        # shield above keeps a pending wait from consuming the result twice.
+        if execute_task.cancelled() or execute_task.done():
+            pass
+        else:
+            execute_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execute_task
+
+
 async def _execute_under_tracer(
     tool_id: str,
     definition: ToolDefinition,
@@ -183,7 +241,20 @@ async def _execute_under_tracer(
         result: Any
         try:
             if definition.timeout_seconds > 0:
-                result = await asyncio.wait_for(execute_fn(ctx), timeout=definition.timeout_seconds)
+                if getattr(definition, "stream_output", False) and ctx.event_bus is not None:
+                    # Streaming tools publish observable progress on the
+                    # ``lisa.tool_output`` topic; the deadline becomes an
+                    # *idle* deadline reset by that progress instead of a
+                    # lifetime bound (see _run_with_idle_deadline).
+                    result = await _run_with_idle_deadline(
+                        execute_fn,
+                        ctx,
+                        timeout_seconds=definition.timeout_seconds,
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        execute_fn(ctx), timeout=definition.timeout_seconds
+                    )
             else:
                 result = await execute_fn(ctx)
         except TimeoutError as exc:

@@ -306,6 +306,26 @@ Tools are dispatched through three paths, tried in order:
 
 Synthetic tools (host-owned aliases like `memory.search`) are registered on the pool and dispatch to MCP server tools with optional argument/result mapping.
 
+#### Wrapper timeout semantics
+
+`tools.registry.execute_tool` wraps every dispatch in a timeout whose value
+comes from the tool's `.tool.yml` (`timeout_seconds`, default 30):
+
+- `timeout_seconds: 0` disables the wrapper — for tools that self-bound
+  (their own parameter timeouts, job adoption, or other internal deadlines).
+- A **streaming** tool (`stream_output: true` with an event bus wired) gets an
+  *idle* deadline: each incremental output published on the `lisa.tool_output`
+  topic resets the clock. A streaming tool that keeps producing runs as long
+  as it stays alive; one that goes silent for the full window is treated as
+  hung and cancelled. Without a bus the streaming call degrades to the
+  lifetime bound.
+- Any other tool keeps the exact lifetime bound.
+
+The idle deadline is what lets a long-running, self-reporting tool (a shell
+build streaming its log) coexist with a hung-call watchdog without forcing
+pack authors to guess a lifetime number larger than every internal duration —
+the 2026-10-05 shell-turn loss came from exactly that sizing problem.
+
 ## Route Resolution
 
 For natural-language turns (non-slash-commands), the host resolves the mode through `ipsar.parse_route` — a pure-regex matcher. It iterates each mode's `command_pattern` and returns the first match as `(mode_id, query)`; when no pattern matches it falls back unconditionally to `("default", text)`. There is no verifier model and no model-bounded routing retry here.
