@@ -3789,6 +3789,7 @@ async def _begin_recovery_record(
     tool_arguments: Any,
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
+    pool: MCPToolPool | None,
     log: logging.Logger,
 ) -> tuple[str, str]:
     """Begin a recovery record for one dispatchable tool call.
@@ -3809,7 +3810,15 @@ async def _begin_recovery_record(
         elif tool_name in tool_catalog:
             effect = str(getattr(tool_catalog[tool_name], "effect", "read") or "read")
         elif tool_kind == "mcp_tool":
+            # The pool spec's read_only_hint is the server-declared proof the
+            # tool has no side effects; without it the record stays execute
+            # (fail closed). Reads retry safely; effectful work needs confirm.
             effect = "execute"
+            spec_fn = getattr(pool, "tool_spec", None) if pool is not None else None
+            if spec_fn is not None:
+                spec = spec_fn(tool_name)
+                if spec is not None and bool(getattr(spec, "read_only_hint", False)):
+                    effect = "read"
         recovery_retry_policy = "safe" if effect == "read" else "confirm"
         # ── Durable workflow-position correlation ──────────
         # When a ``WorkflowPosition`` is active, stamp the
@@ -3855,6 +3864,7 @@ async def _begin_tool_dispatch(
     tool_arguments: Any,
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
+    pool: MCPToolPool | None,
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
     log: logging.Logger,
 ) -> tuple[str, float, str, str]:
@@ -3934,6 +3944,7 @@ async def _begin_tool_dispatch(
             tool_arguments=tool_arguments,
             operation_catalog=operation_catalog,
             tool_catalog=tool_catalog,
+            pool=pool,
             log=log,
         )
     return _tool_kind, _tool_dispatch_started, recovery_item_id, recovery_retry_policy
@@ -7672,6 +7683,7 @@ async def _prepare_tool_call_dispatch(
     execution_policy: ExecutionPolicy | None,
     hooks: TurnHooks,
     max_tool_iterations: int,
+    pool: MCPToolPool | None,
     emit_stage: Callable[..., Awaitable[None]],
     log: logging.Logger,
 ) -> _PreparedToolCall:
@@ -7747,6 +7759,7 @@ async def _prepare_tool_call_dispatch(
         tool_arguments=tool_arguments,
         operation_catalog=operation_catalog,
         tool_catalog=tool_catalog,
+        pool=pool,
         emit_stage=emit_stage,
         log=log,
     )
@@ -8062,6 +8075,7 @@ async def _dispatch_turn_tool_calls(
             execution_policy=execution_policy,
             hooks=hooks,
             max_tool_iterations=max_tool_iterations,
+            pool=pool,
             emit_stage=emit_stage,
             log=log,
         )

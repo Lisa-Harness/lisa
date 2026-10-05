@@ -584,6 +584,117 @@ async def test_empty_tool_output_coerced_to_done() -> None:
     assert "Done" in captured_tool_outputs
 
 
+# ── Recovery-record effect classification for MCP tools ────────────────
+
+
+class _RecoveryCaptureService:
+    """Recovery service stub that records the ``RecoveryRecord`` handed to begin."""
+
+    def __init__(self) -> None:
+        self.begun: list[Any] = []
+
+    async def begin(self, record: Any) -> Any:
+        self.begun.append(record)
+        return record
+
+    async def settle(self, _work_item_id: str, _identity: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def mark_running_indeterminate(self, _identity: Any) -> int:
+        return 0
+
+
+class _ReadOnlySpecPool:
+    """Pool whose ``tool_spec`` reports the spec's ``read_only_hint``."""
+
+    def __init__(self, read_only_hint: bool) -> None:
+        self._spec = SimpleNamespace(read_only_hint=read_only_hint)
+
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+        return []
+
+    async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
+        return SimpleNamespace(tool_id=tool_id, output_text="MCP result", is_error=False)
+
+    def tool_spec(self, _tool_id: str) -> Any:
+        return self._spec
+
+    async def __aenter__(self) -> _ReadOnlySpecPool:
+        return self
+
+    async def __aexit__(self, *_a: object) -> None:
+        pass
+
+    async def start(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _single_mcp_tool_completion() -> Any:
+    """Model completion plan: one ``lisa-storage.read_file`` call, then done."""
+    state = {"count": 0}
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        state["count"] += 1
+        if state["count"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_make_tool_call("c1", "lisa-storage.read_file", {"path": "a.md"})],
+            )
+        return _StubCompletion(content="Done.")
+
+    return complete
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_tool_recovery_record_is_read_effect() -> None:
+    """A ``read_only_hint`` MCP tool begins a ``read``/``safe`` recovery record.
+
+    Regression: opaque MCP tools were hardcoded to ``execute``/``confirm`` in
+    the recovery record, so a read-only storage/thread call that stalled
+    blocked the workflow behind a confirm gate (and, in one-shot hosts, an
+    unanswerable approval prompt).
+    """
+    recovery = _RecoveryCaptureService()
+    hooks = _build_hooks(
+        _single_mcp_tool_completion(),
+        mcp_tool_pool=_ReadOnlySpecPool(read_only_hint=True),
+        recovery_service=recovery,
+    )
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(recovery.begun) == 1
+    record = recovery.begun[0]
+    assert record.target_id == "lisa-storage.read_file"
+    assert record.target_kind == "mcp_tool"
+    assert record.effect == "read"
+    assert record.retry_policy == "safe"
+
+
+@pytest.mark.asyncio
+async def test_effectful_mcp_tool_recovery_record_stays_execute() -> None:
+    """An MCP tool without ``read_only_hint`` still records ``execute``/``confirm``.
+
+    Fail-closed contract: an opaque tool that does not prove it is read-only
+    keeps the effectful retry policy.
+    """
+    recovery = _RecoveryCaptureService()
+    hooks = _build_hooks(
+        _single_mcp_tool_completion(),
+        mcp_tool_pool=_ReadOnlySpecPool(read_only_hint=False),
+        recovery_service=recovery,
+    )
+    await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert len(recovery.begun) == 1
+    record = recovery.begun[0]
+    assert record.effect == "execute"
+    assert record.retry_policy == "confirm"
+
+
 # ── Thought signature preservation (Gemini) ───────────────────────────
 
 
