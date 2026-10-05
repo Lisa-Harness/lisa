@@ -1105,6 +1105,112 @@ class TestProjectionGraduatedCollapse:
             assert head == 600
 
 
+# ── project_tool_messages() — retrieval expansions excluded from pressure ──
+
+
+class TestProjectionExpansionExclusion:
+    """Readout recall is not new evidence; its bytes cannot deepen collapse.
+
+    Regression shape for the 2026-10-05 turn-524 loop: every
+    ``thread_read_content`` page the model fetched was itself counted in
+    ``tool_bytes``, so recalling already-stored evidence re-triggered and
+    deepened the very collapse that required the recall — and the fetched
+    page was pointer-collapsed back to a teaser of itself.
+    """
+
+    @staticmethod
+    def _persist(_: dict[str, Any]) -> str:
+        return "r" + "0" * 64
+
+    @staticmethod
+    def _big_tool_result(call_id: str, name: str, chars: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": call_id, "function": {"name": name}}],
+            },
+            {"role": "tool", "tool_call_id": call_id, "name": name, "content": "x" * chars},
+        ]
+
+    @staticmethod
+    def _expansion_message(chars: int) -> list[dict[str, Any]]:
+        envelope = json.dumps(
+            {"ref": "r" + "a" * 64, "content": "evidence " * (chars // 9), "has_more": False},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "ex", "function": {"name": "thread_read_content"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "ex",
+                "name": "thread_read_content",
+                "content": envelope,
+            },
+        ]
+
+    @staticmethod
+    def _head_sizes(projected: list[dict[str, Any]]) -> list[int]:
+        heads: list[int] = []
+        for message in projected:
+            content = message.get("content")
+            if message.get("role") != "tool" or not isinstance(content, str):
+                continue
+            try:
+                preview = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+            if preview.get("abbreviated") is True:
+                heads.append(len(preview["head"]))
+        return heads
+
+    def test_expansion_bytes_do_not_trigger_pressure(self) -> None:
+        """A recall page must not collapse previews when work bytes fit the budget."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        work_chars = _TOOL_CONTEXT_BYTES - 8192  # under the threshold before the page
+        messages = (
+            self._big_tool_result("wa", "coding_read_file", work_chars // 2)
+            + self._big_tool_result("wb", "coding_read_file", work_chars // 2)
+            + self._expansion_message(8192)
+        )
+        projected = project_tool_messages(messages, "task", self._persist)
+        page = next(m for m in projected if m.get("tool_call_id") == "ex")
+        assert "evidence" in str(page.get("content")), (
+            "expansion page was collapsed into a teaser of itself"
+        )
+        assert self._head_sizes(projected) and all(
+            head == 600 for head in self._head_sizes(projected)
+        ), "work-result previews collapsed without real overage"
+
+    def test_expansion_does_not_deepen_existing_collapse(self) -> None:
+        """Over-budget previews scale identically with and without a recall page."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        work_chars = _TOOL_CONTEXT_BYTES + 16384  # overage already in effect
+        base = self._big_tool_result("wa", "coding_read_file", work_chars // 2) + (
+            self._big_tool_result("wb", "coding_read_file", work_chars // 2)
+        )
+        without_page = project_tool_messages(base, "task", self._persist)
+        with_page = project_tool_messages(
+            [*base, *self._expansion_message(16_384)], "task", self._persist
+        )
+        heads_without = self._head_sizes(without_page)
+        heads_with = [
+            len(json.loads(m["content"])["head"])
+            for m in with_page
+            if m.get("tool_call_id") != "ex"
+            and isinstance(m.get("content"), str)
+            and json.loads(m["content"]).get("abbreviated") is True
+        ]
+        assert heads_without and heads_without == heads_with, (
+            f"previews {heads_without} deepened to {heads_with} by a recall page"
+        )
+
+
 class TestThreadStoreSearch:
     def test_exact_token_match_ranks_first(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"

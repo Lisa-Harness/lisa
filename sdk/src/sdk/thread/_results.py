@@ -70,8 +70,17 @@ def project_tool_messages(
     tool_indices = [
         index for index, message in enumerate(messages) if message.get("role") == "tool"
     ]
+    # Retrieval-tool results (readout pages) are recalls of data already
+    # stored in the thread/results archives — not new evidence. Their bytes
+    # are excluded from the pressure sum and the preview scale so a recall
+    # can neither trigger nor deepen the collapse that demanded it (the
+    # 2026-10-05 turn-524 recall loop). ``_compact_groups`` still counts
+    # every tool byte, so the absolute on-the-wire bound is unchanged;
+    # over-budget pages are evicted to the inventory as before.
     tool_bytes = sum(
-        len(str(messages[index].get("content") or "").encode("utf-8")) for index in tool_indices
+        len(str(messages[index].get("content") or "").encode("utf-8"))
+        for index in tool_indices
+        if str(messages[index].get("name") or "").rsplit(".", 1)[-1] not in _RETRIEVAL_TOOLS
     )
     pressure = tool_bytes > _TOOL_CONTEXT_BYTES
     latest = tool_indices[-1] if tool_indices else -1
