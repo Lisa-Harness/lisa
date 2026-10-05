@@ -163,7 +163,10 @@ def _superseded_note(
         return ""
     resolved = getattr(live_state, "resolved_approvals", None) or {}
     outcome = str(resolved.get(request_id) or "").strip()
-    if not outcome:
+    # "pending" is the store confirming the decision is still outstanding —
+    # the live state, not the recorded past. Annotating it as superseded
+    # would present an undecided approval as settled and suppress the yield.
+    if not outcome or outcome == "pending":
         return ""
     return f" [superseded (live approval store: {outcome})]"
 

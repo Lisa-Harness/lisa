@@ -267,6 +267,34 @@ def test_digest_marks_recorded_blocker_resolved_by_live_approval_state(tmp_path:
     assert "awaiting user" in objectives.body
 
 
+def test_digest_live_state_pending_blocker_stays_live(tmp_path: Path) -> None:
+    """A `pending` live blocker is the live present, not the recorded past.
+
+    Inverse failure of the 2026-10-05 stale-yield incident: annotating a
+    still-pending blocker "[superseded (live approval store: pending)]"
+    presents an undecided approval as settled and suppresses the yield the
+    operator must answer. The note is reserved for resolved outcomes.
+    """
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="paused for approval",
+        response_text="Approval required for run shell command(s).",
+        task_id="task-1",
+        provenance_extra={"pending_approval_request_id": "4803a8691a87431f857c0043b875ed7b"},
+    )
+
+    items = build_thread_context_items(
+        thread_path,
+        live_state=_live_state({"4803a8691a87431f857c0043b875ed7b": "pending"}),
+    )
+
+    by_id = {item.item_id: item for item in items}
+    for item in items:
+        assert "superseded" not in item.body
+    assert "awaiting user" in by_id["thread:open_objectives"].body
+
+
 def test_digest_without_live_state_leaves_recorded_blocker_unannotated(tmp_path: Path) -> None:
     """Without a live snapshot the digest preserves today's behavior."""
     thread_path = tmp_path / "thread"
