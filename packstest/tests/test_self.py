@@ -13,6 +13,7 @@ import pytest
 from packstest.catalog import (
     activate_tool,
     build_tool_catalog,
+    check_tool_yaml_schema,
     load_pack_content_root,
     validate_pack,
 )
@@ -123,6 +124,50 @@ def test_validate_pack_passes_synthetic_pack(synthetic_pack: Path) -> None:
     report = validate_pack(synthetic_pack)
     assert report.ok, report.summary()
     assert "synthetic_hello" in report.tools
+
+
+def test_validate_pack_accepts_self_bounding_tool_timeout_zero(tmp_path: Path) -> None:
+    """``timeout_seconds: 0`` (wrapper disabled, tool self-bounds) is valid.
+
+    The harness previously rejected 0 with "must be > 0", contradicting the
+    kernel contract (kernel/tools/registry.py treats 0 as wrapper-disabled;
+    sdk/AUTHORING.md documents it). That mis-model forced packs to declare
+    positive lifetime bounds no number could satisfy for self-bounding tools.
+    """
+    pack = tmp_path / "lisa-pack-selfbound"
+    package = pack / "lisa_packs" / "selfbound"
+    package.mkdir(parents=True)
+    (pack / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-selfbound"\n', encoding="utf-8"
+    )
+    _write_tool(package, "selfbound_hello", "lisa-pack-selfbound")
+    (package / "tools" / "selfbound_hello" / "selfbound_hello.tool.yml").write_text(
+        "\n".join(
+            [
+                "tool_id: selfbound_hello",
+                "tool_provider_id: lisa-pack-selfbound",
+                "description: synthetic self-bounding tool",
+                "effect: read",
+                "timeout_seconds: 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = validate_pack(pack)
+    assert report.ok, report.summary()
+    assert report.tools["selfbound_hello"]["timeout_seconds"] == 0
+
+
+def test_validate_pack_rejects_negative_tool_timeout(tmp_path: Path) -> None:
+    """Negative timeout_seconds stays a validation error (kernel rejects < 0)."""
+
+    issues = check_tool_yaml_schema(
+        "bad_tool",
+        {"tool_id": "bad_tool", "description": "x", "timeout_seconds": -5},
+    )
+    assert any("negative timeout_seconds" in issue.detail for issue in issues)
 
 
 def test_run_tool_executes_in_process(synthetic_pack: Path, tmp_path: Path) -> None:

@@ -371,8 +371,11 @@ def check_tool_yaml_schema(tool_id: str, tool_dict: dict[str, Any]) -> list[Pack
         issues.append(PackIssue("error", "tool-yaml", f"{tool_id}: missing tool_id"))
     if not tool_dict.get("description"):
         issues.append(PackIssue("warning", "tool-yaml", f"{tool_id}: missing description"))
-    if int(tool_dict.get("timeout_seconds", 30)) <= 0:
-        issues.append(PackIssue("error", "tool-yaml", f"{tool_id}: timeout_seconds must be > 0"))
+    # Mirrors the kernel contract (kernel/tools/registry.py): timeout_seconds
+    # >= 0, where 0 disables the wrapper timeout for self-bounding tools
+    # (sdk/AUTHORING.md). Only negatives are invalid.
+    if int(tool_dict.get("timeout_seconds", 30)) < 0:
+        issues.append(PackIssue("error", "tool-yaml", f"{tool_id}: negative timeout_seconds"))
     if int(tool_dict.get("max_calls_per_turn", 0)) < 0:
         issues.append(PackIssue("error", "tool-yaml", f"{tool_id}: negative max_calls_per_turn"))
     return issues
