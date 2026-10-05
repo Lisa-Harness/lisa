@@ -365,6 +365,58 @@ class TestNestedDispatchRelay:
         await execute_tool("probe", ctx)
         assert ctx.idle_progress_relay is None
 
+    @pytest.mark.asyncio
+    async def test_timed_streaming_child_keeps_parent_alive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A streaming child with its own finite bound must not clobber the relay.
+
+        The child entering its own idle wrapper overwrote
+        ``ctx.idle_progress_relay`` with the child's event, so the parent's
+        clock only reset through a bus filter that cannot match child
+        publishes (they carry the child's tool_id) and the parent cancelled
+        mid-flight despite continuous child progress — the failure class the
+        relay exists to prevent, resurfaced one composition level deeper.
+        """
+        bus = _FakeBus()
+
+        async def child(ctx: ToolExecutionContext) -> str:
+            for seq in range(12):
+                await asyncio.sleep(0.2)
+                publish_tool_output(ctx, text=f"child line {seq}")
+            return "child done"
+
+        async def parent(ctx: ToolExecutionContext) -> str:
+            assert ctx.delegated_tool_dispatch is not None
+            result = await ctx.delegated_tool_dispatch("child", {})
+            return f"parent got: {result.output_text}"
+
+        _register_many(
+            monkeypatch,
+            {
+                "probe": ToolDefinition(
+                    tool_id="probe",
+                    timeout_seconds=1,
+                    stream_output=True,
+                    implementation_module=SimpleNamespace(execute=parent),
+                ),
+                "child": ToolDefinition(
+                    tool_id="child",
+                    timeout_seconds=10,
+                    stream_output=True,
+                    implementation_module=SimpleNamespace(execute=child),
+                ),
+            },
+        )
+        ctx = ToolExecutionContext(
+            tool_id="probe",
+            event_bus=bus,
+            stream_output=True,
+            capability_binding_provider=_NoopBindingProvider(),
+        )
+        result = await execute_tool("probe", ctx)
+        assert result.output_text == "parent got: child done"
+
 
 class TestIdleDeadlineTelemetry:
     """The timeout error and span carry the idle semantics."""

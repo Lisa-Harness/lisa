@@ -38,7 +38,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -154,6 +154,26 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
         del catalog[tool_id]
 
 
+def _chain_idle_relay(
+    copied_relay: Callable[[], None] | None,
+    published: asyncio.Event,
+) -> Callable[[], None]:
+    """Forward child progress to the copied parent relay and this frame's clock.
+
+    Returns the idle-progress relay installed on the context for this
+    dispatch: a composed child's ``publish_tool_output`` resets the parent's
+    clock first, then this frame's own event, so a timed streaming child
+    keeps the whole chain alive instead of leaving the parent unwatched.
+    """
+
+    def relay_progress() -> None:
+        if copied_relay is not None:
+            copied_relay()
+        published.set()
+
+    return relay_progress
+
+
 async def _run_with_idle_deadline(
     execute_fn: Any,
     ctx: ToolExecutionContext,
@@ -200,8 +220,12 @@ async def _run_with_idle_deadline(
     # exposes ``published.set`` on the context; ``publish_tool_output``
     # calls it synchronously, and ``dispatch_child`` copies it into the child
     # context, so a streaming child resets the PARENT's idle clock with no
-    # bus round-trip (2026-10-05 review, O2). Cleared in the finally below.
-    ctx.idle_progress_relay = published.set
+    # bus round-trip (2026-10-05 review, O2). Chained, not replaced: when
+    # this dispatch is itself a composed child, a copied relay already on
+    # the context is exactly as live as this frame's event — it is dropped
+    # only by the parent's cleanup, never mid-flight (2026-10-05 review).
+    copied_relay = ctx.idle_progress_relay
+    ctx.idle_progress_relay = _chain_idle_relay(copied_relay, published)
     try:
         while True:
             published.clear()
@@ -216,8 +240,10 @@ async def _run_with_idle_deadline(
         # publish on this topic pay an awaited no-op per dead handler
         # (2026-10-05 review, C1). Best-effort — hosts without an
         # ``unsubscribe`` (older seam shapes) keep the handler until the
-        # turn's bus is discarded, as before.
-        ctx.idle_progress_relay = None
+        # turn's bus is discarded, as before. The dropped relay is this
+        # frame's own; a copied parent relay stays live for the rest of the
+        # parent's dispatch.
+        ctx.idle_progress_relay = copied_relay
         unsubscribe = getattr(bus, "unsubscribe", None)
         if callable(unsubscribe):
             with contextlib.suppress(Exception):
