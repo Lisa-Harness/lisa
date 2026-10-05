@@ -6,6 +6,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### `dispute_memory` looked up a different slice than `recall_memory`
+
+- **What:** `dispute_memory` passed only `user_slug` to the `memory.get` /
+  `memory.search` aliases while `recall_memory` passes all four identity
+  scope fields. Both lookup paths now mirror recall's scoped parameters
+  (`user_slug`, `workspace_id`, `surface_id`, `memory_scope`), so
+  correction reaches exactly the records recall ranks.
+- **Why:** The native memory backends scope their WHERE clause on all
+  four identity fields, so a recall-surfaced lesson could not be disputed,
+  and the model burned three consecutive turns on failed dispute lookups
+  against a bad lesson it could see but not correct (2026-10-05 thread).
+- **Tests:** `sdk/packs/memory/tests/test_dispute_memory.py` (scoped
+  lookup reaches the recall slice; out-of-scope ids stay invisible).
+
 #### Catalog loaders rewrote `timeout_seconds: 0` into the 30s default
 
 - **What:** All three catalog loaders (runtime tool, runtime operation,
@@ -104,12 +118,55 @@ All notable changes to the Lisa Harness will be documented in this file.
   to decide an already-consumed approval.
 - **Tests:** `runtime/tests/test_thread_digest.py` (past/present framing on
   all three items; recorded-at timestamps on history lines; live-state
-  reconciliation annotates superseded blockers and leaves unknown requests
-  untouched; resolver and tail-collector helpers);
+  reconciliation annotates superseded blockers, leaves unknown requests and
+  still-`pending` approvals untouched — pending is the live present, not a
+  resolved outcome; resolver and tail-collector helpers);
   `runtime/tests/test_state_provider.py` (digest seam threads the live-state
   snapshot).
 
 ### Changed
+
+#### Operator command vocabulary moved to the runtime seam (BREAKING)
+
+- **What:** Kernel-owned prompt prose no longer embeds operator command
+  syntax (`/approve`, `/deny`, `/skip <id>`, `/cancel <id>`,
+  `/retry <id>`, `/stalls`). The lifecycle resolver and
+  `render_approval_request` now state the pause neutrally and attach
+  structured remediation — `YieldRemediation` /
+  `YieldRemediationAction` (verb + target id + `safe` flag, an open
+  verb vocabulary) on `YieldAction.remediation` — and the runtime
+  renders installed pack command lines into `data["remediation"]` at
+  its delivery seam. A verb no installed command exposes renders
+  nothing. The never-called, never-tested `kernel.recovery` public
+  function `step_blocks_instance()` was removed with this move.
+- **Why:** The kernel is runtime- and pack-neutral by contract, but the
+  lifecycle resolver embedded recovery-pack slash syntax and
+  `kernel.approval` rendered `/approve //deny` into user prompts —
+  import-linter cannot see prose couplings, and installing the recovery
+  pack silently changed kernel-owned prompt content, an inversion of
+  the declared boundary.
+- **BREAKING for hosts:** `render_approval_request` output no longer
+  contains `/approve` / `/deny` syntax, and yield questions carry no
+  command syntax. Hosts must consume the structured
+  `data["approval"]` payload and `data["remediation"]` lines (or the
+  structured `YieldAction.remediation` verbs) instead of
+  pattern-matching the old prose.
+- **Tests:** `kernel/tests/test_lifecycle_resolver.py` (structured verbs
+  pinned, question free of command syntax),
+  `runtime/tests/test_approval_commands.py` (runtime-rendered hints for
+  installed/absent commands), `kernel/tests/
+  test_recovery_provenance_conformance.py` (new — locks the cross-package
+  string contracts import-linter cannot see).
+
+#### Lockfile refresh with transitive bumps (lockfile revision 3 → 5)
+
+- **What:** `uv.lock` regenerated with transitive bumps only — no direct
+  dependency changes in any `pyproject.toml` — notably
+  `pydantic` 2.3.1 → 2.4.0, `typing-extensions`, `certifi`, and
+  related transitive updates.
+- **Why:** Lockfile-format revision bump (3 → 5) with the workspace tooling
+  refresh; recorded here because pydantic is a runtime behavior surface of
+  the frozen trees.
 
 #### bash/bwrap packs declare self-bounding tools (`timeout_seconds: 0`)
 
@@ -139,6 +196,21 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_validate_pack_rejects_negative_tool_timeout`.
 
 ### Added
+
+#### `planner` and `explainer` modes moved into `lisa-pack-core`
+
+- **What:** The `planner` and `explainer` workflow front-end modes now
+  ship in the in-repo core pack instead of the external
+  `lisa-pack-personas`, whose mode catalog trims to `thinker` +
+  `researcher`. Mode ids, front matter, and routing are unchanged; only
+  `mode_provider_id` changed to `lisa-pack-core` (no duplicate
+  `mode_id`s remain across the two packs).
+- **Why:** Both modes are kernel workflow front-ends, not personas:
+  `planner` is the public surface for `plan_workflow` +
+  `needs_full_mode_catalog` routing, `explainer` is the
+  guaranteed-productive terminal mode for the
+  forced-transition-before-cap path — the core pack is their durable
+  owner.
 
 #### Bulk dismiss commands for the recovery pack
 

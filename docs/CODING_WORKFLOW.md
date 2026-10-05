@@ -120,6 +120,57 @@ tooling) proceeds normally.
    fix-sized diff that leaves the surrounding code alone is the correct
    diff, even if the surrounding code has obvious problems.
 
+### Freeze window activity log (2026-10-05)
+
+Compliance review of `86a803f9..HEAD` (declared freeze `86a803f9` through
+`bd95268b`) recorded the following. Carve-outs are known only from commit
+messages — the operator's decisions were not recorded here when made;
+treat the pushed violations below as unratified until the operator says
+otherwise.
+
+**Allowed work (compliant):** every fix commit from `04335b92` through
+`cdec3067` ships its `src/` + `tests/` diff in one commit with a
+red/green receipt; the four `docs:`, `test:`, and `fixup!` test-infra
+commits and all packstest/e2etest work are explicitly unfrozen. Full
+verification loop re-verified green at review time (2955 passed,
+1 xfailed; coverage floors 7/7).
+
+**Commits claiming an operator carve-out in their message (unpushed, on
+`main`):** `668cf86b` (`feat(pack-recovery)` bulk dismiss commands),
+`9c2711ad` (idle-deadline wrapper redesign), `6a169483` (dispute scope
+repair), `144c022e` (digest live-state reconciliation), `cdec3067`
+(state-settling command thread entries).
+
+**Pushed violations recorded after the fact (on `origin/main`):**
+
+- `a4ae5420` `refactor(kernel,runtime)!: move operator command vocabulary
+  to the runtime seam` — new public kernel API
+  (`YieldRemediation`/`YieldRemediationAction`), public function removed
+  (`step_blocks_instance`), BREAKING CHANGE to `render_approval_request`
+  output. Per the freeze these required an operator escalation to
+  authorize; the commit message claims none. Kept on `main` and now
+  documented in the changelog; the operator may reclassify it as a
+  post-hoc carve-out or plan a revert.
+- `181314db` `feat(sdk-core): take in planner + explainer modes from
+  lisa-pack-personas` — new modes with routing front matter inside frozen
+  `sdk/packs/core` (new modules + routing rules). No carve-out claimed;
+  content-only move with no `mode_id` collisions (verified against the
+  external pack's remaining modes).
+- `7aa7453e` `docs(core): widen default-mode clarification guidance` —
+  changes model-steering prompt behavior in a frozen pack.
+- `c9c8b9e6` `chore(deps): refresh uv.lock` — transitive bumps inside
+  frozen-tree behavior surfaces, notably `pydantic` 2.3.1 → 2.4.0 (no
+  direct dependency changes; lock maintenance mid-freeze).
+
+**Freeze-baseline repairs:** `04335b92` repaired one over-length line
+`86a803f9` left in `sdk/src/sdk/thread/_readout.py`; the freeze-declaration
+commit's `ruff format --check` baseline was therefore red, and the
+"100%-green baseline" claim in its message was inaccurate for that gate.
+Post-remediation fixups `bd95268b`, `9c74544f`, and `865b84f7` repair
+findings from the 2026-10-05 compliance review (format-gate drift,
+`pending`-state misannotation, timed-child relay clobber), all red/
+green verified.
+
 The full suite (`uv run pytest -m "not live"`) is green as of this
 declaration (2909 passed, 1 xfailed). The kernel and
 sdk test suites carry autouse settings-hermeticity guards
