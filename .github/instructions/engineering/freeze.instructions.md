@@ -16,7 +16,11 @@ rationale live in `docs/CODING_WORKFLOW.md` § Freeze. Follow them.
    "modernizing" are not bugs.
 2. **Name the test.** You must be able to point at the test that will fail
    before and pass after. If it does not exist yet, write it first.
-3. **If you can do neither, stop.** Surface the freeze to the operator and
+3. **Check for a carve-out.** Operator-declared exceptions to this freeze
+   are listed in `docs/CODING_WORKFLOW.md` § "Declared carve-outs." Work
+   inside a declared carve-out follows the carve-out's stated rules (same
+   red/green test receipt, same commit scoping) instead of this gate.
+4. **If you can do neither, stop.** Surface the freeze to the operator and
    ask whether to carve out an exception or park the work on a branch. Do
    not decide for them.
 

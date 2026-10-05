@@ -171,6 +171,29 @@ findings from the 2026-10-05 compliance review (format-gate drift,
 `pending`-state misannotation, timed-child relay clobber), all red/
 green verified.
 
+### Declared carve-outs
+
+The operator may open a named, bounded exception for work that cannot
+reasonably ship as a fix with regression test. A carve-out is recorded
+here and is the carve-out's receipt: it scopes the exception to named
+modules, bounds it by commit scope, expires with the stated condition,
+and is closed by updating this section (same doc, same history).
+
+**Thread-context durability (opened 2026-10-05, authorized by the
+operator).** Scope: `sdk/src/sdk/thread/` (readout + results projection
+bounds), `runtime/thread/`, `runtime/thread_digest.py`,
+`kernel/session_plan.py` (context/digest knobs only),
+`kernel/turn_runner/` (digest consumption points), and the
+`lisa-thread` tools in `mcp_server/src/mcp_server/thread/`. Purpose:
+repair the hot/cold context boundary so a deep verification turn does
+not collapse into re-reading its own prior tool results at 180-char
+teaser fidelity. Any commit under this heading must (1) name the
+turn-loop behavior it changes, (2) ship a test that fails before and
+passes after (same-commit, red/green), and (3) not widen scope to
+unrelated signatures. The carve-out closes when these trees settle on a
+behavior the operator ratifies, or explicitly on operator order — record
+the closure here.
+
 The full suite (`uv run pytest -m "not live"`) is green as of this
 declaration (2909 passed, 1 xfailed). The kernel and
 sdk test suites carry autouse settings-hermeticity guards
