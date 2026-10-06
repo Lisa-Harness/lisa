@@ -107,7 +107,7 @@ day with five max-intensity turns; 15M is the comfortable working target.
   a turn makes**, which is exactly what `max_tool_iterations` and the
   `per_step_*` caps control — not the token rail.
 
-### Per-call completion budget (updated 2026-09-19)
+### Per-call completion budget (updated 2026-09-19; scoped 2026-10-06)
 
 The turn loop's per-call completion budget (`turn_completion_max_tokens`)
 is a **latency and runaway-generation guard**, not a spend control —
@@ -127,6 +127,18 @@ the table above). Two properties keep it from becoming a silent failure:
   turn-loop paths (streaming and non-streaming) retry a
   `finish_reason=length` truncation once at 2× budget, capped by the
   model's context window. The pathological bound is 32768.
+
+**Scope updates (2026-10-06, `docs/SPEC/BUDGET_SCOPES_RFC.md`):** the
+budget is no longer a single process-wide knob. Manifest model entries
+may declare `max_completion_tokens` (provider-behavior ceiling); modes
+may declare `completion_budget_tokens` (per-call work shape) and
+`turn_completion_budget_tokens` (cumulative per-turn rail). Effective
+per-call budget = `min(mode, model, settings)`, context-window-capped.
+The 2026-10-06 glm-5.3:cloud marathons showed why: a host override
+raised for report-sized finals became every mode's ceiling, and five
+reasoning-dump calls burned 128k cumulative completion in one turn
+(~30% of turn spend, not 3%) — the per-turn rail now exists to bound
+that pattern.
 
 ## Accounting caveat (open decision)
 

@@ -125,6 +125,17 @@ task_artifact_tool_id: coding_create_worktree
 
   When verification fails the model's prose is replaced with the verifier's specific reason (for example "Worktree … is patched, not committed."), the turn is blocked, and `block_origin` is set to `task_completion` (a resumable task state). This is what makes a persona's "finish only after a real commit with required checks passing" instruction enforceable rather than a request the model can ignore.
 
+### Completion budget front matter
+
+Two kernel-owned keys declare the mode's completion budgets (`docs/SPEC/BUDGET_SCOPES_RFC.md` scopes 2–3; both default 0 = inherit, both must be positive integers when present):
+
+- `completion_budget_tokens` (int) — the mode's **per-call work-shape budget**: how large a completion this mode's work produces. The turn loop applies `min(mode, model, settings)` when building each completion request; a mode value may only tighten, never raise. The truncation rescue doubles from this effective budget.
+- `turn_completion_budget_tokens` (int) — the mode's **whole-turn cumulative completion rail**. It arms the completion rail in the effective `TurnBudget` when the host supplied none and tightens it (never loosens) when the host declared one; host tool/total/wall limits are preserved. Exhaustion forces one final no-tools completion via the existing `budget_forces_final` path — bounding cumulative reasoning-dump runaways per-call budgets cannot stop.
+
+Precedence overall: `min(mode per-call, model max_completion_tokens, settings.turn_completion_max_tokens)`, further capped by the model's `context_window`. Manifest-side `max_completion_tokens` (scope 1) is host data in `models.yaml`, not pack content.
+
+These keys are kernel-owned (parsed into typed `WorkflowModeConfig` fields; never land in `extra_front_matter`); the per-mode keys are also protected in `_overrides.yaml` like other budget-bearing settings.
+
 These keys are **kernel-owned** (parsed into typed `WorkflowModeConfig` fields, so they never land in `extra_front_matter` and must not be used for app-owned data), with one difference in the overrides boundary: `yield_policy`, `approval_continuation`, `task_completion`, and `task_artifact_tool_id` are also **protected** — they are rejected in `_overrides.yaml` — whereas `fork_allowed` is overridable, like `description` and `default_model`. They are additive and backward compatible: an existing mode keeps the safe defaults (`yield_policy` allowed, `fork_allowed: false`, `approval_continuation: report`, `task_completion: none`). `task_artifact_tool_id` is required only when `task_completion: checked_commit` — an empty producer fails closed rather than silently passing. The runtime side of the checked-commit contract lives in `kernel/src/kernel/turn_phases/_completion_contract.py` (decision resolver), `kernel/src/kernel/turn_runner/__init__.py` (evidence collection), and the host's `verify_task_completion` service (the runtime wires `verify_checked_commit` in `runtime/src/runtime/code_artifacts.py`); approval continuation is resolved in `runtime/src/runtime/approval/orchestration.py`.
 
 ### Extension Front Matter (`extra_front_matter`)
