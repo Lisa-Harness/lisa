@@ -13,6 +13,7 @@ from runtime.thread import (
     project_thread_messages,
     set_thread_redaction_policy,
 )
+from runtime.thread_digest import build_thread_context_items
 from sdk.thread import ThreadReader, ThreadRedactionPolicy, ThreadStore, result_object_path
 
 register_builtin_host_commands()
@@ -426,3 +427,14 @@ class TestVerifiedFactsExtraction:
 
         entry = ThreadStore(thread).load_recent(limit=1)[0]
         assert entry["verified_facts"][0]["claim"] == "fd 4 is the Unix socket"
+        _append(
+            thread, "continue audit", response_text="new work", provenance={"task_id": "task-2"}
+        )
+
+        facts = next(
+            item
+            for item in build_thread_context_items(thread)
+            if item.item_id == "thread:verified_facts"
+        )
+        assert "fd 4 is the Unix socket" in facts.body
+        assert "daemon.go:124" in facts.body

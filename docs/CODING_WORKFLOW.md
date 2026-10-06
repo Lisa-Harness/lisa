@@ -182,6 +182,8 @@ and is closed by updating this section (same doc, same history).
 **Thread-context durability (opened 2026-10-05, authorized by the
 operator).** Scope: `sdk/src/sdk/thread/` (readout + results projection
 bounds), `runtime/thread/`, `runtime/thread_digest.py`,
+`runtime/approval/orchestration.py` (approved-fact attachment),
+`runtime/context_assembly.py` (context rendering),
 `kernel/session_plan.py` (context/digest knobs only),
 `kernel/turn_runner/` (digest consumption points), and the
 `lisa-thread` tools in `mcp_server/src/mcp_server/thread/`. Purpose:
