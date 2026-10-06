@@ -1210,6 +1210,74 @@ class TestProjectionExpansionExclusion:
             f"previews {heads_without} deepened to {heads_with} by a recall page"
         )
 
+    @pytest.mark.parametrize("page_count", [30, 140])
+    def test_many_retrieval_pages_stay_bounded_and_keep_latest_readable(
+        self, page_count: int
+    ) -> None:
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            ref = "r" + hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            persisted[ref] = result
+            return ref
+
+        messages: list[dict[str, Any]] = []
+        for index in range(page_count):
+            call_id = f"recall-{index}"
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": call_id, "function": {"name": "lisa-thread.thread_search"}}
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": "lisa-thread.thread_search",
+                        "content": f"evidence-{index}: " + "x" * 4000,
+                    },
+                ]
+            )
+
+        projected = project_tool_messages(messages, "task", persist)
+        tool_bytes = sum(
+            len(message["content"].encode()) for message in projected if message["role"] == "tool"
+        )
+        assert tool_bytes <= _TOOL_CONTEXT_BYTES
+        latest = next(
+            message
+            for message in projected
+            if message.get("tool_call_id") == f"recall-{page_count - 1}"
+        )
+        assert f"evidence-{page_count - 1}" in latest["content"]
+        assert any(
+            "inventory_ref" in message.get("content", "")
+            or '"abbreviated":true' in message.get("content", "")
+            for message in projected
+        )
+        assert persisted
+        assert (
+            project_tool_messages(projected, "task", persist, load=persisted.__getitem__)
+            == projected
+        )
+
+    def test_reused_call_id_does_not_reclassify_earlier_work_as_recall(self) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        messages = self._big_tool_result(
+            "same", "coding_read_file", 200_000
+        ) + self._big_tool_result("same", "thread_search", 4000)
+        messages[1].pop("name")
+        projected = project_tool_messages(messages, "task", self._persist)
+        work_preview = json.loads(projected[1]["content"])
+        assert work_preview["abbreviated"] is True
+        assert len(work_preview["head"]) < 600
+        assert projected[3]["content"] == "x" * 4000
+
 
 class TestThreadStoreSearch:
     def test_exact_token_match_ranks_first(self, tmp_path: Path) -> None:

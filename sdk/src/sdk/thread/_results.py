@@ -58,6 +58,20 @@ def load_result_object(base: Path, ref: str) -> dict[str, Any]:
     return result
 
 
+def _tool_result_names(messages: list[dict[str, Any]]) -> dict[int, str]:
+    names: dict[str, str] = {}
+    result_names: dict[int, str] = {}
+    for index, message in enumerate(messages):
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or call
+            names[str(call.get("id") or "")] = str(function.get("name") or "")
+        if message.get("role") == "tool":
+            result_names[index] = str(
+                message.get("name") or names.get(str(message.get("tool_call_id") or ""), "")
+            )
+    return result_names
+
+
 def project_tool_messages(
     messages: list[dict[str, Any]],
     task_id: str,
@@ -70,42 +84,45 @@ def project_tool_messages(
     tool_indices = [
         index for index, message in enumerate(messages) if message.get("role") == "tool"
     ]
-    # Retrieval-tool results (readout pages) are recalls of data already
-    # stored in the thread/results archives — not new evidence. Their bytes
-    # are excluded from the pressure sum and the preview scale so a recall
-    # can neither trigger nor deepen the collapse that demanded it (the
-    # 2026-10-05 turn-524 recall loop). ``_compact_groups`` still counts
-    # every tool byte, so the absolute on-the-wire bound is unchanged;
-    # over-budget pages are evicted to the inventory as before.
+    result_names = _tool_result_names(messages)
+    retrieval_indices = {
+        index for index, name in result_names.items() if name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOLS
+    }
+
+    # Recall bytes do not shrink work previews, but still count toward the
+    # absolute projection budget. Older recall pages must yield room for the
+    # latest page instead of accumulating unboundedly.
     tool_bytes = sum(
         len(str(messages[index].get("content") or "").encode("utf-8"))
         for index in tool_indices
-        if str(messages[index].get("name") or "").rsplit(".", 1)[-1] not in _RETRIEVAL_TOOLS
+        if index not in retrieval_indices
+    )
+    total_bytes = sum(
+        len(str(messages[index].get("content") or "").encode("utf-8")) for index in tool_indices
     )
     pressure = tool_bytes > _TOOL_CONTEXT_BYTES
-    latest = tool_indices[-1] if tool_indices else -1
+    over_budget = total_bytes > _TOOL_CONTEXT_BYTES
+    latest_retrieval = max(retrieval_indices, default=-1)
     scale = _preview_scale(tool_bytes) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
     refs: dict[int, str] = {}
-    names: dict[str, str] = {}
     for index, message in enumerate(projected):
-        for call in message.get("tool_calls") or []:
-            function = call.get("function") or call
-            names[str(call.get("id") or "")] = str(function.get("name") or "")
         content = message.get("content")
         if message.get("role") != "tool" or not isinstance(content, str):
             continue
-        name = str(message.get("name") or names.get(str(message.get("tool_call_id") or ""), ""))
+        name = result_names[index]
+        retrieval_page = index in retrieval_indices
         existing = _existing_result(content, load, redaction)
         if existing is not None:
             refs[index] = existing[0]
-            if not pressure:
+            if not pressure and (
+                not over_budget or not retrieval_page or index == latest_retrieval
+            ):
                 continue
             content = existing[1]["content"]
         permitted = redaction.redact(content) if redaction is not None else content
-        retrieval_page = name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOLS
         pointer = (
             _retrieval_pointer(content, permitted)
-            if pressure and retrieval_page and existing is None
+            if (pressure or over_budget) and retrieval_page and existing is None
             else None
         )
         if pointer is not None:
@@ -117,11 +134,15 @@ def project_tool_messages(
         if (
             retrieval_page
             and len(content.encode("utf-8")) <= _MAX_RETRIEVAL_BYTES
-            and (not pressure or index == latest)
+            and (not over_budget or index == latest_retrieval)
         ):
             message["content"] = permitted
             continue
-        if len(content.encode("utf-8")) <= _INLINE_RESULT_BYTES and not pressure:
+        if (
+            len(content.encode("utf-8")) <= _INLINE_RESULT_BYTES
+            and not pressure
+            and (not retrieval_page or not over_budget or index == latest_retrieval)
+        ):
             message["content"] = permitted
             continue
         ref = (
@@ -131,7 +152,11 @@ def project_tool_messages(
         )
         refs[index] = ref
         message["content"] = _preview(ref, permitted, *scale)
-    return _compact_groups(messages, projected, refs, task_id, persist) if pressure else projected
+    return (
+        _compact_groups(messages, projected, refs, task_id, persist)
+        if pressure or over_budget
+        else projected
+    )
 
 
 def _retrieval_pointer(content: str, permitted: str) -> dict[str, Any] | None:
