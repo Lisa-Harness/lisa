@@ -6935,3 +6935,93 @@ def test_partial_coverage_tie_breaks_by_earliest_keyword_position() -> None:
         gap_intents={"finances", "shell", "other"},
     )
     assert target == "broad", f"strict winner must route, got {target!r}"
+
+
+@pytest.mark.asyncio
+async def test_suppressed_child_turn_injects_no_routing_hint() -> None:
+    """A child turn with ``suppress_routing_hint=True`` (delegate/fork shape)
+    never injects a routing hint, even when the entry phase returns
+    ``suppress_routing_hint=False`` (any chat mode with no entry ops).
+
+    Regression for the 2026-10-06 13:25 UTC incident: ``_default_delegate_fn``
+    passed ``suppress_routing_hint=True`` (the documented "delegate children
+    do not re-route" invariant), but ``_run_turn_entry_sequence`` overwrote
+    the flag with ``bool(entry_result.suppress_routing_hint)`` — False for a
+    no-entry-op chat mode — so a delegate child in ``default`` mode saw the
+    parent's multi-intent query, re-detected a 6-intent gap, re-escalated to
+    ``planner``, and the forced-action enforcer handed the CHILD off
+    mid-turn. The nested ``plan_workflow`` call then blew the parent's 300s
+    ``delegate`` timeout and the whole child stack was cancelled without
+    executing its delegated work.
+
+    Control arm in the same test: the identical query and catalog in a
+    PARENT turn (``suppress_routing_hint=False``) must inject the hint —
+    proving the suppression flag, not the query or catalog, makes the
+    difference.
+    """
+
+    def build_hooks() -> tuple[TurnHooks, list[str]]:
+        captured_system_prompts: list[str] = []
+
+        async def complete(**kwargs: Any) -> _StubCompletion:
+            msgs = kwargs.get("messages", [])
+            if msgs and msgs[0].get("role") == "system":
+                captured_system_prompts.append(str(msgs[0].get("content", "")))
+            return _StubCompletion(content="Done.")
+
+        return _build_minimal_hooks(complete), captured_system_prompts
+
+    # Multi-intent query the ambient synthetic catalog attributes to
+    # ``markdown``/``ponder`` (write + research) — the same gap shape the
+    # incident's MISSION text produced.
+    query = "search for the latest coding practices then write a markdown report"
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(
+            mode_id="search",
+            satisfies_intents=["research"],
+            routing_intent_tags=["research"],
+            routing_intent_keywords={"research": ["search", "web", "find"]},
+        ),
+        "markdown": _mode_config(
+            mode_id="markdown",
+            satisfies_intents=["write"],
+            routing_intent_tags=["write"],
+            routing_intent_keywords={"write": ["markdown", "document", "write"]},
+        ),
+    }
+
+    with _patched_hint_catalog(catalog):
+        # Child arm: suppression must hold (the delegate-child shape).
+        child_hooks, child_prompts = build_hooks()
+        child_result = await run_turn(
+            mode_id="default",
+            query=query,
+            hooks=child_hooks,
+            suppress_routing_hint=True,
+        )
+        # Parent arm: the same query and catalog must inject the hint.
+        parent_hooks, parent_prompts = build_hooks()
+        parent_result = await run_turn(
+            mode_id="default",
+            query=query,
+            hooks=parent_hooks,
+            suppress_routing_hint=False,
+        )
+
+    assert child_result.response_text == "Done."
+    assert child_prompts, "child model must have been called"
+    assert all("Routing Hint" not in prompt for prompt in child_prompts), (
+        "suppressed child turn must not inject a routing hint"
+    )
+    assert child_result.handoff_to is None, "suppressed child must not re-route"
+
+    # Parent arm: the hint must be injected. (The parent's response may
+    # be two completions' text joined — the forced-transition enforcer can
+    # synthesize a handoff after the first "Done." — so only assert on
+    # the hint presence, not the response text.)
+    assert "Done." in parent_result.response_text
+    assert parent_prompts, "parent model must have been called"
+    assert any("Routing Hint" in prompt for prompt in parent_prompts), (
+        "control arm: parent turn must still inject the hint"
+    )

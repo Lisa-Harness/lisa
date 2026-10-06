@@ -6640,6 +6640,7 @@ async def _run_turn_entry_sequence(
     execution_policy: ExecutionPolicy | None,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
+    caller_suppress_routing_hint: bool,
     assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     assemble_system: Callable[[str, str | None], str],
     build_entry_ctx: Callable[..., Any],
@@ -6667,6 +6668,16 @@ async def _run_turn_entry_sequence(
     pre_briefing, system_prompt, slice_outcomes, mode_instruction,
     stage_instruction)``. ``early_return`` is non-None only when the entry
     phase or the input guard ended the turn; the caller returns it verbatim.
+
+    ``caller_suppress_routing_hint`` is the ``run_turn`` caller's flag
+    (``True`` for delegate/fork children). Suppression is sticky: the entry
+    phase's own flag (set when the planner or the resume-in-flight gate is
+    driving the handoff) can only ADD suppression, never lift the caller's.
+    Without the OR, a delegate child in a no-entry-op chat mode had its
+    suppression downgraded to ``False`` and re-ran the full routing pipeline
+    against the parent's multi-intent query — re-escalating to the planner
+    and blowing the delegate's ``timeout_seconds`` (the 2026-10-06 13:25
+    UTC incident).
     """
     entry_result = await execute_entry_phase(
         mode_id=mode_id,
@@ -6685,7 +6696,18 @@ async def _run_turn_entry_sequence(
         run_mode_entry_operations_fn=run_mode_entry_operations_fn,
     )
     if entry_result.early_return is not None:
-        return entry_result.early_return, query, False, "", "", "", [], "", None, None
+        return (
+            entry_result.early_return,
+            query,
+            caller_suppress_routing_hint,
+            "",
+            "",
+            "",
+            [],
+            "",
+            None,
+            None,
+        )
 
     if entry_result.pending_planned_handoff:
         state.pending_planned_handoff = entry_result.pending_planned_handoff
@@ -6712,7 +6734,10 @@ async def _run_turn_entry_sequence(
             log.warning("initial plan position persistence failed: %s", position_exc)
     if entry_result.plan_prefix:
         state.plan_prefix = entry_result.plan_prefix
-    suppress_routing_hint = bool(entry_result.suppress_routing_hint)
+    # Sticky suppression: the entry phase may add its own suppression
+    # (planner / resume-in-flight paths), but only the caller's flag can
+    # lift it — delegate/fork children must never be downgraded to False.
+    suppress_routing_hint = caller_suppress_routing_hint or bool(entry_result.suppress_routing_hint)
     if entry_result.first_step_query:
         query = entry_result.first_step_query
     early_user_context = entry_result.early_user_context
@@ -8558,6 +8583,7 @@ async def _run_turn_inner(
         execution_policy=execution_policy,
         routing_ctx=_routing_ctx,
         preferred_model_id=preferred_model_id,
+        caller_suppress_routing_hint=suppress_routing_hint,
         assemble_user=assemble_user,
         assemble_system=assemble_system,
         build_entry_ctx=_build_entry_ctx,
