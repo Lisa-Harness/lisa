@@ -364,3 +364,65 @@ def test_reprojection_reuses_original_result_references_under_pressure(tmp_path:
         "large result 0 "
     )
     assert project_thread_messages(projected, "task-1", thread_path=thread) == projected
+
+
+class TestVerifiedFactsExtraction:
+    """An approved tool result carrying ``output_json.fact`` attaches it."""
+
+    def test_approval_results_extract_fact_only_from_fact_tool(self) -> None:
+        from kernel.models import ToolResult
+        from runtime.approval.orchestration import _fact_from_approval_result
+
+        fact = {"claim": "fd 4 is the Unix socket", "at": "daemon.go:124", "revision": "0" * 40}
+        carrying = ToolResult(
+            tool_id="coding_record_fact",
+            output_text="recorded",
+            output_json={"fact": fact},
+        )
+        assert _fact_from_approval_result("coding_record_fact", carrying) == [fact]
+
+    def test_other_tools_and_error_results_are_ignored(self) -> None:
+        from kernel.models import ToolResult
+        from runtime.approval.orchestration import _fact_from_approval_result
+
+        fact = {"claim": "x", "at": "y:1", "revision": "0" * 40}
+        assert (
+            _fact_from_approval_result(
+                "coding_commit", ToolResult(tool_id="coding_commit", output_json={"fact": fact})
+            )
+            is None
+        )
+        assert (
+            _fact_from_approval_result(
+                "coding_record_fact",
+                ToolResult(tool_id="coding_record_fact", error="revision mismatch"),
+            )
+            is None
+        )
+        assert (
+            _fact_from_approval_result(
+                "coding_record_fact", ToolResult(tool_id="coding_record_fact")
+            )
+            is None
+        )
+
+    def test_fact_round_trips_through_approved_turn(self, tmp_path: Path) -> None:
+        """The fact lands on the recorded approved turn and survives replay."""
+        thread = tmp_path / "threads" / "tester"
+        _append(
+            thread,
+            "/approve f1",
+            response_text="Recorded fact on abc123: fd 4 is the Unix socket",
+            provenance={"source": "host-approved", "target_id": "coding_record_fact"},
+            effect_receipts=[
+                {"capability_id": "coding_record_fact", "effect": "write", "artifact_id": "abc123"}
+            ],
+            verified_facts=[
+                {"claim": "fd 4 is the Unix socket", "at": "daemon.go:124", "revision": "0" * 40}
+            ],
+        )
+
+        from sdk.thread import ThreadStore
+
+        entry = ThreadStore(thread).load_recent(limit=1)[0]
+        assert entry["verified_facts"][0]["claim"] == "fd 4 is the Unix socket"

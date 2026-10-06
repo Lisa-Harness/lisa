@@ -327,6 +327,36 @@ def _approval_action_receipt_for_thread(
     return approval_action_receipt(invocation, result)
 
 
+_VERIFIED_FACT_TOOL_IDS = frozenset({"coding_record_fact"})
+
+
+def _fact_from_approval_result(
+    tool_id: str, result: ToolResult | OperationResult
+) -> list[dict[str, Any]] | None:
+    """Extract a verified-facts record from an approved tool result.
+
+    Only the fact-recording tool's successful result contributes; everything
+    else (other tools, errors, missing payloads) returns ``None`` so the
+    thread attach site carries no implicit behavior. The fact survives as
+    part of the approved-turn record, so a fresh worktree rehydrates it from
+    the archive rather than re-deriving it.
+    """
+    if tool_id not in _VERIFIED_FACT_TOOL_IDS or not isinstance(result, ToolResult):
+        return None
+    if result.error.strip():
+        return None
+    fact = result.output_json.get("fact")
+    if not isinstance(fact, dict):
+        return None
+    claim = str(fact.get("claim") or "").strip()
+    at = str(fact.get("at") or "").strip()
+    revision = str(fact.get("revision") or "").strip()
+    if not claim or not at or not revision:
+        return None
+    record: dict[str, Any] = {"claim": claim, "at": at, "revision": revision}
+    return [record]
+
+
 def _thread_entries(runtime: HostRuntime) -> list[dict[str, Any]]:
     """Return every persisted turn in the active thread, oldest first."""
     from runtime.thread import (  # lazy: defers runtime.thread import to approval time
@@ -472,6 +502,9 @@ async def _record_and_continue_after_approval(
             "target_id": invocation.target_id,
         },
         effect_receipts=[] if error else [_approval_action_receipt_for_thread(invocation, result)],
+        verified_facts=None
+        if error
+        else _fact_from_approval_result(str(invocation.target_id or ""), result),
         handoff_to=""
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
