@@ -316,7 +316,10 @@ def _turn_completion_max_tokens(model_def: Any) -> int:
     Reasoning-capable models (``reasoning_model``/``thinking_model`` flags
     or a ``reasoning`` capability string) get ``settings.turn_completion_max_tokens``
     (default 8192); everything else keeps the legacy 4096. Always bounded by
-    the model's ``context_window`` when the manifest declares one.
+    the model's ``context_window`` when the manifest declares one, and by
+    the model's declared ``max_completion_tokens`` ceiling when set
+    (BUDGET_SCOPES_RFC scope 1 — the per-model value may only tighten:
+    min of settings budget and model ceiling).
     """
     budget = int(getattr(_kernel_settings, "turn_completion_max_tokens", 0) or 0)
     if budget <= 0:
@@ -327,6 +330,9 @@ def _turn_completion_max_tokens(model_def: Any) -> int:
     caps_reasoning = _REASONING_CAPABILITY_MARKER in {
         str(cap).lower() for cap in (getattr(model_def, "capabilities", ()) or ())
     }
+    model_ceiling = int(getattr(model_def, "max_completion_tokens", 0) or 0)
+    if model_ceiling > 0:
+        budget = min(budget, model_ceiling)
     if not (flags_reasoning or caps_reasoning):
         # Never exceed the legacy budget for plain models, even when the
         # configured reasoning budget is lower.

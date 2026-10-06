@@ -41,6 +41,18 @@ class StubModelDefinition:
 
     context_window: int = 0
 
+    max_completion_tokens: int = 0
+
+    """Per-call completion token ceiling from ``ManifestModelEntry``
+
+    (BUDGET_SCOPES_RFC scope 1). 0/absent = inherit the host settings
+
+    budget; a declared value bounds every turn-loop call regardless of
+
+    mode. Forwarded so the kernel's budget resolver can apply
+
+    ``min(settings, model)`` without reaching into the host manifest."""
+
     completion_api: str = "chat_completions"
 
     """Which OpenAI-compatible endpoint family this model uses: ``"chat_completions"``
@@ -400,6 +412,7 @@ def resolve_model(
         reasoning_model=resolved.reasoning_model,
         thinking_model=resolved.thinking_model,
         context_window=resolved.context_window,
+        max_completion_tokens=getattr(resolved, "max_completion_tokens", 0),
         completion_api=resolved.completion_api,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,

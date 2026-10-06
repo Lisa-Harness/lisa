@@ -29,6 +29,11 @@ class ManifestModelEntry:
     cost_tier: str = "standard"
     latency_tier: str = "medium"
     context_window: int = 0
+    #: Per-call completion token ceiling the host applies on top of its
+    #: settings budget (``min``). 0/absent = inherit the host setting.
+    #: Provider-behavior declaration (BUDGET_SCOPES_RFC scope 1): bounds
+    #: reasoning-class models regardless of mode.
+    max_completion_tokens: int = 0
     #: Per-token USD price for prompt (input) tokens, when the provider
     #: publishes pricing. 0.0 = unknown/not priced. OpenRouter exposes this
     #: via ``pricing.prompt``; other providers may leave it 0.0. Display
@@ -467,6 +472,11 @@ def _parse_model_entry(
             field_name="context_window",
             model_id=key,
         ),
+        max_completion_tokens=_parse_model_completion_budget(
+            raw_model.get("max_completion_tokens"),
+            context_window_raw=raw_model.get("context_window"),
+            model_id=key,
+        ),
         operator_only=bool(raw_model.get("operator_only", False)),
         deployment_only=bool(raw_model.get("deployment_only", False)),
         api_key_env=str(raw_model.get("api_key_env") or "").strip(),
@@ -527,6 +537,43 @@ def _parse_nonnegative_int(raw_value: Any, *, field_name: str, model_id: str) ->
     if value < 0:
         raise ValueError(
             f"Manifest model entry for '{model_id}' {field_name} must be a non-negative integer."
+        )
+    return value
+
+
+_MIN_DECLARED_COMPLETION_BUDGET = 1024
+
+
+def _parse_model_completion_budget(
+    raw_value: Any, *, context_window_raw: Any, model_id: str
+) -> int:
+    """Parse the optional per-model ``max_completion_tokens`` ceiling.
+
+    0/absent = inherit the host settings budget. A declared value must be
+    at least 1024 (a ceiling below one K of completion is a manifest typo,
+    not a budget) and, when the entry also declares ``context_window``,
+    must fit inside it. Load-time errors, not silent clamps — the manifest
+    is not the place to hide a fix-up (BUDGET_SCOPES_RFC scope 1).
+    """
+    if raw_value is None:
+        return 0
+    value = _parse_nonnegative_int(
+        raw_value, field_name="max_completion_tokens", model_id=model_id
+    )
+    if value == 0:
+        return 0
+    if value < _MIN_DECLARED_COMPLETION_BUDGET:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' max_completion_tokens must be "
+            "0 (inherit) or at least 1024."
+        )
+    window = _parse_nonnegative_int(
+        context_window_raw, field_name="context_window", model_id=model_id
+    )
+    if window > 0 and value > window:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' max_completion_tokens ({value}) "
+            f"exceeds its context_window ({window})."
         )
     return value
 

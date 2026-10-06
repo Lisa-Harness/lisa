@@ -108,3 +108,82 @@ def test_reasoning_budget_capped_by_context_window() -> None:
 
     model = _model(capabilities=("reasoning",), context_window=8192)
     assert _turn_completion_max_tokens(model) == 8192
+
+
+# ── Per-model manifest budget (BUDGET_SCOPES_RFC scope 1) ─────────────
+
+
+def test_model_declared_budget_bounds_reasoning_budget() -> None:
+    """A manifest ``max_completion_tokens`` bounds the per-call budget.
+
+    Scope 1 of the per-scope completion budgets: the manifest entry
+    declares provider behavior — "this model may not bill more than N
+    completion tokens per call". The 2026-10-06 glm-5.3:cloud marathons
+    burned the host override at the settings level only; a per-model
+    ceiling tames reasoning-class models for every mode at once, and
+    makes the truncation-rescue math proportionally smaller for free.
+    """
+
+    model = _model(reasoning_model=True, max_completion_tokens=8192)
+    assert _turn_completion_max_tokens(model) == 8192
+
+
+def test_model_declared_budget_above_settings_uses_settings() -> None:
+    """The effective budget is the min of model ceiling and settings value.
+
+    A per-model value may only tighten; a declaration above the host
+    budget never raises the effective budget.
+    """
+
+    model = _model(reasoning_model=True, max_completion_tokens=131072)
+    assert _turn_completion_max_tokens(model) == 16384
+
+
+def test_model_declared_budget_absent_inherits_settings() -> None:
+    """Absent field (0) inherits the settings path unchanged."""
+
+    model = _model(reasoning_model=True, max_completion_tokens=0)
+    assert _turn_completion_max_tokens(model) == 16384
+
+
+def test_model_declared_budget_respects_context_window() -> None:
+    """The window cap applies after the model ceiling: min of all three."""
+
+    model = _model(
+        reasoning_model=True, max_completion_tokens=8192, context_window=4096
+    )
+    assert _turn_completion_max_tokens(model) == 4096
+
+
+def test_manifest_load_validates_model_completion_budget() -> None:
+    """The manifest loader accepts and rejects per-model budgets.
+
+    ``max_completion_tokens`` must be >= 1024 and, when both are set,
+    <= the entry's ``context_window`` — violations are load-time errors
+    (the manifest is not the place to hide a silent clamp).
+    """
+    import pathlib
+    import tempfile
+
+    import yaml
+    from kernel.model_manifest import load_model_manifest
+
+    def _load(model: dict) -> None:
+        payload = {"version": 1, "models": [model]}
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(payload, f)
+            f.flush()
+            load_model_manifest(pathlib.Path(f.name))
+
+    _load({"model_id": "ok", "provider": "openai", "max_completion_tokens": 8192})
+    with pytest.raises(ValueError, match="max_completion_tokens"):
+        _load({"model_id": "tiny", "provider": "openai", "max_completion_tokens": 512})
+    with pytest.raises(ValueError, match="max_completion_tokens"):
+        _load(
+            {
+                "model_id": "over",
+                "provider": "openai",
+                "max_completion_tokens": 131072,
+                "context_window": 65536,
+            }
+        )
