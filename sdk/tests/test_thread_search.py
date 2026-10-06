@@ -1105,6 +1105,158 @@ class TestProjectionGraduatedCollapse:
             assert head == 600
 
 
+# ── project_tool_messages() — small work results inline under pressure ───
+
+
+class TestProjectionSmallWorkResultInline:
+    """Abbreviation must not fire when it would omit nothing.
+
+    Regression shape for the 2026-10-06 turn-557/558 micro-window loop:
+    under pressure every work-tool result was persisted and previewed,
+    including results smaller than the active head+tail scale (whose
+    ``omitted_chars`` was zero). The preview envelope plus JSON escaping
+    cost more wire bytes than the content it replaced, so the projector
+    inflated the context it bounds and coerced the model into re-reading
+    files through ever-smaller line windows (31 of 50 reads at 2-3 lines,
+    ~7.5s each, before the 50-read cap).
+    """
+
+    @staticmethod
+    def _pressure_messages(small_result: str) -> list[dict[str, Any]]:
+        filler = "x" * (_TOOL_CONTEXT_BYTES + 4096)
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "big", "function": {"name": "coding_read_file"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "big",
+                "name": "coding_read_file",
+                "content": filler,
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "small", "function": {"name": "coding_read_file"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "small",
+                "name": "coding_read_file",
+                "content": small_result,
+            },
+        ]
+
+    @staticmethod
+    def _persisted(result: dict[str, Any]) -> str:
+        return "r" + hashlib.sha256(json.dumps(result).encode()).hexdigest()
+
+    def test_result_fitting_the_pressure_scale_stays_inline(self) -> None:
+        """A work result no larger than head+tail is visible whole under pressure."""
+        from sdk.thread._results import project_tool_messages
+
+        # At this overage the graduated scale is 576+288 visible chars
+        # (fraction 4736/98304): a result that fits must not be previewed.
+        small = "line of evidence " * 40  # 640 chars < 864
+        projected = project_tool_messages(self._pressure_messages(small), "task", self._persisted)
+        small_message = next(m for m in projected if m.get("tool_call_id") == "small")
+        assert small_message["content"] == small, (
+            "work result fitting the preview scale was abbreviated without omission"
+        )
+        big_message = next(m for m in projected if m.get("tool_call_id") == "big")
+        assert json.loads(big_message["content"])["abbreviated"] is True
+
+    def test_result_exceeding_the_pressure_scale_is_abbreviated_with_omission(self) -> None:
+        """A result larger than head+tail still previews (and omits) as before."""
+        from sdk.thread._results import project_tool_messages
+
+        large = "line of evidence " * 200  # 3200 chars > 864
+        projected = project_tool_messages(self._pressure_messages(large), "task", self._persisted)
+        small_message = next(m for m in projected if m.get("tool_call_id") == "small")
+        preview = json.loads(small_message["content"])
+        assert preview["abbreviated"] is True
+        assert preview["omitted_chars"] > 0, (
+            "abbreviation without omission must not fire for oversized results either"
+        )
+
+    def test_inline_small_results_remain_inventory_eligible(self) -> None:
+        """Over-budget turns still evict inline results through the inventory."""
+        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            ref = "r" + hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            persisted.setdefault(ref, result)
+            return ref
+
+        small = "y" * 600
+        # Many results that fit the pressure scale individually but exceed the
+        # absolute budget together: _compact_groups must evict them to the
+        # inventory (persisting on demand), keeping the wire bound.
+        messages: list[dict[str, Any]] = []
+        for index in range(120):
+            call_id = f"s{index}"
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"id": call_id, "function": {"name": "coding_read_file"}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": "coding_read_file",
+                        "content": small,
+                    },
+                ]
+            )
+        projected = project_tool_messages(messages, "task", persist)
+        projected_bytes = sum(
+            len(m["content"].encode()) for m in projected if m.get("role") == "tool"
+        )
+        assert projected_bytes <= _TOOL_CONTEXT_BYTES
+        assert any("inventory_ref" in m.get("content", "") for m in projected), (
+            "absolute projection bound lost its inventory eviction path"
+        )
+        assert any(
+            result.get("tool_name") == "coding_read_file" for result in persisted.values()
+        ), "evicted inline results were not persisted for lossless recovery"
+
+    def test_inline_projection_is_idempotent(self) -> None:
+        """Re-projecting the projected form does not re-abbreviate inline results."""
+        from sdk.thread._results import project_tool_messages
+
+        small = "line of evidence " * 40
+        first = project_tool_messages(self._pressure_messages(small), "task", self._persisted)
+        second = project_tool_messages(first, "task", self._persisted)
+        assert first == second
+
+    def test_inline_result_is_smaller_on_the_wire_than_its_preview(self) -> None:
+        """The replaced preview must cost more wire bytes than the inline content."""
+        from sdk.thread._results import project_tool_messages
+
+        small = "line of evidence " * 40
+        projected = project_tool_messages(self._pressure_messages(small), "task", self._persisted)
+        small_message = next(m for m in projected if m.get("tool_call_id") == "small")
+        inline_bytes = len(small_message["content"].encode())
+        # Project a twin one char too large to inline: its preview envelope
+        # must exceed the inline content, i.e. abbreviation would have
+        # inflated the wire (the net-negative compaction being fixed).
+        oversized = small + "!" * 770  # just above the scale
+        legacy_oversized = project_tool_messages(
+            self._pressure_messages(oversized), "task", lambda r: "r" + "0" * 64
+        )
+        preview = json.loads(
+            next(m for m in legacy_oversized if m.get("tool_call_id") == "small")["content"]
+        )
+        preview_bytes = len(json.dumps(preview, ensure_ascii=False).encode())
+        assert preview_bytes > inline_bytes, (
+            f"preview envelope {preview_bytes}B did not exceed inline {inline_bytes}B; "
+            "the net-negative abbreviation premise failed"
+        )
+
+
 # ── project_tool_messages() — retrieval expansions excluded from pressure ──
 
 

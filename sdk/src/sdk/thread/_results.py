@@ -105,6 +105,9 @@ def project_tool_messages(
     latest_retrieval = max(retrieval_indices, default=-1)
     scale = _preview_scale(tool_bytes) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
     refs: dict[int, str] = {}
+    # Inline results register lazy persisters instead of eager refs: the
+    # absolute-bound path may still have to evict them to the inventory.
+    inline_refs: dict[int, Callable[[], str]] = {}
     for index, message in enumerate(projected):
         content = message.get("content")
         if message.get("role") != "tool" or not isinstance(content, str):
@@ -140,9 +143,27 @@ def project_tool_messages(
             continue
         if (
             len(content.encode("utf-8")) <= _INLINE_RESULT_BYTES
-            and not pressure
+            and (not pressure or len(permitted) <= scale[0] + scale[1])
             and (not retrieval_page or not over_budget or index == latest_retrieval)
         ):
+            # A result that fits the active head+tail scale has nothing to
+            # omit: abbreviating it would replace content with a strictly
+            # larger ref envelope (the 2026-10-06 turn-557/558 micro-window
+            # loop, where zero-omission previews inflated the context they
+            # bound). Keep it inline. ``_compact_groups`` can still evict it
+            # when over budget, persisting the raw content on demand, so the
+            # absolute bound and the lossless archive both hold.
+
+            def _persist_inline(bound_content: str = content, bound_name: str = name) -> str:
+                return persist(
+                    {
+                        "content": bound_content,
+                        "task_id": task_id,
+                        "tool_name": bound_name,
+                    }
+                )
+
+            inline_refs[index] = _persist_inline
             message["content"] = permitted
             continue
         ref = (
@@ -152,6 +173,7 @@ def project_tool_messages(
         )
         refs[index] = ref
         message["content"] = _preview(ref, permitted, *scale)
+    refs.update({index: make_ref() for index, make_ref in inline_refs.items()})
     return (
         _compact_groups(messages, projected, refs, task_id, persist)
         if pressure or over_budget
