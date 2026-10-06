@@ -172,6 +172,15 @@ class Settings(BaseSettings):
     per_step_max_tool_calls: int = 150
 
     # ── Turn runner: completion budgets ──────────────────────────────
+    # Seconds without a streamed chunk before ``_collect_stream`` aborts
+    # the generation and the turn falls back to an error completion. The
+    # 2026-10-06 glm-5.3:cloud marathon froze mid-generation (socket byte
+    # counters frozen 8+ minutes; the turn only recovered because the
+    # upstream happened to resume) and the bare ``async for`` blocked
+    # indefinitely. 0 disables the watchdog. Long *quiet-but-alive*
+    # generations are unaffected: the window resets on every chunk.
+    # Override via ``STREAM_IDLE_TIMEOUT_S``.
+    stream_idle_timeout_s: float = 300.0
     # Per-iteration completion token budget for turn-loop model calls.
     # Reasoning-capable models (``reasoning_model``/``thinking_model``
     # flags, or a ``reasoning`` capability) bill their chain-of-thought
@@ -400,6 +409,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "declarative_completion_max_tokens",
+        "stream_idle_timeout_s",
         "max_tool_iterations",
         "fork_child_max_tool_iterations",
         "delegate_child_max_tool_iterations",

@@ -10,6 +10,7 @@ from __future__ import annotations
 __all__ = [
     # Public surface
     "ContextSeams",
+    "StreamIdleTimeout",
     "StreamedCompletionAdapter",
     "TurnHooks",
     "TurnResult",
@@ -43,6 +44,8 @@ __all__ = [
 ]
 
 
+import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -2594,14 +2597,47 @@ async def _collect_stream(
     Returns ``(chunks, elapsed_ms)``. Bare metadata chunks (no
     ``content``/``reasoning_content``) are collected but not forwarded —
     transports only need to see real text.
+
+    Idle watchdog: a generation that goes silent for
+    ``settings.stream_idle_timeout_s`` (0 disables) is aborted with a
+    ``StreamIdleTimeout`` — the bare ``async for`` blocked indefinitely on
+    the 2026-10-06 mid-stream freeze, hanging the turn on an upstream that
+    happened to resume only by luck. The window resets on every chunk, so
+    a slow-but-alive generation never trips it.
     """
+    timeout_s = float(getattr(_kernel_settings, "stream_idle_timeout_s", 0.0) or 0.0)
+    if timeout_s <= 0:
+        chunks: list[StreamedChunk] = []
+        started = time.perf_counter()
+        async for chunk in stream_gateway_fn(completion_request):
+            chunks.append(chunk)
+            if on_delta is not None and (chunk.content or chunk.reasoning_content):
+                await on_delta(chunk.content, chunk.reasoning_content)
+        return chunks, (time.perf_counter() - started) * 1000.0
+
     started = time.perf_counter()
-    chunks: list[StreamedChunk] = []
-    async for chunk in stream_gateway_fn(completion_request):
+    chunks = []
+    stream = stream_gateway_fn(completion_request)
+    while True:
+        try:
+            chunk = await asyncio.wait_for(stream.__anext__(), timeout=timeout_s)
+        except StopAsyncIteration:
+            return chunks, (time.perf_counter() - started) * 1000.0
+        except TimeoutError as exc:
+            # The generator is abandoned mid-``__anext__``; close it so the
+            # gateway's finally-block (httpx response cleanup) still runs.
+            with contextlib.suppress(Exception):
+                await stream.aclose()
+            raise StreamIdleTimeout(
+                f"stream produced no chunk for {timeout_s:.0f}s"
+            ) from exc
         chunks.append(chunk)
         if on_delta is not None and (chunk.content or chunk.reasoning_content):
             await on_delta(chunk.content, chunk.reasoning_content)
-    return chunks, (time.perf_counter() - started) * 1000.0
+
+
+class StreamIdleTimeout(RuntimeError):
+    """A streamed generation went silent past ``stream_idle_timeout_s``."""
 
 
 async def _streamed_gateway_completion(

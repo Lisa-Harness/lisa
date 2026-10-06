@@ -11,6 +11,7 @@ Gateway-specific streaming tests (``OpenAICompatibleGateway.complete_stream``,
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -574,3 +575,90 @@ async def test_turn_runner_on_delta_absent_is_noop() -> None:
     assert hooks.models.on_delta is None
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert "plain stream" in result.response_text
+
+
+# ── Stream idle watchdog (the 2026-10-06 mid-stream freeze) ───────────
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_stalled_stream_aborts_after_idle_timeout() -> None:
+    """A stream that goes silent mid-generation aborts after the idle
+    timeout instead of hanging the turn forever.
+
+    Regression for the 2026-10-06 glm-5.3:cloud marathon: the doubled
+    truncation-rescue stream stalled mid-generation (socket byte counters
+    frozen for 8+ minutes) and ``_collect_stream``'s bare ``async for``
+    blocked indefinitely — no timeout existed between the POST and the
+    next lifecycle event. The turn only recovered because the upstream
+    happened to resume; a permanent upstream hang left the CLI dead.
+    The stalled call raises ``StreamIdleTimeout``; the turn loop's
+    provider-failure path turns that into a turn error the host renders.
+    """
+    import asyncio
+
+    import kernel.turn_runner
+    from kernel.turn_runner import _collect_stream
+
+    chunks_yielded: list[StreamedChunk] = []
+
+    def _stalled_stream_fn(idle_s: float):
+        async def stream_fn(*_args: Any, **_kwargs: Any):
+            # First chunk arrives promptly…
+            chunk = StreamedChunk(content="thinking")
+            chunks_yielded.append(chunk)
+            yield chunk
+            # …then the upstream freezes: nothing else ever arrives.
+            await asyncio.sleep(idle_s * 10)
+
+        return stream_fn
+
+    request = _request()
+    before = time.monotonic()
+    with (
+        patch(
+            "kernel.turn_runner._kernel_settings",
+            SimpleNamespace(stream_idle_timeout_s=0.05),
+        ),
+        pytest.raises(kernel.turn_runner.StreamIdleTimeout),
+    ):
+        await _collect_stream(_stalled_stream_fn(0.05), request, None)
+    elapsed = time.monotonic() - before
+    # The watchdog aborted the stalled stream within the timeout budget
+    # (not the 0.5s the sleep would have taken).
+    assert elapsed < 0.4, f"watchdog did not bound the stall: {elapsed:.2f}s"
+    # The chunk that arrived before the stall was produced (the generator
+    # ran at least once before freezing).
+    assert [c.content for c in chunks_yielded] == ["thinking"]
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_healthy_stream_unaffected_by_watchdog() -> None:
+    """A stream that keeps producing within the idle window is consumed
+    fully — the watchdog never fires on a live generation, even one
+    slower than the timeout in aggregate."""
+    import asyncio
+
+    from kernel.turn_runner import _collect_stream
+
+    def _slow_but_alive_stream_fn():
+        async def stream_fn(*_args: Any, **_kwargs: Any):
+            for _ in range(3):
+                yield StreamedChunk(content="x")
+                await asyncio.sleep(0.02)  # well under the idle timeout
+
+        return stream_fn
+
+    with patch(
+        "kernel.turn_runner._kernel_settings",
+        SimpleNamespace(stream_idle_timeout_s=0.5),
+    ):
+        chunks, _ = await _collect_stream(_slow_but_alive_stream_fn(), _request(), None)
+    assert [c.content for c in chunks] == ["x", "x", "x"]
+
+
+def test_stream_idle_timeout_setting_env_override() -> None:
+    """``STREAM_IDLE_TIMEOUT_S`` tunes the watchdog; 0 disables it."""
+    from kernel.config import Settings
+
+    assert Settings.model_validate({"stream_idle_timeout_s": "120"}).stream_idle_timeout_s == 120
+    assert Settings.model_validate({"stream_idle_timeout_s": "0"}).stream_idle_timeout_s == 0
