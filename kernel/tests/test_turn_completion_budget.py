@@ -220,3 +220,64 @@ def test_mode_budget_never_raises_effective_budget() -> None:
 
     model = _model(reasoning_model=True, max_completion_tokens=8192)
     assert _effective_completion_max_tokens(model, mode_budget_tokens=65536) == 8192
+
+
+# ── Mode-authored turn completion rail (BUDGET_SCOPES_RFC scope 3) ────
+
+
+def test_mode_turn_rail_folds_into_budget_when_host_supplied_none() -> None:
+    """A mode's ``turn_completion_budget_tokens`` becomes the effective
+    TurnBudget's completion rail when the host declared none.
+
+    Scope 3 closes the cumulative runaway the per-call budgets cannot
+    bound: the 2026-10-06 turn burned 128k completion across five
+    per-call-sized dumps and still ended blocked. ``budget_forces_final``
+    already enforces a completion rail; what was missing was authority —
+    modes can now declare the whole-turn envelope their work shape
+    warrants.
+    """
+    from types import SimpleNamespace as _NS
+
+    from kernel.turn_runner import _fold_mode_turn_budget
+
+    mode_config = _NS(turn_completion_budget_tokens=200_000)
+    # Host supplied nothing: the mode rail arms.
+    folded = _fold_mode_turn_budget(None, mode_config)
+    assert folded is not None and folded.max_completion_tokens == 200_000
+    assert folded.max_tool_calls == 0  # unlimited preserved
+    assert folded.max_total_tokens == 0
+    assert folded.max_wall_ms == 0
+
+
+def test_mode_turn_rail_tightens_host_budget_never_raises() -> None:
+    """A host-declared completion rail wins over the mode's (fold-only,
+    never loosen); the mode value may tighten the host rail."""
+
+    from types import SimpleNamespace as _NS
+
+    from kernel.models import TurnBudget
+    from kernel.turn_runner import _fold_mode_turn_budget
+
+    host_budget = TurnBudget(max_tool_calls=50, max_completion_tokens=500_000)
+    mode_config = _NS(turn_completion_budget_tokens=200_000)
+    folded = _fold_mode_turn_budget(host_budget, mode_config)
+    assert folded.max_completion_tokens == 200_000  # tightened
+    assert folded.max_tool_calls == 50  # host tool cap preserved
+    # Mode declares more than the host rail: the host rail stands.
+    mode_config_big = _NS(turn_completion_budget_tokens=10_000_000)
+    folded2 = _fold_mode_turn_budget(host_budget, mode_config_big)
+    assert folded2.max_completion_tokens == 500_000
+
+
+def test_mode_turn_rail_absent_keeps_budget_untouched() -> None:
+    """No declaration (0) = budget passes through unchanged (either way)."""
+
+    from types import SimpleNamespace as _NS
+
+    from kernel.models import TurnBudget
+    from kernel.turn_runner import _fold_mode_turn_budget
+
+    mode_config = _NS(turn_completion_budget_tokens=0)
+    host_budget = TurnBudget(max_tool_calls=50, max_completion_tokens=500_000)
+    assert _fold_mode_turn_budget(host_budget, mode_config) is host_budget
+    assert _fold_mode_turn_budget(None, mode_config) is None

@@ -279,6 +279,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "satisfies_intents",
         "required_capabilities",
         "completion_budget_tokens",
+        "turn_completion_budget_tokens",
         "default_intent_bridges",
         "artifact_type",
         "yield_policy",
@@ -819,30 +820,39 @@ def _parse_mode_routing_fields(
 def _parse_completion_budget_tokens(
     mode_front_matter: dict[str, Any],
     mode_config_path: Path,
-) -> int:
-    """Parse the mode's per-call ``completion_budget_tokens`` declaration.
+) -> tuple[int, int]:
+    """Parse the mode's budget declarations (BUDGET_SCOPES_RFC scopes 2+3).
 
-    BUDGET_SCOPES_RFC scope 2: the mode's work-shape budget, applied as
-    min(mode, model, settings) by the turn loop. 0/absent = inherit the
-    effective model/settings budget (backward compatible). A declared
-    value must be a positive integer — a typo'd budget silently
-    inheriting the settings value would defeat the declaration, so
-    invalid values fail catalog load loudly.
+    Returns ``(completion_budget_tokens, turn_completion_budget_tokens)`` —
+    the per-call work-shape budget and the whole-turn cumulative rail.
+    0/absent for either = inherit (backward compatible). Declared values
+    must be positive integers — a typo'd budget silently inheriting the
+    settings value would defeat the declaration, so invalid values fail
+    catalog load loudly.
     """
+    per_call = 0
     raw = mode_front_matter.get("completion_budget_tokens")
-    if raw is None:
-        return 0
+    if raw is not None:
+        per_call = _coerce_positive_budget_int(raw, "completion_budget_tokens", mode_config_path)
+    per_turn = 0
+    raw_turn = mode_front_matter.get("turn_completion_budget_tokens")
+    if raw_turn is not None:
+        per_turn = _coerce_positive_budget_int(
+            raw_turn, "turn_completion_budget_tokens", mode_config_path
+        )
+    return per_call, per_turn
+
+
+def _coerce_positive_budget_int(raw: Any, field_name: str, mode_config_path: Path) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
         raise WorkflowValidationError(
-            f"completion_budget_tokens must be a positive integer in {mode_config_path}, "
-            f"got {raw!r}"
+            f"{field_name} must be a positive integer in {mode_config_path}, got {raw!r}"
         ) from exc
     if value <= 0:
         raise WorkflowValidationError(
-            f"completion_budget_tokens must be a positive integer in {mode_config_path}, "
-            f"got {value}"
+            f"{field_name} must be a positive integer in {mode_config_path}, got {value}"
         )
     return value
 
@@ -1057,6 +1067,7 @@ def _load_mode_from_dir(
         mode_front_matter, mode_kind, mode_config_path
     )
     routing = _parse_mode_routing_fields(mode_front_matter, mode_config_path)
+    _mode_budget_tokens = _parse_completion_budget_tokens(mode_front_matter, mode_config_path)
     default_intent_bridges = _parse_default_intent_bridges(mode_front_matter, mode_config_path)
     yield_policy, fork_allowed = _parse_yield_and_fork_policy(mode_front_matter, mode_config_path)
     approval_continuation = _parse_approval_continuation(mode_front_matter, mode_config_path)
@@ -1089,9 +1100,8 @@ def _load_mode_from_dir(
         routing_intent_keywords=routing.routing_intent_keywords,
         satisfies_intents=routing.satisfies_intents,
         required_capabilities=routing.required_capabilities,
-        completion_budget_tokens=_parse_completion_budget_tokens(
-            mode_front_matter, mode_config_path
-        ),
+        completion_budget_tokens=_mode_budget_tokens[0],
+        turn_completion_budget_tokens=_mode_budget_tokens[1],
         command_pattern=command_pattern,
         require_query=require_query,
         entry_operation_ids=operation_bindings.entry_operation_ids,

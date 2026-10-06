@@ -358,6 +358,39 @@ def _effective_completion_max_tokens(model_def: Any, *, mode_budget_tokens: int 
     return budget
 
 
+def _fold_mode_turn_budget(turn_budget: TurnBudget | None, mode_config: Any) -> TurnBudget | None:
+    """Fold the mode's declared turn completion rail into the effective budget.
+
+    BUDGET_SCOPES_RFC scope 3. ``budget_forces_final`` already enforces a
+    completion rail; what was missing was mode authority. A mode declaring
+    ``turn_completion_budget_tokens`` arms the rail when the host supplied
+    no budget, and tightens it (never loosens) when the host declared one.
+    The mode's value is cumulative completion tokens across ALL calls of
+    the turn — the runaway the per-call budgets cannot bound (the
+    2026-10-06 turn: five per-call-sized dumps, 128k cumulative
+    completion, still no verdict). Host-declared tool/total/wall limits
+    are preserved verbatim; absent declaration (0) passes through
+    unchanged.
+    """
+    mode_rail = int(getattr(mode_config, "turn_completion_budget_tokens", 0) or 0)
+    if mode_rail <= 0:
+        return turn_budget
+    if turn_budget is None:
+        return TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=mode_rail,
+            max_wall_ms=0,
+        )
+    host_rail = turn_budget.max_completion_tokens
+    effective = min(host_rail, mode_rail) if host_rail else mode_rail
+    if effective == host_rail:
+        return turn_budget
+    return turn_budget.model_copy(
+        update={"max_completion_tokens": effective}
+    )
+
+
 def _synthesized_call_missing_all_required(
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -1105,6 +1138,12 @@ async def run_turn(
         )
 
     mode_config = get_workflow_catalog().get(mode_id)
+
+    # Mode-authored turn rail (BUDGET_SCOPES_RFC scope 3): fold the
+    # mode's declared cumulative completion budget into the effective
+    # TurnBudget — arms the rail when the host supplied none, tightens
+    # when the host declared one (host tool/total/wall limits preserved).
+    turn_budget = _fold_mode_turn_budget(turn_budget, mode_config)
 
     if hooks.services.recovery_service is not None:
         try:

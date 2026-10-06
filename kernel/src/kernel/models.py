@@ -1341,6 +1341,16 @@ class WorkflowModeConfig(BaseModel):
     # owned so it parses into this field rather than leaking into
     # ``extra_front_matter``.
     completion_budget_tokens: int = Field(default=0, ge=0)
+    # Whole-turn completion token rail declared by the mode itself
+    # (BUDGET_SCOPES_RFC scope 3): the cumulative envelope the mode's
+    # work shape warrants across ALL calls of one turn. Folds into the
+    # effective TurnBudget when the host declared no completion rail
+    # (host-declared wins; the mode value may only tighten). Exhaustion
+    # forces one final no-tools completion via ``budget_forces_final`` —
+    # bounding the cumulative reasoning-dump runaway per-call budgets
+    # cannot stop. 0/absent = no mode rail. Authored in ``_mode.md``
+    # front matter (``turn_completion_budget_tokens``).
+    turn_completion_budget_tokens: int = Field(default=0, ge=0)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""
