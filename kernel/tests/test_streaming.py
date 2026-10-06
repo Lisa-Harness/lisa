@@ -512,3 +512,65 @@ async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> 
 
     assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
     assert "complete answer" in result.response_text
+
+
+# ── on_delta per-chunk forwarding (v1 streaming display) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_forwards_chunks_to_on_delta() -> None:
+    """Every streamed chunk's text/reasoning deltas reach ``on_delta``.
+
+    The runtime's ``on_text_chunk`` transport display streams through this
+    hook; without it the chunks were collected locally and only the
+    aggregated completion reached the host — the 2026-10-04 "spinner with
+    nothing streaming" CLI incident.
+    """
+    chunks = [
+        StreamedChunk(content="Hel"),
+        StreamedChunk(reasoning_content="thinking..."),
+        StreamedChunk(content="lo world", finish_reason="stop"),
+    ]
+    stream_fn = _make_streaming_complete_stream(chunks)
+    received: list[tuple[str, str]] = []
+
+    async def on_delta(text: str, reasoning: str) -> None:
+        received.append((text, reasoning))
+
+    hooks = _build_minimal_hooks(_make_stub_complete("unused"), stream_fn)
+    hooks.models.on_delta = on_delta
+    result = await run_turn(mode_id="default", query="hi", hooks=hooks)
+
+    assert "Hello world" in result.response_text
+    assert received == [("Hel", ""), ("", "thinking..."), ("lo world", "")]
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_skips_empty_chunks_in_on_delta() -> None:
+    """Bare metadata chunks (finish_reason only) do not reach ``on_delta``."""
+    chunks = [
+        StreamedChunk(content="answer"),
+        StreamedChunk(finish_reason="stop"),
+    ]
+    stream_fn = _make_streaming_complete_stream(chunks)
+    received: list[tuple[str, str]] = []
+
+    async def on_delta(text: str, reasoning: str) -> None:
+        received.append((text, reasoning))
+
+    hooks = _build_minimal_hooks(_make_stub_complete("unused"), stream_fn)
+    hooks.models.on_delta = on_delta
+    await run_turn(mode_id="default", query="hi", hooks=hooks)
+
+    assert received == [("answer", "")]
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_on_delta_absent_is_noop() -> None:
+    """``on_delta=None`` (default) leaves the streaming path unchanged."""
+    chunks = [StreamedChunk(content="plain stream")]
+    stream_fn = _make_streaming_complete_stream(chunks)
+    hooks = _build_minimal_hooks(_make_stub_complete("unused"), stream_fn)
+    assert hooks.models.on_delta is None
+    result = await run_turn(mode_id="default", query="hi", hooks=hooks)
+    assert "plain stream" in result.response_text

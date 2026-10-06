@@ -806,6 +806,7 @@ class _WiredHooks:
         "execute_operation",
         "explicit_slice",
         "last_slice_finished_at",
+        "on_delta",
         "on_stage",
         "on_turn_complete",
         "post_turn_slice",
@@ -826,6 +827,7 @@ class _WiredHooks:
         execute_operation: Any,
         on_turn_complete: Any,
         on_stage: Any,
+        on_delta: Any,
         state_provider: Any,
         pre_turn_slice: Any,
         post_turn_slice: Any,
@@ -843,6 +845,7 @@ class _WiredHooks:
         self.execute_operation = execute_operation
         self.on_turn_complete = on_turn_complete
         self.on_stage = on_stage
+        self.on_delta = on_delta
         self.state_provider = state_provider
         self.pre_turn_slice = pre_turn_slice
         self.post_turn_slice = post_turn_slice
@@ -881,6 +884,7 @@ def _assemble_turn_hooks(
             resolve_model=wired.resolve_model,
             complete=None,
             complete_stream=wired.complete_stream,
+            on_delta=wired.on_delta,
         ),
         tools=ToolHooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
@@ -1156,6 +1160,60 @@ def _declared_config_owners(runtime: HostRuntime) -> set[str]:
     return runtime.session_plan.manifest.declared_pack_owners()
 
 
+def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindings:
+    """Build the session capability bindings from the live catalogs.
+
+    Extracted from ``build_turn_hooks`` to keep that assembler under the
+    complexity ceiling; owns the operation/tool ref collection and the
+    declared-config-owner resolution.
+    """
+    from kernel.operations.registry import get_operation_catalog
+    from kernel.tools.registry import get_tool_catalog
+
+    capability_refs = [
+        CapabilityRef("operation", definition.operation_id, definition.owner_id)
+        for definition in get_operation_catalog().values()
+        if definition.owner_id
+    ]
+    capability_refs.extend(
+        CapabilityRef("tool", definition.tool_id, definition.owner_id)
+        for definition in get_tool_catalog().values()
+        if definition.owner_id
+    )
+    return SessionCapabilityBindings(
+        runtime.session_plan.manifest.resources.packs.configuration,
+        capabilities=capability_refs or None,
+        declared_owners=_declared_config_owners(runtime),
+    )
+
+
+
+def _transport_forwarder(transport: Any) -> Any:
+    """Build guarded transport forwarders (stage + delta events).
+
+    Module-level so ``build_turn_hooks`` stays under the mccabe ceiling:
+    the guard branches live here, not in the assembler's nested closures.
+    Transport failures never break the turn — same posture as the
+    kernel's ``_emit_stage``.
+    """
+
+    async def forward(method: str, *args: Any) -> None:
+        if transport is None:
+            return
+        try:
+            await getattr(transport, method)(*args)
+        except Exception:
+            logger.debug("transport %s failed", method, exc_info=True)
+
+    async def on_stage(label: str, data: Any) -> None:
+        await forward("on_stage", label, data)
+
+    async def on_delta(text: str, reasoning: str) -> None:
+        await forward("on_text_chunk", text, reasoning)
+
+    return on_stage, on_delta
+
+
 def build_turn_hooks(
     runtime: HostRuntime,
     context: dict[str, Any] | None = None,
@@ -1174,24 +1232,8 @@ def build_turn_hooks(
         A ``TurnHooks`` ready to pass to ``kernel.turn_runner.run_turn``.
     """
     ctx_dict = context if context is not None else {}
-    from kernel.operations.registry import get_operation_catalog
-    from kernel.tools.registry import get_tool_catalog
 
-    capability_refs = [
-        CapabilityRef("operation", definition.operation_id, definition.owner_id)
-        for definition in get_operation_catalog().values()
-        if definition.owner_id
-    ]
-    capability_refs.extend(
-        CapabilityRef("tool", definition.tool_id, definition.owner_id)
-        for definition in get_tool_catalog().values()
-        if definition.owner_id
-    )
-    capability_binding_provider = SessionCapabilityBindings(
-        runtime.session_plan.manifest.resources.packs.configuration,
-        capabilities=capability_refs or None,
-        declared_owners=_declared_config_owners(runtime),
-    )
+    capability_binding_provider = _capability_binding_provider(runtime)
     approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
@@ -1369,15 +1411,12 @@ def build_turn_hooks(
         _explicit_slice,
     ) = _build_slice_callables(runtime, file_state_provider, _resolve_model)
 
-    # ── Live stage telemetry ─────────────────────────────────────────
-    # Forward the kernel's fine-grained stage events to the transport so the
-    # CLI/web stage line can show model_call, tool_dispatch, and
-    # fork-child progress as it happens. The kernel's ``_emit_stage`` helper
-    # swallows hook failures, so a transport error never breaks the turn.
-    async def _on_stage_event(label: str, data: dict[str, Any]) -> None:
-        if transport is None:
-            return
-        await transport.on_stage(label, data)
+    # ── Live stage telemetry + token deltas ────────────────────────
+    # Forward the kernel's fine-grained stage events and streamed deltas to
+    # the transport (on_stage / on_text_chunk) as they happen. The module
+    # level _transport_forwarder guards each call — a transport error never
+    # breaks the turn, mirroring the kernel's ``_emit_stage`` posture.
+    _on_stage_event, _on_delta_event = _transport_forwarder(transport)
 
     # ── Pack-provided slice providers ───────────────────────────────
     # _discover_pack_slice_providers (module-level) resolves the
@@ -1431,6 +1470,7 @@ def build_turn_hooks(
             execute_operation=_execute_operation,
             on_turn_complete=_on_turn_complete,
             on_stage=_on_stage_event,
+            on_delta=_on_delta_event,
             state_provider=_state_provider,
             pre_turn_slice=_pre_turn_slice_chained,
             post_turn_slice=_post_turn_slice_chained,

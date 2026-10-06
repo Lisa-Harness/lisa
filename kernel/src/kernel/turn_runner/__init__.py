@@ -2584,6 +2584,26 @@ def _per_iteration_nudges(
     return _midpoint_nudge_text, _read_loop_nudge_text
 
 
+async def _collect_stream(
+    stream_gateway_fn: Any,
+    completion_request: CompletionRequest,
+    on_delta: Callable[[str, str], Awaitable[None]] | None,
+) -> tuple[list[StreamedChunk], float]:
+    """Consume one ``complete_stream`` generator, forwarding deltas to ``on_delta``.
+
+    Returns ``(chunks, elapsed_ms)``. Bare metadata chunks (no
+    ``content``/``reasoning_content``) are collected but not forwarded —
+    transports only need to see real text.
+    """
+    started = time.perf_counter()
+    chunks: list[StreamedChunk] = []
+    async for chunk in stream_gateway_fn(completion_request):
+        chunks.append(chunk)
+        if on_delta is not None and (chunk.content or chunk.reasoning_content):
+            await on_delta(chunk.content, chunk.reasoning_content)
+    return chunks, (time.perf_counter() - started) * 1000.0
+
+
 async def _streamed_gateway_completion(
     *,
     gateway: Any,
@@ -2603,10 +2623,9 @@ async def _streamed_gateway_completion(
     """
     stream_gateway_fn = getattr(gateway, "complete_stream", None)
     assert callable(stream_gateway_fn)  # guarded by the caller's complete_stream check
-    chunks: list[StreamedChunk] = []
-    async for chunk in stream_gateway_fn(completion_request):
-        chunks.append(chunk)
-    stream_ms = (time.perf_counter() - complete_started) * 1000.0
+    on_delta = hooks.models.on_delta
+    chunks, collect_ms = await _collect_stream(stream_gateway_fn, completion_request, on_delta)
+    stream_ms = collect_ms
     aggregated = _aggregate_streamed_chunks(chunks)
     fallback_request = completion_request
 
@@ -2645,11 +2664,10 @@ async def _streamed_gateway_completion(
                 response_format=completion_request.response_format,
                 system_prompt_segments=completion_request.system_prompt_segments,
             )
-            retry_started = time.perf_counter()
-            retry_chunks: list[StreamedChunk] = []
-            async for chunk in stream_gateway_fn(fallback_request):
-                retry_chunks.append(chunk)
-            stream_ms += (time.perf_counter() - retry_started) * 1000.0
+            retry_chunks, retry_ms = await _collect_stream(
+                stream_gateway_fn, fallback_request, on_delta
+            )
+            stream_ms += retry_ms
             aggregated = _aggregate_streamed_chunks(retry_chunks)
 
     if aggregated.finish_reason == "tool_calls":

@@ -65,6 +65,14 @@ class ModelHooks:
     #: ``complete`` automatically.
     complete_stream: Callable[..., Any] | None = None
 
+    #: Per-chunk observer for the streaming path. When set, the turn runner
+    #: awaits ``on_delta(text, reasoning)`` for every ``StreamedChunk`` as it
+    #: arrives (before aggregation), so transports can render live token
+    #: streams. Errors raised here are transport decisions, not turn
+    #: failures — the runner forwards them raw (the host swallows or
+    #: handles, mirroring ``emit_stage``).
+    on_delta: Callable[[str, str], Awaitable[None]] | None = None
+
 
 # ── ContextHooks ────────────────────────────────────────────────────────
 @dataclass
