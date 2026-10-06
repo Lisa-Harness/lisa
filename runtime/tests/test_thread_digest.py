@@ -23,6 +23,7 @@ def _write_entry(
     provenance_extra: dict[str, object] | None = None,
     yielded: bool = False,
     yield_question: str = "",
+    verified_facts: list[dict[str, object]] | None = None,
 ) -> None:
     from sdk.thread._backend import _segment_paths
 
@@ -39,6 +40,8 @@ def _write_entry(
         "query": query,
         "response_text": response_text,
     }
+    if verified_facts:
+        entry["verified_facts"] = verified_facts
     if yielded:
         entry["yielded"] = True
         entry["yield_question"] = yield_question
@@ -413,3 +416,95 @@ def test_recorded_approval_request_ids_collects_tail_blockers(tmp_path: Path) ->
     assert recorded_approval_request_ids(thread_path) == ["22222222", "11111111"]
     assert recorded_approval_request_ids(None) == []
     assert recorded_approval_request_ids(tmp_path / "missing") == []
+
+
+def _fact(claim: str, at: str = "daemon.go:124", revision: str = "0dfdda5") -> dict[str, object]:
+    return {"claim": claim, "at": at, "revision": revision}
+
+
+class TestVerifiedFacts:
+    """Verified facts ride the record and render in the digest push lane.
+
+    Regression shape for the 2026-10-05 audit: the conclusion "fd 4 is the
+    Unix socket" existed only in the turn-522 transcript, so every later
+    turn paid again to re-mine it. Facts make conclusions durably rehydratable
+    without re-reading previews or the archive.
+    """
+
+    def test_facts_item_absent_when_no_facts(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(thread_path, query="turn", response_text="done", task_id="t")
+        items = build_thread_context_items(thread_path)
+        assert all(item.item_id != "thread:verified_facts" for item in items)
+
+    def test_facts_item_renders_newest_first_bounded(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="audit 1",
+            response_text="done",
+            task_id="t",
+            timestamp_utc="2026-10-05T18:00:00+00:00",
+            verified_facts=[_fact("fd 3 is the TCP listener", at="daemon.go:121")],
+        )
+        _write_entry(
+            thread_path,
+            query="audit 2",
+            response_text="done",
+            task_id="t",
+            timestamp_utc="2026-10-05T19:00:00+00:00",
+            verified_facts=[
+                _fact("fd 4 is the Unix socket", at="daemon.go:124"),
+                _fact("the publisher engine serves fd 4 only", at="main.go:248"),
+            ],
+        )
+
+        items = build_thread_context_items(thread_path)
+        facts = next(item for item in items if item.item_id == "thread:verified_facts")
+        assert facts.evidence_type == "verified_facts"
+        body = facts.body
+        assert body.index("fd 4 is the Unix socket") < body.index("fd 3 is the TCP listener")
+        assert "main.go:248" in body and "daemon.go:121" in body
+        assert "0dfdda5" in body, "revision must ride the fact for cross-worktree durability"
+
+    def test_facts_survive_worktree_churn(self, tmp_path: Path) -> None:
+        """A fact recorded at turn T renders at turn T+k with no dependency
+        on the artifact ids of the turns that produced it."""
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="audit",
+            response_text="done",
+            task_id="t",
+            timestamp_utc="2026-10-05T18:00:00+00:00",
+            verified_facts=[_fact("no tokens appear in URLs", at="token_gin.go:12")],
+        )
+        # Later turns have no receipts from the original task — artifact churn.
+        for i in range(3):
+            _write_entry(
+                thread_path,
+                query=f"other work {i}",
+                response_text="done",
+                task_id=f"other-{i}",
+                timestamp_utc=f"2026-10-05T2{i}:00:00+00:00",
+            )
+
+        items = build_thread_context_items(thread_path)
+        facts = next(item for item in items if item.item_id == "thread:verified_facts")
+        assert "no tokens appear in URLs" in facts.body
+        assert "token_gin.go:12" in facts.body
+
+    def test_facts_respect_redaction(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(
+            thread_path,
+            query="read",
+            response_text="done",
+            task_id="t",
+            verified_facts=[_fact("the token value was sk3cr3t", at="main.go:9")],
+        )
+        items = build_thread_context_items(
+            thread_path, redaction=ThreadRedactionPolicy.from_patterns((r"sk3cr3t",))
+        )
+        facts = next(item for item in items if item.item_id == "thread:verified_facts")
+        assert "sk3cr3t" not in facts.body

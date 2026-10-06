@@ -46,9 +46,15 @@ _RECENT_BODY_CHARS = 1800
 _TASK_VIEW_BUDGET_BYTES = 4096
 _MAX_OPEN_OBJECTIVE_LINES = 3
 _SALIENCE_TASK_STATE = 0.9
+_SALIENCE_VERIFIED_FACTS = 0.95
 _SALIENCE_RECENT_HISTORY = 0.7
 _SALIENCE_OPEN_OBJECTIVES = 0.8
 _CONFIDENCE = 0.9
+#: Per-fact claim bound inside the digest item — long enough for one real
+#: conclusion, short enough that a dozen verdicts stay cheap to render.
+_FACT_CLAIM_CHARS = 200
+#: Rendering cap for the item: newest facts win when the budget runs out.
+_FACT_ITEM_BUDGET_CHARS = 2048
 #: Closing directive on every digest body — the same past/present framing
 #: the recent_conversation lane and readout pages carry. Post-hoc (after
 #: the data) so a small fast model reads it as a closing directive, not a
@@ -105,6 +111,7 @@ def build_thread_context_items(
         return []
     items: list[ContextItem] = []
     _append_task_state_item(items, entries, redaction, view_budget, live_state)
+    _append_verified_facts_item(items, entries, redaction)
     _append_recent_history_item(items, entries, redaction, recent_limit, body_chars)
     _append_open_objectives_item(items, entries, redaction, objective_lines, live_state)
     return items
@@ -231,6 +238,65 @@ def _render_task_state(
         lines.append(f"blocker: {blocker}")
     lines.append(_PAST_PRESENT_DIRECTIVE)
     return "\n".join(lines)
+
+
+def _append_verified_facts_item(
+    items: list[ContextItem],
+    entries: list[tuple[int, dict[str, Any]]],
+    redaction: Any,
+) -> None:
+    """Push verified conclusions as a durable, retrieval-lane item.
+
+    Facts ride the thread record (``verified_facts`` on each entry), so they
+    survive turns, worktree replacement, and preview collapse. The render is
+    newest-first and budget-capped: a fact is one conclusion plus its
+    ``at`` anchor (``file:line``) and the ``revision`` it was verified
+    against, so a later turn can cite evidence without re-deriving it from
+    a receipt teaser (the gap behind the 2026-10-05 audit re-mining).
+    """
+    lines: list[str] = []
+    budget = _FACT_ITEM_BUDGET_CHARS
+    for _, entry in reversed(entries):
+        facts = entry.get("verified_facts") or []
+        if not isinstance(facts, list):
+            continue
+        timestamp = str(entry.get("timestamp_utc") or "unknown")
+        for fact in reversed(facts):
+            if not isinstance(fact, dict):
+                continue
+            claim = str(fact.get("claim") or "").strip()[:_FACT_CLAIM_CHARS]
+            if not claim:
+                continue
+            if redaction is not None:
+                claim = redaction.redact(claim)
+            at = str(fact.get("at") or "").strip()
+            revision = str(fact.get("revision") or "").strip()
+            suffix = f" ({at}" + (f" @ {revision}" if revision else "") + ")" if at else ""
+            line = f"- [recorded {timestamp}] {claim}{suffix}"
+            if budget - len(line) <= 0:
+                break
+            lines.append(line)
+            budget -= len(line) + 1
+        if budget <= 0:
+            break
+    if not lines:
+        return
+    items.append(
+        ContextItem(
+            item_id="thread:verified_facts",
+            namespace=_DIGEST_NAMESPACE,
+            source=_DIGEST_SOURCE,
+            source_type="general",
+            evidence_type="verified_facts",
+            title="Verified facts (recorded conclusions, newest first)",
+            body="\n".join(lines),
+            collected_at=str(entries[-1][1].get("timestamp_utc") or ""),
+            salience_score=_SALIENCE_VERIFIED_FACTS,
+            confidence=_CONFIDENCE,
+            tags=["thread_digest", "verified_facts"],
+            metadata={"provenance": "system_observed", "scope": "recorded_history"},
+        )
+    )
 
 
 def _append_recent_history_item(

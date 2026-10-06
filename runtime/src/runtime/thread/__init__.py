@@ -204,6 +204,7 @@ def _build_thread_entry(
     turn_input: dict[str, Any] | None,
     memory_ids: list[int] | None,
     transcript: list[dict[str, Any]] | None = None,
+    verified_facts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -222,6 +223,7 @@ def _build_thread_entry(
         transitioned_to=transitioned_to,
         yielded=yielded,
         yield_question=yield_question,
+        verified_facts=verified_facts,
     )
     _apply_thread_content_fields(
         entry,
@@ -244,12 +246,15 @@ def _apply_thread_metadata_fields(
     transitioned_to: str,
     yielded: bool,
     yield_question: str,
+    verified_facts: list[dict[str, Any]] | None,
 ) -> None:
     """Write the provenance / receipt / handoff / yield metadata fields (in place)."""
     if provenance:
         entry["provenance"] = provenance
     if effect_receipts:
         entry["effect_receipts"] = effect_receipts
+    if verified_facts:
+        entry["verified_facts"] = verified_facts
     if handoff_to:
         entry["handoff_to"] = handoff_to
     if transitioned_to:
@@ -303,6 +308,7 @@ def append_thread_entry(
     turn_input: dict[str, Any] | None = None,
     memory_ids: list[int] | None = None,
     transcript: list[dict[str, Any]] | None = None,
+    verified_facts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -337,6 +343,7 @@ def append_thread_entry(
         turn_input=turn_input,
         memory_ids=memory_ids,
         transcript=transcript,
+        verified_facts=verified_facts,
     )
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
