@@ -961,3 +961,53 @@ def test_load_catalog_from_disk_overrides_rejects_disallowed_key(tmp_path: Path)
 
     with pytest.raises(WorkflowValidationError, match="kernel-owned keys"):
         _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# load_catalog_from_disk: completion_budget_tokens (BUDGET_SCOPES_RFC scope 2)
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_reads_completion_budget(tmp_path: Path) -> None:
+    """``completion_budget_tokens`` flows from front matter into the typed field.
+
+    Scope 2 of the per-scope completion budgets: a mode declares its
+    work-shape budget (how big a payload work in this mode produces).
+    The kernel applies min(mode, model, settings) when building turn-loop
+    completion requests.
+    """
+    _write_mode(tmp_path, extra_front_matter={"completion_budget_tokens": 8192})
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].completion_budget_tokens == 8192
+
+
+def test_load_catalog_from_disk_completion_budget_default_zero(tmp_path: Path) -> None:
+    """Absent ``completion_budget_tokens`` inherits the effective model/settings
+    budget (0 = no declaration; backward compatible)."""
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].completion_budget_tokens == 0
+
+
+def test_load_catalog_from_disk_completion_budget_kernel_owned(tmp_path: Path) -> None:
+    """``completion_budget_tokens`` is kernel-owned: parsed into the typed
+    field, never leaked into ``extra_front_matter``."""
+    _write_mode(tmp_path, extra_front_matter={"completion_budget_tokens": 8192})
+    catalog = _load(tmp_path)
+
+    assert "completion_budget_tokens" not in catalog["demo"].extra_front_matter
+
+
+def test_load_catalog_from_disk_completion_budget_rejects_invalid(tmp_path: Path) -> None:
+    """A non-positive or non-integer budget is a load error, not a silent default.
+
+    A typo'd budget silently inheriting the settings value would defeat the
+    mode's declaration; fail loudly at catalog load.
+    """
+    import pytest as _pytest
+
+    _write_mode(tmp_path, extra_front_matter={"completion_budget_tokens": -1})
+    with _pytest.raises(WorkflowValidationError, match="completion_budget_tokens"):
+        _load(tmp_path)

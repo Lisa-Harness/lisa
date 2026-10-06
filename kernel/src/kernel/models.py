@@ -1332,6 +1332,15 @@ class WorkflowModeConfig(BaseModel):
     # hardcodes specific capability names; they are pack-authored vocabulary
     # matching ``ModelCapability``.
     required_capabilities: list[str] = Field(default_factory=list)
+    # Per-call completion token budget declared by the mode itself
+    # (BUDGET_SCOPES_RFC scope 2): the work-shape budget — how large a
+    # completion this mode's work produces. Applied as min(mode, model,
+    # settings) when the turn loop builds completion requests; 0/absent =
+    # inherit the effective model/settings budget. Authored in
+    # ``_mode.md`` front matter (``completion_budget_tokens``), kernel-
+    # owned so it parses into this field rather than leaking into
+    # ``extra_front_matter``.
+    completion_budget_tokens: int = Field(default=0, ge=0)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

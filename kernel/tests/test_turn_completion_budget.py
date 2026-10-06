@@ -187,3 +187,36 @@ def test_manifest_load_validates_model_completion_budget() -> None:
                 "context_window": 65536,
             }
         )
+
+
+# ── Per-mode completion budget (BUDGET_SCOPES_RFC scope 2) ─────────────
+
+
+def test_mode_budget_bounds_model_and_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mode's declared budget tightens the effective per-call budget.
+
+    Precedence is min(mode, model, settings): a mode declares its work
+    shape; a model entry declares provider behavior; the settings value is
+    the process default. The narrowest declaration wins, so the 2026-10-06
+    shape (a report-final host override becoming every mode's ceiling)
+    cannot recur — a mode that only ever produces small payloads can opt
+    down even when the host raised the global budget.
+    """
+    from kernel.turn_runner import _effective_completion_max_tokens
+
+    model = _model(reasoning_model=True, max_completion_tokens=8192)
+    assert _effective_completion_max_tokens(model, mode_budget_tokens=4096) == 4096
+    # Mode absent → model ceiling applies.
+    assert _effective_completion_max_tokens(model, mode_budget_tokens=0) == 8192
+    # Both absent → settings path unchanged.
+    plain = _model(reasoning_model=True)
+    assert _effective_completion_max_tokens(plain, mode_budget_tokens=0) == 16384
+
+
+def test_mode_budget_never_raises_effective_budget() -> None:
+    """A mode value above the model ceiling does not raise the budget."""
+
+    from kernel.turn_runner import _effective_completion_max_tokens
+
+    model = _model(reasoning_model=True, max_completion_tokens=8192)
+    assert _effective_completion_max_tokens(model, mode_budget_tokens=65536) == 8192

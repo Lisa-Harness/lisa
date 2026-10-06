@@ -343,6 +343,21 @@ def _turn_completion_max_tokens(model_def: Any) -> int:
     return budget
 
 
+def _effective_completion_max_tokens(model_def: Any, *, mode_budget_tokens: int = 0) -> int:
+    """Effective per-call completion budget after the mode's declaration.
+
+    BUDGET_SCOPES_RFC scope 2 precedence: min(mode, model, settings), the
+    narrowest declaration wins. A mode value may only tighten — a mode
+    declaring more than its model/settings budget inherits the smaller
+    value. ``mode_budget_tokens`` 0/absent keeps the model/settings path
+    exactly as before.
+    """
+    budget = _turn_completion_max_tokens(model_def)
+    if mode_budget_tokens > 0:
+        budget = min(budget, int(mode_budget_tokens))
+    return budget
+
+
 def _synthesized_call_missing_all_required(
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -2797,6 +2812,7 @@ async def _model_completion_for_iteration(
     effective_model_def: Any,
     effective_tools: list[dict[str, Any]] | None,
     sys_segments: SystemPromptSegments,
+    mode_budget_tokens: int,
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
     log: logging.Logger,
 ) -> Any:
@@ -2919,8 +2935,13 @@ async def _model_completion_for_iteration(
         # chain-of-thought against ``max_tokens`` on some providers,
         # so the lean legacy 4096 starves the visible answer or the
         # tool-call payload (2026-09-02 empty-turn + 2026-09-17
-        # meta-analysis incidents). See _turn_completion_max_tokens.
-        max_tokens=_turn_completion_max_tokens(effective_model_def),
+        # meta-analysis incidents). The mode's declared
+        # ``completion_budget_tokens`` tightens further
+        # (BUDGET_SCOPES_RFC scope 2: min(mode, model, settings)).
+        # See _effective_completion_max_tokens.
+        max_tokens=_effective_completion_max_tokens(
+            effective_model_def, mode_budget_tokens=mode_budget_tokens
+        ),
         temperature=0.4,
         tools=effective_tools,
         # Carry the typed segment view alongside ``messages`` so the
@@ -8956,6 +8977,9 @@ async def _run_turn_inner(
             effective_model_def=effective_model_def,
             effective_tools=effective_tools,
             sys_segments=_sys_segments,
+            mode_budget_tokens=int(
+                getattr(mode_config, "completion_budget_tokens", 0) or 0
+            ),
             emit_stage=_emit_stage,
             log=_log,
         )
