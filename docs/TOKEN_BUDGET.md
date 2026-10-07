@@ -140,6 +140,132 @@ reasoning-dump calls burned 128k cumulative completion in one turn
 (~30% of turn spend, not 3%) — the per-turn rail now exists to bound
 that pattern.
 
+## Sizing the completion budget
+
+The knobs, from widest to narrowest:
+
+| Knob | Scope | Sets |
+| --- | --- | --- |
+| `TURN_COMPLETION_MAX_TOKENS` | Process | Default per-call budget. |
+| Manifest `max_completion_tokens` | Model | Provider ceiling for the model. |
+| Mode `completion_budget_tokens` | Mode | Per-call work shape. |
+| Mode `turn_completion_budget_tokens` | Mode | Per-turn cumulative rail. |
+
+The effective per-call budget is `min(mode, model, settings)`, further
+capped by the model's declared `context_window`. Declaring a value can
+only tighten; widening requires narrowing the narrower scope.
+
+### What the settings global is for
+
+`turn_completion_max_tokens` (16384 default) is the **default per-call
+budget for reasoning-capable models** — i.e., ones whose provider bills
+chain-of-thought against `max_tokens` (Ollama). It buys headroom so one
+call can hold deliberation *and* an artifact-sized tool payload without
+truncating mid-write; the 2026-09-19 incident had 8192 cutting tool-call
+payloads in half across three models. It is deliberately generous because
+per the 2026-08-01 baseline, completion tokens are ~3% of burn — a wrong
+*small* value silently aborts work, a wrong *large* value costs tokens
+that mostly don't matter. Plain models never receive it: unflagged models
+stay on the legacy 4096, so raising the global does not loosen
+non-reasoning models.
+
+**If you set the global** (e.g. `TURN_COMPLETION_MAX_TOKENS=8192`), every
+reasoning-mode call in every mode tightens: the truncation rescue doubles
+from 8192 instead of 16384 (so pathological calls bound at 16384), and
+turns at the 90th–95th percentile of completion size (per the distribution
+below) start hitting the cap mid-tool-call. Raising it to 32768 doubles
+the pathological ceiling to 65536 and removes the per-call brake the
+2026-10-06 marathons were stopped by — the per-turn rail and iteration
+cap remain, but each silent reasoning dump now burns 2× before stopping.
+Treat the global as the *default shape of work*, not a cost dial. Cost
+enforcement lives on the daily ledger; runaway lives on iterations and
+the per-turn rail.
+
+### What to set per model (manifest `max_completion_tokens`)
+
+Pick the value from the model's *observed* completion distribution for the
+workload, not from its context window. Current turn-loop distribution in
+this workspace (`artifacts/token-usage.jsonl`, n=1243, 2026-10-06): p50
+≈ 500, p75 ≈ 2500, p90 ≈ 10.5k, p95 = 16384 (the cap — a saturated
+quartile, evidence the budget is binding), p99 ≈ 32k. The 16384 default
+for reasoning models is therefore already the p95 and is the right
+starting point for chatty reasoning classes like `glm-5.3:cloud` —
+dropping it saves nothing (3% of burn) and converts p90+ calls into
+truncation aborts. If a model proves tighter in practice (the
+manifest-level knob's true purpose), declare the ceiling it actually
+needs; e.g. DeepSeek-V4.1-Flash stayed under 17k on 10-06 even unguided,
+so `max_completion_tokens: 16384` is honest headroom, not a cut. Per the
+manifest loader, `0`/absent inherits the process default; the floor for
+any declared value is 1024, and the value must not exceed the model's
+declared `context_window` when both are set.
+
+### `context_window` on the manifest entry
+
+`context_window` is the physical ceiling both the budget math and the
+truncation rescue respect. When discovery can't fill it in (see the
+probe-shape caveat below), declaring it by hand is correct — the kernel
+caps retries and budgets at `min(budget, context_window)`, and an absent
+window means an uncapped 2× rescue. For the Ollama cloud family currently
+in use, the provider itself reports 1M-token contexts for glm-5.3,
+deepseek-v4.1-flash, and kimi-k3 (probe via `/api/tags` →
+`details.context_length`, or `/api/show` → `model_info`), so a hand-set
+`context_window: 1048576` matches provider truth — but it is a physical
+bound, not a sizing choice; the sizing choice above is separate.
+
+### Probe-shape caveat (2026-10-06)
+
+`/models discover --force` is supposed to fill `context_window` from the
+provider, and the Ollama probe does call `/api/show`. Two reasons it came
+back zero here:
+
+1. `/api/tags` for the cloud proxy *does* carry
+   `details.context_length` (e.g. 1048576 for glm-5.3:cloud), but the
+   enrichment path ignores it in favor of `/api/show`.
+2. The `/api/show` reader
+   (`probes/ollama.py::_ollama_show_context_window`) only looks for
+   `model_info["general.context_length"]`. The cloud models return
+   family-keyed names (`glm_dsa_moe.context_length`,
+   `deepseek_v41.context_length`, `kimi-k3.context_length`). Real local
+   Ollama GGUF builds publish `general.context_length`; the Ollama cloud
+   proxy and some runtimes do not — which is why the manifest silently
+   dropped windows for every cloud-pulled model on this box.
+
+The fix is a one-bug kernel change (read `*.context_length` from
+`model_info`, fall back to `/api/tags` details) — see the kernel
+carve-out discussion below. Until then, hand-declaring `context_window`
+in `artifacts/config/models.yaml` is the workaround.
+
+### The per-mode rails
+
+`completion_budget_tokens` (per call) and `turn_completion_budget_tokens`
+(cumulative per turn) are the mode-local levers, and no shipped pack sets
+them yet — every mode inherits the settings/model path. Reach for the
+per-turn rail in coding/action modes first: it's what stops the
+five-cycle, 128k reasoning-dump pattern without touching per-call
+headroom the report-sized finals legitimately need (`coding_review`'s
+final must fit a full review verbatim, and those finals were the largest
+legitimate completions in the trace — up to 47k).
+
+### Failure modes of a wrong value
+
+- **Too small (per call):** truncation mid-tool-call → the kernel's
+  finish/no-tools abort fires (`completion truncated at the token cap
+  with no tool calls … ending the turn`). Turns report `blocked=True`
+  with partial prose. Worse, iterations where the lifecycle resolver has
+  stripped tools (budget-exhausted final completions, router terminal
+  actions) cannot be rescue-retried because the rescue predicate is
+  `finish_reason == "length" and effective_tools` — see the carve-out
+  list below.
+- **Too large:** silent multi-minute reasoning dumps (the 2026-10-06
+  2–7-minute calls), rescue doubling doubles the damage (2× cap), and
+  cumulative completion climbs toward the per-turn rail. The daily ledger
+  and per-turn rail stay the real cost guards; a too-large per-call value
+  just lets each dump burn more before the rail fires.
+- **No per-turn rail on an action mode:** a turn that loops at the
+  per-call cap has no token-based stop — only `max_tool_iterations`
+  (default 300) bounds it, which is why 10-06 coding turns ran to 107
+  tool calls before anything intervened.
+
 ## Accounting caveat (open decision)
 
 Two coherent ways to wire the per-turn budget; the **daily 15M is the same
@@ -167,6 +293,15 @@ true cost ceiling.
 - **Iterations:** `max_tool_iterations = 300` remains the per-turn runaway
   governor; `per_step_max_iterations / per_step_max_tool_calls` remain the
   per-step sub-budgets.
+- **Completion sizing (2026-10-06 data):** reasoning-capable per-call
+  default stays **16384** — it sits at the observed p95 of the turn-loop
+  completion distribution, and completion is ~3% of spend, so tightening
+  buys nothing while turning the busiest tenth of calls into truncations.
+  Set per-model ceilings from observed distributions, not from context
+  windows; leave DeepSeek-class flash models at 16384 unless telemetry
+  shows otherwise. Declare `context_window` on models the probe can't
+  size (the Ollama-cloud `/api/show` shape bug) so the rescue/budget math
+  has a real ceiling.
 
 ## Prompt-cache strategy
 

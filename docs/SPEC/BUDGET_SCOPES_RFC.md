@@ -127,7 +127,38 @@ best answer instead of escalating burn per cycle.
 - **Stream idle watchdog** in `_collect_stream` (a stalled upstream stream
   hangs the turn forever): a bug fix with a regression test, eligible under
   the freeze without this design. Listed here only as the boundary between
-  "bounded" and "budgeted" behavior.
+  "bounded" and "budgeted" behavior. **Shipped** (`fecc658c`).
+- **Tools-stripped truncations skip the rescue.** The rescue predicate is
+  `finish_reason == "length" and effective_tools`, but the turn loop sets
+  `effective_tools = None` on pending-yield iterations and on any
+  `_FinishAction` iteration (budget-exhausted finals, router terminal
+  actions, approval continuations). On 2026-10-06, four of ten
+  truncation aborts (including the three final turns of the session)
+  landed on exactly those iterations: the model was asked for a no-tools
+  closing summary, dumped reasoning into content, hit the cap, and the
+  abort path surfaced the reasoning tail as the answer with
+  `blocked=True`. Fix shape: run the same one-shot 2× retry (cap-bounded)
+  for `finish_reason == "length"` on tools-stripped completions —
+  content-free or not — instead of aborting immediately. Bug fix +
+  regression test; freeze-eligible.
+- **Ollama-cloud context-window probe misses.** `/api/tags` on the Ollama
+  cloud proxy carries `details.context_length` (e.g. 1048576 for
+  glm-5.3:cloud), and `/api/show` returns family-keyed model_info entries
+  (`glm_dsa_moe.context_length`, `deepseek_v41.context_length`,
+  `kimi-k3.context_length`). `_ollama_show_context_window` only reads
+  `model_info["general.context_length"]`, so every Ollama-cloud model on
+  this host landed in the manifest with `context_window` unset — leaving
+  the rescue retry uncapped and the per-model ceiling without its bound.
+  Fix shape: read `*.context_length` from `model_info`, fall back to
+  `/api/tags` `details.context_length`, keep the static-registry override
+  last. Bug fix + regression test; freeze-eligible.
+- **Chatty-reasoning model behavior (no kernel fix).** glm-5.3:cloud and
+  deepseek-v4.1-flash:cloud began emitting 20k–47k completions on
+  2026-10-06 (up from ≤8k through 10-05), with per-call latencies of
+  2–7 minutes. Mitigations: `context_window` declarations (above), a
+  per-turn completion rail on `coding_execute` (mode front matter, not
+  kernel), or switching the mode model until the behavior settles. No
+  kernel change is proposed for this.
 - **Router capability vocabulary**: the inert
   `"code" in route.required_capabilities` rule was worked around per-host by
   the `mode_models` pin + (optionally) declaring
