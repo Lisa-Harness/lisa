@@ -196,6 +196,36 @@ unrelated signatures. The carve-out closes when these trees settle on a
 behavior the operator ratifies, or explicitly on operator order — record
 the closure here.
 
+**Context residency by allocation (opened 2026-10-07, authorized by the
+operator).** Scope: `sdk/src/sdk/thread/_results.py` (stub envelope
+projection), `sdk/src/sdk/thread/_readout.py` and `_search.py` (ref
+surfaces the stub row aligns to), `runtime/src/runtime/thread/_replay.py`
+and `runtime/thread/` (turn-boundary replay working set),
+`runtime/src/runtime/context_assembly.py` (replay lane wired into the
+allocator), `kernel/src/kernel/context/context_budget.py` (the
+replay/residency lane budget), `kernel/src/kernel/turn_runner/__init__.py`
+(turn-start working-set assembly, the per-iteration standing state ledger
+via the existing dynamic-segment path, the append-only within-turn
+invariant), `kernel/src/kernel/turn_phases/_dispatch.py` (receipt capture
+feeding the ledger and the `active_refs` source), and
+`mcp_server/src/mcp_server/thread/server.py` (the result shapes the stub
+points at). `kernel/src/kernel/execution_ledger.py`,
+`kernel/src/kernel/workflow_position.py`, and
+`kernel/src/kernel/session_plan.py` are *read sources only* for the
+ledger — no signature changes to anything another package imports.
+Purpose: make context residency bounded by recomputing a budgeted resident
+working set at each turn boundary (last-N events verbatim, one stub row
+per older/over-threshold event, a standing receipts-derived state ledger),
+while every byte stays persisted and recoverable by content/turn address.
+No compression, no model-authored summary, no in-place rewrite of any
+in-flight message. Design record: `docs/SPEC/RESIDENCY_RFC.md`. Any commit
+under this heading must (1) name the turn-loop behavior it changes,
+(2) ship a test that fails before and passes after (same-commit,
+red/green), (3) not widen scope to unrelated signatures, and (4) keep the
+full verification loop green in its entirety. The carve-out closes when
+these trees settle on a behavior the operator ratifies, or explicitly on
+operator order — record the closure here.
+
 The full suite (`uv run pytest -m "not live"`) is green as of this
 declaration (2909 passed, 1 xfailed). The kernel and
 sdk test suites carry autouse settings-hermeticity guards

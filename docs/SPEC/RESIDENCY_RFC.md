@@ -1,0 +1,287 @@
+# Residency RFC — Residency by Allocation, Coherence by Address
+
+> **Status:** Active. Carve-out opened 2026-10-07 in
+> `docs/CODING_WORKFLOW.md` § "Declared carve-outs" (authorized by the
+> operator). Implementation in progress.
+> **Design thread:** "residency by allocation, coherence by address" —
+> one principle, three rules.
+
+## Principle
+
+Context is a cache over the lossless store; coherence is by identity, not
+repetition. "Lossless" means every byte persists and is recoverable by
+address (**true today** — the thread store, result objects, and turn refs
+already guarantee this). "Efficient" means residency is bounded (**false
+today** — tool results re-enter context at whatever fidelity they were
+first rendered, and nothing recomputes the resident working set at the
+turn boundary).
+
+No compression, no model-authored summaries, no information destroyed —
+ever. The two sides of the principle:
+
+- **Residency by allocation** — what sits in context is decided by a
+  budgeted allocator once per turn boundary, not negotiated per iteration
+  by whatever happened to be appended.
+- **Coherence by address** — anything not resident is still reachable,
+  by a deterministic ref the model already knows how to expand
+  (`r<sha256>`, `t<turn>.m<index>`, thread manifest refs). Identity
+  carries the pointer; the resident copy is a cache, not the record.
+
+## The three rules
+
+### R1 — Every event has an address; nothing large enters context unaddressed
+
+Already half-exists: result-object refs (`r<sha256>`, content-addressed,
+[sdk/thread/_results.py](../../sdk/src/sdk/thread/_results.py)), turn refs
+(`t391.m20`, minted in [_readout.py](../../sdk/src/sdk/thread/_readout.py)),
+and `thread_search` returning excerpt+ref
+([_search.py](../../sdk/src/sdk/thread/_search.py), `_EXCERPT_CHARS = 240`).
+
+The convention goes backward into the write path: any tool result (or
+replayed event) is either small enough to live resident in full (below a
+threshold) or **stubbed** — a one-line deterministic entry, ~25–30 tokens,
+carrying the ref the model would need anyway:
+
+```text
+stub t391.m20 tool=coding_read_file bytes=48,212 sha=r3f9a… read_more=thread_read_content
+```
+
+This is **not** a summary, and no LLM touched it. It is a
+table-of-contents entry — deterministic, derived from the stored object's
+own metadata. `abbreviation_template` on read tools is the same knob,
+generalized from a special case (currently opt-in per `.tool.yml`,
+disabled by default) into the default for anything over threshold.
+
+### R2 — Residency is recomputed once per turn boundary, not negotiated per iteration
+
+At turn start, the replay allocator (the same lane machinery that already
+budgets retrieval/memory/reflection — [`ContextBudgetAllocator`](../../kernel/src/kernel/context/context_budget.py)
+with the host 8,000-token split in [runtime/config.py](../../runtime/src/runtime/config.py);
+Lisa invented budgeted residency and then exempted the one path that grows
+fastest: the **replay/tool-result path**) computes the resident working
+set:
+
+- task frame,
+- the receipts ledger,
+- the last-N events verbatim,
+- every stub row for the rest.
+
+Within a turn, **append-only** — stubs occupy the slot the full result
+would have occupied rather than replacing an appended message, so nothing
+is ever rewritten. That property is what makes the hard case below (a
+result that started large and stayed large) tractable: the resident
+working set is recomputed at the boundary, but no in-flight message is
+ever mutated.
+
+### R3 — State is not history
+
+A **state ledger** — deterministic, built from effect receipts
+([`EffectReceipt`](../../kernel/src/kernel/models.py), captured in
+[_dispatch.py](../../kernel/src/kernel/turn_phases/_dispatch.py)) — is
+resident every iteration, at the bottom of the context where attention
+lives (the Manus recitation insight, but free: it is generated text,
+zero model tokens, O(work-done) not O(content-seen)). Payload: stage,
+budget remaining, writes landed/attempted, active refs, plan excerpt.
+
+This unifies two things Lisa already builds into one standing payload
+instead of one-shot arrivals:
+
+- the **cap-pause diagnostic**
+  ([`_build_cap_pause_diagnostic`](../../kernel/src/kernel/turn_runner/__init__.py)),
+  which today appears only when the turn stalls;
+- the **lifecycle briefing**
+  ([`_build_budget_briefing`](../../kernel/src/kernel/turn_runner/__init__.py)),
+  which is rebuilt per iteration as a dynamic system segment.
+
+## What exists vs. what is missing
+
+Recon 2026-10-07 (three parallel codebase maps, verified against source).
+This grounds each rule in the real seam and names the gap precisely.
+
+### R1 — stub addressing/projection
+
+| Piece | Status | Where |
+| --- | --- | --- |
+| Content-addressed result refs (`r<sha256>`) + lossless persist/load | **exists** | `_results.py:13–60` |
+| Threshold-based inline vs. preview/pointer projection | **exists** | `project_tool_messages()` — `_INLINE_RESULT_BYTES=8192`, `_HEAD_CHARS=600`, `_TAIL_CHARS=300` |
+| Turn refs `t<turn>.m<index>` minted on readout | **exists** | `_readout.py:160–170` |
+| `thread_search` → `{ref, excerpt}` | **exists** | `_search.py:108–126` |
+| `abbreviation_template` knob | **exists, opt-in, default off** | `models.py:196–215`, `_dispatch.py:210–225` |
+| **Missing** | A single deterministic **stub envelope format** (one line, ~25–30 tokens, carrying the ref) that both live dispatch and replay emit for over-threshold results. Today "stub" is two shapes (preview/pointer envelope, retrieval page pointer) with different heads, and the abbreviation knob is off by default. | — |
+
+**The R1 gap is format + default, not plumbing.** The persist/load/address
+machinery is done; what is missing is one canonical stub row and making it
+the default over-threshold shape.
+
+### R2 — turn-boundary residency
+
+| Piece | Status | Where |
+| --- | --- | --- |
+| Lane budget machinery (6 lanes, allocator, tighten-only replay caps) | **exists** | `context_budget.py`, `context_assembly.py:594–645` |
+| Host 8,000-token lane split | **exists** | `runtime/config.py:376–430` |
+| Per-turn allocator build at context assembly | **exists** | `assemble_dynamic_user_context` |
+| Replay of unfinished task at turn start | **exists** | `_replay.py:128–165` → `build_open_task_messages`, consumed at `turn_runner/__init__.py:2015–2035` via `prior_messages()` |
+| Tool results flow through `project_tool_messages` on replay | **exists** | `_replay.py` calls `project_thread_messages` |
+| **Missing** | Residency computed **by the allocator at the turn boundary** as a working set (last-N verbatim + stubs for the rest), rather than the current pass-through where replayed results enter at whatever fidelity they carry and the lane allocator never sees them. The replay path is the one path that grows fastest and is the one the 8k lane budget exempts. | — |
+
+**The R2 gap is the working-set contract.** The allocator exists; the
+replay lane exists; they are not the same object. R2 is making the replay
+allocator's per-turn recompute own the boundary between "last-N verbatim"
+and "stub rows", with the append-only within-turn invariant.
+
+### R3 — resident state ledger
+
+| Piece | Status | Where |
+| --- | --- | --- |
+| `EffectReceipt` (effect, capability_id, artifact_id), recorded on success | **exists** | `models.py:1863–1890`, `_dispatch.py:429–559` |
+| Receipts surfaced on `TurnResult` + persisted to thread record | **exists** | `turn_runner/__init__.py`, `THREAD_STORE.md:63–80` |
+| `ExecutionLedger` (model/capability calls, tokens, elapsed) | **exists** | `execution_ledger.py:17–112` |
+| `write_attempted` vs `write_landed` distinction | **exists** | `turn_phases/_child_turn.py:205–214` |
+| `WorkflowPosition` (active stage/step) | **exists** | `workflow_position.py:105–117` |
+| Per-iteration dynamic system segment update path | **exists** | `turn_runner/__init__.py:5800–5850` (`sys_segments.set_dynamic`) |
+| **Missing** | A **deterministic per-iteration render** that folds receipts + execution ledger + workflow position + active refs into one standing ledger block, resident every iteration at the bottom of context. No `active_refs` ledger exists. Today the equivalent signal arrives as one-shot events (cap-pause on stall, lifecycle briefing rebuilt per iteration) rather than as a single unified standing payload. | — |
+
+**The R3 gap is the unified deterministic render + an active-refs
+source.** All inputs exist except a live `active_refs` set; the render
+into the standing per-iteration slot does not exist.
+
+## Carve-out declaration
+
+Recorded in `docs/CODING_WORKFLOW.md` § "Declared carve-outs" as
+"Context residency by allocation (opened 2026-10-07, authorized by the
+operator)". That entry is the carve-out's receipt; the scope below is its
+copy for review and the two are kept identical.
+
+---
+
+**Context residency by allocation (opened 2026-10-07, authorized by the
+operator).** Scope:
+
+- `sdk/src/sdk/thread/_results.py` — stub envelope projection, canonical
+  over-threshold stub row.
+- `sdk/src/sdk/thread/_readout.py` — ref surface for the stub row.
+- `sdk/src/sdk/thread/_search.py` — excerpt+ref shape the stub aligns to.
+- `runtime/src/runtime/thread/_replay.py` and `runtime/thread/` — replay
+  working-set projection at the turn boundary.
+- `runtime/src/runtime/context_assembly.py` — replay lane wired into the
+  allocator; the working-set recompute at turn start.
+- `kernel/src/kernel/context/context_budget.py` — the replay/residency
+  lane budget (a new lane is a scoped allocation-rule change named here,
+  not an unrelated routing rule).
+- `kernel/src/kernel/turn_runner/__init__.py` — turn-start working-set
+  assembly from `prior_messages()`; the per-iteration standing `State`
+  ledger render via the existing `set_dynamic` segment path; the
+  append-only within-turn invariant.
+- `kernel/src/kernel/turn_phases/_dispatch.py` — receipt capture feeding
+  the ledger; the `active_refs` source.
+- `kernel/src/kernel/execution_ledger.py`,
+  `kernel/src/kernel/workflow_position.py`,
+  `kernel/src/kernel/session_plan.py` — ledger read sources (no signature
+  changes to anything another package imports).
+- `mcp_server/src/mcp_server/thread/server.py` — `thread_read_content` /
+  `thread_search` result shapes the stub points at.
+
+**Purpose:** make context residency bounded by recomputing a budgeted
+resident working set at each turn boundary (last-N events verbatim, stub
+rows for the rest, a standing receipts-derived state ledger), while every
+byte stays persisted and recoverable by content/turn address. No
+compression, no model-authored summary, no in-place rewrite of any
+in-flight message.
+
+**Rules (same as every carve-out):** each commit (1) names the turn-loop
+behavior it changes, (2) ships a test that fails before and passes after
+(same-commit, red/green), (3) does not widen scope to unrelated
+signatures, and (4) keeps the full verification loop green in its
+entirety.
+
+**Closes when:** these trees settle on a behavior the operator ratifies,
+or explicitly on operator order — record the closure in the workflow doc.
+
+---
+
+## Phased plan
+
+Landing order **R2 → R1 → R3**. R2 is highest-risk and fixes the contract
+(the stub format + the append-only slot semantics) that R1's envelope and
+R3's ledger both build on. Each phase is a chain of single-behavior,
+red/green commits.
+
+### Phase 2 (first) — Turn-boundary residency working set
+
+1. **Residency working-set contract at turn start.** Behavior: at turn
+   start, the replay allocator computes the resident working set — task
+   frame, receipts ledger, last-N events verbatim, one stub row per
+   older/over-threshold event — from `prior_messages()`.
+   *Red/green:* a replay assembly test that fails while a large prior
+   tool result re-enters verbatim and passes once it lands as a stub row
+   carrying its ref.
+2. **Append-only within-turn invariant.** Behavior: a stub occupies the
+   slot its full result would have occupied; no appended in-turn message
+   is rewritten. *Red/green:* a turn-loop test asserting no
+   already-appended message mutates across iterations (only the keyed
+   dynamic segment is replaced).
+3. **Replay lane budget.** Behavior: the replay/tool-result path is
+   budgeted by the allocator like every other lane (tighten-only).
+   *Red/green:* an allocator test where an over-budget replay set is
+   bounded to its lane ceiling.
+
+### Phase 1 (second) — Canonical stub envelope
+
+1. **One over-threshold stub row.** Behavior: replace the split between
+   preview envelope and retrieval pointer with a single deterministic stub
+   envelope (tool name, byte count, ref, `read_more` path), emitted by
+   both live dispatch and replay. *Red/green:* a `project_tool_messages`
+   test on an over-threshold result asserting the canonical stub shape and
+   that the raw bytes persist.
+2. **Stub as the default over-threshold shape.** Behavior: the
+   `abbreviation_template` mechanism's special case becomes the general
+   default for over-threshold results (not opt-in per `.tool.yml`).
+   *Red/green:* a dispatch test showing an over-threshold read enters
+   context as a stub by default.
+
+### Phase 3 (third) — Standing state ledger
+
+1. **`active_refs` source.** Behavior: the dispatch/receipt path records
+   the live set of refs the turn has minted or touched.
+   *Red/green:* a dispatch test asserting receipt capture populates
+   `active_refs`.
+2. **Deterministic per-iteration ledger render.** Behavior: receipts +
+   `ExecutionLedger` + `WorkflowPosition` + `active_refs` + plan excerpt
+   render into one standing `## State` block, set via the existing
+   `set_dynamic` segment path each iteration. *Red/green:* a turn-runner
+   test asserting the block is present and current every iteration.
+3. **Unify cap-pause + lifecycle briefing into the ledger.** Behavior:
+   the cap-pause diagnostic and lifecycle briefing become the same
+   standing payload, not one-shot arrivals. *Red/green:* a test asserting
+   the standing block carries the cap-pause signal when the stall fires.
+
+## Risks and mitigations
+
+- **Stub-expanded loops.** The
+  `2026-10-06 turn-557/558 micro-window loop` showed zero-omission
+  previews *inflating* the context they bound. Mitigation: the stub row
+  must be strictly smaller than any verbatim result it replaces, and the
+  working set reserves budget for it — verified by the Phase-1 red/green
+  test measuring emitted bytes.
+- **Ref-expansion failure surfacing.** A stub is only useful if
+  `thread_read_content` on its ref works. Mitigation: stub rows name the
+  `read_more` path; the expansion path is covered by existing
+  `read_content` reference parsing (`_readout.py:470–555`) and its tests.
+- **Scope creep into adjacent frozen code.** The per-iteration slot
+  already exists (`set_dynamic`); R3 renders into it rather than adding a
+  mechanism. Mitigation: carve-out names `execution_ledger.py` /
+  `workflow_position.py` / `session_plan.py` as **read sources only** —
+  no signature changes.
+
+## Exit / ratification criteria
+
+- A deep verification turn no longer re-reads its own prior tool results
+  at bounded fidelity: older results present as stub rows, expandable by
+  ref on demand.
+- Resident context footprint per turn is bounded by the allocator and
+  measurable in [docs/TOKEN_BUDGET.md](../TOKEN_BUDGET.md) terms —
+  the 97%-prompt baseline is the number this design exists to move.
+- Every commit lands with its red/green receipt; the full verification
+  loop stays green in its entirety at each step.
+- The carve-out is closed in `docs/CODING_WORKFLOW.md` when the operator
+  ratifies the settled behavior.
