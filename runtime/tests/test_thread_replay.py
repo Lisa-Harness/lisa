@@ -259,6 +259,81 @@ def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path
     assert raw["transcript"][-1]["content"] == original
 
 
+def _scan_turn(n_results: int, result_size: int) -> list[dict[str, object]]:
+    calls = [
+        {
+            "id": f"c{i}",
+            "type": "function",
+            "function": {"name": "read", "arguments": "{}"},
+        }
+        for i in range(n_results)
+    ]
+    return [
+        {"role": "user", "content": "scan"},
+        {"role": "assistant", "content": "", "tool_calls": calls},
+        *[
+            {"role": "tool", "tool_call_id": f"c{i}", "content": "x" * result_size}
+            for i in range(n_results)
+        ],
+    ]
+
+
+def _tool_bytes(messages: list[dict[str, Any]]) -> int:
+    return sum(
+        len(str(m.get("content") or "").encode("utf-8"))
+        for m in messages
+        if m.get("role") == "tool"
+    )
+
+
+def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
+    """The resident working set is recomputed under a byte budget at the turn
+    boundary (R2): six individually sub-threshold results (6KB each, below the
+    8KB inline threshold so none stubs on its own) accumulate to 36KB verbatim
+    with no budget; under ``budget_bytes`` they collapse to recoverable
+    ref-stubs — residency bounded, coherence by address, nothing lost.
+    """
+    thread = tmp_path / "threads" / "tester"
+    _append(
+        thread,
+        "scan",
+        response_text="paused",
+        provenance={"source": "observed", "operator_exit": "paused"},
+        transcript=_scan_turn(n_results=6, result_size=6000),
+    )
+
+    messages = build_open_task_messages(thread_path=thread, budget_bytes=12_000)
+
+    # Residency is bounded (verbatim replay was 36KB).
+    assert _tool_bytes(messages) <= 12_000
+    # Coherence by address: every collapsed result carries a ref that
+    # re-expands losslessly to its full 6000 chars.
+    refs = [
+        json.loads(m["content"])["ref"]
+        for m in messages
+        if m.get("role") == "tool" and str(m.get("content") or "").startswith('{"ref"')
+    ]
+    assert refs, "expected collapsed results to enter as ref-stubs"
+    reader = ThreadReader(ThreadStore(thread))
+    for ref in refs:
+        page = json.loads(reader.read_content(ref, limit_chars=9000))
+        assert page["content"] == "x" * 6000
+
+
+def test_replay_working_set_unbounded_without_budget(tmp_path: Path) -> None:
+    """With no budget_bytes the prior verbatim behavior is unchanged."""
+    thread = tmp_path / "threads" / "tester"
+    _append(
+        thread,
+        "scan",
+        response_text="paused",
+        provenance={"source": "observed", "operator_exit": "paused"},
+        transcript=_scan_turn(n_results=6, result_size=6000),
+    )
+    messages = build_open_task_messages(thread_path=thread)
+    assert _tool_bytes(messages) == 36_000
+
+
 def test_live_result_redaction_and_integrity_are_enforced(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     original = "secret " * 5000

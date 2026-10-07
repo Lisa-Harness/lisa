@@ -126,8 +126,16 @@ def _paired_approval_result(
     }
 
 
-def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]]:
-    """Return the latest turn and its unfinished task as replayable messages."""
+def build_open_task_messages(
+    *, thread_path: Path | None, budget_bytes: int | None = None
+) -> list[dict[str, Any]]:
+    """Return the latest turn and its unfinished task as replayable messages.
+
+    ``budget_bytes`` bounds the resident tool-result bytes for the whole
+    replayed working set (``None`` keeps the projection default): oldest
+    results collapse into the evidence inventory by address, newest stay
+    verbatim. Residency by allocation at the turn boundary (R2).
+    """
     from runtime.thread import (
         _thread_redaction,
         load_recent_thread_entries,
@@ -166,5 +174,13 @@ def build_open_task_messages(*, thread_path: Path | None) -> list[dict[str, Any]
                 str(provenance.get("task_id") or ""),
                 thread_path=thread_path,
             )
+        )
+    if budget_bytes is not None:
+        # Turn-boundary working-set recompute (R2): the per-entry projection
+        # above bounds each result on its own; this final pass bounds the
+        # whole replayed set, collapsing the oldest tool groups into the
+        # evidence inventory by address so the newest stays resident.
+        messages = project_thread_messages(
+            messages, "", thread_path=thread_path, budget_bytes=budget_bytes
         )
     return messages

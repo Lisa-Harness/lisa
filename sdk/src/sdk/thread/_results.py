@@ -78,8 +78,18 @@ def project_tool_messages(
     persist: Callable[[dict[str, Any]], str],
     redaction: ThreadRedactionPolicy | None = None,
     load: Callable[[str], dict[str, Any]] | None = None,
+    *,
+    budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Abbreviate large tool text without modifying raw messages or tool-call pairing."""
+    """Abbreviate large tool text without modifying raw messages or tool-call pairing.
+
+    ``budget_bytes`` bounds the total tool-result bytes that may remain
+    resident in this projection; ``None`` (default) keeps the module
+    ``_TOOL_CONTEXT_BYTES`` ceiling. A lower budget is how the turn-start
+    replay allocator recomputes the resident working set — oldest results
+    collapse into the evidence inventory, newest stay verbatim.
+    """
+    budget = _TOOL_CONTEXT_BYTES if budget_bytes is None else max(0, budget_bytes)
     projected = copy.deepcopy(messages)
     tool_indices = [
         index for index, message in enumerate(messages) if message.get("role") == "tool"
@@ -100,10 +110,10 @@ def project_tool_messages(
     total_bytes = sum(
         len(str(messages[index].get("content") or "").encode("utf-8")) for index in tool_indices
     )
-    pressure = tool_bytes > _TOOL_CONTEXT_BYTES
-    over_budget = total_bytes > _TOOL_CONTEXT_BYTES
+    pressure = tool_bytes > budget
+    over_budget = total_bytes > budget
     latest_retrieval = max(retrieval_indices, default=-1)
-    scale = _preview_scale(tool_bytes) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
+    scale = _preview_scale(tool_bytes, budget) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
     refs: dict[int, str] = {}
     # Inline results register lazy persisters instead of eager refs: the
     # absolute-bound path may still have to evict them to the inventory.
@@ -175,7 +185,7 @@ def project_tool_messages(
         message["content"] = _preview(ref, permitted, *scale)
     refs.update({index: make_ref() for index, make_ref in inline_refs.items()})
     return (
-        _compact_groups(messages, projected, refs, task_id, persist)
+        _compact_groups(messages, projected, refs, task_id, persist, budget=budget)
         if pressure or over_budget
         else projected
     )
@@ -231,7 +241,7 @@ def _existing_pointer(
     return ref, result
 
 
-def _preview_scale(tool_bytes: int) -> tuple[int, int]:
+def _preview_scale(tool_bytes: int, budget: int = _TOOL_CONTEXT_BYTES) -> tuple[int, int]:
     """Map total tool-result bytes to graduated (head, tail) preview sizes.
 
     Sizes shrink linearly from (_HEAD_CHARS, _TAIL_CHARS) at the pressure
@@ -243,8 +253,9 @@ def _preview_scale(tool_bytes: int) -> tuple[int, int]:
     2026-10-05 turn-524 thrash, where every re-expansion re-triggered
     full collapse).
     """
-    over = max(0, tool_bytes - _TOOL_CONTEXT_BYTES)
-    fraction = min(1.0, over / _PRESSURE_SPAN_BYTES)
+    over = max(0, tool_bytes - budget)
+    span = max(1, budget // 2) if budget < _TOOL_CONTEXT_BYTES else _PRESSURE_SPAN_BYTES
+    fraction = min(1.0, over / span)
     head = int(_HEAD_CHARS - (_HEAD_CHARS - _PRESSURE_HEAD_CHARS) * fraction)
     tail = int(_TAIL_CHARS - (_TAIL_CHARS - _PRESSURE_TAIL_CHARS) * fraction)
     return head, tail
@@ -319,6 +330,8 @@ def _compact_groups(
     refs: dict[int, str],
     task_id: str,
     persist: Callable[[dict[str, Any]], str],
+    *,
+    budget: int = _TOOL_CONTEXT_BYTES,
 ) -> list[dict[str, Any]]:
     remaining = sum(
         len(str(message.get("content") or "").encode("utf-8"))
@@ -327,8 +340,9 @@ def _compact_groups(
     )
     omitted: set[int] = set()
     inventory: list[dict[str, Any]] = []
+    reserve = min(_INVENTORY_RESERVE_BYTES, max(0, budget // 16))
     for call_index, result_indices in _complete_groups(projected):
-        if remaining <= _TOOL_CONTEXT_BYTES - _INVENTORY_RESERVE_BYTES:
+        if remaining <= budget - reserve:
             break
         if not all(index in refs for index in result_indices):
             continue

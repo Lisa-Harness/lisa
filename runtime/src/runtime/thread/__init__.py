@@ -83,8 +83,14 @@ def project_thread_messages(
     task_id: str = "",
     *,
     thread_path: Path | None,
+    budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Persist large raw results before sending recoverable previews to a model."""
+    """Persist large raw results before sending recoverable previews to a model.
+
+    ``budget_bytes`` bounds the resident tool-result bytes in this projection
+    (``None`` keeps the sdk default ceiling); the turn-start replay path uses
+    it to recompute the resident working set under the session's replay lane.
+    """
     if thread_path is None:
         raise ValueError("Tool-result projection requires a thread storage path")
     return project_tool_messages(
@@ -93,6 +99,7 @@ def project_thread_messages(
         lambda result: _persist_result(thread_path, result),
         _thread_redaction,
         lambda ref: load_result_object(thread_path, ref),
+        budget_bytes=budget_bytes,
     )
 
 
