@@ -2710,6 +2710,7 @@ async def _streamed_gateway_completion(
     completion_request: CompletionRequest,
     complete_started: float,
     log: logging.Logger,
+    tools_offered_this_turn: bool = False,
 ) -> Any:
     """Stream one completion with tool-call fallback and a truncation rescue.
 
@@ -2736,7 +2737,15 @@ async def _streamed_gateway_completion(
     # payload blew the 4096-token budget). Retry once with a
     # doubled budget (bounded by the model's context window)
     # before accepting the narration-only aggregate as final.
-    if aggregated.finish_reason == "length" and effective_tools:
+    #
+    # Tools-stripped iterations (pending yield, forced final from the
+    # router or lifecycle) still carry tools_offered_this_turn=True
+    # because the model was working with tools earlier in the turn;
+    # stripping tools from one iteration is a harness decision, not a
+    # signal that the model had nowhere to dispatch. The rescue retries
+    # those truncations too — the 2026-10-06 "unfinished turns" incident
+    # (turns ending on a final-answer truncation with no tool calls).
+    if aggregated.finish_reason == "length" and (effective_tools or tools_offered_this_turn):
         base_max_tokens = int(completion_request.max_tokens or 0)
         retry_max_tokens = base_max_tokens * 2
         cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
@@ -2791,6 +2800,7 @@ async def _nonstreamed_gateway_completion(
     completion_request: CompletionRequest,
     complete_started: float,
     log: logging.Logger,
+    tools_offered_this_turn: bool = False,
 ) -> Any:
     """Complete non-streaming with a one-shot doubled-budget truncation rescue.
 
@@ -2806,7 +2816,12 @@ async def _nonstreamed_gateway_completion(
     before accepting the truncated completion as final.
     """
     completion = await gateway.complete(completion_request)
-    if getattr(completion, "finish_reason", None) == "length" and effective_tools:
+    # Same predicate as the streaming rescue: a truncated stripped-tools
+    # completion is still a write the model was building. The 2026-10-06
+    # "unfinished turns" incidents ended blocked turns on this path.
+    if getattr(completion, "finish_reason", None) == "length" and (
+        effective_tools or tools_offered_this_turn
+    ):
         base_max_tokens = int(completion_request.max_tokens or 0)
         retry_max_tokens = base_max_tokens * 2
         cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
@@ -2854,6 +2869,7 @@ async def _model_completion_for_iteration(
     mode_budget_tokens: int,
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
     log: logging.Logger,
+    tools_offered_this_turn: bool = False,
 ) -> Any:
     """Produce this iteration's completion: planned-handoff synthesis or gateway call.
 
@@ -3021,6 +3037,7 @@ async def _model_completion_for_iteration(
             mode_id=mode_id,
             effective_model_def=effective_model_def,
             effective_tools=effective_tools,
+            tools_offered_this_turn=tools_offered_this_turn,
             completion_request=completion_request,
             complete_started=_complete_started,
             log=log,
@@ -3034,6 +3051,7 @@ async def _model_completion_for_iteration(
         mode_id=mode_id,
         effective_model_def=effective_model_def,
         effective_tools=effective_tools,
+        tools_offered_this_turn=tools_offered_this_turn,
         completion_request=completion_request,
         complete_started=_complete_started,
         log=log,
@@ -9021,9 +9039,8 @@ async def _run_turn_inner(
             ),
             emit_stage=_emit_stage,
             log=_log,
+            tools_offered_this_turn=bool(tool_schemas),
         )
-        # Usage fold, token telemetry, model_call_complete emit, and the
-        # assistant-message append live in ``_record_iteration_completion``.
         _iteration_record = await _record_iteration_completion(
             state=_state,
             hooks=hooks,

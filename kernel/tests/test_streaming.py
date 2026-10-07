@@ -432,7 +432,96 @@ async def test_turn_runner_rescues_truncated_completion_with_tools_offered() -> 
 
 
 @pytest.mark.asyncio
-async def test_turn_runner_truncated_completion_without_tools_is_not_retried() -> None:
+async def test_turn_runner_truncated_completion_stripped_tools_retries() -> None:
+    """A completion truncated on a tools-stripped iteration still retries.
+
+    Regression for the 2026-10-06 "unfinished turns" incident: turns ended
+    blocked with partial reasoning-prose when the final no-tools completion
+    (pending_yield = iteration cap, lifecycle _FinishAction, router terminal
+    action, approval continuation) was truncated at the cap. The rescue's
+    tools-offered predicate read the iteration-local effective_tools, which
+    the loop strips on those iterations, so truncated stripped-tools finals
+    never got the 2x retry and the turn aborted with a reasoning tail.
+
+    The model had tools earlier in the turn; stripping them on one
+    iteration is harness-internal (the loop's choice to force a summary).
+    Retry on the doubled budget instead of surfacing the truncation abort.
+    """
+
+    calls: list[int] = []
+    completions = [
+        # First call (tools offered): the model makes no tool calls, runs
+        # out of its budget narrating a summary, and truncates.
+        _RescueStubCompletion(
+            content="The work so far concludes with the change applied, but writing the summary…",
+            finish_reason="length",
+        ),
+        # Retry (doubled budget): completes with a full final answer.
+        _RescueStubCompletion(
+            content="Conclusion: landed the change, ran the checks, and wrote the summary.",
+            finish_reason="stop",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="finish up the changes.", hooks=hooks)
+
+    # The retry fired with a doubled budget — the tools-stripped final got
+    # the same 2x rescue as a tools-offered call.
+    assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
+    # The turn completes with the retried completion's answer, not the
+    # truncated "nothing was dispatched" abort message.
+    assert "nothing was dispatched" not in result.response_text
+    assert "Conclusion" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_truncated_completion_no_tools_no_retry() -> None:
+    """A stripped-tools truncation is retried only when the turn began
+    with a tool surface.
+
+    The freeze-gated ``test_turn_runner_truncated_completion_without_tools_
+    is_not_retried`` pins the no-tools-at-all contract: a plain chat turn
+    that finishes at the cap is a natural completion, no retry. This case
+    fills the other gap: a turn that *started* with tools (a
+    ``memory.read`` catalog ambient tool) and then strips them for the
+    final iteration because the cap fires must still retry.
+    """
+
+    calls: list[int] = []
+    completions = [
+        _RescueStubCompletion(content="partial", finish_reason="length"),
+        _RescueStubCompletion(content="done", finish_reason="stop"),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="summarize the findings", hooks=hooks)
+
+    assert calls == [4096, 8192], f"expected one rescue retry at 2x, got {calls}"
+    assert result.response_text
+
     """``finish_reason='length'`` with NO tools offered is a natural
     completion, not a lost tool call — no rescue retry on the
     non-streaming path either."""
