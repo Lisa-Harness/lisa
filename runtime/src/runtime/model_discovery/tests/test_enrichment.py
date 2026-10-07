@@ -236,6 +236,63 @@ class TestOllamaEnrichment:
         assert "vision" in model.capabilities  # from family heuristic
         assert model.context_window == 0
 
+    def test_cloud_proxy_family_keyed_context_length(self) -> None:
+        """Ollama-cloud `/api/show` returns family-keyed context lengths.
+
+        Regression for the 2026-10-06 manifest gap: `models discover
+        --force` against the Ollama cloud proxy produced entries with no
+        `context_window` because `_ollama_show_context_window` only read
+        `model_info["general.context_length"]`, while the proxy publishes
+        family-keyed names (`glm_dsa_moe.context_length`,
+        `deepseek_v41.context_length`, `kimi-k3.context_length`). The
+        missing window left the kernel's truncation-rescue uncapped and
+        the per-model `max_completion_tokens` bound without its ceiling.
+        """
+        model = _enrich_ollama_model(
+            "glm-5.3:cloud",
+            {"details": {"parameter_size": "32B", "family": "glm"}},
+            show_payload={
+                "capabilities": ["completion", "thinking", "tools"],
+                "model_info": {"glm_dsa_moe.context_length": 1048576},
+            },
+        )
+        assert model.context_window == 1048576
+        assert "reasoning" in model.capabilities
+
+    def test_tags_details_context_length_used_when_show_missing(self) -> None:
+        """`/api/tags` `details.context_length` is the fallback when
+        `/api/show` carries no usable window."""
+        model = _enrich_ollama_model(
+            "deepseek-v4.1-flash:cloud",
+            {
+                "details": {
+                    "parameter_size": "763B",
+                    "family": "deepseek",
+                    "context_length": 1048576,
+                }
+            },
+            show_payload={},
+        )
+        assert model.context_window == 1048576
+
+    def test_tags_details_context_length_ignored_when_show_wins(self) -> None:
+        """`/api/show` remains authoritative when both sources carry a value."""
+        model = _enrich_ollama_model(
+            "glm-5.3:cloud",
+            {"details": {"parameter_size": "32B", "family": "glm", "context_length": 65536}},
+            show_payload={"model_info": {"glm_dsa_moe.context_length": 1048576}},
+        )
+        assert model.context_window == 1048576
+
+    def test_context_length_must_be_positive(self) -> None:
+        """Zero/negative context lengths never populate the window."""
+        model = _enrich_ollama_model(
+            "glm-5.3:cloud",
+            {"details": {"parameter_size": "32B", "family": "glm", "context_length": 0}},
+            show_payload={"model_info": {"glm_dsa_moe.context_length": 0}},
+        )
+        assert model.context_window == 0
+
     def test_show_payload_embedding_only(self) -> None:
         # An embedding-only model surfaces the embedding capability.
         model = _enrich_ollama_model(

@@ -178,16 +178,31 @@ def _derive_ollama_tiers(
 
 
 def _ollama_show_context_window(show_payload: dict[str, Any] | None) -> int:
-    """Extract the authoritative context length from /api/show model_info."""
+    """Extract the authoritative context length from /api/show model_info.
+
+    Keys are runtime-defined: real local GGUF builds publish
+    ``general.context_length``; the Ollama cloud proxy (and some other
+    runtimes) publish family-keyed names such as
+    ``glm_dsa_moe.context_length``. We accept any ``*.context_length``
+    entry, preferring ``general.context_length`` when both exist.
+    """
     if not show_payload:
         return 0
     model_info = (
         show_payload.get("model_info") if isinstance(show_payload.get("model_info"), dict) else None
     )
     if model_info:
-        raw_ctx = model_info.get("general.context_length")
-        if isinstance(raw_ctx, (int, float)) and raw_ctx > 0:
-            return int(raw_ctx)
+        candidates: list[tuple[int, int]] = []
+        for key, raw_ctx in model_info.items():
+            if not isinstance(raw_ctx, (int, float)) or raw_ctx <= 0:
+                continue
+            if key == "general.context_length":
+                candidates.append((0, int(raw_ctx)))
+            elif key.endswith(".context_length"):
+                candidates.append((1, int(raw_ctx)))
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
     return 0
 
 
@@ -229,8 +244,15 @@ def _enrich_ollama_model(
     if family:
         description = f"Ollama {family} model ({parameter_size or 'unknown size'})"
 
-    # Authoritative context length from /api/show model_info (best-effort).
+    # Authoritative context length: /api/show model_info wins any
+    # ``*.context_length`` (family-keyed on the Ollama cloud proxy); the
+    # tag-derived ``details.context_length`` fills in when /api/show is
+    # absent or unusable. ``known_models.yaml`` still overrides both.
     context_window = _ollama_show_context_window(show_payload)
+    if context_window <= 0:
+        raw_caption_ctx = details.get("context_length")
+        if isinstance(raw_caption_ctx, (int, float)) and raw_caption_ctx > 0:
+            context_window = int(raw_caption_ctx)
 
     enrichment = apply_known_override(
         "ollama",
