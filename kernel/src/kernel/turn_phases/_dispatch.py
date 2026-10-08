@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -54,6 +55,16 @@ __all__ = [
     "read_cache_signature",
     "summarize_json_result",
 ]
+
+# Ref grammars mirrored from ``sdk.thread._results`` (``_RESULT_REFERENCE``,
+# ``_THREAD_REFERENCE``): the cross-package contract for addressable values.
+# Captured from tool outputs so the standing state ledger can render the
+# addresses the model holds (R3). Word-bounded to avoid leaking prose
+# fragments ("at t3pm" must not register a t3 ref).
+_RESULT_REF_PATTERN = re.compile(r"\br[a-f0-9]{64}\b")
+_THREAD_REF_PATTERN = re.compile(
+    r"\bt\d{1,20}(?:\.m\d{1,20})?(?:\.c\d{1,20})?(?:\.[a-z_]+)?(?![\w.])"
+)
 
 #: Thread-archive tools whose repeated identical calls signal paging in
 #: circles rather than gathering (the 2026-10-02 reviewer burn: 23
@@ -559,6 +570,15 @@ def _capture_effect_receipt(
         tool_output = receipt_error
         returned_error = receipt_error
         dispatched_succeeded = False
+
+    # Refs ride the output even on failure envelopes — capture before the
+    # return so the standing state ledger sees every address the model may
+    # expand (R3). Stub envelopes and page pointers both carry ``"ref":``.
+    if isinstance(tool_output, str) and '"ref"' in tool_output:
+        for match in _RESULT_REF_PATTERN.findall(tool_output):
+            state.active_refs.add(match)
+        for match in _THREAD_REF_PATTERN.findall(tool_output):
+            state.active_refs.add(match)
 
     return tool_output, dispatched_effect, dispatched_succeeded, returned_error
 

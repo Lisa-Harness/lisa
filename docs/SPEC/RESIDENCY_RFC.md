@@ -245,33 +245,62 @@ red/green commits.
 
 ### Phase 1 (second) — Canonical stub envelope
 
-1. **One over-threshold stub row.** Behavior: replace the split between
-   preview envelope and retrieval pointer with a single deterministic stub
-   envelope (tool name, byte count, ref, `read_more` path), emitted by
-   both live dispatch and replay. *Red/green:* a `project_tool_messages`
-   test on an over-threshold result asserting the canonical stub shape and
-   that the raw bytes persist.
-2. **Stub as the default over-threshold shape.** Behavior: the
-   `abbreviation_template` mechanism's special case becomes the general
-   default for over-threshold results (not opt-in per `.tool.yml`).
-   *Red/green:* a dispatch test showing an over-threshold read enters
-   context as a stub by default.
+1. **Recognize every graduated stub scale** — *shipped 2026-10-07.* The
+   canonical envelope already exists (`{ref, abbreviated, total_chars,
+   head, tail, omitted_chars, expand, find}` — one grammar, emitted by
+   both live dispatch and replay); the real bug was that re-projection
+   recognized only the two exact endpoint scale pairs, so a
+   graduated-pressure stub evicted by the working-set compactor was
+   persisted as fresh content — a stub-of-a-stub whose ref expanded to
+   preview JSON instead of original bytes. Recognition now rebuilds the
+   preview at the stub's own scale. *Red/green:*
+   `runtime/tests/test_thread_replay.py::
+   test_inventory_refs_expand_to_original_bytes_not_stub_json`.
+2. **Pointer complete stored pages** — *shipped 2026-10-07*
+   (Lisa-Harness/lisa#5, pre-existing at HEAD). Complete retrieval pages
+   (`has_more` false) over the inline ceiling but under the turn ceiling
+   fell through a no-pointer window and were persisted as copies of
+   already-stored bytes (two expansion hops). The pointer now fires
+   whenever a complete stored page cannot stay resident inline.
+   *Red/green:*
+   `sdk/tests/test_thread_search.py::
+   TestProjectionRetrievalPages::test_over_threshold_page_pointers_without_pressure`.
+3. **Stub as the default over-threshold shape** — *not a change; the RFC
+   premise was wrong.* The over-threshold default stub is already
+   enforced by projection for every tool; `abbreviation_template` is a
+   separate opt-in same-turn repetition cache, not the stub mechanism.
+   Making it default would be refactor without a named bug — dropped
+   from the plan.
 
 ### Phase 3 (third) — Standing state ledger
 
-1. **`active_refs` source.** Behavior: the dispatch/receipt path records
-   the live set of refs the turn has minted or touched.
-   *Red/green:* a dispatch test asserting receipt capture populates
-   `active_refs`.
-2. **Deterministic per-iteration ledger render.** Behavior: receipts +
-   `ExecutionLedger` + `WorkflowPosition` + `active_refs` + plan excerpt
-   render into one standing `## State` block, set via the existing
-   `set_dynamic` segment path each iteration. *Red/green:* a turn-runner
-   test asserting the block is present and current every iteration.
-3. **Unify cap-pause + lifecycle briefing into the ledger.** Behavior:
-   the cap-pause diagnostic and lifecycle briefing become the same
-   standing payload, not one-shot arrivals. *Red/green:* a test asserting
-   the standing block carries the cap-pause signal when the stall fires.
+1. **`active_refs` source** — *shipped 2026-10-07.* `_TurnState.active_refs`
+   captures every result-object (`r<sha256>`) and thread (`t<turn>.m<idx>…`)
+   reference tool outputs carry, at dispatch time (word-bounded regexes
+   mirrored from the sdk ref grammar). *Red/green:*
+   `kernel/tests/test_effect_receipts.py::
+   test_dispatch_captures_active_refs_from_stub_envelopes`.
+2. **Deterministic per-iteration ledger render** — *shipped 2026-10-07.*
+   Writes landed/attempted (from effect receipts) and refs held render as
+   ledger lines inside the standing `## Turn Lifecycle` block via the
+   existing `N_LIFECYCLE_BRIEFING` keyed segment — one control channel,
+   replaced per iteration, zero model tokens, O(work-done). Omitted
+   entirely on receipt-less, ref-less iterations so early-iteration
+   briefings stay byte-identical to the pre-ledger format. Continuous
+   token budgets stay deliberately omitted (the documented
+   "model cannot convert '50k tokens left' into a concrete decision"
+   contract). *Red/green:*
+   `kernel/tests/test_control_channel.py::
+   test_budget_briefing_carries_state_ledger_lines` /
+   `test_budget_briefing_ledger_lines_omitted_when_empty`.
+3. **Unify cap-pause + lifecycle briefing into the ledger** — *verified
+   already satisfied by the channel architecture; no commit needed.* The
+   stuck-in-stage nudge and cap-pause diagnostic already ride the same
+   Phase 7 control channel (guidance lines and the empty-content path
+   into the same `N_LIFECYCLE_BRIEFING` segment), the stage-budget line
+   rides the count lines, and the new ledger lines complete the payload
+   (stage, writes, refs, receipts). Restructuring further would be
+   refactor without a named bug — out of scope under the freeze.
 
 ## Risks and mitigations
 

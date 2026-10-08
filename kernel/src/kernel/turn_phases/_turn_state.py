@@ -285,6 +285,13 @@ class _TurnState:
     action tools — not just read-only fetches. A child that did 4
     ``fetch_page`` calls but never called ``markdown_forge_document``
     hallucinated its success (the 2026-07-27 follow-on incident)."""
+    active_refs: set[str] = field(default_factory=set)
+    """Every result-object (``r<sha256>``) and thread (``t<turn>.m<idx>…``)
+    reference the turn's tool outputs carried — the addresses the model
+    may expand on demand. Captured at dispatch time so the standing state
+    ledger can render them without re-scanning context (R3: state is not
+    history). The grammar mirrors ``sdk.thread._results``; the strings are
+    the cross-package ref contract."""
     effect_receipts: list[EffectReceipt] = field(default_factory=list)
     """``EffectReceipt`` instances collected at dispatch time for every
     successfully-dispatched capability. Write/external_write receipts prove

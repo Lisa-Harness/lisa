@@ -30,7 +30,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from kernel.models import WorkflowModeConfig
+from kernel.models import EffectReceipt, WorkflowModeConfig
 from kernel.turn_hooks import (
     ModelHooks,
 )
@@ -89,6 +89,82 @@ def _briefing_state() -> SimpleNamespace:
         called_tool_names=set(),
         effect_receipts=[],
     )
+
+
+def test_budget_briefing_carries_state_ledger_lines() -> None:
+    """The standing state ledger rides the lifecycle block (R3).
+
+    Writes landed/attempted and the refs the turn holds render every
+    iteration — deterministic text built from effect receipts and the
+    dispatch-time ref capture, zero model tokens, so the model never
+    re-scans context to know what it has done or can re-expand.
+    """
+    state = SimpleNamespace(
+        iteration=3,
+        step_iteration=0,
+        step_tool_calls=0,
+        turns_in_stage=2,
+        call_ledger_counts={},
+        sub_turn_kind=None,
+        action_tool_ids=set(),
+        called_tool_names={"read_file", "write_file", "patch_file"},
+        effect_receipts=[
+            EffectReceipt(effect="write", capability_id="write_file", artifact_id="doc-1"),
+            EffectReceipt(effect="write", capability_id="patch_file", artifact_id=""),
+            EffectReceipt(effect="read", capability_id="read_file", artifact_id=""),
+        ],
+        active_refs={"r" + "a" * 64, "t391.m20", "t390.m4"},
+    )
+    briefing = _build_budget_briefing(
+        state=state,
+        max_tool_iterations=50,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
+        tool_schemas=[],
+        operation_catalog={},
+        tool_catalog={},
+        execution_policy=None,
+        budget_exhausted=False,
+    )
+    assert "## Turn Lifecycle" in briefing
+    assert "writes landed: 1, attempted: 2" in briefing
+    assert "refs held: 3" in briefing
+    # Refs render abbreviated (first ref chars + …), with the expand path.
+    assert "thread_read_content" in briefing
+
+
+def test_budget_briefing_ledger_lines_omitted_when_empty() -> None:
+    """A turn with no receipts and no refs renders no ledger lines (R3).
+
+    Iteration 1 before any dispatch has nothing to report; the briefing
+    stays byte-identical to the pre-ledger format.
+    """
+    state = SimpleNamespace(
+        iteration=1,
+        step_iteration=0,
+        step_tool_calls=0,
+        turns_in_stage=0,
+        call_ledger_counts={},
+        sub_turn_kind=None,
+        action_tool_ids=set(),
+        called_tool_names=set(),
+        effect_receipts=[],
+        active_refs=set(),
+    )
+    briefing = _build_budget_briefing(
+        state=state,
+        max_tool_iterations=50,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        stage_nudge_cap=9,
+        tool_schemas=[],
+        operation_catalog={},
+        tool_catalog={},
+        execution_policy=None,
+        budget_exhausted=False,
+    )
+    assert briefing == "## Turn Lifecycle\n\niteration: 1 of 50"
 
 
 def test_budget_briefing_carries_guidance_lines() -> None:

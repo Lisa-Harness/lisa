@@ -386,9 +386,7 @@ def _fold_mode_turn_budget(turn_budget: TurnBudget | None, mode_config: Any) -> 
     effective = min(host_rail, mode_rail) if host_rail else mode_rail
     if effective == host_rail:
         return turn_budget
-    return turn_budget.model_copy(
-        update={"max_completion_tokens": effective}
-    )
+    return turn_budget.model_copy(update={"max_completion_tokens": effective})
 
 
 def _synthesized_call_missing_all_required(
@@ -645,6 +643,12 @@ def _build_budget_briefing(
     # model produces.
     if budget_exhausted:
         lines.append("YIELD: budget exhausted — harness will ask the user")
+    # ── State ledger (R3: state is not history) ─────────────────────────
+    # Deterministic lines built from effect receipts and the dispatch-time
+    # ref capture — zero model tokens, O(work-done). Rendered every
+    # iteration so the model never re-scans context to know what it has
+    # done (writes landed/attempted) or which addresses it can re-expand.
+    lines.extend(_build_state_ledger_lines(state=state))
     # ── Sub-turn contract (fork / delegate children) ──────────────────
     # A fork/delegate child whose mode declares action tools must be told
     # the budget is a write-deadline, not exploration room — and that
@@ -672,6 +676,42 @@ def _build_budget_briefing(
     if sub_contract:
         return sub_contract
     return lifecycle_block
+
+
+#: Chars shown per ref in the ledger's ``refs held`` line — enough to
+#: disambiguate (result refs share a hex prefix) without flooding the
+#: briefing with 64-char ids.
+_LEDGER_REF_ABBREV_CHARS = 12
+
+
+def _build_state_ledger_lines(*, state: Any) -> list[str]:
+    """Build the deterministic receipts/refs lines for the lifecycle block.
+
+    The state ledger (R3: state is not history): writes landed/attempted
+    from effect receipts, and the addresses the turn holds from the
+    dispatch-time ref capture. Rendered every iteration as generated text
+    (zero model tokens, O(work-done)); omitted entirely when the turn has
+    no receipts and no refs so early iterations stay byte-identical to
+    the pre-ledger briefing.
+    """
+    lines: list[str] = []
+    receipts = list(getattr(state, "effect_receipts", None) or [])
+    write_receipts = [
+        r for r in receipts if getattr(r, "effect", "") in ("write", "external_write")
+    ]
+    landed = [r for r in write_receipts if getattr(r, "artifact_id", "")]
+    attempted: set[str] = {str(getattr(r, "capability_id", "")) for r in write_receipts}
+    if write_receipts:
+        lines.append(f"writes landed: {len(landed)}, attempted: {len(attempted)}")
+    active_refs = set(getattr(state, "active_refs", None) or ())
+    if active_refs:
+        shown = sorted(active_refs)
+        render = " · ".join(
+            r[:_LEDGER_REF_ABBREV_CHARS] + "…" if len(r) > _LEDGER_REF_ABBREV_CHARS else r
+            for r in shown
+        )
+        lines.append(f"refs held: {len(shown)} ({render}) [expand: thread_read_content]")
+    return lines
 
 
 def _build_budget_count_lines(
@@ -2688,9 +2728,7 @@ async def _collect_stream(
             # gateway's finally-block (httpx response cleanup) still runs.
             with contextlib.suppress(Exception):
                 await stream.aclose()
-            raise StreamIdleTimeout(
-                f"stream produced no chunk for {timeout_s:.0f}s"
-            ) from exc
+            raise StreamIdleTimeout(f"stream produced no chunk for {timeout_s:.0f}s") from exc
         chunks.append(chunk)
         if on_delta is not None and (chunk.content or chunk.reasoning_content):
             await on_delta(chunk.content, chunk.reasoning_content)
@@ -9034,9 +9072,7 @@ async def _run_turn_inner(
             effective_model_def=effective_model_def,
             effective_tools=effective_tools,
             sys_segments=_sys_segments,
-            mode_budget_tokens=int(
-                getattr(mode_config, "completion_budget_tokens", 0) or 0
-            ),
+            mode_budget_tokens=int(getattr(mode_config, "completion_budget_tokens", 0) or 0),
             emit_stage=_emit_stage,
             log=_log,
             tools_offered_this_turn=bool(tool_schemas),

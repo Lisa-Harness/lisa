@@ -20,6 +20,7 @@ happen". Three behaviors pinned here:
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -133,6 +134,51 @@ def test_failed_execute_tool_does_not_emit_receipt() -> None:
     assert succeeded is False
     assert returned_error == "sandbox unavailable"
     assert state.effect_receipts == []
+
+
+def test_dispatch_captures_active_refs_from_stub_envelopes() -> None:
+    """Every ref the model would need is recorded on the turn state (R3).
+
+    Tool outputs carry stub envelopes (``{"ref": "r…", "abbreviated": …}``)
+    and page pointers (``{"ref": "t0.response_text", "page_omitted": …}``)
+    minted by projection; the standing state ledger renders this set so the
+    model always sees which addresses it holds without re-scanning context.
+    """
+    state = _TurnState()
+    tool_output = (
+        '{"ref":"r' + "a" * 64 + '","abbreviated":true,"total_chars":10,'
+        '"head":"x","tail":"","omitted_chars":9,'
+        '"expand":"thread_read_content","find":"thread_find_content"}'
+    )
+    _capture_effect_receipt(
+        tool_name="read_file",
+        tool_output=tool_output,
+        op_result=None,
+        tool_result=ToolResult(tool_id="read_file", output=tool_output),
+        mcp_result=None,
+        operation_catalog={},
+        tool_catalog={"read_file": SimpleNamespace(effect="read")},
+        pool=SimpleNamespace(),
+        state=state,
+        logger=logging.getLogger(__name__),
+    )
+    pointer_output = json.dumps(
+        {"ref": "t3.m2.content", "page_omitted": True, "expand": "thread_read_content"}
+    )
+    _capture_effect_receipt(
+        tool_name="thread_read_content",
+        tool_output=pointer_output,
+        op_result=None,
+        tool_result=ToolResult(tool_id="thread_read_content", output=pointer_output),
+        mcp_result=None,
+        operation_catalog={},
+        tool_catalog={"thread_read_content": SimpleNamespace(effect="read")},
+        pool=SimpleNamespace(),
+        state=state,
+        logger=logging.getLogger(__name__),
+    )
+
+    assert state.active_refs == {"r" + "a" * 64, "t3.m2.content"}
 
 
 def test_failed_mcp_write_does_not_emit_receipt() -> None:
