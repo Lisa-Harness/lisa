@@ -4,6 +4,40 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Context residency by allocation — bounded replay working set, stub coherence, standing state ledger
+
+- **What:** The three-rule residency design shipped under the
+  "Context residency by allocation" freeze carve-out
+  (`docs/SPEC/RESIDENCY_RFC.md`): (R2) the turn-start replay working set is
+  recomputed under a byte budget — `build_open_task_messages` /
+  `project_tool_messages` accept `budget_bytes`; three tighten-only layers
+  set it: host ceiling `HostConfig.context_budget_replay_max_bytes`
+  (65536, env `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES`), session knob
+  `context.history.replay_max_bytes`, core default 32768 (16KB noted as
+  adequate most of the time). Over-budget replayed results collapse to
+  recoverable ref-stubs; newest stay verbatim. (R1) stub recognition and
+  page-pointer coherence fixes below. (R3) a standing state ledger rides the
+  `## Turn Lifecycle` block every iteration: `_TurnState.active_refs`
+  captures every `r<sha256>`/`t<turn>.m<idx>` ref tool outputs carry, and
+  deterministic writes-landed/attempted + refs-held lines render from
+  effect receipts — zero model tokens, O(work-done).
+- **Why:** The thread store is lossless but context residency was not
+  bounded: the replay path — the one context path the 8k lane budget never
+  saw — replayed the open task's tool results verbatim, growing linearly
+  (six 6KB results = 36KB). The 97%-prompt token split
+  (`docs/TOKEN_BUDGET.md`) is the cost this exists to move.
+- **Tests:** `runtime/tests/test_thread_replay.py`
+  (bounded/unbounded working set; inventory refs expand to original bytes);
+  `runtime/tests/test_replay_budget_wiring.py` (knob tightens, core default
+  bounds, absent knob verbatim, knob cannot exceed env ceiling);
+  `kernel/tests/test_session_plan.py::test_compile_session_plan_accepts_replay_max_bytes`;
+  `kernel/tests/test_effect_receipts.py::
+  test_dispatch_captures_active_refs_from_stub_envelopes`;
+  `kernel/tests/test_control_channel.py::test_budget_briefing_carries_state_ledger_lines`,
+  `test_budget_briefing_ledger_lines_omitted_when_empty`.
+
 ### Fixed
 
 #### `dispute_memory` looked up a different slice than `recall_memory`
@@ -19,6 +53,40 @@ All notable changes to the Lisa Harness will be documented in this file.
   against a bad lesson it could see but not correct (2026-10-05 thread).
 - **Tests:** `sdk/packs/memory/tests/test_dispute_memory.py` (scoped
   lookup reaches the recall slice; out-of-scope ids stay invisible).
+
+#### Graduated-scale stubs were not recognized on re-projection (stub-of-a-stub)
+
+- **What:** `_existing_result` recognized over-threshold preview stubs at
+  only the two exact endpoint scale pairs. Stubs minted mid-ramp (the
+  graduated 600→120 head-scale under pressure) that were later evicted by
+  the working-set compactor were treated as fresh content and persisted
+  as-is, so the evidence inventory's ref expanded to the stub's own JSON
+  instead of the original bytes. Recognition now rebuilds the preview at
+  the stub's own head/tail and compares — every scale is recognized while
+  envelopes whose excerpts don't match the store are still rejected.
+- **Why:** Coherence by address means one hop: the model expanding an
+  inventory ref found a preview envelope whose `total_chars`/`head`/`tail`
+  described the JSON, not the content, and needed a second expansion hop to
+  reach the bytes (2026-10-07 replay-eviction finding).
+- **Tests:** `runtime/tests/test_thread_replay.py::
+  test_inventory_refs_expand_to_original_bytes_not_stub_json`.
+
+#### Complete retrieval pages were persisted instead of pointered
+
+- **What:** A complete (`has_more` false) retrieval-tool page whose `ref`
+  already addressed stored content pointed only under turn pressure.
+  Pages over `_MAX_RETRIEVAL_BYTES` (32KB) but under the turn ceiling
+  (64KB) fell through a no-pointer window to `persist()`+preview — every
+  replay of such a page created a fresh result object holding a copy of
+  bytes the store already had, and the stub addressed the copy (two
+  expansion hops). The pointer now fires whenever a complete stored page
+  cannot stay resident inline; the `has_more` guard stands (a mid-page
+  carries progress the original ref cannot reconstruct).
+- **Why:** The page adds nothing the original ref cannot recover; a copy
+  is a second address for the same bytes and inflates the result store on
+  every over-threshold page read (Lisa-Harness/lisa#5).
+- **Tests:** `sdk/tests/test_thread_search.py::
+  TestProjectionRetrievalPages::test_over_threshold_page_pointers_without_pressure`.
 
 #### Catalog loaders rewrote `timeout_seconds: 0` into the 30s default
 
