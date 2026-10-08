@@ -11,6 +11,7 @@ Gateway-specific streaming tests (``OpenAICompatibleGateway.complete_stream``,
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -602,6 +603,90 @@ async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> 
 
     assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
     assert "complete answer" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rescues_truncated_fallback_after_tool_calls_stream() -> None:
+    """A truncated non-streaming fallback after a tool_calls stream is retried.
+
+    Regression for the 2026-10-08 "ran out without doing anything" turns:
+    v1 streaming ends ``finish_reason='tool_calls'`` and falls back to the
+    non-streaming ``complete()`` to rebuild the structured tool-call payload.
+    That regeneration is a fresh generation — a reasoning model can burn its
+    whole budget re-deliberating and stop at ``finish_reason='length'`` with
+    no tool calls (glm-5.3:cloud in coding_execute: 16384-token loops of
+    "Let me output. Here. Go. OK. Writing."). Both sibling paths (the
+    truncated-stream rescue and the non-streaming truncation rescue) retry
+    at 2x, but this fallback regenerated with no rescue — the turn ended
+    with the "reached its token cap before emitting a tool call" abort and
+    the degenerate reasoning tail surfaced as the response, three turns in
+    a row.
+    """
+
+    stream_calls: list[int] = []
+    complete_calls: list[int] = []
+    stream_idx = {"n": 0}
+
+    async def stream_fn(**kwargs: Any):
+        stream_calls.append(kwargs.get("max_tokens"))
+        if stream_idx["n"] == 0:
+            stream_idx["n"] += 1
+            yield StreamedChunk(content="Let me make the edit now.")
+            yield StreamedChunk(finish_reason="tool_calls")
+        else:
+            yield StreamedChunk(content="", finish_reason="stop")
+
+    completions = [
+        # First fallback generation: re-deliberates past the budget and
+        # truncates before emitting the tool-call payload.
+        _RescueStubCompletion(
+            content="",
+            finish_reason="length",
+        ),
+        # Retry (doubled budget): the payload fits — the edit lands as a
+        # structured tool call.
+        _RescueStubCompletion(
+            content="",
+            finish_reason="stop",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "memory.add",
+                        "arguments": json.dumps({"content": "edited"}),
+                    },
+                }
+            ],
+        ),
+        # Iteration 2 after the dispatch: the fallback path returns a
+        # clean final answer (no further truncation).
+        _RescueStubCompletion(
+            content="Edit applied and recorded.",
+            finish_reason="stop",
+        ),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        complete_calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+
+    # The fallback completion was retried at a doubled budget…
+    assert complete_calls == [4096, 8192], (
+        f"expected one fallback rescue retry at 2x, got {complete_calls}"
+    )
+    # …and the turn did NOT end on the token-cap abort wrapper.
+    assert "reached its token cap before emitting a tool call" not in result.response_text
 
 
 # ── on_delta per-chunk forwarding (v1 streaming display) ──────────────

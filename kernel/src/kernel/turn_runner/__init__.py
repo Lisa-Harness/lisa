@@ -2814,11 +2814,20 @@ async def _streamed_gateway_completion(
             aggregated = _aggregate_streamed_chunks(retry_chunks)
 
     if aggregated.finish_reason == "tool_calls":
-        # Fall back to non-streaming for tool-call payload
-        fallback_started = time.perf_counter()
-        completion = await gateway.complete(fallback_request)
-        if completion.duration_ms <= 0.0:
-            completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
+        # Fall back to non-streaming for tool-call payload. The fallback
+        # regeneration is itself a fresh generation, so it gets the same
+        # truncation rescue as both sibling paths (see
+        # ``_rescue_truncated_fallback_completion`` — the 2026-10-08
+        # "ran out without doing anything" incident).
+        completion = await _rescue_truncated_fallback_completion(
+            gateway=gateway,
+            fallback_request=fallback_request,
+            mode_id=mode_id,
+            effective_model_def=effective_model_def,
+            effective_tools=effective_tools,
+            tools_offered_this_turn=tools_offered_this_turn,
+            log=log,
+        )
     else:
         # Build a completion-like object from the aggregated stream
         completion = StreamedCompletionAdapter(aggregated)
@@ -2826,6 +2835,70 @@ async def _streamed_gateway_completion(
             # The stream carried no usage; stamp measured duration so
             # duration_ms survives the flip for time-billed providers.
             completion.duration_ms = stream_ms
+    return completion
+
+
+async def _rescue_truncated_fallback_completion(
+    *,
+    gateway: Any,
+    fallback_request: CompletionRequest,
+    mode_id: str,
+    effective_model_def: Any,
+    effective_tools: list[dict[str, Any]] | None,
+    tools_offered_this_turn: bool,
+    log: logging.Logger,
+) -> Any:
+    """Non-streaming fallback for a tool_calls stream, with truncation rescue.
+
+    v1 streaming does not parse tool-call deltas, so a stream ending
+    ``finish_reason='tool_calls'`` regenerates via the non-streaming
+    ``complete()`` to get the structured payload. That regeneration is a
+    fresh generation — a reasoning model can re-deliberate past the
+    budget and stop at ``length`` before emitting the payload (the
+    2026-10-08 "ran out without doing anything" incident: glm-5.3:cloud
+    in coding_execute burned 16384 tokens on a degenerate reasoning loop,
+    the turn aborted with the token-cap wrapper, three turns in a row).
+    Both sibling paths (the truncated-stream rescue above and the
+    non-streaming rescue below) retry a truncation at 2x; the fallback
+    regenerated with no rescue. Same predicate, same one-shot doubled
+    budget (context-window-capped).
+    """
+    fallback_started = time.perf_counter()
+    completion = await gateway.complete(fallback_request)
+    if completion.duration_ms <= 0.0:
+        completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
+    if getattr(completion, "finish_reason", None) != "length" or not (
+        effective_tools or tools_offered_this_turn
+    ):
+        return completion
+    base_max_tokens = int(fallback_request.max_tokens or 0)
+    retry_max_tokens = base_max_tokens * 2
+    cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
+    if cap_window > 0:
+        retry_max_tokens = min(retry_max_tokens, cap_window)
+    if retry_max_tokens <= base_max_tokens:
+        return completion
+    log.warning(
+        "truncated fallback after tool_calls stream; retrying "
+        "once with higher max_tokens (mode=%s, model=%s, from=%d, to=%d)",
+        mode_id,
+        getattr(effective_model_def, "model_id", ""),
+        base_max_tokens,
+        retry_max_tokens,
+    )
+    retry_request = CompletionRequest(
+        messages=fallback_request.messages,
+        model_def=fallback_request.model_def,
+        max_tokens=retry_max_tokens,
+        temperature=fallback_request.temperature,
+        tools=fallback_request.tools,
+        response_format=fallback_request.response_format,
+        system_prompt_segments=fallback_request.system_prompt_segments,
+    )
+    retry_started = time.perf_counter()
+    completion = await gateway.complete(retry_request)
+    if completion.duration_ms <= 0.0:
+        completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
     return completion
 
 
