@@ -458,6 +458,12 @@ class ContextHistoryPlan(_StrictSessionModel):
     include_recent_conversation: bool = True
     include_reflection: bool = False
     recent_message_limit: int = Field(default=6, ge=0)
+    #: Bound the turn-start replay working set — the total tool-result
+    #: bytes replayed verbatim for the open task before the rest collapse
+    #: to recoverable ref-stubs (residency by allocation, R2). Tighten-only
+    #: against the host ``context_budget_replay_max_bytes`` ceiling;
+    #: ``None`` (absent) keeps the host default.
+    replay_max_bytes: int | None = Field(default=None, ge=1, le=1048576)
     digest: ThreadDigestPlan = Field(default_factory=ThreadDigestPlan)
 
 

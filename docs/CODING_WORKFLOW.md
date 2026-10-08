@@ -209,10 +209,17 @@ via the existing dynamic-segment path, the append-only within-turn
 invariant), `kernel/src/kernel/turn_phases/_dispatch.py` (receipt capture
 feeding the ledger and the `active_refs` source), and
 `mcp_server/src/mcp_server/thread/server.py` (the result shapes the stub
-points at). `kernel/src/kernel/execution_ledger.py`,
-`kernel/src/kernel/workflow_position.py`, and
-`kernel/src/kernel/session_plan.py` are *read sources only* for the
-ledger — no signature changes to anything another package imports.
+points at). Amended 2026-10-07 (operator-ratified budget design) to add:
+`kernel/src/kernel/session_plan.py` (the
+`context.history.replay_max_bytes` knob only — schema addition, same
+category as the thread-context carve-out's context/digest-knob exception;
+no other session-plan surface), `runtime/src/runtime/turn_hooks_builder.py`
+(the `prior_messages` replay-budget wiring only), and
+`sdk/packs/core/src/sdk/packs/core/sessions/default.md` (the
+`context.history.replay_max_bytes` default only).
+`kernel/src/kernel/execution_ledger.py` and
+`kernel/src/kernel/workflow_position.py` remain *read sources only* for
+the ledger — no signature changes to anything another package imports.
 Purpose: make context residency bounded by recomputing a budgeted resident
 working set at each turn boundary (last-N events verbatim, one stub row
 per older/over-threshold event, a standing receipts-derived state ledger),

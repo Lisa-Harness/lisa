@@ -103,6 +103,15 @@ execution:
   # turn-length governor.
   max_completion_tokens: 500000
 context:
+  # Bound the turn-start replay working set: total tool-result bytes
+  # replayed verbatim for the open task before the rest collapse to
+  # recoverable ref-stubs (residency by allocation; nothing is lost —
+  # stubs re-expand via thread_read_content). The host ceiling is 64KB;
+  # 32KB keeps a few full file reads resident across a turn boundary.
+  # 16KB is adequate most of the time — tighten in your own session
+  # context when you prefer cheaper replays over verbatim residency.
+  history:
+    replay_max_bytes: 32768
   sources:
     - rule_id: default
       lane_id: operational

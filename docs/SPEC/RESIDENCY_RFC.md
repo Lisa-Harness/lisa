@@ -2,7 +2,9 @@
 
 > **Status:** Active. Carve-out opened 2026-10-07 in
 > `docs/CODING_WORKFLOW.md` § "Declared carve-outs" (authorized by the
-> operator). Implementation in progress.
+> operator). Phase 2 (turn-boundary residency) implemented 2026-10-07:
+> replay working-set budget (`84d0984a` mechanism, wiring + knob +
+> core-default commits) — see "Phased plan" below for per-commit receipts.
 > **Design thread:** "residency by allocation, coherence by address" —
 > one principle, three rules.
 
@@ -208,22 +210,38 @@ red/green commits.
 
 ### Phase 2 (first) — Turn-boundary residency working set
 
-1. **Residency working-set contract at turn start.** Behavior: at turn
-   start, the replay allocator computes the resident working set — task
-   frame, receipts ledger, last-N events verbatim, one stub row per
-   older/over-threshold event — from `prior_messages()`.
-   *Red/green:* a replay assembly test that fails while a large prior
-   tool result re-enters verbatim and passes once it lands as a stub row
-   carrying its ref.
-2. **Append-only within-turn invariant.** Behavior: a stub occupies the
-   slot its full result would have occupied; no appended in-turn message
-   is rewritten. *Red/green:* a turn-loop test asserting no
-   already-appended message mutates across iterations (only the keyed
-   dynamic segment is replaced).
-3. **Replay lane budget.** Behavior: the replay/tool-result path is
-   budgeted by the allocator like every other lane (tighten-only).
-   *Red/green:* an allocator test where an over-budget replay set is
-   bounded to its lane ceiling.
+1. **Residency working-set contract at turn start** — *shipped 2026-10-07
+   (`84d0984a`).* `build_open_task_messages` gained `budget_bytes`; a
+   final pass over the assembled replay bounds total tool-result bytes by
+   collapsing the oldest results into recoverable ref-stubs via the
+   existing `_compact_groups` evidence-inventory machinery. Defaults
+   preserved prior behavior (no caller passed a budget in that commit).
+   *Red/green:* `test_replay_working_set_is_bounded_by_budget_bytes` /
+   `test_replay_working_set_unbounded_without_budget`
+   (`runtime/tests/test_thread_replay.py`).
+2. **Append-only within-turn invariant** — *verified structurally true,
+   no commit needed (2026-10-07).* The in-turn loop never rewrites an
+   appended tool result; the only in-place rewrites are `messages[0]`
+   keyed dynamic segments (lifecycle briefing, routing hint, handoff
+   context, terminal prompt). Confirmed by audit of all nine tool-append
+   sites and four in-place rewrite sites in `kernel/turn_runner/__init__.py`.
+3. **Replay budget knob + live wiring** — *shipped 2026-10-07.* The
+   replay working set is bounded by a three-layer budget (no render-lane
+   was added: the section allocator never consumes replay messages, so a
+   lane there would be an unused lane — the knob family lives in config
+   and the consumer is the replay path itself):
+   - Host ceiling: `HostConfig.context_budget_replay_max_bytes`, default
+     65536, env `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES`.
+   - Session tighten-only knob: `context.history.replay_max_bytes` on the
+     v2 `ContextHistoryPlan` (absent = host ceiling; cannot raise past it).
+   - Core default session: 32768 with a note that 16384 is adequate most
+     of the time.
+   - Wiring: `prior_messages` in `turn_hooks_builder.py` threads the
+     effective budget into `build_open_task_messages`.
+   *Red/green:* `kernel/tests/test_session_plan.py::
+   test_compile_session_plan_accepts_replay_max_bytes`;
+   `runtime/tests/test_replay_budget_wiring.py` (bounds-to-knob,
+   core-default-bounds, absent-knob-verbatim, knob-cannot-exceed-ceiling).
 
 ### Phase 1 (second) — Canonical stub envelope
 

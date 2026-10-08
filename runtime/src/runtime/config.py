@@ -47,11 +47,17 @@ LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_REFLECTION_
 LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV = "LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO"
+LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES_ENV = "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES"
 LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
 
 # ── Default values ────────────────────────────────────────────────────
 
 _DEFAULT_THREAD_SEGMENT_TURNS = 256
+#: Host ceiling for the turn-start replay working set (bytes). Matches the
+#: projection module's per-turn tool-result ceiling so default turns
+#: behave as they did before the budget existed; sessions tighten via
+#: ``context.history.replay_max_bytes`` (never raise past this).
+_DEFAULT_REPLAY_BUDGET_BYTES = 65536
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
 _PROFILES_SUBDIR_NAME = "profiles"
@@ -175,7 +181,16 @@ def _context_budget_overrides() -> dict[str, int | bool]:
             "context_budget_operational_max_tokens",
             800,
         ),
-        (LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV, "context_budget_token_char_ratio", 4),
+        (
+            LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV,
+            "context_budget_token_char_ratio",
+            4,
+        ),
+        (
+            LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES_ENV,
+            "context_budget_replay_max_bytes",
+            _DEFAULT_REPLAY_BUDGET_BYTES,
+        ),
     )
     for env_name, field_name, default_value in int_specs:
         raw = _resolve_env(env_name)
@@ -423,6 +438,14 @@ class HostConfig:
     # the prompt. Override via
     # ``LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS``.
     context_budget_operational_max_tokens: int = 800
+    # Ceiling for the turn-start replay working set (bytes): the total
+    # tool-result bytes replayed verbatim for the open task before the
+    # rest collapse to recoverable ref-stubs (residency by allocation,
+    # R2). Default matches the sdk projection ceiling so ordinary turns
+    # are unchanged; session front matter may tighten via
+    # ``context.history.replay_max_bytes`` but never raise past this.
+    # Override via ``LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES``.
+    context_budget_replay_max_bytes: int = _DEFAULT_REPLAY_BUDGET_BYTES
 
     # ── Prompt caching (provider wire-level) ────────────────────────
     # When True (default), providers that support explicit prompt-cache

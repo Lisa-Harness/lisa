@@ -900,7 +900,11 @@ def _assemble_turn_hooks(
             # _snapshot_sink wired into _assemble_user_context. Utilization-
             # aware slice providers read this via hooks.context.last_context_snapshot.
             last_context_snapshot=runtime.session.last_context_snapshot,
-            prior_messages=lambda: build_open_task_messages(thread_path=runtime.paths.thread_path),
+            prior_messages=partial(
+                build_open_task_messages,
+                thread_path=runtime.paths.thread_path,
+                budget_bytes=_effective_replay_budget_bytes(runtime),
+            ),
             project_messages=partial(
                 project_thread_messages, thread_path=runtime.paths.thread_path
             ),
@@ -1212,6 +1216,26 @@ def _transport_forwarder(transport: Any) -> Any:
         await forward("on_text_chunk", text, reasoning)
 
     return on_stage, on_delta
+
+
+def _effective_replay_budget_bytes(runtime: Any) -> int:
+    """Resolve the turn-start replay working-set budget (tighten-only).
+
+    The host ``context_budget_replay_max_bytes`` is the ceiling; the
+    session plan's ``context.history.replay_max_bytes`` may tighten it
+    (never raise past it). Absent knob keeps the host ceiling so the
+    pre-budget verbatim behavior survives for ordinary sessions.
+    """
+
+    ceiling = int(
+        getattr(runtime.config, "context_budget_replay_max_bytes", 65536) or 65536
+    )
+    knob = runtime.session_plan.manifest.context.history.replay_max_bytes
+    if knob is None:
+        return max(0, ceiling)
+    if knob <= 0:
+        return max(0, ceiling)
+    return max(0, min(ceiling, knob))
 
 
 def build_turn_hooks(
