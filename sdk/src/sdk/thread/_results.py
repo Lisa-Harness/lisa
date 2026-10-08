@@ -133,9 +133,21 @@ def project_tool_messages(
                 continue
             content = existing[1]["content"]
         permitted = redaction.redact(content) if redaction is not None else content
+        # A complete page (has_more false) of an already-stored value always
+        # pointers when it cannot stay resident inline: its ref reconstructs
+        # the bytes, so persisting the page would create a second address
+        # for the same content and a stub-of-a-page (Lisa-Harness/lisa#5).
+        # Pressure is not the trigger — exceeding ``_MAX_RETRIEVAL_BYTES``
+        # while under the turn ceiling was a no-pointer window that
+        # persisted copies of stored pages on every replay.
         pointer = (
             _retrieval_pointer(content, permitted)
-            if (pressure or over_budget) and retrieval_page and existing is None
+            if retrieval_page
+            and existing is None
+            and (
+                (pressure or over_budget)
+                or len(content.encode("utf-8")) > _MAX_RETRIEVAL_BYTES
+            )
             else None
         )
         if pointer is not None:

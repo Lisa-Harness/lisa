@@ -928,6 +928,51 @@ class TestProjectionRetrievalPages:
             separators=(",", ":"),
         )
 
+    def test_over_threshold_page_pointers_without_pressure(self) -> None:
+        """An already-stored page too large for inline residency pointers
+        even without pressure (Lisa-Harness/lisa#5).
+
+        The page's ``ref`` addresses stored content; persisting a copy of a
+        page of an already-stored value creates a second address for the
+        same bytes and a stub-of-a-page the model must expand twice. The
+        window that bit: pages over ``_MAX_RETRIEVAL_BYTES`` (32KB) but
+        under the turn ceiling (64KB) — too big to stay inline, not enough
+        to trigger pressure — fell through to persist+preview. The pointer
+        must not depend on turn-level pressure: whenever a complete page
+        (``has_more`` false) would not be kept inline, it pointers.
+        """
+        from sdk.thread._results import project_tool_messages
+
+        original = "stored worktree state " * 2100  # ~44KB page: in the window
+        stored_ref = "r" + f"{3:064x}"
+
+        def load(ref: str) -> dict[str, Any]:
+            return {"content": original, "task_id": "task", "tool_name": "coding_status"}
+
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            digest = hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            ref = "r" + digest
+            persisted.setdefault(ref, result)
+            return ref
+
+        page = self._envelope(stored_ref, original)
+        page_bytes = len(page.encode("utf-8"))
+        assert 32768 < page_bytes < 65536, "page must sit in the no-pointer window"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "p", "function": {"name": "thread_read_content"}}],
+            },
+            {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
+        ]
+        projected = project_tool_messages(messages, "task", persist, None, load)
+        pointer = json.loads(projected[1]["content"])
+        assert pointer["ref"] == stored_ref
+        assert pointer["page_omitted"] is True
+        assert not persisted, "no fresh result object may be persisted for a stored page"
+
     def test_pressure_pointer_replaces_page_without_persisting(self, tmp_path: Path) -> None:
         from sdk.thread._results import project_tool_messages, result_object_path
 
