@@ -1191,7 +1191,6 @@ def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindi
     )
 
 
-
 def _transport_forwarder(transport: Any) -> Any:
     """Build guarded transport forwarders (stage + delta events).
 
@@ -1227,9 +1226,7 @@ def _effective_replay_budget_bytes(runtime: Any) -> int:
     pre-budget verbatim behavior survives for ordinary sessions.
     """
 
-    ceiling = int(
-        getattr(runtime.config, "context_budget_replay_max_bytes", 65536) or 65536
-    )
+    ceiling = int(getattr(runtime.config, "context_budget_replay_max_bytes", 65536) or 65536)
     knob = runtime.session_plan.manifest.context.history.replay_max_bytes
     if knob is None:
         return max(0, ceiling)

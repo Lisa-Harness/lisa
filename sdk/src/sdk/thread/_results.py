@@ -144,10 +144,7 @@ def project_tool_messages(
             _retrieval_pointer(content, permitted)
             if retrieval_page
             and existing is None
-            and (
-                (pressure or over_budget)
-                or len(content.encode("utf-8")) > _MAX_RETRIEVAL_BYTES
-            )
+            and ((pressure or over_budget) or len(content.encode("utf-8")) > _MAX_RETRIEVAL_BYTES)
             else None
         )
         if pointer is not None:

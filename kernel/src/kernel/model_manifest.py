@@ -557,9 +557,7 @@ def _parse_model_completion_budget(
     """
     if raw_value is None:
         return 0
-    value = _parse_nonnegative_int(
-        raw_value, field_name="max_completion_tokens", model_id=model_id
-    )
+    value = _parse_nonnegative_int(raw_value, field_name="max_completion_tokens", model_id=model_id)
     if value == 0:
         return 0
     if value < _MIN_DECLARED_COMPLETION_BUDGET:

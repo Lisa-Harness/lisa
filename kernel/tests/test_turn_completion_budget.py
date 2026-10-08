@@ -149,9 +149,7 @@ def test_model_declared_budget_absent_inherits_settings() -> None:
 def test_model_declared_budget_respects_context_window() -> None:
     """The window cap applies after the model ceiling: min of all three."""
 
-    model = _model(
-        reasoning_model=True, max_completion_tokens=8192, context_window=4096
-    )
+    model = _model(reasoning_model=True, max_completion_tokens=8192, context_window=4096)
     assert _turn_completion_max_tokens(model) == 4096
 
 
