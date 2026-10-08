@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from runtime.host_commands import register_builtin_host_commands
@@ -257,6 +258,66 @@ def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path
     assert "".join(restored) == original
     raw = ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]
     assert raw["transcript"][-1]["content"] == original
+
+
+def test_inventory_refs_expand_to_original_bytes_not_stub_json(tmp_path: Path) -> None:
+    """Coherence by address (R1): a ref in any stub or inventory row must
+    expand to the original permitted content in one hop — never to a nested
+    preview envelope (a stub-of-a-stub).
+
+    The bug: over-threshold results under projection pressure get *graduated*
+    preview scales (the 600→120 head ramp). ``_existing_result`` recognizes
+    only the two exact endpoint scale pairs, so a graduated stub that is
+    later evicted by the working-set compactor is treated as fresh content
+    and persisted as-is — the inventory ref then expands to the stub's own
+    JSON instead of the original bytes. Reproduction: two 50KB results
+    (pressure graduated stubs) + ``budget_bytes=800`` (inventory eviction).
+    """
+    thread = tmp_path / "threads" / "tester"
+    transcript = _scan_turn(n_results=2, result_size=50_000)
+    _append(
+        thread,
+        "scan",
+        response_text="paused",
+        provenance={"source": "observed", "operator_exit": "paused"},
+        transcript=transcript,
+    )
+
+    replayed = build_open_task_messages(thread_path=thread, budget_bytes=800)
+
+    reader = ThreadReader(ThreadStore(thread))
+    refs: list[str] = []
+    for message in replayed:
+        content = str(message.get("content") or "")
+        if not content.startswith("{"):
+            continue
+        stub = json.loads(content)
+        if "ref" in stub and message.get("role") == "tool":
+            refs.append(stub["ref"])
+        if "inventory_ref" in stub:
+            inventory = json.loads(reader.read_content(stub["inventory_ref"], limit_chars=8000))[
+                "content"
+            ]
+            refs.extend(
+                row_ref
+                for group in json.loads(inventory)
+                for row_ref in [r["ref"] for r in group.get("results", [])]
+            )
+    assert refs, "expected stub refs and/or inventory rows"
+    reader_for_refs = ThreadReader(ThreadStore(thread))
+    for ref in refs:
+        offset = 0
+        restored: list[str] = []
+        while True:
+            page = json.loads(reader_for_refs.read_content(ref, offset, limit_chars=20000))
+            restored.append(page["content"])
+            if not page["has_more"]:
+                break
+            offset = page["next_offset_chars"]
+        assert "".join(restored) == "x" * 50_000, (
+            "ref expanded to something other than the original bytes "
+            "(stub-of-a-stub); coherence by address is broken"
+        )
 
 
 def _scan_turn(n_results: int, result_size: int) -> list[dict[str, object]]:

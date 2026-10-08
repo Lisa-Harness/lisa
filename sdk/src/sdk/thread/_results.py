@@ -300,10 +300,22 @@ def _existing_result(
             return None
         result = load(ref)
         permitted = redaction.redact(result["content"]) if redaction else result["content"]
-        if preview not in (
-            json.loads(_preview(ref, permitted, *_preview_scale(0))),
-            json.loads(_preview(ref, permitted, _PRESSURE_HEAD_CHARS, _PRESSURE_TAIL_CHARS)),
-        ):
+        # Recognition must hold for every graduated pressure scale, not only
+        # the two exact endpoint pairs: a stub minted mid-ramp (e.g. head
+        # 431 at 100KB pressure) that is later evicted by the working-set
+        # compactor would otherwise be persisted as fresh content — a
+        # stub-of-a-stub whose ref expands to preview JSON, not original
+        # bytes (2026-10-07 replay-eviction finding). Rebuild the preview at
+        # the stub's own head/tail and compare; that accepts any scale while
+        # still rejecting envelopes whose excerpts do not match the store.
+        head_chars = preview.get("head")
+        tail_chars = preview.get("tail")
+        rebuilt = (
+            json.loads(_preview(ref, permitted, len(head_chars), len(tail_chars)))
+            if isinstance(head_chars, str) and isinstance(tail_chars, str)
+            else None
+        )
+        if rebuilt is None or preview != rebuilt:
             return None
         return ref, result
     except (KeyError, TypeError, ValueError):
