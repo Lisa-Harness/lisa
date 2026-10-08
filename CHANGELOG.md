@@ -40,6 +40,28 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### The streaming tool-call fallback regenerated with no truncation rescue
+
+- **What:** When a streamed generation ended
+  `finish_reason='tool_calls'`, the streaming path fell back to a
+  non-streaming `complete()` to rebuild the structured payload — but that
+  regeneration had no truncation rescue: if it re-deliberated past its
+  budget and stopped at `finish_reason='length'`, the turn ended on the
+  "reached its token cap before emitting a tool call" abort with the
+  degenerate reasoning tail surfaced as the response. The fallback now
+  retries such a truncation once at a doubled budget (context-window-
+  capped), the same predicate and shape as both sibling rescues (the
+  truncated-stream rescue and the non-streaming truncation rescue).
+- **Why:** Three consecutive turns on the 2026-10-08 dnsmasq-web thread
+  burned their full 16384-token completion budgets on a "Let me output.
+  Here. Go. OK. Writing." reasoning loop inside the fallback generation,
+  dispatched zero writes, and ended with the same aborted-turn message —
+  while every other truncation path in the turn loop already retried at
+  2x. A reasoning model's fallback regeneration is a fresh generation
+  with the same failure mode, not a payload copy.
+- **Tests:** `kernel/tests/test_streaming.py::
+  test_turn_runner_rescues_truncated_fallback_after_tool_calls_stream`.
+
 #### `dispute_memory` looked up a different slice than `recall_memory`
 
 - **What:** `dispute_memory` passed only `user_slug` to the `memory.get` /
