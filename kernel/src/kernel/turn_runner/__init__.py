@@ -1882,6 +1882,26 @@ def _wire_resolve_iteration_model(
         if iteration_num == 1 and pregate_iteration1_model is not None:
             state.pending_router_decision = pregate_decision
             return pregate_iteration1_model
+        pinned_def = getattr(state, "mode_model_def", None)
+        if pinned_def is not None:
+            # A mid-turn handoff re-resolved the per-mode pin for the mode
+            # the turn is now in (``_execute_mid_turn_handoff``). Route
+            # this iteration's resolution through the same tiered
+            # resolver with the pinned def as the fallback, so the router
+            # can still override per-iteration and
+            # ``state.effective_model`` metadata stays accurate.
+            return resolve_iteration_model_fn(
+                state,
+                iteration_num,
+                hooks,
+                str(getattr(pinned_def, "model_id", "") or preferred_model_id),
+                resolve_model,
+                model_def=pinned_def,
+                query=query,
+                mode_id=mode_id,
+                turn_budget=turn_budget,
+                log=log,
+            )
         return resolve_iteration_model_fn(
             state,
             iteration_num,
@@ -4747,6 +4767,80 @@ def _advance_handoff_workflow_position(
         log.warning("workflow position advancement failed: %s", exc)
 
 
+def _resolve_mode_model_at_handoff(
+    *,
+    target_stage: str,
+    target_mode_config: Any,
+    resolve_model: Callable[[str], Any] | None,
+    log: logging.Logger,
+) -> Any:
+    """Re-resolve the per-mode model pin for a mid-turn handoff target.
+
+    Mirrors the entry path's precedence (``model_alias_for_mode`` +
+    ``ModelManifest.resolve``: ``mode_models[target]`` wins, the mode's
+    authored ``default_model`` next, then the ``default`` mode's pin —
+    the host's ``resolve_model`` seam implements the mode-pin precedence).
+    Returns ``None`` when nothing resolves or no seam is wired — the
+    caller keeps the current model (the router can still select one per
+    iteration). Never raises: a pin that cannot resolve must not fail an
+    otherwise valid handoff.
+    """
+    if resolve_model is None:
+        return None
+    candidates = (
+        target_stage,
+        str(getattr(target_mode_config, "default_model", "") or ""),
+        "default",
+    )
+    for ref in candidates:
+        if not ref.strip():
+            continue
+        try:
+            resolved = resolve_model(ref)
+        except Exception:  # pylint: disable=broad-except
+            # A host seam may raise on an unknown ref (the runtime's
+            # ``resolve_model`` raises ValueError when the manifest maps
+            # neither a mode pin nor a model id) — treat it as
+            # "candidate does not resolve" and try the next one.
+            continue
+        if resolved is not None:
+            if ref != target_stage:
+                log.debug(
+                    "handoff model pin: mode '%s' resolved via '%s' -> %s",
+                    target_stage,
+                    ref,
+                    getattr(resolved, "model_id", ref),
+                )
+            return resolved
+    return None
+
+
+def _apply_mode_model_pin_at_handoff(
+    *,
+    state: Any,
+    target_stage: str,
+    target_mode_config: Any,
+    resolve_model: Callable[[str], Any] | None,
+    log: logging.Logger,
+) -> None:
+    """Store the handoff target's re-resolved model def on ``_TurnState``.
+
+    The per-iteration model-resolution closure reads
+    ``state.mode_model_def`` so post-handoff iterations run on the model
+    pinned for the mode the turn is actually in. No-op when the target
+    pin cannot resolve (the current model stays; the router tier can
+    still select one per iteration).
+    """
+    resolved = _resolve_mode_model_at_handoff(
+        target_stage=target_stage,
+        target_mode_config=target_mode_config,
+        resolve_model=resolve_model,
+        log=log,
+    )
+    if resolved is not None:
+        state.mode_model_def = resolved
+
+
 async def _execute_mid_turn_handoff(
     *,
     state: Any,
@@ -4871,6 +4965,24 @@ async def _execute_mid_turn_handoff(
             # Recompile capability manifest for new surface
             capability_manifest = compile_capability_manifest(
                 tool_schemas, mode_config=target_mode_config
+            )
+            # ── Per-mode model pin re-resolution ─────────────
+            # The entry path resolves the model once from
+            # ``mode_models[entry_mode]``; without this
+            # re-resolution every post-handoff iteration
+            # keeps running the entry mode's model (the
+            # 2026-10-08 incident: a default→coding_execute
+            # handoff kept running the default mode's model
+            # while the manifest pinned a different one for
+            # coding_execute). Same precedence as the entry
+            # path; on an unresolvable target pin, keep the
+            # current model rather than failing the handoff.
+            _apply_mode_model_pin_at_handoff(
+                state=state,
+                target_stage=target_stage,
+                target_mode_config=target_mode_config,
+                resolve_model=hooks.models.resolve_model,
+                log=log,
             )
             # Phase 8: the completion contract follows
             # the mode the turn is actually in —

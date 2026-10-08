@@ -120,6 +120,17 @@ class _TurnState:
     # (which may be empty even when earlier tools returned results).
     tool_results_received: int = 0
     required_capabilities: tuple[str, ...] = ()
+    # The active mode's re-resolved model definition. ``None`` until a
+    # mid-turn handoff re-resolves the per-mode pin for the mode the turn
+    # is now in (``mode_models[target]`` → ``mode_models[default]``, via
+    # the host's ``resolve_model`` seam). The per-iteration model
+    # resolution closure prefers this over the loop-setup-captured entry
+    # model so post-handoff iterations run on the mode the turn is
+    # actually in (the 2026-10-08 incident: a default→coding_execute
+    # handoff kept running the default mode's model, which then
+    # reasoning-looped; the manifest's per-mode pin only took effect when
+    # the turn was *entered* in that mode).
+    mode_model_def: Any = None
     # Metadata of the model effective in the preceding iteration. Set after
     # the first completion; on iteration 1 the router receives the static
     # preferred model via RouterRequest.effective_model.

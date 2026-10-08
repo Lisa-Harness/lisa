@@ -224,9 +224,15 @@ When the model calls `transition_stage(target_stage_id="markdown")`:
 2. `messages[0]` (system prompt) is swapped to the new mode's `_mode.md` body.
 3. Tool schemas are rebuilt for the new mode's `allowed_tool_ids`.
 4. The capability manifest is recompiled for the new tool surface.
-5. `mode_id` and `mode_config` are updated to the new mode.
-6. `handoff_to` is set on the `TurnResult`.
-7. The loop continues — the next model call uses the new prompt + tools.
+5. The per-mode model pin is re-resolved through the host's `resolve_model`
+   seam (`mode_models[target]` → the mode's authored `default_model` → the
+   `default` mode's pin), so post-handoff iterations run on the model pinned
+   for the mode the turn is now in. The model router can still override the
+   selection per iteration; an unresolvable target pin keeps the current
+   model.
+6. `mode_id` and `mode_config` are updated to the new mode.
+7. `handoff_to` is set on the `TurnResult`.
+8. The loop continues — the next model call uses the new prompt + tools.
 
 **Chat history is preserved.** Only `messages[0]` (system prompt) changes.
 All prior user/assistant/tool messages stay in the `messages` list.

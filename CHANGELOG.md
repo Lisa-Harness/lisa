@@ -40,6 +40,32 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### A mid-turn handoff kept the entry mode's model
+
+- **What:** The turn entry path resolves the model once from
+  `mode_models[entry_mode]`, and `_execute_mid_turn_handoff` swapped the
+  prompt, tool surface, `mode_id`, and `ctx` — but never re-resolved the
+  model. Post-handoff iterations kept running the entry mode's pin. The
+  handoff now re-resolves the per-mode pin through the host's
+  `resolve_model` seam with the entry path's precedence
+  (`mode_models[target]` → the mode's authored `default_model` → the
+  `default` mode's pin) and stores it on the turn state; the
+  per-iteration model-resolution closure prefers it, and the router can
+  still override per iteration. An unresolvable target pin keeps the
+  current model rather than failing the handoff.
+- **Why:** The 2026-10-08 dnsmasq-web thread: turns entered in `default`
+  (pinned to glm-5.3:cloud) that handed off mid-turn to `coding_execute`
+  (pinned to deepseek-v4.1-flash:cloud) kept running glm through every
+  coding iteration — the same session ran the manifest's coding pin only
+  when a turn happened to *enter* in coding mode. glm then
+  reasoning-looped in `coding_execute` (the truncation-rescue fix
+  addresses the symptom; this removes the misrouting that put the
+  loop-prone model on the coding iterations at all).
+- **Tests:** `kernel/tests/test_turn_runner.py::
+  test_run_turn_handoff_re_resolves_mode_model_pin`,
+  `test_run_turn_handoff_falls_back_to_default_pin_when_target_unpinned`,
+  `test_run_turn_handoff_keeps_model_when_pin_unresolvable`.
+
 #### The streaming tool-call fallback regenerated with no truncation rescue
 
 - **What:** When a streamed generation ended

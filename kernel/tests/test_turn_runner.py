@@ -3551,6 +3551,255 @@ async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
         assert "write a doc" in first_user
 
 
+@pytest.mark.asyncio
+async def test_run_turn_handoff_re_resolves_mode_model_pin() -> None:
+    """A mid-turn handoff re-resolves the per-mode model pin.
+
+    Regression for the 2026-10-08 incident: a turn entered in ``default``
+    (pin: model-a) that hands off mid-turn to a mode with its own
+    ``mode_models`` pin (model-b) kept running model-a for every
+    post-handoff iteration — the manifest's per-mode pin only took effect
+    when the turn was *entered* in that mode. ``preferred_model_id`` is
+    resolved once at turn entry; the handoff swaps prompt, tools,
+    ``mode_id``, and ``ctx`` but never re-resolved the model.
+    """
+
+    from unittest.mock import patch
+
+    call_count = 0
+    seen_model_defs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        model_def = kwargs.get("model_def")
+        seen_model_defs.append(str(getattr(model_def, "model_id", "?")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in search mode.")
+
+    def resolve_model(model_ref: str) -> Any:
+        # The host seam: mode refs resolve through ``mode_models`` (mode
+        # pins win); concrete model ids resolve directly.
+        if model_ref == "search":
+            return SimpleNamespace(model_id="model-b", reasoning_model=False)
+        if model_ref in ("default", "model-a"):
+            return SimpleNamespace(model_id="model-a", reasoning_model=False)
+        return None
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(mode_id="search", satisfies_intents=["research"]),
+    }
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.models.resolve_model = resolve_model
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for rust news",
+            hooks=hooks,
+        )
+
+    assert result.handoff_to == "search"
+    assert call_count >= 2
+    # The post-handoff iterations must run on the target mode's pinned
+    # model (model-b), not the entry mode's pin (model-a).
+    assert seen_model_defs[0] == "model-a"
+    assert all(mid == "model-b" for mid in seen_model_defs[1:])
+
+
+@pytest.mark.asyncio
+async def test_run_turn_handoff_falls_back_to_default_pin_when_target_unpinned() -> None:
+    """A handoff to a mode with no distinct pin falls back to the default
+    mode's pin — mirroring ``model_alias_for_mode`` — instead of keeping
+    the entry mode's pin."""
+
+    from unittest.mock import patch
+
+    call_count = 0
+    seen_model_defs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        model_def = kwargs.get("model_def")
+        seen_model_defs.append(str(getattr(model_def, "model_id", "?")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in search mode.")
+
+    def resolve_model(model_ref: str) -> Any:
+        # No pin for ``search``: both the target mode and ``default``
+        # resolve to model-a (the default pin). The entry mode runs a
+        # host-supplied override (model-x); the handoff must drop it.
+        if model_ref == "model-x":
+            return SimpleNamespace(model_id="model-x", reasoning_model=False)
+        if model_ref in ("search", "default"):
+            return SimpleNamespace(model_id="model-a", reasoning_model=False)
+        return None
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(mode_id="search", satisfies_intents=["research"]),
+    }
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.models.resolve_model = resolve_model
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for rust news",
+            hooks=hooks,
+            preferred_model_id="model-x",
+        )
+
+    assert result.handoff_to == "search"
+    assert call_count >= 2
+    # Entry iterations run the host override; post-handoff iterations run
+    # the target mode's pin via the default fallback (model-a).
+    assert seen_model_defs[0] == "model-x"
+    assert all(mid == "model-a" for mid in seen_model_defs[1:])
+
+
+@pytest.mark.asyncio
+async def test_run_turn_handoff_keeps_model_when_pin_unresolvable() -> None:
+    """A handoff target whose pin cannot resolve keeps the current model.
+
+    The runtime's ``resolve_model`` raises ``ValueError`` for a ref that is
+    neither a mode pin nor a known model id; the re-resolution must treat
+    that as "candidate does not resolve" (next candidate / keep the
+    current model) rather than failing an otherwise valid handoff.
+    """
+
+    from unittest.mock import patch
+
+    call_count = 0
+    seen_model_defs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        model_def = kwargs.get("model_def")
+        seen_model_defs.append(str(getattr(model_def, "model_id", "?")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in search mode.")
+
+    def resolve_model(model_ref: str) -> Any:
+        # The entry ref resolves (the entry path resolves it once at loop
+        # setup); every post-handoff candidate — the target-mode ref and
+        # the default-mode fallback ref — raises, like a host whose
+        # manifest maps no pins for either.
+        if model_ref == "model-x":
+            return SimpleNamespace(model_id="model-x", reasoning_model=False)
+        raise ValueError(f"Model '{model_ref}' not in the host's manifest.")
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(mode_id="search", satisfies_intents=["research"]),
+    }
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.models.resolve_model = resolve_model
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for rust news",
+            hooks=hooks,
+            preferred_model_id="model-x",
+        )
+
+    # The handoff succeeded despite the raising seam: the turn landed in
+    # the target mode and completed, running the entry model (the
+    # loop-setup-captured fallback) — never a hard failure.
+    assert result.handoff_to == "search"
+    assert result.response_text == "Done in search mode."
+    assert call_count >= 2
+    assert all(mid == "model-x" for mid in seen_model_defs)
+
+
 @pytest.mark.xfail(
     reason=(
         "2026-07-25 fix: the search mode's ``web_search`` entry operation now "
