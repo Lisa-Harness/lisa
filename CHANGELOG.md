@@ -40,6 +40,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Approval-required tools were validated only after the approval pause
+
+- **What:** `execute_tool` now calls an optional, effect-free module
+  `preflight(ctx)` after parameter validation and before requesting
+  approval. An error `ToolResult` from it is returned to the model as a
+  normal in-turn tool error and no approval is requested; `None` proceeds
+  to the approval pause. Receipt-bearing calls skip preflight because
+  `execute` re-validates.
+- **Why:** Approval ends the turn. A `coding_edit_files` batch (2026-10-09,
+  turn 623) carried two `main.go` `old_text`s written from memory with
+  three tabs instead of two; the mismatch surfaced only after the
+  auto-approved `/approve`, in a recovery turn whose replayed working set
+  no longer held the reads needed to correct it, so the model re-read
+  everything and never landed the edit.
+- **Tests:** `kernel/tests/test_approval.py::
+  test_failed_preflight_returns_error_before_requesting_approval`,
+  `test_passing_preflight_requests_approval_and_receipt_skips_it`.
+
 #### Tool-result residency was a fixed 64KB with an 8KB per-result cap
 
 - **What:** The provider-only projection kept at most 64KB of tool output

@@ -412,6 +412,9 @@ async def execute_tool(
 
         ctx.delegated_tool_dispatch = dispatch_child
     _validate_parameters(definition, ctx)
+    rejected = await _preflight_before_approval(definition, ctx)
+    if rejected is not None:
+        return rejected
     await _require_approval(definition, ctx)
     module = definition.implementation_module
     if module is None:
@@ -489,6 +492,32 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
             f"Tool '{definition.tool_id}' received invalid parameters: {exc}"
         ) from exc
     ctx.parameters = parsed.model_dump(mode="json")
+
+
+async def _preflight_before_approval(
+    definition: ToolDefinition,
+    ctx: ToolExecutionContext,
+) -> ToolResult | None:
+    """Return the tool's effect-free rejection of a request before approval pauses.
+
+    Approval ends the turn, so a request that can never succeed (stale anchor,
+    missing path) would otherwise fail only after the pause, in a continuation
+    that no longer holds the evidence needed to correct it. An optional module
+    ``preflight(ctx)`` must not perform effects; it returns an error
+    ``ToolResult`` to reject the request in-turn, or ``None`` to proceed.
+    Receipt-bearing calls skip it because ``execute`` re-validates.
+    """
+
+    if not definition.approval_required or ctx.approval_request_id:
+        return None
+    preflight_fn = getattr(definition.implementation_module, "preflight", None)
+    if preflight_fn is None:
+        return None
+    result = await _execute_under_tracer(definition.tool_id, definition, preflight_fn, ctx)
+    if result is None:
+        return None
+    coerced = _coerce_tool_result(definition.tool_id, result)
+    return coerced if coerced.error.strip() else None
 
 
 async def _require_approval(

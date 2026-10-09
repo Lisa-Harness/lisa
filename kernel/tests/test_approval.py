@@ -210,6 +210,85 @@ async def test_approval_is_exact_identity_bound_and_single_use(
         await execute_tool("effectful_tool", changed)
 
 
+class _CountingApprovalService(InMemoryApprovalService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests = 0
+
+    async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
+        self.requests += 1
+        return await super().request(invocation)
+
+
+def _preflighted_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    preflight_error: str,
+    events: list[str],
+) -> ToolExecutionContext:
+    async def preflight(ctx: ToolExecutionContext) -> ToolResult | None:
+        events.append(f"preflight:{ctx.parameters['name']}")
+        return ToolResult(tool_id=ctx.tool_id, error=preflight_error) if preflight_error else None
+
+    async def execute(ctx: ToolExecutionContext) -> ToolResult:
+        events.append("execute")
+        return ToolResult(tool_id=ctx.tool_id, output_text="done")
+
+    definition = ToolDefinition(
+        tool_id="effectful_tool",
+        description="Effectful test tool.",
+        parameters_schema=_Parameters,
+        approval_required=True,
+        implementation_module=SimpleNamespace(execute=execute, preflight=preflight),
+    )
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", {"effectful_tool": definition})
+    return ToolExecutionContext(
+        tool_id="effectful_tool",
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_id="surface",
+        mode_id="coding",
+        session_plan_digest="plan-a",
+        parameters={"name": "first"},
+        approval_service=_CountingApprovalService(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_preflight_returns_error_before_requesting_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request that cannot succeed is corrected in-turn, not after the pause."""
+
+    events: list[str] = []
+    context = _preflighted_tool(monkeypatch, "old_text not found in main.go", events)
+
+    result = await execute_tool("effectful_tool", context)
+
+    assert result.error == "old_text not found in main.go"
+    assert events == ["preflight:first"]
+    assert isinstance(context.approval_service, _CountingApprovalService)
+    assert context.approval_service.requests == 0
+
+
+@pytest.mark.asyncio
+async def test_passing_preflight_requests_approval_and_receipt_skips_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    context = _preflighted_tool(monkeypatch, "", events)
+
+    with pytest.raises(ApprovalRequired) as required:
+        await execute_tool("effectful_tool", context)
+    assert await context.approval_service.approve(  # type: ignore[union-attr]
+        required.value.invocation.request_id, _identity()
+    )
+    context.approval_request_id = required.value.invocation.request_id
+
+    assert (await execute_tool("effectful_tool", context)).output_text == "done"
+    assert events == ["preflight:first", "execute"]
+
+
 def _invocation(
     *,
     parameters: dict[str, str] | None = None,
