@@ -759,16 +759,30 @@ async def dispatch_capability(
         )
 
     except ApprovalRequired:
-        await _settle_recovery(
-            hooks,
-            recovery_item_id,
-            rec_identity,
-            state="stalled",
-            tool_name=tool_name,
-            logger=logger,
-            last_error=RECOVERY_APPROVAL_PENDING_ERROR,
-            retry_policy=cast(Any, "confirm"),
-        )
+        if state.sub_turn_kind:
+            # classify_child_turn discards a sub-turn's approval pause, so an
+            # approval-pending stall here would block the parent workflow on
+            # an approval nobody can grant.
+            await _settle_recovery(
+                hooks,
+                recovery_item_id,
+                rec_identity,
+                state="cancelled",
+                tool_name=tool_name,
+                logger=logger,
+                last_error=f"{state.sub_turn_kind} sub-turn cannot request approval",
+            )
+        else:
+            await _settle_recovery(
+                hooks,
+                recovery_item_id,
+                rec_identity,
+                state="stalled",
+                tool_name=tool_name,
+                logger=logger,
+                last_error=RECOVERY_APPROVAL_PENDING_ERROR,
+                retry_policy=cast(Any, "confirm"),
+            )
         raise
 
     except Exception as exc:  # pylint: disable=broad-except

@@ -24,10 +24,11 @@ import json
 import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from kernel.approval import ApprovalRequired
 from kernel.models import (
     CallLedger,
     EffectReceipt,
@@ -36,6 +37,7 @@ from kernel.models import (
     ToolResult,
     WorkflowModeConfig,
 )
+from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 from kernel.tools.mcp_client import MCPToolResult
 from kernel.turn_hooks import ModelHooks, OperationHooks, ToolHooks
 from kernel.turn_phases._dispatch import _capture_effect_receipt, dispatch_capability
@@ -246,6 +248,60 @@ async def test_returned_operation_failure_stalls_recovery(effect: str, status: s
     assert settlements == [
         {"state": "stalled", "last_error": "unavailable", "retry_policy": "confirm"}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_turn_kind", [None, "delegate", "fork"])
+async def test_approval_required_blocks_workflow_only_in_parent_turn(
+    sub_turn_kind: str | None,
+) -> None:
+    """A sub-turn's approval pause is discarded by ``classify_child_turn``.
+
+    Leaving the approval-pending stall open would block the parent workflow
+    on every later turn with an approval nobody can grant (2026-10-09 e2e
+    review-fix-commit run: a ``coding_execute`` delegate paused for
+    ``coding_create_worktree`` and every later turn yielded the stall).
+    """
+    settlements: list[dict[str, Any]] = []
+
+    async def settle(_work_item_id: str, _identity: object, **kwargs: Any) -> None:
+        settlements.append(kwargs)
+
+    async def execute_operation(
+        _operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        raise ApprovalRequired(cast(Any, SimpleNamespace(request_id="req-1")))
+
+    hooks = TurnHooks()
+    hooks.services.recovery_service = SimpleNamespace(settle=settle)
+    state = _TurnState(sub_turn_kind=sub_turn_kind)
+    with pytest.raises(ApprovalRequired):
+        await dispatch_capability(
+            tool_name="test_operation",
+            tool_arguments={},
+            tool_kind="operation",
+            ctx=OperationExecutionContext(),
+            state=state,
+            ledger=CallLedger(),
+            pool=SimpleNamespace(),
+            operation_catalog={"test_operation": SimpleNamespace(effect="write")},
+            tool_catalog={},
+            exec_op=execute_operation,
+            hooks=hooks,
+            recovery_item_id="work-1",
+            build_recovery_identity_fn=lambda _hooks: object(),
+        )
+
+    assert len(settlements) == 1
+    if sub_turn_kind is None:
+        assert settlements[0] == {
+            "state": "stalled",
+            "last_error": RECOVERY_APPROVAL_PENDING_ERROR,
+            "retry_policy": "confirm",
+        }
+    else:
+        assert settlements[0]["state"] == "cancelled"
+        assert settlements[0]["last_error"] != RECOVERY_APPROVAL_PENDING_ERROR
 
 
 # ── Parent-turn validation (scripted turns) ───────────────────────────
