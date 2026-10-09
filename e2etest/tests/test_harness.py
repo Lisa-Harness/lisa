@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,44 @@ def test_oracles_fail_with_evidence(committed_run: Evidence) -> None:
     assert "pause" in results["no_operator_exit"].detail
     assert "other.txt" in results["diff_touches"].detail
     assert results["nope"].detail == "unknown oracle"
+
+
+def test_diff_allow_and_check_restore_judge_source_against_original_tests(
+    committed_run: Evidence,
+) -> None:
+    """``allow`` admits a test edit; ``restore`` rejudges with the baseline file."""
+    worktree = Path(committed_run.artifacts[0]["worktree_path"])
+    (worktree / "t.txt").write_text("extra regression test\n", encoding="utf-8")
+    _git(worktree, "add", "t.txt")
+    _git(worktree, "commit", "-qm", "add test")
+    committed_run.artifacts[0]["commit_sha"] = _git(worktree, "rev-parse", "HEAD")
+    results = evaluate(
+        (
+            _spec("diff_touches", paths=["f.txt"], allow=["t.txt"], exact=True),
+            _spec("diff_touches", paths=["f.txt"], exact=True),
+            _spec("independent_check", argv=["grep", "-q", "bad", "f.txt"], restore=["f.txt"]),
+            _spec("independent_check", argv=["grep", "-q", "good", "f.txt"], restore=["f.txt"]),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [True, False, True, False], [
+        (r.name, r.detail) for r in results
+    ]
+    assert "unexpected=['t.txt']" in results[1].detail
+    assert "restored=['f.txt']" in results[3].detail
+
+
+def test_checkout_oracles_expand_scenario_dir(committed_run: Evidence, tmp_path: Path) -> None:
+    """Hidden acceptance checks live beside the scenario, outside the fixture."""
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    (scenario_dir / "accept.sh").write_text("grep -q good f.txt\n", encoding="utf-8")
+    ev = Evidence(replace(committed_run.paths, scenario_dir=scenario_dir), committed_run.outcome)
+    argv = ["sh", "${SCENARIO_DIR}/accept.sh"]
+    results = evaluate(
+        (_spec("baseline_fails", argv=argv), _spec("independent_check", argv=argv)), ev
+    )
+    assert all(r.passed for r in results), [(r.name, r.detail) for r in results]
 
 
 def test_recovery_oracles_read_store_and_exchange_evidence(committed_run: Evidence) -> None:

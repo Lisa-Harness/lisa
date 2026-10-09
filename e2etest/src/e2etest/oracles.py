@@ -94,15 +94,37 @@ def _tail(text: str, lines: int = 8) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
-def _run_at(ev: Evidence, sha: str, argv: list[str], timeout_s: float) -> tuple[int, str]:
-    """Run ``argv`` in a throwaway detached checkout of ``sha`` (never Lisa's worktree)."""
+def _expand(ev: Evidence, argv: list[str], **extra: str) -> list[str]:
+    """Expand ``${SCENARIO_DIR}``/``${RUN_DIR}`` (plus ``extra``) in ``argv``."""
+    values = {
+        "SCENARIO_DIR": str(ev.paths.scenario_dir or ""),
+        "RUN_DIR": str(ev.paths.run_dir),
+        **extra,
+    }
+    return [Template(str(a)).safe_substitute(values) for a in argv]
+
+
+def _run_at(
+    ev: Evidence,
+    sha: str,
+    argv: list[str],
+    timeout_s: float,
+    restore: list[str] | None = None,
+) -> tuple[int, str]:
+    """Run ``argv`` in a throwaway detached checkout of ``sha`` (never Lisa's worktree).
+
+    ``restore`` paths are reset to the fixture's initial commit first, so the
+    committed source is judged against the original tests, not edited ones.
+    """
     workspace = ev.paths.workspace
     assert workspace is not None
     with tempfile.TemporaryDirectory(dir=ev.paths.run_dir, prefix="verify-") as tmp:
         checkout = Path(tmp) / "tree"
         git(workspace, "worktree", "add", "--quiet", "--detach", str(checkout), sha)
         try:
-            proc = _run_argv(argv, checkout, timeout_s)
+            if restore:
+                git(checkout, "checkout", ev.paths.initial_main_sha, "--", *restore)
+            proc = _run_argv(_expand(ev, argv), checkout, timeout_s)
         finally:
             git(workspace, "worktree", "remove", "--force", str(checkout))
     return proc.returncode, _tail(proc.stdout + "\n" + proc.stderr)
@@ -228,8 +250,9 @@ def _diff_touches(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
         ev.paths.workspace, "diff", "--name-only", ev.paths.initial_main_sha, art["commit_sha"]
     ).splitlines()
     wanted = [str(p) for p in args["paths"]]
+    allowed = set(wanted) | {str(p) for p in args.get("allow", ())}
     missing = [p for p in wanted if p not in changed]
-    unexpected = [p for p in changed if p not in wanted] if args.get("exact") else []
+    unexpected = [p for p in changed if p not in allowed] if args.get("exact") else []
     ok = not missing and not unexpected
     return ok, f"changed={changed} missing={missing} unexpected={unexpected}"
 
@@ -285,8 +308,12 @@ def _independent_check(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     art = ev.committed_artifact()
     if art is None:
         return False, "no committed artifact"
-    code, out = _run_at(ev, art["commit_sha"], list(args["argv"]), args.get("timeout_s", 120))
-    return code == 0, f"exit={code} at {art['commit_sha'][:10]}\n{out}"
+    restore = [str(p) for p in args.get("restore", ())]
+    code, out = _run_at(
+        ev, art["commit_sha"], list(args["argv"]), args.get("timeout_s", 120), restore
+    )
+    restored = f" restored={restore}" if restore else ""
+    return code == 0, f"exit={code} at {art['commit_sha'][:10]}{restored}\n{out}"
 
 
 # ── data-dir outcome (packs whose work product lives in lisa-storage) ───
@@ -298,12 +325,7 @@ def _data_check(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     files = ev.paths.files_root
     if not files.is_dir():
         return False, f"storage sandbox missing: {files}"
-    values = {
-        "SCENARIO_DIR": str(ev.paths.scenario_dir or ""),
-        "FILES": str(files),
-        "RUN_DIR": str(ev.paths.run_dir),
-    }
-    argv = [Template(str(a)).safe_substitute(values) for a in args["argv"]]
+    argv = _expand(ev, list(args["argv"]), FILES=str(files))
     proc = _run_argv(argv, files, args.get("timeout_s", 120))
     return proc.returncode == 0, f"exit={proc.returncode}\n{_tail(proc.stdout + proc.stderr)}"
 

@@ -59,6 +59,8 @@ uv run --frozen lisa-e2e run ../packs-wip/coding/lisa_packs/coding/tests/e2e/rev
 | Scenario | Workflow |
 | --- | --- |
 | `coding/review-fix-commit` | knowledge-capturing review → worktree → patch → required check → commit, verified by re-running the tests outside Lisa |
+| `coding/feature-design-implement` | product review → feature design doc → multi-file implementation in a worktree → required check → commit, judged by hidden acceptance tests |
+| `coding/roadmap-chunk-implement` | open-ended product review → roadmap → model-proposed design overridden by operator pushback → terse "start the first chunk" that must recover the agreed design → checked commit, same hidden acceptance tests |
 | `finances/categorize-and-close` | import bank + card exports → survey + proposed categories → user decisions (incl. a new category) → final ledger, verified by re-reading the ledger outside Lisa |
 
 Options:
@@ -177,11 +179,15 @@ Code change (coding pack WorkProduct + git; needs a `fixture.repo`):
 | `workproduct_committed` | — | an artifact has a `commit_sha` |
 | `branch_prefix` | `prefix` | the committed branch starts with `prefix` |
 | `main_untouched` | — | local and remote `main` equal the fixture's initial commit |
-| `diff_touches` | `paths`, `exact` | the commit changes `paths` (and nothing else when `exact`) |
+| `diff_touches` | `paths`, `exact`, `allow` | the commit changes `paths` (and nothing outside `paths` + `allow` when `exact`) |
 | `checks_current` | — | every required check passed at the artifact revision and committed tree |
 | `worktree_clean` | — | the owned worktree is clean and at the commit |
 | `baseline_fails` | `argv`, `timeout_s` | `argv` fails on the fixture baseline (the defect is real) |
-| `independent_check` | `argv`, `timeout_s` | `argv` passes on a fresh checkout of the commit, outside Lisa |
+| `independent_check` | `argv`, `timeout_s`, `restore` | `argv` passes on a fresh checkout of the commit, outside Lisa, with `restore` paths reset to the fixture baseline |
+
+`baseline_fails` and `independent_check` run with cwd at the checkout and
+expand `${SCENARIO_DIR}` and `${RUN_DIR}` in `argv`, so hidden acceptance
+tests can live beside the scenario where the model cannot see or edit them.
 
 Storage sandbox (packs whose work product lives under `data/files`):
 
@@ -197,6 +203,10 @@ An unknown oracle name fails the run, so typos surface immediately.
   and an independent check over text matching.
 - **Prove the fixture.** Pair every "fixed" oracle with a baseline oracle that
   shows the starting state was actually broken.
+- **Allow tests, judge with the originals.** A fix may add regression tests:
+  list test files under `diff_touches.allow` and pair it with an
+  `independent_check` that `restore`s them, so edited tests cannot mask an
+  unfixed defect.
 - **Verify outside Lisa.** End-state checks (`independent_check`, a re-read of
   the ledger/file) must not reuse the tool path under test.
 - **Exercise approvals for real.** Approve the effectful tools the workflow
@@ -205,6 +215,9 @@ An unknown oracle name fails the run, so typos surface immediately.
   make stalls and capability gaps fail loudly instead of being papered over.
 - **Keep fixtures tiny and deterministic.** Stdlib-only test commands, no
   network, one planted defect per workflow.
+- **Judge features with hidden tests.** For feature work, keep the acceptance
+  suite outside the fixture (`${SCENARIO_DIR}/acceptance/`) and pair a
+  `baseline_fails` with an `independent_check` on it.
 
 ### Adding a new pack to the harness
 
