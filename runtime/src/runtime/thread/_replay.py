@@ -58,10 +58,16 @@ def _replay_message(message: dict[str, Any], prefix: str, redaction: Any) -> dic
         replayed["tool_call_id"] = f"{prefix}{replayed['tool_call_id']}"
     for call in replayed.get("tool_calls") or []:
         call["id"] = f"{prefix}{call.get('id', '')}"
-        function = call.get("function") or {}
-        if isinstance(function.get("arguments"), str):
-            function["arguments"] = _redact(function["arguments"], redaction)
+        payload = _call_payload(call)
+        if isinstance(payload.get("arguments"), str):
+            payload["arguments"] = _redact(payload["arguments"], redaction)
     return replayed
+
+
+def _call_payload(call: dict[str, Any]) -> dict[str, Any]:
+    """Return the dict holding ``name``/``arguments`` for nested or flat tool calls."""
+    function = call.get("function")
+    return function if isinstance(function, dict) else call
 
 
 def _entry_messages(
@@ -109,7 +115,7 @@ def _paired_approval_result(
     ]
     if len(calls) != 1:
         return None
-    tool_name = str((calls[0].get("function") or {}).get("name") or "")
+    tool_name = str(_call_payload(calls[0]).get("name") or "")
     if tool_name != (approved.get("provenance") or {}).get("target_id"):
         return None
     failed = (approved.get("provenance") or {}).get("source") == "host-approved-failed"

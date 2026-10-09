@@ -124,8 +124,18 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     assert all(cid.startswith("t") for cid in call_ids)
 
 
+def _call(call_id: str, name: str, arguments: str, *, flat: bool) -> dict[str, object]:
+    # Provider gateways record the flat OpenAI shape; synthesized calls nest under "function".
+    if flat:
+        return {"id": call_id, "type": "function", "name": name, "arguments": arguments}
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+
+
+@pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
-def test_approved_action_replays_as_original_tool_result(tmp_path: Path, failed: bool) -> None:
+def test_approved_action_replays_as_original_tool_result(
+    tmp_path: Path, failed: bool, flat: bool
+) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -140,25 +150,13 @@ def test_approved_action_replays_as_original_tool_result(tmp_path: Path, failed:
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {"name": "read", "arguments": "{}"},
-                    }
-                ],
+                "tool_calls": [_call("call-1", "read", "{}", flat=flat)],
             },
             {"role": "tool", "tool_call_id": "call-1", "content": "file contents"},
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {"name": "write", "arguments": "{}"},
-                    }
-                ],
+                "tool_calls": [_call("call-2", "write", "{}", flat=flat)],
             },
         ],
     )
@@ -208,6 +206,31 @@ def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
 
     assert "SECRET123" not in str(messages)
     assert "SECRET123" in thread.with_suffix(".current.jsonl").read_text(encoding="utf-8")
+
+
+def test_open_task_replay_redacts_flat_tool_call_arguments(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    _append(
+        thread,
+        "write secrets",
+        response_text="ok",
+        transcript=[
+            {"role": "user", "content": "write secrets"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [_call("c1", "write", '{"token": "SECRET123"}', flat=True)],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "saved"},
+        ],
+    )
+    set_thread_redaction_policy(ThreadRedactionPolicy.from_patterns((r"SECRET\d+",)))
+    try:
+        messages = build_open_task_messages(thread_path=thread)
+    finally:
+        set_thread_redaction_policy(None)
+
+    assert "SECRET123" not in str(messages)
 
 
 def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path) -> None:
