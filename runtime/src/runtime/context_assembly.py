@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import Any, TypedDict, cast
 
 from kernel.capability_manifest import render_capability_manifest_context
+from kernel.config import settings as kernel_settings
 from kernel.context.context_broker import (
     build_ambient_facts,
     resolve_host_name,
@@ -345,7 +346,9 @@ def build_brokered_context_markdown(
         query=query,
         state=state,
         context_plan=context_plan or ContextPlan(),
-        model_context_window_tokens=model_context_window_tokens or 131072,
+        model_context_window_tokens=(
+            model_context_window_tokens or kernel_settings.context_default_window_tokens
+        ),
         active_packs=active_packs,
         snapshot_sink=snapshot_sink,
     )

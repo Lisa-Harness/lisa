@@ -52,7 +52,7 @@ def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_pa
     thread = tmp_path / "threads" / "tester"
     original = "FULL FILE DATA " * 800
     transcript = _read_turn("update parser", original)
-    projected = project_thread_messages(transcript, "task-1", thread_path=thread)
+    projected = project_thread_messages(transcript, "task-1", thread_path=thread, budget_bytes=4096)
     assert json.loads(projected[-1]["content"])["abbreviated"] is True
     _append(
         thread,
@@ -402,7 +402,9 @@ def test_live_result_redaction_and_integrity_are_enforced(tmp_path: Path) -> Non
     policy = ThreadRedactionPolicy.from_patterns(("secret",))
     set_thread_redaction_policy(policy)
     try:
-        projected = project_thread_messages(_read_turn("read", original), thread_path=thread)
+        projected = project_thread_messages(
+            _read_turn("read", original), thread_path=thread, budget_bytes=4096
+        )
     finally:
         set_thread_redaction_policy(None)
     stub = json.loads(projected[-1]["content"])
@@ -465,7 +467,9 @@ def test_tool_context_compaction_preserves_pairing_and_inventory(tmp_path: Path)
 def test_result_refs_cannot_follow_symlinks_or_cross_threads(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
-    projected = project_thread_messages(_read_turn("read", "data " * 3000), thread_path=first)
+    projected = project_thread_messages(
+        _read_turn("read", "data " * 3000), thread_path=first, budget_bytes=4096
+    )
     ref = json.loads(projected[-1]["content"])["ref"]
     with pytest.raises(ValueError, match="not found"):
         ThreadReader(ThreadStore(second)).read_content(ref)
@@ -484,7 +488,7 @@ def test_reprojection_reuses_original_result_references_under_pressure(tmp_path:
     original_refs = set()
     for index in range(200):
         turn = _read_turn("read", f"large result {index} " * 2000, call_id=f"call-{index}")[1:]
-        preview = project_thread_messages(turn, "task-1", thread_path=thread)
+        preview = project_thread_messages(turn, "task-1", thread_path=thread, budget_bytes=4096)
         original_refs.add(json.loads(preview[-1]["content"])["ref"])
         replayed.extend(preview)
     projected = project_thread_messages(replayed, "task-1", thread_path=thread)

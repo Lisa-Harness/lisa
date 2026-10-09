@@ -14,8 +14,6 @@ from sdk.thread.redaction import ThreadRedactionPolicy
 
 _RESULT_REFERENCE = re.compile(r"r[a-f0-9]{64}")
 _THREAD_REFERENCE = re.compile(r"t\d{1,20}(?:\.m\d{1,20})?(?:\.c\d{1,20})?(?:\.[a-z_]+)?$")
-_INLINE_RESULT_BYTES = 8192
-_MAX_RETRIEVAL_BYTES = 32768
 _TOOL_CONTEXT_BYTES = 65536
 _INVENTORY_RESERVE_BYTES = 2048
 _HEAD_CHARS = 600
@@ -80,11 +78,14 @@ def project_tool_messages(
 ) -> list[dict[str, Any]]:
     """Fit tool text into a resident budget without modifying raw messages or pairing.
 
-    Results are allocated newest-first against ``budget_bytes`` (``None``
-    keeps the module ``_TOOL_CONTEXT_BYTES`` ceiling). A result stays
-    verbatim when it fits both its per-result cap and the bytes not yet
-    allocated to newer results, so the evidence the model just requested is
-    always readable. A result that does not fit is abbreviated: a complete
+    Results are allocated newest-first against ``budget_bytes``, which the
+    kernel sizes from the active model's context window (``None`` keeps the
+    module ``_TOOL_CONTEXT_BYTES`` ceiling). A result stays verbatim when it
+    fits the bytes not yet allocated to newer results, so the evidence the
+    model just requested is always readable. There is no per-result cap: a
+    fixed 8KB one previewed every mid-sized source file while most of the
+    budget sat free, and the model re-read the same files until the
+    iteration cap (2026-10-09 turn-622). A result that does not fit is abbreviated: a complete
     page of an already-stored value pointers to that value, anything else
     is persisted and previewed. Oldest groups then collapse into the
     evidence inventory until the absolute bound holds.
@@ -116,7 +117,6 @@ def project_tool_messages(
             continue
         permitted = redaction.redact(content) if redaction is not None else content
         size = len(permitted.encode("utf-8"))
-        cap = _MAX_RETRIEVAL_BYTES if retrieval_page else _INLINE_RESULT_BYTES
         # A complete page (has_more false) of an already-stored value never
         # persists a copy: its ref reconstructs the bytes, so a second
         # address would be a stub-of-a-page (Lisa-Harness/lisa#5).
@@ -124,7 +124,7 @@ def project_tool_messages(
         # A result no larger than a preview's excerpts stays inline even
         # without room: abbreviating it would inflate the wire (the
         # 2026-10-06 micro-window loop). The inventory can still evict it.
-        if (size <= cap and size <= available) or len(permitted) <= _HEAD_CHARS + _TAIL_CHARS:
+        if size <= available or len(permitted) <= _HEAD_CHARS + _TAIL_CHARS:
             message["content"] = permitted
             available -= size
             refs[index] = (

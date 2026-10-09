@@ -65,6 +65,7 @@ from kernel.approval import (
 )
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
+from kernel.context.context_budget import tool_context_budget_bytes
 from kernel.context.sub_turn_contract import (
     render_no_write_warning,
     render_sub_turn_contract,
@@ -3146,7 +3147,11 @@ async def _model_completion_for_iteration(
         )
     completion_request = CompletionRequest(
         messages=(
-            hooks.context.project_messages(messages, hooks.identity.task_id)
+            hooks.context.project_messages(
+                messages,
+                hooks.identity.task_id,
+                budget_bytes=tool_context_budget_bytes(effective_model_def),
+            )
             if hooks.context.project_messages is not None
             else messages
         ),

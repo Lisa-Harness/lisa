@@ -329,6 +329,18 @@ class Settings(BaseSettings):
     # budgeting. Override via ``CONTEXT_BUDGET_TOKEN_CHAR_RATIO``.
     context_budget_token_char_ratio: int = 4
 
+    # ── Model context window budgets ─────────────────────────────────────
+    # Window assumed for a model whose manifest entry does not declare
+    # ``context_window`` (tokens). Shared by the context mapper and the
+    # tool-result projection so both size against the same window.
+    context_default_window_tokens: int = 131072
+    # Share of the model's context window the provider-only tool-result
+    # projection keeps resident each model call. A fixed 64KB ceiling
+    # (≈16K tokens) was smaller than an ordinary coding working set, so
+    # earlier reads were stubbed and re-read until the iteration cap
+    # (2026-10-09 turn 622). Override via ``TOOL_CONTEXT_WINDOW_SHARE``.
+    tool_context_window_share: float = 0.25
+
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
     # authority component as ``authority × confidence × multiplier``.
@@ -428,6 +440,8 @@ class Settings(BaseSettings):
         "hint_override_limit",
         "chat_mode_dense_content_min_chars",
         "context_budget_token_char_ratio",
+        "context_default_window_tokens",
+        "tool_context_window_share",
         mode="before",
     )
     @classmethod

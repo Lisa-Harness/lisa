@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from kernel.approval import ApprovalService
@@ -75,12 +75,26 @@ class ModelHooks:
 
 
 # ── ContextHooks ────────────────────────────────────────────────────────
+class MessageProjector(Protocol):
+    """Provider-only projection of one model call's messages.
+
+    ``budget_bytes`` is the resident tool-result budget the kernel sized
+    from the active model's context window
+    (:func:`kernel.context.context_budget.tool_context_budget_bytes`).
+    """
+
+    def __call__(
+        self, messages: list[dict[str, Any]], task_id: str, *, budget_bytes: int
+    ) -> list[dict[str, Any]]: ...
+
+
 @dataclass
 class ContextHooks:
     """Prompt assembly and provider-only message projection.
 
-    project_messages receives raw messages and task_id; it must not mutate
-    inputs. Raw turn recording remains separate from the provider request.
+    project_messages receives raw messages, task_id, and the model-sized
+    tool-result budget; it must not mutate inputs. Raw turn recording
+    remains separate from the provider request.
     """
 
     #: ``assemble_system_prompt(mode_instruction, stage_instruction=None)``
@@ -101,7 +115,7 @@ class ContextHooks:
     #: only. Default: none.
     prior_messages: Callable[[], list[dict[str, Any]]] | None = None
 
-    project_messages: Callable[[list[dict[str, Any]], str], list[dict[str, Any]]] | None = None
+    project_messages: MessageProjector | None = None
 
     #: Most recent ``ContextBudgetSnapshot`` produced by the host's
     #: context-mapper pass. Mutated by the host after each prompt assembly so

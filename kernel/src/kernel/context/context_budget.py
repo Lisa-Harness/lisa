@@ -3,23 +3,51 @@
 This module keeps per-turn prompt assembly frugal by applying lane-specific
 budgets and a total token ceiling across optional context blocks. The
 budgets themselves are host-owned (see ``runtime.config``); the kernel provides
-only the allocation mechanics plus a shared chars-per-token estimate.
+only the allocation mechanics plus a shared chars-per-token estimate, and
+sizes the model-scoped budgets (the context window and the tool-result share
+of it) from the active model's manifest entry.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from typing import Literal
+from typing import Any, Literal
+
+from kernel.config import settings
 
 __all__ = [
     "ContextBudgetAllocator",
     "ContextBudgetRecord",
     "ContextLane",
     "RequiredContextBudgetError",
+    "model_context_window_tokens",
+    "tool_context_budget_bytes",
 ]
 
 ContextLane = Literal["core", "retrieval", "memory", "reflection", "history", "operational"]
+
+
+def model_context_window_tokens(model_def: Any) -> int:
+    """Return the model's declared context window, or the shared default."""
+
+    declared = int(getattr(model_def, "context_window", 0) or 0)
+    return declared if declared > 0 else settings.context_default_window_tokens
+
+
+def tool_context_budget_bytes(model_def: Any) -> int:
+    """Resident tool-result bytes the provider-only projection may keep.
+
+    The single source for how much tool output a model call carries: the
+    ``tool_context_window_share`` of the model's context window, converted
+    with the shared chars-per-token estimate. A small-window model gets a
+    small budget; a large-window model can keep a whole coding working set
+    resident instead of re-reading stubbed files.
+    """
+
+    window = model_context_window_tokens(model_def)
+    tokens = int(window * settings.tool_context_window_share)
+    return max(0, tokens * settings.context_budget_token_char_ratio)
 
 
 class RequiredContextBudgetError(RuntimeError):

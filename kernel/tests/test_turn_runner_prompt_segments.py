@@ -161,7 +161,9 @@ async def test_model_projection_preserves_raw_history_and_records_actual_request
     ]
     tasks: list[str] = []
 
-    def project(messages: list[dict[str, Any]], task_id: str) -> list[dict[str, Any]]:
+    def project(
+        messages: list[dict[str, Any]], task_id: str, *, budget_bytes: int
+    ) -> list[dict[str, Any]]:
         tasks.append(task_id)
         return [
             {**message, "content": "recoverable preview"}
@@ -190,3 +192,48 @@ async def test_model_projection_preserves_raw_history_and_records_actual_request
         == "recoverable preview"
     )
     assert result.model_requests[0]["messages"] == request.messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("context_window", "expected"), [(400_000, 400_000), (0, 131_072)])
+async def test_projection_budget_is_sized_from_the_model_context_window(
+    context_window: int, expected: int
+) -> None:
+    """The in-turn tool-result budget follows the effective model's window.
+
+    A fixed 64KB budget with an 8KB per-result cap ignored the model: a
+    400K-token coding model re-read the same 12-15KB files until the
+    iteration cap (2026-10-09 turn-622). An undeclared window falls back to
+    ``context_default_window_tokens``.
+    """
+    from types import SimpleNamespace
+
+    budgets: list[int] = []
+
+    def project(
+        messages: list[dict[str, Any]], task_id: str, *, budget_bytes: int
+    ) -> list[dict[str, Any]]:
+        budgets.append(budget_bytes)
+        return messages
+
+    async def complete_fn(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="ok")
+
+    hooks = TurnHooks(
+        models=ModelHooks(
+            complete=complete_fn,
+            resolve_model=lambda _mid: SimpleNamespace(
+                provider="test",
+                model_id="m",
+                display_name="M",
+                reasoning_model=False,
+                thinking_model=False,
+                context_window=context_window,
+            ),
+        ),
+        context=ContextHooks(project_messages=project),
+        context_seams=ContextSeams(provider_gateways=StubGatewayProvider(complete_fn)),
+    )
+    await run_turn(mode_id="default", query="hello", hooks=hooks)
+    # 0.25 of the window at 4 chars per token.
+    assert budgets == [expected]

@@ -105,7 +105,7 @@ This grounds each rule in the real seam and names the gap precisely.
 | Piece | Status | Where |
 | --- | --- | --- |
 | Content-addressed result refs (`r<sha256>`) + lossless persist/load | **exists** | `_results.py:13–60` |
-| Threshold-based inline vs. preview/pointer projection | **exists** | `project_tool_messages()` — `_INLINE_RESULT_BYTES=8192`, `_HEAD_CHARS=600`, `_TAIL_CHARS=300` |
+| Budget-based inline vs. preview/pointer projection | **exists** | `project_tool_messages()` — newest-first against a model-sized `budget_bytes` (`tool_context_budget_bytes`), `_HEAD_CHARS=600`, `_TAIL_CHARS=300`; the 8KB per-result cap was removed 2026-10-09 |
 | Turn refs `t<turn>.m<index>` minted on readout | **exists** | `_readout.py:160–170` |
 | `thread_search` → `{ref, excerpt}` | **exists** | `_search.py:108–126` |
 | `abbreviation_template` knob | **exists, opt-in, default off** | `models.py:196–215`, `_dispatch.py:210–225` |

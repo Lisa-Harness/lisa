@@ -935,11 +935,8 @@ class TestProjectionRetrievalPages:
         The page's ``ref`` addresses stored content; persisting a copy of a
         page of an already-stored value creates a second address for the
         same bytes and a stub-of-a-page the model must expand twice. The
-        window that bit: pages over ``_MAX_RETRIEVAL_BYTES`` (32KB) but
-        under the turn ceiling (64KB) — too big to stay inline, not enough
-        to trigger pressure — fell through to persist+preview. The pointer
-        must not depend on turn-level pressure: whenever a complete page
-        (``has_more`` false) would not be kept inline, it pointers.
+        pointer must not depend on turn-level pressure: whenever a complete
+        page (``has_more`` false) would not be kept inline, it pointers.
         """
         from sdk.thread._results import project_tool_messages
 
@@ -959,7 +956,8 @@ class TestProjectionRetrievalPages:
 
         page = self._envelope(stored_ref, original)
         page_bytes = len(page.encode("utf-8"))
-        assert 32768 < page_bytes < 65536, "page must sit in the no-pointer window"
+        budget = 32768
+        assert budget < page_bytes, "page must not fit the resident budget"
         messages = [
             {
                 "role": "assistant",
@@ -967,7 +965,9 @@ class TestProjectionRetrievalPages:
             },
             {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
         ]
-        projected = project_tool_messages(messages, "task", persist, None, load)
+        projected = project_tool_messages(
+            messages, "task", persist, None, load, budget_bytes=budget
+        )
         pointer = json.loads(projected[1]["content"])
         assert pointer["ref"] == stored_ref
         assert pointer["page_omitted"] is True
@@ -1174,6 +1174,53 @@ class TestProjectionNewestFirstAllocation:
         assert persisted[first_ref]["content"] == messages[1]["content"]
 
 
+class TestProjectionBudgetOnlyResidency:
+    """Residency is bounded by the budget alone, never by a per-result cap.
+
+    Regression shape for the 2026-10-09 turn-622 non-convergence: an 8KB
+    per-result cap previewed every 12-15KB source file the model read even
+    with most of the budget free, so it re-read the same seven files 3-4
+    times each and hit the 20-iteration cap without editing.
+    """
+
+    @staticmethod
+    def _persist(result: dict[str, Any]) -> str:
+        return "r" + hashlib.sha256(json.dumps(result).encode()).hexdigest()
+
+    @staticmethod
+    def _reads(sizes: list[int]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for index, size in enumerate(sizes):
+            call_id = f"read-{index}"
+            name = "lisa-coding.coding_read_file"
+            messages += [
+                {"role": "assistant", "tool_calls": [{"id": call_id, "function": {"name": name}}]},
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": f"{index}\t" + "x" * size,
+                },
+            ]
+        return messages
+
+    def test_large_source_reads_stay_verbatim_when_the_budget_has_room(self) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        messages = self._reads([15400, 11900, 12300, 11800])
+        projected = project_tool_messages(messages, "task", self._persist, budget_bytes=131072)
+        assert projected == messages, "a read that fits the budget was abbreviated"
+
+    def test_read_that_does_not_fit_the_budget_is_still_previewed(self) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        messages = self._reads([15400])
+        projected = project_tool_messages(messages, "task", self._persist, budget_bytes=8192)
+        preview = json.loads(projected[1]["content"])
+        assert preview["abbreviated"] is True
+        assert preview["omitted_chars"] > 0
+
+
 # ── project_tool_messages() — fixed preview scale ────────────────────
 
 
@@ -1288,12 +1335,14 @@ class TestProjectionSmallWorkResultInline:
         big_message = next(m for m in projected if m.get("tool_call_id") == "big")
         assert json.loads(big_message["content"])["abbreviated"] is True
 
-    def test_result_over_the_inline_cap_is_abbreviated_with_omission(self) -> None:
-        """A work result larger than the inline cap still previews (and omits)."""
+    def test_result_over_the_budget_is_abbreviated_with_omission(self) -> None:
+        """A work result larger than the remaining budget previews (and omits)."""
         from sdk.thread._results import project_tool_messages
 
-        large = "line of evidence " * 600  # 10200 chars > 8192
-        projected = project_tool_messages(self._pressure_messages(large), "task", self._persisted)
+        large = "line of evidence " * 600  # 10200 chars > 8192 budget
+        projected = project_tool_messages(
+            self._pressure_messages(large), "task", self._persisted, budget_bytes=8192
+        )
         small_message = next(m for m in projected if m.get("tool_call_id") == "small")
         preview = json.loads(small_message["content"])
         assert preview["abbreviated"] is True
@@ -1463,13 +1512,7 @@ class TestProjectionExpansionExclusion:
             [*base, *self._expansion_message(16_384)], "task", self._persist
         )
         heads_without = self._head_sizes(without_page)
-        heads_with = [
-            len(json.loads(m["content"])["head"])
-            for m in with_page
-            if m.get("tool_call_id") != "ex"
-            and isinstance(m.get("content"), str)
-            and json.loads(m["content"]).get("abbreviated") is True
-        ]
+        heads_with = self._head_sizes([m for m in with_page if m.get("tool_call_id") != "ex"])
         assert heads_without and heads_without == heads_with, (
             f"previews {heads_without} deepened to {heads_with} by a recall page"
         )
@@ -1532,14 +1575,21 @@ class TestProjectionExpansionExclusion:
     def test_reused_call_id_does_not_reclassify_earlier_work_as_recall(self) -> None:
         from sdk.thread._results import project_tool_messages
 
-        # 20000 chars stays verbatim as a recall page but must preview as work.
-        messages = self._big_tool_result(
-            "same", "coding_read_file", 20_000
-        ) + self._big_tool_result("same", "thread_search", 4000)
+        # A page-shaped work result pointers if misread as recall; as work it
+        # must persist and preview.
+        page = json.dumps(
+            {"ref": "r" + "b" * 64, "content": "x" * 20_000, "has_more": False},
+            separators=(",", ":"),
+        )
+        messages = self._big_tool_result("same", "coding_read_file", 0) + (
+            self._big_tool_result("same", "thread_search", 4000)
+        )
+        messages[1]["content"] = page
         messages[1].pop("name")
-        projected = project_tool_messages(messages, "task", self._persist)
+        projected = project_tool_messages(messages, "task", self._persist, budget_bytes=8192)
         work_preview = json.loads(projected[1]["content"])
         assert work_preview["abbreviated"] is True
+        assert "page_omitted" not in work_preview
         assert projected[3]["content"] == "x" * 4000
 
 

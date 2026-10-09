@@ -40,6 +40,31 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Tool-result residency was a fixed 64KB with an 8KB per-result cap
+
+- **What:** The provider-only projection kept at most 64KB of tool output
+  per model call, and any single work result over 8KB (recall pages over
+  32KB) was previewed even with the budget mostly free. Neither number
+  looked at the model. The kernel now sizes the budget from the effective
+  model's manifest `context_window` through one resolver,
+  `kernel.context.context_budget.tool_context_budget_bytes`
+  (`tool_context_window_share` 0.25 × window × 4 chars/token), and passes
+  it to `ContextHooks.project_messages(..., budget_bytes=...)` on every
+  model call. A model without a declared window falls back to
+  `context_default_window_tokens` (131072 → 128KB), which the context
+  mapper now shares instead of its own literal. The per-result caps are
+  removed: a result stays verbatim whenever it fits the bytes newer results
+  left. The turn-start replay ceiling and `replay_max_bytes` still bound
+  what carries across turns.
+- **Why:** A `coding_execute` turn (2026-10-09, turn 622) re-read seven
+  12–15KB source files 3–4 times each and hit the 20-iteration cap with
+  zero edits: every file was previewed on arrival by the 8KB cap, and the
+  ~120KB working set thrashed through the 64KB budget.
+- **Tests:** `kernel/tests/test_tool_context_budget.py`;
+  `kernel/tests/test_turn_runner_prompt_segments.py::
+  test_projection_budget_is_sized_from_the_model_context_window`;
+  `sdk/tests/test_thread_search.py::TestProjectionBudgetOnlyResidency`.
+
 #### Tool-result projection starved the model past the turn budget
 
 - **What:** `project_tool_messages` decided residency from a turn-wide
