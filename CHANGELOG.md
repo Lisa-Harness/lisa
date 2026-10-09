@@ -40,6 +40,37 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Router inputs and usage attribution were frozen at the turn's entry mode
+
+- **What:** The per-iteration ``RouterRequest``'s ``route.mode_id``
+  (documented as "the active mode id") and
+  ``route.required_capabilities`` were captured at loop setup from the
+  entry mode and never refreshed, so a CEL rule keying on the active mode
+  could never match post-handoff iterations and a handoff target's
+  required capabilities were silently dropped from the request.
+  ``_wire_record_model_usage``'s closure captured the entry mode the same
+  way, so ``per_mode_usage`` — the per-mode token accounting surfaced to
+  hosts — billed every post-handoff completion to the entry mode,
+  breaking ``record_model_usage``'s "the mode that actually ran the
+  completion" contract. One writer now establishes the active mode's
+  routing context (active mode id, required capabilities, and the
+  per-mode model pin re-resolution) on the turn state — called once at
+  entry and on every successful mid-turn handoff — and the router
+  request, the iteration-model resolution, and the usage attribution all
+  read it. This also single-sources the previously three-place
+  truncation-rescue retry math (predicate, 2x budget, context-window cap,
+  request clone) into ``_truncation_retry_budget``.
+- **Why:** Found while auditing the 2026-10-08 model-pin fix for
+  duplicate codepaths: the same loop-setup capture staleness that
+  mis-pinned the model also froze the router's view of the active mode
+  and the per-mode token accounting — today's logs billed all
+  ``coding_execute`` glm tokens to ``mode=default``.
+- **Tests:** ``kernel/tests/test_turn_runner.py::
+  test_run_turn_handoff_router_sees_target_mode_inputs``,
+  ``test_run_turn_handoff_attributes_usage_to_target_mode``;
+  ``kernel/tests/test_streaming.py`` rescue tests pin the deduped retry
+  math unchanged.
+
 #### A mid-turn handoff kept the entry mode's model
 
 - **What:** The turn entry path resolves the model once from

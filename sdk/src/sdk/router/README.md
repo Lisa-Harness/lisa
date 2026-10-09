@@ -333,8 +333,8 @@ expressions through three CEL namespaces. Bindings are populated from
 | Binding | Type | Value |
 | --- | --- | --- |
 | `route.query` | string | the user query text |
-| `route.mode_id` | string | the active mode id |
-| `route.required_capabilities` | list of string | capability names the current mode's tool surface requires (e.g. `["code", "text"]`) |
+| `route.mode_id` | string | the active mode id; follows mid-turn handoffs |
+| `route.required_capabilities` | list of string | capabilities the current mode's tool surface requires (e.g. `["code", "text"]`); refreshed on every mid-turn handoff |
 
 ### `model.*` — metadata of the effective model
 

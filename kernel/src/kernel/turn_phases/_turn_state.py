@@ -106,6 +106,14 @@ class _TurnState:
     capability_limit_hit: bool = False
 
     # ── Router-relevant state ────────────────────────────────────────
+    # The mode the turn is currently in — the entry mode until a
+    # mid-turn handoff updates it. The per-iteration ``RouterRequest``
+    # (``route.mode_id``, documented as "the active mode id") and the
+    # per-mode usage attribution (``record_model_usage``'s "the mode
+    # that actually ran the completion" contract) read this instead of
+    # a loop-setup-captured local, which stays frozen at the entry mode
+    # across a handoff (the 2026-10-08 staleness family).
+    active_mode_id: str = ""
     last_tool_result_text: str | None = None
     # The last in-process ``OperationResult`` dispatched this turn, or
     # ``None`` when the last dispatch was an MCP tool or a low-level
@@ -763,6 +771,12 @@ def resolve_iteration_model(
     2. ``ModelPolicy.choose`` — the legacy duck-typed optional method.
     3. Static ``model_def`` — the once-resolved ``preferred_model_id``.
 
+    ``route.mode_id`` and ``route.required_capabilities`` read the
+    turn's routing context (``state.active_mode_id`` /
+    ``state.required_capabilities``), which the single writer updates on
+    every mid-turn handoff — a rule keying on the active mode matches
+    post-handoff iterations too (the 2026-10-08 staleness fix).
+
     When the router returns a terminal action (``finish`` or
     ``transition_to``), the decision is stored on
     ``state.pending_router_decision`` and the static ``model_def`` is
@@ -788,7 +802,7 @@ def resolve_iteration_model(
             last_tool_result=state.last_tool_result_text,
             has_tool_result=state.tool_results_received > 0,
             required_capabilities=state.required_capabilities,
-            mode_id=mode_id,
+            mode_id=state.active_mode_id or mode_id,
             effective_model=effective_ref,
         )
         try:

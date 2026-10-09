@@ -1815,9 +1815,12 @@ def _wire_record_model_usage(
     """Build the per-turn usage-recording closure.
 
     The closure merges one completion's counters into the per-model
-    accumulator and accumulates into ``per_mode_usage`` keyed by this
-    turn's ``mode_id`` so the host can attribute tokens to the mode that
-    actually ran the completion (not the entry mode).
+    accumulator and accumulates into ``per_mode_usage`` keyed by the mode
+    that actually ran the completion — read from ``state.active_mode_id``
+    (kept current across mid-turn handoffs by ``_apply_mode_routing_context``),
+    falling back to the loop-setup-captured entry mode for state objects
+    that predate the field (the 2026-10-08 attribution fix: post-handoff
+    completions billed to the entry mode).
     """
 
     def _record_model_usage(
@@ -1834,7 +1837,17 @@ def _wire_record_model_usage(
     ) -> None:
         """Merge one completion's counters into the per-model accumulator."""
         record_model_usage_fn(
-            state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, cc=cc, d=d, lat=lat, mode_id=mode_id
+            state,
+            model_def,
+            p=p,
+            c=c,
+            t=t,
+            ct=ct,
+            rt=rt,
+            cc=cc,
+            d=d,
+            lat=lat,
+            mode_id=str(getattr(state, "active_mode_id", "") or "") or mode_id,
         )
 
     return _record_model_usage
@@ -2104,14 +2117,20 @@ def _prepare_turn_messages_and_model(
     )
     model_def = resolve_model(preferred_model_id)
 
-    # required_capabilities are derived once from the mode config. They
-    # default to empty — a router that does not need them ignores them.
-    # Initialized before the capability gate so the router's iteration-1
-    # selection (below) can read them off ``state``.
-    required_capabilities: tuple[str, ...] = ()
-    if mode_config is not None:
-        required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
-    state.required_capabilities = required_capabilities
+    # The routing context is established through the single writer
+    # (``_apply_mode_routing_context``): the active mode id and the
+    # mode's required capabilities land on ``state`` so the router's
+    # iteration-1 selection (below) reads them off ``state``. The model
+    # pin stays as the caller resolved it — at entry the pin IS the
+    # entry mode's (``at_handoff=False`` skips the re-resolution).
+    _apply_mode_routing_context(
+        state=state,
+        mode_id=mode_id,
+        mode_config=mode_config,
+        resolve_model=resolve_model,
+        log=log,
+        at_handoff=False,
+    )
 
     # ── Pre-gate router escalation (iteration 1) ───────────────────────
     # Run the model router once for iteration 1 *before* the capability
@@ -2754,6 +2773,49 @@ async def _collect_stream(
             await on_delta(chunk.content, chunk.reasoning_content)
 
 
+def _truncation_retry_budget(
+    *,
+    base_request: CompletionRequest,
+    effective_model_def: Any,
+    effective_tools: list[dict[str, Any]] | None,
+    tools_offered_this_turn: bool,
+) -> tuple[CompletionRequest, int] | None:
+    """Return the one-shot doubled-budget retry request for a truncation.
+
+    Shared decision for all three truncation rescues (the streamed
+    truncation, the tool-calls-stream fallback regeneration, and the
+    non-streaming completion). A ``finish_reason='length'`` stop while
+    tools were offered was cut mid-generation — quite possibly mid
+    tool-call payload — so each path retries once at 2x, bounded by the
+    model's context window. Returns ``None`` when the truncation is not
+    rescuable (no tools offered, or the doubled budget cannot exceed the
+    base — e.g. capped at the context window). Callers own the
+    ``finish_reason`` read; this helper owns the budget math and the
+    request clone.
+    """
+    if not (effective_tools or tools_offered_this_turn):
+        return None
+    base_max_tokens = int(base_request.max_tokens or 0)
+    retry_max_tokens = base_max_tokens * 2
+    cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
+    if cap_window > 0:
+        retry_max_tokens = min(retry_max_tokens, cap_window)
+    if retry_max_tokens <= base_max_tokens:
+        return None
+    return (
+        CompletionRequest(
+            messages=base_request.messages,
+            model_def=base_request.model_def,
+            max_tokens=retry_max_tokens,
+            temperature=base_request.temperature,
+            tools=base_request.tools,
+            response_format=base_request.response_format,
+            system_prompt_segments=base_request.system_prompt_segments,
+        ),
+        retry_max_tokens,
+    )
+
+
 class StreamIdleTimeout(RuntimeError):
     """A streamed generation went silent past ``stream_idle_timeout_s``."""
 
@@ -2804,28 +2866,20 @@ async def _streamed_gateway_completion(
     # those truncations too — the 2026-10-06 "unfinished turns" incident
     # (turns ending on a final-answer truncation with no tool calls).
     if aggregated.finish_reason == "length" and (effective_tools or tools_offered_this_turn):
-        base_max_tokens = int(completion_request.max_tokens or 0)
-        retry_max_tokens = base_max_tokens * 2
-        cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
-        if cap_window > 0:
-            retry_max_tokens = min(retry_max_tokens, cap_window)
-        if retry_max_tokens > base_max_tokens:
+        _retry = _truncation_retry_budget(
+            base_request=completion_request,
+            effective_model_def=effective_model_def,
+            effective_tools=effective_tools,
+            tools_offered_this_turn=tools_offered_this_turn,
+        )
+        if _retry is not None:
+            fallback_request, retry_max_tokens = _retry
             log.warning(
                 "stream truncated with tools offered; retrying once "
-                "with higher max_tokens (mode=%s, model=%s, from=%d, to=%d)",
+                "with higher max_tokens (mode=%s, model=%s, to=%d)",
                 mode_id,
                 getattr(effective_model_def, "model_id", ""),
-                base_max_tokens,
                 retry_max_tokens,
-            )
-            fallback_request = CompletionRequest(
-                messages=completion_request.messages,
-                model_def=completion_request.model_def,
-                max_tokens=retry_max_tokens,
-                temperature=completion_request.temperature,
-                tools=completion_request.tools,
-                response_format=completion_request.response_format,
-                system_prompt_segments=completion_request.system_prompt_segments,
             )
             retry_chunks, retry_ms = await _collect_stream(
                 stream_gateway_fn, fallback_request, on_delta
@@ -2887,33 +2941,23 @@ async def _rescue_truncated_fallback_completion(
     completion = await gateway.complete(fallback_request)
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
-    if getattr(completion, "finish_reason", None) != "length" or not (
-        effective_tools or tools_offered_this_turn
-    ):
+    if getattr(completion, "finish_reason", None) != "length":
         return completion
-    base_max_tokens = int(fallback_request.max_tokens or 0)
-    retry_max_tokens = base_max_tokens * 2
-    cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
-    if cap_window > 0:
-        retry_max_tokens = min(retry_max_tokens, cap_window)
-    if retry_max_tokens <= base_max_tokens:
+    _retry = _truncation_retry_budget(
+        base_request=fallback_request,
+        effective_model_def=effective_model_def,
+        effective_tools=effective_tools,
+        tools_offered_this_turn=tools_offered_this_turn,
+    )
+    if _retry is None:
         return completion
+    retry_request, retry_max_tokens = _retry
     log.warning(
         "truncated fallback after tool_calls stream; retrying "
-        "once with higher max_tokens (mode=%s, model=%s, from=%d, to=%d)",
+        "once with higher max_tokens (mode=%s, model=%s, to=%d)",
         mode_id,
         getattr(effective_model_def, "model_id", ""),
-        base_max_tokens,
         retry_max_tokens,
-    )
-    retry_request = CompletionRequest(
-        messages=fallback_request.messages,
-        model_def=fallback_request.model_def,
-        max_tokens=retry_max_tokens,
-        temperature=fallback_request.temperature,
-        tools=fallback_request.tools,
-        response_format=fallback_request.response_format,
-        system_prompt_segments=fallback_request.system_prompt_segments,
     )
     retry_started = time.perf_counter()
     completion = await gateway.complete(retry_request)
@@ -2950,32 +2994,22 @@ async def _nonstreamed_gateway_completion(
     # Same predicate as the streaming rescue: a truncated stripped-tools
     # completion is still a write the model was building. The 2026-10-06
     # "unfinished turns" incidents ended blocked turns on this path.
-    if getattr(completion, "finish_reason", None) == "length" and (
-        effective_tools or tools_offered_this_turn
-    ):
-        base_max_tokens = int(completion_request.max_tokens or 0)
-        retry_max_tokens = base_max_tokens * 2
-        cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
-        if cap_window > 0:
-            retry_max_tokens = min(retry_max_tokens, cap_window)
-        if retry_max_tokens > base_max_tokens:
+    if getattr(completion, "finish_reason", None) == "length":
+        _retry = _truncation_retry_budget(
+            base_request=completion_request,
+            effective_model_def=effective_model_def,
+            effective_tools=effective_tools,
+            tools_offered_this_turn=tools_offered_this_turn,
+        )
+        if _retry is not None:
+            retry_request, retry_max_tokens = _retry
             log.warning(
                 "non-streaming completion truncated with tools "
                 "offered; retrying once with higher max_tokens "
-                "(mode=%s, model=%s, from=%d, to=%d)",
+                "(mode=%s, model=%s, to=%d)",
                 mode_id,
                 getattr(effective_model_def, "model_id", ""),
-                base_max_tokens,
                 retry_max_tokens,
-            )
-            retry_request = CompletionRequest(
-                messages=completion_request.messages,
-                model_def=completion_request.model_def,
-                max_tokens=retry_max_tokens,
-                temperature=completion_request.temperature,
-                tools=completion_request.tools,
-                response_format=completion_request.response_format,
-                system_prompt_segments=completion_request.system_prompt_segments,
             )
             retry_started = time.perf_counter()
             completion = await gateway.complete(retry_request)
@@ -4815,25 +4849,40 @@ def _resolve_mode_model_at_handoff(
     return None
 
 
-def _apply_mode_model_pin_at_handoff(
+def _apply_mode_routing_context(
     *,
     state: Any,
-    target_stage: str,
-    target_mode_config: Any,
+    mode_id: str,
+    mode_config: Any,
     resolve_model: Callable[[str], Any] | None,
     log: logging.Logger,
+    at_handoff: bool,
 ) -> None:
-    """Store the handoff target's re-resolved model def on ``_TurnState``.
+    """Establish the active mode's routing context on ``_TurnState``.
 
-    The per-iteration model-resolution closure reads
-    ``state.mode_model_def`` so post-handoff iterations run on the model
-    pinned for the mode the turn is actually in. No-op when the target
-    pin cannot resolve (the current model stays; the router tier can
-    still select one per iteration).
+    Single writer for the mode-scoped router inputs: the active mode id,
+    the mode's required capabilities, and the per-mode model pin. Called
+    once at turn entry (loop setup) and again on every successful
+    mid-turn handoff, so every reader — the per-iteration
+    ``RouterRequest`` (``route.mode_id`` / ``route.required_capabilities``),
+    the per-iteration model-resolution closure (``state.mode_model_def``),
+    and the per-mode usage attribution (``state.active_mode_id``) — sees
+    the mode the turn is *currently* in instead of a loop-setup-captured
+    entry value (the 2026-10-08 staleness family).
+
+    ``at_handoff`` gates the model re-resolution: at entry the caller has
+    already resolved the entry pin (and run the pre-gate router escalation
+    against it), so re-resolving would double-call the host seam; on a
+    handoff the pin must follow the target mode. The re-resolution never
+    raises and a target pin that cannot resolve keeps the current model.
     """
+    state.active_mode_id = mode_id
+    state.required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
+    if not at_handoff:
+        return
     resolved = _resolve_mode_model_at_handoff(
-        target_stage=target_stage,
-        target_mode_config=target_mode_config,
+        target_stage=mode_id,
+        target_mode_config=mode_config,
         resolve_model=resolve_model,
         log=log,
     )
@@ -4966,23 +5015,21 @@ async def _execute_mid_turn_handoff(
             capability_manifest = compile_capability_manifest(
                 tool_schemas, mode_config=target_mode_config
             )
-            # ── Per-mode model pin re-resolution ─────────────
-            # The entry path resolves the model once from
-            # ``mode_models[entry_mode]``; without this
-            # re-resolution every post-handoff iteration
-            # keeps running the entry mode's model (the
-            # 2026-10-08 incident: a default→coding_execute
-            # handoff kept running the default mode's model
-            # while the manifest pinned a different one for
-            # coding_execute). Same precedence as the entry
-            # path; on an unresolvable target pin, keep the
-            # current model rather than failing the handoff.
-            _apply_mode_model_pin_at_handoff(
+            # ── Routing context follows the mode the turn is in ────
+            # Single writer for the active-mode router inputs: the
+            # active mode id, required capabilities, and the per-mode
+            # model pin re-resolution (the 2026-10-08 staleness
+            # family: without this, post-handoff iterations kept the
+            # entry mode's model, ``route.mode_id`` kept reporting the
+            # entry mode, and usage attribution billed the target
+            # mode's completions to the entry mode).
+            _apply_mode_routing_context(
                 state=state,
-                target_stage=target_stage,
-                target_mode_config=target_mode_config,
+                mode_id=target_stage,
+                mode_config=target_mode_config,
                 resolve_model=hooks.models.resolve_model,
                 log=log,
+                at_handoff=True,
             )
             # Phase 8: the completion contract follows
             # the mode the turn is actually in —

@@ -3800,6 +3800,195 @@ async def test_run_turn_handoff_keeps_model_when_pin_unresolvable() -> None:
     assert all(mid == "model-x" for mid in seen_model_defs)
 
 
+@pytest.mark.asyncio
+async def test_run_turn_handoff_router_sees_target_mode_inputs() -> None:
+    """After a mid-turn handoff, the per-iteration router request carries the
+    active mode's id and required capabilities.
+
+    Regression for the router-input staleness found with the 2026-10-08 model
+    pin bug: ``RouterRequest.mode_id`` is documented as "the active mode id"
+    and ``required_capabilities`` as "the capabilities the current mode's
+    tool surface requires" — but both were captured at loop setup from the
+    entry mode, so a CEL rule keying on ``route.mode_id`` could never match
+    post-handoff, and a target mode's required capabilities were silently
+    dropped from the request.
+    """
+
+    from unittest.mock import patch
+
+    from kernel.seams.protocols import RouterDecision, RouterRequest
+
+    call_count = 0
+    router_requests: list[RouterRequest] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in search mode.")
+
+    class _RecordingRouter:
+        def choose(self, req: RouterRequest) -> RouterDecision | None:
+            router_requests.append(req)
+            return None
+
+    def resolve_model(model_ref: str) -> Any:
+        return SimpleNamespace(model_id="model-a", reasoning_model=False)
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(
+            mode_id="search",
+            satisfies_intents=["research"],
+            required_capabilities=["tools"],
+        ),
+    }
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.models.resolve_model = resolve_model
+    hooks.context_seams.model_router = _RecordingRouter()
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+    ):
+        result = await run_turn(mode_id="default", query="search for rust news", hooks=hooks)
+
+    assert result.handoff_to == "search"
+    assert call_count >= 2
+    assert len(router_requests) >= 2
+    # Entry iteration sees the entry mode…
+    assert router_requests[0].mode_id == "default"
+    # …post-handoff iterations see the active mode and its required
+    # capabilities, not the loop-setup-captured entry values.
+    # The pre-gate escalation and the loop's iteration-1 resolution both
+    # legitimately see the entry mode. The post-handoff model call is the
+    # last one this turn — its request must carry the active mode and the
+    # target mode's required capabilities, not the loop-setup-captured
+    # entry values.
+    assert router_requests[0].mode_id == "default"
+    post_handoff_req = router_requests[-1]
+    assert post_handoff_req.mode_id == "search"
+    assert tuple(post_handoff_req.required_capabilities) == ("tools",)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_handoff_attributes_usage_to_target_mode() -> None:
+    """Post-handoff completions are billed to the mode that ran them.
+
+    Regression for the usage-attribution staleness found with the
+    2026-10-08 model pin bug: ``_wire_record_model_usage``'s closure
+    captured the entry mode at loop setup, so ``per_mode_usage`` — the
+    per-mode token accounting surfaced to the host — attributed every
+    post-handoff completion to the entry mode even though
+    ``record_model_usage``'s contract says "the mode that actually ran
+    the completion (not the entry mode)".
+    """
+
+    from unittest.mock import patch
+
+    call_count = 0
+
+    @dataclass
+    class _UsageCompletion:
+        content: str
+        tool_calls: list[dict[str, Any]] | None = None
+        prompt_tokens: int = 0
+        completion_tokens: int = 0
+
+    async def two_step(**kwargs: Any) -> _UsageCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _UsageCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+                prompt_tokens=100,
+                completion_tokens=111,
+            )
+        # The post-handoff completion bills 222 completion tokens — the
+        # target mode's entry must carry them, not the entry mode's.
+        return _UsageCompletion(
+            content="Done in search mode.",
+            prompt_tokens=200,
+            completion_tokens=222,
+        )
+
+    def resolve_model(model_ref: str) -> Any:
+        return SimpleNamespace(model_id="model-a", reasoning_model=False)
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "search": _mode_config(mode_id="search", satisfies_intents=["research"]),
+    }
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.models.resolve_model = resolve_model
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=catalog: (
+                _c[mid].instruction_body if _c.get(mid) and _c[mid].instruction_body else mid
+            ),
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for rust news",
+            hooks=hooks,
+        )
+
+    assert result.handoff_to == "search"
+    assert call_count >= 2
+    per_mode = {entry["mode_id"]: entry for entry in result.per_mode_usage}
+    # The post-handoff completion must bill the target mode, not the
+    # entry mode — per_mode_usage carries a "search" entry holding the
+    # post-handoff completion's tokens.
+    assert "search" in per_mode, f"post-handoff usage missing target mode: {per_mode}"
+    assert per_mode["search"]["completion_tokens"] == 222
+
+
 @pytest.mark.xfail(
     reason=(
         "2026-07-25 fix: the search mode's ``web_search`` entry operation now "
