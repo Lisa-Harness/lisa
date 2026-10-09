@@ -185,6 +185,13 @@ class _TurnState:
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
+    turn_plan_position: Any = None
+    """Plan declared by a routing entry op during this turn. The host's
+    ``workflow_position`` view is derived from the thread at turn start, so
+    a mid-turn plan is invisible to it until the turn is written; the kernel
+    keeps the plan here (advancing ``current_step_id`` on each handoff to a
+    planned step) so handoff context and post-handoff hints follow the
+    declared plan instead of re-deriving extra steps from the intent gap."""
 
     # ── Deferred ad-hoc workflow-instance steps ───────────────────────
     # Compiled at turn start from the routing hint's multi-step chain,

@@ -3547,95 +3547,92 @@ def _compute_post_handoff_hint(
         # (``handoff_to``) and written to the thread;
         # the WorkflowView derives progress from
         # receipts in later thread entries. Here we
-        # read the turn-start view snapshot to emit a
+        # read the mid-turn plan when this handoff
+        # lands on one of its steps, else the
+        # turn-start view snapshot, to emit a
         # directive hint naming the next step's mode
         # from the declared sequence, so the model
         # knows where to go next. No mutable
         # position is advanced — the view is
         # read-only and re-derived next turn.
-        if hooks.workflow.workflow_position is not None:
-            try:
-                _position = hooks.workflow.workflow_position()
-            except Exception:  # pylint: disable=broad-except
-                _position = None
-            if _position is not None and _position.current_step_id:
-                _next_step = _position.step_by_id(_position.current_step_id)
-                if _next_step is not None:
-                    # Emit the plan-driven hint via
-                    # the shared self-handoff guard.
-                    # When the next step's mode is
-                    # the one the turn just handed
-                    # off to, the guard returns ""
-                    # (a self-handoff hint causes
-                    # the forced-action enforcer to
-                    # synthesize a no-op
-                    # transition_stage to the
-                    # current mode, looping until
-                    # the iteration cap — the
-                    # 2026-08-11 executor→executor
-                    # stuck loop).
-                    post_handoff_hint = emit_transition_hint(
-                        target_mode_id=_next_step.mode_id,
-                        current_mode_id=target_stage,
-                        prose_template=(
-                            "## Routing Hint\n\n"
-                            "This is the next step "
-                            "in the planned "
-                            "workflow. Call "
-                            "`transition_stage` "
-                            "with target_stage_id "
-                            "`{target}`."
-                        ),
+        _plan_next = _plan_driven_next_step(state=state, hooks=hooks, target_stage=target_stage)
+        if _plan_next is not None:
+            _position, _next_step = _plan_next
+            # Emit the plan-driven hint via
+            # the shared self-handoff guard.
+            # When the next step's mode is
+            # the one the turn just handed
+            # off to, the guard returns ""
+            # (a self-handoff hint causes
+            # the forced-action enforcer to
+            # synthesize a no-op
+            # transition_stage to the
+            # current mode, looping until
+            # the iteration cap — the
+            # 2026-08-11 executor→executor
+            # stuck loop).
+            post_handoff_hint = emit_transition_hint(
+                target_mode_id=_next_step.mode_id,
+                current_mode_id=target_stage,
+                prose_template=(
+                    "## Routing Hint\n\n"
+                    "This is the next step "
+                    "in the planned "
+                    "workflow. Call "
+                    "`transition_stage` "
+                    "with target_stage_id "
+                    "`{target}`."
+                ),
+            )
+            if post_handoff_hint:
+                log.info(
+                    "plan-driven next step: position=%s step=%s target=%s",
+                    _position.position_id,
+                    _next_step.step_id,
+                    _next_step.mode_id,
+                )
+            # ── Do-the-work backstop ──
+            # The routing hint and the
+            # plan-driven hint both
+            # correctly go silent here,
+            # leaving a guidance-needing
+            # model with no directive.
+            # When the effective model
+            # declared ``needs_guidance``
+            # and this mode has action
+            # tools, arm a do-the-work
+            # backstop: the empty-
+            # completion enforcer will
+            # synthesize a call to one
+            # of the mode's action tools
+            # instead of accepting prose
+            # and ending blocked as
+            # ``no_tools`` (the
+            # 2026-08-15 researcher
+            # no-verified-write block).
+            # Cleared as soon as any
+            # tool dispatches, so it
+            # cannot loop.
+            elif getattr(
+                state.effective_model,
+                "needs_guidance",
+                False,
+            ):
+                _work_tools = (
+                    mode_completion_effects(
+                        target_stage,
+                        mcp_pool=pool,
                     )
-                    if post_handoff_hint:
-                        log.info(
-                            "plan-driven next step: position=%s step=%s target=%s",
-                            _position.position_id,
-                            _next_step.step_id,
-                            _next_step.mode_id,
-                        )
-                    # ── Do-the-work backstop ──
-                    # The routing hint and the
-                    # plan-driven hint both
-                    # correctly go silent here,
-                    # leaving a guidance-needing
-                    # model with no directive.
-                    # When the effective model
-                    # declared ``needs_guidance``
-                    # and this mode has action
-                    # tools, arm a do-the-work
-                    # backstop: the empty-
-                    # completion enforcer will
-                    # synthesize a call to one
-                    # of the mode's action tools
-                    # instead of accepting prose
-                    # and ending blocked as
-                    # ``no_tools`` (the
-                    # 2026-08-15 researcher
-                    # no-verified-write block).
-                    # Cleared as soon as any
-                    # tool dispatches, so it
-                    # cannot loop.
-                    elif getattr(
-                        state.effective_model,
-                        "needs_guidance",
-                        False,
-                    ):
-                        _work_tools = (
-                            mode_completion_effects(
-                                target_stage,
-                                mcp_pool=pool,
-                            )
-                            if pool is not None
-                            else state.action_tool_ids
-                        )
-                        if _work_tools:
-                            state.forced_work_tool = next(iter(sorted(_work_tools)))
-                            log.info(
-                                "self-handoff do-the-work backstop armed (mode=%s tool=%s)",
-                                target_stage,
-                                state.forced_work_tool,
-                            )
+                    if pool is not None
+                    else state.action_tool_ids
+                )
+                if _work_tools:
+                    state.forced_work_tool = next(iter(sorted(_work_tools)))
+                    log.info(
+                        "self-handoff do-the-work backstop armed (mode=%s tool=%s)",
+                        target_stage,
+                        state.forced_work_tool,
+                    )
     return post_handoff_hint
 
 
@@ -4258,6 +4255,68 @@ async def _begin_tool_dispatch(
     return _tool_kind, _tool_dispatch_started, recovery_item_id, recovery_retry_policy
 
 
+def _advance_turn_plan_position(*, state: Any, target_stage: str) -> None:
+    """Point the turn's mid-turn plan at the step a handoff lands on.
+
+    Moves ``current_step_id`` forward to the first declared step at or after
+    the current one whose mode is ``target_stage``. An off-plan handoff
+    leaves the position untouched so ``_on_plan_turn_position`` reports it
+    off-plan and callers fall back to intent-gap routing.
+    """
+    position = getattr(state, "turn_plan_position", None)
+    if position is None:
+        return
+    steps = tuple(position.declared_steps)
+    current = position.step_by_id(position.current_step_id)
+    start = steps.index(current) if current is not None else 0
+    for step in steps[start:]:
+        if step.mode_id == target_stage:
+            if step.step_id != position.current_step_id:
+                state.turn_plan_position = position.model_copy(
+                    update={"current_step_id": step.step_id}
+                )
+            return
+
+
+def _on_plan_turn_position(*, state: Any, target_stage: str) -> Any:
+    """Return the turn's mid-turn plan when ``target_stage`` is its current step."""
+    position = getattr(state, "turn_plan_position", None)
+    if position is None:
+        return None
+    current = position.step_by_id(position.current_step_id)
+    if current is None or current.mode_id != target_stage:
+        return None
+    return position
+
+
+def _plan_driven_next_step(*, state: Any, hooks: TurnHooks, target_stage: str) -> Any:
+    """Return ``(position, next_step)`` for the plan-driven post-handoff hint.
+
+    A mid-turn plan the handoff landed on names the declared step after the
+    current one; on its last step it names the current step, which the
+    self-handoff guard turns into silence. Otherwise the turn-start view's
+    current step is the next step. ``None`` when no plan applies.
+    """
+    planned = _on_plan_turn_position(state=state, target_stage=target_stage)
+    if planned is not None:
+        steps = tuple(planned.declared_steps)
+        current = planned.step_by_id(planned.current_step_id)
+        following = steps[steps.index(current) + 1 :]
+        return planned, (following[0] if following else current)
+    if hooks.workflow.workflow_position is None:
+        return None
+    try:
+        position = hooks.workflow.workflow_position()
+    except Exception:  # pylint: disable=broad-except
+        return None
+    if position is None or not position.current_step_id:
+        return None
+    step = position.step_by_id(position.current_step_id)
+    if step is None:
+        return None
+    return position, step
+
+
 def _remaining_chain_steps(
     *,
     state: Any,
@@ -4267,9 +4326,16 @@ def _remaining_chain_steps(
 ) -> list[str]:
     """Compute the routing targets that still cover a gap intent after the handoff.
 
-    Tag-blind: manipulates opaque intent-tag sets and routing target ids; it
-    names no intents. Excludes the handoff target itself.
+    When the handoff lands on a step of a plan declared this turn, the plan
+    is authoritative: the remaining steps are the declared steps after it.
+    Otherwise tag-blind: manipulates opaque intent-tag sets and routing
+    target ids; it names no intents. Excludes the handoff target itself.
     """
+    planned = _on_plan_turn_position(state=state, target_stage=target_stage)
+    if planned is not None:
+        steps = tuple(planned.declared_steps)
+        current = planned.step_by_id(planned.current_step_id)
+        return [step.mode_id for step in steps[steps.index(current) + 1 :]]
     post_handoff_satisfied = set(state.chain_satisfied) | set(target_mode_config.satisfies_intents)
     remaining_gap = (
         _detect_query_intents(
@@ -4554,6 +4620,50 @@ def _handle_entry_operation_failure(
     return entry_output
 
 
+def _record_turn_plan_position(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    target_stage: str,
+    entry_result: Any,
+    log: logging.Logger,
+) -> None:
+    """Keep a mid-turn plan on the turn state and persist it when wired.
+
+    The turn state copy makes the plan authoritative for the rest of this
+    turn's handoffs; the host updater (when wired and no position exists)
+    persists it across turns.
+    """
+    try:
+        from kernel.workflow_position import WorkflowPosition
+
+        plan_steps = _plan_steps_to_workflow_steps(
+            list((entry_result.output_json or {}).get("steps") or [])
+        )
+        if not plan_steps:
+            return
+        position = WorkflowPosition(
+            declared_steps=tuple(plan_steps),
+            current_step_id=plan_steps[0].step_id,
+            mode_id=target_stage,
+            plan_text=entry_result.output_text or "",
+            spawned_from="plan_workflow_op",
+        )
+        state.turn_plan_position = position
+        updater = hooks.workflow.workflow_position_updater
+        if updater is None:
+            return
+        existing = (
+            hooks.workflow.workflow_position()
+            if callable(hooks.workflow.workflow_position)
+            else None
+        )
+        if existing is None:
+            updater(position)
+    except Exception as position_exc:  # pylint: disable=broad-except
+        log.warning("mid-turn plan position persistence failed: %s", position_exc)
+
+
 async def _run_handoff_entry_operations(
     *,
     state: Any,
@@ -4662,30 +4772,14 @@ async def _run_handoff_entry_operations(
                 preferred_model_id=preferred_model_id,
                 log=log,
             )
-            if _promises_routing and hooks.workflow.workflow_position_updater is not None:
-                try:
-                    from kernel.workflow_position import WorkflowPosition
-
-                    _plan_steps = _plan_steps_to_workflow_steps(
-                        list((entry_result.output_json or {}).get("steps") or [])
-                    )
-                    _existing_position = (
-                        hooks.workflow.workflow_position()
-                        if callable(hooks.workflow.workflow_position)
-                        else None
-                    )
-                    if _plan_steps and _existing_position is None:
-                        hooks.workflow.workflow_position_updater(
-                            WorkflowPosition(
-                                declared_steps=tuple(_plan_steps),
-                                current_step_id=_plan_steps[0].step_id,
-                                mode_id=target_stage,
-                                plan_text=entry_result.output_text or "",
-                                spawned_from="plan_workflow_op",
-                            )
-                        )
-                except Exception as position_exc:  # pylint: disable=broad-except
-                    log.warning("mid-turn plan position persistence failed: %s", position_exc)
+            if _promises_routing:
+                _record_turn_plan_position(
+                    state=state,
+                    hooks=hooks,
+                    target_stage=target_stage,
+                    entry_result=entry_result,
+                    log=log,
+                )
         except Exception as entry_exc:  # pylint: disable=broad-except
             # The failure handling (unreliable-marking + hard-fail stamp)
             # lives in ``_handle_entry_operation_failure``.
@@ -4987,6 +5081,7 @@ async def _execute_mid_turn_handoff(
             # Built and injected by ``_build_structured_handoff_context``
             # (chain position, remaining steps, plan block, current task,
             # provided context, and the terminal-step directive).
+            _advance_turn_plan_position(state=state, target_stage=target_stage)
             _build_structured_handoff_context(
                 state=state,
                 hooks=hooks,

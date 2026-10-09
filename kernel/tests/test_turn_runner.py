@@ -1839,6 +1839,110 @@ async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mid_turn_plan_is_authoritative_over_residual_intent_gap() -> None:
+    """A plan declared mid-turn governs the handoff it drives.
+
+    The host's ``workflow_position`` view is derived from the thread at turn
+    start, so a plan made mid-turn is invisible to it. The handoff into the
+    planned (final) step then fell back to intent-gap routing: a residual
+    intent the plan deliberately left out appended an extra "remaining
+    step" and a routing hint sent the model straight out of the planned
+    mode before it did any work (the 2026-10-09 e2e roadmap run:
+    planner → coding_review was immediately hinted to ``thinker``, which
+    has no workspace tools, and the review answered "no workspace").
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write"]},
+    )
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text="research only",
+            output_json={
+                "target_stage_id": "search",
+                "rationale": "research intent",
+                "steps": [{"mode_id": "search", "description": "search", "rationale": "r"}],
+            },
+        )
+
+    search_prompts: list[str] = []
+    entered_markdown = False
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal entered_markdown
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "## Handoff Context" in sys_content and "handed off from: `search`" in sys_content:
+            entered_markdown = True
+            return _StubCompletion(content="Markdown output.")
+        if "## Handoff Context" in sys_content and "`plan`" in sys_content:
+            if "Handed off to mode: search" in str(
+                [m.get("content", "") for m in kwargs["messages"]]
+            ):
+                search_prompts.append(sys_content)
+                return _StubCompletion(content="Search results from web_search.")
+            return _StubCompletion(content="Planning...")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(complete)
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default", query="search for rust news then write a summary", hooks=hooks
+        )
+
+    assert search_prompts, "the planned search step must run"
+    search_prompt = search_prompts[0]
+    assert "Remaining steps after this one: (none" in search_prompt
+    assert "`markdown`" not in search_prompt
+    assert not entered_markdown
+    assert result.response_text == "Search results from web_search."
+
+
+@pytest.mark.asyncio
 async def test_run_turn_missing_complete_raises_not_implemented() -> None:
     """A search (action) mode with entry ops needs complete_fn, and the
     operation fails with an OperationExecutionError wrapping the
