@@ -265,7 +265,15 @@ red/green commits.
    *Red/green:*
    `sdk/tests/test_thread_search.py::
    TestProjectionRetrievalPages::test_over_threshold_page_pointers_without_pressure`.
-3. **Stub as the default over-threshold shape** — *not a change; the RFC
+3. **Allocate residency newest-first** — *shipped 2026-10-08.* Projection
+   decided residency from a turn-wide pressure flag over all raw tool
+   bytes, so once a turn's raw history passed the budget every new result
+   was previewed and every expansion pointered to its own ref, even
+   though eviction had freed the budget. Results are now allocated
+   newest-first against the resident budget at one fixed preview scale;
+   the oldest results collapse into the inventory. *Red/green:*
+   `sdk/tests/test_thread_search.py::TestProjectionNewestFirstAllocation`.
+4. **Stub as the default over-threshold shape** — *not a change; the RFC
    premise was wrong.* The over-threshold default stub is already
    enforced by projection for every tool; `abbreviation_template` is a
    separate opt-in same-turn repetition cache, not the stub mechanism.

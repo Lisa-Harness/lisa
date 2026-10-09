@@ -973,10 +973,11 @@ class TestProjectionRetrievalPages:
         assert pointer["page_omitted"] is True
         assert not persisted, "no fresh result object may be persisted for a stored page"
 
-    def test_pressure_pointer_replaces_page_without_persisting(self, tmp_path: Path) -> None:
+    def test_page_without_room_pointers_without_persisting(self, tmp_path: Path) -> None:
+        """An older page that newer results crowd out pointers to its stored value."""
         from sdk.thread._results import project_tool_messages, result_object_path
 
-        original = "stored worktree state " * 200
+        original = "stored worktree state " * 400
         stored_ref = "r" + f"{1:064x}"
         path = result_object_path(tmp_path, stored_ref)
         path.parent.mkdir(parents=True)
@@ -998,17 +999,27 @@ class TestProjectionRetrievalPages:
                 return {"content": original, "task_id": "task", "tool_name": "coding_status"}
             return persisted[ref]
 
-        page = self._envelope(stored_ref, original[:50])
-        filler = "x" * (_TOOL_CONTEXT_BYTES + 1)
+        page = self._envelope(stored_ref, original[:7500])
         messages = [
             {
                 "role": "assistant",
                 "tool_calls": [{"id": "p", "function": {"name": "thread_read_content"}}],
             },
             {"role": "tool", "tool_call_id": "p", "name": "thread_read_content", "content": page},
-            {"role": "assistant", "tool_calls": [{"id": "f", "function": {"name": "big_tool"}}]},
-            {"role": "tool", "tool_call_id": "f", "name": "big_tool", "content": filler},
         ]
+        for index in range(8):  # newer work results claim the resident budget
+            messages += [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": f"f{index}", "function": {"name": "big_tool"}}],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": f"f{index}",
+                    "name": "big_tool",
+                    "content": "x" * 8000,
+                },
+            ]
         projected = project_tool_messages(messages, "task", persist, None, load)
         pointer = json.loads(projected[1]["content"])
         assert pointer["ref"] == stored_ref
@@ -1071,16 +1082,107 @@ class TestProjectionRetrievalPages:
         assert projected[1]["content"] == page
 
 
-# ── project_tool_messages() — graduated preview collapse ───────────────
+# ── project_tool_messages() — newest-first resident allocation ────────
 
 
-class TestProjectionGraduatedCollapse:
-    """Preview sizes shrink gradually with overage, not across one cliff.
+class TestProjectionNewestFirstAllocation:
+    """Newest results stay verbatim; only what cannot stay resident collapses.
 
-    Regression shape for the 2026-10-05 turn-524 thrash: tool-result bytes
-    just past ``_TOOL_CONTEXT_BYTES`` used to flip every preview from
-    600+300 to 120+60 chars in one step, so re-expanding evidence through
-    the thread tools re-added bytes and re-triggered full collapse.
+    Regression shape for the 2026-10-08 turn-618 non-convergence: once raw
+    turn history passed the 64KB budget, projection treated the whole turn
+    as "under pressure" forever — even after eviction left ~12KB resident —
+    so every new read became a ~400-char preview and every
+    ``thread_read_content`` expansion was pointered back to its own ref.
+    The model re-read the same file in shrinking windows (500→5 lines) and
+    exhausted the 20-iteration cap without writing anything.
+    """
+
+    @staticmethod
+    def _call(call_id: str, name: str, content: str) -> list[dict[str, Any]]:
+        return [
+            {"role": "assistant", "tool_calls": [{"id": call_id, "function": {"name": name}}]},
+            {"role": "tool", "tool_call_id": call_id, "name": name, "content": content},
+        ]
+
+    @staticmethod
+    def _store() -> tuple[dict[str, dict[str, Any]], Any]:
+        persisted: dict[str, dict[str, Any]] = {}
+
+        def persist(result: dict[str, Any]) -> str:
+            ref = "r" + hashlib.sha256(json.dumps(result).encode()).hexdigest()
+            persisted.setdefault(ref, result)
+            return ref
+
+        return persisted, persist
+
+    def _turn(self, stored_ref: str, stored: str) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for index in range(40):  # ~280KB of earlier medium reads
+            messages += self._call(
+                f"read-{index}", "lisa-coding.coding_read_file", f"read {index}: " + "x" * 7000
+            )
+        messages += self._call("small", "lisa-coding.coding_read_file", "func main() {}\n" * 40)
+        page = json.dumps(
+            {"ref": stored_ref, "content": stored[:700], "has_more": False},
+            separators=(",", ":"),
+        )
+        messages += self._call("page", "lisa-thread.thread_read_content", page)
+        return messages
+
+    @staticmethod
+    def _tool_bytes(projected: list[dict[str, Any]]) -> int:
+        return sum(len(m["content"].encode()) for m in projected if m.get("role") == "tool")
+
+    def test_new_results_stay_verbatim_after_history_exceeds_budget(self) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        persisted, persist = self._store()
+        stored = "package main\n" * 100
+        stored_ref = persist({"content": stored, "task_id": "task", "tool_name": "read"})
+        messages = self._turn(stored_ref, stored)
+        projected = project_tool_messages(messages, "task", persist, load=persisted.__getitem__)
+
+        by_id = {m.get("tool_call_id"): m["content"] for m in projected if m.get("role") == "tool"}
+        assert by_id["small"] == messages[-3]["content"], "fresh small read was abbreviated"
+        assert by_id["page"] == messages[-1]["content"], (
+            "latest expansion page was pointered back to its own ref"
+        )
+        verbatim_reads = [
+            call_id
+            for call_id, content in by_id.items()
+            if str(call_id).startswith("read-") and content.startswith("read ")
+        ]
+        assert len(verbatim_reads) >= 6, (
+            f"only {len(verbatim_reads)} recent reads kept verbatim; resident budget is wasted"
+        )
+        assert self._tool_bytes(projected) <= _TOOL_CONTEXT_BYTES
+        assert any("inventory_ref" in m.get("content", "") for m in projected)
+
+    def test_newest_first_projection_is_idempotent_and_lossless(self) -> None:
+        from sdk.thread._results import project_tool_messages
+
+        persisted, persist = self._store()
+        stored = "package main\n" * 100
+        stored_ref = persist({"content": stored, "task_id": "task", "tool_name": "read"})
+        messages = self._turn(stored_ref, stored)
+        projected = project_tool_messages(messages, "task", persist, load=persisted.__getitem__)
+        again = project_tool_messages(projected, "task", persist, load=persisted.__getitem__)
+        assert again == projected
+        marker = next(m for m in projected if "inventory_ref" in m.get("content", ""))
+        inventory = json.loads(persisted[json.loads(marker["content"])["inventory_ref"]]["content"])
+        first_ref = inventory[0]["results"][0]["ref"]
+        assert persisted[first_ref]["content"] == messages[1]["content"]
+
+
+# ── project_tool_messages() — fixed preview scale ────────────────────
+
+
+class TestProjectionPreviewScale:
+    """Previews keep one 600+300 scale; overage evicts oldest, never shrinks.
+
+    Regression shape for the 2026-10-05 turn-524 thrash: a turn-wide
+    overage used to shrink every preview toward 120+60 chars, so
+    re-expanding evidence re-added bytes and deepened the collapse.
     """
 
     @staticmethod
@@ -1100,8 +1202,8 @@ class TestProjectionGraduatedCollapse:
         ]
 
     @staticmethod
-    def _preview_sizes(projected: list[dict[str, Any]]) -> list[tuple[int, int]]:
-        sizes: list[tuple[int, int]] = []
+    def _preview_heads(projected: list[dict[str, Any]]) -> list[int]:
+        heads: list[int] = []
         for message in projected:
             content = message.get("content")
             if message.get("role") != "tool" or not isinstance(content, str):
@@ -1111,43 +1213,18 @@ class TestProjectionGraduatedCollapse:
             except (TypeError, ValueError):
                 continue
             if preview.get("abbreviated") is True:
-                sizes.append((len(preview["head"]), len(preview["tail"])))
-        return sizes
+                heads.append(len(preview["head"]))
+        return heads
 
-    def test_over_threshold_by_one_byte_is_nominally_shrunk(self) -> None:
-        """One byte past the threshold must not cost 83% of preview fidelity."""
-        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
-
-        projected = project_tool_messages(
-            self._messages(_TOOL_CONTEXT_BYTES + 2), "task", lambda r: "r" + "0" * 64
-        )
-        sizes = self._preview_sizes(projected)
-        assert sizes, "expected abbreviated previews under pressure"
-        for head, _tail in sizes:
-            assert head >= 500, (
-                f"preview head {head} chars one byte past the threshold "
-                f"(cliff: full collapse to 120)"
-            )
-
-    def test_deep_overage_reaches_the_floor(self) -> None:
-        """Far past the span the legacy 120/60 floor still applies."""
-        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
+    @pytest.mark.parametrize("overage", [0, 2, 200_000])
+    def test_previews_keep_full_scale_at_any_overage(self, overage: int) -> None:
+        from sdk.thread._results import project_tool_messages
 
         projected = project_tool_messages(
-            self._messages(_TOOL_CONTEXT_BYTES + 200_000), "task", lambda r: "r" + "0" * 64
+            self._messages(_TOOL_CONTEXT_BYTES + overage), "task", lambda r: "r" + "0" * 64
         )
-        for head, _tail in self._preview_sizes(projected):
-            assert head <= 120
-
-    def test_below_threshold_previews_keep_full_size(self) -> None:
-        """No overage preserves the legacy 600/300 previews unchanged."""
-        from sdk.thread._results import _TOOL_CONTEXT_BYTES, project_tool_messages
-
-        projected = project_tool_messages(
-            self._messages(_TOOL_CONTEXT_BYTES), "task", lambda r: "r" + "0" * 64
-        )
-        for head, _tail in self._preview_sizes(projected):
-            assert head == 600
+        heads = self._preview_heads(projected)
+        assert heads and all(head == 600 for head in heads)
 
 
 # ── project_tool_messages() — small work results inline under pressure ───
@@ -1211,18 +1288,16 @@ class TestProjectionSmallWorkResultInline:
         big_message = next(m for m in projected if m.get("tool_call_id") == "big")
         assert json.loads(big_message["content"])["abbreviated"] is True
 
-    def test_result_exceeding_the_pressure_scale_is_abbreviated_with_omission(self) -> None:
-        """A result larger than head+tail still previews (and omits) as before."""
+    def test_result_over_the_inline_cap_is_abbreviated_with_omission(self) -> None:
+        """A work result larger than the inline cap still previews (and omits)."""
         from sdk.thread._results import project_tool_messages
 
-        large = "line of evidence " * 200  # 3200 chars > 864
+        large = "line of evidence " * 600  # 10200 chars > 8192
         projected = project_tool_messages(self._pressure_messages(large), "task", self._persisted)
         small_message = next(m for m in projected if m.get("tool_call_id") == "small")
         preview = json.loads(small_message["content"])
         assert preview["abbreviated"] is True
-        assert preview["omitted_chars"] > 0, (
-            "abbreviation without omission must not fire for oversized results either"
-        )
+        assert preview["omitted_chars"] > 0
 
     def test_inline_small_results_remain_inventory_eligible(self) -> None:
         """Over-budget turns still evict inline results through the inventory."""
@@ -1277,29 +1352,21 @@ class TestProjectionSmallWorkResultInline:
         second = project_tool_messages(first, "task", self._persisted)
         assert first == second
 
-    def test_inline_result_is_smaller_on_the_wire_than_its_preview(self) -> None:
-        """The replaced preview must cost more wire bytes than the inline content."""
-        from sdk.thread._results import project_tool_messages
+    def test_result_without_room_is_not_inflated_into_a_preview(self) -> None:
+        """No room left must not swap a tiny result for a larger preview envelope."""
+        from sdk.thread._results import _preview, project_tool_messages
 
-        small = "line of evidence " * 40
-        projected = project_tool_messages(self._pressure_messages(small), "task", self._persisted)
-        small_message = next(m for m in projected if m.get("tool_call_id") == "small")
-        inline_bytes = len(small_message["content"].encode())
-        # Project a twin one char too large to inline: its preview envelope
-        # must exceed the inline content, i.e. abbreviation would have
-        # inflated the wire (the net-negative compaction being fixed).
-        oversized = small + "!" * 770  # just above the scale
-        legacy_oversized = project_tool_messages(
-            self._pressure_messages(oversized), "task", lambda r: "r" + "0" * 64
-        )
-        preview = json.loads(
-            next(m for m in legacy_oversized if m.get("tool_call_id") == "small")["content"]
-        )
-        preview_bytes = len(json.dumps(preview, ensure_ascii=False).encode())
-        assert preview_bytes > inline_bytes, (
-            f"preview envelope {preview_bytes}B did not exceed inline {inline_bytes}B; "
-            "the net-negative abbreviation premise failed"
-        )
+        tiny = "line of evidence " * 50  # 850 chars <= 600+300 excerpts
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "tiny", "function": {"name": "read"}}]},
+            {"role": "tool", "tool_call_id": "tiny", "name": "read", "content": tiny},
+            {"role": "assistant", "tool_calls": [{"id": "new", "function": {"name": "read"}}]},
+            {"role": "tool", "tool_call_id": "new", "name": "read", "content": "z" * 3000},
+        ]
+        # budget 4000 - reserve 250 leaves 750 bytes after the newest result.
+        projected = project_tool_messages(messages, "task", self._persisted, budget_bytes=4000)
+        assert projected[1]["content"] == tiny
+        assert len(_preview("r" + "0" * 64, tiny).encode()) > len(tiny.encode())
 
 
 # ── project_tool_messages() — retrieval expansions excluded from pressure ──
@@ -1465,14 +1532,14 @@ class TestProjectionExpansionExclusion:
     def test_reused_call_id_does_not_reclassify_earlier_work_as_recall(self) -> None:
         from sdk.thread._results import project_tool_messages
 
+        # 20000 chars stays verbatim as a recall page but must preview as work.
         messages = self._big_tool_result(
-            "same", "coding_read_file", 200_000
+            "same", "coding_read_file", 20_000
         ) + self._big_tool_result("same", "thread_search", 4000)
         messages[1].pop("name")
         projected = project_tool_messages(messages, "task", self._persist)
         work_preview = json.loads(projected[1]["content"])
         assert work_preview["abbreviated"] is True
-        assert len(work_preview["head"]) < 600
         assert projected[3]["content"] == "x" * 4000
 
 

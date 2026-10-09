@@ -265,8 +265,9 @@ def test_inventory_refs_expand_to_original_bytes_not_stub_json(tmp_path: Path) -
     expand to the original permitted content in one hop — never to a nested
     preview envelope (a stub-of-a-stub).
 
-    The bug: over-threshold results under projection pressure get *graduated*
-    preview scales (the 600→120 head ramp). ``_existing_result`` recognizes
+    The bug: over-threshold results under projection pressure got *graduated*
+    preview scales (the 600→120 head ramp, removed 2026-10-08; such stubs
+    persist in old threads). ``_existing_result`` recognized
     only the two exact endpoint scale pairs, so a graduated stub that is
     later evicted by the working-set compactor is treated as fresh content
     and persisted as-is — the inventory ref then expands to the stub's own

@@ -40,6 +40,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Tool-result projection starved the model past the turn budget
+
+- **What:** `project_tool_messages` decided residency from a turn-wide
+  "pressure" flag computed over all raw tool bytes the turn ever produced,
+  not what stayed resident. Once a turn passed 64KB of raw results the flag
+  stuck: eviction left ~12KB resident, yet every new result became a
+  ~400-char preview (a 600-char read became a *larger* preview), and every
+  `thread_read_content` expansion was pointered back to its own ref, so
+  expanding was a no-op. Projection now allocates newest-first against the
+  resident budget: a result stays verbatim when it fits its per-result cap
+  (8KB work, 32KB recall pages) and the bytes left after newer results;
+  only results that do not fit are abbreviated (stored pages pointer,
+  others persist and preview at one fixed 600+300 scale), and oldest
+  groups then collapse into the evidence inventory. The graduated
+  preview ramp is removed; stubs minted at older scales are still
+  recognized. Verbatim results persist only when the inventory evicts them.
+- **Why:** A `coding_execute` turn (2026-10-08, turn 618) re-read one file
+  in shrinking windows (500→110→25→5 lines) and expanded the same refs
+  repeatedly, hitting the 20-iteration cap with zero writes. Replaying the
+  turn through the new allocator keeps every new read and expansion
+  verbatim, with resident context at 55–63KB of the 64KB budget instead
+  of ~12KB.
+- **Tests:** `sdk/tests/test_thread_search.py::TestProjectionNewestFirstAllocation`;
+  `TestProjectionPreviewScale`;
+  `TestProjectionRetrievalPages::test_page_without_room_pointers_without_persisting`;
+  `TestProjectionSmallWorkResultInline::test_result_without_room_is_not_inflated_into_a_preview`.
+
 #### Router inputs and usage attribution were frozen at the turn's entry mode
 
 - **What:** The per-iteration ``RouterRequest``'s ``route.mode_id``

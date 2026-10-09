@@ -20,9 +20,6 @@ _TOOL_CONTEXT_BYTES = 65536
 _INVENTORY_RESERVE_BYTES = 2048
 _HEAD_CHARS = 600
 _TAIL_CHARS = 300
-_PRESSURE_HEAD_CHARS = 120
-_PRESSURE_TAIL_CHARS = 60
-_PRESSURE_SPAN_BYTES = 96 * 1024
 _RETRIEVAL_TOOLS = frozenset(
     {
         "thread_read_range",
@@ -81,123 +78,82 @@ def project_tool_messages(
     *,
     budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Abbreviate large tool text without modifying raw messages or tool-call pairing.
+    """Fit tool text into a resident budget without modifying raw messages or pairing.
 
-    ``budget_bytes`` bounds the total tool-result bytes that may remain
-    resident in this projection; ``None`` (default) keeps the module
-    ``_TOOL_CONTEXT_BYTES`` ceiling. A lower budget is how the turn-start
-    replay allocator recomputes the resident working set — oldest results
-    collapse into the evidence inventory, newest stay verbatim.
+    Results are allocated newest-first against ``budget_bytes`` (``None``
+    keeps the module ``_TOOL_CONTEXT_BYTES`` ceiling). A result stays
+    verbatim when it fits both its per-result cap and the bytes not yet
+    allocated to newer results, so the evidence the model just requested is
+    always readable. A result that does not fit is abbreviated: a complete
+    page of an already-stored value pointers to that value, anything else
+    is persisted and previewed. Oldest groups then collapse into the
+    evidence inventory until the absolute bound holds.
+
+    Residency depends only on what stays resident, never on how much raw
+    history the turn accumulated: a sticky turn-wide "pressure" flag once
+    previewed every new read and pointered every expansion back to its own
+    ref after eviction had already freed the budget (2026-10-08 turn-618).
     """
     budget = _TOOL_CONTEXT_BYTES if budget_bytes is None else max(0, budget_bytes)
+    reserve = min(_INVENTORY_RESERVE_BYTES, max(0, budget // 16))
+    available = budget - reserve
     projected = copy.deepcopy(messages)
-    tool_indices = [
-        index for index, message in enumerate(messages) if message.get("role") == "tool"
-    ]
     result_names = _tool_result_names(messages)
-    retrieval_indices = {
-        index for index, name in result_names.items() if name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOLS
-    }
-
-    # Recall bytes do not shrink work previews, but still count toward the
-    # absolute projection budget. Older recall pages must yield room for the
-    # latest page instead of accumulating unboundedly.
-    tool_bytes = sum(
-        len(str(messages[index].get("content") or "").encode("utf-8"))
-        for index in tool_indices
-        if index not in retrieval_indices
-    )
-    total_bytes = sum(
-        len(str(messages[index].get("content") or "").encode("utf-8")) for index in tool_indices
-    )
-    pressure = tool_bytes > budget
-    over_budget = total_bytes > budget
-    latest_retrieval = max(retrieval_indices, default=-1)
-    scale = _preview_scale(tool_bytes, budget) if pressure else (_HEAD_CHARS, _TAIL_CHARS)
-    refs: dict[int, str] = {}
-    # Inline results register lazy persisters instead of eager refs: the
-    # absolute-bound path may still have to evict them to the inventory.
-    inline_refs: dict[int, Callable[[], str]] = {}
-    for index, message in enumerate(projected):
+    # Refs resolve lazily: verbatim results persist only if the inventory
+    # actually evicts them.
+    refs: dict[int, Callable[[], str]] = {}
+    for index in sorted(result_names, reverse=True):
+        message = projected[index]
         content = message.get("content")
-        if message.get("role") != "tool" or not isinstance(content, str):
+        if not isinstance(content, str):
             continue
         name = result_names[index]
-        retrieval_page = index in retrieval_indices
+        retrieval_page = name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOLS
         existing = _existing_result(content, load, redaction)
         if existing is not None:
-            refs[index] = existing[0]
-            if not pressure and (
-                not over_budget or not retrieval_page or index == latest_retrieval
-            ):
-                continue
-            content = existing[1]["content"]
+            refs[index] = _known_ref(existing[0])
+            available -= len(content.encode("utf-8"))
+            continue
         permitted = redaction.redact(content) if redaction is not None else content
-        # A complete page (has_more false) of an already-stored value always
-        # pointers when it cannot stay resident inline: its ref reconstructs
-        # the bytes, so persisting the page would create a second address
-        # for the same content and a stub-of-a-page (Lisa-Harness/lisa#5).
-        # Pressure is not the trigger — exceeding ``_MAX_RETRIEVAL_BYTES``
-        # while under the turn ceiling was a no-pointer window that
-        # persisted copies of stored pages on every replay.
-        pointer = (
-            _retrieval_pointer(content, permitted)
-            if retrieval_page
-            and existing is None
-            and ((pressure or over_budget) or len(content.encode("utf-8")) > _MAX_RETRIEVAL_BYTES)
-            else None
-        )
+        size = len(permitted.encode("utf-8"))
+        cap = _MAX_RETRIEVAL_BYTES if retrieval_page else _INLINE_RESULT_BYTES
+        # A complete page (has_more false) of an already-stored value never
+        # persists a copy: its ref reconstructs the bytes, so a second
+        # address would be a stub-of-a-page (Lisa-Harness/lisa#5).
+        pointer = _retrieval_pointer(content, permitted) if retrieval_page else None
+        # A result no larger than a preview's excerpts stays inline even
+        # without room: abbreviating it would inflate the wire (the
+        # 2026-10-06 micro-window loop). The inventory can still evict it.
+        if (size <= cap and size <= available) or len(permitted) <= _HEAD_CHARS + _TAIL_CHARS:
+            message["content"] = permitted
+            available -= size
+            refs[index] = (
+                _known_ref(pointer["ref"])
+                if pointer is not None
+                else _lazy_persist(persist, content, task_id, name)
+            )
+            continue
         if pointer is not None:
-            # A page of an already-stored value re-expands the original ref;
-            # persisting the page again would wrap the ref in another ref.
-            refs[index] = pointer["ref"]
+            ref = pointer["ref"]
             message["content"] = json.dumps(pointer, ensure_ascii=False, separators=(",", ":"))
-            continue
-        if (
-            retrieval_page
-            and len(content.encode("utf-8")) <= _MAX_RETRIEVAL_BYTES
-            and (not over_budget or index == latest_retrieval)
-        ):
-            message["content"] = permitted
-            continue
-        if (
-            len(content.encode("utf-8")) <= _INLINE_RESULT_BYTES
-            and (not pressure or len(permitted) <= scale[0] + scale[1])
-            and (not retrieval_page or not over_budget or index == latest_retrieval)
-        ):
-            # A result that fits the active head+tail scale has nothing to
-            # omit: abbreviating it would replace content with a strictly
-            # larger ref envelope (the 2026-10-06 turn-557/558 micro-window
-            # loop, where zero-omission previews inflated the context they
-            # bound). Keep it inline. ``_compact_groups`` can still evict it
-            # when over budget, persisting the raw content on demand, so the
-            # absolute bound and the lossless archive both hold.
+        else:
+            ref = persist({"content": content, "task_id": task_id, "tool_name": name})
+            message["content"] = _preview(ref, permitted)
+        refs[index] = _known_ref(ref)
+        available -= len(message["content"].encode("utf-8"))
+    if available + reserve >= 0:
+        return projected
+    return _compact_groups(messages, projected, refs, task_id, persist, budget=budget)
 
-            def _persist_inline(bound_content: str = content, bound_name: str = name) -> str:
-                return persist(
-                    {
-                        "content": bound_content,
-                        "task_id": task_id,
-                        "tool_name": bound_name,
-                    }
-                )
 
-            inline_refs[index] = _persist_inline
-            message["content"] = permitted
-            continue
-        ref = (
-            existing[0]
-            if existing
-            else persist({"content": content, "task_id": task_id, "tool_name": name})
-        )
-        refs[index] = ref
-        message["content"] = _preview(ref, permitted, *scale)
-    refs.update({index: make_ref() for index, make_ref in inline_refs.items()})
-    return (
-        _compact_groups(messages, projected, refs, task_id, persist, budget=budget)
-        if pressure or over_budget
-        else projected
-    )
+def _known_ref(ref: str) -> Callable[[], str]:
+    return lambda: ref
+
+
+def _lazy_persist(
+    persist: Callable[[dict[str, Any]], str], content: str, task_id: str, name: str
+) -> Callable[[], str]:
+    return lambda: persist({"content": content, "task_id": task_id, "tool_name": name})
 
 
 def _retrieval_pointer(content: str, permitted: str) -> dict[str, Any] | None:
@@ -250,27 +206,9 @@ def _existing_pointer(
     return ref, result
 
 
-def _preview_scale(tool_bytes: int, budget: int = _TOOL_CONTEXT_BYTES) -> tuple[int, int]:
-    """Map total tool-result bytes to graduated (head, tail) preview sizes.
-
-    Sizes shrink linearly from (_HEAD_CHARS, _TAIL_CHARS) at the pressure
-    threshold to (_PRESSURE_HEAD_CHARS, _PRESSURE_TAIL_CHARS) at span end.
-    Below the threshold the scale is the full values exactly; at and beyond
-    the span end the scale is the floor values exactly. The continuous
-    ramp removes the collapse cliff: a small overage costs proportionally
-    little preview fidelity instead of 83% of it in one step (the
-    2026-10-05 turn-524 thrash, where every re-expansion re-triggered
-    full collapse).
-    """
-    over = max(0, tool_bytes - budget)
-    span = max(1, budget // 2) if budget < _TOOL_CONTEXT_BYTES else _PRESSURE_SPAN_BYTES
-    fraction = min(1.0, over / span)
-    head = int(_HEAD_CHARS - (_HEAD_CHARS - _PRESSURE_HEAD_CHARS) * fraction)
-    tail = int(_TAIL_CHARS - (_TAIL_CHARS - _PRESSURE_TAIL_CHARS) * fraction)
-    return head, tail
-
-
-def _preview(ref: str, content: str, head_chars: int, tail_chars: int) -> str:
+def _preview(
+    ref: str, content: str, head_chars: int = _HEAD_CHARS, tail_chars: int = _TAIL_CHARS
+) -> str:
     head_chars = min(head_chars, len(content))
     tail_chars = min(tail_chars, len(content) - head_chars)
     return json.dumps(
@@ -309,14 +247,13 @@ def _existing_result(
             return None
         result = load(ref)
         permitted = redaction.redact(result["content"]) if redaction else result["content"]
-        # Recognition must hold for every graduated pressure scale, not only
-        # the two exact endpoint pairs: a stub minted mid-ramp (e.g. head
-        # 431 at 100KB pressure) that is later evicted by the working-set
-        # compactor would otherwise be persisted as fresh content — a
-        # stub-of-a-stub whose ref expands to preview JSON, not original
-        # bytes (2026-10-07 replay-eviction finding). Rebuild the preview at
-        # the stub's own head/tail and compare; that accepts any scale while
-        # still rejecting envelopes whose excerpts do not match the store.
+        # Persisted threads hold stubs minted at older graduated scales
+        # (e.g. head 431). Recognizing only the current 600/300 scale would
+        # re-persist such a stub as fresh content — a stub-of-a-stub whose
+        # ref expands to preview JSON, not original bytes (2026-10-07
+        # replay-eviction finding). Rebuild the preview at the stub's own
+        # head/tail and compare; that accepts any scale while still
+        # rejecting envelopes whose excerpts do not match the store.
         head_chars = preview.get("head")
         tail_chars = preview.get("tail")
         rebuilt = (
@@ -348,11 +285,11 @@ def _complete_groups(messages: list[dict[str, Any]]) -> list[tuple[int, tuple[in
 def _compact_groups(
     raw: list[dict[str, Any]],
     projected: list[dict[str, Any]],
-    refs: dict[int, str],
+    refs: dict[int, Callable[[], str]],
     task_id: str,
     persist: Callable[[dict[str, Any]], str],
     *,
-    budget: int = _TOOL_CONTEXT_BYTES,
+    budget: int,
 ) -> list[dict[str, Any]]:
     remaining = sum(
         len(str(message.get("content") or "").encode("utf-8"))
@@ -371,7 +308,7 @@ def _compact_groups(
             {
                 "tool_calls": raw[call_index].get("tool_calls") or [],
                 "results": [
-                    {"ref": refs[index], "tool_call_id": raw[index].get("tool_call_id")}
+                    {"ref": refs[index](), "tool_call_id": raw[index].get("tool_call_id")}
                     for index in result_indices
                 ],
             }
