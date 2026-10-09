@@ -20,6 +20,7 @@ Migration notes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from datetime import UTC
@@ -1266,6 +1267,38 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="not in the host's manifest"):
         resolve_model("not-a-real-model", runtime_state={}, data_dir=tmp_path)
+
+
+def test_resolve_model_unpinned_mode_raises_without_error_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unpinned mode id is an expected miss, reported only by the raise.
+
+    The kernel's mid-turn handoff probes ``resolve_model(target_mode)`` and
+    falls back to the default pin on ``ValueError``; an error-level record
+    per probe made every handoff to an unpinned mode (``planner``,
+    ``coding_execute``) look like a runtime failure.
+    """
+    _write_manifest(
+        tmp_path,
+        "\n".join(
+            [
+                "version: 1",
+                "mode_models: {default: gemma3:latest}",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+            ]
+        ),
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="runtime.model_runtime"),
+        pytest.raises(ValueError, match="not in the host's manifest"),
+    ):
+        resolve_model("planner", runtime_state={}, data_dir=tmp_path)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 # ── Startup without an existing models.yaml ──────────────────────────

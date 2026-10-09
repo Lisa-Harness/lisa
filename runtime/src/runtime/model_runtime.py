@@ -397,7 +397,9 @@ def resolve_model(
     if resolved is None:
         known_models = ", ".join(model.model_id for model in manifest.models)
 
-        logger.error("model %r not in manifest (configured: %s)", requested, known_models)
+        # The raise is the report: callers such as the kernel's mid-turn
+        # handoff probe unpinned mode ids and fall back on ValueError.
+        logger.debug("model %r not in manifest (configured: %s)", requested, known_models)
 
         raise ValueError(
             f"Model '{requested}' is not in the host's manifest. Configured models: {known_models}"
