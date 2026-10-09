@@ -121,3 +121,25 @@ class TestShouldAutoCaptureSalienceFeedsTier:
         assert captured is True
         assert salience == 0.8
         assert classify_memory_tier(salience) == "long_term"
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        {"id": "c1", "type": "function", "function": {"name": "synthesize_and_store_learning"}},
+        # Provider gateways record the flat OpenAI shape.
+        {"id": "c1", "type": "function", "name": "synthesize_and_store_learning"},
+    ],
+)
+def test_auto_capture_skips_when_model_already_stored_learning(
+    tool_call: dict[str, object],
+) -> None:
+    messages: list[dict[str, object]] = [
+        {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+    ]
+    assert should_auto_capture(
+        "from now on always use tabs",
+        "ok",
+        messages,
+        effect_receipts=[{"effect": "write"}],
+    ) == (False, 0.0)

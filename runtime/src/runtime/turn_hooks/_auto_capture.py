@@ -80,7 +80,9 @@ def should_auto_capture(  # noqa: C901,PLR0912
             continue
         tool_calls = msg.get("tool_calls") or []
         for tc in tool_calls:
-            fn_name = str((tc.get("function") or {}).get("name", "")).strip()
+            function = tc.get("function")
+            payload = function if isinstance(function, dict) else tc
+            fn_name = str(payload.get("name", "")).strip()
             if fn_name in ("synthesize_and_store_learning", "dispute_memory"):
                 return False, 0.0
 
