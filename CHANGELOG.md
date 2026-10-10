@@ -40,6 +40,34 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### The turn's capability block kept describing the entry mode after a mid-turn handoff
+
+- **What:** The mid-turn handoff path in
+  `kernel/src/kernel/turn_runner/__init__.py`,
+  `_execute_mid_turn_handoff`, now reassembles the turn's own user
+  message (replaced in place at `state.transcript_start`; no new
+  synthesized user messages) with the recompiled post-handoff capability
+  manifest via the new `_recompile_manifest_and_refresh_user` /
+  `_refresh_user_message_capability_block` helpers, threading
+  `assemble_user` through the `_intercept_transition_stage` →
+  `_intercept_mode_handoff` → `_dispatch_turn_tool_calls` →
+  `_execute_prepared_tool_call` chain.
+- **Why:** The capability block was assembled once at turn start against
+  the entry mode's tool surface and never refreshed, even though the
+  handoff rebuilds the tool surface and recompiles the manifest. The
+  stale block — rendered `<authoritative>` by the host — stayed the
+  newest user state: on the 2026-10-10 p920 turn 664, the executor handed
+  off to `coding_execute` (36 coding tools advertised), read its own
+  "mode: default / available_tools: 16" block, concluded the coding tools
+  were unavailable, and reported the contradiction as a harness defect
+  instead of implementing; the write-contract backstop then burned two
+  more completions. The same staleness was present (and merely survived)
+  on successful prior executor turns, e.g. 662.
+- **Tests:** `kernel/tests/test_handoff_user_context_refresh.py`
+  (post-handoff the newest user message names the active mode and the
+  entry-mode block does not survive as newest; the refresh replaces in
+  place — one capability block, one query line).
+
 #### Approval-required tools were validated only after the approval pause
 
 - **What:** `execute_tool` now calls an optional, effect-free module

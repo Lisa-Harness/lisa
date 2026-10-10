@@ -4355,6 +4355,88 @@ def _remaining_chain_steps(
     return remaining_steps
 
 
+def _refresh_user_message_capability_block(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    query: str,
+    target_stage: str,
+    capability_manifest: CapabilityManifest,
+    messages: list[dict[str, Any]],
+    log: logging.Logger,
+) -> None:
+    """Reassemble this turn's own user message with the post-handoff manifest.
+
+    The loop rule stands — the kernel never synthesizes new ``user``
+    messages — but the turn's own user message is the newest user state,
+    and after a mid-turn handoff its capability block still described the
+    entry mode (it was assembled at turn start before the tool surface was
+    rebuilt). When the host renders that block as authoritative, it
+    contradicts the recompiled function schema and the model may obey the
+    stale text instead of the live tools (the 2026-10-10 turn-664
+    incident: the executor read "mode: default / 16 tools" post-handoff
+    and reported the coding tools as unavailable instead of implementing).
+
+    Replaces the message the turn already authored in place
+    (``state.transcript_start`` names it). Failures are logged and
+    swallowed — the handoff proceeds; the entry-mode block stays.
+    """
+    assemble_user = hooks.context.assemble_user_context
+    if assemble_user is None:
+        return
+    try:
+        refreshed_context = assemble_user(target_stage, query, "", capability_manifest)
+        prior_content = str(messages[state.transcript_start].get("content") or "")
+        _marker = "\n\n## User Query\n\n"
+        _head = prior_content[: prior_content.find(_marker)] if _marker in prior_content else ""
+        _briefing = ""
+        _briefing_marker = "## Pre-turn Briefing\n\n"
+        if _briefing_marker in _head:
+            _briefing = _head.split(_briefing_marker, 1)[1].split("\n\n", 1)[0]
+        refreshed_parts: list[str] = []
+        if _briefing:
+            refreshed_parts.append(f"## Pre-turn Briefing\n\n{_briefing}")
+        if refreshed_context:
+            refreshed_parts.append(refreshed_context)
+        refreshed_parts.append(f"## User Query\n\n{query}")
+        refreshed_content = "\n\n".join(refreshed_parts)
+        messages[state.transcript_start]["content"] = refreshed_content
+        if state.messages is not None:
+            state.messages[state.transcript_start]["content"] = refreshed_content
+    except Exception as refresh_exc:  # pylint: disable=broad-except
+        log.warning(
+            "user-message capability refresh failed after handoff to '%s': %s "
+            "(the entry-mode block stays)",
+            target_stage,
+            refresh_exc,
+        )
+
+
+def _recompile_manifest_and_refresh_user(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    query: str,
+    tool_schemas: list[dict[str, Any]],
+    target_stage: str,
+    target_mode_config: Any,
+    messages: list[dict[str, Any]],
+    log: logging.Logger,
+) -> CapabilityManifest:
+    """Recompile the capability manifest and refresh the user block on handoff."""
+    manifest = compile_capability_manifest(tool_schemas, mode_config=target_mode_config)
+    _refresh_user_message_capability_block(
+        state=state,
+        hooks=hooks,
+        query=query,
+        target_stage=target_stage,
+        capability_manifest=manifest,
+        messages=messages,
+        log=log,
+    )
+    return manifest
+
+
 def _build_structured_handoff_context(
     *,
     state: Any,
@@ -5017,6 +5099,7 @@ async def _execute_mid_turn_handoff(
     sys_segments: SystemPromptSegments,
     messages: list[dict[str, Any]],
     assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     log: logging.Logger,
 ) -> tuple[
     str,
@@ -5111,9 +5194,18 @@ async def _execute_mid_turn_handoff(
                 pool=pool,
                 yield_policy=_resolve_yield_policy(target_mode_config, yield_policy_override),
             )
-            # Recompile capability manifest for new surface
-            capability_manifest = compile_capability_manifest(
-                tool_schemas, mode_config=target_mode_config
+            # Recompile capability manifest for new surface and refresh
+            # this turn's user-message capability block in one seam (the
+            # helper owns both: the block must match the rebuilt schema).
+            capability_manifest = _recompile_manifest_and_refresh_user(
+                state=state,
+                hooks=hooks,
+                query=query,
+                tool_schemas=tool_schemas,
+                target_stage=target_stage,
+                target_mode_config=target_mode_config,
+                messages=messages,
+                log=log,
             )
             # ── Routing context follows the mode the turn is in ────
             # Single writer for the active-mode router inputs: the
@@ -6276,6 +6368,7 @@ async def _intercept_mode_handoff(
     tool_name: str,
     tool_call_id: str,
     assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     build_entry_ctx: Callable[..., Any],
     sys_segments: SystemPromptSegments,
     tool_schemas: list[dict[str, Any]],
@@ -6393,6 +6486,7 @@ async def _intercept_mode_handoff(
         sys_segments=sys_segments,
         messages=messages,
         assemble_system=assemble_system,
+        assemble_user=assemble_user,
         log=log,
     )
     # Preserve an already-stamped handoff across a
@@ -6673,6 +6767,7 @@ async def _intercept_transition_stage(
     tool_arguments: Any,
     tool_call_id: str,
     assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     build_entry_ctx: Callable[..., Any],
     sys_segments: SystemPromptSegments,
     tool_schemas: list[dict[str, Any]],
@@ -6854,6 +6949,7 @@ async def _intercept_transition_stage(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
             assemble_system=assemble_system,
+            assemble_user=assemble_user,
             build_entry_ctx=build_entry_ctx,
             sys_segments=sys_segments,
             tool_schemas=tool_schemas,
@@ -8424,6 +8520,7 @@ async def _execute_prepared_tool_call(
     max_handoffs_per_turn: int,
     max_tool_iterations: int,
     assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     build_entry_ctx: Callable[..., Any],
     sys_segments: SystemPromptSegments,
     emit_stage: Callable[..., Awaitable[None]],
@@ -8482,6 +8579,7 @@ async def _execute_prepared_tool_call(
                 tool_arguments=prepared.tool_arguments,
                 tool_call_id=prepared.tool_call_id,
                 assemble_system=assemble_system,
+                assemble_user=assemble_user,
                 build_entry_ctx=build_entry_ctx,
                 sys_segments=sys_segments,
                 tool_schemas=loop_state.tool_schemas,
@@ -8576,6 +8674,7 @@ async def _dispatch_turn_tool_calls(
     max_handoffs_per_turn: int,
     max_tool_iterations: int,
     assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     build_entry_ctx: Callable[..., Any],
     sys_segments: SystemPromptSegments,
     tool_schemas: list[dict[str, Any]],
@@ -8641,6 +8740,7 @@ async def _dispatch_turn_tool_calls(
             max_handoffs_per_turn=max_handoffs_per_turn,
             max_tool_iterations=max_tool_iterations,
             assemble_system=assemble_system,
+            assemble_user=assemble_user,
             build_entry_ctx=build_entry_ctx,
             sys_segments=sys_segments,
             emit_stage=emit_stage,
@@ -9515,6 +9615,7 @@ async def _run_turn_inner(
             max_handoffs_per_turn=_max_handoffs_per_turn,
             max_tool_iterations=max_tool_iterations,
             assemble_system=assemble_system,
+            assemble_user=assemble_user,
             build_entry_ctx=_build_entry_ctx,
             sys_segments=_sys_segments,
             tool_schemas=tool_schemas,
