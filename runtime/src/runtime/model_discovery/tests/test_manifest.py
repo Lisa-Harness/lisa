@@ -431,15 +431,15 @@ class TestRouterPresetAnnotations:
         from runtime.model_discovery.manifest import _router_preset_annotations
 
         models = (
-            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5-chat", provider="openai"),
             DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
         )
         annotations = _router_preset_annotations(
-            mode_models={"default": "gpt-5"},
+            mode_models={"default": "gpt-5-chat"},
             models=models,
             router_block=self._resolved_router_block(),
         )
-        assert "gpt-5" in annotations
+        assert "gpt-5-chat" in annotations
         assert "o3-pro" in annotations
 
     def test_picks_code_model_from_capabilities(self) -> None:

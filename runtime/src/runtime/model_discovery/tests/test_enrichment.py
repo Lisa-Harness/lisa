@@ -149,6 +149,20 @@ class TestAzureEnrichment:
         model = _enrich_azure_model("gpt-5.4", {"model": "gpt-5.4"})
         assert model.completion_api == "chat_completions"
 
+    def test_gpt5_deployment_is_reasoning(self) -> None:
+        """gpt-5 bills hidden reasoning against max_completion_tokens.
+
+        Regression: unflagged gpt-5.6-terra got the 4096 legacy budget and
+        every long call truncated, then retried with the whole prompt.
+        """
+        model = _enrich_azure_model("gpt-5.6-terra", {"model": "gpt-5.6-terra"})
+        assert model.reasoning_model is True
+        assert "reasoning" in model.capabilities
+
+    def test_gpt5_chat_deployment_is_not_reasoning(self) -> None:
+        model = _enrich_azure_model("gpt-5-chat", {"model": "gpt-5-chat"})
+        assert model.reasoning_model is False
+
 
 class TestOllamaEnrichment:
     def test_small_model_is_budget(self) -> None:

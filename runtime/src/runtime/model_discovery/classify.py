@@ -75,7 +75,13 @@ def is_reasoning_model(model_id: str) -> bool:
     """
 
     value = model_id.strip().lower()
-    return any(marker in value for marker in _REASONING_MARKERS)
+    if any(marker in value for marker in _REASONING_MARKERS):
+        return True
+    # gpt-5+ models (except ``*-chat``) reason by default and bill that
+    # reasoning against ``max_completion_tokens``; classifying them as plain
+    # models capped calls at the 4096 legacy budget and forced truncation
+    # retries that resent the whole prompt.
+    return is_gpt_5_family(value) and "chat" not in value
 
 
 def is_code_model(model_id: str) -> bool:
