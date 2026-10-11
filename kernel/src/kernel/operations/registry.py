@@ -25,6 +25,7 @@ from typing import Any, Literal
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalRequired,
+    ApprovalUnavailable,
     build_approval_invocation,
 )
 from kernel.capability_binding import CapabilityRef
@@ -71,6 +72,10 @@ class OperationValidationError(ValueError):
 
 class OperationExecutionError(RuntimeError):
     """Raised when an operation cannot be resolved or executed."""
+
+
+class OperationApprovalError(OperationExecutionError, ApprovalUnavailable):
+    """Raised when an operation cannot consume the supplied approval receipt."""
 
 
 class OperationTimeoutError(OperationExecutionError):
@@ -1069,7 +1074,7 @@ async def _require_approval(
     if ctx.approval_request_id:
         receipt = await service.consume(ctx.approval_request_id, invocation)
         if receipt is None:
-            raise OperationExecutionError(
+            raise OperationApprovalError(
                 f"Operation '{definition.operation_id}' has no matching usable approval receipt."
             )
         return

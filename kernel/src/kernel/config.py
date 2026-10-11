@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     # only redistribute *when* this pool is spent. Hosts lower this only
     # for sandboxed test runs. Override via ``MAX_TOOL_ITERATIONS``.
     max_tool_iterations: int = 300
+    max_auto_approved_actions: int = 10
     # Per-child iteration cap for fork fan-out. When a mode calls
     # ``fork``, each child runs as an independent sub-turn in parallel
     # with this ceiling before its turn is concluded. Children get a
@@ -423,6 +424,7 @@ class Settings(BaseSettings):
         "declarative_completion_max_tokens",
         "stream_idle_timeout_s",
         "max_tool_iterations",
+        "max_auto_approved_actions",
         "fork_child_max_tool_iterations",
         "delegate_child_max_tool_iterations",
         "delegate_max_depth",

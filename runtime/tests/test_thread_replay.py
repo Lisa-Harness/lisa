@@ -48,6 +48,28 @@ def _read_turn(turn_query: str, output: str, call_id: str = "c1") -> list[dict[s
     ]
 
 
+def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    transcript = _read_turn("original request", "first result")
+    _append(
+        thread,
+        "original request",
+        transcript=transcript,
+        provenance={"kernel_turn_id": "same-turn", "pending_approval_request_id": "approval"},
+    )
+    _append(
+        thread,
+        "original request",
+        transcript=[*transcript, {"role": "assistant", "content": "finished"}],
+        provenance={"kernel_turn_id": "same-turn"},
+        response_text="finished",
+    )
+    messages = build_open_task_messages(thread_path=thread)
+    assert sum(message.get("content") == "first result" for message in messages) == 1
+    assert sum(message.get("content") == "original request" for message in messages) == 1
+    assert not any("approval" in str(message.get("content")) for message in messages)
+
+
 def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     original = "FULL FILE DATA " * 800

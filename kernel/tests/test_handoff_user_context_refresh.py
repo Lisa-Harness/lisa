@@ -9,8 +9,7 @@ own authoritative context, concluded the coding tools were absent after the
 handoff, and reported a harness defect instead of implementing the change.
 The write-contract backstop then armed and burned two further completions.
 
-The turn loop's rule stands: the kernel never synthesizes new ``user``
-messages. These tests pin that the turn's own user message is REFRESHED —
+These tests pin that the turn's own user message is REFRESHED —
 the capability block recomputed against the active mode — after a mid-turn
 handoff, and that no replayed history is touched.
 """
@@ -42,7 +41,11 @@ async def test_user_capability_context_refreshes_after_mid_turn_handoff() -> Non
     async def complete(**kwargs: Any) -> Any:
         messages = kwargs["messages"]
         calls.append({"messages": messages, "tools": kwargs.get("tools")})
-        user_messages = [m for m in messages if m.get("role") == "user"]
+        user_messages = [
+            m
+            for m in messages
+            if m.get("role") == "user" and "## User Query" in str(m.get("content", ""))
+        ]
         system_has_handoff = "## Handoff Context" in str(messages[0].get("content", ""))
         if len(calls) == 1:
             # Entry mode: hand off mid-turn.
@@ -109,7 +112,11 @@ async def test_user_capability_context_not_duplicated_by_handoff() -> None:
                     }
                 ],
             )
-        user_messages = [m for m in messages if m.get("role") == "user"]
+        user_messages = [
+            m
+            for m in messages
+            if m.get("role") == "user" and "## User Query" in str(m.get("content", ""))
+        ]
         content = str(user_messages[-1].get("content", ""))
         assert content.count("Capability Context (live this turn)") <= 1, content
         assert content.count("## User Query") == 1, content

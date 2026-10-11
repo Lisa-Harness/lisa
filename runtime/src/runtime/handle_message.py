@@ -48,6 +48,7 @@ from uuid import uuid4
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
+from kernel.turn_continuation import TurnContinuation
 from kernel.turn_phases._routing import TurnDecision, evaluate_turn_decision
 from kernel.turn_runner import (
     TurnResult,
@@ -88,6 +89,7 @@ from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
 from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
+from runtime.turn_continuation import persist_continuation, usage_since_resume
 from runtime.turn_hooks_builder import build_turn_hooks
 from runtime.turn_logging import build_turn_completed_payload
 from runtime.types import HostCommandResult
@@ -608,7 +610,8 @@ async def _route_model_turn(
     transport: TransportCallbacks,
     *,
     task_id: str = "",
-) -> str:
+    continuation: TurnContinuation | None = None,
+) -> str | HostCommandResult:
     """Handle model-backed routing: mode dispatch and run_turn execution.
 
     Routing order (unified FSM — see docs/ROUTING_RFC_HANDOFF.md):
@@ -624,6 +627,16 @@ async def _route_model_turn(
     # Ensure the (possibly deferred) MCP pool is ready before building
     # turn hooks, which snapshot runtime.resources.mcp_tool_pool.
     await runtime.ensure_pool_ready()
+    if continuation is not None:
+        return await _execute_mode_turn(
+            runtime,
+            continuation.query,
+            continuation.mode_id,
+            continuation.query,
+            transport,
+            task_id=continuation.identity.task_id,
+            continuation=continuation,
+        )
     if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
@@ -822,6 +835,12 @@ async def _handle_pending_approval(
             "pending_approval_request_id": pending_approval.request_id,
             "pending_approval_tool_call_id": result.pending_approval_tool_call_id,
             "pending_approval_recovery_item_id": result.pending_approval_recovery_item_id,
+            "kernel_turn_id": result.continuation.turn_id if result.continuation else "",
+            "turn_continuation_ref": persist_continuation(
+                runtime.paths.thread_path, result.continuation
+            )
+            if result.continuation is not None
+            else "",
         },
         effect_receipts=_serialize_effect_receipts(result),
         handoff_to=result.handoff_to or "",
@@ -829,15 +848,27 @@ async def _handle_pending_approval(
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
     )
-    approved_result = await maybe_auto_continue_approval(
-        runtime,
-        pending_approval,
-        transport,
-        route_model_turn=_route_model_turn,
+    approved_result = (
+        None
+        if result.continuation is not None
+        else await maybe_auto_continue_approval(
+            runtime,
+            pending_approval,
+            transport,
+            route_model_turn=_route_model_turn,
+        )
     )
     if approved_result is not None:
         return approved_result
     approval_data = build_approval_data(runtime, pending_approval)
+    response_text = result.response_text
+    if result.continuation is not None and result.continuation.reason == "auto_approval_cap":
+        approval_data["suspension_reason"] = "auto_approval_cap"
+        response_text = (
+            "Automatic approval allowance reached. The turn and pending tool batch are preserved; "
+            "approval resumes this action and grants another allowance.\n\n"
+            f"{response_text}"
+        )
     # Panel transports render a keystroke panel from ``data["approval"]``.
     # Plain transports only get the text — append the installed command
     # hints so the operator still has a copy-pasteable escape. Runtime owns
@@ -848,7 +879,7 @@ async def _handle_pending_approval(
         f"/deny {request_id}" if request_id else "/deny",
     ]
     return HostCommandResult(
-        text=f"{result.response_text}\n\nRun {' or '.join(hints)}.",
+        text=f"{response_text}\n\nRun {' or '.join(hints)}.",
         data=approval_data,
     )
 
@@ -1043,6 +1074,7 @@ async def _execute_mode_turn(
     transport: TransportCallbacks,
     *,
     task_id: str = "",
+    continuation: TurnContinuation | None = None,
 ) -> HostCommandResult | str:
     """Resolve mode, build context, and run the turn through the kernel.
 
@@ -1148,6 +1180,7 @@ async def _execute_mode_turn(
             hooks=hooks,
             preferred_model_id=preferred_model_id,
             execution_policy=execution_policy,
+            continuation=continuation,
         )
     except OperationExecutionError as exc:
         response_text = format_operation_error(exc)
@@ -1169,6 +1202,16 @@ async def _execute_mode_turn(
     # clean (the signal is one-shot; the transport re-sets it on the next
     # key press).
     runtime.session.operator_signal_value = ""
+
+    if result.transitioned_to:
+        runtime.session.current_stage_id = result.transitioned_to
+    _apply_turn_usage(
+        runtime,
+        usage_since_resume(result, continuation),
+        model_id=resolved_model.model_id,
+        mode_id=mode.mode_id,
+        stage_id=runtime.session.current_stage_id or "-",
+    )
 
     # ── Operator exit handling (pause/stop/terminate) ──────────────────
     # The kernel produces ``operator_exit`` when an operator signal or a cap
@@ -1202,24 +1245,6 @@ async def _execute_mode_turn(
     if pending_approval_result is not None:
         return pending_approval_result
 
-    # Apply token usage accounting.
-    # Sync the runtime's stage from the result's terminal transition so the
-    # per-stage breakdown reflects where the turn actually ended (workflow
-    # FSM advancements) rather than the entry stage set by
-    # set_runtime_route_preview at dispatch. Without this, every turn's
-    # stage_token_totals row is the entry stage regardless of how many
-    # stages the model advanced through.
-    if result.transitioned_to:
-        runtime.session.current_stage_id = result.transitioned_to
-        logger.debug("stage synced: %s", result.transitioned_to)
-    _apply_turn_usage(
-        runtime,
-        result,
-        model_id=resolved_model.model_id,
-        mode_id=mode.mode_id,
-        stage_id=runtime.session.current_stage_id or "-",
-    )
-
     # Update completion context.
     _update_completion_context(
         run_context,
@@ -1239,6 +1264,7 @@ async def _execute_mode_turn(
         resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
     )
     provenance["task_id"] = task_id
+    provenance["kernel_turn_id"] = continuation.turn_id if continuation is not None else ""
     if result.block_origin:
         provenance["block_origin"] = result.block_origin
 

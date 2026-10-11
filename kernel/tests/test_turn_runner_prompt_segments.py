@@ -4,12 +4,12 @@ Locks the wire contract between the kernel's per-turn
 ``SystemPromptSegments`` registry and the ``CompletionRequest`` handed to
 the provider gateway: the typed segments ride every turn-loop completion,
 the flattened system message stays byte-identical to the legacy single
-string, and the per-iteration lifecycle briefing replaces its own segment
-rather than accumulating or rewriting the stable prefix.
+string, and lifecycle guidance does not rewrite the stable conversation prefix.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import Any, ClassVar
 
 import pytest
@@ -70,12 +70,14 @@ async def test_completion_request_carries_ordered_prompt_segments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_briefing_is_a_replaced_ephemeral_segment() -> None:
-    """Per-iteration lifecycle briefing never accumulates in the segments."""
+async def test_lifecycle_briefing_preserves_provider_conversation_prefix() -> None:
+    """Changing counters must not invalidate the already-sent conversation."""
     call_count = 0
+    captured: list[dict[str, Any]] = []
 
-    async def two_step(**_kwargs: Any) -> _StubCompletion:
+    async def two_step(**kwargs: Any) -> _StubCompletion:
         nonlocal call_count
+        captured.append(copy.deepcopy(kwargs))
         call_count += 1
         if call_count == 1:
             return _StubCompletion(
@@ -110,13 +112,14 @@ async def test_lifecycle_briefing_is_a_replaced_ephemeral_segment() -> None:
     segments = tuple(request.system_prompt_segments)
 
     lifecycle_blocks = [s for s in segments if not s.is_stable and "## Turn Lifecycle" in s.text]
-    # Exactly one ephemeral lifecycle segment exists for the turn; iteration
-    # 2's briefing replaced iteration 1's rather than appending a second.
-    assert len(lifecycle_blocks) == 1
+    assert not lifecycle_blocks
     # Stable segment content is untouched by the briefing.
     stable_texts = [s.text for s in segments if s.is_stable]
     assert stable_texts
     assert all("## Turn Lifecycle" not in text for text in stable_texts)
+    first, second = captured
+    assert first["messages"] == second["messages"][: len(first["messages"])]
+    assert any("## Turn Lifecycle" in str(m.get("content")) for m in first["messages"][1:])
 
 
 @pytest.mark.asyncio

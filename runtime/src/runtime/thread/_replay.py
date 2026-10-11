@@ -36,6 +36,17 @@ def _open_task_span(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if (e.get("provenance") or {}).get("source") in _APPROVAL_SOURCES
         or not is_host_command_query(str(e.get("query") or ""))
     ]
+    latest_by_turn = {
+        turn_id: entry
+        for entry in relevant
+        if (turn_id := (entry.get("provenance") or {}).get("kernel_turn_id"))
+    }
+    relevant = [
+        entry
+        for entry in relevant
+        if not (turn_id := (entry.get("provenance") or {}).get("kernel_turn_id"))
+        or latest_by_turn[turn_id] is entry
+    ]
     if not relevant:
         return []
     span = [relevant[-1]]

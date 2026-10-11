@@ -73,6 +73,9 @@ class ModelHooks:
     #: handles, mirroring ``emit_stage``).
     on_delta: Callable[[str, str], Awaitable[None]] | None = None
 
+    #: Persist an exact request synchronously before dispatch; retain only its reference.
+    record_request: Callable[[dict[str, Any]], str] | None = None
+
 
 # ── ContextHooks ────────────────────────────────────────────────────────
 class MessageProjector(Protocol):

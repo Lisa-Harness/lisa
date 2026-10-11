@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -21,17 +23,23 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
 )
+from kernel.system_segments import SystemPromptSegments
 from kernel.tools.registry import execute_tool
+from kernel.turn_continuation import TurnContinuation, capture_segments, capture_state
 from kernel.turn_hooks import (
     HostServiceHandles,
     TurnIdentity,
 )
+from kernel.turn_phases._turn_state import _TurnState
 from kernel.turn_runner import TurnHooks, TurnResult
 from pydantic import BaseModel
+from runtime.approval.orchestration import handle_approval_command
 from runtime.approvals import FileApprovalService
-from runtime.handle_message import handle_message
+from runtime.handle_message import _handle_pending_approval, handle_message
 from runtime.policy import PolicyDocument, PolicyRule
 from runtime.policy_service import PolicyApprovalService
+from runtime.thread import append_thread_entry
+from runtime.turn_continuation import persist_continuation, usage_since_resume
 from runtime.types import HostCommandResult
 
 from runtime import HostConfig, HostRuntime, NullTransport
@@ -1795,6 +1803,161 @@ async def test_approve_reports_expiry_for_expired_request(
     settled = await runtime.services.recovery_service.get(started.work_item_id, recovery_identity)
     assert settled is not None
     assert settled.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_expired_policy_receipt_is_rejected_before_dispatch(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=identity,
+        pack_config={},
+        ttl=timedelta(seconds=30),
+    )
+    await runtime.services.approval_service.request(invocation)
+    await runtime.services.approval_service.approve(invocation.request_id, identity)
+    store_path = Path(runtime.paths.state_dir) / "approvals.json"
+    payload = json.loads(store_path.read_text())
+    payload[invocation.request_id]["invocation"]["expires_at"] = (
+        datetime.now(UTC) - timedelta(seconds=1)
+    ).isoformat()
+    store_path.write_text(json.dumps(payload))
+    result = await handle_approval_command(
+        runtime,
+        f"/approve {invocation.request_id}",
+        approve=True,
+        transport=NullTransport(),
+        route_model_turn=_unused_route,
+    )
+    assert isinstance(result, str)
+    assert "expired" in result
+
+
+@pytest.mark.asyncio
+async def test_approval_loads_durable_kernel_continuation_without_synthesis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="bash_run",
+        pack_id="lisa-pack-bash",
+        effect="execute",
+        parameters={"command": "hostname"},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    await runtime.services.approval_service.request(invocation)
+    saved = TurnContinuation(
+        identity=TurnIdentity(task_id="task"),
+        mode_id="default",
+        query="original request",
+        state_json=capture_state(_TurnState()),
+        context_json="{}",
+        mode_config_json="",
+        segments_json=capture_segments(SystemPromptSegments()),
+        preferred_model_id=None,
+        max_iterations=10,
+        per_step_max_iterations=5,
+        per_step_max_tool_calls=5,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        approval_request_id=invocation.request_id,
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query=saved.query,
+        response_text="approval required",
+        provenance={
+            "pending_approval_request_id": invocation.request_id,
+            "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, saved),
+        },
+    )
+
+    async def forbidden_execute(**_: object) -> ToolResult:
+        raise AssertionError("host must not execute the action separately")
+
+    monkeypatch.setattr(
+        "runtime.approval.orchestration.execute_approved_invocation", forbidden_execute
+    )
+
+    async def resume(
+        _runtime: HostRuntime,
+        query: str,
+        _transport: object,
+        *,
+        task_id: str,
+        continuation: TurnContinuation,
+    ) -> HostCommandResult:
+        assert query == saved.query
+        assert task_id == "task"
+        assert continuation == saved
+        return HostCommandResult(text="same turn resumed")
+
+    result = await handle_approval_command(
+        runtime,
+        f"/approve {invocation.request_id}",
+        approve=True,
+        transport=NullTransport(),
+        route_model_turn=resume,
+    )
+    assert isinstance(result, HostCommandResult)
+    assert result.text == "same turn resumed"
+    checkpoint = saved.model_copy(
+        update={
+            "state_json": capture_state(
+                _TurnState(
+                    total_prompt_tokens=100,
+                    total_tokens=120,
+                    total_completion_tokens=20,
+                    per_model_usage={"model": {"model_id": "model", "total_tokens": 120}},
+                    per_mode_usage={"default": {"mode_id": "default", "total_tokens": 120}},
+                )
+            )
+        }
+    )
+    cumulative = TurnResult(
+        response_text="done",
+        prompt_tokens=150,
+        completion_tokens=30,
+        total_tokens=180,
+        per_model_usage=[{"model_id": "model", "total_tokens": 180}],
+        per_mode_usage=[{"mode_id": "default", "total_tokens": 180}],
+    )
+    delta = usage_since_resume(cumulative, checkpoint)
+    assert (delta.prompt_tokens, delta.completion_tokens, delta.total_tokens) == (50, 10, 60)
+    assert delta.per_model_usage[0]["total_tokens"] == 60
+    assert delta.per_mode_usage[0]["total_tokens"] == 60
+    assert cumulative.total_tokens == 180
+    assert checkpoint.restore_state().total_tokens == 120
+    cap_panel = await _handle_pending_approval(
+        runtime,
+        TurnResult(
+            response_text="approval required",
+            pending_approval=invocation,
+            continuation=saved.model_copy(update={"reason": "auto_approval_cap"}),
+        ),
+        mode_id="default",
+        query=saved.query,
+        resolved_model=SimpleNamespace(model_id="stub", provider="stub"),
+        turn_index=2,
+        task_id="task",
+        transport=NullTransport(),
+    )
+    assert cap_panel is not None
+    assert "Automatic approval allowance reached" in cap_panel.text
+    assert cap_panel.data["suspension_reason"] == "auto_approval_cap"
 
 
 @pytest.mark.asyncio

@@ -1,24 +1,4 @@
-"""Phase 7 (one control channel): turn-loop message-role invariants.
-
-The turn loop never appends a synthesized ``role: "user"`` message — user
-messages come only from the host (the initial query). Soft nudges (the
-resolver's ``ContinueAction.nudge``, the sub-turn midpoint write-nudge)
-and the post-handoff chain-advance directive ride the per-iteration
-lifecycle briefing in the system prompt (``## Turn Lifecycle``).
-
-Three enforcement layers:
-  1. A lint-level source scan: exactly one ``role: "user"`` dict literal
-     may exist in ``kernel/turn_runner.py`` (the host query) and none in
-     the ``kernel/turn_phases`` modules.
-  2. A unit check that ``_build_budget_briefing`` carries guidance lines
-     inside the lifecycle block (so the per-iteration marker strip
-     removes them with the briefing — no stale accumulation).
-  3. A runtime scripted-turn check: across a live ad-hoc chain handoff
-     (default → search, chain search → coding → markdown driven by the
-     forced-action enforcer), every model call sees exactly one user
-     message — the host query — and the chain-advance directive appears
-     in the system-prompt briefing while the chain is in flight.
-"""
+"""One lifecycle-guidance channel, appended at complete tool-batch boundaries."""
 
 from __future__ import annotations
 
@@ -44,13 +24,8 @@ _ROLE_USER_RE = re.compile(r"[\"']role[\"']\s*:\s*[\"']user[\"']")
 # ── 1. Lint-level source scan ─────────────────────────────────────────
 
 
-def test_turn_loop_source_has_no_synthesized_user_messages() -> None:
-    """Lint-level invariant: one ``role: "user"`` literal in the loop.
-
-    The single permitted site is the host-query message assembly in
-    ``_run_turn_inner``. Everything else — nudges, hints, escalations,
-    closing directives — rides the system prompt.
-    """
+def test_turn_loop_has_only_query_and_lifecycle_user_message_sites() -> None:
+    """Only host-query assembly and the central briefing helper add user messages."""
     runner_files = sorted((_KERNEL_PKG / "turn_runner").glob("*.py"))
     phase_files = sorted((_KERNEL_PKG / "turn_phases").glob("*.py"))
     assert runner_files, "kernel/turn_runner package not found; scan would be vacuous"
@@ -61,16 +36,16 @@ def test_turn_loop_source_has_no_synthesized_user_messages() -> None:
         for path in runner_files
         for hit in _ROLE_USER_RE.findall(path.read_text(encoding="utf-8"))
     ]
-    assert len(runner_hits) == 1, (
-        "kernel/turn_runner must contain exactly one role:'user' "
-        f"message literal (the host query); found {len(runner_hits)}"
+    assert len(runner_hits) == 2, (
+        "kernel/turn_runner must contain only query and lifecycle role:'user' "
+        f"message literals; found {len(runner_hits)}"
     )
     for phase_file in phase_files:
         hits = _ROLE_USER_RE.findall(phase_file.read_text(encoding="utf-8"))
         assert not hits, (
             f"kernel/turn_phases/{phase_file.name} synthesizes user "
             f"messages ({len(hits)} site(s)); nudges ride the lifecycle "
-            "briefing (system prompt)"
+            "briefing helper"
         )
 
 
@@ -349,16 +324,8 @@ def _catalog_with_chain() -> dict[str, WorkflowModeConfig]:
 
 
 @pytest.mark.asyncio
-async def test_chain_handoff_turn_has_no_synthesized_user_messages() -> None:
-    """Every model call sees exactly one user message: the host query.
-
-    Drives a live ad-hoc chain (``default → search`` by the stub model,
-    then the forced-action enforcer advances ``search → coding →
-    markdown``). While the chain is in flight the chain-advance directive
-    must appear in the system-prompt briefing (the Phase-7 replacement
-    for the old synthesized ``user`` escalation); at no point may any
-    snapshot contain a synthesized user message.
-    """
+async def test_chain_handoff_guidance_follows_complete_tool_batches() -> None:
+    """Chain guidance must not split an assistant's tool-call/result batch."""
     active: list[WorkflowPosition | None] = [None]
     snapshots: list[list[dict[str, Any]]] = []
     _handoff_issued = {"flag": False}
@@ -408,17 +375,20 @@ async def test_chain_handoff_turn_has_no_synthesized_user_messages() -> None:
 
     assert len(snapshots) >= 2, "expected at least the handoff iteration and a continuation"
     for snapshot in snapshots:
+        pending: set[str] = set()
+        for message in snapshot:
+            if message.get("tool_calls"):
+                pending.update(call["id"] for call in message["tool_calls"])
+            elif message.get("role") == "tool":
+                pending.discard(message["tool_call_id"])
+            else:
+                assert not pending, "guidance split a pending tool batch"
         user_messages = [m for m in snapshot if m.get("role") == "user"]
-        assert len(user_messages) == 1, (
-            "every model call must see exactly one user message (the host "
-            f"query); found {len(user_messages)}: {user_messages!r}"
-        )
+        assert user_messages
         assert "## User Query" in str(user_messages[0].get("content", ""))
-    # The chain-advance directive rode the system-prompt briefing while
-    # the chain was in flight (post-handoff hint non-empty).
+        for message in user_messages[1:]:
+            assert "## Turn Lifecycle" in str(message.get("content", ""))
     assert any(
-        snapshot
-        and snapshot[0].get("role") == "system"
-        and "WORKFLOW CHAIN IN FLIGHT" in str(snapshot[0].get("content", ""))
+        any("WORKFLOW CHAIN IN FLIGHT" in str(m.get("content", "")) for m in snapshot)
         for snapshot in snapshots
     ), "chain-advance directive missing from the lifecycle briefing"

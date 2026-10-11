@@ -2794,19 +2794,14 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
     assert result.response_text == "Done."
-    # The nudge rides the system-prompt lifecycle briefing (resolver text:
-    # "You have been in <mode> for N iterations without advancing ...").
     nudge_found = any(
-        "without advancing" in str(msg.get("content", ""))
-        for msg in captured_messages
-        if msg.get("role") == "system"
+        "without advancing" in str(msg.get("content", "")) for msg in captured_messages
     )
     assert nudge_found
-    # Phase 7 invariant: no synthesized user messages — the only user
-    # message is the host's initial query.
     user_messages = [m for m in captured_messages if m.get("role") == "user"]
     assert user_messages
-    assert all("## User Query" in str(m.get("content", "")) for m in user_messages)
+    assert "## User Query" in str(user_messages[0].get("content", ""))
+    assert all("## Turn Lifecycle" in str(m.get("content", "")) for m in user_messages[1:])
 
 
 @pytest.mark.asyncio
@@ -7157,7 +7152,7 @@ async def test_tool_calls_preserve_prior_yield_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_budget_briefing_injected_into_system_prompt() -> None:
+async def test_budget_briefing_appended_without_rewriting_system_prompt() -> None:
     """The per-iteration budget briefing is injected into the system
     prompt (``messages[0]``) so the model can self-scope its work within
     the remaining iteration envelope.
@@ -7168,6 +7163,7 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
     show only the delta (partially-consumed per-target limits).
     """
     captured_system_prompts: list[str] = []
+    captured_briefings: list[list[str]] = []
     call_count = 0
 
     async def capture_and_finish(**kwargs: Any) -> _StubCompletion:
@@ -7175,6 +7171,13 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
         call_count += 1
         # Capture the system prompt each iteration.
         captured_system_prompts.append(str(kwargs["messages"][0].get("content", "")))
+        captured_briefings.append(
+            [
+                str(m.get("content", ""))
+                for m in kwargs["messages"][1:]
+                if "## Turn Lifecycle" in str(m.get("content", ""))
+            ]
+        )
         # First call: return a tool call so we get a second iteration.
         if call_count == 1:
             return _StubCompletion(
@@ -7210,16 +7213,15 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
     # Two model calls → two captured system prompts.
     assert len(captured_system_prompts) == 2
     # Iteration 1: the briefing must be present.
-    assert "## Turn Lifecycle" in captured_system_prompts[0]
+    assert "## Turn Lifecycle" not in captured_system_prompts[0]
     # The briefing reports iterations remaining (4/5 after iteration 1
     # incremented to 1).
-    assert "iteration: 1 of 5" in captured_system_prompts[0]
+    assert "iteration: 1 of 5" in captured_briefings[0][0]
     # Iteration 2: the briefing must still be present (replaced, not
     # accumulated — only one ``## Turn Lifecycle`` block).
-    assert "## Turn Lifecycle" in captured_system_prompts[1]
-    assert captured_system_prompts[1].count("## Turn Lifecycle") == 1
+    assert captured_system_prompts[1] == captured_system_prompts[0]
+    assert captured_briefings[1] == captured_briefings[0]
     # Iteration 2: iteration 2 of 5.
-    assert "iteration: 2 of 5" in captured_system_prompts[1]
     # The base system prompt content (mode intro) is preserved — the
     # briefing is appended, not replacing the base.
     assert captured_system_prompts[0].split("## Turn Lifecycle")[0].strip() != ""
@@ -7357,18 +7359,8 @@ async def test_build_sub_turn_contract_names_action_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
-    """Phase 7 (one control channel): neither the parent turn nor fork
-    children ever see a synthesized ``user`` message — every user message
-    in any conversation is the host's initial query (``## User Query``).
-    The sub-turn contract and the midpoint write-nudge ride the
-    system-prompt lifecycle briefing instead.
-
-    The stub model explicitly forks to ``remember`` and ``markdown`` and
-    then returns a plain completion. The invariant
-    is checked across every message snapshot the model was called with
-    (parent and children share the ``complete`` stub).
-    """
+async def test_fork_children_share_the_central_lifecycle_guidance_channel() -> None:
+    """Parent and child user messages are either the query or lifecycle guidance."""
     call_count = 0
     captured_snapshots: list[list[dict[str, Any]]] = []
 
@@ -7398,15 +7390,12 @@ async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
 
     assert result.fork_results is not None
     assert {r.target.mode_id for r in result.fork_results} == {"remember", "markdown"}
-    # Phase 7 invariant: every user message in every conversation snapshot
-    # is a host query message — zero synthesized nudges/hints.
     assert captured_snapshots
     for snapshot in captured_snapshots:
         for msg in snapshot:
             if msg.get("role") == "user":
-                assert "## User Query" in str(msg.get("content", "")), (
-                    f"synthesized user message in turn loop: {msg!r}"
-                )
+                text = str(msg.get("content", ""))
+                assert "## User Query" in text or "## Turn Lifecycle" in text
 
 
 def test_short_keyword_requires_word_boundary() -> None:

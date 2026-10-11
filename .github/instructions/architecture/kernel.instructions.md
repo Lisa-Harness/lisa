@@ -24,7 +24,7 @@ description: Architecture boundaries for the kernel package.
 ## Routing safeguards
 
 - Detect alternating routing targets as well as identical repeated hints, and suppress hints after repeated model overrides.
-- Replace a per-iteration budget briefing rather than accumulating prompt blocks. Brief only discrete execution budgets, not token or wall-time estimates.
+- Keep the provider prefix stable. Append actionable lifecycle guidance at complete tool-batch boundaries; do not rewrite earlier messages for changing counters.
 - When no workflow steps remain, emit completion guidance rather than an unconditional handoff directive.
 - Lifecycle resolution must preserve the established priority order and yield on stalled or exhausted work rather than force a final answer.
 

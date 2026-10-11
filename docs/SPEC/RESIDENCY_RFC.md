@@ -8,6 +8,37 @@
 > **Design thread:** "residency by allocation, coherence by address" —
 > one principle, three rules.
 
+## Current approval and cache behavior
+
+Model-loop approval boundaries now save a kernel-owned
+[`TurnContinuation`](../../kernel/src/kernel/turn_continuation.py).
+The runtime persists it by content address before returning the approval
+panel. An approval resumes the saved dispatch cursor, including the remaining
+calls in the model's batch, without replay, prompt assembly, entry operations,
+or a synthetic continuation query. The kernel revalidates approval ownership,
+expiry, mode configuration, and the normal registry authorization.
+
+Policy-approved actions execute inside that same loop. The
+`MAX_AUTO_APPROVED_ACTIONS` allowance defaults to ten; reaching it saves the
+same continuation. An explicit approval grants another allowance while
+retaining consumed counters, receipts, and cumulative turn budgets.
+Consumed or expired approvals cannot replay an action.
+
+Lifecycle guidance is appended initially and when actionable guidance changes,
+at complete tool-batch boundaries. Counters no longer rewrite the system
+message. Provider residency survives approval checkpoints; previously reduced
+evidence is not expanded again on each completion. A genuine mode handoff
+still refreshes the active capability context and creates a cache boundary.
+
+Exact model requests are persisted before dispatch, with only their result
+references retained in memory and recorded under `turn_input.calls`. Read those
+references through the thread readout to recover the request.
+
+This does not yet replace iteration/step-cap continuation or entry-operation
+approval recovery. The existing replay lane and tool-window-share limits also
+remain; a full-request allocator that accounts for schemas, non-tool history,
+and output reserve is still required before claiming maximum-window residency.
+
 ## Principle
 
 Context is a cache over the lossless store; coherence is by identity, not

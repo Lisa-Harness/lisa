@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolResult
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
+from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 if TYPE_CHECKING:
     from kernel.models import TurnBudget
@@ -185,7 +186,7 @@ class _TurnState:
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
-    turn_plan_position: Any = None
+    turn_plan_position: WorkflowPosition | None = None
     """Plan declared by a routing entry op during this turn. The host's
     ``workflow_position`` view is derived from the thread at turn start, so
     a mid-turn plan is invisible to it until the turn is written; the kernel
@@ -208,7 +209,7 @@ class _TurnState:
     # mid-turn, after at least one handoff has already persisted the
     # instance. Empty tuple when no ad-hoc chain was compiled or after
     # the deferred persist has fired.
-    pending_adhoc_steps: tuple[Any, ...] = field(default_factory=tuple)
+    pending_adhoc_steps: tuple[WorkflowStep, ...] = field(default_factory=tuple)
 
     # ── Hard-failure / loop-guard state ───────────────────────────────
     entry_failed: bool = False
@@ -451,6 +452,13 @@ class _TurnState:
     """Per-turn cache of read-tool signatures → abbreviations. Prevents
     re-reads from re-accumulating full tool output in the message
     history."""
+    lifecycle_briefed: bool = False
+    last_lifecycle_guidance: tuple[str, ...] = ()
+    auto_approved_actions: int = 0
+    auto_approval_limit: int = 0
+    suspension_reason: str = ""
+    provider_messages: list[dict[str, Any]] = field(default_factory=list)
+    projected_message_count: int = 0
 
 
 # ── Closure-free helper functions ──────────────────────────────────────────

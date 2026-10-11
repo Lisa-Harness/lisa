@@ -8,6 +8,7 @@ from typing import Any, Literal
 from kernel.approval import ApprovalInvocation
 from kernel.models import BlockDiagnostic, EffectReceipt, ForkChildResult, YieldAction
 from kernel.slice import SliceOutcome
+from kernel.turn_continuation import TurnContinuation
 
 # ── Public types ───────────────────────────────────────────────────────────
 
@@ -124,6 +125,8 @@ class TurnResult:
     See :class:`kernel.models.YieldAction`."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
+    continuation: TurnContinuation | None = None
+    """Serializable existing-turn state for a model-loop approval or auto-approval cap."""
     pending_approval_tool_call_id: str = ""
     pending_approval_recovery_item_id: str = ""
     transcript: list[dict[str, Any]] = field(default_factory=list)

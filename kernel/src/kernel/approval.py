@@ -105,6 +105,10 @@ class ApprovalRecord(BaseModel):
     decision: ApprovalDecision | None = None
 
 
+class ApprovalUnavailable(RuntimeError):
+    """The receipt failed authoritative consumption; do not continue its saved batch."""
+
+
 class ApprovalRequired(RuntimeError):
     """Interrupt execution until the host has approved the exact action."""
 

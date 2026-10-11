@@ -14,9 +14,10 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
-from kernel.approval import ApprovalRequired, EffectKind
+from kernel.approval import ApprovalRequired, ApprovalUnavailable, EffectKind
 from kernel.models import (
     EffectReceipt,
     ForkChildResult,
@@ -657,6 +658,29 @@ async def _settle_recovery(
         )
 
 
+async def _continue_policy_approval(
+    required: ApprovalRequired,
+    ctx: OperationExecutionContext,
+    state: _TurnState,
+    hooks: TurnHooks,
+    dispatch: Callable[[], Awaitable[CapabilityDispatchOutcome]],
+) -> CapabilityDispatchOutcome | None:
+    service = hooks.services.approval_service
+    record = await service.get(required.invocation.request_id) if service else None
+    if record is None or record.state != "approved" or record.receipt is None:
+        return None
+    if state.auto_approved_actions >= state.auto_approval_limit:
+        state.suspension_reason = "auto_approval_cap"
+        return None
+    state.auto_approved_actions += 1
+    previous = ctx.approval_request_id
+    ctx.approval_request_id = required.invocation.request_id
+    try:
+        return await dispatch()
+    finally:
+        ctx.approval_request_id = previous
+
+
 async def dispatch_capability(
     *,
     tool_name: str,
@@ -758,7 +782,33 @@ async def dispatch_capability(
             retry_policy=cast(Any, recovery_retry_policy) if dispatch_error else None,
         )
 
-    except ApprovalRequired:
+    except ApprovalRequired as required:
+        continued = await _continue_policy_approval(
+            required,
+            ctx,
+            state,
+            hooks,
+            partial(
+                dispatch_capability,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                tool_kind=tool_kind,
+                ctx=ctx,
+                state=state,
+                ledger=ledger,
+                pool=pool,
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
+                exec_op=exec_op,
+                hooks=hooks,
+                recovery_item_id=recovery_item_id,
+                recovery_retry_policy=recovery_retry_policy,
+                build_recovery_identity_fn=build_recovery_identity_fn,
+                log=logger,
+            ),
+        )
+        if continued is not None:
+            return continued
         if state.sub_turn_kind:
             # classify_child_turn discards a sub-turn's approval pause, so an
             # approval-pending stall here would block the parent workflow on
@@ -783,6 +833,9 @@ async def dispatch_capability(
                 last_error=RECOVERY_APPROVAL_PENDING_ERROR,
                 retry_policy=cast(Any, "confirm"),
             )
+        raise
+
+    except ApprovalUnavailable:
         raise
 
     except Exception as exc:  # pylint: disable=broad-except

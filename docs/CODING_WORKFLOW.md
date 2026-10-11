@@ -77,6 +77,13 @@ precedence and prevents checks from running.
 
 ## Freeze
 
+**Operator exception (2026-10-10):** The freeze is lifted for context
+preservation: cache-stable model requests, kernel-owned approval/cap
+continuations, consistent evidence residency, and bounded-memory archive
+access. Public contract changes required for this work are authorized.
+Regression tests and the shared verification loop remain required. Other
+work remains subject to the stabilization freeze.
+
 Declared 2026-10-04. Applies to `kernel/`, `runtime/`, `sdk/`, and
 `mcp_server/` (including `sdk/packs/`). Rationale: sustained churn at
 ~3,000 changed lines/day with a ~47% fix-commit ratio over September was

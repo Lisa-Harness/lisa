@@ -34,6 +34,7 @@ from kernel.approval import (
     ApprovalIdentity,
     ApprovalInvocation,
     ApprovalRequired,
+    is_expired,
     render_approval_request,
 )
 from kernel.ipsar_fsm import get_workflow_catalog
@@ -48,6 +49,7 @@ from runtime.approval.presentation import (
     unresolved_approval_text,
 )
 from runtime.policy import AUTO_APPROVE_TURN_CAP, read_containment, remember_allow_prefix
+from runtime.turn_continuation import load_continuation
 from runtime.turn_hooks_builder import build_turn_hooks
 
 if TYPE_CHECKING:
@@ -695,6 +697,10 @@ async def _acquire_approval_receipt(
         success, or the unresolved-approval diagnostic the caller should
         return immediately.
     """
+    if is_expired(record.invocation):
+        await runtime.services.approval_service.approve(request_id, identity)
+        fresh = await runtime.services.approval_service.get(request_id)
+        return None, unresolved_approval_text(request_id, fresh or record)
     if record.state == "approved" and record.receipt is not None:
         return record.receipt, None
     receipt = await runtime.services.approval_service.approve(request_id, identity)
@@ -877,6 +883,54 @@ async def handle_approval_command(
             )
         return receipt_error
 
+    return await _continue_approved_record(
+        runtime,
+        record,
+        request_id=request_id,
+        command=command,
+        remember=remember,
+        transport=transport,
+        route_model_turn=route_model_turn,
+        auto_approved=auto_approved,
+    )
+
+
+async def _continue_approved_record(
+    runtime: HostRuntime,
+    record: Any,
+    *,
+    request_id: str,
+    command: str,
+    remember: str | None,
+    transport: TransportCallbacks,
+    route_model_turn: RouteModelTurnFn,
+    auto_approved: bool,
+) -> str | HostCommandResult:
+    paused_entry = _paused_approval_entry(runtime, request_id)
+    saved = load_continuation(
+        runtime.paths.thread_path, (paused_entry or {}).get("provenance") or {}
+    )
+    if saved is not None:
+        if saved.approval_request_id != request_id:
+            raise ValueError("The saved turn does not own this approval.")
+        runtime.session.current_mode_id = saved.mode_id
+        if saved.reason == "auto_approval_cap":
+            saved = saved.grant_auto_approval_allowance()
+        if "--remember" in command:
+            _remember_allow_rule(runtime, record.invocation, remember)
+        routed = await route_model_turn(
+            runtime,
+            saved.query,
+            transport,
+            task_id=saved.identity.task_id,
+            continuation=saved,
+        )
+        from runtime.types import HostCommandResult
+
+        return (
+            routed if isinstance(routed, HostCommandResult) else HostCommandResult(text=str(routed))
+        )
+
     result = await _execute_approved_with_settlement(
         runtime, record, request_id=request_id, transport=transport
     )
@@ -889,7 +943,7 @@ async def handle_approval_command(
     # program / program+subcommand, e.g. "git status" from "git status -sb"),
     # which is the natural "this thing, repeatedly" scope; an explicit flag
     # value overrides it. Host-side write — the CLI never edits policy.yaml.
-    if not error and approve and "--remember" in command:
+    if not error and "--remember" in command:
         _remember_allow_rule(runtime, record.invocation, remember)
 
     # ── Post-approval continuation ───────────────────────────────────

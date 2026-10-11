@@ -45,6 +45,7 @@ from typing import Any, Literal
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalRequired,
+    ApprovalUnavailable,
     build_approval_invocation,
 )
 from kernel.capability_binding import CapabilityRef, ExecutionFloorView
@@ -88,6 +89,10 @@ class ToolValidationError(ValueError):
 
 class ToolExecutionError(RuntimeError):
     """Raised when a tool cannot be resolved or executed."""
+
+
+class ToolApprovalError(ToolExecutionError, ApprovalUnavailable):
+    """Raised when a tool cannot consume the supplied approval receipt."""
 
 
 def get_tool_catalog() -> dict[str, ToolDefinition]:
@@ -554,7 +559,7 @@ async def _require_approval(
     if ctx.approval_request_id:
         receipt = await service.consume(ctx.approval_request_id, invocation)
         if receipt is None:
-            raise ToolExecutionError(
+            raise ToolApprovalError(
                 f"Tool '{definition.tool_id}' has no matching usable approval receipt."
             )
         return

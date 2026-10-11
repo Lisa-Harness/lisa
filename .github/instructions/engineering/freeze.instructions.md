@@ -6,6 +6,9 @@ description: Behavior freeze on kernel, runtime, sdk, and mcp_server. Only fixes
 
 # Stabilization freeze
 
+The operator lifted the freeze for context-preservation work on 2026-10-10;
+see the scoped exception in `docs/CODING_WORKFLOW.md` § Freeze.
+
 As of 2026-10-04 these trees are frozen to behavior change. The full rules and
 rationale live in `docs/CODING_WORKFLOW.md` § Freeze. Follow them.
 

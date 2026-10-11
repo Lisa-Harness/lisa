@@ -1751,7 +1751,7 @@ async def test_parent_turn_pre_cap_write_nudge_fires_before_cap(
         # Capture the system prompt each iteration to inspect the nudge.
         messages = kwargs.get("messages", [])
         if messages and isinstance(messages, list):
-            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            sys_msg = "\n".join(str(message.get("content", "")) for message in messages)
             captured_prompts.append(sys_msg)
         return _StubCompletion(
             content="",
@@ -1824,7 +1824,7 @@ async def test_parent_turn_write_nudge_disabled_when_margin_zero(
     async def read_loop(**kwargs: Any) -> _StubCompletion:
         messages = kwargs.get("messages", [])
         if messages and isinstance(messages, list):
-            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            sys_msg = "\n".join(str(message.get("content", "")) for message in messages)
             captured_prompts.append(sys_msg)
         return _StubCompletion(
             content="",
@@ -1943,7 +1943,7 @@ async def test_midpoint_nudge_fires_for_guidance_model_gather_without_output(
         call_count += 1
         messages = kwargs.get("messages", [])
         if messages and isinstance(messages, list):
-            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            sys_msg = "\n".join(str(message.get("content", "")) for message in messages)
             captured_prompts.append(sys_msg)
         return _StubCompletion(
             content="",
@@ -2090,7 +2090,9 @@ async def test_stalled_write_rescue_directs_announced_write_to_dispatch() -> Non
         call_count += 1
         messages = kwargs.get("messages", [])
         if messages:
-            captured_prompts.append(str(messages[0].get("content", "")))
+            captured_prompts.append(
+                "\n".join(str(message.get("content", "")) for message in messages)
+            )
         if call_count == 1:
             # Read work first (a real tool call), then announce.
             return _StubCompletion(
@@ -2164,7 +2166,7 @@ async def test_stalled_write_rescue_directs_announced_write_to_dispatch() -> Non
     # The rescue directive was injected into the briefing exactly once.
     rescue_prompts = [p for p in captured_prompts if "STOP ANNOUNCING AND DISPATCH" in p]
     assert rescue_prompts, "rescue directive missing from the briefing"
-    assert len(rescue_prompts) == 1, "rescue directive must be one-shot"
+    assert all(p.count("STOP ANNOUNCING AND DISPATCH") == 1 for p in rescue_prompts)
     assert "write_file" in rescue_prompts[0]
 
 
@@ -2180,7 +2182,9 @@ async def test_stalled_write_rescue_does_not_fire_for_dense_honest_answers() -> 
     async def honest_model(**kwargs: Any) -> _StubCompletion:
         messages = kwargs.get("messages", [])
         if messages:
-            captured_prompts.append(str(messages[0].get("content", "")))
+            captured_prompts.append(
+                "\n".join(str(message.get("content", "")) for message in messages)
+            )
         if not captured_prompts or len(captured_prompts) == 1:
             return _StubCompletion(
                 content="",
@@ -2257,7 +2261,9 @@ async def test_stalled_write_rescue_is_one_shot_per_turn() -> None:
         call_count += 1
         messages = kwargs.get("messages", [])
         if messages:
-            captured_prompts.append(str(messages[0].get("content", "")))
+            captured_prompts.append(
+                "\n".join(str(message.get("content", "")) for message in messages)
+            )
         if call_count == 1:
             return _StubCompletion(
                 content="",
@@ -2301,9 +2307,8 @@ async def test_stalled_write_rescue_is_one_shot_per_turn() -> None:
         result = await run_turn(mode_id="writer", query="write them", hooks=hooks)
 
     rescue_prompts = [p for p in captured_prompts if "STOP ANNOUNCING AND DISPATCH" in p]
-    assert len(rescue_prompts) == 1, (
-        f"rescue must fire exactly once per turn, fired {len(rescue_prompts)}"
-    )
+    assert rescue_prompts
+    assert all(p.count("STOP ANNOUNCING AND DISPATCH") == 1 for p in rescue_prompts)
     # The stalling prose was still accepted (chat softening) — no loop.
     assert result.blocked is False
 
@@ -2330,7 +2335,9 @@ async def test_stalled_write_rescue_fires_on_silent_read_loop_at_threshold() -> 
         call_count += 1
         messages = kwargs.get("messages", [])
         if messages:
-            captured_prompts.append(str(messages[0].get("content", "")))
+            captured_prompts.append(
+                "\n".join(str(message.get("content", "")) for message in messages)
+            )
         if call_count < 3:
             return _StubCompletion(
                 content="",
@@ -2395,5 +2402,6 @@ async def test_stalled_write_rescue_fires_on_silent_read_loop_at_threshold() -> 
     assert pool.write_calls, "the rescue must lead to a real write dispatch"
     assert result.blocked is False
     commit_prompts = [p for p in captured_prompts if "COMMIT TO A WRITE OR CONCLUDE" in p]
-    assert len(commit_prompts) == 1, "structured directive must fire once"
+    assert commit_prompts
+    assert all(p.count("COMMIT TO A WRITE OR CONCLUDE") == 1 for p in commit_prompts)
     assert "write_file" in commit_prompts[0]

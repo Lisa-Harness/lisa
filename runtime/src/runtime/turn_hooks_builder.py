@@ -62,6 +62,7 @@ from runtime.thread import (
     build_recent_thread_excerpt,
     project_thread_messages,
 )
+from runtime.turn_continuation import persist_request
 
 if TYPE_CHECKING:
     from runtime.callbacks import TransportCallbacks
@@ -885,6 +886,7 @@ def _assemble_turn_hooks(
             complete=None,
             complete_stream=wired.complete_stream,
             on_delta=wired.on_delta,
+            record_request=partial(persist_request, runtime.paths.thread_path),
         ),
         tools=ToolHooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
