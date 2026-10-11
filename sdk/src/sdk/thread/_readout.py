@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sdk.thread._backend import ThreadStore
-from sdk.thread._results import load_result_object
+from sdk.thread._results import load_result_object, read_result_window
 from sdk.thread._search import SearchFilters, entry_task_id, redact_value, search_entries
 from sdk.thread._taskview import DEFAULT_TASK_VIEW_BYTES, RECORDED_HISTORY_LABEL, build_task_view
 from sdk.thread.redaction import ThreadRedactionPolicy
@@ -29,6 +29,14 @@ _MAX_REFERENCE_CHARS = 128
 _RANGE_CURSOR = re.compile(r"(range|recent)\.(\d{1,20})\.(\d{1,20})\.(\d{1,20})\.(-?\d{1,20})")
 _SEARCH_CURSOR = re.compile(r"search\.(-?\d{1,20})\.(\d{1,20})\.([a-f0-9]{16})")
 _REFERENCE = re.compile(r"t(\d{1,20})(?:\.m(\d{1,20}))?(?:\.c(\d{1,20}))?(?:\.([a-z_]+))?")
+_STORED_RESULT_SOURCE: dict[str, Any] = {
+    "scope": "stored_tool_result",
+    "source_kind": "tool",
+    "timestamp_utc": None,
+    "interpretation": (
+        "Stored tool output; its time and relationship to the active request are unknown."
+    ),
+}
 _ENTRY_FIELDS = ("mode_id", "query", "response_text", "handoff_to", "transitioned_to")
 _MESSAGE_FIELDS = ("role", "name", "tool_call_id", "id", "content", "tool_calls", "is_error")
 
@@ -317,11 +325,14 @@ class ThreadReader:
         )
         if position > len(matches):
             raise ValueError("Cursor exceeds search results")
+        raw_entries = self.store.load_turns([item["turn"] for item in matches[position:]])
         page = _page()
         for index in range(position, len(matches)):
             candidate = matches[index]
             turn = candidate["turn"]
-            raw = self.store.load_range(start_turn=turn, end_turn=turn)[0]
+            raw = raw_entries.get(turn)
+            if raw is None:
+                raise ValueError("Thread reference not found")
             projected = self._entry(raw, turn)
             projected["response_preview"] = projected.pop("response_text")
             projected["score"] = candidate["score"]
@@ -361,30 +372,45 @@ class ThreadReader:
         """Page a complete permitted value; offsets count Unicode characters after redaction."""
         if len(ref) > _MAX_REFERENCE_CHARS or offset_chars < 0 or limit_chars <= 0:
             raise ValueError("Invalid reference, offset_chars, or limit_chars")
-        key = (ref, offset_chars, limit_chars, "read")
-        cached = self.page_cache.get(key) if self.page_cache is not None else None
-        if cached is not None:
-            cached = dict(cached)
-            cached["cached"] = True
-            return _encode(cached)
-        value, source = self._resolve(ref)
-        permitted = self._redact(value)
-        text = permitted if isinstance(permitted, str) else _encode(permitted)
-        if offset_chars > len(text):
-            raise ValueError("offset_chars exceeds content length")
         budget = _budget(budget_bytes)
-        lower, upper = 0, min(limit_chars, MAX_READOUT_BYTES, len(text) - offset_chars)
+        key = (ref, offset_chars, limit_chars, f"read:{budget}")
+        if (hit := self._cached_page(key, budget)) is not None:
+            return hit
+        cap = min(limit_chars, MAX_READOUT_BYTES)
+        if ref.startswith("r") and (self.redaction is None or self.redaction.is_empty):
+            window, total = read_result_window(
+                self.store.base_path, ref, offset_chars=offset_chars, limit_chars=cap
+            )
+            source = dict(_STORED_RESULT_SOURCE)
+        else:
+            value, source = self._resolve(ref)
+            permitted = self._redact(value)
+            text = permitted if isinstance(permitted, str) else _encode(permitted)
+            window, total = text[offset_chars : offset_chars + cap], len(text)
+        if offset_chars > total:
+            raise ValueError("offset_chars exceeds content length")
+        lower, upper = 0, len(window)
         while lower < upper:
             length = (lower + upper + 1) // 2
-            candidate = self._content_page(ref, text, offset_chars, length, source)
+            candidate = self._content_page(
+                ref, window, offset_chars, length, source=source, total=total
+            )
             if _byte_size(candidate) <= budget:
                 lower = length
             else:
                 upper = length - 1
-        page = self._content_page(ref, text, offset_chars, lower, source)
+        page = self._content_page(ref, window, offset_chars, lower, source=source, total=total)
         if self.page_cache is not None:
             self.page_cache.put(key, page)
         return _encode(page)
+
+    def _cached_page(self, key: tuple[str, int, int, str], budget: int) -> str | None:
+        """Return a cached page re-marked ``cached`` only if it still fits ``budget``."""
+        cached = self.page_cache.get(key) if self.page_cache is not None else None
+        if cached is None:
+            return None
+        hit = {**cached, "cached": True}
+        return _encode(hit) if _byte_size(hit) <= budget else None
 
     def find_content(
         self,
@@ -398,18 +424,15 @@ class ThreadReader:
         """Find literal text inside one permitted value without paging through all of it."""
         if not query or offset_chars < 0 or len(ref) > _MAX_REFERENCE_CHARS:
             raise ValueError("Require a nonempty query, valid ref, and nonnegative offset")
-        key = (ref, offset_chars, limit, "find:" + query)
-        cached = self.page_cache.get(key) if self.page_cache is not None else None
-        if cached is not None:
-            cached = dict(cached)
-            cached["cached"] = True
-            return _encode(cached)
+        budget = _budget(budget_bytes)
+        key = (ref, offset_chars, limit, f"find:{budget}:{query}")
+        if (hit := self._cached_page(key, budget)) is not None:
+            return hit
         raw, source = self._resolve(ref)
         value = self._redact(raw)
         text = value if isinstance(value, str) else _encode(value)
         if offset_chars > len(text):
             raise ValueError("offset_chars exceeds content length")
-        budget = _budget(budget_bytes)
         pattern = re.compile(re.escape(query), re.I)
         page: dict[str, Any] = {
             "ref": ref,
@@ -445,31 +468,31 @@ class ThreadReader:
 
     @staticmethod
     def _content_page(
-        ref: str, text: str, offset: int, length: int, source: dict[str, Any]
+        ref: str,
+        window: str,
+        offset: int,
+        length: int,
+        *,
+        source: dict[str, Any],
+        total: int,
     ) -> dict[str, Any]:
+        """Build one page from ``window`` (the value's text starting at ``offset``)."""
         next_offset = offset + length
-        has_more = next_offset < len(text)
+        has_more = next_offset < total
         return {
             "ref": ref,
             "source": source,
-            "content": text[offset:next_offset],
+            "content": window[:length],
             "offset_chars": offset,
-            "total_chars": len(text),
+            "total_chars": total,
             "next_offset_chars": next_offset if has_more else None,
             "has_more": has_more,
         }
 
     def _resolve(self, ref: str) -> tuple[Any, dict[str, Any]]:
         if ref.startswith("r"):
-            return load_result_object(self.store.base_path, ref)["content"], {
-                "scope": "stored_tool_result",
-                "source_kind": "tool",
-                "timestamp_utc": None,
-                "interpretation": (
-                    "Stored tool output; its time and relationship "
-                    "to the active request are unknown."
-                ),
-            }
+            content = load_result_object(self.store.base_path, ref)["content"]
+            return content, dict(_STORED_RESULT_SOURCE)
         match = _REFERENCE.fullmatch(ref)
         if match is None:
             raise ValueError("Invalid thread reference")

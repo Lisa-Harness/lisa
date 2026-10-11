@@ -11,6 +11,21 @@ from typing import Any
 
 from sdk.thread import result_object_path
 
+_COMPARE_BLOCK_BYTES = 65536
+
+
+def _matches_payload(path: Path, payload: bytes) -> bool:
+    """Compare an existing object to ``payload`` in blocks, without a second full copy."""
+    if path.stat().st_size != len(payload):
+        return False
+    view = memoryview(payload)
+    with path.open("rb") as handle:
+        for start in range(0, len(payload), _COMPARE_BLOCK_BYTES):
+            block = view[start : start + _COMPARE_BLOCK_BYTES]
+            if handle.read(len(block)) != block:
+                return False
+    return True
+
 
 def _persist_result(base: Path, result: dict[str, Any]) -> str:
     payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -18,7 +33,7 @@ def _persist_result(base: Path, result: dict[str, Any]) -> str:
     path = result_object_path(base, ref)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.exists():
-        if path.read_bytes() != payload:
+        if not _matches_payload(path, payload):
             raise ValueError("Existing result object failed integrity verification")
         return ref
     with NamedTemporaryFile(dir=path.parent, delete=False) as temporary:

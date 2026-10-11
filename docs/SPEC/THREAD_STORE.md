@@ -162,21 +162,48 @@ cron — this matches the house rule "no cron in lightweight hosts". For a
 
 ### Recent-N (`load_recent_thread_entries`)
 
-1. Read only `current.jsonl`. If it has >= `limit` entries, return the
-   last `limit`.
-2. If it has fewer, read the index, find the most recent sealed segment,
-   decompress it, and take the needed tail entries from it.
-3. **Two file touches max.** This fixes the legacy O(file-size) bug —
-   the active segment is bounded by `segment_turns`, so the read is
-   O(`limit`) in practice.
+1. Read `current.jsonl` from its end in 64 KiB blocks, parsing lines
+   newest-first until `limit` valid entries are found. Bytes parsed are
+   O(`limit`), not O(segment).
+2. If it has fewer, take the tail of the most recent sealed segment: stream
+   it through a bounded zstd decoder keeping only the newest raw lines
+   resident, then parse backwards (the keep window grows if malformed lines
+   eat the budget).
+3. `limit <= 0` returns every active entry.
 
-### Range query (`load_thread_range`)
+### Range query (`load_thread_range`) and single turn
 
 1. Consult the index to find segments overlapping `[start_turn, end_turn]`.
-2. Decompress only those segments, slice in memory.
-3. For the active (unsealed) tail, read it directly and include entries
-   in range.
-4. Returns entries in chronological order.
+2. Overlapping sealed segments are stream-decoded one line at a time and
+   decoding stops at the window end. Sealed ordinals count valid entries, so
+   lines before the window in the same segment are parsed transiently and
+   discarded; nothing but the requested records is retained.
+3. Active ordinals count **valid** entries (malformed lines never consume a
+   turn number), exactly as before. A per-process, incrementally extended map
+   of malformed line slots (keyed by path and a file-head fingerprint, reset
+   if the file shrinks or is replaced) is built by one streaming pass that
+   parses each line transiently; afterwards only newly appended lines are
+   parsed, `next_turn_index` is O(appended lines), and reads parse only the
+   lines they return. The first read of a process parses the active segment
+   once, with bounded memory.
+4. `ThreadStore.load_turns` fetches an arbitrary set of turns in one pass
+   (used to build search pages).
+
+### Search (`thread_search`)
+
+Entries are scored as they stream past and only the top `limit` (at most 20)
+are retained (`heapq.nlargest`); no candidate list is built.
+
+### Result objects (`r<sha256>` refs)
+
+Objects stay `{prefix}.results/<ref>.json` with the ref being the SHA-256 of
+the stored bytes. `read_result_window` streams the canonical
+`{"content":"…",…}` layout in 64 KiB blocks, hashes every byte, and verifies
+the digest before returning, while retaining only the requested character
+window (memory O(page), integrity unchanged). It still reads the whole file
+because the ref hashes the whole payload. Objects in another key order, and
+readers with a non-empty redaction policy (offsets count characters after
+redaction), take the full-load path; `find_content` also full-loads.
 
 ### Lossless round-trip guarantee
 

@@ -15,9 +15,13 @@ truth for workflow state.
 
 from __future__ import annotations
 
+import heapq
+import io
 import json
 import logging
-from collections.abc import Iterator
+import sys
+from collections import deque
+from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -36,6 +40,8 @@ _DEFAULT_SEGMENT_TURNS = 256
 _ZSTD_LEVEL = 5
 _DICT_RETRAIN_EVERY = 10
 _DICT_MIN_SAMPLES = 8
+#: Block size for streaming reads of active and sealed segments.
+_READ_BLOCK_BYTES = 65536
 
 
 # ── Path derivation ────────────────────────────────────────────────────
@@ -160,38 +166,192 @@ def _load_zstd_dictionary(dict_path: Path) -> Any:
         return None
 
 
-def _decompress_bytes(data: bytes, dict_path: Path) -> bytes:
-    """Decompress a sealed segment, using the trained dictionary when present."""
-    import zstandard  # lazy: optional dep startup cost
+def _sealed_lines(sealed_path: Path, dict_path: Path) -> Iterator[bytes]:
+    """Stream the non-empty lines of a sealed segment through a bounded decoder.
 
-    dictionary = _load_zstd_dictionary(dict_path)
-    if dictionary is not None:
-        dctx = zstandard.ZstdDecompressor(dict_data=dictionary)
-    else:
-        dctx = zstandard.ZstdDecompressor()
-    return bytes(dctx.decompress(data))
+    Only one decoder block and one line are resident at a time. A missing or
+    undecodable segment ends the stream after the lines already decoded.
+    """
+    if not sealed_path.exists():
+        return
+    try:
+        import zstandard  # lazy: optional dep startup cost
+
+        dictionary = _load_zstd_dictionary(dict_path)
+        dctx = (
+            zstandard.ZstdDecompressor(dict_data=dictionary)
+            if dictionary is not None
+            else zstandard.ZstdDecompressor()
+        )
+        with sealed_path.open("rb") as source, dctx.stream_reader(source) as reader:
+            for line in io.BufferedReader(reader, _READ_BLOCK_BYTES):
+                if line.strip():
+                    yield line
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("thread: failed to decompress sealed segment %s: %s", sealed_path, exc)
 
 
-def _parse_entries(raw_lines: list[str]) -> list[dict[str, Any]]:
-    """Parse JSONL lines into dicts, skipping malformed/non-dict lines."""
+def _parse_line(line: bytes) -> dict[str, Any] | None:
+    """Parse one JSONL line; ``None`` for malformed or non-dict content.
+
+    Every archive record decode goes through here, so it is the single seam
+    that bounds how many bytes a read parses.
+    """
+    try:
+        decoded = json.loads(line.decode("utf-8"))
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _active_lines(current_path: Path) -> Iterator[bytes]:
+    """Stream non-empty lines of the active segment without parsing them."""
+    try:
+        handle = current_path.open("rb")
+    except OSError:
+        return
+    with handle:
+        for line in handle:
+            if line.strip():
+                yield line
+
+
+def _reverse_active_lines(current_path: Path) -> Iterator[bytes]:
+    """Stream non-empty active-segment lines newest-first, reading blocks from the end."""
+    try:
+        handle = current_path.open("rb")
+    except OSError:
+        return
+    with handle:
+        position = handle.seek(0, io.SEEK_END)
+        pending: list[bytes] = []  # pieces of the current line, latest piece first
+        while position > 0:
+            size = min(_READ_BLOCK_BYTES, position)
+            position -= size
+            handle.seek(position)
+            block = handle.read(size)
+            pieces = block.split(b"\n")
+            if len(pieces) == 1:
+                pending.append(block)
+                continue
+            pending.append(pieces[-1])
+            line = b"".join(reversed(pending))
+            if line.strip():
+                yield line
+            for piece in reversed(pieces[1:-1]):
+                if piece.strip():
+                    yield piece
+            pending = [pieces[0]]
+        line = b"".join(reversed(pending))
+        if line.strip():
+            yield line
+
+
+def _newest_entries(lines: Iterator[bytes], limit: int) -> list[dict[str, Any]]:
+    """Parse newest-first lines until ``limit`` entries are found; return oldest-first."""
     entries: list[dict[str, Any]] = []
-    for raw_line in raw_lines:
-        stripped = raw_line.strip()
-        if not stripped:
-            continue
-        try:
-            decoded = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(decoded, dict):
-            entries.append(decoded)
+    for line in lines:
+        entry = _parse_line(line)
+        if entry is not None:
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+    entries.reverse()
     return entries
 
 
 def _read_active_entries(current_path: Path) -> list[dict[str, Any]]:
-    if not current_path.exists():
-        return []
-    return _parse_entries(current_path.read_text(encoding="utf-8").splitlines())
+    entries = (_parse_line(line) for line in _active_lines(current_path))
+    return [entry for entry in entries if entry is not None]
+
+
+class _ActiveScan:
+    """Malformed-line map of the append-only active segment, extended incrementally.
+
+    Turn ordinals count *valid* entries, so a malformed line shifts every later
+    ordinal. One streaming pass finds the malformed line slots (parsing each
+    line transiently); afterwards only newly appended complete lines are
+    parsed, and reads parse just the lines they return.
+    """
+
+    def __init__(self, fingerprint: bytes) -> None:
+        self.fingerprint = fingerprint
+        self.offset = 0  # bytes scanned, always at a line boundary
+        self.slots = 0  # non-empty lines scanned
+        self.malformed: set[int] = set()
+
+
+_ACTIVE_SCANS: dict[Path, _ActiveScan] = {}
+_MAX_ACTIVE_SCANS = 64
+_FINGERPRINT_BYTES = 256
+
+
+def _active_scan(current_path: Path) -> _ActiveScan | None:
+    """Bring the cached scan of ``current_path`` up to its last complete line."""
+    try:
+        with current_path.open("rb") as handle:
+            fingerprint = handle.read(_FINGERPRINT_BYTES)
+            size = handle.seek(0, io.SEEK_END)
+            scan = _ACTIVE_SCANS.get(current_path)
+            if scan is not None and (
+                size < scan.offset or not fingerprint.startswith(scan.fingerprint[:size])
+            ):
+                scan = None
+            if scan is None:
+                scan = _ActiveScan(fingerprint)
+                if len(_ACTIVE_SCANS) >= _MAX_ACTIVE_SCANS:
+                    _ACTIVE_SCANS.clear()
+                _ACTIVE_SCANS[current_path] = scan
+            handle.seek(scan.offset)
+            for line in handle:
+                if not line.endswith(b"\n"):
+                    break
+                scan.offset += len(line)
+                if not line.strip():
+                    continue
+                if _parse_line(line) is None:
+                    scan.malformed.add(scan.slots)
+                scan.slots += 1
+    except OSError:
+        _ACTIVE_SCANS.pop(current_path, None)
+        return None
+    return scan
+
+
+def _active_entries(
+    current_path: Path,
+) -> Iterator[tuple[bytes, dict[str, Any] | None]]:
+    """Yield ``(line, parsed_or_None)`` for every valid entry line, oldest first.
+
+    Lines inside the scanned prefix are classified from the malformed map
+    without parsing (``parsed`` is ``None``; the caller parses what it returns).
+    Lines in the unscanned tail (a partial or just-appended line) are parsed here.
+    """
+    scan = _active_scan(current_path)
+    if scan is None:
+        return
+    for slot, line in enumerate(_active_lines(current_path)):
+        if slot < scan.slots:
+            if slot not in scan.malformed:
+                yield line, None
+        else:
+            entry = _parse_line(line)
+            if entry is not None:
+                yield line, entry
+
+
+def _count_active_entries(current_path: Path) -> int:
+    """Count valid active-segment entries; only newly appended lines are parsed."""
+    scan = _active_scan(current_path)
+    if scan is None:
+        return 0
+    tail = 0
+    with current_path.open("rb") as handle:
+        handle.seek(scan.offset)
+        for line in handle:
+            if line.strip() and _parse_line(line) is not None:
+                tail += 1
+    return scan.slots - len(scan.malformed) + tail
 
 
 # ── ThreadStore ─────────────────────────────────────────────────────────
@@ -235,42 +395,37 @@ class ThreadStore:
     def load_recent(self, *, limit: int = 30) -> list[dict[str, Any]]:
         """Load up to ``limit`` recent thread entries (oldest-first in the tail).
 
-        Reads only the active segment. If it has fewer than ``limit``
-        entries, falls back to the most recent sealed segment for the
-        remaining tail. Two file touches max. Returns ``[]`` when no
+        The active segment is read from its end, parsing only as many lines as
+        needed. If it holds fewer than ``limit`` entries, the remainder comes
+        from the tail of the most recent sealed segment, which is streamed
+        through a bounded decoder keeping only the newest raw lines resident.
+        ``limit <= 0`` returns every active entry. Returns ``[]`` when no
         store exists.
         """
-        active = _read_active_entries(self._paths.current)
-        if len(active) >= limit > 0:
-            return active[-limit:]
-        if limit <= 0 or len(active) >= limit:
+        if limit <= 0:
+            return _read_active_entries(self._paths.current)
+        active = _newest_entries(_reverse_active_lines(self._paths.current), limit)
+        if len(active) >= limit:
             return active
         records = _read_index(self._paths.index_path)
         if not records:
             return active
-        last = records[-1]
-        sealed_path = _sealed_segment_path(self._paths.base, last.seg_id)
-        sealed_entries = self._load_sealed_entries(sealed_path, last.seg_id)
-        if not sealed_entries:
-            return active
-        needed = limit - len(active)
-        tail = sealed_entries[-needed:] if needed < len(sealed_entries) else sealed_entries
-        return tail + active
+        sealed_path = _sealed_segment_path(self._paths.base, records[-1].seg_id)
+        return self._sealed_tail(sealed_path, limit - len(active)) + active
 
-    def _load_sealed_entries(
-        self,
-        sealed_path: Path,
-        seg_id: str,
-    ) -> list[dict[str, Any]]:
-        """Decompress and parse a sealed segment. Returns [] on any failure."""
-        if not sealed_path.exists():
-            return []
-        try:
-            decompressed = _decompress_bytes(sealed_path.read_bytes(), self._paths.dictionary)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("thread: failed to decompress sealed segment %s: %s", seg_id, exc)
-            return []
-        return _parse_entries(decompressed.decode("utf-8").splitlines())
+    def _sealed_tail(self, sealed_path: Path, needed: int) -> list[dict[str, Any]]:
+        """Return the newest ``needed`` valid entries of one sealed segment, oldest-first."""
+        keep = max(needed * 2, 16)
+        while True:
+            window: deque[bytes] = deque(maxlen=keep)
+            total = 0
+            for line in _sealed_lines(sealed_path, self._paths.dictionary):
+                window.append(line)
+                total += 1
+            entries = _newest_entries(iter(reversed(window)), needed)
+            if len(entries) >= needed or total <= keep:
+                return entries
+            keep *= 4
 
     def next_turn_index(self) -> int:
         """Return the 0-based global turn index the next appended entry will receive.
@@ -282,49 +437,91 @@ class ThreadStore:
         briefing with the turn number and thread the pre-computed value
         through to the append, so the number the model saw and the number
         stamped on the entry are one source of truth — no off-by-one.
+        The active segment is counted by streaming lines, never parsed.
         """
         records = _read_index(self._paths.index_path)
         sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        active_count = len(_read_active_entries(self._paths.current))
-        return sealed_spans + active_count
+        return sealed_spans + _count_active_entries(self._paths.current)
 
     def load_range(self, *, start_turn: int, end_turn: int) -> list[dict[str, Any]]:
         """Load entries whose global turn index falls in ``[start_turn, end_turn]``.
 
         Global turn index is the 0-based ordinal of a turn across the whole
         store (sealed segments + active). The index is consulted to find
-        overlapping segments; only those are decompressed. The active segment
-        is read directly for its in-range tail.
+        overlapping segments; only those are streamed.
         """
         return [entry for _, entry in self.iter_range(start_turn=start_turn, end_turn=end_turn)]
 
+    def load_turns(self, turns: Collection[int]) -> dict[int, dict[str, Any]]:
+        """Load the entries at specific global turns in one pass, omitting absent turns."""
+        wanted = {turn for turn in turns if turn >= 0}
+        if not wanted:
+            return {}
+        return dict(self._iter(min(wanted), max(wanted), wanted))
+
     def iter_range(self, *, start_turn: int, end_turn: int) -> Iterator[tuple[int, dict[str, Any]]]:
         """Yield entries with their stable global ordinals without building a range list."""
+        return self._iter(start_turn, end_turn, None)
+
+    def _iter(
+        self,
+        start_turn: int,
+        end_turn: int,
+        wanted: Collection[int] | None,
+    ) -> Iterator[tuple[int, dict[str, Any]]]:
+        """Stream ``(turn, entry)`` in ``[start_turn, end_turn]``, optionally only ``wanted``.
+
+        Sealed ordinals count valid entries, so lines of an overlapping sealed
+        segment before the window are parsed one at a time and discarded; the
+        decoder stops once the window ends. Active ordinals count valid entries too,
+        taken from the cached malformed-line map, so lines outside the window
+        are never re-parsed.
+        """
         if start_turn > end_turn:
             return
         records = _read_index(self._paths.index_path)
         for record in records:
             if record.turn_hi < start_turn or record.turn_lo > end_turn:
                 continue
-            sealed_path = _sealed_segment_path(self._paths.base, record.seg_id)
-            if not sealed_path.exists():
+            yield from self._iter_sealed(record, start_turn, end_turn, wanted)
+        active_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+        yield from self._iter_active(active_lo, start_turn, end_turn, wanted)
+
+    def _iter_sealed(
+        self,
+        record: SegmentRecord,
+        start_turn: int,
+        end_turn: int,
+        wanted: Collection[int] | None,
+    ) -> Iterator[tuple[int, dict[str, Any]]]:
+        sealed_path = _sealed_segment_path(self._paths.base, record.seg_id)
+        turn = record.turn_lo
+        for line in _sealed_lines(sealed_path, self._paths.dictionary):
+            if turn > end_turn:
+                return
+            entry = _parse_line(line)
+            if entry is None:
                 continue
-            try:
-                decompressed = _decompress_bytes(sealed_path.read_bytes(), self._paths.dictionary)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("thread: range decompress failed for %s: %s", record.seg_id, exc)
-                continue
-            entries = _parse_entries(decompressed.decode("utf-8").splitlines())
-            for offset, entry in enumerate(entries):
-                global_turn = record.turn_lo + offset
-                if start_turn <= global_turn <= end_turn:
-                    yield global_turn, entry
-        # Active (unsealed) tail: its turn range starts after the last sealed.
-        active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        for offset, entry in enumerate(_read_active_entries(self._paths.current)):
-            global_turn = active_turn_lo + offset
-            if start_turn <= global_turn <= end_turn:
-                yield global_turn, entry
+            if turn >= start_turn and (wanted is None or turn in wanted):
+                yield turn, entry
+            turn += 1
+
+    def _iter_active(
+        self,
+        first_turn: int,
+        start_turn: int,
+        end_turn: int,
+        wanted: Collection[int] | None,
+    ) -> Iterator[tuple[int, dict[str, Any]]]:
+        turn = first_turn
+        for line, entry in _active_entries(self._paths.current):
+            if turn > end_turn:
+                return
+            if turn >= start_turn and (wanted is None or turn in wanted):
+                parsed = entry or _parse_line(line)
+                if parsed is not None:
+                    yield turn, parsed
+            turn += 1
 
     def build_recent_excerpt(
         self,
@@ -491,44 +688,22 @@ class ThreadStore:
         Host-only command entries are stripped when ``is_host_command``
         is provided (mirrors ``build_recent_excerpt``).
 
-        The scan decompresses every sealed segment on each call. This is
-        acceptable for a tool the model calls occasionally; for
-        high-frequency search an in-memory entry cache (rebuilt on seal)
-        would be the next optimization.
+        The scan streams every segment on each call with bounded memory: one
+        decoded line at a time plus the top ``limit`` results.
         """
         capped_limit = max(1, min(limit, 20))
         tokens = {tok.strip().lower() for tok in query.split() if tok.strip()}
 
-        # Gather every entry with its global turn index.
-        records = _read_index(self._paths.index_path)
-        candidates: list[tuple[float, int, dict[str, Any]]] = []
-
-        for record in records:
-            sealed_path = _sealed_segment_path(self._paths.base, record.seg_id)
-            sealed_entries = self._load_sealed_entries(sealed_path, record.seg_id)
-            for offset, entry in enumerate(sealed_entries):
-                global_turn = record.turn_lo + offset
-                if end_turn is not None and global_turn > end_turn:
-                    continue
+        def scored_entries() -> Iterator[tuple[float, int, dict[str, Any]]]:
+            stop = sys.maxsize if end_turn is None else end_turn
+            for global_turn, entry in self.iter_range(start_turn=0, end_turn=stop):
                 scored = self._score_entry(entry, global_turn, tokens, is_host_command)
                 if scored is not None:
-                    candidates.append(scored)
+                    yield scored
 
-        active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        for offset, entry in enumerate(_read_active_entries(self._paths.current)):
-            global_turn = active_turn_lo + offset
-            if end_turn is not None and global_turn > end_turn:
-                continue
-            scored = self._score_entry(entry, global_turn, tokens, is_host_command)
-            if scored is not None:
-                candidates.append(scored)
-
-        if not candidates:
-            return []
-
-        # Sort by (score desc, turn desc) — recency tiebreak.
-        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return [entry for _, _, entry in candidates[:capped_limit]]
+        # Streaming top-k: at most ``capped_limit`` scored results are resident.
+        best = heapq.nlargest(capped_limit, scored_entries(), key=lambda item: (item[0], item[1]))
+        return [entry for _, _, entry in best]
 
     def _score_entry(
         self,

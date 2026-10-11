@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import copy
 import hashlib
 import json
@@ -16,6 +17,7 @@ _RESULT_REFERENCE = re.compile(r"r[a-f0-9]{64}")
 _THREAD_REFERENCE = re.compile(r"t\d{1,20}(?:\.m\d{1,20})?(?:\.c\d{1,20})?(?:\.[a-z_]+)?$")
 _TOOL_CONTEXT_BYTES = 65536
 _INVENTORY_RESERVE_BYTES = 2048
+_RESULT_BLOCK_BYTES = 65536
 _HEAD_CHARS = 600
 _TAIL_CHARS = 300
 _RETRIEVAL_TOOLS = frozenset(
@@ -48,9 +50,125 @@ def load_result_object(base: Path, ref: str) -> dict[str, Any]:
         raise ValueError("Result-object reference not found or unreadable") from exc
     if hashlib.sha256(payload).hexdigest() != ref[1:]:
         raise ValueError("Result-object integrity check failed")
-    if not isinstance(result, dict) or not isinstance(result.get("content"), str):
+    if not isinstance(result, dict):
+        raise ValueError("Invalid result-object content")
+    if "content" not in result:
+        # Objects persisted without a ``content`` key (for example
+        # ``{"output_text": ...}``) are returned wrapped: ``result["content"]``
+        # is the stored object itself.
+        return {"content": result}
+    if not isinstance(result["content"], str):
         raise ValueError("Invalid result-object content")
     return result
+
+
+_CONTENT_PREFIX = b'{"content":"'
+_RESULT_TAIL_LIMIT = 1 << 20
+_STRING_TOKENS = re.compile(
+    r"(?:[^\"\\]+"
+    r"|\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}"
+    r"|\\u(?![dD][89abAB])[0-9a-fA-F]{4}"
+    r"|\\u[dD][89abAB][0-9a-fA-F]{2}(?=[^\\]|\\[^u]|\\u[0-9a-fA-F]{4})"
+    r"|\\[^u])*"
+)
+
+
+def read_result_window(
+    base: Path,
+    ref: str,
+    *,
+    offset_chars: int,
+    limit_chars: int,
+) -> tuple[str, int]:
+    """Return ``(text, total_chars)`` for one character window of a result object's content.
+
+    Streams the object in blocks so resident memory is O(window), not O(object),
+    while still hashing every byte: the digest is verified against ``ref``
+    before returning, exactly as :func:`load_result_object` does. Objects not in
+    the canonical ``{"content": "..."...}`` layout fall back to a full load.
+    """
+    path = result_object_path(base, ref)
+    try:
+        windowed = _stream_content_window(path, ref, offset_chars, limit_chars)
+    except OSError as exc:
+        raise ValueError("Result-object reference not found or unreadable") from exc
+    if windowed is not None:
+        return windowed
+    content = load_result_object(base, ref)["content"]
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    return content[offset_chars : offset_chars + limit_chars], len(content)
+
+
+class _StringWindow:
+    """Incrementally decode a JSON string body, keeping only one character window."""
+
+    def __init__(self, offset: int, limit: int) -> None:
+        self.start, self.end = offset, offset + limit
+        self.parts: list[str] = []
+        self.total = 0
+        self.pending = ""
+        self.tail = ""
+        self.ended = False
+
+    def feed(self, text: str) -> bool:
+        """Consume decoded text; ``False`` when the layout needs the full-load path."""
+        if self.ended:
+            self.tail += text
+            return len(self.tail) <= _RESULT_TAIL_LIMIT
+        self.pending += text
+        stop = _STRING_TOKENS.match(self.pending).end()  # type: ignore[union-attr]
+        body = self.pending[:stop]
+        if stop < len(self.pending) and self.pending[stop] == '"':
+            self.ended = True
+            self.tail = self.pending[stop + 1 :]
+            self.pending = ""
+        else:
+            self.pending = self.pending[stop:]
+        try:
+            piece = json.loads(f'"{body}"')
+        except ValueError:
+            return False
+        low, high = max(self.start - self.total, 0), max(self.end - self.total, 0)
+        if high > low:
+            self.parts.append(piece[low:high])
+        self.total += len(piece)
+        return len(self.tail) <= _RESULT_TAIL_LIMIT
+
+    def trailer_is_valid(self) -> bool:
+        """The bytes after the content string must complete a plain JSON object."""
+        if not self.ended:
+            return False
+        try:
+            rest = json.loads(f'{{"content":0{self.tail}')
+        except ValueError:
+            return False
+        return isinstance(rest, dict) and rest.get("content") == 0
+
+
+def _stream_content_window(path: Path, ref: str, offset: int, limit: int) -> tuple[str, int] | None:
+    """Single streaming pass; ``None`` when the layout needs the full-load path."""
+    digest = hashlib.sha256()
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    state = _StringWindow(offset, limit)
+    with path.open("rb") as handle:
+        head = handle.read(len(_CONTENT_PREFIX))
+        digest.update(head)
+        if head != _CONTENT_PREFIX:
+            return None
+        while block := handle.read(_RESULT_BLOCK_BYTES):
+            digest.update(block)
+            try:
+                text = decoder.decode(block)
+            except UnicodeDecodeError:
+                return None
+            if not state.feed(text):
+                return None
+    if digest.hexdigest() != ref[1:]:
+        raise ValueError("Result-object integrity check failed")
+    if not state.trailer_is_valid():
+        return None
+    return "".join(state.parts), state.total
 
 
 def _tool_result_names(messages: list[dict[str, Any]]) -> dict[int, str]:

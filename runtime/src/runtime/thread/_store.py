@@ -171,21 +171,6 @@ def _compress_bytes(data: bytes, dict_path: Path) -> bytes:
     return bytes(cctx.compress(data))
 
 
-def _decompress_bytes(data: bytes, dict_path: Path) -> bytes:
-    """Decompress a sealed segment, using the trained dictionary when present."""
-    import zstandard  # lazy: defers optional dep startup cost
-
-    dictionary = _load_zstd_dictionary(dict_path)
-    if dictionary is not None:
-        dctx = zstandard.ZstdDecompressor(dict_data=dictionary)
-    else:
-        dctx = zstandard.ZstdDecompressor()
-    # TODO(seekable-frames): revisit when segment_turns > ~1000 or decompress
-    # latency exceeds ~50ms; switch to zstd seekable frame format (frame_dlog)
-    # for byte-offset range reads without full decompress.
-    return bytes(dctx.decompress(data))
-
-
 def _train_dictionary(samples: Sequence[bytes | bytearray], dict_path: Path) -> None:
     """Train and persist a zstd dictionary from sample documents."""
     if len(samples) < _DICT_MIN_SAMPLES:
@@ -245,12 +230,6 @@ def _parse_entries(raw_lines: list[str]) -> list[dict[str, Any]]:
     return entries
 
 
-def _read_active_entries(current_path: Path) -> list[dict[str, Any]]:
-    if not current_path.exists():
-        return []
-    return _parse_entries(current_path.read_text(encoding="utf-8").splitlines())
-
-
 def _read_active_entries_count(current_path: Path) -> int:
     """Count entries in the active segment without materializing them.
 
@@ -278,7 +257,7 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
         seg_id = _next_seg_id(paths.index_path)
     sealed_path = _sealed_segment_path(paths.base, seg_id)
 
-    entries = _parse_entries(paths.current.read_text(encoding="utf-8").splitlines())
+    entries = _parse_entries(raw_bytes.decode("utf-8").splitlines())
     if not entries:
         return None
 
