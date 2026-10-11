@@ -462,7 +462,8 @@ class ContextHistoryPlan(_StrictSessionModel):
     #: bytes replayed verbatim for the open task before the rest collapse
     #: to recoverable ref-stubs (residency by allocation, R2). Tighten-only
     #: against the host ``context_budget_replay_max_bytes`` ceiling;
-    #: ``None`` (absent) keeps the host default.
+    #: ``None`` (absent) defers to the request allocator unless the host
+    #: explicitly sets a replay ceiling.
     replay_max_bytes: int | None = Field(default=None, ge=1, le=1048576)
     digest: ThreadDigestPlan = Field(default_factory=ThreadDigestPlan)
 

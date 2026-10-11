@@ -52,8 +52,9 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import partial
+from math import ceil
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -68,7 +69,7 @@ from kernel.approval import (
 )
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
-from kernel.context.context_budget import tool_context_budget_bytes
+from kernel.context.request_budget import estimate_request_tokens, fit_request_context
 from kernel.context.sub_turn_contract import (
     render_no_write_warning,
     render_sub_turn_contract,
@@ -115,6 +116,7 @@ from kernel.operations.structured_output import (
 )
 from kernel.provider_contracts import (
     CompletionRequest,
+    RequestTokenCount,
     StreamedChunk,
     _aggregate_streamed_chunks,
 )
@@ -2838,6 +2840,9 @@ def _truncation_retry_budget(
     base_max_tokens = int(base_request.max_tokens or 0)
     retry_max_tokens = base_max_tokens * 2
     cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
+    if base_request.context_budget is not None:
+        budget = base_request.context_budget
+        cap_window = budget.window_tokens - budget.margin_tokens - budget.input_tokens
     if cap_window > 0:
         retry_max_tokens = min(retry_max_tokens, cap_window)
     if retry_max_tokens <= base_max_tokens:
@@ -2851,6 +2856,7 @@ def _truncation_retry_budget(
             tools=base_request.tools,
             response_format=base_request.response_format,
             system_prompt_segments=base_request.system_prompt_segments,
+            context_budget=base_request.context_budget,
         ),
         retry_max_tokens,
     )
@@ -3060,15 +3066,62 @@ async def _nonstreamed_gateway_completion(
     return completion
 
 
+def _count_resident_request(
+    request: CompletionRequest, *, state: _TurnState, hooks: TurnHooks
+) -> RequestTokenCount:
+    counted = (hooks.models.count_request_tokens or estimate_request_tokens)(request)
+    key = (
+        f"{getattr(request.model_def, 'provider', '')}:{getattr(request.model_def, 'model_id', '')}"
+    )
+    scale = state.request_token_scales.get(key, 1.0)
+    return RequestTokenCount(
+        tokens=ceil(counted.tokens * scale),
+        method=f"{counted.method};observed_scale={scale:.4f}",
+    )
+
+
+def _audit_request_context(
+    completion: Any, *, request: CompletionRequest, state: _TurnState, log: logging.Logger
+) -> Any:
+    budget = request.context_budget
+    if budget is None:
+        return completion
+    observed = _extract_completion_usage(completion).prompt_tokens
+    key = f"{getattr(request.model_def, 'provider', '')}:{request.model_def.model_id}"
+    if observed > budget.input_tokens > 0:
+        state.request_token_scales[key] = (
+            state.request_token_scales.get(key, 1.0) * observed / budget.input_tokens
+        )
+        log.warning(
+            "context token count underestimated input: model=%s counted=%d observed=%d method=%s",
+            key,
+            budget.input_tokens,
+            observed,
+            budget.counting_method,
+        )
+    log.info(
+        "request context: model=%s window=%d input=%d observed=%d output=%d margin=%d reduced=%s",
+        key,
+        budget.window_tokens,
+        budget.input_tokens,
+        observed,
+        request.max_tokens,
+        budget.margin_tokens,
+        budget.reduced,
+    )
+    return completion
+
+
 def _project_provider_messages(
     state: _TurnState,
     hooks: TurnHooks,
     messages: list[dict[str, Any]],
     model_def: Any,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    max_tokens: int = 0,
 ) -> list[dict[str, Any]]:
     projector = hooks.context.project_messages
-    if projector is None:
-        return messages
     if (
         state.provider_messages
         and state.provider_messages[0] == messages[0]
@@ -3081,11 +3134,26 @@ def _project_provider_messages(
         projection_input[0] = messages[0]
     else:
         projection_input = messages
-    projected = projector(
-        projection_input,
-        hooks.identity.task_id,
-        budget_bytes=tool_context_budget_bytes(model_def),
+    request = CompletionRequest(
+        messages=projection_input,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=0.4,
+        tools=tools,
     )
+    fitted = fit_request_context(
+        request,
+        (
+            lambda source, *, budget_bytes: projector(
+                source, hooks.identity.task_id, budget_bytes=budget_bytes
+            )
+        )
+        if projector
+        else None,
+        partial(_count_resident_request, state=state, hooks=hooks),
+    )
+    projected = fitted.messages
+    state.request_context_budget = fitted.context_budget
     state.provider_messages = copy.deepcopy(projected)
     state.projected_message_count = len(messages)
     return projected
@@ -3223,8 +3291,18 @@ async def _model_completion_for_iteration(
             f"Known to the active gateway provider: model "
             f"{getattr(effective_model_def, 'model_id', '')!r} cannot be completed."
         )
+    completion_max_tokens = _effective_completion_max_tokens(
+        effective_model_def, mode_budget_tokens=mode_budget_tokens
+    )
     completion_request = CompletionRequest(
-        messages=_project_provider_messages(state, hooks, messages, effective_model_def),
+        messages=_project_provider_messages(
+            state,
+            hooks,
+            messages,
+            effective_model_def,
+            tools=effective_tools,
+            max_tokens=completion_max_tokens,
+        ),
         model_def=effective_model_def,
         # Reasoning-aware budget: reasoning models bill their
         # chain-of-thought against ``max_tokens`` on some providers,
@@ -3234,9 +3312,7 @@ async def _model_completion_for_iteration(
         # ``completion_budget_tokens`` tightens further
         # (BUDGET_SCOPES_RFC scope 2: min(mode, model, settings)).
         # See _effective_completion_max_tokens.
-        max_tokens=_effective_completion_max_tokens(
-            effective_model_def, mode_budget_tokens=mode_budget_tokens
-        ),
+        max_tokens=state.request_context_budget.completion_tokens,
         temperature=0.4,
         tools=effective_tools,
         # Carry the typed segment view alongside ``messages`` so the
@@ -3246,6 +3322,7 @@ async def _model_completion_for_iteration(
         # flattening the system message from ``messages``, which is
         # byte-identical to the segment-flattened text.
         system_prompt_segments=sys_segments.as_segments_copy(),
+        context_budget=state.request_context_budget,
     )
     snapshot = {
         "iteration": state.iteration,
@@ -3257,6 +3334,9 @@ async def _model_completion_for_iteration(
         "temperature": completion_request.temperature,
         "max_tokens": completion_request.max_tokens,
         "response_format": completion_request.response_format,
+        "context_budget": asdict(completion_request.context_budget)
+        if completion_request.context_budget
+        else None,
     }
     _record_request_snapshot(state, hooks, snapshot)
 
@@ -3270,9 +3350,29 @@ async def _model_completion_for_iteration(
         # get the structured tool-call payload. Live in
         # ``_streamed_gateway_completion`` (with the truncation
         # rescue and tool-call fallback).
-        return await _streamed_gateway_completion(
+        return _audit_request_context(
+            await _streamed_gateway_completion(
+                gateway=_gateway,
+                hooks=hooks,
+                mode_id=mode_id,
+                effective_model_def=effective_model_def,
+                effective_tools=effective_tools,
+                tools_offered_this_turn=tools_offered_this_turn,
+                completion_request=completion_request,
+                complete_started=_complete_started,
+                log=log,
+            ),
+            request=completion_request,
+            state=state,
+            log=log,
+        )
+
+    # ── Non-streaming path ──────────────────────────────────────
+    # Live in ``_nonstreamed_gateway_completion`` (with the truncation
+    # rescue).
+    return _audit_request_context(
+        await _nonstreamed_gateway_completion(
             gateway=_gateway,
-            hooks=hooks,
             mode_id=mode_id,
             effective_model_def=effective_model_def,
             effective_tools=effective_tools,
@@ -3280,19 +3380,9 @@ async def _model_completion_for_iteration(
             completion_request=completion_request,
             complete_started=_complete_started,
             log=log,
-        )
-
-    # ── Non-streaming path ──────────────────────────────────────
-    # Live in ``_nonstreamed_gateway_completion`` (with the truncation
-    # rescue).
-    return await _nonstreamed_gateway_completion(
-        gateway=_gateway,
-        mode_id=mode_id,
-        effective_model_def=effective_model_def,
-        effective_tools=effective_tools,
-        tools_offered_this_turn=tools_offered_this_turn,
-        completion_request=completion_request,
-        complete_started=_complete_started,
+        ),
+        request=completion_request,
+        state=state,
         log=log,
     )
 

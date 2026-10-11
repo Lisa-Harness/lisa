@@ -214,7 +214,22 @@ def project_tool_messages(
     ref after eviction had already freed the budget (2026-10-08 turn-618).
     """
     budget = _TOOL_CONTEXT_BYTES if budget_bytes is None else max(0, budget_bytes)
-    reserve = min(_INVENTORY_RESERVE_BYTES, max(0, budget // 16))
+    payload_bytes = sum(
+        len(str(message.get("content") or "").encode("utf-8"))
+        for message in messages
+        if message.get("role") == "tool"
+    )
+    minimums = (
+        {
+            index: _minimum_result_bytes(content, redaction)
+            for index, message in enumerate(messages)
+            if message.get("role") == "tool" and isinstance(content := message.get("content"), str)
+        }
+        if payload_bytes > budget
+        else {}
+    )
+    batch_reserves = _batch_result_reserves(messages, minimums)
+    reserve = min(_INVENTORY_RESERVE_BYTES, max(0, budget // 16)) if minimums else 0
     available = budget - reserve
     projected = copy.deepcopy(messages)
     result_names = _tool_result_names(messages)
@@ -242,7 +257,9 @@ def project_tool_messages(
         # A result no larger than a preview's excerpts stays inline even
         # without room: abbreviating it would inflate the wire (the
         # 2026-10-06 micro-window loop). The inventory can still evict it.
-        if size <= available or len(permitted) <= _HEAD_CHARS + _TAIL_CHARS:
+        if size <= available - batch_reserves.get(index, 0) or len(permitted) <= (
+            _HEAD_CHARS + _TAIL_CHARS
+        ):
             message["content"] = permitted
             available -= size
             refs[index] = (
@@ -262,6 +279,25 @@ def project_tool_messages(
     if available + reserve >= 0:
         return projected
     return _compact_groups(messages, projected, refs, task_id, persist, budget=budget)
+
+
+def _minimum_result_bytes(content: str, redaction: ThreadRedactionPolicy | None) -> int:
+    permitted = redaction.redact(content) if redaction else content
+    preview = _preview("r" + "0" * 64, permitted)
+    return min(len(permitted.encode("utf-8")), len(preview.encode("utf-8")))
+
+
+def _batch_result_reserves(
+    messages: list[dict[str, Any]], minimums: dict[int, int]
+) -> dict[int, int]:
+    """Keep older siblings addressable without evicting the newest result's batch."""
+    reserves: dict[int, int] = {}
+    for _, indices in _complete_groups(messages):
+        remaining = 0
+        for index in sorted(indices):
+            reserves[index] = remaining
+            remaining += minimums.get(index, 0)
+    return reserves
 
 
 def _known_ref(ref: str) -> Callable[[], str]:

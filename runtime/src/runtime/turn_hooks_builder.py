@@ -46,6 +46,7 @@ from kernel.turn_runner import ContextSeams
 from sdk.context.extension_item_builder import (
     EntryPointExtensionItemBuilder,
 )
+from sdk.providers.token_counting import count_request_tokens
 
 from runtime.capability_bindings import SessionCapabilityBindings
 from runtime.code_artifacts import verify_checked_commit
@@ -887,6 +888,7 @@ def _assemble_turn_hooks(
             complete_stream=wired.complete_stream,
             on_delta=wired.on_delta,
             record_request=partial(persist_request, runtime.paths.thread_path),
+            count_request_tokens=count_request_tokens,
         ),
         tools=ToolHooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
@@ -1219,22 +1221,12 @@ def _transport_forwarder(transport: Any) -> Any:
     return on_stage, on_delta
 
 
-def _effective_replay_budget_bytes(runtime: Any) -> int:
-    """Resolve the turn-start replay working-set budget (tighten-only).
-
-    The host ``context_budget_replay_max_bytes`` is the ceiling; the
-    session plan's ``context.history.replay_max_bytes`` may tighten it
-    (never raise past it). Absent knob keeps the host ceiling so the
-    pre-budget verbatim behavior survives for ordinary sessions.
-    """
-
-    ceiling = int(getattr(runtime.config, "context_budget_replay_max_bytes", 65536) or 65536)
+def _effective_replay_budget_bytes(runtime: Any) -> int | None:
+    """Resolve explicit replay ceilings; absent ceilings defer to request allocation."""
+    ceiling = int(runtime.config.context_budget_replay_max_bytes)
     knob = runtime.session_plan.manifest.context.history.replay_max_bytes
-    if knob is None:
-        return max(0, ceiling)
-    if knob <= 0:
-        return max(0, ceiling)
-    return max(0, min(ceiling, knob))
+    limits = [value for value in (ceiling, knob) if value is not None and value > 0]
+    return min(limits) if limits else None
 
 
 def build_turn_hooks(

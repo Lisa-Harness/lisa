@@ -1267,9 +1267,11 @@ class TestProjectionPreviewScale:
     def test_previews_keep_full_scale_at_any_overage(self, overage: int) -> None:
         from sdk.thread._results import project_tool_messages
 
-        projected = project_tool_messages(
-            self._messages(_TOOL_CONTEXT_BYTES + overage), "task", lambda r: "r" + "0" * 64
-        )
+        messages = self._messages(_TOOL_CONTEXT_BYTES + overage)
+        projected = project_tool_messages(messages, "task", lambda r: "r" + "0" * 64)
+        if overage == 0:
+            assert projected == messages, "exact-fit payloads must not be pre-reduced"
+            return
         heads = self._preview_heads(projected)
         assert heads and all(head == 600 for head in heads)
 

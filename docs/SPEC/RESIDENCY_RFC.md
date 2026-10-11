@@ -35,9 +35,57 @@ references retained in memory and recorded under `turn_input.calls`. Read those
 references through the thread readout to recover the request.
 
 This does not yet replace iteration/step-cap continuation or entry-operation
-approval recovery. The existing replay lane and tool-window-share limits also
-remain; a full-request allocator that accounts for schemas, non-tool history,
-and output reserve is still required before claiming maximum-window residency.
+approval recovery.
+
+## Whole-request allocation
+
+The kernel now fits each primary turn-loop request through
+[`fit_request_context`](../../kernel/src/kernel/context/request_budget.py).
+There is no fixed tool-result window share. The allocation accounts for
+serialized messages (including system text and tool-call arguments), schemas,
+structured-output instructions, and the actual per-call completion ceiling.
+It reserves `CONTEXT_REQUEST_MARGIN_SHARE` of the declared model window
+(default 5%) for counting/framing uncertainty. If required input alone crowds
+the output ceiling, that ceiling is tightened explicitly in the recorded
+budget; required content is never silently dropped.
+
+Full permitted results remain resident while the complete request fits.
+Under pressure, the allocator searches a fitting result-byte allowance and
+recounts the projected request, including reference and inventory overhead.
+It additionally recovers up to one margin's worth of append headroom to
+avoid reducing history on every subsequent append. Results allocate newest
+first, reserving space for older references before spending on full payloads.
+Previously referenced results do not automatically re-expand. This is
+recency-based residency, not a general access-tracked LRU implementation.
+Truncation retries cannot borrow space already allocated to input.
+
+The SDK tokenizes the serialized request locally with the registered
+`tiktoken` encoding for recognized model IDs. Provider-specific framing and
+schema translation still make this a request estimate, not an exact wire
+count. Unknown tokenizers use an explicitly labelled UTF-8-byte/3 estimate.
+Provider-reported input usage is compared with the count; underestimates
+increase a per-model multiplier for subsequent requests. That multiplier
+survives approval checkpoints. Estimates and the safety margin do not
+guarantee that every unrecognized tokenizer or multimodal payload fits.
+
+Exact request snapshots include `context_budget`: window, requested/actual
+completion ceiling, safety margin, pressure headroom, required/input tokens,
+result-byte allowance, counting method, and reduction flag. Runtime logs
+also compare counted and observed input tokens.
+
+Replay no longer pre-reduces each entry against the SDK's 64KB default.
+The host replay ceiling defaults to zero (no independent cap); the core
+default session likewise omits `context.history.replay_max_bytes`. Explicit
+host/session ceilings still apply, choosing the tighter finite limit.
+The p920 example session's 24KB override has been removed. Lane budgets
+for other prompt-assembly sections remain; this change fills remaining
+capacity with tool results rather than redesigning those sections.
+
+The rules below describe the original RFC. Whole-request pressure allocation
+supersedes its threshold-first stubbing and turn-boundary-only allocation
+proposals. Durable projection restoration across ordinary new turns,
+general access-tracked LRU, non-tool history reduction, and provider-native
+exact counting remain follow-up work.
 
 ## Principle
 

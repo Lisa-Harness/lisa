@@ -198,17 +198,11 @@ async def test_model_projection_preserves_raw_history_and_records_actual_request
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("context_window", "expected"), [(400_000, 400_000), (0, 131_072)])
-async def test_projection_budget_is_sized_from_the_model_context_window(
-    context_window: int, expected: int
+@pytest.mark.parametrize("context_window", [400_000, 0])
+async def test_projection_preserves_all_payload_when_whole_request_fits(
+    context_window: int,
 ) -> None:
-    """The in-turn tool-result budget follows the effective model's window.
-
-    A fixed 64KB budget with an 8KB per-result cap ignored the model: a
-    400K-token coding model re-read the same 12-15KB files until the
-    iteration cap (2026-10-09 turn-622). An undeclared window falls back to
-    ``context_default_window_tokens``.
-    """
+    """An ample or default model window need not reduce an 80KB result."""
     from types import SimpleNamespace
 
     budgets: list[int] = []
@@ -234,9 +228,17 @@ async def test_projection_budget_is_sized_from_the_model_context_window(
                 context_window=context_window,
             ),
         ),
-        context=ContextHooks(project_messages=project),
+        context=ContextHooks(
+            project_messages=project,
+            prior_messages=lambda: [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "read", "function": {"name": "read", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": "read", "content": "x" * 80_000},
+            ],
+        ),
         context_seams=ContextSeams(provider_gateways=StubGatewayProvider(complete_fn)),
     )
     await run_turn(mode_id="default", query="hello", hooks=hooks)
-    # 0.25 of the window at 4 chars per token.
-    assert budgets == [expected]
+    assert budgets == [80_000]

@@ -283,7 +283,7 @@ def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path
     assert transcript[-1]["content"] == original
     assert project_thread_messages(transcript, "task-1", thread_path=thread) == live
     _append(thread, "read", transcript=transcript, provenance={"task_id": "task-1"})
-    replayed = build_open_task_messages(thread_path=thread)
+    replayed = build_open_task_messages(thread_path=thread, budget_bytes=65536)
     replay_stub = json.loads(
         next(message for message in replayed if message["role"] == "tool")["content"]
     )

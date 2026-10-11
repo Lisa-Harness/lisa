@@ -174,22 +174,26 @@ def build_open_task_messages(
         provenance = entry.get("provenance") or {}
         if provenance.get("source") in _APPROVAL_SOURCES:
             if provenance.get("approval_request_id") not in paired_ids:
+                replay = _entry_messages(entry, _thread_redaction)
                 messages.extend(
                     project_thread_messages(
-                        _entry_messages(entry, _thread_redaction),
+                        replay,
                         str(provenance.get("task_id") or ""),
                         thread_path=thread_path,
+                        budget_bytes=_entry_tool_bytes(replay),
                     )
                 )
             continue
         approved_result = _paired_approval_result(entry, approvals)
         if approved_result is not None:
             paired_ids.add(str(provenance["pending_approval_request_id"]))
+        replay = _entry_messages(entry, _thread_redaction, approved_result=approved_result)
         messages.extend(
             project_thread_messages(
-                _entry_messages(entry, _thread_redaction, approved_result=approved_result),
+                replay,
                 str(provenance.get("task_id") or ""),
                 thread_path=thread_path,
+                budget_bytes=_entry_tool_bytes(replay),
             )
         )
     if budget_bytes is not None:
@@ -198,6 +202,18 @@ def build_open_task_messages(
         # whole replayed set, collapsing the oldest tool groups into the
         # evidence inventory by address so the newest stays resident.
         messages = project_thread_messages(
-            messages, "", thread_path=thread_path, budget_bytes=budget_bytes
+            messages,
+            str((entries[-1].get("provenance") or {}).get("task_id") or "") if entries else "",
+            thread_path=thread_path,
+            budget_bytes=budget_bytes,
         )
     return messages
+
+
+def _entry_tool_bytes(messages: list[dict[str, Any]]) -> int:
+    """Replay admits complete payloads; the kernel budgets the assembled request."""
+    return sum(
+        len(str(message.get("content") or "").encode("utf-8"))
+        for message in messages
+        if message.get("role") == "tool"
+    )

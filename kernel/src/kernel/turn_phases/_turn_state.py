@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolResult
+from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
@@ -459,6 +460,8 @@ class _TurnState:
     suspension_reason: str = ""
     provider_messages: list[dict[str, Any]] = field(default_factory=list)
     projected_message_count: int = 0
+    request_context_budget: RequestContextBudget | None = None
+    request_token_scales: dict[str, float] = field(default_factory=dict)
 
 
 # ── Closure-free helper functions ──────────────────────────────────────────

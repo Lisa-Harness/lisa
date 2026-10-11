@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -335,12 +335,9 @@ class Settings(BaseSettings):
     # ``context_window`` (tokens). Shared by the context mapper and the
     # tool-result projection so both size against the same window.
     context_default_window_tokens: int = 131072
-    # Share of the model's context window the provider-only tool-result
-    # projection keeps resident each model call. A fixed 64KB ceiling
-    # (≈16K tokens) was smaller than an ordinary coding working set, so
-    # earlier reads were stubbed and re-read until the iteration cap
-    # (2026-10-09 turn 622). Override via ``TOOL_CONTEXT_WINDOW_SHARE``.
-    tool_context_window_share: float = 0.25
+    # Provider framing/token-count uncertainty reserve. Tool results use
+    # the remainder after complete request input and output reservations.
+    context_request_margin_share: float = Field(default=0.05, ge=0, lt=1)
 
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
@@ -443,7 +440,7 @@ class Settings(BaseSettings):
         "chat_mode_dense_content_min_chars",
         "context_budget_token_char_ratio",
         "context_default_window_tokens",
-        "tool_context_window_share",
+        "context_request_margin_share",
         mode="before",
     )
     @classmethod

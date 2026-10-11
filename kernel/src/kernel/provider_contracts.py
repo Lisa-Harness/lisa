@@ -65,6 +65,30 @@ def flatten_system_prompt_segments(
 
 
 @dataclass(slots=True)
+class RequestTokenCount:
+    """Input size plus the counting method; estimates must be labelled as such."""
+
+    tokens: int
+    method: str
+
+
+@dataclass(slots=True)
+class RequestContextBudget:
+    """Auditable whole-request allocation, excluding no input surfaces."""
+
+    window_tokens: int
+    requested_completion_tokens: int
+    completion_tokens: int
+    margin_tokens: int
+    pressure_headroom_tokens: int
+    required_tokens: int
+    input_tokens: int
+    tool_budget_bytes: int
+    counting_method: str
+    reduced: bool
+
+
+@dataclass(slots=True)
 class CompletionRequest:
     """One normalized completion request sent through a provider gateway."""
 
@@ -80,6 +104,7 @@ class CompletionRequest:
     #: the producer guarantees the segment texts, joined with ``\\n\\n``, are
     #: byte-identical to those system-role contents.
     system_prompt_segments: tuple[SystemPromptSegment, ...] = ()
+    context_budget: RequestContextBudget | None = None
 
 
 @dataclass(slots=True)

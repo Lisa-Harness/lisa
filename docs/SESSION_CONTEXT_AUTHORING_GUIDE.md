@@ -125,8 +125,9 @@ context:
     # replayed verbatim for the open task before the rest collapse to
     # recoverable ref-stubs (the stubs re-expand via thread_read_content;
     # nothing is lost). Tighten-only against the host ceiling
-    # (LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES, default 65536); omit to keep
-    # the host ceiling.
+    # (LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES, default 0 = no separate cap).
+    # Omit this knob to let replay and live results fill the request's
+    # remaining model window after input framing and output reservations.
     replay_max_bytes: 32768
     # Thread digest pushed into the retrieval lane each turn (all defaults shown)
     digest:

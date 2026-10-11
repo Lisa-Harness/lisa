@@ -346,11 +346,11 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
                 display_name="Small Model",
                 reasoning_model=False,
                 thinking_model=False,
-                context_window=6000,
+                context_window=9000,
             ),
         ),
     )
-    # context_window 6000 caps the doubled budget at 6000 (not 8192).
+    # The retry uses only the space left after input and the safety margin.
     # Suppress the routing hint (same seam as the rescue test above) so
     # the forced transition cannot consume a third stubbed stream call.
     with patch(
@@ -363,7 +363,8 @@ async def test_turn_runner_truncated_stream_retry_respects_context_cap() -> None
             hooks=hooks,
         )
 
-    assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
+    budget = result.model_requests[0]["context_budget"]
+    assert calls == [4096, 9000 - budget["input_tokens"] - budget["margin_tokens"]]
     assert "partial" in result.response_text
 
 
@@ -586,11 +587,11 @@ async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> 
                 display_name="Small Model",
                 reasoning_model=False,
                 thinking_model=False,
-                context_window=6000,
+                context_window=9000,
             ),
         ),
     )
-    # context_window 6000 caps the doubled budget at 6000 (not 8192).
+    # The retry uses only the space left after input and the safety margin.
     with patch(
         "kernel.turn_runner._compute_capability_routing_hint",
         return_value="",
@@ -601,7 +602,8 @@ async def test_turn_runner_truncated_completion_retry_respects_context_cap() -> 
             hooks=hooks,
         )
 
-    assert calls == [4096, 6000], f"retry budget must cap at context_window, got {calls}"
+    budget = result.model_requests[0]["context_budget"]
+    assert calls == [4096, 9000 - budget["input_tokens"] - budget["margin_tokens"]]
     assert "complete answer" in result.response_text
 
 

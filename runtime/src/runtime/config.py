@@ -53,11 +53,8 @@ LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
 # ── Default values ────────────────────────────────────────────────────
 
 _DEFAULT_THREAD_SEGMENT_TURNS = 256
-#: Host ceiling for the turn-start replay working set (bytes). Matches the
-#: projection module's per-turn tool-result ceiling so default turns
-#: behave as they did before the budget existed; sessions tighten via
-#: ``context.history.replay_max_bytes`` (never raise past this).
-_DEFAULT_REPLAY_BUDGET_BYTES = 65536
+#: Zero defers replay residency to the whole-request context allocator.
+_DEFAULT_REPLAY_BUDGET_BYTES = 0
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
 _PROFILES_SUBDIR_NAME = "profiles"
@@ -441,8 +438,8 @@ class HostConfig:
     # Ceiling for the turn-start replay working set (bytes): the total
     # tool-result bytes replayed verbatim for the open task before the
     # rest collapse to recoverable ref-stubs (residency by allocation,
-    # R2). Default matches the sdk projection ceiling so ordinary turns
-    # are unchanged; session front matter may tighten via
+    # R2). Zero (default) defers to whole-request allocation. Session
+    # front matter may impose an explicit ceiling via
     # ``context.history.replay_max_bytes`` but never raise past this.
     # Override via ``LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES``.
     context_budget_replay_max_bytes: int = _DEFAULT_REPLAY_BUDGET_BYTES

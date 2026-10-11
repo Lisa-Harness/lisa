@@ -3,10 +3,8 @@
 Pins that ``build_turn_hooks`` wires ``prior_messages`` to bound the
 replayed tool-result working set by the session plan's
 ``context.history.replay_max_bytes`` knob (tighten-only against the host
-``context_budget_replay_max_bytes`` ceiling; absent knob keeps the host
-ceiling). Before this wiring, the replay path passed no budget and the
-open task's sub-threshold tool results re-entered context verbatim,
-growing linearly with task length.
+``context_budget_replay_max_bytes`` ceiling). Without an explicit ceiling,
+replay stays full until the kernel allocates the complete model request.
 """
 
 from __future__ import annotations
@@ -82,9 +80,7 @@ def _tool_bytes(messages: list[dict[str, object]]) -> int:
 def _runtime_with_history_knob(tmp_path: Path, replay_max_bytes: int | None) -> object:
     """Build a runtime whose compiled session history knob is forced.
 
-    ``build_test_runtime`` compiles the core default session (which sets
-    ``replay_max_bytes: 32768``), so every case explicitly sets the knob —
-    including ``None`` to model a session that does not declare it.
+    Each case explicitly selects a ceiling or defers to request allocation.
     """
     runtime = build_test_runtime(tmp_path, user_slug="user", surface_type="dm", surface_id="s")
     plan = runtime.session_plan
@@ -115,19 +111,17 @@ def test_prior_messages_bounds_working_set_to_history_knob(tmp_path: Path) -> No
     assert stub_refs, "expected over-budget results to replay as ref-stubs"
 
 
-def test_prior_messages_core_default_session_bounds_replay(tmp_path: Path) -> None:
-    """The core default session ships 32768: an unmodified runtime (no knob
-    injection) bounds a 36000-byte working set via its compiled session."""
+def test_prior_messages_core_default_session_defers_to_request_budget(tmp_path: Path) -> None:
+    """The core default admits complete replay for whole-request allocation."""
     runtime = build_test_runtime(tmp_path, user_slug="user", surface_type="dm", surface_id="s")
-    assert runtime.session_plan.manifest.context.history.replay_max_bytes == 32768, (
-        "core default session must declare replay_max_bytes: 32768"
-    )
+    assert runtime.session_plan.manifest.context.history.replay_max_bytes is None
     _seed_open_task(runtime.paths.thread_path)
 
     hooks = build_turn_hooks(runtime, context=None, transport=None)
 
     messages = hooks.context.prior_messages()
-    assert _tool_bytes(messages) < 36000, "32768 budget must collapse the 36000-byte set"
+    assert _tool_bytes(messages) == 36000
+    assert hooks.models.count_request_tokens is not None
 
 
 def test_prior_messages_host_ceiling_when_knob_absent(
@@ -158,3 +152,45 @@ def test_prior_messages_knob_cannot_exceed_host_ceiling(
 
     messages = hooks.context.prior_messages()
     assert _tool_bytes(messages) <= 12288
+
+
+def test_default_replay_and_live_results_share_actual_remaining_window(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from kernel.turn_phases._turn_state import _TurnState
+    from kernel.turn_runner import _project_provider_messages
+    from runtime.thread import load_result_object
+
+    runtime = _runtime_with_history_knob(tmp_path, replay_max_bytes=None)
+    _seed_open_task(runtime.paths.thread_path, result_size=30_000)
+    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    replay = hooks.context.prior_messages()
+    assert _tool_bytes(replay) == 180_000, "default replay must not pre-trim to 64KB"
+    messages = [{"role": "system", "content": "fixed"}, *replay]
+    state = _TurnState()
+    large = SimpleNamespace(model_id="unknown", context_window=131_072)
+    fitted = _project_provider_messages(state, hooks, messages, large, max_tokens=4096)
+    assert fitted == messages, "ample window must preserve all admitted evidence"
+    assert state.request_context_budget.reduced is False
+
+    small = SimpleNamespace(model_id="unknown", context_window=32_768)
+    pressured = _project_provider_messages(state, hooks, messages, small, max_tokens=4096)
+    budget = state.request_context_budget
+    assert budget.reduced is True
+    assert budget.input_tokens + budget.margin_tokens + budget.completion_tokens <= 32_768
+    assert _tool_bytes(pressured) < 180_000
+    references = [
+        json.loads(str(m["content"]))["ref"]
+        for m in pressured
+        if m.get("role") == "tool" and str(m.get("content") or "").startswith('{"ref"')
+    ]
+    assert references
+    assert all(
+        load_result_object(runtime.paths.thread_path, ref)["content"] == "x" * 30_000
+        for ref in references
+    )
+    restored = _TurnState()
+    restored.provider_messages = pressured
+    restored.projected_message_count = len(messages)
+    expanded_window = _project_provider_messages(restored, hooks, messages, large, max_tokens=4096)
+    assert expanded_window == pressured, "growing capacity must not rewrite old references"

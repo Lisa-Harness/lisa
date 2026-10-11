@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         IntrospectSnapshot,
         OperationResult,
     )
+    from kernel.provider_contracts import CompletionRequest, RequestTokenCount
     from kernel.recovery import RecoveryService
     from kernel.seams.protocols import RouteCoordinator, StateProvider
     from kernel.slice import SliceOutcome, SlicePolicy, SliceTuning
@@ -75,15 +76,15 @@ class ModelHooks:
 
     #: Persist an exact request synchronously before dispatch; retain only its reference.
     record_request: Callable[[dict[str, Any]], str] | None = None
+    count_request_tokens: Callable[[CompletionRequest], RequestTokenCount] | None = None
 
 
 # ── ContextHooks ────────────────────────────────────────────────────────
 class MessageProjector(Protocol):
     """Provider-only projection of one model call's messages.
 
-    ``budget_bytes`` is the resident tool-result budget the kernel sized
-    from the active model's context window
-    (:func:`kernel.context.context_budget.tool_context_budget_bytes`).
+    ``budget_bytes`` is the resident tool-result capacity left after the
+    kernel accounts for the complete request and completion reserve.
     """
 
     def __call__(
