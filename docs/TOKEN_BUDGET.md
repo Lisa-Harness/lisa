@@ -366,6 +366,15 @@ nearly every later call reduce again, rewriting early messages and missing
 the provider prefix cache. The slack lets the following calls append to an
 unchanged prefix until the next reduction.
 
+### Mode-stable prefix
+
+The system prompt is mode-specific, so a mode switch misses the provider
+cache. A host started per message used to re-enter `start_mode` every turn,
+then hand off back to the working mode: one extra routing call plus a cold
+prefix per user message. The host now restores the mode the latest thread
+entry left active (see `docs/ROUTER_DESIGN.md`), so follow-up turns start in
+the mode whose prefix is already cached.
+
 ### Rollback
 
 `LISA_PROMPT_CACHE_ENABLED=false` flattens segments to the legacy

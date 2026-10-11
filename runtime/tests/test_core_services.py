@@ -853,6 +853,35 @@ async def test_resume_phrase_after_completed_turn_stays_in_current_mode(tmp_path
     assert mode == "default"
 
 
+def _restarted_mode(tmp_path: Path, provenance: dict[str, str] | None) -> str:
+    from runtime.thread import append_thread_entry
+
+    first = _make_runtime(tmp_path)
+    if provenance is not None:
+        append_thread_entry(
+            thread_path=first.paths.thread_path,
+            user_slug=first.config.user_slug,
+            mode_id="coding_plan",
+            query="fix issue 6",
+            response_text="handing off",
+            provenance=provenance,
+            handoff_to="coding_execute",
+        )
+    return _make_runtime(tmp_path).session.current_mode_id
+
+
+def test_restarted_host_resumes_mode_the_last_turn_handed_off_to(tmp_path: Path) -> None:
+    assert _restarted_mode(tmp_path, {"source": "observed"}) == "coding_execute"
+
+
+def test_restarted_host_resumes_host_approved_turn_owner(tmp_path: Path) -> None:
+    assert _restarted_mode(tmp_path, {"source": "host-approved"}) == "coding_plan"
+
+
+def test_restarted_host_with_empty_thread_uses_start_mode(tmp_path: Path) -> None:
+    assert _restarted_mode(tmp_path, None) == "default"
+
+
 # ── Token accounting ──────────────────────────────────────────────────
 
 

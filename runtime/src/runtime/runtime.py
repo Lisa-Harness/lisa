@@ -43,6 +43,7 @@ from runtime.providers import ProviderRegistry
 from runtime.runtime_paths import HostPaths
 from runtime.services import HostServices
 from runtime.session_context import compile_selected_session_plan
+from runtime.thread import latest_turn_owner_mode
 
 logger = logging.getLogger(__name__)
 
@@ -704,7 +705,13 @@ class HostRuntime:
         self.providers = ProviderRegistry()
         self.services = HostServices.build(self.paths.data_dir)
         self.session = SessionState()
-        self.session.current_mode_id = self.session_plan.manifest.routing.start_mode
+        # A host started per message must resume the routing state the
+        # previous process left; re-entering the start mode re-routed every
+        # turn and missed the owner mode's provider cache prefix.
+        self.session.current_mode_id = (
+            latest_turn_owner_mode(thread_path=self.paths.thread_path)
+            or self.session_plan.manifest.routing.start_mode
+        )
         self.resources = RuntimeResources(self)
 
         # ── Copilot customizations cache ──────────────────────────────

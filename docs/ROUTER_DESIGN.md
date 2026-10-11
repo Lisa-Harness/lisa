@@ -118,11 +118,17 @@ class SessionRouting(_StrictSessionModel):
 ```
 
 `start_mode` defaults to `"default"` and seeds `current_mode_id` at runtime
-initialization:
+initialization when the thread is empty. Otherwise the host restores the mode
+the latest turn left active (its `handoff_to`, or its `mode_id` for
+host-approved entries), so a host started per message keeps the same routing
+state as a long-lived one:
 
 ```python
 # runtime/runtime.py
-self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
+self.session.current_mode_id = (
+    latest_turn_owner_mode(thread_path=self.paths.thread_path)
+    or self.session_plan.manifest.routing.start_mode
+)
 ```
 
 The `start_mode` key is a **bypass pin**: when `current_mode_id == start_mode`

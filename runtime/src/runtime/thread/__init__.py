@@ -163,6 +163,22 @@ def paused_turn_owner_mode(*, thread_path: Path | None) -> str:
     return str(last.get("handoff_to") or last.get("mode_id") or "")
 
 
+def latest_turn_owner_mode(*, thread_path: Path | None) -> str:
+    """Return the mode the latest turn left active, or ``""`` for an empty thread.
+
+    A long-lived host keeps this as ``current_mode_id``; a host started per
+    message recovers it here so the next turn does not re-enter the start
+    mode, re-route, and miss the owner mode's provider cache prefix.
+    """
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=1)
+    if not entries:
+        return ""
+    last = entries[-1]
+    if (last.get("provenance") or {}).get("source") in {"host-approved", "host-approved-failed"}:
+        return str(last.get("mode_id") or "")
+    return str(last.get("handoff_to") or last.get("mode_id") or "")
+
+
 def next_turn_index(*, thread_path: Path | None) -> int:
     """Return the 0-based global turn index the next appended entry will receive.
 
@@ -364,6 +380,7 @@ __all__ = [
     "build_open_task_messages",
     "build_recent_thread_excerpt",
     "build_thread_manifest",
+    "latest_turn_owner_mode",
     "load_recent_thread_entries",
     "load_thread_range",
     "next_turn_index",
