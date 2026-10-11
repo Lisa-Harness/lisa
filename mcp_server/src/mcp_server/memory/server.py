@@ -37,9 +37,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from sdk.layout import DATA_DIR
 from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
+from sdk.memory.embeddings import OpenAIEmbeddingProvider
 from sdk.memory.store import SqliteMemoryStore
 
-from mcp_server.memory.embeddings import HttpEmbeddingProvider, resolve_embedding_config
+from mcp_server.memory.embeddings import resolve_embedding_config
 
 __all__ = ["MemoryDeps", "init_store", "main", "mcp", "set_deps_for_test"]
 
@@ -93,7 +94,7 @@ def _resolve_deps(ctx: Context[Any, Any] | None) -> MemoryDeps:
 @dataclass
 class _MemoryConfig:
     data_dir: Path = Path()
-    embedding_provider: HttpEmbeddingProvider | None = None
+    embedding_provider: OpenAIEmbeddingProvider | None = None
     embedding_dimension: int = 1536
     backup_keep: int = DEFAULT_KEEP_BACKUPS
 
@@ -107,7 +108,7 @@ async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
 
     When an embedding model is configured (``--embedding-model`` /
     ``LISA_EMBEDDING_MODEL``), the store is constructed with an
-    :class:`HttpEmbeddingProvider` so semantic recall populates ``memory_vec``.
+    :class:`OpenAIEmbeddingProvider` so semantic recall populates ``memory_vec``.
     When absent, the store stays lexical-only (no vector chunks) — the
     previous default behavior.
 
@@ -504,7 +505,7 @@ def main() -> None:
     Parses the standard CLI contract via the shared ``run()`` helper.
     ``--data-dir`` is required; the store's SQLite file is derived from it.
     ``--embedding-model`` / ``--embedding-endpoint`` optionally wire an
-    :class:`HttpEmbeddingProvider` for semantic recall.
+    :class:`OpenAIEmbeddingProvider` for semantic recall.
     """
     from mcp_server.config.cli import run
 

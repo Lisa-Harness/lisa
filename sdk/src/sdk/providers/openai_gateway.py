@@ -1007,7 +1007,9 @@ def extract_openai_embeddings(response: Any) -> list[list[float]]:
     """Extract embedding vectors from one OpenAI-style embeddings response."""
 
     vectors: list[list[float]] = []
-    for item in getattr(response, "data", []) or []:
+    for item in sorted(
+        getattr(response, "data", []) or [], key=lambda item: getattr(item, "index", 0)
+    ):
         raw_embedding = getattr(item, "embedding", None)
         if raw_embedding is None:
             continue
