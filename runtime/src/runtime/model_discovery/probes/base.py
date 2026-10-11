@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import is_reasoning_model
+from ..classify import is_reasoning_model, uses_prompt_cache_breakpoints
 from ..redact import classify_status, safe_http_error
 from ..types import (
     DiscoveredModel,
@@ -142,6 +142,7 @@ def _model(
         description=description,
         structured_reliability=structured_reliability,
         completion_api=completion_api,
+        prompt_cache_breakpoints=uses_prompt_cache_breakpoints(provider, model_id),
     )
 
 

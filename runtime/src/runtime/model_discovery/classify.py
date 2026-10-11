@@ -8,6 +8,7 @@ reasoning/low-latency tagging rules.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,22 @@ def is_gpt_5_family(model_id: str) -> bool:
     """
     value = model_id.strip().lower()
     return any(marker in value for marker in _GPT_5_FAMILY_MARKERS)
+
+
+_BREAKPOINT_CACHE_FAMILY = re.compile(r"gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})(?![\d])")
+
+
+def uses_prompt_cache_breakpoints(provider: str, model_id: str) -> bool:
+    """Heuristic: does the deployment cache only at prompt-cache breakpoints?
+
+    Azure GPT-5.6 and later families read cached prefixes only where a
+    breakpoint ends them (the implicit one on the latest message, plus
+    explicit ones). Older models reject the breakpoint field with a 400.
+    """
+
+    if provider.strip().lower() != "azure_openai":
+        return False
+    return bool(_BREAKPOINT_CACHE_FAMILY.search(model_id.strip().lower()))
 
 
 def is_local_provider(provider: str) -> bool:

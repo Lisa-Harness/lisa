@@ -484,17 +484,154 @@ def _add_prompt_cache_key(kwargs: dict[str, Any], request: CompletionRequest) ->
         kwargs["prompt_cache_key"] = request.prompt_cache_key
 
 
-async def _create_with_cache_key_fallback(
+_BREAKPOINT_FIELD = "prompt_cache_breakpoint"
+_EXPLICIT_BREAKPOINT = {"mode": "explicit"}
+# Azure reads at most the latest 50 breakpoints per request; one is reserved
+# for the stable system prefix so long tool loops never push it out.
+_MAX_BOUNDARY_BREAKPOINTS = 49
+# (provider, model_id) pairs whose deployment rejected explicit breakpoints.
+_PROMPT_CACHE_BREAKPOINTS_REJECTED: set[tuple[str, str]] = set()
+
+
+def _mark_breakpoint(message: dict[str, Any]) -> dict[str, Any]:
+    """Return ``message`` with an explicit cache breakpoint on its last text block."""
+
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content:
+            return message
+        block = {"type": "text", "text": content, _BREAKPOINT_FIELD: dict(_EXPLICIT_BREAKPOINT)}
+        return {**message, "content": [block]}
+    if isinstance(content, list):
+        for index in range(len(content) - 1, -1, -1):
+            part = content[index]
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+                marked = list(content)
+                marked[index] = {**part, _BREAKPOINT_FIELD: dict(_EXPLICIT_BREAKPOINT)}
+                return {**message, "content": marked}
+    return message
+
+
+def _split_system_at_stable_prefix(
+    message: dict[str, Any], segments: tuple[Any, ...]
+) -> dict[str, Any] | None:
+    """Split one system message into segment blocks, breakpoint on the last stable one.
+
+    Returns ``None`` when the segments do not reproduce the message text, so
+    the caller marks the whole message instead.
+    """
+
+    texts = [
+        (str(getattr(segment, "text", "") or ""), bool(getattr(segment, "is_stable", True)))
+        for segment in segments
+    ]
+    texts = [(text, stable) for text, stable in texts if text.strip()]
+    if not texts or message.get("content") != "\n\n".join(text for text, _ in texts):
+        return None
+    last_stable = max((i for i, (_, stable) in enumerate(texts) if stable), default=-1)
+    if last_stable < 0:
+        return None
+    blocks: list[dict[str, Any]] = []
+    for index, (text, _) in enumerate(texts):
+        separator = "\n\n" if index < len(texts) - 1 else ""
+        block: dict[str, Any] = {"type": "text", "text": text + separator}
+        if index == last_stable:
+            block[_BREAKPOINT_FIELD] = dict(_EXPLICIT_BREAKPOINT)
+        blocks.append(block)
+    return {**message, "content": blocks}
+
+
+def _uses_prompt_cache_breakpoints(request: CompletionRequest) -> bool:
+    target = _cache_key_target(request)
+    return (
+        bool(getattr(request.model_def, "prompt_cache_breakpoints", False))
+        and target[0] in _PROMPT_CACHE_KEY_PROVIDERS
+        and target not in _PROMPT_CACHE_BREAKPOINTS_REJECTED
+    )
+
+
+def add_prompt_cache_breakpoints(
+    messages: ChatMessages, segments: tuple[Any, ...] = ()
+) -> ChatMessages:
+    """Place explicit prompt-cache breakpoints where later requests can reuse a prefix.
+
+    Breakpoint-model caches (Azure GPT-5.6+) only read prefixes that end at a
+    breakpoint. Marks:
+
+    * the end of the stable system prefix, so a new message, a trimmed tool
+      result, or a changed routing hint still reuses the system + tools prefix;
+    * every message that ended an earlier request (the message right before
+      each assistant reply) plus the final message, so each tool-loop
+      iteration and any reduction rewrite reuses the longest unchanged prefix.
+
+    Positions are a pure function of the history, so a boundary marked in one
+    request is marked identically in every later request.
+    """
+
+    marked = list(messages)
+    leading_system = 0
+    while leading_system < len(marked) and marked[leading_system].get("role") in {
+        "system",
+        "developer",
+    }:
+        leading_system += 1
+    if leading_system:
+        last_system = leading_system - 1
+        split = (
+            _split_system_at_stable_prefix(marked[0], segments)
+            if leading_system == 1 and segments
+            else None
+        )
+        marked[last_system] = split or _mark_breakpoint(marked[last_system])
+    boundaries = [
+        index
+        for index in range(leading_system, len(marked))
+        if index == len(marked) - 1 or marked[index + 1].get("role") == "assistant"
+    ]
+    for index in boundaries[-_MAX_BOUNDARY_BREAKPOINTS:]:
+        if marked[index].get("role") != "assistant":
+            marked[index] = _mark_breakpoint(marked[index])
+    return marked
+
+
+def _strip_prompt_cache_breakpoints(messages: Any) -> Any:
+    if not isinstance(messages, list):
+        return messages
+    stripped: list[Any] = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and _BREAKPOINT_FIELD in part for part in content
+        ):
+            parts = [
+                {k: v for k, v in part.items() if k != _BREAKPOINT_FIELD}
+                if isinstance(part, dict)
+                else part
+                for part in content
+            ]
+            stripped.append({**message, "content": parts})
+            continue
+        stripped.append(message)
+    return stripped
+
+
+async def _create_with_cache_fallback(
     create: Callable[..., Awaitable[Any]], kwargs: dict[str, Any], request: CompletionRequest
 ) -> Any:
-    """Retry once without ``prompt_cache_key`` when a deployment rejects it."""
+    """Retry once without prompt-cache parameters a deployment rejects."""
     try:
         return await create(**kwargs)
     except Exception as exc:  # pylint: disable=broad-except
-        if "prompt_cache_key" not in kwargs or "prompt_cache_key" not in str(exc):
+        error = str(exc)
+        retry = dict(kwargs)
+        if "prompt_cache_key" in kwargs and "prompt_cache_key" in error:
+            _PROMPT_CACHE_KEY_REJECTED.add(_cache_key_target(request))
+            retry.pop("prompt_cache_key")
+        elif _BREAKPOINT_FIELD in error and _uses_prompt_cache_breakpoints(request):
+            _PROMPT_CACHE_BREAKPOINTS_REJECTED.add(_cache_key_target(request))
+            retry["messages"] = _strip_prompt_cache_breakpoints(kwargs.get("messages"))
+        else:
             raise
-    _PROMPT_CACHE_KEY_REJECTED.add(_cache_key_target(request))
-    retry = {key: value for key, value in kwargs.items() if key != "prompt_cache_key"}
     return await create(**retry)
 
 
@@ -533,6 +670,10 @@ def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]
         # leaves client-side validation to ``normalize_structured_content``.
         kwargs["response_format"] = type_to_response_format_param(request.response_format)
     _add_prompt_cache_key(kwargs, request)
+    if _uses_prompt_cache_breakpoints(request):
+        kwargs["messages"] = add_prompt_cache_breakpoints(
+            kwargs["messages"], tuple(getattr(request, "system_prompt_segments", ()) or ())
+        )
     return kwargs
 
 
@@ -910,13 +1051,8 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("prompt_tokens_details")
     )
-    cached_tokens = 0
-    if prompt_details is not None:
-        cached_tokens = coerce_non_negative_int(
-            getattr(prompt_details, "cached_tokens", None)
-            if not isinstance(prompt_details, dict)
-            else prompt_details.get("cached_tokens")
-        )
+    cached_tokens = _detail_tokens(prompt_details, "cached_tokens")
+    cache_write_tokens = _detail_tokens(prompt_details, "cache_write_tokens")
 
     completion_details = (
         getattr(raw_usage, "completion_tokens_details", None)
@@ -939,6 +1075,17 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         total_tokens=total_tokens,
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
+        cache_creation_tokens=cache_write_tokens,
+    )
+
+
+def _detail_tokens(details: Any, field: str) -> int:
+    """Read one token counter from a usage ``*_details`` object or dict."""
+
+    if details is None:
+        return 0
+    return coerce_non_negative_int(
+        details.get(field) if isinstance(details, dict) else getattr(details, field, None)
     )
 
 
@@ -974,13 +1121,8 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("input_tokens_details")
     )
-    cached_tokens = 0
-    if input_details is not None:
-        cached_tokens = coerce_non_negative_int(
-            getattr(input_details, "cached_tokens", None)
-            if not isinstance(input_details, dict)
-            else input_details.get("cached_tokens")
-        )
+    cached_tokens = _detail_tokens(input_details, "cached_tokens")
+    cache_write_tokens = _detail_tokens(input_details, "cache_write_tokens")
 
     output_details = (
         getattr(raw_usage, "output_tokens_details", None)
@@ -1003,6 +1145,7 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
         total_tokens=total_tokens,
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
+        cache_creation_tokens=cache_write_tokens,
     )
 
 
@@ -1246,7 +1389,7 @@ class AzureOpenAIGateway:
                 # client; the GA chat-completions client 404s it.
                 client = self._responses_client_factory()
                 name_map = build_responses_tool_name_map(request.tools or [])
-                response = await _create_with_cache_key_fallback(
+                response = await _create_with_cache_fallback(
                     client.responses.create, build_openai_responses_kwargs(request), request
                 )
                 content = normalize_structured_content(
@@ -1266,7 +1409,7 @@ class AzureOpenAIGateway:
                 # and fence/prose tolerance is handled client-side by
                 # ``normalize_structured_content`` instead of raising inside
                 # the SDK's ``parse`` helper.
-                response = await _create_with_cache_key_fallback(
+                response = await _create_with_cache_fallback(
                     client.chat.completions.create, kwargs, request
                 )
                 content = normalize_structured_content(
@@ -1380,7 +1523,7 @@ class OpenAICompatibleGateway:
             # and fence/prose tolerance is handled client-side by
             # ``normalize_structured_content`` instead of raising inside
             # the SDK's ``parse`` helper.
-            response = await _create_with_cache_key_fallback(
+            response = await _create_with_cache_fallback(
                 client.chat.completions.create, kwargs, request
             )
         except Exception as exc:  # pylint: disable=broad-except
@@ -1473,7 +1616,7 @@ class OpenAICompatibleGateway:
             }
         )
         try:
-            stream = await _create_with_cache_key_fallback(
+            stream = await _create_with_cache_fallback(
                 client.chat.completions.create, kwargs, request
             )
         except Exception as exc:  # pylint: disable=broad-except

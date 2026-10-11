@@ -273,22 +273,21 @@ def _apply_optional_model_fields(entry: dict[str, Any], model: DiscoveredModel) 
     Omitted when empty; ``pricing_currency`` skips the USD default and
     ``completion_api`` skips the chat_completions default.
     """
-    if model.cost_tier:
-        entry["cost_tier"] = model.cost_tier
-    if model.latency_tier:
-        entry["latency_tier"] = model.latency_tier
-    if model.context_window:
-        entry["context_window"] = model.context_window
-    if model.prompt_price:
-        entry["prompt_price"] = model.prompt_price
-    if model.completion_price:
-        entry["completion_price"] = model.completion_price
+    for field in (
+        "cost_tier",
+        "latency_tier",
+        "context_window",
+        "prompt_price",
+        "completion_price",
+        "description",
+        "structured_reliability",
+        "prompt_cache_breakpoints",
+    ):
+        value = getattr(model, field)
+        if value:
+            entry[field] = value
     if model.pricing_currency and model.pricing_currency != "USD":
         entry["pricing_currency"] = model.pricing_currency
-    if model.description:
-        entry["description"] = model.description
-    if model.structured_reliability:
-        entry["structured_reliability"] = model.structured_reliability
     if model.completion_api and model.completion_api != "chat_completions":
         entry["completion_api"] = model.completion_api
 

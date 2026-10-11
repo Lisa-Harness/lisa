@@ -21,6 +21,9 @@ class ManifestModelEntry:
     provider: str
     display_name: str
     completion_api: str = "chat_completions"
+    #: The provider caches only prefixes ending at a prompt-cache breakpoint
+    #: (Azure GPT-5.6+); the gateway then places explicit breakpoints.
+    prompt_cache_breakpoints: bool = False
     reasoning_model: bool = False
     thinking_model: bool = False
     aliases: frozenset[str] = frozenset()
@@ -456,6 +459,7 @@ def _parse_model_entry(
         provider=provider,
         display_name=display_name,
         completion_api=completion_api,
+        prompt_cache_breakpoints=bool(raw_model.get("prompt_cache_breakpoints", False)),
         reasoning_model=bool(raw_model.get("reasoning_model", False)),
         thinking_model=bool(raw_model.get("thinking_model", False)),
         aliases=frozenset(

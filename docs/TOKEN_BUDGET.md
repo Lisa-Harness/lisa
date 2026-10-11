@@ -355,14 +355,27 @@ rolling back context management.
 - **Anthropic:** `sdk.providers.anthropic_gateway` emits the stable prefix as
   system content blocks with an ephemeral `cache_control` breakpoint on the
   final stable block; the dynamic tail stays uncached.
-- **OpenAI / Azure:** implicit prefix caching — no explicit breakpoints, but
-  tool schemas are canonically sorted by function name
+- **OpenAI / Azure:** prefix caching. Tool schemas are canonically sorted by function name
   (`kernel.turn_phases._tool_schemas`) so the same mode produces a
   byte-identical tool payload across turns. Each request also carries an
   opaque per-conversation `prompt_cache_key` so its calls route to the same
   cache. A deployment that rejects the parameter is retried once without it
   and stops receiving it for the rest of the process. Other
   OpenAI-compatible backends never receive it.
+- **Azure GPT-5.6+ (`prompt_cache_breakpoints: true`):** these models only
+  reuse a prefix that ends at a cache breakpoint; the implicit one sits on
+  the latest message alone. The Chat Completions path therefore marks
+  explicit `prompt_cache_breakpoint` blocks at the end of the stable system
+  prefix (splitting the system message into segment blocks), on every
+  message that ended an earlier request (the one before each assistant
+  reply), and on the final message, keeping the latest 49 boundaries.
+  Positions depend only on the history, so later requests re-mark the same
+  prefixes. Discovery sets the flag for Azure `gpt-5.6`+ / `gpt-6`+;
+  older models reject the field, so a rejecting deployment is retried once
+  without breakpoints and not sent them again. Cache writes are billed on
+  these models and reported as `cache_write_tokens`, recorded as
+  `cache_creation_tokens`; `scripts/cache_report.py` shows them as
+  `written`.
 - **Gemini:** implicit caching only; explicit Cached Content resources are a
   separate follow-on (distinct lifecycle/TTL semantics).
 

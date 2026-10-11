@@ -76,6 +76,9 @@ class DiscoveredModel:
     # chat-completions path used by every other model. Forwarded to the
     # manifest entry so ``/models apply`` preserves it across re-discovery.
     completion_api: str = "chat_completions"
+    # Azure GPT-5.6+ caches only prefixes that end at a prompt-cache
+    # breakpoint; the manifest flag makes the gateway place them.
+    prompt_cache_breakpoints: bool = False
 
 
 @dataclass(frozen=True, slots=True)

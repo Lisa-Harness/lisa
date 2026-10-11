@@ -62,6 +62,12 @@ class StubModelDefinition:
     ``chat.completions.create``. Default ``"chat_completions"`` for backward
     compatibility with stubs that do not carry the field."""
 
+    prompt_cache_breakpoints: bool = False
+
+    """Forwarded from ``ManifestModelEntry.prompt_cache_breakpoints``: the
+    OpenAI-family gateway places explicit prompt-cache breakpoints for
+    models whose cache only reads prefixes ending at one (Azure GPT-5.6+)."""
+
     capabilities: tuple[str, ...] = ()
 
     """``ModelCapability`` strings (``text``, ``tools``, ``code``, ...) the
@@ -416,6 +422,7 @@ def resolve_model(
         context_window=resolved.context_window,
         max_completion_tokens=getattr(resolved, "max_completion_tokens", 0),
         completion_api=resolved.completion_api,
+        prompt_cache_breakpoints=resolved.prompt_cache_breakpoints,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,
         base_url=getattr(resolved, "base_url", ""),

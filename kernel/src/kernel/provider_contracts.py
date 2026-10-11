@@ -123,7 +123,8 @@ class CompletionUsage:
 
     ``cache_creation_tokens`` is the provider-reported prompt-cache
     *creation/population* count — tokens paid at the write rate, not the
-    read rate. Only Anthropic surfaces it today; it defaults to 0 for
+    read rate. Anthropic (``cache_creation_input_tokens``) and Azure
+    GPT-5.6+ (``cache_write_tokens``) surface it; it defaults to 0 for
     providers that do not report it.
 
     ``duration_ms`` captures wall-clock time spent on the provider call.

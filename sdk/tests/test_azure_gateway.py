@@ -12,11 +12,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from kernel.provider_contracts import CompletionRequest
+from kernel.provider_contracts import CompletionRequest, SystemPromptSegment
 from sdk.providers.openai_gateway import (
     AzureOpenAIGateway,
+    add_prompt_cache_breakpoints,
     build_openai_completion_kwargs,
     build_responses_tool_name_map,
+    extract_openai_completion_usage,
+    extract_responses_usage,
     restore_responses_tool_names,
 )
 
@@ -259,3 +262,143 @@ class TestPromptCacheKey:
         await gateway.complete(request)
         assert "prompt_cache_key" not in completions.calls[-1]
         assert len(completions.calls) == 3
+
+
+# ── prompt-cache breakpoints (Azure GPT-5.6+) ────────────────────────
+
+
+_BP = {"mode": "explicit"}
+
+
+def _breakpointed(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(part, dict) and "prompt_cache_breakpoint" in part for part in content
+    )
+
+
+def _breakpoint_model(**overrides: Any) -> Any:
+    return _model_def(
+        **{"model_id": "gpt-5.6-terra", "prompt_cache_breakpoints": True, **overrides}
+    )
+
+
+class TestPromptCacheBreakpoints:
+    def test_system_split_at_stable_prefix(self) -> None:
+        segments = (
+            SystemPromptSegment("persona"),
+            SystemPromptSegment("tools guide"),
+            SystemPromptSegment("routing hint", stability="ephemeral"),
+        )
+        messages = [
+            {"role": "system", "content": "persona\n\ntools guide\n\nrouting hint"},
+            {"role": "user", "content": "hi"},
+        ]
+        marked = add_prompt_cache_breakpoints(messages, segments)
+        blocks = marked[0]["content"]
+        assert "".join(block["text"] for block in blocks) == messages[0]["content"]
+        assert [block.get("prompt_cache_breakpoint") for block in blocks] == [None, _BP, None]
+
+    def test_system_marked_whole_when_segments_do_not_match(self) -> None:
+        messages = [{"role": "system", "content": "other"}, {"role": "user", "content": "hi"}]
+        marked = add_prompt_cache_breakpoints(messages, (SystemPromptSegment("persona"),))
+        assert marked[0]["content"] == [
+            {"type": "text", "text": "other", "prompt_cache_breakpoint": _BP}
+        ]
+
+    def test_boundaries_before_each_assistant_and_final_message(self) -> None:
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "c3", "content": "r3"},
+        ]
+        marked = add_prompt_cache_breakpoints(messages)
+        assert [_breakpointed(message) for message in marked] == [
+            True,
+            True,
+            False,
+            False,
+            True,
+            False,
+            True,
+        ]
+        # Unmarked messages are passed through untouched.
+        assert marked[3] is messages[3]
+
+    def test_boundary_count_capped_to_latest(self) -> None:
+        messages: list[dict[str, Any]] = [{"role": "system", "content": "sys"}]
+        for index in range(60):
+            messages.append({"role": "user", "content": f"u{index}"})
+            messages.append({"role": "assistant", "content": f"a{index}"})
+        messages.append({"role": "user", "content": "last"})
+        marked = add_prompt_cache_breakpoints(messages)
+        flags = [_breakpointed(message) for message in marked]
+        assert flags[0] is True
+        assert sum(flags) == 50
+        assert flags[-1] is True
+        assert flags[1] is False
+
+    def test_only_flagged_openai_family_models_get_breakpoints(self) -> None:
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        flagged = build_openai_completion_kwargs(_request(messages, model_def=_breakpoint_model()))
+        assert _breakpointed(flagged["messages"][0])
+        plain = build_openai_completion_kwargs(_request(messages))
+        assert plain["messages"] == messages
+        other = build_openai_completion_kwargs(
+            _request(messages, model_def=_breakpoint_model(provider="ollama"))
+        )
+        assert other["messages"] == messages
+
+    @pytest.mark.asyncio
+    async def test_rejected_breakpoints_are_stripped_and_not_resent(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class _Rejecting:
+            async def create(self, **kwargs: Any) -> Any:
+                calls.append(kwargs)
+                if any(_breakpointed(message) for message in kwargs["messages"]):
+                    raise ValueError("Unrecognized parameter: prompt_cache_breakpoint")
+                return _chat_response()
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=_Rejecting()))
+        gateway = AzureOpenAIGateway(complete_client_factory=lambda: client)
+        request = _request(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
+            model_def=_breakpoint_model(model_id="gpt-5.6-rejecting"),
+        )
+
+        assert (await gateway.complete(request)).content == "ok"
+        assert [any(_breakpointed(m) for m in c["messages"]) for c in calls] == [True, False]
+
+        await gateway.complete(request)
+        assert len(calls) == 3
+        assert not any(_breakpointed(m) for m in calls[-1]["messages"])
+
+
+class TestCacheWriteUsage:
+    def test_chat_usage_reads_cache_writes(self) -> None:
+        usage = SimpleNamespace(
+            prompt_tokens=1000,
+            completion_tokens=10,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=600, cache_write_tokens=300),
+        )
+        parsed = extract_openai_completion_usage(SimpleNamespace(usage=usage))
+        assert parsed is not None
+        assert parsed.cached_tokens == 600
+        assert parsed.cache_creation_tokens == 300
+
+    def test_responses_usage_reads_cache_writes(self) -> None:
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=10,
+            input_tokens_details=SimpleNamespace(cached_tokens=400, cache_write_tokens=500),
+        )
+        parsed = extract_responses_usage(SimpleNamespace(usage=usage))
+        assert parsed is not None
+        assert parsed.cached_tokens == 400
+        assert parsed.cache_creation_tokens == 500

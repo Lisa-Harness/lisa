@@ -224,3 +224,35 @@ def test_load_manifest_preserves_thinking_model_flag(tmp_path: Path) -> None:
     model = manifest.find_model("gemini-3.6-flash")
     assert model is not None
     assert model.thinking_model is True
+
+
+def test_prompt_cache_breakpoints_flag_reaches_the_gateway_descriptor(tmp_path: Path) -> None:
+    """The OpenAI-family gateway reads ``prompt_cache_breakpoints`` off the
+    resolved model definition; dropping it silently disables Azure GPT-5.6+
+    prompt caching beyond the implicit latest-message breakpoint."""
+
+    manifest_file = tmp_path / "models.yaml"
+    manifest_file.write_text(
+        textwrap.dedent(
+            """\
+            version: 1
+            mode_models:
+              default: gpt-5.6-terra
+            models:
+              - model_id: gpt-5.6-terra
+                provider: azure_openai
+                prompt_cache_breakpoints: true
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = model_manifest.load_model_manifest(manifest_file)
+    entry = manifest.find_model("gpt-5.6-terra")
+    assert entry is not None
+    assert entry.prompt_cache_breakpoints is True
+
+    from runtime.model_runtime import resolve_model
+
+    resolved = resolve_model("default", runtime_state={}, data_dir=tmp_path, path=manifest_file)
+    assert resolved.prompt_cache_breakpoints is True

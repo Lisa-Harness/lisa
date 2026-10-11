@@ -5,6 +5,7 @@ from __future__ import annotations
 from runtime.model_discovery.classify import (
     apply_known_override,
     load_known_models,
+    uses_prompt_cache_breakpoints,
 )
 from runtime.model_discovery.manifest import build_manifest_payload
 from runtime.model_discovery.probes.anthropic import _enrich_anthropic_model
@@ -399,6 +400,30 @@ class TestBuildManifestPayloadEnrichment:
         payload = build_manifest_payload(models)
         row = payload["models"][0]
         assert row["completion_api"] == "responses"
+
+    def test_prompt_cache_breakpoints_written_only_when_set(self) -> None:
+        models = (
+            DiscoveredModel(
+                model_id="gpt-5.6-terra",
+                provider="azure_openai",
+                prompt_cache_breakpoints=True,
+            ),
+            DiscoveredModel(model_id="gpt-5.5", provider="azure_openai"),
+        )
+        rows = build_manifest_payload(models)["models"]
+        assert rows[0]["prompt_cache_breakpoints"] is True
+        assert "prompt_cache_breakpoints" not in rows[1]
+
+
+class TestPromptCacheBreakpointClassification:
+    def test_azure_gpt_5_6_and_later_use_breakpoints(self) -> None:
+        for model_id in ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6.1-sol"):
+            assert _enrich_azure_model(model_id, {}).prompt_cache_breakpoints, model_id
+
+    def test_older_and_non_azure_models_do_not(self) -> None:
+        for model_id in ("gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-4o"):
+            assert not _enrich_azure_model(model_id, {}).prompt_cache_breakpoints, model_id
+        assert not uses_prompt_cache_breakpoints("openai", "gpt-5.6-terra")
 
 
 class TestKnownModelsRegistry:
