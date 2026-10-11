@@ -380,8 +380,26 @@ rolling back context management.
   these models and reported as `cache_write_tokens`, recorded as
   `cache_creation_tokens`; `scripts/cache_report.py` shows them as
   `written`.
+- **Azure transport:** the SDK constructs one OpenAI v1 client at
+  `{endpoint}/openai/v1/` for chat, Responses, and embeddings. The runtime
+  resolves credentials and caches the client; dated chat and preview
+  Responses `api-version` settings are no longer used for inference.
+- **Responses continuation:** configured Azure Responses calls use
+  `store=false` and request `reasoning.encrypted_content`. The SDK returns
+  encrypted reasoning as opaque continuation items; the kernel stores them
+  on the owning assistant message alongside, not inside, visible content.
+  The SDK replays them before that message's tool calls only for the same
+  provider and model. Chat and Gemini wire formats never receive those items.
+  Removing an assistant message removes its continuation too.
 - **Gemini:** implicit caching only; explicit Cached Content resources are a
   separate follow-on (distinct lifecycle/TTL semantics).
+
+Memory embeddings also use the SDK's OpenAI-compatible embedding gateway.
+The memory server only resolves CLI/environment configuration; it no longer
+sends provider HTTP itself. Gateway failures and malformed vector counts or
+dimensions propagate to the store's logged best-effort boundary, preserving
+lexical memory writes and recall. The configured endpoint must implement the
+OpenAI `/embeddings` shape (including Ollama's `/v1` surface).
 
 ### Reduction hysteresis
 

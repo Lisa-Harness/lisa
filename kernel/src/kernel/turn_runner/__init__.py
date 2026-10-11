@@ -3497,6 +3497,9 @@ async def _record_iteration_completion(
         assistant_msg["extra"] = {
             "provenance": {"source": "observed", "model": getattr(completion, "model", "")}
         }
+    continuation = getattr(completion, "continuation", None)
+    if continuation is not None:
+        assistant_msg["provider_continuation"] = asdict(continuation)
     messages.append(assistant_msg)
     return {
         "prompt_tokens": prompt_tokens,

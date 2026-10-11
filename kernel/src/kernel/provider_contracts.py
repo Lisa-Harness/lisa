@@ -143,6 +143,15 @@ class CompletionUsage:
 
 
 @dataclass(slots=True)
+class ProviderContinuation:
+    """Opaque provider-owned context, replayable only to its originating model."""
+
+    provider: str
+    model_id: str
+    items: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class CompletionResult:
     """One normalized completion result returned from a provider gateway."""
 
@@ -172,6 +181,7 @@ class CompletionResult:
     #: unknown. ``None`` is treated as a single safety-net continuation, not
     #: a multi-attempt loop.
     truncated: bool | None = None
+    continuation: ProviderContinuation | None = None
 
     @property
     def prompt_tokens(self) -> int:

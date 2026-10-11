@@ -15,7 +15,6 @@ from runtime.gateway_provider import (
     HostGatewayProvider,
     _anthropic_http_client_instance,
     _azure_client_instance,
-    _azure_responses_client_instance,
     _env,
     _openai_client_instance,
     _openrouter_client_factory,
@@ -29,7 +28,6 @@ class _FakeRuntime:
     def __init__(self, *, config: Any = None, **provider_slots: Any) -> None:
         self.providers = SimpleNamespace(
             azure_client=None,
-            azure_responses_client=None,
             openai_client=None,
             anthropic_http_client=None,
             openrouter_client=None,
@@ -148,11 +146,8 @@ def test_azure_client_instance_missing_config_raises(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_azure_client_instance_cached_hit() -> None:
-    from openai import AsyncAzureOpenAI
-
-    real_client = AsyncAzureOpenAI(
-        api_version="2024-10-21",
-        azure_endpoint="https://cached.openai.azure.com",
+    real_client = AsyncOpenAI(
+        base_url="https://cached.openai.azure.com/openai/v1/",
         api_key="cached-key",
     )
     runtime = _runtime(azure_client=real_client)
@@ -170,7 +165,8 @@ async def test_azure_client_instance_constructs_and_caches(monkeypatch: pytest.M
     runtime = _runtime()
     client = _azure_client_instance(runtime)
     try:
-        assert str(client.base_url).startswith("https://ep.openai.azure.com")
+        assert str(client.base_url) == "https://ep.openai.azure.com/openai/v1/"
+        assert "api-version" not in client.default_query
         assert runtime.providers.azure_client is client
         # Second call is the cache-hit branch.
         assert _azure_client_instance(runtime) is client
@@ -178,28 +174,18 @@ async def test_azure_client_instance_constructs_and_caches(monkeypatch: pytest.M
         await client.close()
 
 
-def test_azure_responses_client_requires_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://ep.openai.azure.com")
-    monkeypatch.setenv("LISA_AZURE_OPENAI_API_KEY", "ak")
-    monkeypatch.delenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", raising=False)
-
-    with pytest.raises(ValueError, match="requires LISA_AZURE_OPENAI_RESPONSES_API_VERSION"):
-        _azure_responses_client_instance(_runtime())
-
-
 @pytest.mark.asyncio
-async def test_azure_responses_client_constructs_with_preview_version(
+async def test_azure_v1_endpoint_is_not_appended_twice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://ep.openai.azure.com")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://ep.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "ak-std")
-    monkeypatch.setenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", "preview-1")
 
     runtime = _runtime()
-    client = _azure_responses_client_instance(runtime)
+    client = _azure_client_instance(runtime)
     try:
-        assert runtime.providers.azure_responses_client is client
-        assert _azure_responses_client_instance(runtime) is client
+        assert str(client.base_url) == "https://ep.openai.azure.com/openai/v1/"
+        assert runtime.providers.azure_client is client
     finally:
         await client.close()
 

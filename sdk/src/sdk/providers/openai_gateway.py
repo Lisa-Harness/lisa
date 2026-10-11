@@ -22,6 +22,7 @@ from kernel.provider_contracts import (
     EmbeddingRequest,
     EmbeddingResult,
     ModelDescriptor,
+    ProviderContinuation,
     ProviderEventEmitter,
     ProviderStreamEvent,
     StreamedChunk,
@@ -31,7 +32,7 @@ from kernel.provider_contracts import (
     provider_gateway_error_from_exception,
 )
 from kernel.token_usage import coerce_non_negative_int
-from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai import AsyncOpenAI
 from openai.lib._parsing import type_to_response_format_param
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import ValidationError
@@ -640,7 +641,13 @@ def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]
 
     kwargs: dict[str, Any] = {
         "model": request.model_def.model_id,
-        "messages": cast(Any, normalize_openai_messages(request.messages)),
+        "messages": cast(
+            Any,
+            [
+                {key: value for key, value in message.items() if key != "provider_continuation"}
+                for message in normalize_openai_messages(request.messages)
+            ],
+        ),
     }
     # Azure deployments take ``max_completion_tokens`` regardless of the
     # reasoning flag (the legacy host dispatch special-cased the provider for
@@ -682,8 +689,14 @@ def build_openai_responses_kwargs(request: CompletionRequest) -> dict[str, Any]:
 
     kwargs: dict[str, Any] = {
         "model": request.model_def.model_id,
-        "input": build_openai_responses_input(request.messages),
+        "input": build_openai_responses_input(
+            request.messages,
+            provider=request.model_def.provider,
+            model_id=request.model_def.model_id,
+        ),
         "max_output_tokens": request.max_tokens,
+        "store": False,
+        "include": ["reasoning.encrypted_content"],
     }
     if not request.model_def.reasoning_model and not request.model_def.thinking_model:
         kwargs["temperature"] = request.temperature
@@ -758,7 +771,26 @@ def restore_responses_tool_names(
     return tool_calls
 
 
-def build_openai_responses_input(messages: ChatMessages) -> list[dict[str, Any]]:
+def _responses_reasoning_items(
+    message: dict[str, Any], *, provider: str, model_id: str
+) -> list[dict[str, Any]]:
+    continuation = message.get("provider_continuation")
+    if not isinstance(continuation, dict):
+        return []
+    if continuation.get("provider") != provider or continuation.get("model_id") != model_id:
+        return []
+    return [
+        dict(item)
+        for item in continuation.get("items", [])
+        if isinstance(item, dict)
+        and item.get("type") == "reasoning"
+        and item.get("encrypted_content")
+    ]
+
+
+def build_openai_responses_input(
+    messages: ChatMessages, *, provider: str = "", model_id: str = ""
+) -> list[dict[str, Any]]:
     """Translate chat-completions history into Responses API input items."""
 
     normalized_messages = normalize_openai_messages(messages)
@@ -776,6 +808,9 @@ def build_openai_responses_input(messages: ChatMessages) -> list[dict[str, Any]]
             )
             continue
         if role == "assistant":
+            input_items.extend(
+                _responses_reasoning_items(message, provider=provider, model_id=model_id)
+            )
             if content not in (None, "", []):
                 input_items.append(
                     {
@@ -831,6 +866,27 @@ def build_openai_embedding_kwargs(request: EmbeddingRequest) -> dict[str, Any]:
 
 
 # ── Response extractors ──────────────────────────────────────────────────
+
+
+def extract_responses_continuation(
+    response: Any, model_def: ModelDescriptor
+) -> ProviderContinuation | None:
+    """Keep encrypted reasoning on the owning assistant message, never as prose."""
+    items: list[dict[str, Any]] = []
+    for item in getattr(response, "output", None) or []:
+        if isinstance(item, dict):
+            payload = dict(item)
+        elif isinstance(item, PydanticBaseModel):
+            payload = item.model_dump(mode="json", exclude_none=True)
+        else:
+            payload = vars(item)
+        if payload.get("type") == "reasoning" and payload.get("encrypted_content"):
+            items.append(dict(payload))
+    if not items:
+        return None
+    return ProviderContinuation(
+        provider=model_def.provider, model_id=model_def.model_id, items=items
+    )
 
 
 def _stringify_parsed_content(parsed: Any) -> str:
@@ -1354,26 +1410,25 @@ def normalize_structured_content(content: str, response_format: Any) -> str:
 # ── Gateways ─────────────────────────────────────────────────────────────
 
 
+def create_azure_openai_client(*, endpoint: str, api_key: str) -> AsyncOpenAI:
+    """Construct an Azure v1 client shared by chat, Responses, and embeddings."""
+    base_url = endpoint.rstrip("/")
+    if not base_url.endswith("/openai/v1"):
+        base_url = f"{base_url}/openai/v1"
+    return AsyncOpenAI(base_url=f"{base_url}/", api_key=api_key)
+
+
 class AzureOpenAIGateway:
     """Gateway for Azure OpenAI chat completions, responses, and embeddings."""
 
     def __init__(
         self,
         *,
-        complete_client_factory: Callable[[], AsyncAzureOpenAI],
-        responses_client_factory: Callable[[], AsyncAzureOpenAI] | None = None,
+        complete_client_factory: Callable[[], AsyncOpenAI],
         event_emitter: ProviderEventEmitter | None = None,
     ) -> None:
-        """Construct the Azure gateway.
-
-        ``responses_client_factory`` supplies the client for the Responses API
-        (``/openai/responses``), which requires a preview api-version — the GA
-        chat-completions api-version 404s that endpoint. When omitted, the
-        Responses path falls back to ``complete_client_factory`` (single-client
-        deployments where one api-version covers both endpoints).
-        """
+        """Construct the Azure gateway with one SDK-owned v1 client factory."""
         self._complete_client_factory = complete_client_factory
-        self._responses_client_factory = responses_client_factory or complete_client_factory
         self._event_emitter = event_emitter
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
@@ -1387,9 +1442,7 @@ class AzureOpenAIGateway:
         )
         try:
             if _uses_openai_responses_api(request.model_def):
-                # The Responses endpoint needs its own (preview api-version)
-                # client; the GA chat-completions client 404s it.
-                client = self._responses_client_factory()
+                client = self._complete_client_factory()
                 name_map = build_responses_tool_name_map(request.tools or [])
                 response = await _create_with_cache_fallback(
                     client.responses.create, build_openai_responses_kwargs(request), request
@@ -1462,6 +1515,9 @@ class AzureOpenAIGateway:
             reasoning_content=extract_openai_reasoning(response),
             finish_reason=finish_reason,
             truncated=truncated,
+            continuation=extract_responses_continuation(response, request.model_def)
+            if _uses_openai_responses_api(request.model_def)
+            else None,
         )
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:

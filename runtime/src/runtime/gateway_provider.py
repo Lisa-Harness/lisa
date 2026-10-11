@@ -23,7 +23,8 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx
-from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai import AsyncOpenAI
+from sdk.providers.openai_gateway import create_azure_openai_client
 
 from runtime.provider_endpoints import (
     OPENAI_DEFAULT_BASE_URL,
@@ -104,12 +105,8 @@ class HostGatewayProvider:
         runtime = self._runtime
         try:
             if provider == "azure_openai":
-                # Azure needs a dual-client split: chat-completions on the GA
-                # api-version and the Responses API (Codex) on a preview
-                # api-version. Both factories are runtime-cached.
                 return gateway_cls(
                     complete_client_factory=lambda: _azure_client_instance(runtime),
-                    responses_client_factory=lambda: _azure_responses_client_instance(runtime),
                 )
             if provider == "anthropic":
                 # AnthropicGateway holds the raw runtime-cached httpx client;
@@ -181,11 +178,11 @@ def _openai_compatible_client_factory(runtime: HostRuntime, provider: str) -> Ca
     return lambda: _ollama_client_instance(runtime)
 
 
-def _azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
-    """Return the cached Azure chat-completions client."""
+def _azure_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Resolve host credentials and cache the SDK-owned Azure v1 client."""
 
     existing_client = runtime.providers.azure_client
-    if isinstance(existing_client, AsyncAzureOpenAI):
+    if isinstance(existing_client, AsyncOpenAI):
         return existing_client
     endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
     api_key = _env("LISA_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")
@@ -194,39 +191,8 @@ def _azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
             "Azure OpenAI is not configured. Set LISA_AZURE_OPENAI_ENDPOINT and "
             "LISA_AZURE_OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
         )
-    client = AsyncAzureOpenAI(
-        api_version=_env("LISA_AZURE_OPENAI_API_VERSION") or "2024-10-21",
-        azure_endpoint=endpoint,
-        api_key=api_key,
-    )
+    client = create_azure_openai_client(endpoint=endpoint, api_key=api_key)
     runtime.providers.azure_client = client
-    return client
-
-
-def _azure_responses_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
-    """Return the cached Azure Responses API client with its preview version."""
-
-    existing_client = runtime.providers.azure_responses_client
-    if isinstance(existing_client, AsyncAzureOpenAI):
-        return existing_client
-    endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
-    api_key = _env("LISA_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")
-    if not endpoint or not api_key:
-        raise ValueError(
-            "Azure OpenAI is not configured. Set LISA_AZURE_OPENAI_ENDPOINT and "
-            "LISA_AZURE_OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
-        )
-    api_version = _env("LISA_AZURE_OPENAI_RESPONSES_API_VERSION")
-    if not api_version:
-        raise ValueError(
-            "The Azure Responses API requires LISA_AZURE_OPENAI_RESPONSES_API_VERSION."
-        )
-    client = AsyncAzureOpenAI(
-        api_version=api_version,
-        azure_endpoint=endpoint,
-        api_key=api_key,
-    )
-    runtime.providers.azure_responses_client = client
     return client
 
 

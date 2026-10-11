@@ -1,23 +1,27 @@
 """Tests for the Azure OpenAI gateway.
 
-Covers the dual-client split (chat-completions on the GA api-version vs.
-the Responses API on a preview api-version), the Responses tool-name
+Covers the shared Azure v1 client for chat and Responses, the Responses tool-name
 sanitize/restore round-trip, and the ``max_completion_tokens`` special-case
 for Azure deployments (which accept it regardless of the reasoning flag).
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from kernel.provider_contracts import CompletionRequest, SystemPromptSegment
+from sdk.providers.google_gateway import _build_gemini_request_body
 from sdk.providers.openai_gateway import (
     AzureOpenAIGateway,
     add_prompt_cache_breakpoints,
     build_openai_completion_kwargs,
+    build_openai_responses_kwargs,
     build_responses_tool_name_map,
+    create_azure_openai_client,
     extract_openai_completion_usage,
     extract_responses_usage,
     restore_responses_tool_names,
@@ -118,43 +122,12 @@ def _responses_response(tool_name: str = "get_weather") -> SimpleNamespace:
     )
 
 
-# ── Dual-client split ────────────────────────────────────────────────
+# ── Shared v1 client ─────────────────────────────────────────────────
 
 
-class TestDualClientSplit:
+class TestSharedClient:
     @pytest.mark.asyncio
     async def test_chat_completions_uses_complete_client(self) -> None:
-        captured: dict[str, Any] = {}
-        chat_client = _StubAzureClient(chat_response=_chat_response(), captured=captured)
-        responses_client = _StubAzureClient(responses_response=_responses_response())
-        gateway = AzureOpenAIGateway(
-            complete_client_factory=lambda: chat_client,
-            responses_client_factory=lambda: responses_client,
-        )
-        await gateway.complete(_request())
-        assert "chat_kwargs" in captured
-        assert "responses_kwargs" not in captured
-
-    @pytest.mark.asyncio
-    async def test_responses_api_uses_responses_client(self) -> None:
-        captured: dict[str, Any] = {}
-        chat_client = _StubAzureClient(chat_response=_chat_response(), captured=captured)
-        responses_client = _StubAzureClient(
-            responses_response=_responses_response(), captured=captured
-        )
-        model_def = _model_def(completion_api="responses")
-        gateway = AzureOpenAIGateway(
-            complete_client_factory=lambda: chat_client,
-            responses_client_factory=lambda: responses_client,
-        )
-        result = await gateway.complete(_request(model_def=model_def))
-        assert "responses_kwargs" in captured
-        assert "chat_kwargs" not in captured
-        # The sanitized wire name is restored to the original.
-        assert result.tool_calls[0]["name"] == "get_weather"
-
-    @pytest.mark.asyncio
-    async def test_responses_falls_back_to_complete_client_when_no_factory(self) -> None:
         captured: dict[str, Any] = {}
         client = _StubAzureClient(
             chat_response=_chat_response(),
@@ -162,9 +135,137 @@ class TestDualClientSplit:
             captured=captured,
         )
         gateway = AzureOpenAIGateway(complete_client_factory=lambda: client)
+        await gateway.complete(_request())
+        assert "chat_kwargs" in captured
+        assert "responses_kwargs" not in captured
+
+    @pytest.mark.asyncio
+    async def test_responses_api_uses_shared_client(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubAzureClient(
+            chat_response=_chat_response(),
+            responses_response=_responses_response(),
+            captured=captured,
+        )
+        model_def = _model_def(completion_api="responses")
+        gateway = AzureOpenAIGateway(complete_client_factory=lambda: client)
+        result = await gateway.complete(_request(model_def=model_def))
+        assert "responses_kwargs" in captured
+        assert "chat_kwargs" not in captured
+        assert captured["responses_kwargs"]["store"] is False
+        assert captured["responses_kwargs"]["include"] == ["reasoning.encrypted_content"]
+        # The sanitized wire name is restored to the original.
+        assert result.tool_calls[0]["name"] == "get_weather"
+
+    @pytest.mark.asyncio
+    async def test_same_gateway_handles_chat_then_responses(self) -> None:
+        captured: dict[str, Any] = {}
+        client = _StubAzureClient(
+            chat_response=_chat_response(),
+            responses_response=_responses_response(),
+            captured=captured,
+        )
+        gateway = AzureOpenAIGateway(complete_client_factory=lambda: client)
+        await gateway.complete(_request())
         result = await gateway.complete(_request(model_def=_model_def(completion_api="responses")))
         assert "responses_kwargs" in captured
         assert result.tool_calls[0]["name"] == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_encrypted_reasoning_replays_before_tools_only_to_its_model() -> None:
+    captured: dict[str, Any] = {}
+    response = _responses_response()
+    reasoning = {
+        "type": "reasoning",
+        "id": "rs_1",
+        "summary": [],
+        "encrypted_content": "opaque-encrypted-context",
+    }
+    response.output.insert(0, SimpleNamespace(**reasoning))
+    gateway = AzureOpenAIGateway(
+        complete_client_factory=lambda: _StubAzureClient(
+            responses_response=response, captured=captured
+        )
+    )
+    model = _model_def(completion_api="responses", reasoning_model=True)
+    result = await gateway.complete(_request(model_def=model))
+    assert result.continuation is not None
+    messages = [
+        {"role": "user", "content": "check weather"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                }
+            ],
+            "provider_continuation": asdict(result.continuation),
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+    ]
+    kwargs = build_openai_responses_kwargs(_request(messages, model_def=model))
+    assert [item["type"] for item in kwargs["input"]] == [
+        "message",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+    ]
+    assert kwargs["input"][1] == reasoning
+    assert "opaque-encrypted-context" not in result.content
+    for other_model in (
+        _model_def(model_id="different", completion_api="responses"),
+        _model_def(provider="openai", completion_api="responses"),
+    ):
+        other = build_openai_responses_kwargs(_request(messages, model_def=other_model))
+        assert all(item["type"] != "reasoning" for item in other["input"])
+    chat = build_openai_completion_kwargs(_request(messages, model_def=model))
+    assert all("provider_continuation" not in message for message in chat["messages"])
+    gemini = _build_gemini_request_body(
+        _request(messages, model_def=_model_def(provider="google", model_id="gemini-test"))
+    )
+    assert "opaque-encrypted-context" not in str(gemini)
+    assert messages[1]["provider_continuation"]["items"] == [reasoning]
+
+
+@pytest.mark.asyncio
+async def test_azure_v1_sends_chat_responses_and_embeddings_without_api_version() -> None:
+    captured: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path.endswith("/chat/completions"):
+            body = {
+                "id": "chat",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+            }
+        elif request.url.path.endswith("/responses"):
+            body = {"id": "resp", "output": []}
+        else:
+            body = {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+        return httpx.Response(200, json=body)
+
+    original = create_azure_openai_client(
+        endpoint="https://resource.services.ai.azure.com", api_key="test-key"
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+        client = original.with_options(http_client=transport)
+        try:
+            await client.chat.completions.create(model="deployment", messages=[])
+            await client.responses.create(model="deployment", input="hi")
+            await client.embeddings.create(model="embedding-deployment", input=["hi"])
+        finally:
+            await client.close()
+            await original.close()
+    assert [request.url.path for request in captured] == [
+        "/openai/v1/chat/completions",
+        "/openai/v1/responses",
+        "/openai/v1/embeddings",
+    ]
+    assert all(not request.url.query for request in captured)
+    assert all(request.headers["authorization"] == "Bearer test-key" for request in captured)
 
 
 # ── Tool-name sanitize/restore round-trip ────────────────────────────

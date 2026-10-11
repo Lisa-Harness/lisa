@@ -70,6 +70,21 @@ def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_
     assert not any("approval" in str(message.get("content")) for message in messages)
 
 
+def test_opaque_provider_context_survives_durable_thread_replay(tmp_path: Path) -> None:
+    thread = tmp_path / "threads" / "tester"
+    transcript = _read_turn("check weather", "sunny")
+    continuation = {
+        "provider": "azure_openai",
+        "model_id": "reasoning-model",
+        "items": [{"type": "reasoning", "encrypted_content": "opaque", "summary": []}],
+    }
+    transcript[1]["provider_continuation"] = continuation
+    _append(thread, "check weather", transcript=transcript)
+    messages = build_open_task_messages(thread_path=thread)
+    assistant = next(message for message in messages if message.get("role") == "assistant")
+    assert assistant["provider_continuation"] == continuation
+
+
 def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     original = "FULL FILE DATA " * 800
