@@ -214,3 +214,48 @@ class TestMaxCompletionTokens:
             _request(model_def=_model_def(provider="openai", reasoning_model=True))
         )
         assert kwargs["max_completion_tokens"] == 1024
+
+
+# ── prompt_cache_key ─────────────────────────────────────────────────
+
+
+class _RejectingChatCompletions:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if "prompt_cache_key" in kwargs:
+            raise ValueError("Unrecognized request argument supplied: prompt_cache_key")
+        return _chat_response()
+
+
+class TestPromptCacheKey:
+    def test_key_sent_to_azure_and_openai_only(self) -> None:
+        def keyed(provider: str) -> CompletionRequest:
+            request = _request(model_def=_model_def(provider=provider, model_id="m-key"))
+            request.prompt_cache_key = "lisa-abc"
+            return request
+
+        assert build_openai_completion_kwargs(keyed("azure_openai"))["prompt_cache_key"] == (
+            "lisa-abc"
+        )
+        assert build_openai_completion_kwargs(keyed("openai"))["prompt_cache_key"] == "lisa-abc"
+        assert "prompt_cache_key" not in build_openai_completion_kwargs(keyed("ollama"))
+        assert "prompt_cache_key" not in build_openai_completion_kwargs(_request())
+
+    @pytest.mark.asyncio
+    async def test_rejecting_deployment_retries_once_then_stops_sending(self) -> None:
+        completions = _RejectingChatCompletions()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        gateway = AzureOpenAIGateway(complete_client_factory=lambda: client)
+        request = _request(model_def=_model_def(model_id="legacy-deployment"))
+        request.prompt_cache_key = "lisa-abc"
+
+        result = await gateway.complete(request)
+        assert result.content == "ok"
+        assert ["prompt_cache_key" in call for call in completions.calls] == [True, False]
+
+        await gateway.complete(request)
+        assert "prompt_cache_key" not in completions.calls[-1]
+        assert len(completions.calls) == 3

@@ -47,12 +47,13 @@ __all__ = [
 import asyncio
 import contextlib
 import copy
+import hashlib
 import json
 import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from math import ceil
 from types import SimpleNamespace
@@ -2848,19 +2849,7 @@ def _truncation_retry_budget(
         retry_max_tokens = min(retry_max_tokens, cap_window)
     if retry_max_tokens <= base_max_tokens:
         return None
-    return (
-        CompletionRequest(
-            messages=base_request.messages,
-            model_def=base_request.model_def,
-            max_tokens=retry_max_tokens,
-            temperature=base_request.temperature,
-            tools=base_request.tools,
-            response_format=base_request.response_format,
-            system_prompt_segments=base_request.system_prompt_segments,
-            context_budget=base_request.context_budget,
-        ),
-        retry_max_tokens,
-    )
+    return replace(base_request, max_tokens=retry_max_tokens), retry_max_tokens
 
 
 class StreamIdleTimeout(RuntimeError):
@@ -3160,6 +3149,17 @@ def _project_provider_messages(
     return projected
 
 
+def _prompt_cache_key(hooks: TurnHooks) -> str:
+    """One opaque key per conversation so its calls share a provider cache.
+
+    Mode changes alter the prompt after the shared harness prefix, so the
+    key deliberately omits the mode: the same machine keeps the shared part.
+    """
+    identity = hooks.identity
+    scope = f"{identity.workspace_id}:{identity.principal_key}:{identity.conversation_id}"
+    return "lisa-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+
+
 def _record_request_snapshot(state: _TurnState, hooks: TurnHooks, snapshot: dict[str, Any]) -> None:
     if hooks.models.record_request is not None:
         reference = hooks.models.record_request(snapshot)
@@ -3324,6 +3324,7 @@ async def _model_completion_for_iteration(
         # byte-identical to the segment-flattened text.
         system_prompt_segments=sys_segments.as_segments_copy(),
         context_budget=state.request_context_budget,
+        prompt_cache_key=_prompt_cache_key(hooks),
     )
     snapshot = {
         "iteration": state.iteration,

@@ -347,7 +347,11 @@ rolling back context management.
 - **OpenAI / Azure:** implicit prefix caching — no explicit breakpoints, but
   tool schemas are canonically sorted by function name
   (`kernel.turn_phases._tool_schemas`) so the same mode produces a
-  byte-identical tool payload across turns.
+  byte-identical tool payload across turns. Each request also carries an
+  opaque per-conversation `prompt_cache_key` so its calls route to the same
+  cache. A deployment that rejects the parameter is retried once without it
+  and stops receiving it for the rest of the process. Other
+  OpenAI-compatible backends never receive it.
 - **Gemini:** implicit caching only; explicit Cached Content resources are a
   separate follow-on (distinct lifecycle/TTL semantics).
 

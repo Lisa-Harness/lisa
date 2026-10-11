@@ -10,7 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 from kernel.operations.structured_output import parse_structured_payload
@@ -460,6 +460,44 @@ def sanitize_chat_history_tool_names(
     return sanitized_messages if changed else messages
 
 
+# Providers whose OpenAI-shaped endpoints honour ``prompt_cache_key``. Other
+# OpenAI-compatible backends (Ollama, OpenRouter upstreams) may reject
+# unknown parameters, so they never receive it.
+_PROMPT_CACHE_KEY_PROVIDERS = frozenset({"openai", "azure_openai"})
+# (provider, model_id) pairs whose deployment rejected the key; they stop
+# receiving it for the life of the process instead of failing every call.
+_PROMPT_CACHE_KEY_REJECTED: set[tuple[str, str]] = set()
+
+
+def _cache_key_target(request: CompletionRequest) -> tuple[str, str]:
+    provider = str(getattr(request.model_def, "provider", "") or "").strip().lower()
+    return provider, str(request.model_def.model_id)
+
+
+def _add_prompt_cache_key(kwargs: dict[str, Any], request: CompletionRequest) -> None:
+    target = _cache_key_target(request)
+    if (
+        request.prompt_cache_key
+        and target[0] in _PROMPT_CACHE_KEY_PROVIDERS
+        and target not in _PROMPT_CACHE_KEY_REJECTED
+    ):
+        kwargs["prompt_cache_key"] = request.prompt_cache_key
+
+
+async def _create_with_cache_key_fallback(
+    create: Callable[..., Awaitable[Any]], kwargs: dict[str, Any], request: CompletionRequest
+) -> Any:
+    """Retry once without ``prompt_cache_key`` when a deployment rejects it."""
+    try:
+        return await create(**kwargs)
+    except Exception as exc:  # pylint: disable=broad-except
+        if "prompt_cache_key" not in kwargs or "prompt_cache_key" not in str(exc):
+            raise
+    _PROMPT_CACHE_KEY_REJECTED.add(_cache_key_target(request))
+    retry = {key: value for key, value in kwargs.items() if key != "prompt_cache_key"}
+    return await create(**retry)
+
+
 def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]:
     """Build provider kwargs for one OpenAI-compatible completion request."""
 
@@ -494,6 +532,7 @@ def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]
         # ``normalize_structured_content`` can clean it. Plain ``create``
         # leaves client-side validation to ``normalize_structured_content``.
         kwargs["response_format"] = type_to_response_format_param(request.response_format)
+    _add_prompt_cache_key(kwargs, request)
     return kwargs
 
 
@@ -511,6 +550,7 @@ def build_openai_responses_kwargs(request: CompletionRequest) -> dict[str, Any]:
         kwargs["tools"] = [_normalize_openai_response_tool(tool) for tool in request.tools]
     if request.response_format:
         kwargs["text"] = {"format": _normalize_openai_response_format(request.response_format)}
+    _add_prompt_cache_key(kwargs, request)
     return kwargs
 
 
@@ -1206,7 +1246,9 @@ class AzureOpenAIGateway:
                 # client; the GA chat-completions client 404s it.
                 client = self._responses_client_factory()
                 name_map = build_responses_tool_name_map(request.tools or [])
-                response = await client.responses.create(**build_openai_responses_kwargs(request))
+                response = await _create_with_cache_key_fallback(
+                    client.responses.create, build_openai_responses_kwargs(request), request
+                )
                 content = normalize_structured_content(
                     extract_responses_content(response), request.response_format
                 )
@@ -1224,7 +1266,9 @@ class AzureOpenAIGateway:
                 # and fence/prose tolerance is handled client-side by
                 # ``normalize_structured_content`` instead of raising inside
                 # the SDK's ``parse`` helper.
-                response = await client.chat.completions.create(**kwargs)
+                response = await _create_with_cache_key_fallback(
+                    client.chat.completions.create, kwargs, request
+                )
                 content = normalize_structured_content(
                     extract_openai_content(response), request.response_format
                 )
@@ -1336,7 +1380,9 @@ class OpenAICompatibleGateway:
             # and fence/prose tolerance is handled client-side by
             # ``normalize_structured_content`` instead of raising inside
             # the SDK's ``parse`` helper.
-            response = await client.chat.completions.create(**kwargs)
+            response = await _create_with_cache_key_fallback(
+                client.chat.completions.create, kwargs, request
+            )
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {
@@ -1427,7 +1473,9 @@ class OpenAICompatibleGateway:
             }
         )
         try:
-            stream = await client.chat.completions.create(**kwargs)
+            stream = await _create_with_cache_key_fallback(
+                client.chat.completions.create, kwargs, request
+            )
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {

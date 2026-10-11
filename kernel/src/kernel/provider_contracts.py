@@ -105,6 +105,9 @@ class CompletionRequest:
     #: byte-identical to those system-role contents.
     system_prompt_segments: tuple[SystemPromptSegment, ...] = ()
     context_budget: RequestContextBudget | None = None
+    #: Stable per-conversation routing key for providers with implicit
+    #: prefix caching (OpenAI ``prompt_cache_key``). Empty means unset.
+    prompt_cache_key: str = ""
 
 
 @dataclass(slots=True)
