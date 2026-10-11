@@ -128,7 +128,10 @@ def fit_request_context(
             raise RequiredContextBudgetError(
                 "Request cannot fit its context window without a tool-result projector."
             )
-        headroom = min(margin, max(0, input_limit - required.tokens))
+        # Hysteresis: fit well below the limit so later calls append to an
+        # unchanged prefix instead of reducing (and rewriting) every call.
+        tool_room = max(0, input_limit - required.tokens)
+        headroom = tool_room - int(tool_room * settings.context_reduction_target_share)
         candidate, counted, budget = _fit_projection(
             request, projector, counter, input_limit - headroom, payload_bytes
         )

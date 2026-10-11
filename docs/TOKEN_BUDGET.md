@@ -351,6 +351,17 @@ rolling back context management.
 - **Gemini:** implicit caching only; explicit Cached Content resources are a
   separate follow-on (distinct lifecycle/TTL semantics).
 
+### Reduction hysteresis
+
+Tool results fill whatever the complete request leaves after required
+content, the completion reservation, and `context_request_margin_share`.
+When a call would exceed that limit, the kernel reduces resident results to
+`context_reduction_target_share` (default `0.75`) of the room tool results
+may occupy, not to just under the limit. Fitting just under the limit made
+nearly every later call reduce again, rewriting early messages and missing
+the provider prefix cache. The slack lets the following calls append to an
+unchanged prefix until the next reduction.
+
 ### Rollback
 
 `LISA_PROMPT_CACHE_ENABLED=false` flattens segments to the legacy

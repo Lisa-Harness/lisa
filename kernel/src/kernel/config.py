@@ -338,6 +338,12 @@ class Settings(BaseSettings):
     # Provider framing/token-count uncertainty reserve. Tool results use
     # the remainder after complete request input and output reservations.
     context_request_margin_share: float = Field(default=0.05, ge=0, lt=1)
+    # Low-water mark for a pressure reduction, as a share of the room tool
+    # results may occupy. Fitting just under the limit forced another
+    # reduction (rewriting early messages and missing the provider prefix
+    # cache) on nearly every later call; the slack lets the next calls
+    # append without rewriting anything.
+    context_reduction_target_share: float = Field(default=0.75, gt=0, le=1)
 
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
@@ -441,6 +447,7 @@ class Settings(BaseSettings):
         "context_budget_token_char_ratio",
         "context_default_window_tokens",
         "context_request_margin_share",
+        "context_reduction_target_share",
         mode="before",
     )
     @classmethod

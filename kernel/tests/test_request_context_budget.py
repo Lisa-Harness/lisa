@@ -152,3 +152,56 @@ def test_observed_underestimate_tightens_later_requests_and_survives_checkpoint(
     )
     assert counted.tokens == observed
     assert "observed_scale=2.0000" in counted.method
+
+
+def _project_oldest_first(
+    messages: list[dict[str, Any]], *, budget_bytes: int
+) -> list[dict[str, Any]]:
+    """Newest results stay verbatim; older ones shrink first, like the real projector."""
+    projected = copy.deepcopy(messages)
+    remaining = budget_bytes
+    for message in reversed(projected):
+        if message.get("role") != "tool":
+            continue
+        content = message["content"]
+        message["content"] = content[: max(0, remaining)]
+        remaining -= len(message["content"])
+    return projected
+
+
+def test_reduction_fits_to_low_water_so_later_calls_append_unchanged() -> None:
+    from kernel.config import settings
+
+    request = _request("x" * 12_000)
+    fitted = fit_request_context(request, _project_oldest_first, _count)
+    budget = fitted.context_budget
+    assert budget is not None and budget.reduced is True
+    input_limit = 10_000 - budget.completion_tokens - budget.margin_tokens
+    tool_room = input_limit - budget.required_tokens
+    target = budget.required_tokens + int(tool_room * settings.context_reduction_target_share)
+    assert budget.input_tokens <= target
+    assert budget.input_tokens >= target - 50
+
+    # Several later calls append fresh results to the fitted messages; none
+    # needs another reduction, so the sent prefix never changes.
+    messages = fitted.messages
+    for index in range(3):
+        appended = [
+            *messages,
+            {"role": "assistant", "tool_calls": [{"id": f"n{index}"}]},
+            {"role": "tool", "tool_call_id": f"n{index}", "content": "y" * 300},
+        ]
+        later = fit_request_context(
+            CompletionRequest(
+                messages=appended,
+                tools=request.tools,
+                model_def=request.model_def,
+                max_tokens=1000,
+                temperature=0.4,
+            ),
+            _project_oldest_first,
+            _count,
+        )
+        assert later.context_budget is not None and later.context_budget.reduced is False
+        assert later.messages[: len(messages)] == messages
+        messages = later.messages
