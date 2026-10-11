@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from kernel.models import TurnBudget
 from kernel.turn_phases._turn_state import _TurnState, budget_forces_final
 
@@ -63,3 +64,61 @@ def test_none_budget_never_fires() -> None:
     assert (
         budget_forces_final(_state(total_completion_tokens=10_000), None, time.monotonic()) is False
     )
+
+
+def test_total_rail_excludes_cached_prefix() -> None:
+    """Cached prompt prefixes are not new work: a long cache-hitting turn
+    must not exhaust ``max_total_tokens`` (2026-10-10 p920: ~10 calls of
+    ~100k mostly-cached prompt tripped the 1M rail without converging)."""
+    budget = TurnBudget(max_completion_tokens=0, max_total_tokens=1000, max_wall_ms=0)
+    state = _state(total_tokens=5000)
+    state.total_cached_tokens = 4500
+
+    assert budget_forces_final(state, budget, time.monotonic()) is False
+
+    state.total_cached_tokens = 3900
+    assert budget_forces_final(state, budget, time.monotonic()) is True
+
+
+@pytest.mark.asyncio
+async def test_forced_final_completion_accumulates_cached_tokens() -> None:
+    """The forced no-tools final call must fold cached tokens too, or the
+    processed-token rail would count its cached prefix as new work."""
+    import logging
+    from types import SimpleNamespace
+    from typing import Any
+    from unittest.mock import MagicMock
+
+    from kernel.turn_runner import _force_final_content_completion
+
+    async def complete(**_: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            content="Final answer.",
+            tool_calls=None,
+            prompt_tokens=1000,
+            completion_tokens=50,
+            total_tokens=1050,
+            cached_tokens=900,
+            reasoning_tokens=0,
+            cache_creation_tokens=0,
+            duration_ms=0.0,
+            latency_ms=0,
+            usage=None,
+        )
+
+    state = _state()
+    content, _ = await _force_final_content_completion(
+        state=state,
+        hooks=MagicMock(),
+        mode_id="default",
+        content="",
+        content_source="",
+        messages=[],
+        effective_model_def=SimpleNamespace(model_id="m", provider="p"),
+        complete=complete,
+        record_model_usage=lambda *_a, **_k: None,
+        log=logging.getLogger(__name__),
+    )
+
+    assert content == "Final answer."
+    assert state.total_cached_tokens == 900

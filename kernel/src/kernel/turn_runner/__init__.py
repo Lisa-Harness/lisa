@@ -305,9 +305,10 @@ _STALLED_WRITE_PATTERNS = re.compile(
 # artifact-sized write payload (expanded config + multi-KB script)
 # still truncated mid-tool-call across three different models. Both
 # turn-loop paths (streaming and non-streaming) now also rescue a
-# ``finish_reason=length`` truncation with one 2x retry. OpenAI-style
-# providers bill reasoning separately, so the leaner budget costs nothing
-# there — the flag-based bump is the conservative cross-provider choice.
+# ``finish_reason=length`` truncation with one 2x retry. OpenAI/Azure
+# reasoning models (o-series, gpt-5+) count hidden reasoning against
+# ``max_completion_tokens`` too, so discovery must flag them as reasoning;
+# an unflagged gpt-5 deployment stays at 4096 and truncates.
 # Bounded by the model's context window when known.
 _REASONING_CAPABILITY_MARKER = "reasoning"
 
@@ -5583,6 +5584,7 @@ async def _force_final_content_completion(
             state.total_prompt_tokens += final_usage.prompt_tokens
             state.total_completion_tokens += final_usage.completion_tokens
             state.total_tokens += final_usage.total_tokens
+            state.total_cached_tokens += final_usage.cached_tokens
             state.total_cache_creation_tokens += final_usage.cache_creation_tokens
             state.total_duration_ms += final_usage.duration_ms
             record_model_usage(
@@ -6225,6 +6227,7 @@ async def _emit_terminal_stage_summary(
                         state.total_prompt_tokens += terminal_usage.prompt_tokens
                         state.total_completion_tokens += terminal_usage.completion_tokens
                         state.total_tokens += terminal_usage.total_tokens
+                        state.total_cached_tokens += terminal_usage.cached_tokens
                         state.total_cache_creation_tokens += terminal_usage.cache_creation_tokens
                         state.total_duration_ms += terminal_usage.duration_ms
                         record_model_usage(

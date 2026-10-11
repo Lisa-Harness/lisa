@@ -687,14 +687,16 @@ def _session_budget_blocked(runtime: HostRuntime) -> str | None:
     """Return the budget-exhausted block message, or ``None`` to proceed.
 
     Pre-turn session budget gate. When the session has declared a
-    ``max_session_tokens`` cap and the accumulated session total (across
-    prior turns in this session) already meets or exceeds it, block the
+    ``max_session_tokens`` cap and the accumulated processed tokens (uncached
+    input plus output across prior turns) already meet or exceed it, block the
     turn before any model call — the user must start a fresh session or
-    raise the cap rather than continue burning tokens.
+    raise the cap rather than continue burning tokens. Cached prefix reads are
+    excluded so retaining useful context does not consume the work budget.
     """
     max_session_tokens = runtime.session_plan.manifest.execution.max_session_tokens
-    if max_session_tokens and runtime.session.tokens.session_total_tokens >= max_session_tokens:
-        used = runtime.session.tokens.session_total_tokens
+    tokens = runtime.session.tokens
+    used = max(0, tokens.session_total_tokens - tokens.session_cached_tokens)
+    if max_session_tokens and used >= max_session_tokens:
         message_text = (
             f"Session token budget exhausted ({used:,} / {max_session_tokens:,} tokens). "
             "Start a new session (or raise `max_session_tokens` in your session context) "

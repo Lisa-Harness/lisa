@@ -167,7 +167,12 @@ per the 2026-08-01 baseline, completion tokens are ~3% of burn — a wrong
 *small* value silently aborts work, a wrong *large* value costs tokens
 that mostly don't matter. Plain models never receive it: unflagged models
 stay on the legacy 4096, so raising the global does not loosen
-non-reasoning models.
+non-reasoning models. OpenAI/Azure gpt-5+ models (except `*-chat`) are
+reasoning models: their hidden reasoning counts against
+`max_completion_tokens`. Discovery flags them `reasoning_model`; older
+manifests without the flag cap them at 4096 and trigger truncation retries
+that resend the whole prompt. Re-run `/models discover` or add
+`reasoning_model: true` to fix this.
 
 **If you set the global** (e.g. `TURN_COMPLETION_MAX_TOKENS=8192`), every
 reasoning-mode call in every mode tightens: the truncation rescue doubles
@@ -283,6 +288,15 @@ either way**, but the per-turn behavior differs:
 The recommendation is to pursue the completion-based per-turn option so
 turns are governed by work + iteration count, and the daily ledger is the
 true cost ceiling.
+
+**Resolved (2026-10-10):** `max_total_tokens` (per turn) and
+`max_session_tokens` now count **processed** tokens — uncached input plus
+output. Cached prefix reads are excluded. The 2026-10-10 `p920` coding
+turns stopped at iterations 11–15 because ~100K full-window requests
+(57–62% cached) reached the 1M raw-total rail, so work stopped
+mid-implementation. With processed accounting, a cache-friendly turn can
+keep its full context for many more iterations; cache misses still count
+in full.
 
 ## Decision record
 

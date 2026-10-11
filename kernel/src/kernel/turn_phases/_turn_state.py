@@ -680,6 +680,16 @@ def _float(value: Any) -> float:
         return 0.0
 
 
+def processed_tokens(state: _TurnState) -> int:
+    """Return tokens newly processed by providers this turn.
+
+    Cached prompt prefixes are re-read rather than processed again, so the
+    whole-turn token envelope counts uncached input plus output. Counting the
+    re-sent prefix would make useful context consumption, not work, the cap.
+    """
+    return max(0, state.total_tokens - state.total_cached_tokens)
+
+
 def budget_forces_final(
     state: _TurnState,
     turn_budget: TurnBudget | None,
@@ -696,13 +706,13 @@ def budget_forces_final(
     if turn_budget.max_tool_calls and state.total_tool_calls >= turn_budget.max_tool_calls:
         return True
     # Completion-based token rail: measures actual model work (output tokens),
-    # not context re-send. ``max_total_tokens`` is the cumulative fallback for
-    # hosts/sessions that still want a whole-turn envelope.
+    # not context re-send. ``max_total_tokens`` is the whole-turn envelope
+    # over processed tokens (uncached input plus output).
     if turn_budget.max_completion_tokens and state.total_completion_tokens >= (
         turn_budget.max_completion_tokens
     ):
         return True
-    if turn_budget.max_total_tokens and state.total_tokens >= turn_budget.max_total_tokens:
+    if turn_budget.max_total_tokens and processed_tokens(state) >= turn_budget.max_total_tokens:
         return True
     if turn_budget.max_wall_ms:
         elapsed_ms = int((time.monotonic() - turn_start_mono) * 1000)

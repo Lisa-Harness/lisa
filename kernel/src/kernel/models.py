@@ -1203,7 +1203,11 @@ class TurnBudget(BaseModel):
     """
 
     max_tool_calls: int = Field(default=0, ge=0, description="0 = unlimited.")
-    max_total_tokens: int = Field(default=0, ge=0, description="0 = unlimited.")
+    max_total_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Uncached input plus output tokens; cached prefixes excluded. 0 = unlimited.",
+    )
     max_completion_tokens: int = Field(default=0, ge=0, description="0 = unlimited.")
     max_wall_ms: int = Field(default=0, ge=0, description="0 = unlimited.")
 
