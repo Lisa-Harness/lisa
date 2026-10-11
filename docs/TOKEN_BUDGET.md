@@ -354,7 +354,11 @@ rolling back context management.
 
 - **Anthropic:** `sdk.providers.anthropic_gateway` emits the stable prefix as
   system content blocks with an ephemeral `cache_control` breakpoint on the
-  final stable block; the dynamic tail stays uncached.
+  final stable block. Request-level automatic `cache_control` also moves the
+  conversation breakpoint forward as history grows, for both complete and
+  streaming calls. The host's cache opt-out disables both. Normalized prompt
+  tokens include uncached input, cache reads, and cache writes, so cached
+  context still counts toward request sizing and processed-token caps.
 - **OpenAI / Azure:** prefix caching. Tool schemas are canonically sorted by function name
   (`kernel.turn_phases._tool_schemas`) so the same mode produces a
   byte-identical tool payload across turns. Each request also carries an

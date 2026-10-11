@@ -96,9 +96,9 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
     if all_zero and not usage_keys_present:
         return None
     return CompletionUsage(
-        prompt_tokens=prompt_tokens,
+        prompt_tokens=prompt_tokens + cache_creation + cache_read,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
+        total_tokens=prompt_tokens + cache_creation + cache_read + completion_tokens,
         cached_tokens=cache_read,
         # ``cache_creation_input_tokens`` reports tokens *written into* the
         # prompt cache at the write rate. It is NOT reasoning output, so it
@@ -323,6 +323,8 @@ def _merged_system_text(request: CompletionRequest) -> str:
 def _base_messages_payload(
     request: CompletionRequest,
     system: str | list[dict[str, Any]],
+    *,
+    cache_enabled: bool = False,
 ) -> dict[str, Any]:
     """Build the shared skeleton of one ``/v1/messages`` request payload.
 
@@ -349,6 +351,8 @@ def _base_messages_payload(
             "type": "enabled",
             "budget_tokens": request.max_tokens,
         }
+    if cache_enabled:
+        payload["cache_control"] = {"type": "ephemeral"}
     return payload
 
 
@@ -492,7 +496,7 @@ class AnthropicGateway:
             getattr(request, "system_prompt_segments", ()) or (),
             cache_enabled=self._prompt_cache_enabled,
         )
-        payload = _base_messages_payload(request, _system)
+        payload = _base_messages_payload(request, _system, cache_enabled=self._prompt_cache_enabled)
         if request.tools:
             anthropic_tools, name_map = _build_anthropic_tools_with_name_map(request.tools)
             payload["tools"] = anthropic_tools
@@ -574,7 +578,7 @@ class AnthropicGateway:
             getattr(request, "system_prompt_segments", ()) or (),
             cache_enabled=self._prompt_cache_enabled,
         )
-        payload = _base_messages_payload(request, _system)
+        payload = _base_messages_payload(request, _system, cache_enabled=self._prompt_cache_enabled)
         payload["stream"] = True
         if request.tools:
             payload["tools"] = [_openai_tool_to_anthropic_tool(tool) for tool in request.tools]

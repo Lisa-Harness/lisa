@@ -129,6 +129,8 @@ def test_anthropic_usage_maps_cache_creation_to_dedicated_counter() -> None:
     assert usage is not None
     assert usage.cache_creation_tokens == 150
     assert usage.cached_tokens == 800
+    assert usage.prompt_tokens == 1150
+    assert usage.total_tokens == 1190
     # Cache creation is a write-rate cost, not reasoning output.
     assert usage.reasoning_tokens == 0
 
@@ -213,6 +215,26 @@ async def test_prompt_cache_disabled_flattens_to_legacy_system_string() -> None:
     assert "Stable harness + mode" in system
     assert "## Routing Hint" in system
     assert "iter 2/50" in system
+    assert "cache_control" not in captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_growing_history_uses_automatic_cache_with_stable_system_anchor() -> None:
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = _segmented_request()
+    await gateway.complete(request)
+    assert captured["json"]["cache_control"] == {"type": "ephemeral"}
+    request.messages.extend(
+        [
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": "continue"},
+        ]
+    )
+    await gateway.complete(request)
+    assert captured["json"]["cache_control"] == {"type": "ephemeral"}
+    assert captured["json"]["system"][1]["cache_control"] == {"type": "ephemeral"}
+    assert len(captured["json"]["messages"]) == 3
 
 
 @pytest.mark.asyncio

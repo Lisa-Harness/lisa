@@ -212,6 +212,7 @@ async def test_anthropic_gateway_stream_yields_text_deltas() -> None:
     assert chunks[2].usage is not None
     assert chunks[2].usage.prompt_tokens == 10
     assert chunks[2].usage.completion_tokens == 20
+    assert captured["json"]["cache_control"] == {"type": "ephemeral"}
     # Auth headers are injected per-request by the gateway.
     assert captured["headers"]["x-api-key"] == "test-key"
     assert captured["headers"]["anthropic-version"] == "2023-06-01"
