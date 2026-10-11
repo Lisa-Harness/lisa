@@ -48,7 +48,7 @@ from uuid import uuid4
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
-from kernel.turn_continuation import TurnContinuation
+from kernel.turn_continuation import TurnContinuation, resume_after_pause
 from kernel.turn_phases._routing import TurnDecision, evaluate_turn_decision
 from kernel.turn_runner import (
     TurnResult,
@@ -89,7 +89,11 @@ from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
 from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
-from runtime.turn_continuation import persist_continuation, usage_since_resume
+from runtime.turn_continuation import (
+    load_continuation,
+    persist_continuation,
+    usage_since_resume,
+)
 from runtime.turn_hooks_builder import build_turn_hooks
 from runtime.turn_logging import build_turn_completed_payload
 from runtime.types import HostCommandResult
@@ -637,6 +641,15 @@ async def _route_model_turn(
             task_id=continuation.identity.task_id,
             continuation=continuation,
         )
+    if not message.lstrip().startswith("/") and _is_task_resume_request(message):
+        paused = _paused_turn_continuation(runtime.paths.thread_path)
+        if paused is not None:
+            return await _route_model_turn(
+                runtime,
+                message,
+                transport,
+                continuation=resume_after_pause(paused, message),
+            )
     if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
@@ -769,6 +782,35 @@ def _is_task_resume_request(message: str) -> bool:
             "resume where we left off",
         )
     )
+
+
+def _kernel_loop_provenance(
+    runtime: HostRuntime, result: TurnResult, resumed: TurnContinuation | None
+) -> dict[str, str]:
+    """Link resumed loops and keep a paused loop resumable in place, not re-routed."""
+    paused_at = result.continuation
+    if paused_at is None or paused_at.requires_approval or runtime.paths.thread_path is None:
+        return {"kernel_turn_id": resumed.turn_id if resumed is not None else ""}
+    return {
+        "kernel_turn_id": paused_at.turn_id,
+        "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, paused_at),
+    }
+
+
+def _paused_turn_continuation(thread_path: Any) -> TurnContinuation | None:
+    """Return the latest turn's saved loop when it paused at an iteration boundary."""
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=1)
+    if not entries:
+        return None
+    provenance = entries[-1].get("provenance") or {}
+    if provenance.get("operator_exit") != "paused":
+        return None
+    try:
+        saved = load_continuation(thread_path, provenance)
+    except (OSError, ValueError, KeyError) as exc:
+        logger.warning("paused turn is not resumable in place: %s", exc)
+        return None
+    return saved if saved is not None and not saved.requires_approval else None
 
 
 def _resumable_task_context(thread_path: Any, message: str) -> tuple[str, str]:
@@ -1266,7 +1308,7 @@ async def _execute_mode_turn(
         resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
     )
     provenance["task_id"] = task_id
-    provenance["kernel_turn_id"] = continuation.turn_id if continuation is not None else ""
+    provenance.update(_kernel_loop_provenance(runtime, result, continuation))
     if result.block_origin:
         provenance["block_origin"] = result.block_origin
 

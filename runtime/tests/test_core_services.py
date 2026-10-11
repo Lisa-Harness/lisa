@@ -26,6 +26,7 @@ import sys
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from kernel.models import (
@@ -851,6 +852,93 @@ async def test_resume_phrase_routes_to_paused_turn_owner(tmp_path: Path) -> None
 async def test_resume_phrase_after_completed_turn_stays_in_current_mode(tmp_path: Path) -> None:
     mode = await _routed_mode_after(tmp_path, {"source": "observed"})
     assert mode == "default"
+
+
+async def _resumed_continuation_after(
+    tmp_path: Path, *, reason: str, message: str
+) -> tuple[Any, list[tuple[Any, str]]]:
+    from unittest.mock import AsyncMock, patch
+
+    from kernel.turn_continuation import TurnContinuation
+    from kernel.turn_hooks import TurnIdentity
+    from runtime.callbacks import NullTransport
+    from runtime.thread import append_thread_entry
+    from runtime.turn_continuation import persist_continuation
+
+    runtime = _make_runtime(tmp_path)
+    saved = TurnContinuation(
+        identity=TurnIdentity(workspace_id="w", user_id="u", task_id="task-7"),
+        mode_id="worker",
+        query="fix issue 7",
+        state_json="{}",
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="[]",
+        preferred_model_id=None,
+        max_iterations=3,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        reason=reason,
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="worker",
+        query="fix issue 7",
+        response_text="iteration cap",
+        provenance={
+            "source": "observed",
+            "operator_exit": "paused",
+            "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, saved),
+        },
+    )
+    notes: list[tuple[Any, str]] = []
+
+    def resume(paused: Any, note: str) -> Any:
+        notes.append((paused, note))
+        return paused
+
+    execute_mock = AsyncMock(return_value="ok")
+    with (
+        patch.object(handle_message_mod, "_execute_mode_turn", execute_mock),
+        patch.object(handle_message_mod, "resume_after_pause", resume),
+    ):
+        await handle_message(runtime, message, NullTransport())
+    return execute_mock.call_args.kwargs.get("continuation"), notes
+
+
+@pytest.mark.asyncio
+async def test_resume_phrase_resumes_cap_paused_loop_in_place(tmp_path: Path) -> None:
+    continuation, notes = await _resumed_continuation_after(
+        tmp_path, reason="cap", message="continue, and keep the tests green"
+    )
+    assert continuation is not None
+    assert continuation.reason == "cap"
+    assert continuation.mode_id == "worker"
+    assert [note for _, note in notes] == ["continue, and keep the tests green"]
+
+
+@pytest.mark.asyncio
+async def test_new_request_after_cap_pause_routes_normally(tmp_path: Path) -> None:
+    continuation, notes = await _resumed_continuation_after(
+        tmp_path, reason="cap", message="what is the weather like"
+    )
+    assert continuation is None
+    assert notes == []
+
+
+@pytest.mark.asyncio
+async def test_approval_continuation_is_not_resumed_by_a_resume_phrase(tmp_path: Path) -> None:
+    continuation, notes = await _resumed_continuation_after(
+        tmp_path, reason="approval", message="continue"
+    )
+    assert continuation is None
+    assert notes == []
 
 
 def _restarted_mode(tmp_path: Path, provenance: dict[str, str] | None) -> str:

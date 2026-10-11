@@ -15,6 +15,8 @@ from kernel.turn_hooks import TurnIdentity
 from kernel.turn_phases._turn_state import _TurnState
 
 _STATE = TypeAdapter(_TurnState)
+# Pauses at an iteration boundary: no pending tool call and no approval.
+PAUSE_REASONS = frozenset({"cap", "pause"})
 _SEGMENTS = TypeAdapter(SystemPromptSegments)
 
 
@@ -57,6 +59,13 @@ class TurnContinuation(BaseModel):
     approval_request_id: str = ""
     reason: str = "approval"
     active_wall_ms: float = 0
+    # The allowance the turn started with; each cap resume grants it again.
+    base_max_iterations: int = 0
+    base_turn_budget: TurnBudget | None = None
+
+    @property
+    def requires_approval(self) -> bool:
+        return self.reason not in PAUSE_REASONS
 
     def restore_state(self) -> _TurnState:
         return _STATE.validate_json(self.state_json)
@@ -69,6 +78,32 @@ class TurnContinuation(BaseModel):
         state = self.restore_state()
         state.auto_approval_limit += settings.max_auto_approved_actions
         return self.model_copy(update={"state_json": capture_state(state)})
+
+
+def resume_after_pause(saved: TurnContinuation, note: str) -> TurnContinuation:
+    """Continue a paused loop in place with the operator's reply appended.
+
+    A cap pause grants one more of the turn's original allowances; the
+    cumulative counters stay, so every resume is bounded and accounted.
+    """
+    state = saved.restore_state()
+    if note.strip() and state.messages is not None:
+        state.messages.append({"role": "user", "content": note.strip()})
+    update: dict[str, Any] = {"state_json": capture_state(state)}
+    if saved.reason == "cap":
+        base = saved.base_turn_budget or saved.turn_budget
+        update["max_iterations"] = saved.max_iterations + (
+            saved.base_max_iterations or saved.max_iterations
+        )
+        if saved.turn_budget is not None and base is not None:
+            update["turn_budget"] = saved.turn_budget.model_copy(
+                update={
+                    field: getattr(saved.turn_budget, field) + getattr(base, field)
+                    for field in TurnBudget.model_fields
+                    if getattr(saved.turn_budget, field)
+                }
+            )
+    return saved.model_copy(update=update)
 
 
 def capture_state(state: _TurnState) -> str:

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from kernel.approval import ApprovalInvocation, ApprovalUnavailable, InMemoryApprovalService
 from kernel.models import ToolDefinition, ToolResult
-from kernel.turn_continuation import TurnContinuation, capture_state
+from kernel.turn_continuation import TurnContinuation, capture_state, resume_after_pause
 from kernel.turn_hooks import ContextHooks, HostServiceHandles, ModelHooks, TurnHooks, TurnIdentity
 from kernel.turn_phases._turn_state import _TurnState
 from kernel.turn_runner import _project_provider_messages, run_turn
@@ -217,3 +217,62 @@ def test_provider_residency_survives_a_serialized_checkpoint() -> None:
     )
     assert inputs[1][1]["content"] == "result reference"
     assert inputs[1][-1]["content"] == "new tail"
+
+
+@pytest.mark.asyncio
+async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def execute(ctx: Any) -> ToolResult:
+        return ToolResult(output_text=f"result:{ctx.tool_id}")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "read": ToolDefinition(
+                tool_id="read",
+                pack_id="test",
+                effect="read",
+                implementation_module=SimpleNamespace(execute=execute),
+            )
+        },
+    )
+    requests: list[list[dict[str, Any]]] = []
+    finish_after = 3
+
+    async def complete(**kwargs: Any) -> Any:
+        requests.append(copy.deepcopy(kwargs["messages"]))
+        if len(requests) >= finish_after:
+            return SimpleNamespace(content="finished", tool_calls=[])
+        call_id = f"read-{len(requests)}"
+        return SimpleNamespace(
+            content="",
+            tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
+        )
+
+    def forbidden_replay() -> list[dict[str, Any]]:
+        raise AssertionError("resume reconstructed the turn")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        identity=TurnIdentity(workspace_id="w", user_id="u", task_id="task"),
+    )
+    paused = await run_turn(mode_id="default", query="do it", hooks=hooks, max_tool_iterations=3)
+    assert paused.operator_exit == "paused"
+    assert len(requests) == 2
+    assert paused.continuation is not None
+    assert paused.continuation.reason == "cap"
+    assert not paused.continuation.requires_approval
+
+    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    saved = resume_after_pause(
+        TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
+        "keep going",
+    )
+    assert saved.max_iterations == 6
+    resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
+    assert resumed.response_text == "finished"
+    assert len(requests) == 3
+    assert requests[1] == requests[2][: len(requests[1])]
+    assert requests[2][-1] == {"role": "user", "content": "keep going"}
+    assert resumed.tool_call_count == 2

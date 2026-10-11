@@ -251,6 +251,17 @@ headroom the report-sized finals legitimately need (`coding_review`'s
 final must fit a full review verbatim, and those finals were the largest
 legitimate completions in the trace — up to 47k).
 
+### Resuming a capped turn
+
+A cap or operator pause saves the loop at the iteration boundary, before
+the model call it would have made. The thread entry records the saved
+loop as `turn_continuation_ref`. When the next message is a resume phrase
+("continue", "keep going …"), the host restores that loop rather than
+re-routing and replaying. The message is appended as a user note, so the
+cached prefix survives. A cap resume grants the original iteration and
+token allowance again, so each resume is bounded and never unlimited. Any
+other message routes normally.
+
 ### Failure modes of a wrong value
 
 - **Too small (per call):** truncation mid-tool-call → the kernel's

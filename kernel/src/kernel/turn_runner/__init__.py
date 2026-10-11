@@ -1068,6 +1068,8 @@ def _scale_iteration_ceiling(
 async def _validate_turn_continuation(saved: TurnContinuation, hooks: TurnHooks) -> None:
     if saved.identity != hooks.identity:
         raise ValueError("Continuation belongs to a different turn identity or session plan.")
+    if not saved.requires_approval:
+        return
     service = hooks.services.approval_service
     record = await service.get(saved.approval_request_id) if service else None
     if record is None or record.state != "approved" or is_expired(record.invocation):
@@ -9296,8 +9298,8 @@ def _save_dispatch_continuation(
     loop: _ToolDispatchLoopState,
     calls: list[dict[str, Any]],
     index: int,
-    prepared: _PreparedToolCall,
-    required: ApprovalRequired,
+    prepared: _PreparedToolCall | None,
+    required: ApprovalRequired | None,
     *,
     capture: list[Any] | None,
     state: _TurnState,
@@ -9350,17 +9352,49 @@ def _save_dispatch_continuation(
             pre_handoff_text=loop.pre_handoff_text,
             pending_calls=copy.deepcopy(calls),
             pending_index=index,
-            pending_tool_name=prepared.tool_name,
-            pending_tool_arguments=prepared.tool_arguments,
-            pending_tool_kind=prepared.tool_kind,
-            pending_tool_call_id=prepared.tool_call_id,
-            pending_recovery_item_id=prepared.recovery_item_id,
-            pending_recovery_retry_policy=prepared.recovery_retry_policy,
-            approval_request_id=required.invocation.request_id,
+            pending_tool_name=prepared.tool_name if prepared else "",
+            pending_tool_arguments=prepared.tool_arguments if prepared else {},
+            pending_tool_kind=prepared.tool_kind if prepared else "",
+            pending_tool_call_id=prepared.tool_call_id if prepared else "",
+            pending_recovery_item_id=prepared.recovery_item_id if prepared else None,
+            pending_recovery_retry_policy=prepared.recovery_retry_policy if prepared else "",
+            approval_request_id=required.invocation.request_id if required else "",
             reason=state.suspension_reason or "approval",
             active_wall_ms=(time.monotonic() - turn_start_mono) * 1000,
+            base_max_iterations=(
+                previous.base_max_iterations or previous.max_iterations
+                if previous is not None
+                else max_iterations
+            ),
+            base_turn_budget=(
+                previous.base_turn_budget or previous.turn_budget
+                if previous is not None
+                else turn_budget
+            ),
         )
     ]
+
+
+def _save_pause_continuation(
+    suspend: Callable[..., None],
+    loop: _ToolDispatchLoopState,
+    *,
+    state: _TurnState,
+    operator_exit: str,
+    cap_pause_reason: str,
+) -> None:
+    """Save the loop at the iteration boundary a pause broke before its model call."""
+    if operator_exit != "paused":
+        return
+    state.suspension_reason = "cap" if cap_pause_reason else "pause"
+    state.iteration -= 1
+    state.step_iteration = max(0, state.step_iteration - 1)
+    try:
+        suspend(loop, [], 0, None, None)
+    finally:
+        state.iteration += 1
+        state.step_iteration += 1
+        state.suspension_reason = ""
 
 
 async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the existing turn loop
@@ -9831,6 +9865,27 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
             log=_log,
         )
         if _lifecycle_break:
+            _save_pause_continuation(
+                suspend_dispatch,
+                _ToolDispatchLoopState(
+                    mode_id=mode_id,
+                    mode_config=mode_config,
+                    ctx=ctx,
+                    tool_schemas=tool_schemas,
+                    capability_manifest=capability_manifest,
+                    routing_hint=routing_hint,
+                    chain_advance_guidance=_chain_advance_guidance,
+                    pending_yield=None,
+                    handoff_to=handoff_to,
+                    transitioned_to=transitioned_to,
+                    content=content,
+                    pre_handoff_text=_pre_handoff_text,
+                    yielded=False,
+                ),
+                state=_state,
+                operator_exit=_pending_operator_exit,
+                cap_pause_reason=_cap_pause_reason,
+            )
             break
 
         # Nudges use the central briefing helper after complete tool batches.
