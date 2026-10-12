@@ -4,6 +4,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### A resumed turn that re-hit the stuck-stage cap crashed with UnboundLocalError
+
+- **What:** `_run_turn_inner` (kernel turn runner) now seeds
+  `effective_model_def` from the pre-gate model resolution before the
+  tool loop; each loop pass overwrites it.
+- **Why:** A lifecycle action can break the loop on its first pass — a
+  resumed continuation enters with the restored stall counters already
+  at the stuck-in-stage cap, so the cap pauses before any iteration body
+  runs and `_finalize_turn_result` read the never-assigned
+  `effective_model_def`, raising `UnboundLocalError` on every resume
+  attempt (2026-10-12 18:00/18:12 UTC: the paused "SP-5" turn failed to
+  finalize each time).
+- **Tests:** `kernel/tests/test_turn_continuation.py`
+  `::test_stuck_cap_pause_persists_a_resumable_continuation`.
+
 ### Removed
 
 #### Dead context plumbing — unconsumed seams, always-zero budget fields, and the duplicate broker path
