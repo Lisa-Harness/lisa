@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kernel.capability_binding import CapabilityRef
@@ -139,27 +141,84 @@ class _SliceProviderHooksView:
         return self._runtime.session.last_context_snapshot
 
 
+_VIEW_CHUNK_TURNS = 256
+
+
+@dataclass
+class _PlanScan:
+    """What ``_derive_view`` learned about the thread up to ``next_turn``."""
+
+    next_turn: int
+    plan_turn: int | None
+    view: Any
+
+
+# The thread is append-only, so the latest-plan turn found for a prefix stays
+# valid; later calls only scan newly appended turns. Keyed by thread path.
+_PLAN_SCANS: dict[Path, _PlanScan] = {}
+_MAX_PLAN_SCANS = 64
+
+
+def _latest_plan_turn(thread_path: Path, first_turn: int, last_turn: int) -> int | None:
+    """Return the newest global turn in ``[first_turn, last_turn]`` carrying a plan."""
+    from kernel.workflow_view import has_workflow_plan
+
+    from runtime.thread import load_thread_range
+
+    end_turn = last_turn
+    while end_turn >= first_turn:
+        start_turn = max(first_turn, end_turn - _VIEW_CHUNK_TURNS + 1)
+        chunk = load_thread_range(thread_path=thread_path, start_turn=start_turn, end_turn=end_turn)
+        for offset in range(len(chunk) - 1, -1, -1):
+            if has_workflow_plan(str(chunk[offset].get("response_text") or "")):
+                return start_turn + offset
+        end_turn = start_turn - 1
+    return None
+
+
 def _derive_view(runtime: HostRuntime) -> Any:
     """Derive the workflow view from the latest plan and subsequent thread entries.
 
     A pure read from the lossless thread log — no mutable position store.
     Returns a ``WorkflowView`` or ``None`` when no active workflow exists.
+    The result is reused until the thread grows, and only new turns are
+    searched for a newer plan.
     """
-    from kernel.workflow_view import derive_workflow_view, has_workflow_plan
+    from kernel.workflow_view import derive_workflow_view
 
     from runtime.thread import load_thread_range, next_turn_index
 
     thread_path = runtime.paths.thread_path
-    end_turn = next_turn_index(thread_path=thread_path) - 1
+    next_turn = next_turn_index(thread_path=thread_path)
+    cached = _PLAN_SCANS.get(thread_path) if thread_path is not None else None
+    if cached is not None and cached.next_turn == next_turn:
+        return cached.view
+    if cached is None or cached.next_turn > next_turn:
+        scan_from, plan_turn = 0, None
+    else:
+        scan_from, plan_turn = cached.next_turn, cached.plan_turn
+    end_turn = next_turn - 1
+    if thread_path is not None:
+        newer_plan = _latest_plan_turn(thread_path, scan_from, end_turn)
+        if newer_plan is not None:
+            plan_turn = newer_plan
     entries: list[dict[str, Any]] = []
-    while end_turn >= 0:
-        start_turn = max(0, end_turn - 255)
-        chunk = load_thread_range(thread_path=thread_path, start_turn=start_turn, end_turn=end_turn)
-        entries = chunk + entries
-        if any(has_workflow_plan(str(entry.get("response_text") or "")) for entry in chunk):
-            break
-        end_turn = start_turn - 1
-    return derive_workflow_view(entries)
+    if plan_turn is not None:
+        # Same window the backwards chunk walk always produced: whole
+        # chunks counted back from the newest turn, so mode run-lengths that
+        # began before the plan are still visible.
+        start_turn = end_turn - _VIEW_CHUNK_TURNS + 1
+        while start_turn > plan_turn:
+            start_turn -= _VIEW_CHUNK_TURNS
+        entries = load_thread_range(
+            thread_path=thread_path, start_turn=max(0, start_turn), end_turn=end_turn
+        )
+    view = derive_workflow_view(entries)
+    if thread_path is not None:
+        if len(_PLAN_SCANS) >= _MAX_PLAN_SCANS and thread_path not in _PLAN_SCANS:
+            _PLAN_SCANS.clear()
+        _PLAN_SCANS[thread_path] = _PlanScan(next_turn=next_turn, plan_turn=plan_turn, view=view)
+    return view
 
 
 def _resolve_factory_arity(factory: Any, default_params: int) -> int:

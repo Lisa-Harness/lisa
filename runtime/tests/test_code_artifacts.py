@@ -500,6 +500,69 @@ def test_restart_recovers_plan_and_receipts_outside_recent_tail(
     assert _resumable_task_id(thread_path, "continue") == "task-original"
 
 
+def test_derive_view_does_not_rescan_unchanged_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: _derive_view re-parsed the whole thread on every
+    # workflow_position() call when no plan existed (~3s per call on a 110MB
+    # thread), and the kernel calls it many times per turn.
+    import runtime.thread as thread_module
+
+    runtime = build_test_runtime(
+        tmp_path, user_slug="user", surface_type="personal_dm", surface_id="surface"
+    )
+    thread_path = runtime.paths.thread_path
+
+    def append(response_text: str, receipts: list[dict[str, str]] | None = None) -> None:
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="user",
+            segment_turns=64,
+            mode_id="executor",
+            query="continue",
+            response_text=response_text,
+            provenance={"source": "observed"},
+            effect_receipts=receipts,
+        )
+
+    for _ in range(300):
+        append("No plan here.")
+
+    loaded: list[int] = []
+    original_load = thread_module.load_thread_range
+
+    def counting_load(**kwargs: object) -> list[dict[str, object]]:
+        entries = original_load(**kwargs)  # type: ignore[arg-type]
+        loaded.append(len(entries))
+        return entries
+
+    monkeypatch.setattr(thread_module, "load_thread_range", counting_load)
+
+    assert _derive_view(runtime) is None
+    assert sum(loaded) == 300
+
+    loaded.clear()
+    assert _derive_view(runtime) is None
+    assert _derive_view(runtime) is None
+    assert sum(loaded) == 0
+
+    append("Still no plan.")
+    loaded.clear()
+    assert _derive_view(runtime) is None
+    assert sum(loaded) == 1
+
+    append("## Plan\n1. executor - Edit the owned worktree\n_writes: coding_edit_files_\n")
+    view = _derive_view(runtime)
+    assert view is not None
+    assert view.declared_steps[0].write_capability == "coding_edit_files"
+    assert view.completed_steps == ()
+
+    append("Edited.", [{"capability_id": "coding_edit_files", "effect": "write"}])
+    loaded.clear()
+    assert _derive_view(runtime) is None
+    assert sum(loaded) < 300
+
+
 def _host_with_declared_bwrap(data_dir: Path) -> HostRuntime:
     runtime = build_test_runtime(
         data_dir, user_slug="user", surface_type="personal_dm", surface_id="surface"
