@@ -4,6 +4,29 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Streamed tool calls dispatch in one pass — no non-streaming regeneration
+
+- **What:** `StreamedChunk` carries `tool_call_deltas`; the OpenAI-compatible
+  gateway parses `delta.tool_calls` fragments (with the sanitize/restore pair
+  now applied on the stream path), `_aggregate_streamed_chunks` stitches them
+  by `index` into the OpenAI tool-call shape, and `_streamed_gateway_completion`
+  dispatches a `finish_reason='tool_calls'` stream directly when deltas were
+  parsed instead of regenerating the whole content non-streaming. Backends that
+  signal `tool_calls` with no deltas keep the regeneration path unchanged.
+- **Why:** The discarded stream pass was a measured 1.21x tax on every
+  tool-call iteration and ~24% of provider wall time (121 hidden passes vs 172
+  recorded calls in the 2026-10-12 afternoon window). Done under the
+  "Streamed tool-call deltas" freeze carve-out (`docs/CODING_WORKFLOW.md`).
+- **Tests:** `kernel/tests/test_streaming.py`
+  (`test_aggregate_stitches_tool_call_deltas_by_index`,
+  `test_turn_runner_stream_tool_deltas_skip_the_fallback_complete`),
+  `sdk/tests/test_gateway_streaming.py`
+  (`test_openai_gateway_stream_parses_tool_call_deltas`,
+  `test_openai_gateway_stream_restores_dotted_tool_names`,
+  `test_openai_gateway_stream_text_only_yields_no_deltas`).
+
 ### Fixed
 
 #### A resumed turn that re-hit the stuck-stage cap crashed with UnboundLocalError
