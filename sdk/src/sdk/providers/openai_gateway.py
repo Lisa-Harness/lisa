@@ -1648,10 +1648,12 @@ class OpenAICompatibleGateway:
     async def complete_stream(self, request: CompletionRequest) -> AsyncIterator[StreamedChunk]:
         """Stream completion chunks from an OpenAI-compatible endpoint.
 
-        v1 streams tokens only. Tool-call deltas are not parsed; the host
-        gets text deltas and a final ``finish_reason``. When the model wants
-        to call tools, the stream's ``finish_reason`` will be ``'tool_calls'``
-        and the host should fall back to ``complete()`` for that iteration.
+        v1 streamed tokens only; the 2026-10-12 one-pass carve-out adds
+        tool-call delta parsing: an OpenAI-style ``delta.tool_calls`` list is
+        forwarded per chunk as ``tool_call_deltas`` (index/id/name/argument
+        fragments the kernel stitches). Backends that don't stream tool
+        calls keep the chunk contract unchanged — the turn runner falls
+        back to ``complete()`` for a ``tool_calls`` finish with no deltas.
         """
 
         client = self._client_factory()
@@ -1659,12 +1661,13 @@ class OpenAICompatibleGateway:
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
         # Strict backends validate tool names even on streaming requests;
-        # sanitize here too (no restoration needed — this path never parses
-        # tool-call deltas, the host falls back to complete() for tools).
-        sanitized_tools, _ = sanitize_chat_tool_names(kwargs.get("tools"))
-        if sanitized_tools is not kwargs.get("tools"):
+        # sanitize on the wire and restore the originals on the parsed
+        # deltas before yielding (matches the non-streaming path's
+        # sanitize/restore pair).
+        sanitized_tools, name_map = sanitize_chat_tool_names(kwargs.get("tools"))
+        if name_map:
             kwargs["tools"] = sanitized_tools
-            kwargs["messages"] = sanitize_chat_history_tool_names(kwargs["messages"], {})
+            kwargs["messages"] = sanitize_chat_history_tool_names(kwargs["messages"], name_map)
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -1694,6 +1697,7 @@ class OpenAICompatibleGateway:
             delta_reasoning = ""
             finish_reason = None
             choices = getattr(event, "choices", None) or []
+            tool_call_deltas: list[dict[str, Any]] = []
             if choices:
                 choice = choices[0]
                 delta = getattr(choice, "delta", None)
@@ -1711,6 +1715,29 @@ class OpenAICompatibleGateway:
                         or getattr(delta, "reasoning", None)
                         or ""
                     )
+                for raw_delta in (
+                    getattr(delta, "tool_calls", None) if delta is not None else None
+                ) or []:
+                    function_obj = getattr(raw_delta, "function", None)
+                    entry: dict[str, Any] = {
+                        "index": getattr(raw_delta, "index", 0) or 0,
+                    }
+                    call_id = getattr(raw_delta, "id", None)
+                    if call_id:
+                        entry["id"] = call_id
+                    call_type = getattr(raw_delta, "type", None)
+                    if call_type:
+                        entry["type"] = call_type
+                    entry["function"] = {
+                        "name": getattr(function_obj, "name", None) or "",
+                        "arguments": getattr(function_obj, "arguments", None) or "",
+                    }
+                    # Restore the sanitized dotted tool name so the kernel
+                    # dispatcher matches the non-streaming wire shape.
+                    wire_name = entry["function"]["name"]
+                    if name_map and wire_name in name_map:
+                        entry["function"]["name"] = name_map[wire_name]
+                    tool_call_deltas.append(entry)
                 finish_reason = getattr(choice, "finish_reason", None)
             usage = extract_openai_completion_usage(event)
             yield StreamedChunk(
@@ -1718,6 +1745,7 @@ class OpenAICompatibleGateway:
                 reasoning_content=delta_reasoning,
                 finish_reason=finish_reason,
                 usage=usage,
+                tool_call_deltas=tool_call_deltas,
             )
         await self._emit(
             {

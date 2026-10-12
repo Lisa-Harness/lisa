@@ -220,6 +220,122 @@ async def test_turn_runner_stream_tool_calls_falls_back_to_complete() -> None:
     assert "final answer" in result.response_text
 
 
+# ── Streaming tool-call deltas (freeze carve-out: one-pass tool turns) ──
+
+
+def test_aggregate_stitches_tool_call_deltas_by_index() -> None:
+    """Deltas for the same call index merge; names and arguments concatenate.
+
+    Ollama v1 streams a tool call as fragments:
+    ``delta.tool_calls=[{index:0, id:'call_1', function:{name:'write'}}]``
+    then ``[{index:0, function:{arguments:'{"pa'}}]`` … The stitched result
+    must be the same normalized shape ``extract_openai_tool_calls`` returns
+    for a non-streaming response.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_1", "function": {"name": "write_file", "arguments": ""}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"arguments": '{"path": "README.md", '}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"arguments": '"content": "hi"}'}}],
+            finish_reason="tool_calls",
+        ),
+        # A second call starting mid-stream gets its own index.
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 1, "id": "call_2", "function": {"name": "read_file", "arguments": "{}"}}
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 2
+    first = result.tool_calls[0]
+    assert first["id"] == "call_1"
+    assert first["type"] == "function"
+    assert first["function"]["name"] == "write_file"
+    assert json.loads(first["function"]["arguments"]) == {"path": "README.md", "content": "hi"}
+    second = result.tool_calls[1]
+    assert second["id"] == "call_2"
+    assert second["function"]["name"] == "read_file"
+
+
+def test_aggregate_without_deltas_keeps_empty_tool_calls() -> None:
+    """No deltas = no tool calls: today's text-only behavior is unchanged."""
+    chunks = [StreamedChunk(content="hi"), StreamedChunk(finish_reason="tool_calls")]
+    result = _aggregate_streamed_chunks(chunks)
+    assert result.tool_calls == []
+    assert result.finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_stream_tool_deltas_skip_the_fallback_complete() -> None:
+    """A tool_calls stream with parsed deltas dispatches without regenerating.
+
+    Regression for the 2026-10-12 performance review: the v1 gateway
+    streamed, hit ``finish_reason='tool_calls'``, and the turn loop
+    regenerated the entire content non-streaming — a measured 1.21x tax
+    on every tool-call iteration (the ollama stream pass is discarded).
+    When the stream carries parseable tool-call deltas, the dispatch must
+    run off the streamed payload and ``complete()`` must not be called.
+    """
+    stream_chunks = [
+        StreamedChunk(content="Editing."),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {
+                        "name": "memory.add",
+                        "arguments": json.dumps({"content": "edited"}),
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+        ),
+    ]
+    stream_fn = _make_streaming_complete_stream(stream_chunks)
+    complete_calls: list[int] = []
+
+    async def complete_fn(**kwargs: Any):
+        complete_calls.append(kwargs.get("max_tokens"))
+        return _StubCompletion(content="should not be reached")
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+    assert complete_calls == [], "complete() must not run when deltas were parsed"
+    assert result.response_text != "should not be reached"
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_tool_calls_stream_without_deltas_still_falls_back() -> None:
+    """No parseable deltas = unchanged fallback (older backends)."""
+    stream_calls: list[int] = []
+    stream_fn_source = [StreamedChunk(content="", finish_reason="tool_calls")]
+
+    async def stream_fn(**kwargs: Any):
+        stream_calls.append(kwargs.get("max_tokens"))
+        for chunk in stream_fn_source:
+            yield chunk
+
+    async def complete_fn(**kwargs: Any):
+        return _StubCompletion(content="final answer")
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    result = await run_turn(mode_id="default", query="hi", hooks=hooks)
+    assert "final answer" in result.response_text
+
+
 # ── Truncated-stream rescue (the 2026-09-02 write-announcement loop) ───
 
 

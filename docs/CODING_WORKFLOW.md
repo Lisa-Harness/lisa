@@ -195,6 +195,29 @@ here and is the carve-out's receipt: it scopes the exception to named
 modules, bounds it by commit scope, expires with the stated condition,
 and is closed by updating this section (same doc, same history).
 
+**Streamed tool-call deltas (opened 2026-10-12, authorized by the
+operator).** Scope: `kernel/src/kernel/provider_contracts.py`
+(`StreamedChunk.tool_call_deltas` field and
+`_aggregate_streamed_chunks` delta stitching only),
+`sdk/src/sdk/providers/openai_gateway.py` (`complete_stream` delta
+parsing plus the streamed-path sanitize/restore pair only), and
+`kernel/src/kernel/turn_runner/__init__.py` (the
+`_streamed_gateway_completion` dispatch predicate only). Purpose: a
+`finish_reason='tool_calls'` stream with parseable `delta.tool_calls`
+must dispatch without the non-streaming regeneration pass — the
+discarded stream pass was a measured 1.21x tax on every tool-call
+iteration (~24% of provider wall time; 121 hidden passes vs 172 recorded
+in the 2026-10-12 afternoon window). Backends signaling `tool_calls`
+without deltas keep the unchanged regeneration path. Any commit under
+this heading must (1) name the turn-loop behavior it changes, (2) ship
+a test that fails before and passes after (same-commit, red/green),
+(3) not widen scope beyond the named streaming/delta surfaces, and (4)
+keep the full verification loop green in its entirety. The carve-out
+closes when a live ollama coding turn shows one recorded pass per
+tool-call iteration in `token-usage.jsonl` (the hidden-pass count does
+not exceed the streaming-only share), or explicitly on operator order —
+record the closure here.
+
 **Cache-aware usage accounting (opened 2026-10-11, authorized by the
 operator; amended 2026-10-12 — the kernel carries counts, not currency).**
 Scope: `kernel/src/kernel/provider_contracts.py`

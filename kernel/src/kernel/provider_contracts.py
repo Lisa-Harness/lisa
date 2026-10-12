@@ -227,6 +227,18 @@ class StreamedChunk:
     """Final usage — only present on the last chunk for providers that
     include usage in the stream."""
 
+    tool_call_deltas: list[dict[str, Any]] = field(default_factory=list)
+    """Tool-call fragments streamed in this chunk (v1.1 carve-out).
+
+    Each entry mirrors one OpenAI ``delta.tool_calls`` element: ``index``
+    (int, the stitch key), optional ``id``/``type`` on the first fragment of
+    a call, and ``function.name``/``function.arguments`` fragments
+    (arguments arrive in pieces and concatenate). Empty for text-only
+    providers and backends that do not stream tool calls; the gateway
+    contract stays "no deltas" for those, and the turn runner keeps the
+    non-streaming fallback for a ``tool_calls`` finish with no deltas.
+    """
+
 
 @dataclass(slots=True)
 class StreamedCompletion:
@@ -360,12 +372,38 @@ def is_pydantic_model_class(obj: Any) -> bool:
     return isinstance(obj, type) and issubclass(obj, PydanticBaseModel)
 
 
+def _stitch_tool_call_delta(
+    staged: dict[int, dict[str, Any]],
+    delta: dict[str, Any],
+) -> None:
+    """Merge one streamed tool-call fragment into its aggregate entry.
+
+    ``index`` is the stitch key (OpenAI streams fragment one call across
+    many chunks); missing index appends a new call. ``id``/``type`` arrive
+    once on the first fragment; ``name``/``arguments`` concatenate.
+    """
+    index = int(delta.get("index", len(staged)))
+    entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
+    if delta.get("id"):
+        entry["id"] = str(delta["id"])
+    if delta.get("type"):
+        entry["type"] = str(delta["type"])
+    function = delta.get("function") or {}
+    if function.get("name"):
+        entry["name"] += str(function["name"])
+    if function.get("arguments"):
+        entry["arguments"] += str(function["arguments"])
+
+
 def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletion:
     """Aggregate a list of ``StreamedChunk`` into one ``StreamedCompletion``.
 
-    v1 streams tokens only — tool-call streaming is deferred to v2, so this
-    helper does not attempt to reconstruct tool calls from deltas. The last
-    non-``None`` ``finish_reason`` wins. The last non-``None`` ``usage`` wins.
+    v1 streamed tokens only; the 2026-10-12 carve-out adds tool-call delta
+    stitching (gateway yields ``tool_call_deltas`` fragments; this helper
+    assembles them by ``index`` into the OpenAI tool-call shape so the turn
+    runner can dispatch without the non-streaming regeneration pass). The
+    last non-``None`` ``finish_reason`` wins. The last non-``None``
+    ``usage`` wins.
 
     ``reasoning_content`` (gpt-5.x reasoning models) is aggregated separately
     and kept on the ``StreamedCompletion`` so callers can surface it as a
@@ -378,6 +416,7 @@ def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletio
     reasoning_parts: list[str] = []
     finish_reason = "stop"
     usage: CompletionUsage | None = None
+    staged: dict[int, dict[str, Any]] = {}
     for chunk in chunks:
         if chunk.content:
             parts.append(chunk.content)
@@ -387,10 +426,20 @@ def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletio
             finish_reason = chunk.finish_reason
         if chunk.usage is not None:
             usage = chunk.usage
+        for delta in chunk.tool_call_deltas or []:
+            _stitch_tool_call_delta(staged, delta)
+    tool_calls = [
+        {
+            "id": entry["id"],
+            "type": entry["type"] or "function",
+            "function": {"name": entry["name"], "arguments": entry["arguments"]},
+        }
+        for _, entry in sorted(staged.items())
+    ]
     return StreamedCompletion(
         content="".join(parts),
         reasoning_content="".join(reasoning_parts),
-        tool_calls=[],
+        tool_calls=tool_calls,
         usage=usage,
         finish_reason=finish_reason,
         chunks=chunks,

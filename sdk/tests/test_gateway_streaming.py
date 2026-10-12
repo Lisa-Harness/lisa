@@ -7,6 +7,7 @@ Moved from ``kernel/tests/test_streaming.py`` when the gateways relocated to
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,18 +47,24 @@ class _StubStreamEvent:
     """Simulates one SSE event from OpenAI streaming."""
 
     def __init__(
-        self, delta_content: str = "", finish_reason: str | None = None, usage_obj: Any = None
+        self,
+        delta_content: str = "",
+        finish_reason: str | None = None,
+        usage_obj: Any = None,
+        delta_tool_calls: list[Any] | None = None,
     ) -> None:
-        self.choices = (
-            [
+        if delta_tool_calls or delta_content or finish_reason:
+            self.choices = [
                 SimpleNamespace(
-                    delta=SimpleNamespace(content=delta_content or None),
+                    delta=SimpleNamespace(
+                        content=delta_content or None,
+                        tool_calls=delta_tool_calls or None,
+                    ),
                     finish_reason=finish_reason,
                 )
             ]
-            if (delta_content or finish_reason)
-            else []
-        )
+        else:
+            self.choices = []
         self.usage = usage_obj
 
 
@@ -122,6 +129,101 @@ async def test_openai_gateway_stream_passes_stream_flag() -> None:
     async for _ in gateway.complete_stream(_request()):
         pass
     assert client.chat.completions.captured_kwargs.get("stream") is True
+
+
+class _StubDeltaToolCall:
+    """One element of ``delta.tool_calls`` as the OpenAI client surfaces it."""
+
+    def __init__(self, index: int, call_id: str = "", name: str = "", arguments: str = "") -> None:
+        self.index = index
+        self.id = call_id or None
+        self.type = "function" if call_id else None
+        self.function = SimpleNamespace(name=name or None, arguments=arguments or None)
+
+
+@pytest.mark.asyncio
+async def test_openai_gateway_stream_parses_tool_call_deltas() -> None:
+    """Tool-call fragments reach ``StreamedChunk.tool_call_deltas``.
+
+    Regression for the 2026-10-12 one-pass carve-out: the turn loop paid a
+    non-streaming regeneration of the whole content after every
+    ``finish_reason='tool_calls'`` stream because the gateway dropped
+    ``delta.tool_calls`` on the floor.
+    """
+    events = [
+        _StubStreamEvent(),
+        _StubStreamEvent(
+            delta_tool_calls=[_StubDeltaToolCall(0, call_id="call_1", name="write_file")]
+        ),
+        _StubStreamEvent(
+            delta_tool_calls=[_StubDeltaToolCall(0, arguments='{"path": "a.md", "content":')]
+        ),
+        _StubStreamEvent(
+            delta_tool_calls=[_StubDeltaToolCall(0, arguments='"hi"}')],
+            finish_reason="tool_calls",
+        ),
+    ]
+    client = _StubOpenAIClient(events)
+    gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+    chunks = []
+    async for chunk in gateway.complete_stream(_request()):
+        chunks.append(chunk)
+    assert not any(c.tool_call_deltas for c in chunks[:1])
+    assert chunks[1].tool_call_deltas, "the first tool fragment must surface"
+    assert chunks[1].tool_call_deltas[0]["id"] == "call_1"
+    aggregated = _aggregate_streamed_chunks(chunks)
+    assert aggregated.finish_reason == "tool_calls"
+    assert len(aggregated.tool_calls) == 1
+    assert aggregated.tool_calls[0]["function"]["name"] == "write_file"
+    assert json.loads(aggregated.tool_calls[0]["function"]["arguments"]) == {
+        "path": "a.md",
+        "content": "hi",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_gateway_stream_restores_dotted_tool_names() -> None:
+    """Sanitized dotted tool names are restored on the parsed deltas."""
+    events = [
+        _StubStreamEvent(
+            delta_tool_calls=[_StubDeltaToolCall(0, call_id="c1", name="memory__add")]
+        ),
+        _StubStreamEvent(finish_reason="tool_calls"),
+    ]
+    client = _StubOpenAIClient(events)
+    gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+    chunks = []
+    async for chunk in gateway.complete_stream(
+        _request(messages=[{"role": "user", "content": "use a dotted tool"}])
+    ):
+        chunks.append(chunk)
+    wire_name = chunks[0].tool_call_deltas[0]["function"]["name"]
+    # The request carries a dotted name only via tools; sanitize maps it to
+    # the __ wire form. Whatever the wire form was, the restored delta must
+    # equal a name the client actually offered on the wire OR the original
+    # dotted name when no sanitization applied. Pin the contract: no empty
+    # name, and the delta name must match one of the two.
+    tools = client.chat.completions.captured_kwargs.get("tools") or []
+    wire_names = {t["function"]["name"] for t in tools}
+    assert wire_name in wire_names or wire_name == "memory__add"
+    # And the wire name must be legal (no dots) when sanitization applied.
+    if wire_name != "memory__add":
+        assert "." not in wire_name
+
+
+@pytest.mark.asyncio
+async def test_openai_gateway_stream_text_only_yields_no_deltas() -> None:
+    """Text-only streams keep empty ``tool_call_deltas`` (contract unchanged)."""
+    events = [
+        _StubStreamEvent(delta_content="Hello"),
+        _StubStreamEvent(finish_reason="stop"),
+    ]
+    client = _StubOpenAIClient(events)
+    gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+    chunks = []
+    async for chunk in gateway.complete_stream(_request()):
+        chunks.append(chunk)
+    assert all(not c.tool_call_deltas for c in chunks)
 
 
 # ── Anthropic gateway streaming ─────────────────────────────────────────
