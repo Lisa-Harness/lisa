@@ -285,12 +285,13 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
     """A cap pause that fires on the FIRST loop pass of a resume must still finalize.
 
     Regression for the 2026-10-12 18:00/18:12 UTC incident: a resumed
-    continuation entered ``_run_turn_inner`` with the restored step counter
-    already at the stuck-in-stage cap, so the first-pass ``_lifecycle_break``
-    fired before the loop body had ever assigned ``effective_model_def``.
-    ``_finalize_turn_result`` then raised ``UnboundLocalError`` and every
-    resume attempt crashed without persisting the pause — the paused turn
-    became unresumable.
+    continuation entered ``_run_turn_inner`` with its restored step counter
+    one below the stuck-in-stage cap (the pause path decremented before
+    snapshotting) and the first pass's own increment reached the cap, so
+    the first-pass ``_lifecycle_break`` fired before the loop body had ever
+    assigned ``effective_model_def``. ``_finalize_turn_result`` then raised
+    ``UnboundLocalError`` and every resume attempt crashed without
+    persisting the pause — the paused turn became unresumable.
     """
 
     async def execute(ctx: Any) -> ToolResult:
