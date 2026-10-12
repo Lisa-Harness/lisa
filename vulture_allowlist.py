@@ -13,9 +13,6 @@ ignore it.  Run::
 # ────────────────────────────────────────────────────────────────────────
 # Console-script entry points — called by pip-installed [project.scripts].
 # ────────────────────────────────────────────────────────────────────────
-# reason: console_script target — lisa-context MCP server
-mcp_server.context.server.main  # noqa: Vulture
-
 # reason: console_script target — lisa-memory MCP server
 mcp_server.memory.server.main  # noqa: Vulture
 
@@ -84,9 +81,6 @@ sdk.packs.memory.operations.memory.synthesize_learning.DistilledLearning  # noqa
 # must satisfy, even if the Protocol/ABC body (``...`` / ``raise`` / pass)
 # never reads them.
 # ──────────────────────────────────────────────────────────────────────────
-# reason: DataSanitizer.redact Protocol parameter — interface contract
-kernel.context.data_sanitizer.PassThroughSanitizer.redact.scope  # noqa: Vulture
-
 # reason: OutputGuard.validate Protocol parameter — interface contract
 kernel.seams.protocols.OutputGuard.validate.surface  # noqa: Vulture
 
@@ -99,16 +93,13 @@ sdk.memory.store.EmbeddingProvider.embed.texts  # noqa: Vulture
 # ──────────────────────────────────────────────────────────────────────────
 # MCP lifespan context-manager parameters — the ``app`` argument is part of
 # the ``@asynccontextmanager`` lifespan signature MCPServer hands us; the
-# catalog/content/context/fetch/guard/memory/storage servers don't read it.
+# catalog/content/fetch/guard/memory/storage servers don't read it.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: MCPServer lifespan signature requires ``app``; value not read
 mcp_server.catalog.server._lifespan.app  # noqa: Vulture
 
 # reason: MCPServer lifespan signature requires ``app``; value not read
 mcp_server.content.server._lifespan.app  # noqa: Vulture
-
-# reason: MCPServer lifespan signature requires ``app``; value not read
-mcp_server.context.server._lifespan.app  # noqa: Vulture
 
 # reason: MCPServer lifespan signature requires ``app``; value not read
 mcp_server.fetch.server._lifespan.app  # noqa: Vulture

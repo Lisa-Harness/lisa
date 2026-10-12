@@ -108,9 +108,6 @@ def _request(
         candidates=candidates,
         active_packs=frozenset({"lisa-pack-core"}),
         model_context_window_tokens=model_context_window_tokens,
-        stable_prefix_tokens=40,
-        conversation_tokens=30,
-        tool_schema_tokens=20,
         now=_NOW,
     )
 
@@ -166,9 +163,6 @@ def test_default_context_sources_admit_digest_items_without_authored_rules() -> 
         candidates=(digest, other),
         active_packs=frozenset(),
         model_context_window_tokens=100_000,
-        stable_prefix_tokens=0,
-        conversation_tokens=0,
-        tool_schema_tokens=0,
         now=_NOW,
     )
     result = ContextMapper().map(request)
@@ -543,7 +537,7 @@ def test_mapper_breaks_ties_by_candidate_id_and_keeps_required_duplicate() -> No
 def test_mapper_reserves_model_budget_before_context_selection() -> None:
     candidate = _candidate("general", "Useful deployment context.", token_estimate=12)
 
-    result = ContextMapper().map(_request((candidate,), model_context_window_tokens=140))
+    result = ContextMapper().map(_request((candidate,), model_context_window_tokens=50))
 
     budget = result.trace.budget
     assert budget.available_context_tokens == _AVAILABLE_CONTEXT_TOKENS

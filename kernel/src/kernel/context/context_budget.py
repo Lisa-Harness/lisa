@@ -326,7 +326,6 @@ class ContextBudgetAllocator:
                     "budget_tokens": record.budget_tokens,
                     "included": record.included,
                     "required": record.required,
-                    "drop_reason": record.dropped_reason,
                     "dropped_reason": record.dropped_reason,
                     "truncated": record.truncated,
                 }

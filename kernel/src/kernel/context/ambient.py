@@ -1,21 +1,20 @@
-"""Ambient runtime facts and extension-item builder registration.
+"""Ambient runtime facts for prompt context injection.
 
-This module owns the runtime-neutral helpers that survive the context-broker
+Owns the runtime-neutral helpers that survive the context-broker
 unification:
 
 - :func:`build_ambient_facts` — compact ambient runtime facts for prompt
   context injection.
 - :func:`resolve_host_name` — OS hostname resolution honoring platform env
   vars.
-- The module-level extension-item builder (``set_extension_item_builder``
-  / ``reset_extension_item_builder``) used by the SDK's entry-point-aware
-  builder.
 
 Context *selection* (ranking, gating, budgeting, rendering) is owned by the
 session-owned :class:`~kernel.context.context_mapper.ContextMapper`. The
 legacy namespace broker (``select_ranked_context`` /
-``render_context_packet_markdown``) was removed in favor of that single
-engine.
+``render_context_packet_markdown``) and the write-only module-global
+extension-item builder that survived alongside it are both gone — the
+production builder reaches the turn loop explicitly through
+``ContextSeams.extension_item_builder``, not a module global.
 """
 
 from __future__ import annotations
@@ -25,8 +24,10 @@ import socket
 from datetime import UTC, datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from kernel.context.extension_item import NoOpExtensionItemBuilder
-from kernel.seams.protocols import ExtensionItemBuilder
+__all__ = [
+    "build_ambient_facts",
+    "resolve_host_name",
+]
 
 
 def resolve_host_name() -> str:
@@ -46,27 +47,6 @@ def resolve_host_name() -> str:
         return socket.gethostname() or ""
     except OSError:
         return ""
-
-
-# Module-level extension-item builder. Hosts override via
-# ``set_extension_item_builder`` when they need the production builder.
-# Callers that need explicit injection (e.g. tests, kernel seams) pass the
-# builder explicitly; when omitted, this module global is used.
-_extension_item_builder: ExtensionItemBuilder = NoOpExtensionItemBuilder()
-
-
-def set_extension_item_builder(builder: ExtensionItemBuilder) -> None:
-    """Override the module-level extension-item builder."""
-
-    global _extension_item_builder  # noqa: PLW0603 — module-level singleton seam
-    _extension_item_builder = builder
-
-
-def reset_extension_item_builder() -> None:
-    """Reset the extension-item builder to the NoOp default (for tests)."""
-
-    global _extension_item_builder  # noqa: PLW0603 — module-level singleton seam
-    _extension_item_builder = NoOpExtensionItemBuilder()
 
 
 def build_ambient_facts(

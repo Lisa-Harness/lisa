@@ -23,7 +23,6 @@ dependencies = [
 ]
 
 [project.scripts]
-lisa-context = "mcp_server.context.server:main"
 lisa-memory = "mcp_server.memory.server:main"
 lisa-guard = "mcp_server.guard.server:main"
 lisa-content = "mcp_server.content.server:main"

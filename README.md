@@ -65,7 +65,7 @@ flowchart TB
         P["sdk/packs — core · memory · introspect · recovery"]
     end
     subgraph MCPS["mcp_server — first-party MCP servers (stdio)"]
-        M["lisa-catalog · lisa-content · lisa-context · lisa-memory ·<br/>lisa-guard · lisa-storage · lisa-thread · lisa-fetch"]
+        M["lisa-catalog · lisa-content · lisa-memory ·<br/>lisa-guard · lisa-storage · lisa-thread · lisa-fetch"]
     end
     HARN["packstest — in-process pack test/eval harness (dev only)"]
 
@@ -222,7 +222,6 @@ Lisa's surface-scoped tools over stdio. Each is an independent entry point:
 
 | Server | Entry point | Surface |
 | --- | --- | --- |
-| `lisa-context` | `mcp_server.context.server:main` | Context assembly and retrieval |
 | `lisa-content` | `mcp_server.content.server:main` | Content loading and rendering |
 | `lisa-catalog` | `mcp_server.catalog.server:main` | Mode/operation catalog |
 | `lisa-memory` | `mcp_server.memory.server:main` | Surface-scoped memory store/recall |

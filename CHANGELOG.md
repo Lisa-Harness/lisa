@@ -4,6 +4,59 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+#### Dead context plumbing — unconsumed seams, always-zero budget fields, and the duplicate broker path
+
+- **What:** Removed the eight pieces of dead or misleading context
+  plumbing identified in the 2026-10-12 context-system review, under the
+  "Dead context plumbing removal" freeze carve-out
+  (`docs/CODING_WORKFLOW.md`): (1) `kernel/context/context_keys.py`
+  (zero importers); (2) the never-invoked `DataSanitizer` seam —
+  `seams.protocols.DataSanitizer`, `context/data_sanitizer.py`
+  (`PassThroughSanitizer`), `ContextSeams.data_sanitizer`, and the
+  vulture allowlist entry masking it (real redaction is the runtime's
+  thread `ThreadRedactionPolicy`); (3) the write-only module-global
+  extension-item builder (`set_extension_item_builder` /
+  `reset_extension_item_builder`) and its sole wrapper
+  `sdk.context.context_broker` +
+  `sdk.context.extension_item_builder.set_production_extension_item_builder`
+  (the turn loop receives the builder explicitly via
+  `ContextSeams.extension_item_builder`); (4) the always-zero
+  `stable_prefix_tokens` / `conversation_tokens` / `tool_schema_tokens`
+  fields on `ContextMapperRequest` / `ContextBudgetSnapshot` (every
+  caller passed 0, so the mapper's "model-aware budget" never subtracted
+  them — the real enforcement point is `fit_request_context`);
+  (5) the dead retrieval-lane budget knob
+  `context_budget_retrieval_max_tokens` /
+  `LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS` (the lane's only section is
+  bypassed by the allocator by design); (6) the
+  `publish_context_usage_event` stub (unwired event bus, stdlib log only)
+  and with it the duplicated `drop_reason` key in
+  `ContextBudgetAllocator.summary()`; (7) the single-caller
+  `build_brokered_context_markdown` wrapper (callers use
+  `build_session_mapped_context_markdown` directly); (8) the
+  `lisa-context` MCP server (`mcp_server/context/`, its entry point,
+  registry + launch-manifest entries, and tests) whose `broker_context`
+  tool duplicated the in-process mapper path and was called by nothing in
+  the repo — plus two renames of modules reduced to stale names:
+  `kernel/context/context_broker.py` → `ambient.py` (ambient facts only)
+  and `kernel/context/context_frames.py` → `content_registry.py` (now
+  exposing a public `get_content_registry()` instead of the private
+  `_content_registry` import), and the test-only
+  `DiscoveryReport.notes` / `DiscoveryReport.results_for` accessors.
+- **Why:** Dead seams and budget knobs that look enforced but are not
+  make the context budget story read as stronger than it is, and unused
+  config accrues readers.
+- **Tests:** behavior-preserving deletions; the receipt is the full
+  verification loop green (`runtime/tests/test_context_assembly.py`,
+  `runtime/tests/test_context_selection.py`,
+  `mcp_server/tests/test_cli_contract.py`,
+  `mcp_server/tests/test_in_process_registry.py`,
+  `mcp_server/tests/test_mcp_servers.py`,
+  `runtime/src/runtime/model_discovery/tests/test_discover.py` updated or
+  trimmed to stop referencing removed symbols).
+
 ### Added
 
 #### Context residency by allocation — bounded replay working set, stub coherence, standing state ledger

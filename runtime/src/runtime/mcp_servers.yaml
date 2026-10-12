@@ -89,15 +89,6 @@ servers:
       # MCPContentRegistry calls them via its own stdio sessions.
       allowed_tools: []
 
-  - server_id: lisa-context
-    runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}"
-    cli_args: ["--timezone", "${LISA_TIMEZONE}"]
-    warm: true
-    required: true
-    tool_policy:
-      allowed_tools: []
-
   # ── First-party servers (cold — lazily connected on first use) ──
   - server_id: lisa-guard
     runtime_kind: venv_bin

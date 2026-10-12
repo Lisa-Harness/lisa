@@ -16,7 +16,6 @@ Key principles:
 
 | Script | Module | Purpose |
 | --- | --- | --- |
-| `lisa-context` | `mcp_server.context.server` | Query-aware context brokerage (lane-aware, budget-aware, MMR-diversified) — the same engine the host uses. |
 | `lisa-memory` | `mcp_server.memory.server` | The minimal, optional and replacable built-in memory backend (with `embeddings.py`). |
 | `lisa-guard` | `mcp_server.guard.server` | Thin facade over `sdk.guard.GuardBackend` — input/output guard tools. |
 | `lisa-content` | `mcp_server.content.server` | Authored-text file reading for the kernel. |

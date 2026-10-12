@@ -1,7 +1,7 @@
-"""Tests for the four Kernel-as-MCP servers (Part 4).
+"""Tests for the Kernel-as-MCP servers.
 
-Covers tool registration and dispatch for lisa-context, lisa-memory,
-and lisa-guard using MCPServer's in-process ``call_tool`` API.
+Covers tool registration and dispatch for lisa-memory and lisa-guard
+using MCPServer's in-process ``call_tool`` API.
 """
 
 from __future__ import annotations
@@ -238,69 +238,6 @@ async def test_memory_lists_tools() -> None:
         "retire_memory",
         "count_memories",
     } <= names
-
-
-# ── lisa_context (broker only) ─────────────────────────────────────────────
-
-
-@pytest.fixture
-def context_setup() -> None:
-    from sdk.context.context_broker import reset_extension_item_builder
-
-    reset_extension_item_builder()
-
-
-@pytest.mark.asyncio
-async def test_context_lists_broker_tool(context_setup: None) -> None:
-    from mcp_server.context.server import mcp
-
-    tools = await mcp.list_tools()
-    names = {t.name for t in tools}
-    assert "broker_context" in names
-    assert "add_memory" not in names
-
-
-@pytest.mark.asyncio
-async def test_context_broker_context_returns_packet(context_setup: None) -> None:
-    """broker_context with a valid typed payload returns brokered markdown."""
-    from mcp_server.context.server import mcp
-
-    payload = {
-        "query": "what is the current status",
-        "mode_id": "default",
-        "state": {"compiled_at": "2026-07-11T00:00:00+00:00", "context_markdown": ""},
-    }
-    result = await mcp.call_tool("broker_context", payload)
-    data = json.loads(_tool_text(result))
-    assert "packet_markdown" in data
-    assert "## Ambient Facts" in data["packet_markdown"]
-
-
-@pytest.mark.asyncio
-async def test_context_broker_context_empty_state_ok(context_setup: None) -> None:
-    """broker_context with no state field uses an empty UnifiedState."""
-    from mcp_server.context.server import mcp
-
-    payload = {"query": "hello"}
-    result = await mcp.call_tool("broker_context", payload)
-    data = json.loads(_tool_text(result))
-    assert "packet_markdown" in data
-    assert "## Ambient Facts" in data["packet_markdown"]
-
-
-@pytest.mark.asyncio
-async def test_context_broker_context_malformed_state_raises(context_setup: None) -> None:
-    """broker_context with malformed state should fail, not silently degrade."""
-    from mcp_server.context.server import mcp
-
-    payload = {
-        "query": "hello",
-        "state": {"compiled_at": 12345, "context_markdown": "", "bogus_field": object()},
-    }
-    # MCPServer wraps tool errors; the call should raise rather than return
-    # an empty-state response.
-    with pytest.raises(Exception, match="state"):
-        await mcp.call_tool("broker_context", payload)
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

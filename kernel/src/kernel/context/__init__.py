@@ -11,7 +11,6 @@ directly for content loading — ``lisa-content`` handles authored-text
 reading; ``lisa-catalog`` handles mode/operation/tool catalogs and diagnostics.
 """
 
-from kernel.context.data_sanitizer import PassThroughSanitizer
 from kernel.context.event_bus import InProcessEventBus
 from kernel.context.extension_item import NoOpExtensionItemBuilder
 from kernel.context.input_guard import PassThroughInputGuard
@@ -32,5 +31,4 @@ __all__ = [
     "NoOpExtensionItemBuilder",
     "PassThroughInputGuard",
     "PassThroughOutputGuard",
-    "PassThroughSanitizer",
 ]

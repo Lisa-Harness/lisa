@@ -92,9 +92,6 @@ def _map_sources(state: UnifiedState, query: str, active_packs: frozenset[str]) 
         candidates=candidates,
         active_packs=active_packs,
         model_context_window_tokens=131072,
-        stable_prefix_tokens=0,
-        conversation_tokens=0,
-        tool_schema_tokens=0,
     )
     result = ContextMapper().map(request)
     return {selection.candidate.source_id for selection in result.selections}

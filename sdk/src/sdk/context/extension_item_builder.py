@@ -5,10 +5,11 @@ calls each extension's ``build_context_items(runtime_context, state)``
 function to collect :class:`~kernel.models.ContextItem` records from
 every installed extension (Cloudflare, GitHub, Stripe, etc.).
 
-Hosts call :func:`set_production_extension_item_builder` during
-``setup_framework`` so the broker's catalog builder picks up extension
-evidence automatically. The default :class:`NoOpExtensionItemBuilder`
-returns an empty list when no extensions are installed.
+Hosts construct :class:`EntryPointExtensionItemBuilder` during
+``setup_framework`` and wire it into ``ContextSeams.extension_item_builder``
+as the turn loop's extension evidence source. The default
+:class:`NoOpExtensionItemBuilder` returns an empty list when no extensions
+are installed.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "EntryPointExtensionItemBuilder",
-    "set_production_extension_item_builder",
 ]
 
 _ENTRY_POINT_GROUP = "lisa.extensions.context_items"
@@ -131,18 +131,3 @@ def _tag_items_with_pack(contributed: list[Any], pack_name: str) -> None:
                 item.pack = pack_name
         elif isinstance(item, dict) and not item.get("pack"):
             item["pack"] = pack_name
-
-
-def set_production_extension_item_builder(
-    excluded_packs: set[str] | None = None,
-) -> None:
-    """Install the entry-point-based builder as the broker's extension item source.
-
-    Args:
-        excluded_packs: Normalized pack names to exclude from evidence
-            collection. Forwarded to the ``EntryPointExtensionItemBuilder``
-            constructor.
-    """
-    from sdk.context.context_broker import set_extension_item_builder
-
-    set_extension_item_builder(EntryPointExtensionItemBuilder(excluded_packs=excluded_packs))

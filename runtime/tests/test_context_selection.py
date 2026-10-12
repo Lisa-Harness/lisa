@@ -1,7 +1,5 @@
 """Integration test for the wired context mapper + budget allocator.
 
-Migrated from ``hosts/little_lisa/test_context_broker_integration.py``.
-
 The framework registration that the original module-scope autouse fixture
 performed via ``little_lisa.setup_framework()`` is now handled by the
 ``runtime/tests/conftest.py`` module-scope autouse fixture, which
@@ -14,7 +12,7 @@ Exercises the full chain: populated ``UnifiedState`` →
 Asserts:
 - Budget enforcement drops sections when the ceiling is hit.
 - The mapper produces lane-ordered markdown from a populated state.
-- The ``ContextUsageEvent`` is publishable from the allocator summary.
+- The ``ContextUsageEvent`` telemetry envelope can be built from the allocator summary.
 """
 
 from __future__ import annotations
@@ -123,9 +121,6 @@ def _map_state(state: UnifiedState, query: str) -> str:
         candidates=candidates,
         active_packs=frozenset(),
         model_context_window_tokens=131072,
-        stable_prefix_tokens=0,
-        conversation_tokens=0,
-        tool_schema_tokens=0,
     )
     return ContextMapper().map(request).rendered_context
 

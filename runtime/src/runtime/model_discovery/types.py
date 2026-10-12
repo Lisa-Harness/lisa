@@ -139,9 +139,10 @@ class ProbeResult:
 class DiscoveryReport:
     """Aggregate result of :func:`discover_models`.
 
-    ``results`` is the canonical, per-provider breakdown. ``models`` and
-    ``notes`` are derived conveniences for callers that want the flat
-    projections (the host command layer uses both).
+    ``results`` is the canonical, per-provider breakdown. ``models`` is a
+    derived convenience for callers that want the flat model projection.
+    Per-provider UI notes are rendered from ``results`` via
+    :meth:`ProbeResult.note_line` at the host command layer.
     """
 
     results: tuple[ProbeResult, ...]
@@ -149,16 +150,6 @@ class DiscoveryReport:
     @property
     def models(self) -> tuple[DiscoveredModel, ...]:
         return tuple(model for result in self.results for model in result.models)
-
-    @property
-    def notes(self) -> tuple[str, ...]:
-        return tuple(
-            line for line in (result.note_line() for result in self.results) if line is not None
-        )
-
-    def results_for(self, provider: str) -> tuple[ProbeResult, ...]:
-        lowered = provider.lower()
-        return tuple(r for r in self.results if r.provider.lower() == lowered)
 
     @classmethod
     def from_results(cls, results: Iterable[ProbeResult]) -> DiscoveryReport:

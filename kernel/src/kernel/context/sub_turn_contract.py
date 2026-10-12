@@ -6,7 +6,7 @@ Python callers supply only path constants, the ``sub_turn_kind`` discriminator,
 and substitution glue (``tools_list`` / ``remaining_iterations`` /
 ``action_list``). No model-facing prose lives in this module.
 
-Mirrors ``kernel.context.context_frames``: a module-level content registry
+Mirrors ``kernel.context.content_registry``: a module-level content registry
 injected by the host at startup via ``set_content_registry``. No disk-based
 default; callers that read before the registry is set raise ``RuntimeError``.
 """

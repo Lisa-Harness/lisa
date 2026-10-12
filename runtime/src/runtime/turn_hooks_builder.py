@@ -102,9 +102,9 @@ def content_registry() -> ContentRegistry | None:
     When ``None``, those operations fail at call time with their authored-text
     error (graceful failure); non-authored operations still run normally.
     """
-    from kernel.context.context_frames import _content_registry
+    from kernel.context.content_registry import get_content_registry
 
-    return _content_registry
+    return get_content_registry()
 
 
 # ── Turn-hooks builder ────────────────────────────────────────────────
@@ -750,9 +750,9 @@ def _assemble_dynamic_user_context(
     """Assemble the budgeted dynamic user context for one turn.
 
     Annotates the briefing with the global turn number and the workflow
-    progress (derived from the thread tail), builds the ``UnifiedState``
-    for the broker, and hands the session-owned context mapper its
-    loaders/sink seam callables.
+    progress (derived from the thread tail), builds the ``UnifiedState``,
+    and hands the session-owned context mapper its loaders/sink seam
+    callables.
     """
     # ── Turn number annotation ──────────────────────────────────
     # Prepend the global turn index to the briefing so the model sees
@@ -780,8 +780,8 @@ def _assemble_dynamic_user_context(
     if progress:
         pre_turn_briefing = f"{progress}\n\n{pre_turn_briefing}"
 
-    # Build the UnifiedState from the runtime snapshot for the broker.
-    # The item builder is invoked inside build_unified_state to
+    # Build the UnifiedState from the runtime snapshot. The item builder
+    # is invoked inside build_unified_state to
     # populate ``context_items`` — the single feed the
     # session-owned context mapper walks. Thread-derived digest items
     # (task state, recent history, open objectives) join the same feed so

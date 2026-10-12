@@ -359,7 +359,7 @@ class TurnHooks:
     recall: RecallHooks = field(default_factory=RecallHooks)
     tools: ToolHooks = field(default_factory=ToolHooks)
     #: Context-layer seams (content registry, model policy, provider gateways,
-    #: event bus, data sanitizer). Kept as a direct field to preserve the
+    #: event bus). Kept as a direct field to preserve the
     #: existing ``kernel.context`` default wiring contract.
     context_seams: ContextSeams = field(default=None)  # type: ignore[assignment]
 

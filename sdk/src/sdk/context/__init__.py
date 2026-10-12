@@ -1,1 +1,1 @@
-"""Lisa Context SDK — query-aware context brokerage library."""
+"""Lisa Context SDK — extension-item evidence building for context assembly."""

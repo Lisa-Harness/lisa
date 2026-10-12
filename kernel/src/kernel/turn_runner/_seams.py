@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 from kernel.seams.protocols import (
     ContentRegistry,
-    DataSanitizer,
     EventBus,
     ExtensionItemBuilder,
     InputGuard,
@@ -46,12 +45,6 @@ def _lazy_event_bus() -> EventBus:
     return InProcessEventBus()
 
 
-def _lazy_data_sanitizer() -> DataSanitizer:
-    from kernel.context import PassThroughSanitizer
-
-    return PassThroughSanitizer()
-
-
 def _lazy_extension_item_builder() -> ExtensionItemBuilder:
     from kernel.context import NoOpExtensionItemBuilder
 
@@ -74,7 +67,7 @@ def _lazy_output_guard() -> OutputGuard:
 class ContextSeams:
     """Bundle of context-layer seams injected through ``TurnHooks``.
 
-    These six seams invert the private ``app.*`` dependencies that
+    These five seams invert the private ``app.*`` dependencies that
     ``kernel/context/`` previously took. Defaults wire the public
     implementations shipped under ``kernel.context``; the production app
     overrides any of them with its own without a shim layer.
@@ -97,7 +90,6 @@ class ContextSeams:
     and wired by the host. A model call with no gateway wired fails with a
     clear error."""
     event_bus: EventBus = field(default_factory=_lazy_event_bus)
-    data_sanitizer: DataSanitizer = field(default_factory=_lazy_data_sanitizer)
     extension_item_builder: ExtensionItemBuilder = field(
         default_factory=_lazy_extension_item_builder
     )

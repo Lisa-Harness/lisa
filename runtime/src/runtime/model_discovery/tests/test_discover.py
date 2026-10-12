@@ -114,8 +114,8 @@ class TestDiscoverOrchestrator:
         # via a wrapper. Simpler: just call discover with real probes and
         # rely on the SKIPPED short-circuit for OpenAI.
         report = await discover_models(probes=probes)
-        openai_result = report.results_for("openai")
-        assert openai_result and openai_result[0].status is ProbeStatus.SKIPPED
+        openai_result = next((r for r in report.results if r.provider.lower() == "openai"), None)
+        assert openai_result is not None and openai_result.status is ProbeStatus.SKIPPED
 
     @pytest.mark.asyncio
     async def test_discover_key_never_in_output(self) -> None:
@@ -152,10 +152,11 @@ class TestDiscoverOrchestrator:
                 await client.aclose()
 
             report = DiscoveryReport.from_results((google_result, anthropic_result))
-            for note in report.notes:
-                assert _FAKE_KEY not in note, f"key leaked in note: {note}"
             # Also check the raw error detail is redacted from the public note
             for result in report.results:
+                note = result.note_line()
+                if note is not None:
+                    assert _FAKE_KEY not in note, f"key leaked in note: {note}"
                 if result.error is not None:
                     assert _FAKE_KEY not in result.error.safe_message
         finally:

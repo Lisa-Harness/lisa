@@ -64,7 +64,6 @@ class InProcessServerEntry:
 _LAZY_IMPORTS: dict[str, str] = {
     "lisa-catalog": "mcp_server.catalog.server",
     "lisa-content": "mcp_server.content.server",
-    "lisa-context": "mcp_server.context.server",
     "lisa-guard": "mcp_server.guard.server",
     "lisa-memory": "mcp_server.memory.server",
     "lisa-storage": "mcp_server.storage.server",

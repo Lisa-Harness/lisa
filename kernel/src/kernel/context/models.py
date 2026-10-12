@@ -87,9 +87,6 @@ class ContextBudgetSnapshot(_FrozenContextModel):
     model_context_window_tokens: int = Field(ge=1)
     output_reserve_tokens: int = Field(ge=0)
     safety_margin_tokens: int = Field(ge=0)
-    stable_prefix_tokens: int = Field(ge=0)
-    conversation_tokens: int = Field(ge=0)
-    tool_schema_tokens: int = Field(ge=0)
     available_context_tokens: int = Field(ge=0)
     used_context_tokens: int = Field(default=0, ge=0)
     lane_used_tokens: dict[str, int] = Field(default_factory=dict)
@@ -146,9 +143,6 @@ class ContextMapperRequest(_FrozenContextModel):
         {"public", "private", "restricted"}
     )
     model_context_window_tokens: int = Field(ge=1)
-    stable_prefix_tokens: int = Field(default=0, ge=0)
-    conversation_tokens: int = Field(default=0, ge=0)
-    tool_schema_tokens: int = Field(default=0, ge=0)
     now: datetime | None = None
 
     @model_validator(mode="after")

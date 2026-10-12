@@ -4,9 +4,10 @@ The legacy context-frame system (``ContextFrameId`` / ``CONTEXT_FRAME_IDS``
 and the ``read_context_frame`` / ``render_context_frame`` helpers) was
 superseded by the session-owned :class:`~kernel.context.context_mapper.ContextMapper`
 and removed. What remains is the single module-level content registry that
-hosts inject at startup via :func:`set_content_registry` and read back to
-populate ``TurnHooks.context_seams.content_registry``. No disk-based default;
-callers that read before the registry is set raise ``RuntimeError``.
+hosts inject at startup via :func:`set_content_registry` and read back via
+:func:`get_content_registry` to populate ``TurnHooks.context_seams.content_registry``.
+No disk-based default; callers that read before the registry is set get
+``None``.
 """
 
 from __future__ import annotations
@@ -24,3 +25,9 @@ def set_content_registry(registry: ContentRegistry) -> None:
 
     global _content_registry  # noqa: PLW0603 — module-level singleton seam
     _content_registry = registry
+
+
+def get_content_registry() -> ContentRegistry | None:
+    """Return the injected content registry, or ``None`` before injection."""
+
+    return _content_registry

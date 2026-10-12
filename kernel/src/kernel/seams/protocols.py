@@ -451,18 +451,6 @@ class EventBus(Protocol):
 
 
 @runtime_checkable
-class DataSanitizer(Protocol):
-    """Apply redaction before memory writes or context assembly.
-
-    Replaces ``app.data_sanitizer.apply_redaction_pipeline``. The default
-    implementation is a pass-through that performs no redaction; production
-    hosts override with a real sanitizer.
-    """
-
-    def redact(self, text: str, *, scope: str) -> str: ...
-
-
-@runtime_checkable
 class ExtensionItemBuilder(Protocol):
     """Build context items from installed extensions.
 

@@ -707,10 +707,7 @@ def _available_context_tokens(request: ContextMapperRequest) -> int:
         0,
         request.model_context_window_tokens
         - budget.output_reserve_tokens
-        - budget.safety_margin_tokens
-        - request.stable_prefix_tokens
-        - request.conversation_tokens
-        - request.tool_schema_tokens,
+        - budget.safety_margin_tokens,
     )
 
 
@@ -723,9 +720,6 @@ def _budget_snapshot(
         model_context_window_tokens=request.model_context_window_tokens,
         output_reserve_tokens=plan_budget.output_reserve_tokens,
         safety_margin_tokens=plan_budget.safety_margin_tokens,
-        stable_prefix_tokens=request.stable_prefix_tokens,
-        conversation_tokens=request.conversation_tokens,
-        tool_schema_tokens=request.tool_schema_tokens,
         available_context_tokens=budget.available_tokens,
         used_context_tokens=budget.used_tokens,
         lane_used_tokens=budget.lane_used_tokens,

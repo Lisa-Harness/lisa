@@ -101,10 +101,10 @@ def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(config)
 
-    # Wire the MCPContentRegistry as the content registry for context frames
-    # and the sub-turn contract assets (fork/delegate briefings + midpoint
+    # Wire the MCPContentRegistry as the content registry for authored context
+    # assets and the sub-turn contract assets (fork/delegate briefings + midpoint
     # write-nudge). Both modules share the same registry instance.
-    from kernel.context.context_frames import set_content_registry
+    from kernel.context.content_registry import set_content_registry
     from kernel.context.mcp_content_registry import MCPContentRegistry
     from kernel.context.sub_turn_contract import (
         set_content_registry as _set_sub_turn_content_registry,

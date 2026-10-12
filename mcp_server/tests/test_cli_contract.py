@@ -17,7 +17,6 @@ import pytest
 # All first-party servers that must follow the CLI contract.
 # (module, server_name, supports_readonly)
 ALL_SERVERS: list[tuple[str, str, bool]] = [
-    ("mcp_server.context.server", "lisa-context", True),
     ("mcp_server.memory.server", "lisa-memory", True),
     ("mcp_server.guard.server", "lisa-guard", False),
     ("mcp_server.content.server", "lisa-content", False),
@@ -80,20 +79,6 @@ def test_guard_server_has_backend_arg() -> None:
     result = _run_server("mcp_server.guard.server", "--help")
     assert result.returncode == 0
     assert "--backend" in result.stdout
-
-
-def test_context_server_has_readonly_arg() -> None:
-    """lisa-context should accept --readonly."""
-    result = _run_server("mcp_server.context.server", "--help")
-    assert result.returncode == 0
-    assert "--readonly" in result.stdout
-
-
-def test_context_server_has_timezone_arg() -> None:
-    """lisa-context should accept --timezone for ambient facts rendering."""
-    result = _run_server("mcp_server.context.server", "--help")
-    assert result.returncode == 0
-    assert "--timezone" in result.stdout
 
 
 def test_no_env_var_path_fallback_in_source() -> None:

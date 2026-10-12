@@ -63,8 +63,8 @@ The `lisa-harness-runtime` hosts the kernel and loads packs containing concrete 
 | --- | --- |
 | `operations/` | Operation registry for discovering and executing operations from packs via the `lisa-catalog` MCP server. Includes `registry.py` (discovery, execution, tool-schema building), `declarative.py` (prompt-authored operations runtime), and `structured_output.py` (JSON parsing with retry). |
 | `intake/` | External data collection contracts: `SignalCollector` (stateless, repeatable monitors), `ProcessingLoop` (background processing chains triggered after collection), and `connector_discovery.py` (entry-point discovery). The bottom half is a one-shot process triggered by a systemd timer or cron. |
-| `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ModelRouter`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionItemBuilder`, plus `CompleteFn`, `ResolveModelFn`, `ExecuteToolFn`, and `ExecuteOperationFn` callable protocols. |
-| `context/` | Public default implementations of kernel context seams and in-process context assembly: `MCPContentRegistry`, `MCPModeCatalog`/`MCPOperationCatalog`/`MCPToolCatalog`, `MCPInputGuard`/`MCPOutputGuard`, `ManifestModelPolicy`, `KernelProviderGatewayProvider`, `InProcessEventBus`, `PassThroughSanitizer`, `NoOpExtensionItemBuilder`, `PassThroughInputGuard`/`PassThroughOutputGuard`, plus `context_broker.py` (query-aware brokerage over `UnifiedState`), `context_budget.py` (token budget allocation), `context_frames.py` (authored context-frame helpers), `context_mapper.py` (deterministic candidate mapping and selection), `models.py` (immutable mapper contracts including `ContextBudgetSnapshot`), `context_keys.py` (turn-local context key constants), and `provenance.py` (XML-tagged context envelopes). |
+| `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ModelRouter`, `ProviderGatewayProvider`, `EventBus`, `ExtensionItemBuilder`, plus `CompleteFn`, `ResolveModelFn`, `ExecuteToolFn`, and `ExecuteOperationFn` callable protocols. |
+| `context/` | Public default implementations of kernel context seams and in-process context assembly: `MCPContentRegistry`, `MCPModeCatalog`/`MCPOperationCatalog`/`MCPToolCatalog`, `MCPInputGuard`/`MCPOutputGuard`, `ManifestModelPolicy`, `KernelProviderGatewayProvider`, `InProcessEventBus`, `NoOpExtensionItemBuilder`, `PassThroughInputGuard`/`PassThroughOutputGuard`, plus `ambient.py` (ambient runtime facts: date/time/host), `content_registry.py` (module-level content registry holder), `context_budget.py` (token budget allocation), `context_mapper.py` (deterministic candidate mapping and selection), `models.py` (immutable mapper contracts including `ContextBudgetSnapshot`), and `provenance.py` (XML-tagged context envelopes). |
 | `mcp_launch/` | MCP launch contract: `policy.py` (approved server specs, `EnvPolicy`, `CwdPolicy`, `ToolPolicy`, `ProxyPolicy`, `MCPServerRegistry`), `compiler.py` (runtime adapter compiling specs into `MCPClientConfig`), `tool_filter.py` (allow/deny filtering), and `server_manifest.py` (declarative YAML manifest loader for external MCP servers and memory backends). |
 | `turn_phases/` | The extracted turn-pipeline implementation, split out of `turn_runner.py`: `_fork.py` (fork fan-out + budget division), `_post_turn.py`, `_routing_hint.py` (capability-manifest-aware proactive routing hint + `plan` action escalation + `is_plan_escalation_hint` guard for the ad-hoc instance block), `_tool_schemas.py`, `_turn_state.py` (per-iteration model resolution: router → `ModelPolicy.choose` duck-type → static model). |
 | `testing/` | `extension_harness.py` for validating signal collectors without a host app, `endpoint_registry.py`, `import_boundaries.py`, and `stubs.py`. |
@@ -231,7 +231,6 @@ sequenceDiagram
 | `model_policy` | `ModelPolicy` | `ManifestModelPolicy` | Resolve model aliases and check availability from a model manifest. |
 | `provider_gateways` | `ProviderGatewayProvider` | `KernelProviderGatewayProvider` | Return provider gateway classes by name. |
 | `event_bus` | `EventBus` | `InProcessEventBus` | Lightweight pub/sub for salience events and guardrail audits. |
-| `data_sanitizer` | `DataSanitizer` | `PassThroughSanitizer` | Apply redaction before memory writes or context assembly. |
 | `extension_item_builder` | `ExtensionItemBuilder` | `NoOpExtensionItemBuilder` | Build context evidence records from installed extensions. |
 | `input_guard` | `InputGuard` | `PassThroughInputGuard` | Validate user input before the model call (Phase 1). |
 | `output_guard` | `OutputGuard` | `PassThroughOutputGuard` | Validate model output before it reaches the user (Phase 3). |
@@ -430,7 +429,6 @@ A real host must inject concrete implementations for these seams:
 | Model policy | `ContextSeams.model_policy` | `ManifestModelPolicy` (default) |
 | Provider gateways | `ContextSeams.provider_gateways` | `KernelProviderGatewayProvider` (default) |
 | Event bus | `ContextSeams.event_bus` | `InProcessEventBus` (default) |
-| Data sanitizer | `ContextSeams.data_sanitizer` | `PassThroughSanitizer` (default) |
 | Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
 

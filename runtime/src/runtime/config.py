@@ -41,7 +41,6 @@ LISA_THREAD_REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
 LISA_THREAD_REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
 LISA_CONTEXT_BUDGET_ENABLED_ENV = "LISA_CONTEXT_BUDGET_ENABLED"
 LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS"
-LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS"
@@ -161,11 +160,6 @@ def _context_budget_overrides() -> dict[str, int | bool]:
         overrides["context_budget_enabled"] = enabled
     int_specs = (
         (LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS_ENV, "context_budget_core_max_tokens", 2000),
-        (
-            LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS_ENV,
-            "context_budget_retrieval_max_tokens",
-            1500,
-        ),
         (LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS_ENV, "context_budget_memory_max_tokens", 1200),
         (
             LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV,
@@ -400,13 +394,6 @@ class HostConfig:
     # as a bug signal rather than raising the cap. Override via
     # ``LISA_CONTEXT_BUDGET_CORE_MAX_TOKENS``.
     context_budget_core_max_tokens: int = 2000
-    # Ceiling for the ``retrieval`` lane: ranked context evidence the
-    # session-owned ContextMapper selected from UnifiedState (pack items,
-    # operational state, recalled evidence). Note the mapper already fits
-    # its output to the model-aware window before this ceiling applies,
-    # so this lane budget is a secondary bound, not the primary trim.
-    # Override via ``LISA_CONTEXT_BUDGET_RETRIEVAL_MAX_TOKENS``.
-    context_budget_retrieval_max_tokens: int = 1500
     # Ceiling for the ``memory`` lane: authored session context the user
     # pinned for the session (``--session-context`` markdown, normalized
     # to provenance tags). Pinned instructions outrank derived evidence,

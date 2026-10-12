@@ -20,7 +20,7 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `content/` | Content catalog and authored-text reading: mode/operation/tool catalog JSON builders, content-root resolution, `ContentReader`, path safety, Copilot customization discovery/parsing (applyTo globbing). Powers the `lisa-content` and `lisa-catalog` MCP servers. |
-| `context/` | Query-aware context brokerage: re-exports kernel context helpers and owns entry-point-aware extension item-builder registration. Powers the `lisa-context` MCP server. |
+| `context/` | Entry-point-aware extension item building: discovers `lisa.extensions.context_items` entry points and feeds extension evidence into the session-owned context mapper via `ContextSeams.extension_item_builder`. |
 | `config.py` | Public runtime `Settings` (pydantic-settings) for packs/extensions — deliberately narrower than root app config, with owned-source filtering so packs only consume env keys they declare. |
 | `pack_settings.py` | `OwnedSettingsSource` / `build_owned_settings_sources`; importable by external packs without depending on `sdk_packs`. |
 | `layout.py` | Single source of truth for the canonical data-dir categories (`config/`, `state/`, `data/`, `cache/`, `logs/`, `run/`) shared by hosts, SDK, MCP servers, and packs. |

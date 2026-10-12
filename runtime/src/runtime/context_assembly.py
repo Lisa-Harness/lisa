@@ -11,8 +11,7 @@ Public API (leading underscores removed)::
     assemble_system_prompt(mode_instruction, stage_instruction, content_loader)
     handoff_note(...)
     build_turn_context(...)
-    build_brokered_context_markdown(mode_id, query, state)
-    publish_context_usage_event(...)        # stub — no event bus yet
+    build_session_mapped_context_markdown(...)
     assemble_dynamic_user_context(...)
 """
 
@@ -26,8 +25,7 @@ from datetime import UTC, datetime
 from typing import Any, TypedDict, cast
 
 from kernel.capability_manifest import render_capability_manifest_context
-from kernel.config import settings as kernel_settings
-from kernel.context.context_broker import (
+from kernel.context.ambient import (
     build_ambient_facts,
     resolve_host_name,
 )
@@ -77,13 +75,15 @@ class ContextBudgetValues(TypedDict, total=False):
 
     Built via :func:`context_budget_values_from_config` from a
     ``HostConfig``; mirrors the ``context_budget_*`` fields there. Keys map
-    to ``ContextBudgetAllocator`` constructor inputs.
+    to ``ContextBudgetAllocator`` constructor inputs. There is no
+    ``retrieval`` key: the retrieval lane's only section is the mapper's
+    ranked context, which the mapper already fits to the model-aware
+    window and which the allocator therefore never trims.
     """
 
     enabled: bool
     token_char_ratio: int
     core_max_tokens: int
-    retrieval_max_tokens: int
     memory_max_tokens: int
     reflection_max_tokens: int
     history_max_tokens: int
@@ -98,7 +98,6 @@ _DEFAULT_CONTEXT_BUDGET_VALUES: ContextBudgetValues = {
     "enabled": True,
     "token_char_ratio": 4,
     "core_max_tokens": 2000,
-    "retrieval_max_tokens": 1500,
     "memory_max_tokens": 1200,
     "reflection_max_tokens": 1000,
     "history_max_tokens": 1500,
@@ -113,9 +112,6 @@ def context_budget_values_from_config(config: Any) -> ContextBudgetValues:
         "enabled": bool(getattr(config, "context_budget_enabled", True)),
         "token_char_ratio": int(getattr(config, "context_budget_token_char_ratio", 4) or 4),
         "core_max_tokens": int(getattr(config, "context_budget_core_max_tokens", 2000) or 2000),
-        "retrieval_max_tokens": int(
-            getattr(config, "context_budget_retrieval_max_tokens", 1500) or 1500
-        ),
         "memory_max_tokens": int(getattr(config, "context_budget_memory_max_tokens", 1200) or 1200),
         "reflection_max_tokens": int(
             getattr(config, "context_budget_reflection_max_tokens", 1000) or 1000
@@ -257,8 +253,6 @@ def build_session_mapped_context_markdown(
     context_plan: ContextPlan | None,
     model_context_window_tokens: int,
     active_packs: frozenset[str] | None = None,
-    conversation_tokens: int = 0,
-    tool_schema_tokens: int = 0,
     snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
 ) -> str:
     """Select context via the session-owned ContextMapper and render as Markdown.
@@ -266,15 +260,17 @@ def build_session_mapped_context_markdown(
     Falls back to an empty string when *state* is ``None`` / uncompiled or
     when no ``context_plan`` is provided. This is the session-owned mapping
     path: candidates from ``UnifiedState`` are gated, ranked, budgeted, and
-    rendered into lane-ordered markdown by :class:`ContextMapper`.
+    rendered into lane-ordered markdown by :class:`ContextMapper` against
+    the model-aware budget (window minus the plan's output reserve and
+    safety margin).
 
     When *snapshot_sink* is provided, the mapper's ``ContextBudgetSnapshot``
-    (window size, conversation tokens, used tokens, lane totals) is handed
-    to the callback before the rendered markdown is returned. This lets a
-    host stash the latest snapshot on its ``TurnHooks.last_context_snapshot``
-    field so utilization-aware slice providers can read
-    actual context-window pressure without re-running the mapper. The sink
-    is never called on the empty-state fallback paths.
+    (window size, used tokens, lane totals) is handed to the callback before
+    the rendered markdown is returned. This lets a host stash the latest
+    snapshot on its ``TurnHooks.last_context_snapshot`` field so
+    utilization-aware slice providers can read actual context-window
+    pressure without re-running the mapper. The sink is never called on the
+    empty-state fallback paths.
     """
     if state is None or not state.compiled_at or context_plan is None:
         return ""
@@ -293,9 +289,6 @@ def build_session_mapped_context_markdown(
         candidates=candidates,
         active_packs=active_packs or frozenset(),
         model_context_window_tokens=model_context_window_tokens,
-        stable_prefix_tokens=0,
-        conversation_tokens=conversation_tokens,
-        tool_schema_tokens=tool_schema_tokens,
     )
     # The mapper raises ContextMappingError on a broken plan/budget, not on
     # an empty result. Let it propagate so the turn fails loudly instead of
@@ -313,77 +306,6 @@ def build_session_mapped_context_markdown(
         len(result.rendered_context),
     )
     return result.rendered_context
-
-
-def build_brokered_context_markdown(
-    *,
-    mode_id: str,
-    query: str,
-    state: UnifiedState | None,
-    context_plan: ContextPlan | None = None,
-    model_context_window_tokens: int = 0,
-    active_packs: frozenset[str] | None = None,
-    snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
-) -> str:
-    """Select ranked context items from *state* and render it as Markdown.
-
-    Routes through the session-owned :class:`ContextMapper` (lane-aware,
-    budget-aware, MMR-diversified). When no ``context_plan`` is supplied, a
-    default :class:`ContextPlan` is used so the mapper is always the single
-    selection engine.
-
-    Returns an empty string when no evidence is selected or when *state*
-    is ``None`` / uncompiled.
-
-    *snapshot_sink* is forwarded to the mapper so a host can capture the
-    latest ``ContextBudgetSnapshot`` on each turn.
-    """
-    if state is None or not state.compiled_at:
-        return ""
-
-    return build_session_mapped_context_markdown(
-        mode_id=mode_id,
-        query=query,
-        state=state,
-        context_plan=context_plan or ContextPlan(),
-        model_context_window_tokens=(
-            model_context_window_tokens or kernel_settings.context_default_window_tokens
-        ),
-        active_packs=active_packs,
-        snapshot_sink=snapshot_sink,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Context-usage event (stub — event bus wiring deferred)
-# ---------------------------------------------------------------------------
-
-
-def publish_context_usage_event(
-    *,
-    allocator: ContextBudgetAllocator,
-    mode_id: str,
-    query: str,
-) -> None:
-    """Emit a structured context-usage log line for the turn.
-
-    The event bus is not wired in this module yet; this logs the lane
-    summary via stdlib logging so per-turn context salience is observable
-    in host.jsonl (which lanes were spent, which sections dropped/truncated).
-
-    Never raises — telemetry must not break the turn.
-    """
-    try:
-        summary = allocator.summary()
-        logger.info(
-            "context usage: mode=%s lanes=%s dropped=%s truncated=%s",
-            mode_id,
-            summary.get("lane_totals"),
-            summary.get("dropped_keys"),
-            summary.get("truncated_keys"),
-        )
-    except Exception:  # pylint: disable=broad-except
-        logger.debug("context usage telemetry failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +426,7 @@ def assemble_dynamic_user_context(
     active_packs: frozenset[str] = frozenset()
     if mode is not None:
         active_packs = frozenset({mode.mode_provider_id, *mode.context_item_packs} - {""})
-    packet_markdown = build_brokered_context_markdown(
+    packet_markdown = build_session_mapped_context_markdown(
         mode_id=mode_id,
         query=query,
         state=state,
@@ -547,8 +469,6 @@ def assemble_dynamic_user_context(
         raw_sections=raw_sections,
         allocator=allocator,
     )
-
-    publish_context_usage_event(allocator=allocator, mode_id=mode_id, query=query)
     return "\n\n".join(rendered_sections)
 
 
@@ -614,7 +534,6 @@ def _build_context_allocator(
             "dict[ContextLane, int]",
             {
                 "core": budget_values["core_max_tokens"],
-                "retrieval": budget_values["retrieval_max_tokens"],
                 "memory": budget_values["memory_max_tokens"],
                 "reflection": budget_values["reflection_max_tokens"],
                 "history": budget_values["history_max_tokens"],

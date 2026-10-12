@@ -245,6 +245,38 @@ unrelated signatures. The carve-out closes when these trees settle on a
 behavior the operator ratifies, or explicitly on operator order — record
 the closure here.
 
+**Dead context plumbing removal (opened 2026-10-12, authorized by the
+operator — "remove all of it", scoping the eight items identified in the
+2026-10-12 context-system review).** Scope:
+`kernel/src/kernel/context/` (delete `context_keys.py`; delete the
+write-only `DataSanitizer` seam and `PassThroughSanitizer`; fold
+`context_broker.py` into `ambient.py` and delete its write-only
+extension-item builder global; rename `context_frames.py` →
+`content_registry.py` with a public getter; drop the always-zero
+`stable_prefix_tokens`/`conversation_tokens`/`tool_schema_tokens` fields
+from `ContextMapperRequest`/`ContextBudgetSnapshot`; drop the duplicated
+`drop_reason` key from `ContextBudgetAllocator.summary`; drop the
+test-only `DiscoveryReport.notes`/`results_for` in
+`runtime/src/runtime/model_discovery/types.py`),
+`runtime/src/runtime/` (delete the dead retrieval-lane budget knob
+`context_budget_retrieval_max_tokens`; delete the `publish_context_usage_event`
+stub; delete the single-caller `build_brokered_context_markdown` wrapper;
+delete the `lisa-context` server launch entry from `mcp_servers.yaml`),
+`sdk/src/sdk/context/` (delete the `context_broker.py` re-export and
+`set_production_extension_item_builder`), and
+`mcp_server/src/mcp_server/` (delete the
+`context` server package, its `lisa-context` entry point, and its registry
+entry). Purpose: remove dead seams and optimistic-look budget knobs that
+are never consumed so the context budget story cannot be mistaken for
+more enforced than it is. Behavior-preserving deletions: the receipt for
+each commit is (1) the full verification loop green in its entirety,
+same-commit, (2) a repo-wide grep proving zero remaining references to
+every deleted symbol, and (3) updated tests where a symbol was consumed
+only by tests. No new behavior is added; nothing consumed in production
+is removed. The carve-out closes when all eight removals are committed
+with green receipts, or explicitly on operator order — record the
+closure here.
+
 **Context residency by allocation (opened 2026-10-07, authorized by the
 operator).** Scope: `sdk/src/sdk/thread/_results.py` (stub envelope
 projection), `sdk/src/sdk/thread/_readout.py` and `_search.py` (ref

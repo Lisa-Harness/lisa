@@ -484,10 +484,10 @@ def setup_framework(
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(catalog_config)
 
-    # Wire the MCPContentRegistry as the content registry for context frames
-    # and the sub-turn contract assets (fork/delegate briefings + midpoint
+    # Wire the MCPContentRegistry as the content registry for authored context
+    # assets and the sub-turn contract assets (fork/delegate briefings + midpoint
     # write-nudge). Both modules share the same registry instance.
-    from kernel.context.context_frames import set_content_registry
+    from kernel.context.content_registry import set_content_registry
     from kernel.context.mcp_content_registry import MCPContentRegistry
     from kernel.context.sub_turn_contract import (
         set_content_registry as _set_sub_turn_content_registry,
@@ -506,17 +506,6 @@ def setup_framework(
         registry.read_authored_text,
         ["prompts/system-prompt.md"],
         context="setup_framework startup validation",
-    )
-
-    # Wire the production extension-item builder so the context broker's
-    # catalog builder picks up items from installed SDK extensions
-    # (Cloudflare, GitHub, Stripe) via entry-point discovery.
-    from sdk.context.extension_item_builder import (
-        set_production_extension_item_builder,
-    )
-
-    set_production_extension_item_builder(
-        excluded_packs=disabled_packs,
     )
 
     # ── Model manifest pre-load ──────────────────────────────────────

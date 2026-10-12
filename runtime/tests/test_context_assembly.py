@@ -157,7 +157,6 @@ def test_recent_conversation_wins_history_budget_over_manifest(
             "enabled": True,
             "token_char_ratio": 4,
             "core_max_tokens": 2000,
-            "retrieval_max_tokens": 1500,
             "memory_max_tokens": 1200,
             "reflection_max_tokens": 1000,
             "history_max_tokens": 1500,  # production default: ~6000 chars

@@ -1,5 +1,10 @@
 # Test-suite review — coverage, efficacy, redundancy
 
+> **Historical snapshot (2026-10-04).** The drifted tests it names and the
+> file it referenced (`sdk/src/sdk/context/tests/test_context_broker.py`,
+> since deleted with the dead context plumbing) no longer exist; retained
+> only as a record of the 2026-10-04 remediation work.
+
 **Date:** 2026-10-04 · **Method:** full-suite run under coverage (`pytest -m "not live"`), collection audit, assertion-density scan, near-duplicate detection, CI wiring cross-check.
 
 **Baseline:** 2318 passed, 9 skipped, 1 xfailed, 9 xpassed in 4m13s.
