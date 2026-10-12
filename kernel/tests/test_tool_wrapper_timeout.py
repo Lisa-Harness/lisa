@@ -432,3 +432,42 @@ class TestIdleDeadlineTelemetry:
             await execute_tool("probe", _ctx(bus=_FakeBus()))
         # Message keeps the established contract ("Tool 'x' timed out").
         assert "Tool 'probe' timed out" in str(excinfo.value)
+
+
+async def _stuck_on_pipe(ctx: ToolExecutionContext) -> Any:
+    await asyncio.Event().wait()
+
+
+class TestTimeoutNamesSuspensionSite:
+    """A timeout log names the await the tool hung on.
+
+    Regression background (2026-10-11 coding turn): ``coding_edit_files``
+    timed out twice in preflight with no other log line, so the stuck await
+    (store lock, subprocess spawn, pipe, or wait) could not be identified.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lifetime_timeout_logs_the_stuck_frame(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _register(
+            monkeypatch,
+            _definition(timeout_seconds=1, stream_output=False, execute=_stuck_on_pipe),
+        )
+        with pytest.raises(ToolExecutionError, match="timed out"):
+            await execute_tool("probe", _ctx())
+        [record] = [r for r in caplog.records if "timed out after" in r.getMessage()]
+        assert "_stuck_on_pipe" in record.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_logs_the_stuck_frame(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _register(
+            monkeypatch,
+            _definition(timeout_seconds=1, stream_output=True, execute=_stuck_on_pipe),
+        )
+        with pytest.raises(ToolExecutionError, match="timed out"):
+            await execute_tool("probe", _ctx(bus=_FakeBus()))
+        [record] = [r for r in caplog.records if "timed out after" in r.getMessage()]
+        assert "_stuck_on_pipe" in record.getMessage()

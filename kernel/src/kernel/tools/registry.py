@@ -38,6 +38,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Literal
@@ -179,6 +180,33 @@ def _chain_idle_relay(
     return relay_progress
 
 
+_SUSPENSION_FRAMES = 6
+
+
+def _format_suspension(stack: traceback.StackSummary) -> str:
+    """Render the innermost frames, outermost first, as one log-friendly line."""
+
+    frames = list(stack)[-_SUSPENSION_FRAMES:]
+    return " > ".join(f"{frame.filename}:{frame.lineno} {frame.name}" for frame in frames)
+
+
+def _suspension_site(exc: TimeoutError) -> str:
+    """Name the await a timed-out tool was suspended on when it was cancelled.
+
+    An inline ``wait_for`` cancels the tool coroutine in place, so the
+    ``CancelledError`` it chains carries the tool's frames down to the stuck
+    await. A tool run as its own task records its stack as a note instead.
+    """
+
+    notes = getattr(exc, "__notes__", None)
+    if notes:
+        return str(notes[-1])
+    cause = exc.__cause__ or exc.__context__
+    if cause is None or cause.__traceback__ is None:
+        return "unknown"
+    return _format_suspension(traceback.extract_tb(cause.__traceback__)) or "unknown"
+
+
 async def _run_with_idle_deadline(
     execute_fn: Any,
     ctx: ToolExecutionContext,
@@ -236,8 +264,16 @@ async def _run_with_idle_deadline(
             published.clear()
             try:
                 return await asyncio.wait_for(asyncio.shield(execute_task), timeout=timeout_seconds)
-            except TimeoutError:
+            except TimeoutError as exc:
                 if not published.is_set():
+                    exc.add_note(
+                        _format_suspension(
+                            traceback.StackSummary.extract(
+                                (frame, frame.f_lineno) for frame in execute_task.get_stack()
+                            )
+                        )
+                        or "unknown"
+                    )
                     raise
     finally:
         # Drop the progress subscription: the call is over, and a leaked
@@ -308,9 +344,10 @@ async def _execute_under_tracer(
                 result = await execute_fn(ctx)
         except TimeoutError as exc:
             logger.error(
-                "tool '%s' timed out after %ss",
+                "tool '%s' timed out after %ss; suspended at %s",
                 tool_id,
                 definition.timeout_seconds,
+                _suspension_site(exc),
             )
             status = "timeout"
             err_msg = f"Timed out after {definition.timeout_seconds}s"
