@@ -127,6 +127,8 @@ fixture:
   repo: fixtures/<repo>          # optional; becomes a git repo with a bare origin
   data_files: fixtures/<tree>    # optional; copied into <data_dir>/data/files
 packs: [lisa-pack-...]           # keys of e2etest/packs.yml installed into the venv
+model:
+  script: model/<name>.py        # optional; scripted model instead of the live LLM
 policy: policy.yaml              # optional; default is empty `mode: ask`
 env: {NAME: value}               # optional extra process env
 turns:                           # user messages, in order
@@ -151,6 +153,25 @@ oracles:
 `${WORKSPACE_PARENT}` (where coding worktrees go), `${RUN_DIR}`. Mirror the
 real session the pack targets, but name it uniquely (`name: e2e-<pack>`) so
 live policy rules keyed on a workspace id do not apply.
+
+### Scripted model (token-free repros)
+
+`model.script` replaces every provider gateway with a Python module, so a
+scenario replays a fixed tool sequence in seconds at zero token cost.
+Everything below the model (routing, policy, approvals, packs, sandbox,
+persistence) is production code. Use it to pin down a bug a live run
+surfaced, not to judge model behavior.
+
+The module defines `respond(turn: ScriptTurn) -> Reply` and, optionally,
+`auxiliary(turn)` for tool-less requests (distillers, classifiers, titles).
+Those otherwise receive `{}` or empty text, which some operations log as
+errors. `ScriptTurn` exposes `tool_names`, `user_text`, `count(name)`, and
+`last(name)`. `last(name).data` is the JSON object inside that tool's
+result, so ids and digests flow from real tool output. Return
+`Reply.call(tool, **args)`, `Reply.calls(...)`, or `Reply.text(...)`; raise
+`ScriptError` when the transcript is not what the script expects. Add
+`"model/*"` to the pack's `conftest.py` `collect_ignore_glob`. See
+`coding/tests/e2e/edit_after_check.scenario.yml` in the coding pack.
 
 ### Oracle reference
 

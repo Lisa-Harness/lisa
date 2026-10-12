@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import runtime.turn_hooks_builder
 from runtime.bootstrap import build_runtime
 from runtime.handle_message import handle_message
 from runtime.paths import inject_packs_venv_site_packages
@@ -16,6 +19,7 @@ from runtime.types import HostCommandResult
 
 from e2etest.environment import RunPaths
 from e2etest.scenario import Scenario
+from e2etest.scripted import ScriptedGatewayProvider, load_script
 
 _APPROVAL_SCHEMA = "lisa.approval.v1"
 
@@ -43,12 +47,14 @@ class DriverOutcome:
     exchanges: list[Exchange] = field(default_factory=list)
     stages: list[dict[str, Any]] = field(default_factory=list)
     aborted: str = ""
+    model_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "aborted": self.aborted,
             "exchanges": [asdict(e) for e in self.exchanges],
             "stages": self.stages,
+            "model_calls": self.model_calls,
         }
 
 
@@ -203,21 +209,41 @@ async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> No
             outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
 
 
+@contextmanager
+def _gateway_override(scripted: ScriptedGatewayProvider | None) -> Iterator[None]:
+    """Bind every provider gateway to the model script while the runtime is wired."""
+    if scripted is None:
+        yield
+        return
+    hooks = runtime.turn_hooks_builder
+    original = hooks._resolve_gateway_provider_for_runtime
+    hooks._resolve_gateway_provider_for_runtime = lambda _runtime: scripted
+    try:
+        yield
+    finally:
+        hooks._resolve_gateway_provider_for_runtime = original
+
+
 def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> DriverOutcome:
     """Boot a runtime against ``paths`` and play the scenario's turns."""
     outcome = DriverOutcome()
     if inject_packs_venv_site_packages(packs_venv) is None:
         outcome.aborted = f"packs venv has no site-packages: {packs_venv}"
         return outcome
-    runtime = build_runtime(
-        host_kind="e2e",
-        data_dir=str(paths.data_dir),
-        session_context=str(paths.session_context),
-        streaming="none",
-        in_process_mcp=True,
-    )
-    if runtime.session.restart_required:
-        outcome.aborted = "runtime requested a restart during boot (pack auto-install?)"
-        return outcome
-    asyncio.run(_drive(runtime, scenario, outcome))
+    scripted: ScriptedGatewayProvider | None = None
+    if scenario.model_script is not None:
+        scripted = load_script(scenario.model_script)
+        outcome.model_calls = scripted.log
+    with _gateway_override(scripted):
+        runtime = build_runtime(
+            host_kind="e2e",
+            data_dir=str(paths.data_dir),
+            session_context=str(paths.session_context),
+            streaming="none",
+            in_process_mcp=True,
+        )
+        if runtime.session.restart_required:
+            outcome.aborted = "runtime requested a restart during boot (pack auto-install?)"
+            return outcome
+        asyncio.run(_drive(runtime, scenario, outcome))
     return outcome

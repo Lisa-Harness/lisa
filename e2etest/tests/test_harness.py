@@ -4,12 +4,16 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from e2etest.driver import DriverOutcome, Exchange, approval_payload
 from e2etest.environment import RunPaths
 from e2etest.oracles import Evidence, evaluate
 from e2etest.scenario import OracleSpec, ScenarioError, load_scenario
+from e2etest.scripted import ScriptError, ScriptTurn, load_script
+from kernel.provider_contracts import CompletionRequest
 from runtime.types import HostCommandResult
 
 
@@ -274,3 +278,60 @@ def test_recovery_oracles_read_store_and_exchange_evidence(committed_run: Eviden
     assert all(result.passed for result in results), [
         (r.name, r.detail) for r in results if not r.passed
     ]
+
+
+def _request(messages: list[dict[str, Any]], **kwargs: Any) -> CompletionRequest:
+    return CompletionRequest(
+        messages=messages, model_def=SimpleNamespace(), max_tokens=1, temperature=0.0, **kwargs
+    )
+
+
+def _write_script(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "model.py"
+    path.write_text("from e2etest.scripted import Reply\n" + body, encoding="utf-8")
+    return path
+
+
+def test_script_turn_pairs_tool_calls_with_results() -> None:
+    call = {"id": "c1", "function": {"name": "coding_read_file", "arguments": '{"path": "a"}'}}
+    turn = ScriptTurn(
+        _request(
+            [
+                {"role": "user", "content": "fix it"},
+                {"role": "assistant", "content": "", "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": "c1", "content": 'Read a {"sha": "x"}'},
+            ],
+            tools=[{"type": "function", "function": {"name": "coding_read_file"}}],
+        ),
+        index=0,
+    )
+    assert turn.tool_names == {"coding_read_file"} and not turn.auxiliary
+    assert turn.user_text == "fix it"
+    last = turn.last("coding_read_file")
+    assert last is not None and last.arguments == {"path": "a"} and last.data == {"sha": "x"}
+    assert turn.count("coding_read_file") == 1 and turn.last("coding_edit_files") is None
+
+
+def test_scripted_provider_answers_with_tool_calls_and_default_auxiliary(
+    tmp_path: Path,
+) -> None:
+    provider = load_script(
+        _write_script(tmp_path, "def respond(turn):\n    return Reply.call('t', x=1)\n")
+    )
+    tools = [{"type": "function", "function": {"name": "t"}}]
+    result = provider.answer(_request([{"role": "user", "content": "go"}], tools=tools))
+    assert result.finish_reason == "tool_calls"
+    assert json.loads(result.tool_calls[0]["function"]["arguments"]) == {"x": 1}
+    assert provider.answer(_request([], response_format=dict)).content == "{}"
+    assert provider.answer(_request([])).content == ""
+    assert [entry["auxiliary"] for entry in provider.log] == [False, True, True]
+
+
+def test_load_script_requires_respond_and_scenario_resolves_script(tmp_path: Path) -> None:
+    with pytest.raises(ScriptError, match="respond"):
+        load_script(_write_script(tmp_path, "X = 1\n"))
+    _write_script(tmp_path, "def respond(turn):\n    return Reply.text('ok')\n")
+    path = _write_scenario(
+        tmp_path, "session_context: ctx.md\nturns: [x]\nmodel: {script: model.py}\n"
+    )
+    assert load_scenario(path).model_script == (tmp_path / "model.py").resolve()

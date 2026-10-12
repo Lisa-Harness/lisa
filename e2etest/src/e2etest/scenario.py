@@ -67,6 +67,9 @@ class Scenario:
     continue_message: str = "continue"
     yield_reply: str = "Proceed with your best judgment."
     env: dict[str, str] = field(default_factory=dict)
+    #: ``model.script``: a Python module that stands in for the LLM (see
+    #: ``e2etest.scripted``). ``None`` runs against the configured live model.
+    model_script: Path | None = None
 
     @property
     def base_dir(self) -> Path:
@@ -137,4 +140,7 @@ def load_scenario(path: Path) -> Scenario:
         continue_message=str(raw.get("continue_message") or "continue"),
         yield_reply=str(raw.get("yield_reply") or "Proceed with your best judgment."),
         env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},
+        model_script=_resolve(
+            base, (raw.get("model") or {}).get("script"), key="model.script", required=False
+        ),
     )
