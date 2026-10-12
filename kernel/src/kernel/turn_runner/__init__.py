@@ -9639,6 +9639,14 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
         tuple[str | None, str | None, list[ForkChildResult] | None],
         (None, None, None),
     )
+    # A lifecycle action can break the loop on its FIRST pass — a resumed
+    # continuation enters with the restored stall counters already at the
+    # stuck-in-stage cap, so the cap pauses before any iteration body runs.
+    # Seed the effective model from the pre-gate resolution so
+    # ``_finalize_turn_result`` always receives a defined model (each loop
+    # pass overwrites it; the 2026-10-12 18:00 incident: an unbound
+    # ``effective_model_def`` crashed every resume attempt of a paused turn).
+    effective_model_def = model_def
     # ── Unified turn lifecycle ───────────────────────────────────────────
     # ``_yielded`` is set True when the loop breaks via a forced or
     # model-emitted ``YieldAction``. The thread entry records it for

@@ -276,3 +276,67 @@ async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
     assert requests[1] == requests[2][: len(requests[1])]
     assert requests[2][-1] == {"role": "user", "content": "keep going"}
     assert resumed.tool_call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stuck_cap_pause_persists_a_resumable_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cap pause that fires on the FIRST loop pass of a resume must still finalize.
+
+    Regression for the 2026-10-12 18:00/18:12 UTC incident: a resumed
+    continuation entered ``_run_turn_inner`` with the restored step counter
+    already at the stuck-in-stage cap, so the first-pass ``_lifecycle_break``
+    fired before the loop body had ever assigned ``effective_model_def``.
+    ``_finalize_turn_result`` then raised ``UnboundLocalError`` and every
+    resume attempt crashed without persisting the pause — the paused turn
+    became unresumable.
+    """
+
+    async def execute(ctx: Any) -> ToolResult:
+        return ToolResult(output_text=f"result:{ctx.tool_id}")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "read": ToolDefinition(
+                tool_id="read",
+                pack_id="test",
+                effect="read",
+                implementation_module=SimpleNamespace(execute=execute),
+            )
+        },
+    )
+    requests: list[list[dict[str, Any]]] = []
+
+    async def complete(**kwargs: Any) -> Any:
+        requests.append(copy.deepcopy(kwargs["messages"]))
+        call_id = f"read-{len(requests)}"
+        return SimpleNamespace(
+            content="",
+            tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
+        )
+
+    def forbidden_replay() -> list[dict[str, Any]]:
+        raise AssertionError("resume reconstructed the turn")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        identity=TurnIdentity(workspace_id="w", user_id="u", task_id="task"),
+    )
+    monkeypatch.setattr("kernel.config.settings.stage_nudge_cap", 3)
+    paused = await run_turn(mode_id="default", query="do it", hooks=hooks, max_tool_iterations=10)
+    assert paused.operator_exit == "paused"
+    assert paused.continuation is not None
+    assert paused.continuation.reason == "cap"
+    assert paused.continuation.requires_approval is False
+
+    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    saved = TurnContinuation.model_validate_json(paused.continuation.model_dump_json())
+    resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
+    # The pause fired again on the resumed turn's first pass (before any model
+    # call) — the loop finalized it cleanly instead of raising
+    # UnboundLocalError, and the pause is resumable yet again.
+    assert resumed.operator_exit == "paused"
+    assert resumed.continuation is not None
+    assert len(requests) == 2
