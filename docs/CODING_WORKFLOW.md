@@ -84,6 +84,15 @@ access. Public contract changes required for this work are authorized.
 Regression tests and the shared verification loop remain required. Other
 work remains subject to the stabilization freeze.
 
+**Operator exception (2026-10-11):** The freeze is lifted for
+cache-aware usage accounting — surface the provider's prompt-cache read
+and write counts end to end (kernel counters, telemetry, `/tokens`) and
+let hosts/SDKs estimate cost with manifest cache prices. The kernel
+carries token *counts only*, never currency; per-token prices and any
+cost math live in the manifest (host/config) and host/CLI presentation.
+Scope and red/green requirements: the "Cache-aware usage accounting"
+carve-out in § Declared carve-outs below.
+
 Declared 2026-10-04. Applies to `kernel/`, `runtime/`, `sdk/`, and
 `mcp_server/` (including `sdk/packs/`). Rationale: sustained churn at
 ~3,000 changed lines/day with a ~47% fix-commit ratio over September was
@@ -185,6 +194,39 @@ reasonably ship as a fix with regression test. A carve-out is recorded
 here and is the carve-out's receipt: it scopes the exception to named
 modules, bounds it by commit scope, expires with the stated condition,
 and is closed by updating this section (same doc, same history).
+
+**Cache-aware usage accounting (opened 2026-10-11, authorized by the
+operator; amended 2026-10-12 — the kernel carries counts, not currency).**
+Scope: `kernel/src/kernel/provider_contracts.py`
+(`CompletionUsage.cached_tokens`/`cache_creation_tokens` are already
+declared; no new kernel usage fields),
+`kernel/src/kernel/model_manifest.py`
+(`cache_read_price`/`cache_write_price` per-token fields only — these are
+model facts published by providers, consumed by hosts, and carry no
+runtime state),
+`runtime/src/runtime/model_discovery/` (`DiscoveredModel` cache-price
+fields, manifest emitter, `probes/openrouter.py` +
+`probes/base.py` enrichment of
+`pricing.input_cache_read`/`input_cache_write` only),
+`runtime/src/runtime/model_runtime.py` (resolver forwarding of the price
+fields onto the host descriptor), and the hosts (e.g. `lisa-cli`)
+accumulate cache-hit counts from `model_call_complete` (which already
+carries `cached_tokens` from the kernel via `TurnResult`) and estimate
+cost from manifest prices. Purpose: make cost accounting cache-aware —
+the turn footer undercounted real provider-billed volume (streamed
+attempt + fallback double-dispatch) and estimated at the uncached list
+price while providers bill cache hits at the read rate. The kernel stays
+count-only by design: per-token prices and currency conversion are host
+concerns, so future provider quoting (e.g. a usage `cost` field) belongs
+in host/SDK presentation layers and must not enter these contracts
+without a new carve-out. Any commit under this heading must (1) name the
+accounting behavior it changes, (2) ship a test that fails before and
+passes after (same-commit, red/green), (3) not widen scope beyond the
+named accounting/pricing surfaces, and (4) keep the full verification
+loop green in its entirety. The carve-out closes when the footer's
+cached-token basis and cache-rate estimate reconcile against the
+provider dashboard in a live turn, or explicitly on operator order —
+record the closure here.
 
 **Thread-context durability (opened 2026-10-05, authorized by the
 operator).** Scope: `sdk/src/sdk/thread/` (readout + results projection
