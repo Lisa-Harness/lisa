@@ -143,6 +143,31 @@ class TestEnrichment:
         assert model.completion_price == 0.0
         assert model.cost_tier == ""
 
+    def test_cache_pricing_maps_to_dedicated_fields(self) -> None:
+        """``pricing.input_cache_read``/``input_cache_write`` land on the
+        dedicated cache-price fields as per-token USD."""
+        model = _enrich_openrouter_model(
+            "openai/gpt-5.6-luna",
+            _row(
+                id="openai/gpt-5.6-luna",
+                pricing={
+                    "prompt": "0.0000002",
+                    "completion": "0.0000012",
+                    "input_cache_read": "0.00000002",
+                    "input_cache_write": "0.00000025",
+                },
+                reasoning=None,
+            ),
+        )
+        assert model.cache_read_price == pytest.approx(0.00000002)
+        assert model.cache_write_price == pytest.approx(0.00000025)
+        assert model.prompt_price == pytest.approx(0.0000002)
+
+    def test_missing_cache_pricing_leaves_zero(self) -> None:
+        model = _enrich_openrouter_model("x/m", _row(reasoning=None))
+        assert model.cache_read_price == 0.0
+        assert model.cache_write_price == 0.0
+
     def test_falls_back_to_top_provider_context(self) -> None:
         model = _enrich_openrouter_model(
             "x/m",

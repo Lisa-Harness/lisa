@@ -138,6 +138,8 @@ def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
     pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
     prompt_price = _price(pricing.get("prompt"))
     completion_price = _price(pricing.get("completion"))
+    cache_read_price = _price(pricing.get("input_cache_read"))
+    cache_write_price = _price(pricing.get("input_cache_write"))
 
     # ── Capabilities ──
     supported_params = _as_str_set(row.get("supported_parameters"))
@@ -184,6 +186,8 @@ def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
         "context_window": context_window,
         "prompt_price": prompt_price,
         "completion_price": completion_price,
+        "cache_read_price": cache_read_price,
+        "cache_write_price": cache_write_price,
         "description": description,
         "thinking_model": thinking_model,
     }
@@ -199,6 +203,8 @@ def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
         context_window=_int_or_zero(merged.get("context_window")),
         prompt_price=float(merged.get("prompt_price") or 0.0),
         completion_price=float(merged.get("completion_price") or 0.0),
+        cache_read_price=float(merged.get("cache_read_price") or 0.0),
+        cache_write_price=float(merged.get("cache_write_price") or 0.0),
         description=str(merged.get("description") or ""),
     )
 

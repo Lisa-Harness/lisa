@@ -92,6 +92,32 @@ class StubModelDefinition:
 
     JSON-bound work. Default 0.0 for backward compatibility."""
 
+    prompt_price: float = 0.0
+
+    """Per-token USD price for prompt (input) tokens, forwarded from
+
+    ``ManifestModelEntry.prompt_price`` for cost estimation. 0.0 = unknown."""
+
+    completion_price: float = 0.0
+
+    """Per-token USD price for completion (output) tokens, forwarded from
+
+    ``ManifestModelEntry.completion_price``. 0.0 = unknown."""
+
+    cache_read_price: float = 0.0
+
+    """Per-token USD price for prompt-cache reads, forwarded from
+
+    ``ManifestModelEntry.cache_read_price`` so cache-aware cost estimates
+
+    blend the read rate. 0.0 = unknown."""
+
+    cache_write_price: float = 0.0
+
+    """Per-token USD price for prompt-cache writes, forwarded from
+
+    ``ManifestModelEntry.cache_write_price``. 0.0 = unknown."""
+
     base_url: str = ""
 
     """Direct (non-proxy) endpoint this model's provider serves, forwarded
@@ -425,6 +451,10 @@ def resolve_model(
         prompt_cache_breakpoints=resolved.prompt_cache_breakpoints,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,
+        prompt_price=getattr(resolved, "prompt_price", 0.0),
+        completion_price=getattr(resolved, "completion_price", 0.0),
+        cache_read_price=getattr(resolved, "cache_read_price", 0.0),
+        cache_write_price=getattr(resolved, "cache_write_price", 0.0),
         base_url=getattr(resolved, "base_url", ""),
         base_url_env=getattr(resolved, "base_url_env", ""),
     )

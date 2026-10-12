@@ -279,6 +279,8 @@ def _apply_optional_model_fields(entry: dict[str, Any], model: DiscoveredModel) 
         "context_window",
         "prompt_price",
         "completion_price",
+        "cache_read_price",
+        "cache_write_price",
         "description",
         "structured_reliability",
         "prompt_cache_breakpoints",

@@ -45,6 +45,14 @@ class ManifestModelEntry:
     prompt_price: float = 0.0
     #: Per-token USD price for completion (output) tokens, when known.
     completion_price: float = 0.0
+    #: Per-token USD price for * cached * prompt tokens (prompt-cache reads),
+    #: when the provider publishes it (OpenRouter ``pricing.input_cache_read``).
+    #: 0.0 = unknown/not priced — cost estimators fall back to ``prompt_price``.
+    cache_read_price: float = 0.0
+    #: Per-token USD price for prompt-cache *writes* (population), when the
+    #: provider publishes it (OpenRouter ``pricing.input_cache_write``).
+    #: 0.0 = unknown.
+    cache_write_price: float = 0.0
     #: Currency for the above prices (ISO 4217). Defaults to USD, the only
     #: currency OpenRouter prices in today; kept for forward compatibility.
     pricing_currency: str = "USD"
@@ -501,6 +509,16 @@ def _parse_model_entry(
         completion_price=_parse_price(
             raw_model.get("completion_price"),
             field_name="completion_price",
+            model_id=key,
+        ),
+        cache_read_price=_parse_price(
+            raw_model.get("cache_read_price"),
+            field_name="cache_read_price",
+            model_id=key,
+        ),
+        cache_write_price=_parse_price(
+            raw_model.get("cache_write_price"),
+            field_name="cache_write_price",
             model_id=key,
         ),
         pricing_currency=str(raw_model.get("pricing_currency") or "USD").strip() or "USD",

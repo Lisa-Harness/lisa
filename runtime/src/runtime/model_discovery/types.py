@@ -64,6 +64,12 @@ class DiscoveredModel:
     prompt_price: float = 0.0
     #: Per-token USD price for completion (output) tokens when known.
     completion_price: float = 0.0
+    #: Per-token USD price for prompt-cache reads when the provider publishes
+    #: it (OpenRouter ``pricing.input_cache_read``). 0.0 = unknown.
+    cache_read_price: float = 0.0
+    #: Per-token USD price for prompt-cache writes when the provider publishes
+    #: it (OpenRouter ``pricing.input_cache_write``). 0.0 = unknown.
+    cache_write_price: float = 0.0
     #: Currency for the prices above (ISO 4217). Defaults to USD; OpenRouter
     #: prices are USD-only today.
     pricing_currency: str = "USD"
