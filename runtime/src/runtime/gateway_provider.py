@@ -267,11 +267,11 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
     manifest-friendly ``base_url`` override that the legacy
     ``openai_client_instance`` hardwired away, and injects the optional
     attribution headers. The client is cached on the runtime's
-    ``_openrouter_client`` slot.
+    ``providers.openrouter_client`` slot.
     """
 
     def _build() -> Any:
-        existing = getattr(runtime, "_openrouter_client", None)
+        existing = getattr(getattr(runtime, "providers", None), "openrouter_client", None)
         if existing is not None:
             return existing
         api_key = _env(LISA_OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY")

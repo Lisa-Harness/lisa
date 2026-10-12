@@ -319,16 +319,20 @@ async def test_openrouter_factory_builds_with_headers_and_caches(
 
 
 @pytest.mark.asyncio
-async def test_openrouter_factory_cache_hit_via_private_slot(
+async def test_openrouter_factory_reuses_cached_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Regression: the factory read a dead ``_openrouter_client`` slot, so every
+    # model call built a fresh AsyncOpenAI client. Abandoned clients closed
+    # their sockets from ``__del__`` after GC had already released the fd,
+    # unregistering whatever reused that fd number (e.g. a subprocess pidfd)
+    # and hanging coding tools until their deadline.
     monkeypatch.setenv("LISA_OPENROUTER_API_KEY", "or-key")
 
     runtime = _runtime()
     build = _openrouter_client_factory(runtime)
     client = build()
     try:
-        runtime._openrouter_client = client
         assert build() is client
     finally:
         await client.close()
