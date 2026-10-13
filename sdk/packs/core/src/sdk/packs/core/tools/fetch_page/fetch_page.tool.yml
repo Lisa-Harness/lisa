@@ -2,7 +2,6 @@ tool_id: fetch_page
 description: "Fetch an http(s) URL and extract its main visible text for grounded synthesis."
 effect: read
 exportable: true
-default_available: true
 # Per-turn cap: a read-loop research turn with no cap burned 30 fetch_page
 # calls to the stage cap with zero synthesis (2026-09-04 executor read-loop
 # incident). 8 distinct pages is ample grounding for one turn; more should

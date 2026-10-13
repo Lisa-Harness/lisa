@@ -244,6 +244,37 @@ def test_explicit_allowlist_preserved_with_defaults_appended(tmp_path: Path) -> 
     assert modes["chat"]["allowed_operation_ids"] == ["native_op", "recall_memory"]
 
 
+def test_fetch_page_not_default_available(tmp_path: Path) -> None:
+    """fetch_page is not ambient: modes with empty tool allowlists must not see it.
+
+    Regression for the 2026-10-13 p920 incident: fetch_page was the only
+    ambient web tool, so a mode the router starved of web capability could
+    still improvise full-page fetches against search-engine HTML. The tool
+    now ships as an explicit opt-in — research-tier modes list it in their
+    authored allowed_tool_ids — and the default_available merge must skip
+    it entirely.
+    """
+    import yaml
+
+    core_root = (
+        Path(__file__).resolve().parents[1] / "packs" / "core" / "src" / "sdk" / "packs" / "core"
+    )
+    fetch_yml = core_root / "tools" / "fetch_page" / "fetch_page.tool.yml"
+    metadata = yaml.safe_load(fetch_yml.read_text(encoding="utf-8"))
+    assert metadata["tool_id"] == "fetch_page"
+    # The flag must be absent (or false) — removing the key is the contract;
+    # the merge reads only a truthy flag.
+    assert not metadata.get("default_available", False)
+
+    pack_a = tmp_path / "pack_a"
+    _write_mode(pack_a, mode_id="chat", provider_id="lisa-pack-a")
+    modes, _ops, tools = _build_catalogs(core_root, pack_a)
+    # The tool is still cataloged (research-tier modes opt in by id).
+    assert "fetch_page" in tools
+    assert not tools["fetch_page"]["default_available"]
+    assert "fetch_page" not in modes["chat"]["allowed_tool_ids"]
+
+
 # ── MCP-native default-available merge ──────────────────────────────────────
 #
 # MCP-native tools (declared ambient via ``default_available_tools`` in
