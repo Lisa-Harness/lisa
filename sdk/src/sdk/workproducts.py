@@ -113,6 +113,14 @@ class WorkProduct(BaseModel):
     pushed_sha: str = ""
     pr_url: str = ""
     pr_number: int | None = None
+    #: Optional base tip for import-anchored worktree creation; empty for
+    #: ordinary HEAD-based worktrees. The worktree therefore branches at this
+    #: commit's parent, and this commit is the only one the artifact may import.
+    import_commit: str = ""
+    #: Upstream commits imported into this artifact, each recorded at its
+    #: worktree creation base sha; cleared when the artifact commits, so a
+    #: commit carries the imported content out of the pending-import state.
+    imported_commits: dict[str, str] = Field(default_factory=dict)
     status: WorkProductStatus = "created"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
