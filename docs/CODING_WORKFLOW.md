@@ -340,6 +340,29 @@ full verification loop green in its entirety. The carve-out closes when
 these trees settle on a behavior the operator ratifies, or explicitly on
 operator order — record the closure here.
 
+**Web-tool ambient capability re-scope (opened 2026-10-13, authorized
+by the operator).** Scope:
+`sdk/packs/core/src/sdk/packs/core/tools/fetch_page/fetch_page.tool.yml`
+(removal of `default_available: true` only — `effect`, `exportable`,
+`max_calls_per_turn: 8`, and the tool's Python module stay untouched), the
+same-commit regression test, and any
+`sdk/tests/test_default_available_capabilities.py` fixture updates the
+removal forces. Purpose: `fetch_page` was the only ambient tool an
+arbitrary-mode turn could use for web access, and the 2026-10-13 p920
+market-research turn showed the failure mode: the router failed to reach
+`researcher`, and the model improvised `fetch_page` against search-engine
+HTML pages in a mode that deliberately has no web capability. Ambient
+full-page fetching is stronger containment leakage than the metered
+search primitive it drowned out. Any commit under this heading must
+(1) name the capability surface it changes, (2) ship a test that fails
+before and passes after (same-commit, red/green), (3) not widen scope
+beyond the `fetch_page` `.tool.yml` front matter and its direct tests,
+and (4) keep the full verification loop green in its entirety. The
+carve-out closes when a live turn in a non-research mode shows no
+`fetch_page` in its tool surface (verified the same way as the 2026-10-13
+investigation: `tool schema mode=default names=[...]` without
+`fetch_page`), or explicitly on operator order — record the closure here.
+
 The full suite (`uv run pytest -m "not live"`) is green as of this
 declaration (2909 passed, 1 xfailed). The kernel and
 sdk test suites carry autouse settings-hermeticity guards
