@@ -61,7 +61,10 @@ resources:
             persistence: direct-write
             network: deny
             paths:
-              /path/to/worktree-parent/.lisa-worktrees: rw
+              # Worktree parent: the coding pack defaults worktrees to
+              # <data-dir>/git-worktrees/<workspace-name> (set worktree_dir in
+              # the coding pack configuration to override).
+              <data-dir>/git-worktrees/<workspace-name>: rw
       lisa-pack-github:
         base_branch: main
         allowed_base_branches: [main]
@@ -70,10 +73,10 @@ resources:
 ```
 
 The GitHub token and repository remain extension-owned settings (`GITHUB_TOKEN`
-and `GITHUB_REPO`); they are not session-plan values.
-Replace the bwrap path with the directory adjacent to `workspace_root` where
-the coding pack creates its owned worktrees. A narrower `ro` bind there takes
-precedence and prevents checks from running.
+and `GITHUB_REPO`); they are not session-plan values. Point the bwrap `rw`
+grant at the resolved data-dir worktree parent (or the configured
+`worktree_dir`) so checks can write into owned worktrees; a narrower `ro`
+bind on one worktree takes precedence and prevents checks from running.
 
 ## Freeze
 
