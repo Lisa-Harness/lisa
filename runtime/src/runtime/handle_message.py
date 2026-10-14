@@ -1403,9 +1403,12 @@ async def _execute_mode_turn(
         # non-empty question means the turn ended in a yield — the model
         # asked the operator something instead of finishing. The question
         # rides both the typed field (one-shot hosts exit non-zero) and
-        # ``data["yielded"]`` so panel transports can render it inline.
+        # ``data["yielded"]`` so panel transports can render it inline. The
+        # context and target mode ride data so hosts can render a formatted
+        # yield panel (why the turn stopped, where a reply resumes) without
+        # parsing prose.
         yielded_question=(result.yielded.question if result.yielded else ""),
-        data={"yielded": result.yielded.question, **remediation_payload}
+        data=_yield_payload(result.yielded, remediation_lines=remediation_payload["remediation"])
         if result.yielded
         else None,
     )
@@ -1429,6 +1432,22 @@ def _render_yield_remediation(runtime: HostRuntime, yielded: Any) -> dict[str, A
             continue
         commands.append(f"{prefix} {action.target_id}")
     return {"remediation": commands}
+
+
+def _yield_payload(yielded: Any, *, remediation_lines: list[str]) -> dict[str, Any]:
+    """Build the ``data`` payload for a yielded turn.
+
+    The question mirrors the typed ``yielded_question`` field for transports
+    that read ``data``, and the context / target mode ride beside it so hosts
+    can render a formatted yield — why the turn stopped and where a reply
+    resumes — without parsing prose.
+    """
+    return {
+        "yielded": yielded.question,
+        "yield_context": yielded.context,
+        "yield_mode_id": yielded.target_mode_id,
+        "remediation": remediation_lines,
+    }
 
 
 def _command_prefix_for_verb(runtime: HostRuntime, verb: str) -> str:

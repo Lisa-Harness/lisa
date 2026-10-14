@@ -4,6 +4,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### The runtime stamps the yield's context and resume mode on `HostCommandResult.data`
+
+- **What:** a turn that ends in the `yield` terminal action now carries
+  `data["yield_context"]` (the kernel-supplied reason — question origin,
+  recovery-stall description, capability limit) and `data["yield_mode_id"]`
+  (the mode a forced yield routes to) beside the existing `data["yielded"]`
+  question and `data["remediation"]` command lines. Built by the new
+  `_yield_payload` helper. Covered by
+  `runtime/tests/test_host_command_result_yield.py`.
+- **Why:** `TurnResult.yielded` already documented the intent that hosts
+  "render the question with its context", but the context and target mode
+  were dropped at the `HostCommandResult` seam — hosts could only show the
+  bare question and had to parse prose for the why. This matches the existing
+  structured-approval precedent (`data["approval"]`), where hosts render a
+  panel from fields instead of parsing text.
+- **Tests:** `runtime/tests/test_host_command_result_yield.py`
+  (`test_handle_message_yield_payload_carries_context_and_mode`).
+
 ### Documentation
 
 - Consolidated obsolete I/O, test/release-readiness, routing, budget, and

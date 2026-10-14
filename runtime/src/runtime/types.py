@@ -62,6 +62,13 @@ class HostCommandResult:
     of producing a final answer). Non-empty means the turn did NOT complete —
     one-shot hosts use this to fail fast (there is no interactive loop to
     answer the question) while conversational hosts surface it inline.
+
+    ``data["yield_context"]`` carries the kernel-supplied reason for the yield
+    (why the model is asking — "model-emitted yield", a recovery-stall
+    description, a capability-limit notice); ``data["yield_mode_id"]`` names
+    the mode a forced yield routes to. ``data["remediation"]`` already carries
+    the rendered operator command lines for stalled work. Hosts render these
+    alongside the question instead of parsing prose.
     """
 
     text: str

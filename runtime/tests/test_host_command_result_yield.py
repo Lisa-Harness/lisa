@@ -35,3 +35,28 @@ def test_host_command_result_yield_shape_roundtrip() -> None:
     )
     assert result.yielded_question == "Which networks?"
     assert result.data == {"yielded": "Which networks?"}
+
+
+def test_handle_message_yield_payload_carries_context_and_mode() -> None:
+    """A yielded turn's data carries context, target mode, and remediation."""
+    # Contract under test: the runtime seam stamps the kernel's YieldAction
+    # fields into data so hosts render a formatted yield (why + where to
+    # reply) instead of parsing prose. Verified against the real builder.
+    # pylint: disable=import-outside-toplevel
+    from kernel.models import YieldAction
+    from runtime.handle_message import _yield_payload
+
+    payload = _yield_payload(
+        YieldAction(
+            question="Which networks?",
+            context="recovery stall blocked the step",
+            target_mode_id="coding_execute",
+        ),
+        remediation_lines=["/retry item-1"],
+    )
+    assert payload == {
+        "yielded": "Which networks?",
+        "yield_context": "recovery stall blocked the step",
+        "yield_mode_id": "coding_execute",
+        "remediation": ["/retry item-1"],
+    }

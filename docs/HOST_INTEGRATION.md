@@ -82,6 +82,28 @@ Callbacks are awaited; a slow transport slows the turn. Fatal startup errors
 still raise. Do not derive successful completion solely from displayed prose:
 the runtime also records blocks, yields, pauses, approvals, and receipts.
 
+## Rendering model yields
+
+A turn can end in the model's `yield` terminal action — the model asked the
+operator a question instead of finishing. `handle_message` returns the
+question on `HostCommandResult.yielded_question` and mirrors it (plus context)
+on `data`:
+
+| `data` key | Meaning |
+| --- | --- |
+| `yielded` | The question (mirrors the typed `yielded_question` field) |
+| `yield_context` | Kernel-supplied reason the turn stopped (model ask, recovery stall, capability limit) |
+| `yield_mode_id` | Mode a forced yield routes to; empty for an in-place model ask |
+| `remediation` | Rendered operator command lines for stalled work (pack-dependent; may be empty) |
+
+Treat a non-empty question as an unfinished turn, not an answer: render it
+with its context (the question first, then the why/resume/remediation lines),
+and never write it into redirected output as if it were the requested
+artifact. One-shot hosts exit non-zero instead. A non-empty
+`yield_mode_id` means a reply resumes in that mode; an empty value resumes
+in place. For one-shot hosts the question is durable on the thread (`yielded`
++ `yield_question`), so scripts can also resolve it via `/resume`.
+
 ## Integration checklist
 
 - **Identity:** derive workspace, user, surface, conversation, and principal
