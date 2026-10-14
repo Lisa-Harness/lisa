@@ -5,6 +5,10 @@ a model **per turn-loop iteration** based on turn state, rather than pinning
 one model for the entire turn. This is layered on top of the existing static
 `mode_models` resolution — it does not replace it.
 
+For mode handoffs and workflows, see [mode routing](../../../../docs/ROUTER_DESIGN.md).
+For setup and resource limits, see [configuration](../../../../docs/CONFIGURATION.md)
+and [token budgets](../../../../docs/TOKEN_BUDGET.md).
+
 > **What's new.** A `ModelRouter` Protocol (`kernel/seams/protocols.py`) and
 > `lisa.extensions.model_routers` entry-point group let packs contribute
 > router backends. The built-in `lisa-router` backend ships a **CEL-based**
@@ -85,6 +89,9 @@ mode_models: {default: 'gpt-5.4'}
 router:
   backend: lisa-router          # or "aoi-router" (external pack)
   rules:
+    # Hard stop first: model-selection rules must not shadow this bound.
+    - when: turn.tool_calls_so_far >= 8
+      finish: tool_budget_exhausted
     # Capability gate — escalate code-capable turns to the code model
     # for the whole turn. Fires first so capability-needing modes never hit
     # the budget or phase gates below.
@@ -99,9 +106,6 @@ router:
     # gate above already captured code turns.
     - when: turn.iteration > 1 && turn.has_tool_result
       use: gpt-5.4
-    # Terminal gate — stop runaway turns after the tool budget is exhausted.
-    - when: turn.tool_calls_so_far >= 8
-      finish: tool_budget_exhausted
 ```
 
 There is **no `fallback` key**. When no rule matches, the router returns
@@ -160,17 +164,16 @@ router:
 
 Order rules so earlier rules never shadow later ones:
 
-1. **Capability gate**: a mode that needs `code` gets the code model
-   for the whole turn. Fires first so capability-needing modes never hit
-   the budget, phase, or terminal gates below.
-2. **Budget gate**: a long, tool-heavy turn on a plain mode downgrades to
+1. **Terminal gate**: if this is a hard bound, put it before model selection.
+   With first-match-wins, a terminal rule after an always-applicable `use`
+   rule is unreachable.
+2. **Capability gate**: a mode that needs `code` gets the code model
+   unless the terminal bound has already fired.
+3. **Budget gate**: a long, tool-heavy turn on a plain mode downgrades to
    the cheap model before we pay for frontier synthesis.
-3. **Phase gate**: after the first tool returns, synthesize on the frontier
+4. **Phase gate**: after the first tool returns, synthesize on the frontier
    model. Only reached on plain (non-capability) modes because the
    capability gate already captured code turns.
-4. **Terminal gate**: if the tool budget is truly exhausted, `finish` the
-   turn rather than letting it drift. Terminal actions should sit last so
-   model-selection rules get a chance to escalate first.
 
 ### Presets
 

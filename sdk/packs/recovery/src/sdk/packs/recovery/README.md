@@ -2,6 +2,11 @@
 
 Operator-facing slash commands for inspecting and resolving interrupted dispatch work items recorded by the kernel's recovery service.
 
+This optional pack must be active to register its commands. See
+[bundled packs](../../../../../README.md),
+[troubleshooting](../../../../../../../docs/TROUBLESHOOTING.md), and
+[context lifecycle](../../../../../../../docs/CONTEXT_LIFECYCLE.md).
+
 ## What this pack does
 
 The kernel records write-ahead lifecycle events for every dispatched operation, pack tool, and MCP tool in the turn runner (`kernel/turn_runner.py`). When a dispatch fails, times out, or is interrupted by an approval requirement, the work item is persisted in a `stalled` or `indeterminate` state. When the host process restarts after a crash, orphaned `running` items are promoted to `indeterminate`.
@@ -44,4 +49,10 @@ Indeterminate items (recovered after a crash while `running`) are always `confir
 
 ## Relationship to the thread store
 
-Recovery records are the only durability primitive besides the thread store. The thread captures what the model said and the workflow view derived from it; recovery records capture what the harness knows about individual dispatch work items — whether they completed, failed, or are indeterminate after a crash. The `/resume` command scans the thread for the most recent yielded turn and surfaces its question, optionally alongside stalled recovery records.
+The thread captures conversation and workflow evidence; recovery records
+capture individual dispatch outcomes or uncertainty after a crash.
+Other durable contracts include approvals, continuation objects, memories,
+and work products. `/resume` of a yielded turn is not the exact-action
+approval continuation mechanism. The command scans the thread for the most
+recent yielded turn and surfaces its question, optionally alongside stalled
+recovery records.

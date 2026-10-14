@@ -2,6 +2,9 @@
 
 `lisa-harness-mcp-servers` (`mcp_server`) contains Lisa's first-party MCP (Model Context Protocol) servers — the external tool-facing integrations and transport concerns of the framework.
 
+See [configuration](../docs/CONFIGURATION.md), [storage](../docs/STORAGE.md),
+and the [documentation index](../docs/README.md).
+
 ## Design Philosophy
 
 MCP servers own **actions and storage**: client-invoked tools, file access, search, and memory. Packs own workflow and personality; the kernel owns contracts; hosts own runtime wiring.
@@ -16,7 +19,7 @@ Key principles:
 
 | Script | Module | Purpose |
 | --- | --- | --- |
-| `lisa-memory` | `mcp_server.memory.server` | The minimal, optional and replacable built-in memory backend (with `embeddings.py`). |
+| `lisa-memory` | `mcp_server.memory.server` | Optional built-in memory adapter; domain storage and embeddings primitives live in the SDK. |
 | `lisa-guard` | `mcp_server.guard.server` | Thin facade over `sdk.guard.GuardBackend` — input/output guard tools. |
 | `lisa-content` | `mcp_server.content.server` | Authored-text file reading for the kernel. |
 | `lisa-catalog` | `mcp_server.catalog.server` | Mode/operation/tool catalog and diagnostics. |
@@ -55,7 +58,9 @@ First-party servers run in two modes:
 ## Testing
 
 ```bash
-cd mcp_server && uv run pytest
+uv run pytest mcp_server/tests mcp_server/src/mcp_server/fetch/tests mcp_server/src/mcp_server/memory/tests mcp_server/src/mcp_server/thread/tests -m "not live" -q
 ```
+
+Run from the workspace root; see [testing](../docs/TESTING.md) for full gates.
 
 Architecture boundaries for this package are defined in [.github/instructions/architecture/mcp.instructions.md](../.github/instructions/architecture/mcp.instructions.md).

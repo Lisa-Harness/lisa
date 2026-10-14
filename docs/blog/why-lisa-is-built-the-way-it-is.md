@@ -8,6 +8,9 @@ categories: ["engineering"]
 description: "Lisa makes specific trade-offs: routing as emergent behavior instead of planner calls, effect receipts instead of transcript inspection, tokens as evidence instead of folklore, and simplicity over graph abstraction. This post explains why we chose each one and which principle made that choice non-negotiable."
 ---
 
+> Dated design narrative. The [documentation index](../README.md) links
+> maintained contracts and current operational guidance.
+
 Lisa's README describes *what* she is. This post covers *why*—the decisions that look opinionated from the outside and the principles that made each one non-negotiable. We did not arrive at this shape by preference. We arrived because the prompt-and-graph alternatives kept producing failures that no amount of tuning ever fixed.
 
 <!--more-->
@@ -50,7 +53,10 @@ We traded **uncontrolled context richness** (a bigger context window will absorb
 
 Every framework ships with "sensible defaults." Most of them are folklore. The measured reality from our token-usage ledger on a typical heavy session: 97% of all tokens burned were prompt re-sends, not model output; the largest real call was ~107K tokens; heavy turns are 30-iteration bursts with ~100K context per call; multi-hour sessions burn 15–19M tokens.
 
-Lisa's working limits—the 15M/day cap, the 3–4M-per-turn rail, the ~128K physical per-call ceiling—are all derived from that evidence. The design document exists so others can re-derive from the same ledger when the workload changes.
+Those measurements informed early working limits; they are not universal
+model ceilings or current daily-reset promises. The maintained
+[budget guide](../TOKEN_BUDGET.md) separates request windows, completion,
+turn, and session rails so deployments can calibrate their own workload.
 
 We traded **arbitrary simplicity** (a round number that looks right) for **evidentiary accuracy** (a number that matches what the agent actually burns). The consequence is a budget model you can argue with, because the argument has to produce data, not vibes.
 
@@ -58,7 +64,10 @@ We traded **arbitrary simplicity** (a round number that looks right) for **evide
 
 "Prompt wording is not a privacy control" is the line that governs Lisa's memory design. Shared surfaces must not receive personal context unless the host implements explicit, audited sharing semantics. The framework does not achieve this by telling the model to be careful; it achieves it by carrying `surface_type`, `surface_id`, and `memory_scope` through the contracts and enforcing scope in storage keys, retrieval filters, and delivery routing.
 
-We traded **convenience** (letting the model decide what is safe to share) for **guarantee** (storage keys and retrieval filters that cannot be prompted around). This is the one trade-off that becomes *more* important the better the model gets, because better models are also better at finding the edges of a poorly scoped system.
+We traded model-decided sharing for explicit host-enforced storage and
+retrieval boundaries. Contracts only provide that protection when the host
+supplies authenticated identities and enforces scope; they are not a blanket
+multi-tenant guarantee. See [architecture boundaries](../BOUNDARIES.md).
 
 ## Principle 7: Hard cutover, no compat layer
 

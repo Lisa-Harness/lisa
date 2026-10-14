@@ -53,7 +53,7 @@ context:
 
 ## Configuration Schema
 
-The `context` block is defined in [kernel/session_plan.py](../kernel/session_plan.py) as `ContextPlan`, `ContextLanePlan`, and `ContextSourceRule`.
+The `context` block is defined in [kernel/session_plan.py](../kernel/src/kernel/session_plan.py) as `ContextPlan`, `ContextLanePlan`, and `ContextSourceRule`.
 
 ### `context.lanes`
 
@@ -61,7 +61,13 @@ A list of named lanes, each with a `lane_id`, optional `min_tokens`/`max_tokens`
 
 ### `context.sources`
 
-A list of admission rules. Each rule has a `rule_id` (must be unique) and a `lane_id` (must reference a declared lane). When the context mapper evaluates an incoming piece of `ContextItem`, it checks the rule's selectors. If **any** selector matches, the evidence is assigned to that rule's lane.
+A list of admission rules. Each rule has a unique `rule_id` and a `lane_id`
+referencing a declared lane. **All populated selector fields must match**
+(AND). Within a field, one listed value is enough; `tags` matches any
+overlapping tag. Mode/stage, explicit-invocation, and freshness conditions
+must also pass. For example, a rule with `sources: [stripe]` and
+`evidence_types: [alert]` admits Stripe alerts, not all Stripe items or
+every alert.
 
 #### Match Selectors
 
@@ -71,21 +77,34 @@ A list of admission rules. Each rule has a `rule_id` (must be unique) and a `lan
 * `packs`: Matches against the contributing pack name.
 * `modes`: Matches against the active mode.
 * `stages`: Matches against the active stage.
-* `source_kinds`: Matches against the candidate source kind.
+* `source_kinds`: Matches the normalized candidate kind (for example,
+  `extension_item` or `state_item`), not the raw item's `source_type`.
 
-*Note: A rule needs at least one selector or exactly one `fallback: true`.
+*Note:* A rule needs at least one selector or `fallback: true`.
 
 #### `fallback: true`
 
-Designates a rule as the default catch-all. If a piece of evidence does not trigger any other rule, it will be assigned to this rule's lane. At most one fallback rule is allowed across all sources.
+Designates a catch-all for candidates with no matching non-fallback source
+selector. At most one fallback rule is allowed. A candidate whose source
+selectors match but whose conditions fail is dropped; it does not bypass
+the failed gate through fallback. Fallback candidates still obey admission
+and budget rules.
 
 #### `priority`
 
-An integer (default `0`) that controls admission priority when multiple rules match the same candidate. Higher priority wins.
+An integer (default `0`) used to select among matching source rules.
+Higher priority wins. Equally preferred rules assigning one candidate to
+different lanes are an explicit mapping error, not an arbitrary first match.
 
 #### `required`
 
-If `true`, matching candidates are always admitted if they match, regardless of budget pressure.
+If `true`, matching candidates are selected before optional evidence, but
+they must still fit the lane/global budget. If required content cannot fit,
+the mapper raises `ContextBudgetError`; it never silently overfills the
+window or drops required evidence.
+
+`pinned` also prioritizes selection and bypasses diversity filtering, but
+can be dropped when it cannot fit. It is not the same as `required`.
 
 ---
 
@@ -120,7 +139,11 @@ context:
       fallback: true
 ```
 
-*Tip: Packs should be written so their baseline `salience_score` is `0.0` when healthy. The context mapper automatically drops evidence with low scores unless the user explicitly mentions the source in their query (lexical overlap).*
+*Tip:* Low `salience_score` lowers one ranking feature; it does not
+automatically silence healthy telemetry. To enforce silence, omit healthy
+items at the producer or author suitable source/condition gates such as
+`evidence_types: [alert]` or `explicit_invocation: true`. Budgeted ranking
+is not a guaranteed salience cutoff.
 
 ### Example 2: Domain-Specific Agent
 
@@ -167,7 +190,7 @@ def build_evidence() -> ContextItem:
         item_id="stripe:customer_123",
         namespace="billing",  # Provenance label only — not a selector.
         source="stripe",  # -> Matched by sources: [stripe]
-        source_type="extension",  # -> Matched by source_kinds: [extension]
+        source_type="extension",  # Normalized to source_kinds: [extension_item].
         evidence_type="status",  # -> Matched by evidence_types: [status]
         tags=["billing", "mrr"],  # -> Matched by tags: [billing, mrr]
         title="Customer Billing Status",
@@ -181,3 +204,7 @@ def build_evidence() -> ContextItem:
         # salience_score is carried over.
     )
 ```
+
+See [context lifecycle](CONTEXT_LIFECYCLE.md) for whole-request allocation,
+resident tool-result references, replay, and caching. Lane admission is not
+the complete model-request budget.

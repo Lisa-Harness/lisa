@@ -8,6 +8,10 @@ categories: ["announcement"]
 description: "Lisa is a runtime-neutral framework for building agent hosts and mode/operation packs. We built her explicitly to solve the failure modes the 2025-2026 agent-harness research surfaced—hallucinated success, read-loop burns, context decay—and to stay simple while the field converges on complexity."
 ---
 
+> Dated narrative, not an API/setup reference. For current behavior and
+> installation, use the [documentation index](../README.md) and
+> [getting started](../GETTING_STARTED.md).
+
 Most agent frameworks help you build a demo and then leave you alone in production. Lisa is built for the second part: the moment when your agent claims it wrote a file it never called the tool for, or burns a hundred thousand tokens re-reading the same page, or cheerfully announces a task complete because the context window forgot what "complete" meant.
 
 <!--more-->
@@ -63,7 +67,10 @@ This is the response to the compounding-error problem that eval research keeps p
 
 ### 4. Token budgets from evidence, not folklore
 
-Lisa's budget defaults come from measured session data, not guessed round numbers. The current working cap (15M tokens/day, ~3–4M cumulative per turn) is derived from observed iteration counts, per-call context ceilings, and prompt-resend ratios recorded in the durable token-usage ledger. The design document is reproducible from the telemetry: if the spend profile changes, the numbers get re-derived, not re-argued.
+Lisa's budget defaults are informed by measured session data. Per-call,
+turn, and session limits now have distinct contracts; a session rail is
+not a daily reset or a currency cap. See [token budgets](../TOKEN_BUDGET.md)
+to derive limits from your own workload rather than copy a historic run.
 
 ### 5. Context is admitted, not pasted
 
@@ -75,7 +82,10 @@ The bundled packs treat memory as a first-class capability: `memory` for store/r
 
 ### 7. The MCP server layer is first-class
 
-Lisa's built-in MCP servers (`lisa-storage`, `lisa-context`, `lisa-content`, `lisa-catalog`) expose the toolkit over stdio with surface scoping intact. Tool surface expansion happens by composing packs, not by stuffing more tools into a monolithic system prompt.
+Lisa's built-in MCP adapters include `lisa-storage`, `lisa-thread`,
+`lisa-content`, and `lisa-catalog`. Tool surface expansion happens by composing
+packs. Scope enforcement remains a host responsibility; see
+[the current server reference](../../mcp_server/README.md).
 
 ## Who this is for
 
@@ -86,14 +96,10 @@ If you have ever shipped an agent that claimed success it never performed, or wa
 ## Try it
 
 ```sh
-git clone https://github.com/Lisa-Harness/lisa.git
-cd lisa
-uv sync --extra dev
-uv run lisa verify
-uv run lisa modes
-uv run lisa models discover && uv run lisa models apply
-uv run lisa once "summarize the current thread state"
-uv run lisa
+uv tool install lisa-cli
+lisa --help
 ```
 
-The CLI host lives in the sibling `lisa-hosts/cli` repository and installs with `uv tool install lisa-harness-cli`.
+Configure provider access and a roster before a live turn, following
+[getting started](../GETTING_STARTED.md). The terminal host lives in the
+separate [lisa-cli repository](https://github.com/Lisa-Harness/lisa-cli).

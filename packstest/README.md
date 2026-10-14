@@ -5,6 +5,11 @@ no pip install, no `uv sync`, no catalog MCP subprocess, no model calls. It
 runs on pytest and the existing `kernel.testing` primitives; it adds no new
 runtime dependencies.
 
+The framework development environment must already be installed.
+See [testing](../docs/TESTING.md) and [pack authoring](../docs/PACK_AUTHORING_GUIDE.md).
+The `packstest` workspace member is not currently a target in the framework's
+PyPI publish workflow; source installation does not prove registry availability.
+
 ## Why
 
 The production pack route (entry-point discovery → content-root discovery →
@@ -33,6 +38,7 @@ from pathlib import Path
 from packstest.catalog import validate_pack
 report = validate_pack(Path('../lisa-packs/markdown'))
 print(report.summary())
+assert report.ok, report.summary()
 "
 ```
 
@@ -42,11 +48,43 @@ distribution name declared, content subdirs present, every
 `execute()` callable, tool IDs unique, provider IDs resolved the way session
 configuration expects, and every `lisa.extensions.*` entry point loads.
 
-## Quick start: drive tools
+### Source-layout packs
+
+`validate_pack` recognizes a flat `lisa_packs/<name>` checkout, but its
+content-root locator does not currently infer all `src/` layouts, including
+bundled `src/sdk/packs/<name>` trees. It can return `ok=True` with a
+`content-root` warning and no tool scan. Inspect warnings and expected catalog
+contents; `report.ok` alone is not coverage.
+
+For bundled core, explicitly resolve its exported root and use the harness
+catalog/activation helpers (run from the framework workspace root):
 
 ```python
-import asyncio
 from pathlib import Path
+
+from packstest.catalog import activate_tool, build_tool_catalog, load_pack_entry_points
+
+entries = load_pack_entry_points(Path("sdk/packs/core"))
+root = entries["lisa.extensions.content_roots"]["core"]
+catalog = build_tool_catalog(root)
+assert "fetch_page" in catalog
+assert callable(activate_tool(catalog["fetch_page"]))
+```
+
+For operations and modes, assert the real SDK catalogs at that root as
+part of the pack's tests; `validate_pack` focuses on tool schemas/imports,
+not every operation behavior.
+
+## Quick start: drive tools
+
+This pytest example assumes the external markdown pack checkout exists at
+`PACK`. Supply any configuration/dispatch services required by the tool;
+they are not inferred from its README.
+
+```python
+from pathlib import Path
+
+import pytest
 
 from packstest.catalog import build_tool_catalog
 from packstest.context import ToolContextFactory
@@ -55,14 +93,12 @@ from packstest.runner import run_tool
 PACK = Path("../lisa-packs/markdown")
 
 
-async def main() -> None:
-    factory = ToolContextFactory(root=tmp_path)
+@pytest.mark.asyncio
+async def test_markdown_tool(tmp_path: Path) -> None:
+    factory = ToolContextFactory(root=tmp_path, pack_config={})
     catalog = build_tool_catalog(PACK)
     run = await run_tool(catalog, "markdown_generate", factory, {"markdown": "# Hi\n"})
     assert run.result.error == ""
-
-
-asyncio.run(main())
 ```
 
 `run_tool` accepts a pack checkout path, a full catalog dict, or a single tool
@@ -77,9 +113,10 @@ Eval files live in the pack under `tests/evals/` and use the `eval` marker
 
 ```python
 import pytest
+from pathlib import Path
 from packstest.catalog import validate_pack
 
-PACK_PATH = Path(__file__).resolve().parents[4]  # tests/evals/x.py → checkout
+PACK_PATH = Path(__file__).resolve().parents[2]  # <checkout>/tests/evals/x.py
 
 
 @pytest.mark.eval
@@ -99,10 +136,21 @@ the deterministic core.
 Assert on outcomes and state transitions, not prose:
 
 ```python
+from pathlib import Path
+
+import pytest
+from packstest.catalog import build_tool_catalog
+from packstest.context import ToolContextFactory
+from packstest.report import Trajectory
+from packstest.runner import run_tool
+
+PACK_PATH = Path("../lisa-packs/markdown")
+
+
 @pytest.mark.eval
 @pytest.mark.asyncio
-async def test_full_chain(tmp_path) -> None:
-    factory = ToolContextFactory(root=tmp_path)
+async def test_trajectory(tmp_path: Path) -> None:
+    factory = ToolContextFactory(root=tmp_path, pack_config={})
     catalog = build_tool_catalog(PACK_PATH)
     trajectory = Trajectory(name="chain")
 
@@ -110,11 +158,13 @@ async def test_full_chain(tmp_path) -> None:
     outline = run.result.output_json
     trajectory.record(run)
 
-    # ... subsequent steps, threading derived values ...
-
     assert trajectory.all_errors_absent(), trajectory.first_error()
-    assert trajectory.tool_ids == ["markdown_generate", ...]
+    assert trajectory.tool_ids == ["markdown_generate"]
 ```
+
+For multi-step cases, record each call and pass its structured output to
+the next invocation. Assert on the resulting artifacts/state, not only
+the absence of an error. The example's external pack is not bundled.
 
 ## Fidelity rules (keep the harness honest)
 

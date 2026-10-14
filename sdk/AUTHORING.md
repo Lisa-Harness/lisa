@@ -1,9 +1,13 @@
 # Operation Authoring Guide
 
 This guide walks through creating operations for the Lisa Harness. For the conceptual
-overview and lifecycle details see the Operations section in [`../kernel/README.md`](../kernel/README.md#operations).
+overview and lifecycle details see [kernel dispatch contracts](../kernel/README.md#dispatch-and-operation-contracts).
 
 ## Choose your operation kind
+
+For the package layout and a complete local greeting pack, start with
+[pack authoring](../docs/PACK_AUTHORING_GUIDE.md). This guide covers the
+operation-specific contract.
 
 | Use case | Kind | Format |
 | --- | --- | --- |
@@ -167,10 +171,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     state: UnifiedState | None = ctx.state_provider() if ctx.state_provider else None
     if state is None:
         return OperationResult(output_text="No cached state available.")
-    snapshot = state.signal_snapshots.get("my_service")
-    if snapshot is None:
-        return OperationResult(output_text="No snapshot yet.")
-    return OperationResult(output_text=str(snapshot))
+    items = [item for item in state.context_items if item.source == "my_service"]
+    if not items:
+        return OperationResult(output_text="No evidence yet.")
+    return OperationResult(output_text="\n".join(item.body for item in items))
 ```
 
 ## Declarative (prompt) operation
@@ -335,12 +339,12 @@ def test_tool_ids_declared() -> None:
 
 ### Validate against live modes
 
-```powershell
-# From lisa_framework/
-$env:SDK_CONTENT_ROOTS = "C:\Code\my-pack"
-uv run lisa modes         # verify my_mode appears
-uv run lisa once "/my_mode test query"
-```
+After source tests pass, install/activate the pack through a compatible
+host and inspect `/modes` and `/operations`, then invoke its mode command.
+The framework workspace does not install `lisa`; use the external
+[CLI reference](https://github.com/Lisa-Harness/lisa-cli) for its command
+syntax. `SDK_CONTENT_ROOTS` discovers content but does not make arbitrary
+Python modules importable.
 
 ## Pre-merge checklist
 

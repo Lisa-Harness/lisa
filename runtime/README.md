@@ -2,7 +2,11 @@
 
 `lisa-harness-runtime` is an abstract runtime, i.e., host for the Lisa Harness kernel.
 It offers a transport-neutral but otherwise near complete runtime implementation.
-[`lisa-cli`](../lisa-cli) builds on it to create a concrete running host.
+The separate [lisa-cli host](https://github.com/Lisa-Harness/lisa-cli) builds
+on it to create a concrete running host.
+
+See [host integration](../docs/HOST_INTEGRATION.md), [configuration](../docs/CONFIGURATION.md),
+and the [documentation index](../docs/README.md) for maintained task guides.
 
 ## Design Philosophy
 
@@ -18,14 +22,21 @@ Key principles:
 ## Usage
 
 ```python
-from runtime import HostConfig, HostRuntime, TransportCallbacks, handle_message
+from runtime import NullTransport, handle_message
+from runtime.bootstrap import build_runtime
 
-config = HostConfig.from_env()
-runtime = HostRuntime(config)
-await runtime.start()  # starts MCP pool in the host's event loop
-result = await handle_message(runtime, "/search test", transport)
-await runtime.aclose()  # closes MCP pool in the same loop
+runtime = build_runtime(host_kind="headless", data_dir="./agent-data", user_slug="local-user")
+try:
+    await runtime.start()
+    result = await handle_message(runtime, "/help", NullTransport())
+finally:
+    await runtime.aclose()
 ```
+
+This fragment runs inside one async task with a configured model manifest.
+`HostRuntime(config)` alone does not perform the bootstrap/wiring sequence.
+For a complete program and an observable production transport, see
+[host integration](../docs/HOST_INTEGRATION.md).
 
 ## Module Map
 
@@ -117,8 +128,10 @@ await runtime.aclose()  # closes MCP pool in the same loop
 ## Testing
 
 ```bash
-cd runtime && uv run pytest
+uv run pytest runtime/tests runtime/src/runtime/model_discovery/tests -m "not live" -q
 ```
+
+Run from the workspace root; see [testing](../docs/TESTING.md) for full gates.
 
 Test through `HostConfig` and `HostRuntime` with injected fakes (via `runtime/testing/runtime_factory.py`) rather than monkeypatching module-level interfaces. A test `HostRuntime` needs a seeded model manifest with `mode_models`, not only a `models` list.
 

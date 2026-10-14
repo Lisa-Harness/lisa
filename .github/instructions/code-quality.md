@@ -1,35 +1,21 @@
 ---
 name: Code Quality
-description: "Use for the required dev-loop verification order in the lisa_framework workspace. The local dev loop and CI use the same commands in the same order; any failure blocks. Type-specific quality rules live in markdown-quality.md, yaml-quality.md, json-quality.md, shell-bash.md, and shell-powershell.md."
+description: "Required verification for framework changes; current commands and CI coverage live in docs/TESTING.md."
 applyTo: "**/*"
 ---
 
-# Code Quality
+# Code quality
 
-## Dev loop — required order
-
-The local dev loop and CI use the same commands in the same order. There is no warn-only stage; any failure blocks.
-
-```powershell
-# 1. Format check (deterministic; idempotent)
-uv run ruff format --check kernel sdk mcp_server hosts
-
-# 2. Lint (complexity + style + import ordering)
-uv run ruff check kernel sdk mcp_server hosts
-
-# 3. Direct I/O policy guard (runtime write callsites must be allowlisted)
-uv run python scripts/check_direct_io_policy.py
-
-# 4. Type check (strict, all public packages)
-$env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [IO.Path]::PathSeparator
-uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
-
-# 5. Dead code check
-uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
-
-# 6. Tests (no live API calls)
-uv run pytest -m "not live" --tb=short -v
-
-# 7. Smoke test
-uv run lisa verify
-```
+- Start with the smallest reproducing case, then run the affected package tests.
+- For code changes, run the complete quality/test/coverage loop in
+  [docs/TESTING.md](../../docs/TESTING.md#ci-gates) before committing.
+  CI is authoritative for the selected packages and platform matrix.
+- Required gates are format, lint, direct-I/O policy, strict mypy on the
+  configured sources, dead code, non-live tests, and per-package branch coverage.
+  A dated baseline or a focused pass does not certify the full tree.
+- For documentation-only changes, check links, paths, schema validity, and
+  runnable examples; do not require a live model test.
+- `lisa verify` belongs to the external CLI, is not installed by this workspace,
+  and is not a current framework CI gate.
+- Keep validation commands in the testing guide rather than duplicating them
+  here. Never reference removed `hosts/` paths or nonexistent extras.

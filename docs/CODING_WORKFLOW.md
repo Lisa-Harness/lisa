@@ -1,5 +1,10 @@
 # Coding Workflow
 
+This guide describes the **coding/GitHub packs' agent workflow**, not the
+framework contributor loop. Contributors should start with
+[CONTRIBUTING.md](../CONTRIBUTING.md) and [testing](TESTING.md).
+The active core freeze and operator-authorized exceptions remain below.
+
 > **Stabilization freeze (declared 2026-10-04):** `kernel/`, `runtime/`,
 > `sdk/`, and `mcp_server/` are frozen to behavior-changing work. Within those
 > trees, the only acceptable commits are bug **fixes** (each with a regression
@@ -138,57 +143,6 @@ tooling) proceeds normally.
 4. Agents must not propose "while I'm here" follow-up refactors. The
    fix-sized diff that leaves the surrounding code alone is the correct
    diff, even if the surrounding code has obvious problems.
-
-### Freeze window activity log (2026-10-05)
-
-Compliance review of `86a803f9..HEAD` (declared freeze `86a803f9` through
-`bd95268b`) recorded the following. Carve-outs are known only from commit
-messages — the operator's decisions were not recorded here when made;
-treat the pushed violations below as unratified until the operator says
-otherwise.
-
-**Allowed work (compliant):** every fix commit from `04335b92` through
-`cdec3067` ships its `src/` + `tests/` diff in one commit with a
-red/green receipt; the four `docs:`, `test:`, and `fixup!` test-infra
-commits and all packstest/e2etest work are explicitly unfrozen. Full
-verification loop re-verified green at review time (2955 passed,
-1 xfailed; coverage floors 7/7).
-
-**Commits claiming an operator carve-out in their message (unpushed, on
-`main`):** `668cf86b` (`feat(pack-recovery)` bulk dismiss commands),
-`9c2711ad` (idle-deadline wrapper redesign), `6a169483` (dispute scope
-repair), `144c022e` (digest live-state reconciliation), `cdec3067`
-(state-settling command thread entries).
-
-**Pushed violations recorded after the fact (on `origin/main`):**
-
-- `a4ae5420` `refactor(kernel,runtime)!: move operator command vocabulary
-  to the runtime seam` — new public kernel API
-  (`YieldRemediation`/`YieldRemediationAction`), public function removed
-  (`step_blocks_instance`), BREAKING CHANGE to `render_approval_request`
-  output. Per the freeze these required an operator escalation to
-  authorize; the commit message claims none. Kept on `main` and now
-  documented in the changelog; the operator may reclassify it as a
-  post-hoc carve-out or plan a revert.
-- `181314db` `feat(sdk-core): take in planner + explainer modes from
-  lisa-pack-personas` — new modes with routing front matter inside frozen
-  `sdk/packs/core` (new modules + routing rules). No carve-out claimed;
-  content-only move with no `mode_id` collisions (verified against the
-  external pack's remaining modes).
-- `7aa7453e` `docs(core): widen default-mode clarification guidance` —
-  changes model-steering prompt behavior in a frozen pack.
-- `c9c8b9e6` `chore(deps): refresh uv.lock` — transitive bumps inside
-  frozen-tree behavior surfaces, notably `pydantic` 2.3.1 → 2.4.0 (no
-  direct dependency changes; lock maintenance mid-freeze).
-
-**Freeze-baseline repairs:** `04335b92` repaired one over-length line
-`86a803f9` left in `sdk/src/sdk/thread/_readout.py`; the freeze-declaration
-commit's `ruff format --check` baseline was therefore red, and the
-"100%-green baseline" claim in its message was inaccurate for that gate.
-Post-remediation fixups `bd95268b`, `9c74544f`, and `865b84f7` repair
-findings from the 2026-10-05 compliance review (format-gate drift,
-`pending`-state misannotation, timed-child relay clobber), all red/
-green verified.
 
 ### Declared carve-outs
 
@@ -332,7 +286,8 @@ working set at each turn boundary (last-N events verbatim, one stub row
 per older/over-threshold event, a standing receipts-derived state ledger),
 while every byte stays persisted and recoverable by content/turn address.
 No compression, no model-authored summary, no in-place rewrite of any
-in-flight message. Design record: `docs/SPEC/RESIDENCY_RFC.md`. Any commit
+in-flight message. Current behavior: [context lifecycle](CONTEXT_LIFECYCLE.md).
+The original design/ratification history remains in Git. Any commit
 under this heading must (1) name the turn-loop behavior it changes,
 (2) ship a test that fails before and passes after (same-commit,
 red/green), (3) not widen scope to unrelated signatures, and (4) keep the
@@ -370,36 +325,12 @@ sdk test suites carry autouse settings-hermeticity guards
 leaking mutations to the `kernel.config.settings` or `sdk.config.settings`
 singletons.
 
-### Frozen baseline (verified 2026-10-04, post-remediation)
+### Verification evidence
 
-All six quality gates pass on commit containing this file:
-
-- `uv run ruff format --check .` — 567 files formatted.
-- `uv run ruff check .` — all checks passed.
-- `uv run python scripts/check_direct_io_policy.py` — zero in-tree findings
-  (allowlist updated to match the post-2026-09-19 thread/storage refactor
-  call sites; only out-of-tree `lisa-packs/` advisory entries remain).
-- `uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server`
-  — Success: no issues found in 174 source files.
-- `uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py`
-  — no findings.
-- `uv run pytest -m "not live" --ignore=e2etest` — 2909 passed, 1 xfailed.
-
-> Test-baseline refresh (2026-10-04, test-suite remediation): the six
-> colocated in-src test packages are now wired into `testpaths` (~300
-> recovered tests), the hollow xfail stubs and `migrated…` skip-only tests
-> in `runtime/tests/test_core_services.py` were removed, and
-> `xfail_strict = true` is set — hence zero skips and zero xpassed. A
-> per-package coverage gate now runs in CI (`uv run coverage run -m pytest …`
-> then `uv run python scripts/check_coverage.py`); `fail_under = 76`
-> (branch, source-only) is the suite floor. See `docs/tests-review.md`.
-
-Mypy remediated 12 errors across 4 files by fixing genuine variable-shadowing
-bugs (`match` reused for both cursor regex and search results in
-`_readout.py`), a missing type parameter on `EMPTY_PACK_CONFIGURATION`, and
-narrowing failures on `result`/`projected` dict types. No behavior change;
-existing `sdk/tests/test_thread_search.py` (47 references) confirms the
-refactor.
+Run the current [quality/test/coverage gates](TESTING.md#ci-gates) on each
+candidate revision. A dated baseline, file count, or test count does not
+certify the current tree. Historical freeze compliance reviews and baseline
+repairs remain in Git/change history; they are not current release blockers.
 
 ### Lifting the freeze
 

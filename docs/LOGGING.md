@@ -1,280 +1,100 @@
-# Logging Standards for Lisa
+# Logging and observability
 
-This is the canonical logging contract for the Lisa Harness. Every production Python module must follow these rules.
+Lisa uses stdlib logging. The shared
+[logging setup](../sdk/src/sdk/logging_setup.py) supplies JSON formatting,
+rate limiting, configuration, and structured-event emission.
+Hosts own presentation; first-party MCP adapters use their shared CLI setup.
 
-## Module-level logger
+## Operator configuration
 
-Every Python module with logic (not purely a type/protocol file or `__init__` re-export) must define:
+- `LISA_LOG_LEVEL` sets runtime verbosity; INFO is the effective default.
+- `LISA_LOG_DEBUG` is a comma-separated list of logger names forced to DEBUG.
+- Runtime events normally live in `<data-dir>/logs/runtime.jsonl`;
+  token usage lives in `<data-dir>/logs/token-usage.jsonl`.
+- First-party servers accept `--log-level` and `--data-dir`; their parser
+  uses `LOG_LEVEL` when no log-level argument is supplied.
+
+See [configuration](CONFIGURATION.md) for path resolution and
+[troubleshooting](TROUBLESHOOTING.md#useful-diagnostics) for investigation.
+DEBUG output, threads, and `/debug` request snapshots can be sensitive.
+
+## Contributor standards
+
+Use a module logger and lazy formatting:
 
 ```python
 import logging
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+logger.info("routing: selected mode=%s reason=%s", mode_id, reason)
 ```
 
-No exceptions. A logger must be present even if a module initially has no logging calls — it signals that the module is expected to emit diagnostics.
+Follow the surrounding module's logger name; do not rename existing loggers
+just to standardize spelling.
 
-## Message format
+| Level | Use |
+| --- | --- |
+| INFO | Decisions, lifecycle transitions, authorization outcomes, and meaningful no-ops with reasons |
+| DEBUG | Internal per-item/matching traces |
+| WARNING | Degraded behavior, caught failures, unavailable optional resources |
+| ERROR | Fatal failures and unrecoverable boundary errors |
 
-- Use lazy `%s` positional arguments: `_log.info("routing: mode=%s hint=%s", mode_id, hint_text)`
-- Never f-strings: `_log.info(f"mode={mode_id}")` ❌
-- Phrasing: `"<noun>: <lowercase clause, no trailing period>"`. Examples:
-  - `"routing hint: no targets for gap intents %s"` ✓
-  - `"lifecycle: no transition pending"` ✓
-  - `"decision made"` ❌ (no noun)
-  - `"Routing: Made a decision."` ❌ (mixed case, period)
-
-## Logging levels and what goes where
-
-### INFO — decisions and their reasons (the production default)
-
-Record **every decision** at `INFO`, including no-ops and silent routes. The reason must be clear from the message or structured fields. This ensures production logs are never blind to decision paths.
-
-**Examples:**
-
-- `_log.info("routing hint: selected %s to cover %s (reason: first_single_match)", target_id, gap_intents)`
-- `_log.info("lifecycle: no transition pending (current_stage=%s)", current_stage)`
-- `_log.info("tool schema: empty catalog (expected for mode=%s)", mode_id)`
-
-**Do NOT log at DEBUG:**
-
-- Routing decisions, handoff targets, or deterministic routing outcomes
-- Lifecycle state transitions, yield decisions, no-transition reasons
-- Capability availability or gate decisions (even when denying)
-- Security-relevant fallbacks or policy decisions
-- "No X found" outcomes where X is an orchestration boundary (no mode, no model, no capability)
-
-### DEBUG — internal logic traces
-
-Use `DEBUG` for per-item iterations, pattern-matching traces, and keyword/regex evaluation details. These are scoped globally via `LISA_LOG_DEBUG` environment variable, so they don't spam production logs by default.
-
-**Examples:**
-
-- `_log.debug("intent match: keyword '%s' matched tag %s", keyword, tag)` — per-keyword detail
-- `_log.debug("candidate=%s; checking fork_allowed=%s", target_id, has_fork_allowed)` — per-candidate iteration
-- `_log.debug("regex pattern %r matched", pattern)` — regex evaluation
-
-### WARNING — degraded or fallback paths
-
-Use `WARNING` for caught exceptions, missing optional dependencies, and non-fatal resource unavailability.
-
-**Always include `exc_info=True` when logging an exception:**
+When handling an exception, include the diagnostic context and traceback
+with `exc_info=True` or `logger.exception`. Catch a specific exception and
+either handle explicitly or re-raise. Never return a success-shaped result
+after silently discarding an unexpected error.
 
 ```python
 try:
-    result = expensive_operation()
-except ValueError as exc:
-    _log.warning("operation failed; using fallback: %s", exc, exc_info=True)
-    result = fallback_result()
-```
-
-Or use `_log.exception()`:
-
-```python
-try:
-    result = expensive_operation()
+    load_required_configuration()
 except ValueError:
-    _log.exception("operation failed; using fallback")
-    result = fallback_result()
-```
-
-### ERROR — unhandled or fatal errors
-
-Use `ERROR` with `exc_info=True` or `_log.error(..., exc_info=True)`. Re-raising should typically include a log call at this level:
-
-```python
-except ValueError as exc:
-    _log.error("failed to parse configuration: %s", exc, exc_info=True)
+    logger.exception("configuration: invalid required input")
     raise
 ```
 
-## Exception handling contract
+Expected control-flow exceptions are different from operational failures;
+document any intentional non-reporting boundary.
 
-Every `except` block must choose one of:
+## Structured events
 
-1. **Log and handle** (most common):
-
-```python
-except ValueError as exc:
-    _log.warning("parsing failed; using default: %s", exc, exc_info=True)
-    value = default_value
-```
-
-1. **Log and re-raise**:
-
-```python
-except ImportError as exc:
-    _log.error("required module unavailable: %s", exc, exc_info=True)
-    raise
-```
-
-1. **Bare `pass` is only acceptable for**:
-   - Known, benign control-flow exceptions (e.g., `except StopIteration: pass` in a generator chain)
-   - Operations explicitly documented to fail-silent (rare; document the exception and reason inline)
-
-**Never do this:**
-
-```python
-except ValueError:
-    pass  # ❌ Silent, unobservable failure
-```
-
-## Structured fields and event names
-
-Use `extra={"event": "namespace.junction", ...fields}` to emit structured audit records. The `event` key is namespaced and descriptive, e.g., `"routing.hint_injected"`, `"guard.parse_failed"`, `"provider.request_succeeded"`.
-
-**Use the helper from `sdk.logging_setup`:**
+Use namespaced events and machine-readable fields, not prose parsing:
 
 ```python
 from sdk.logging_setup import emit_structured_event
 
 emit_structured_event(
-    _log,
+    logger,
     level=logging.INFO,
     event="routing.hint_injected",
-    message="routing hint: mode=%s hint=%s targets=%s",
+    message="routing: hint selected",
     mode_id=mode_id,
-    hint_text=hint[:200],  # truncate for safe emission
     targets=targets,
 )
 ```
 
-Structured fields are emitted as top-level JSON keys in the output and indexed by observability tools.
+The turn loop publishes decision telemetry through the event bus, including
+mode, iteration, lifecycle action/reason, calls, and receipt counts.
+Provider/usage records and exact request snapshots serve different purposes:
+do not infer what the model saw solely from a routing event or final answer.
+See [context lifecycle](CONTEXT_LIFECYCLE.md) and [token accounting](TOKEN_BUDGET.md).
 
-### Turn Decision Telemetry (`turn.decision`)
+## Safe diagnostics
 
-On every iteration of the turn loop, when the lifecycle resolver determines the next action, the kernel publishes a structured `turn.decision` event to `hooks.context_seams.event_bus`. This enables live observability and post-incident reconstruction of turn progression.
+Prefer identifiers, counts, hashes, status codes, and bounded reasons.
+Do not log credentials, authorization headers, raw HTTP bodies, full user
+prompts, embeddings, memory bodies, or serialized contexts as routine events.
+Remove credentials/query secrets from URLs as well as headers.
 
-**Event Payload:**
+Persisted threads and deliberate debug snapshots can contain exact content;
+this logging standard does not claim those stores are sanitized. Restrict
+access, define retention, and sanitize before sharing. Read-time thread
+redaction is not deletion of the underlying evidence.
 
-| Field | Type | Description |
-|---|---|---|
-| `mode_id` | `str` | Active mode ID for the iteration |
-| `iteration` | `int` | 1-based turn iteration counter |
-| `turns_in_stage` | `int` | Cumulative turns/iterations in the current stage/mode |
-| `action_type` | `str` | Class name of the resolved `LifecycleAction` (`ContinueAction`, `TransitionAction`, `YieldAction`, `PauseAction`, etc.) |
-| `action_reason` | `str` | Rationale or diagnostic reason associated with the action |
-| `total_tool_calls` | `int` | Total tools dispatched this turn |
-| `write_receipts` | `int` | Count of verified write/external_write receipts |
-| `read_receipts` | `int` | Count of verified read/execute receipts |
+## Verification
 
-## What NOT to log
-
-- **User prompts and conversational content** — Summarize with intent tags, mode, or bounded summaries only. If you must reference prompt text, truncate and use quotes to bound it.
-- **Credentials, API keys, or bearer tokens** — Ever. Use provider/backend identifiers and safe substitutions.
-- **Raw HTTP headers, response bodies, or file contents** — Use summaries (size, hash, status code, line count, error message only).
-- **Memory content, embeddings, or serialized context** — Use counts and IDs only.
-- **File paths from untrusted sources** — Sanitize or use generic descriptions.
-
-**Examples of safe logging:**
-
-- `_log.info("fetched page: url=%s size=%d status=%d", url, size_bytes, status_code)`
-- `_log.warning("provider returned %d tokens; limit=%d", tokens_used, limit)`
-- `_log.info("memory: %d records recalled, %d dropped", recalled, dropped)`
-
-**Examples of unsafe logging:**
-
-- `_log.info(f"user query: {query}")` ❌ Entire prompt exposed
-- `_log.debug(f"response: {response_body}")` ❌ Entire HTTP body, possibly with data
-- `_log.info(f"API key: {api_key}")` ❌ Credentials
-- `_log.debug(f"memory record: {record_dict}")` ❌ Raw record content
-
-## Repository audit and enforcement
-
-The repository includes an AST-based audit script (`scripts/audit_logging.py`) that validates every production file against this contract. The script checks:
-
-1. Module logger presence (`_log = logging.getLogger(__name__)`)
-2. Exception handlers with silent fallbacks (bare `pass` after caught exceptions)
-3. Logging calls in exception handlers without `exc_info=True` or `_log.exception()`
-4. Decision-point logging below `INFO` (including in exception handlers)
-
-Run the audit:
-
-```bash
-python scripts/audit_logging.py --check
-```
-
-To fix simple errors automatically (add missing loggers, add `exc_info=True` to exception handlers):
-
-```bash
-python scripts/audit_logging.py --fix
-```
-
-Intentional exceptions (e.g., control-flow `except StopIteration`) can be allowlisted in `scripts/audit_logging_allowlist.yaml` with a documented reason per entry.
-
-## Examples
-
-### Decision-point logging (routing)
-
-**Bad:**
-
-```python
-def _compute_routing_hint(query, targets):
-    intents = _detect_query_intents(query, targets)
-    gap = intents - current_satisfied
-    if not gap:
-        return ""
-```
-
-**Good:**
-
-```python
-def _compute_routing_hint(query, targets):
-    intents = _detect_query_intents(query, targets)
-    gap = intents - current_satisfied
-    if not gap:
-        _log.info("routing hint: query satisfied by current mode (intents=%s)", intents)
-        return ""
-```
-
-### Exception handling (security)
-
-**Bad:**
-
-```python
-def validate_guard_response(response_json):
-    try:
-        parsed = json.loads(response_json)
-    except json.JSONDecodeError:
-        return GuardResult(allowed=True)  # Silent default-allow on parse failure
-```
-
-**Good:**
-
-```python
-def validate_guard_response(response_json):
-    try:
-        parsed = json.loads(response_json)
-    except json.JSONDecodeError as exc:
-        _log.warning(
-            "guard response parse failed; using default_allowed=%s: %s",
-            default_allowed,
-            exc,
-            exc_info=True,
-        )
-        return GuardResult(allowed=default_allowed)
-```
-
-### No-op decision logging (lifecycle)
-
-**Bad:**
-
-```python
-def resolve_lifecycle_action(state):
-    if state.iteration < 3:
-        return None  # No transition yet
-```
-
-**Good:**
-
-```python
-def resolve_lifecycle_action(state):
-    if state.iteration < 3:
-        _log.info("lifecycle: no transition pending (iteration=%d < threshold=3)", state.iteration)
-        return None
-```
-
-## References
-
-- `sdk/logging_setup.py` — the centralized logging configuration and `JSONFormatter` implementation.
-- `sdk/router/README.md` — decision-point logging example in router (logged at `INFO` with `reason` and `routed_by` fields).
+Use focused tests asserting diagnostic fields and error paths, plus the
+[existing quality gates](TESTING.md). This repository does **not** currently
+ship the formerly advertised `scripts/audit_logging.py` or an automatic
+logging fix/allowlist tool. Do not mistake contributor standards for an
+enforced repository-wide logging audit.

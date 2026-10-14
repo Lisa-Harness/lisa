@@ -1,97 +1,102 @@
 # Contributing to Lisa Harness
 
-Thank you for your interest in contributing.
+Bug reports, documentation improvements, tests, and focused fixes are welcome.
+Read the [Code of Conduct](CODE_OF_CONDUCT.md) and use the
+[security policy](SECURITY.md) for private vulnerability reports.
 
-## Getting Started
+## Before starting
 
-1. Fork the repo and clone it locally.
-2. Install dependencies: `uv sync --extra dev`
-3. Run the verification: `uv run lisa verify`
-4. Make your changes on a feature branch.
+- Search [issues](https://github.com/Lisa-Harness/lisa/issues) for existing work.
+  For a substantial API or architecture change, discuss scope before coding.
+- Check the active [stabilization freeze and exceptions](docs/CODING_WORKFLOW.md#freeze).
+  Core features and refactors are not currently open-ended contribution areas.
+  Documentation describing existing behavior is allowed.
+- Follow the [package boundaries](docs/BOUNDARIES.md). Application workflows
+  normally belong in packs; transport rendering belongs in hosts.
 
-## Development Loop
+For bugs, include expected/actual behavior, a minimal reproduction, OS/Python,
+framework/host/pack versions, and sanitized diagnostics. Do not attach a live
+data directory, credentials, or private conversation logs.
 
-The local loop and CI use the same commands in the same order. There is no
-warn-only stage — any failure blocks. Run all steps from the repo root.
+## Set up a checkout
 
-```powershell
-# 1. Format check (deterministic; idempotent)
-uv run ruff format --check .
+Fork/clone the repository, create a feature branch, and run from its root:
 
-# 2. Lint (complexity + style + import ordering)
-uv run ruff check .
-
-# 3. Direct I/O policy (allowlist)
-uv run python scripts/check_direct_io_policy.py
-
-# 4. Type check (strict, all public packages)
-$env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [IO.Path]::PathSeparator
-uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
-
-# 5. Dead code check
-uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
-
-# 6. Tests (no live API calls)
-uv run pytest -m "not live" --tb=short -v
-
-# 7. Smoke test
-uv run lisa verify
+```sh
+uv sync --frozen --extra dev
+uv run pytest packstest/tests -m "not live" -q
 ```
 
-### Pack changes
+The workspace does not install the `lisa` CLI. An independently installed
+CLI does not automatically use local framework changes; see
+[getting started](docs/GETTING_STARTED.md).
 
-When changing a content pack (bundled under `sdk/packs/` or external sibling
-checkouts like `../lisa-packs-wip/`), verify with the `packstest` harness
-first — it activates the pack in-process from source, with no install step:
+## Development loop
 
-```powershell
-# Structure: entry points, tool YAMLs, importable modules, provider ids
-uv run python -c "from pathlib import Path; from packstest.catalog import validate_pack; print(validate_pack(Path('../lisa-packs-wip/<pack>')).summary())"
+1. Start with a narrow reproducer or failing test.
+2. Make the smallest complete fix, keeping unrelated refactors out.
+3. Run focused tests, then the required [quality and coverage gates](docs/TESTING.md#ci-gates).
+4. Review the diff for unintended behavior, secrets, artifacts, and churn.
+5. Commit and open a pull request with the problem, solution, verification,
+   and any compatibility impact.
 
-# Behavior + deterministic evals in the pack's own suite
-uv run pytest ../lisa-packs-wip/<pack>/lisa_packs/<pack>/tests -m "not live" -q
-```
+Code fixes under the freeze need a regression test that fails before the
+fix and passes after, in the same commit. Do not weaken tests, coverage
+floors, or the direct-I/O allowlist to manufacture a passing result.
 
-See [`packstest/README.md`](packstest/README.md) for driving tools and writing
-eval cases.
+## Pack changes
 
-## Pull Request Checklist
+Use [packstest](packstest/README.md) from source before an installed-package
+test. Keep deterministic evals under the `eval` marker; new user-facing
+workflows also need an opt-in [whole-runtime scenario](e2etest/README.md).
+Do not use a live provider as the first debugging loop.
 
-- [ ] `ruff format --check` passes for touched files.
-- [ ] `ruff check` passes with zero new violations for touched files.
-- [ ] `mypy` passes with zero new errors for touched packages.
-- [ ] `vulture` passes with zero new reports for touched files.
-- [ ] All non-live tests pass (`pytest -m "not live"`).
-- [ ] `lisa verify` exits 0.
-- [ ] New public APIs have docstrings (module, class, function/method).
-- [ ] New or materially changed public callables have co-maintained tests.
-- [ ] No new `# noqa` without a specific rule code and one-line justification.
-- [ ] No `dict[str, Any]` state bags introduced — use Pydantic model or dataclass.
-- [ ] No broad `except Exception:` outside top-level process boundaries.
-- [ ] No nested closures capturing mutable parent state — flatten to module level.
-- [ ] Breaking changes are noted in the PR description and `CHANGELOG.md`.
+See [pack authoring](docs/PACK_AUTHORING_GUIDE.md),
+[operation authoring](sdk/AUTHORING.md), and the
+[external pack registry](https://github.com/Lisa-Harness/lisa-packs).
 
-## Package Layout
+## Documentation changes
 
-| Package | Path | Description |
-| --- | --- | --- |
-| `lisa-harness-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
-| `lisa-harness-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
-| `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
-| `lisa-harness-packstest` | `packstest/` | In-process pack test/eval harness (see `packstest/README.md`) |
-| `lisa-harness-runtime` | `runtime/` | Transport-neutral host runtime |
-| `lisa-harness-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
-| `lisa-host` | `../lisa-hosts/packaging/lisa-runtime/` | Meta-package (`uv tool install lisa-host`) |
+Use the [documentation index](docs/README.md) to find the canonical guide.
+Document current behavior and concrete tasks; link rather than copy long
+contracts across READMEs. Keep proposals and dated narratives explicitly
+separate from instructions.
 
-## Commit Conventions
+Validate local links, complete examples, paths, and ownership of commands.
+For prose-only changes, no live model test is required. Do not add working-tree
+audits or one-off incident reports to the maintained corpus.
 
-- `feat:` — new behavior
-- `fix:` — bug fix
-- `imp:` — non-breaking improvement
-- `docs:` — documentation only
-- `infra:` — CI/CD, build, or tooling
-- `copilot:` — agent-related changes
+## Pull request checklist
 
-## Questions?
+- [ ] Scope respects the active freeze and package boundaries.
+- [ ] Relevant tests and required CI gates pass; skipped/unrun checks are stated.
+- [ ] A fix includes its regression test; a behavior change has explicit approval.
+- [ ] Public APIs have typed contracts, docstrings, and co-maintained tests.
+- [ ] Errors are observable; no silent success-shaped fallback or broad catch
+  outside a justified boundary.
+- [ ] No secrets, generated runtime data, local paths, or unrelated formatting.
+- [ ] User-facing docs/examples are updated.
+- [ ] Breaking changes and material behavior changes are recorded in
+  [CHANGELOG.md](CHANGELOG.md).
 
-Open a discussion or issue on GitHub.
+Python style and test configuration live in [pyproject.toml](pyproject.toml);
+see [Python development](docs/python-BCP.md). Repository agent guidance is
+described in [the customization guide](docs/COPILOT_CUSTOMIZATION_GUIDE.md).
+
+## Commit conventions
+
+Use concise subjects with a type and optional scope:
+
+- `feat:` new behavior; `fix:` a bug fix; `imp:` non-breaking improvement.
+- `docs:` documentation; `test:` tests; `infra:` build/CI/tooling.
+- `copilot:` agent customization.
+
+Describe compatibility breaks in the body and changelog. Keep already shared
+history intact; prefer a follow-up or `fixup!` commit over rewriting it.
+
+## Licensing and review
+
+Submit only material you have permission to contribute under the project's
+[MIT license](LICENSE). Maintainers review correctness, tests, boundaries,
+documentation, and maintenance cost; a passing CI run is necessary but does
+not guarantee acceptance. There is no guaranteed review response time.

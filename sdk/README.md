@@ -13,6 +13,10 @@ Key principles:
 - **Server boundary**: file I/O goes through the storage sandbox (relative paths only, deny-glob policy); SSRF protections and the response-size ceiling in the fetch primitive are non-bypassable. Environment translation belongs in host or tool adapters, not in the primitives.
 - **Namespace package**: `sdk` is a PEP 420 namespace shared with the bundled packs under `sdk/packs/`, which ship their own wheels. The `sdk` content root is exported from [`src/sdk/_content_root.py`](src/sdk/_content_root.py).
 
+See [architecture](../docs/BOUNDARIES.md), [memory](../docs/MEMORY_ARCHITECTURE.md),
+[storage](../docs/STORAGE.md), and the [documentation index](../docs/README.md)
+for cross-package contracts.
+
 ## Module Map
 
 ### Catalog, Content & Context
@@ -66,7 +70,10 @@ The `sdk/packs/` subtree contains the bundled reference packs — `core`, `memor
 ## Testing
 
 ```bash
-cd sdk && uv run pytest
+uv run pytest sdk/tests sdk/src/sdk/context/tests sdk/src/sdk/guard/tests sdk/src/sdk/memory/tests sdk/src/sdk/storage/tests -m "not live" -q
 ```
+
+Run from the workspace root; this selects SDK tests, not bundled pack suites.
+See [testing](../docs/TESTING.md) for the complete CI selection.
 
 Markers: `live` (hits real external signal or provider APIs), `integration` (multi-module in-process; may require Azurite on localhost:10000), `eval` (deterministic agent regression evals — no model calls, no I/O). Pack validation itself belongs to the `packstest` harness; see [`../packstest/README.md`](../packstest/README.md).

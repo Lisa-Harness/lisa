@@ -1,103 +1,41 @@
-# Python Development Best Current Practices (BCP)
+# Python development in Lisa
 
-This document outlines the Best Current Practices (BCP) for modern Python development. It serves as a guideline for writing clean, readable, maintainable, and efficient code.
+This is the project's Python reference, not a general survey of Python tools.
+Use the configuration in [pyproject.toml](../pyproject.toml) and the
+[testing guide](TESTING.md) as the executable source of truth.
 
-## 1. Code Style and Formatting (Readability)
+## Environment and style
 
-The foundation of Python readability is consistency.
+- Python 3.11 is the minimum. Do not use syntax or standard-library APIs
+  unavailable there without an explicit support-range change.
+- Use the uv workspace and lockfile. Do not install dependencies globally
+  or replace the project's dependency manager.
+- Ruff formats and lints the source: line length 100, target `py311`,
+  LF newlines, configured import/style/complexity rules.
+- Run strict mypy on the configured public-source selection. Add typed
+  dataclasses, Pydantic models, or protocols for shared state rather than
+  untyped dictionary bags.
+- Follow existing naming, boundaries, and helpers. Do not add generic
+  abstractions or compatibility aliases without a concrete need.
 
-### Foundation: PEP 8
+## Runtime correctness
 
-PEP 8 is the official style guide for Python code. Adherence is strongly recommended.
+- Keep imports/discovery side-effect-free and accept resolved configuration
+  explicitly at integration seams.
+- Keep domain behavior out of transport hosts and UI dependencies out of
+  the runtime. Packs depend on kernel/SDK, not runtime or other packs.
+- Use the storage seam for model-requested file I/O. Review explicit backend
+  carve-outs under the [direct-I/O policy](STORAGE.md#storage-sandbox-and-direct-io).
+- Handle errors at the correct boundary, with observable diagnostics. Catch
+  specific exceptions; never turn an unexpected failure into silent success.
+- Preserve async resource/task ownership. See [host integration](HOST_INTEGRATION.md).
+- Keep user-facing authored instructions in versioned pack content, not
+  long Python string literals.
 
-- **Indentation:** Use 4 spaces per indentation level.
-- **Line Length:** Limit lines to a maximum of 79-99 characters. Tools often default to 88 (`black`) or 99.
-- **Naming Conventions:**
-  - `snake_case` for functions and variables.
-  - `PascalCase` for classes.
-  - `UPPERCASE_SNAKE_CASE` for constants.
-- **Whitespace:** Use it thoughtfully around operators and after commas to improve clarity.
+## Tests and review
 
-### Automation: Linters and Formatters
-
-Manual formatting is tedious and error-prone. Automation is the BCP.
-
-- **Linters (`flake8`, `pylint`, `ruff`):** Check code for style violations and potential logical errors.
-- **Formatters (`black`, `ruff format`):** Automatically reformat code to a consistent style, eliminating style debates.
-
-## 2. Project Structure and Environment Management
-
-A well-organized project is easier to navigate, test, and deploy.
-
-### Virtual Environments
-
-Isolate project dependencies to prevent conflicts. *Always* use a virtual environment.
-
-- **Standard Tool:** `venv` (built into Python).
-- **Integrated Tools:** `poetry` and `pdm` manage environments automatically.
-
-### Dependency Management
-
-- **`pyproject.toml` (PEP 518/621):** The modern, standardized file for defining project metadata, build requirements, and dependencies.
-- **Tools:**
-  - **`pip` with `requirements.txt`:** The traditional method.
-  - **`poetry` / `pdm`:** Modern tools that manage dependencies, virtual environments, and packaging from `pyproject.toml`, providing lock files for reproducible builds.
-
-### Directory Structure
-
-The "src layout" is highly recommended to prevent common import problems.
-
-```text
-project_root/
-├── pyproject.toml
-├── README.md
-├── src/
-│   └── my_package/
-│       ├── __init__.py
-│       └── module.py
-└── tests/
-    └── test_module.py
-```
-
-## 3. Idiomatic Python ("Pythonic" Code)
-
-Writing "Pythonic" code means using the language's features as they are intended to be used. It follows the principles in the "Zen of Python" (`import this`).
-
-### Key Idioms
-
-- **Comprehensions:** Use list, dict, or set comprehensions for creating collections.
-- **`with` Statement:** Manage resources like files or network connections to ensure proper setup and teardown.
-- **Generators (`yield`):** Use for lazy evaluation over large datasets to conserve memory.
-- **Truthiness:** Check for empty sequences directly (e.g., `if my_list:`) instead of checking the length.
-- **Mutable Default Arguments:** Avoid them. Use `None` as a default and initialize the mutable type inside the function body.
-
-## 4. Documentation and Type Hinting
-
-Code is read more often than it is written. Clear documentation is critical.
-
-### Docstrings (PEP 257)
-
-Every public module, function, class, and method should have a docstring.
-
-- **Content:** Explain the purpose, arguments, return values, and any exceptions raised.
-- **Formats:** Common styles include Google, reStructuredText, and NumPy.
-
-### Type Hinting (PEP 484)
-
-Type hints are now standard practice for new Python code.
-
-- **What it is:** Annotating variables and function signatures with their expected types (e.g., `def greet(name: str) -> str:`).
-- **Benefit:** Enables static analysis tools (`mypy`, `pyright`) to catch bugs before runtime and serves as excellent documentation.
-
-## 5. Testing
-
-Code without automated tests is considered legacy code.
-
-### Frameworks
-
-- **`pytest`:** The de facto standard for testing in Python due to its simplicity and powerful features (fixtures, plugins).
-- **`unittest`:** The built-in standard library module.
-
-### Coverage
-
-- **`coverage.py`:** Use this tool to measure the percentage of your code that is executed by your tests. Aim for high, but meaningful, coverage.
+Start with a narrow reproduction, add a regression test, and verify the
+relevant behavior before broader gates. Do not rely on private data directories,
+live credentials, or sibling packs in unit tests.
+See [CONTRIBUTING.md](../CONTRIBUTING.md), [logging](LOGGING.md), and the
+[active freeze](CODING_WORKFLOW.md#freeze) before making core changes.

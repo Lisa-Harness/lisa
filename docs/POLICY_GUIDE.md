@@ -15,9 +15,9 @@ The policy sits in the config category of the active data dir:
 <data_dir>/config/policy.yaml
 ```
 
-The data dir is `artifacts/` in a repo checkout, the `LISA_DATA_DIR` pin, a
-`profiles/<name>` root when `LISA_PROFILE` is set, or `~/.lisa` by default —
-see `HostConfig.from_env` in `runtime/config.py` for the precedence chain.
+The runtime default is `~/.lisa`, even in a checkout. Explicit host arguments
+and `LISA_DATA_DIR` override it; `LISA_PROFILE` selects a profile when neither
+is set. See [configuration](CONFIGURATION.md#data-directory-and-profiles).
 
 The engine re-reads the file on **every approval request**
 (`runtime/policy_service.py`), so hand edits take effect immediately — no
@@ -181,8 +181,10 @@ never imports pack code:
 | `none` | No sandbox on this action. | No downgrade. |
 | `unknown` | No fact file — the pack never wrote one. | Treated as not contained. |
 
-`degraded`, `none`, and `unknown` all fail closed, so an unsandboxed `rm` can
-never be auto-approved by mistake.
+`degraded`, `none`, and `unknown` never qualify for sandbox downgrade.
+Explicit allow rules are evaluated earlier and can still authorize an
+action, so audit those rules separately. Unknown containment alone is not
+a guarantee that no policy path permits unsandboxed execution.
 
 ## Managing the policy at runtime
 
@@ -197,19 +199,20 @@ never be auto-approved by mistake.
 | `/approve <id> --remember [prefix]` | Approve once and persist an allow rule; the default prefix is the command's first two tokens (`git status` from `git status -sb`). |
 | The `a` / `always` approval keys | Same as `--remember`: approve and persist. |
 
-The same `/policy` grammar is reachable one-shot from the CLI host as
-`lisa once policy ...` (e.g. `lisa once policy mode trust`,
-`lisa once policy rule add ...`) — the once host intercepts the command
-shape and dispatches it through the same host path.
+The external CLI exposes its own policy commands; consult
+[its reference](https://github.com/Lisa-Harness/lisa-cli) for current syntax.
+The framework workspace does not install the CLI, and the old `lisa once`
+spelling is not a runtime contract.
 
 The **host owns every policy write**: transports send command text and the
 host serializes the document through `runtime.policy.write_policy`, which
 rewrites the file with the standard commented header — a mode flip never
-drops rules. Auto-approvals mint real, auditable receipts (records
-transition to `approved`; the host's post-turn hook drives the
-execute-continue loop) — never a silent skip — and are capped at
-`runtime.policy.AUTO_APPROVE_TURN_CAP` (10) per turn. Beyond the cap the host
-prompts instead of burning the receipt ledger on a runaway loop.
+drops rules. Auto-approvals mint real, auditable receipts, never a silent
+skip. Model-loop auto-approved actions continue in the kernel.
+`MAX_AUTO_APPROVED_ACTIONS` defaults to 10; reaching the allowance saves an
+exact continuation and prompts. Another explicit allowance preserves
+consumed counters and cumulative budgets.
+See [context lifecycle](CONTEXT_LIFECYCLE.md#approval-continuation).
 
 ## Fail-closed behavior
 

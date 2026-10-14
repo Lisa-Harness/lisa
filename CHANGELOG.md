@@ -4,6 +4,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+
+- Consolidated obsolete I/O, test/release-readiness, routing, budget, and
+  residency reports into maintained guides; historical details remain in Git.
+- Added a documentation index, framework-versus-CLI onboarding, configuration,
+  host integration, storage, context lifecycle, memory, testing, and
+  troubleshooting references.
+- Updated package READMEs and authoring examples against current contracts;
+  corrected selector/required-budget semantics and model-router rule ordering.
+- Added private vulnerability reporting and an original Code of Conduct.
+  Private reporting setup and a confidential conduct contact remain release
+  requirements.
+
 ### Fixed
 
 #### A reasoning model that burns its completion budget on a clean stop no longer strands the turn
@@ -131,7 +144,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 - **What:** The three-rule residency design shipped under the
   "Context residency by allocation" freeze carve-out
-  (`docs/SPEC/RESIDENCY_RFC.md`): (R2) the turn-start replay working set is
+  (original RFC now consolidated into [context lifecycle](docs/CONTEXT_LIFECYCLE.md)):
+  (R2) the turn-start replay working set is
   recomputed under a byte budget — `build_open_task_messages` /
   `project_tool_messages` accept `budget_bytes`; three tighten-only layers
   set it: host ceiling `HostConfig.context_budget_replay_max_bytes`

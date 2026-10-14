@@ -13,6 +13,10 @@ Use `packstest` for fast, deterministic regressions. Use `lisa-e2e` when the
 question is whether routing, handoffs, approvals, policy, memory, sandboxing,
 and the pack's tools work together for a real model.
 
+See the [documentation index](../docs/README.md) and [testing](../docs/TESTING.md).
+The workspace installs `lisa-e2e`; the framework's current publish workflow
+does not publish the `lisa-harness-e2e` distribution.
+
 ## How a run works
 
 ```mermaid
@@ -53,8 +57,13 @@ From the framework checkout:
 
 ```bash
 uv sync --frozen --extra dev            # once
-uv run --frozen lisa-e2e run ../packs-wip/coding/lisa_packs/coding/tests/e2e/review_fix_commit.scenario.yml
+uv run --frozen lisa-e2e run sdk/packs/recovery/tests/e2e/skip_all.scenario.yml
 ```
+
+This bundled scenario needs the configured base roster/provider **and**
+external bash/bwrap/markdown/personas sources named in its `packs` list.
+Inspect the scenario and `packs.yml` before running; a scenario located
+in this checkout is not necessarily self-contained.
 
 | Scenario | Workflow |
 | --- | --- |

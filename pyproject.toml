@@ -150,7 +150,7 @@ skip_covered = true
 # Source-only gate (test code omitted in [tool.coverage.run]). Floors are set ~2
 # points under the measured branch-coverage baseline so they catch real regressions
 # without flapping on platform noise; ratchet them up over time (see
-# docs/tests-review.md §1/§5 for the per-package gaps these guard).
+# docs/TESTING.md for the source-only, per-package gate contract).
 fail_under = 76
 exclude_also = [
     # Test code is not part of the shipped surface; measuring it inflates totals.

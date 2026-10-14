@@ -33,8 +33,6 @@ resources:
 providers:
   modes:
     default: lisa-pack-core
-  tools:
-    web_search: lisa-pack-brave
 routing:
   start_mode: default
 context:
@@ -50,11 +48,18 @@ facts from inferences, preserve the user's intent, and explain important
 limits or uncertainty directly.
 ```
 
-The Markdown body (after the closing `---`) is the **primary instruction body**. It must not be empty.
+The Markdown body (after the closing `---`) is the **primary instruction body**.
+It must not be empty. This is a minimal strict-schema example, not a complete
+deployment: for live routing, inherit the core vocabulary as shown in
+[configuration](CONFIGURATION.md#session-selection), and supply a model manifest.
 
 ---
 
 ## Full Example
+
+This illustrates schema fields. The external packs and authored fragment
+must exist in the target environment; it is not a self-contained offline
+session.
 
 ```markdown
 ---
@@ -67,11 +72,9 @@ surface:
 
 resources:
   packs:
-    include: [lisa-pack-core, lisa-pack-search, lisa-pack-memory]
+    include: [lisa-pack-core, lisa-pack-search, lisa-pack-brave, lisa-pack-memory]
     required: [lisa-pack-core]
     exclude: [lisa-pack-mem0]
-  servers:
-    exclude: [memory.lisa-memory]
 
 providers:
   modes:
@@ -84,12 +87,12 @@ providers:
     memory: lisa-pack-memory
 
 routing:
-  start_mode: discuss
+  start_mode: default
 
 instructions:
   fragments:
     - ref: acme/ops-guardrails
-      modes: [discuss]
+      modes: [default]
       position: before_mode
       required: true
 
@@ -157,7 +160,7 @@ Primary goals this week:
 
 ## Schema Reference
 
-Every key below is defined in [kernel/session_plan.py](../kernel/session_plan.py) as a frozen Pydantic model with `extra="forbid"`. Unknown keys cause a `SessionPlanError` at compilation.
+Every key below is defined in [kernel/session_plan.py](../kernel/src/kernel/session_plan.py) as a frozen Pydantic model with `extra="forbid"`. Unknown keys cause a `SessionPlanError` at compilation.
 
 ### Top-Level
 
@@ -169,6 +172,7 @@ Every key below is defined in [kernel/session_plan.py](../kernel/session_plan.py
 | `resources` | object | No | Deterministic include/exclude/required selectors for packs and MCP servers. |
 | `providers` | object | No | Explicit ownership decisions for duplicate catalog resources. |
 | `routing` | object | No | Static route seed (start mode). |
+| `execution` | object | No | Tighten-only requests for turn/session resource limits. |
 | `instructions` | object | No | Explicit instruction fragment declarations. |
 | `context` | object | No | The session-owned context mapper policy (lanes, sources, ranking, budget, history). |
 
@@ -248,9 +252,15 @@ If a pack is in `include` but not installed, it is silently absent from the cata
 
 #### Where external packs must live
 
-External (non-bundled) packs belong **only in the packs venv**, not the main framework `.venv`. The catalog and content MCP subprocesses activate the packs venv site-packages via `site.addsitedir`; if the same external pack is installed in both the main `.venv` and the packs venv, `importlib.metadata.entry_points()` sees two distinct content-root paths for one pack and the catalog raises a `Duplicate operation ID` collision that crashes boot.
+Use the host-managed packs venv for external installs; use `packstest` from
+source for development. Catalog/content subprocesses activate that venv's
+site-packages. The runtime deduplicates installed distributions by normalized
+name, but conflicting roots/resource owners still need investigation.
+Avoid installing multiple copies/revisions into different environments.
 
-Do **not** install external packs into the main `.venv` via `uv sync --extra ext --extra wip` (the root `pyproject.toml` `ext`/`wip` optional extras). Those extras exist only as a dev/IDE convenience for import resolution during editing; installing them into the live venv recreates the duplicate. Uninstall any stray external packs from the main `.venv` with `uv pip uninstall --python .venv lisa-pack-<name>` (leaving the bundled packs: core, introspect, memory, recovery).
+The framework root currently has a `dev` extra, not `ext` or `wip`.
+Do not copy obsolete `uv sync --extra ext --extra wip` commands. Inspect
+the actual environment and `/pack` state before uninstalling anything.
 
 ### `providers`
 
@@ -265,9 +275,30 @@ Explicit ownership decisions for duplicate catalog resources. When multiple acti
 
 All IDs must be non-empty strings.
 
+### `execution`
+
+Requests tighten the host's resolved envelope; they do not grant capabilities
+or bypass approval. `null`/absence means no request.
+
+| Key | Unit | Meaning |
+| --- | --- | --- |
+| `max_model_calls` | calls/turn | Model-call bound |
+| `max_capability_calls` | calls/turn | Tool/operation-call bound |
+| `max_total_tokens` | processed tokens/turn | Uncached input plus output; cache reads excluded |
+| `max_completion_tokens` | completion tokens/turn | Cumulative output rail |
+| `max_wall_ms` | milliseconds/turn | Elapsed-time bound |
+| `max_session_tokens` | processed tokens/session | Pre-turn session admission bound, not a daily reset |
+| `force_final_on_exhausted` | bool | Requested exhaustion behavior within lifecycle policy |
+| `capabilities` | map | Per-capability `max_invocations_per_turn` / `max_internal_tool_calls` |
+| `scopes` | map | Named scoped limit requests, applied when the host resolves those scopes |
+
+Numeric declarations must be positive. See [token budgets](TOKEN_BUDGET.md)
+for per-call model/mode ceilings, retries, and the distinction between
+resource accounting and monetary cost.
+
 ### `routing`
 
-Session-level routing seed plus the author-curated vocabulary the kernel's routing-hint generator reads. There is no pre-turn router — natural-language turns go directly to `current_mode_id` and hand off mid-turn via `transition_stage`; `start_mode` is a bypass pin, not a router seed. When `current_mode_id == start_mode != "default"`, the turn goes directly to the pinned mode; `start_mode: default` means "let the model decide via handoff." See [ROUTER_DESIGN.md](ROUTER_DESIGN.md#3-session-context-controls).
+Session-level routing seed plus the author-curated vocabulary the kernel's routing-hint generator reads. There is no pre-turn router — natural-language turns go directly to `current_mode_id` and hand off mid-turn via `transition_stage`; `start_mode` is a bypass pin, not a router seed. When `current_mode_id == start_mode != "default"`, the turn goes directly to the pinned mode; `start_mode: default` means "let the model decide via handoff." See [mode routing](ROUTER_DESIGN.md#turn-time-dispatch).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -319,7 +350,8 @@ The session-owned context mapper policy. This is the sole control surface for ho
 
 #### `context.models`
 
-A reference to the model manifest file this session should load instead of the default `data_dir/models.yaml`. When omitted, the host loads `data_dir/models.yaml` as before.
+A reference to the model manifest file this session should load instead of
+the default `<data-dir>/config/models.yaml`.
 
 | Key | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -368,11 +400,16 @@ Admission rules that assign context candidates to lanes. Each rule has a `rule_i
 | `modes` | `tuple<str,...>` | `()` | Match active mode. |
 | `stages` | `tuple<str,...>` | `()` | Match active stage. |
 | `priority` | `int` | `0` | Higher priority wins admission. |
-| `required` | `bool` | `false` | Required candidates are always admitted if they match. |
+| `required` | `bool` | `false` | Select first; raise a budget error if matched content cannot fit. |
 | `pinned` | `bool` | `false` | Pinned candidates bypass MMR diversity filtering. |
 | `min_freshness` | `float 0.0-1.0` | `0.0` | Minimum freshness score for admission. |
 | `explicit_invocation` | `bool` | `false` | Only admit when explicitly invoked this turn. |
 | `fallback` | `bool` | `false` | If `true`, this rule catches all unmatched candidates. |
+
+All populated selector fields must match; listed alternatives within one
+field use OR. Mode/stage, freshness, and explicit-invocation conditions
+also apply. A source-matched candidate failing a condition is dropped,
+not rescued by fallback. See [context routing](CONTEXT_ROUTING_GUIDE.md).
 
 #### `context.ranking`
 
@@ -409,14 +446,25 @@ Model-aware budget limits applied after fixed per-turn reservations.
 
 Conversation history settings for context assembly.
 
-The lossy digest knobs (`include_digest`, `digest_max_lines`,
-`digest_summary_max_chars`) were removed in the memory &times; thread
-realignment: the thread manifest (always emitted when a thread store
-exists) replaced the digest, and history is never compacted.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `include_recent_conversation` | `true` | Include recent conversation evidence |
+| `include_reflection` | `false` | Include the diagnostic reflection |
+| `recent_message_limit` | `6` | Recent-message selection limit; non-negative |
+| `replay_max_bytes` | absent | Optional 1–1048576-byte replay ceiling, tighten-only against a finite host ceiling |
+| `digest` | object | Bounded task-state/recent-history/open-objective projection |
+
+`digest` fields are `enabled` (true), `recent_entries` (10),
+`recent_body_chars` (1800), `task_view_budget_bytes` (4096), and
+`max_open_objective_lines` (3). This deterministic prompt projection is
+not the removed lossy digest sidecar or in-place thread compaction.
+The underlying thread remains lossless.
 
 #### `context.memory`
 
-Memory-store consolidation policy. Like history compaction, this is pressure-driven and paid for out of the post-turn slice budget — not the user's turn latency.
+Memory-store consolidation policy is pressure-driven and paid from the
+configured slice slot/budget. It can make auxiliary model calls and add
+latency; it does not compact the lossless thread in place.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -440,6 +488,7 @@ Thresholds are fractions of `max_records` (`0.0`-`1.0`). The slice pressure curv
 | `max_records` | `int >= 1` | `200` | Denominator for the pressure fraction. |
 | `preferred_model_id` | `string` | `default` | Model ID used for the consolidate operation. |
 | `consolidate_operation` | `string` | `consolidate_semantic` | Operation ID invoked to consolidate. |
+| `mine_on_segment_seal` | `bool` | `true` | Mine newly sealed thread segments when consolidation runs. |
 
 Example:
 
@@ -629,13 +678,17 @@ context:
 
 ```yaml
 context:
+  lanes:
+    - lane_id: general
   sources:
     - rule_id: catch-all
       lane_id: general
       fallback: true
 ```
 
-At most one fallback rule is allowed. The fallback rule catches every candidate that no other rule matched.
+At most one fallback rule is allowed. The fallback catches candidates with
+no matching non-fallback source selectors; it does not bypass failed
+conditions on a source-matched rule.
 
 ### Restricting Active Packs
 
@@ -675,11 +728,14 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 uv run python -c "from kernel.session_plan import compile_session_plan; from pathlib import Path; compile_session_plan(text=Path('session_context.md').read_text(encoding='utf-8'), source_uri='session_context.md'); print('OK')"
 ```
 
-2. Start the host with the session and verify startup. `lisa verify` compiles the plan during runtime initialization, so a malformed session context will fail the command — but note the displayed "Session context" check row only echoes the resolved slug/path and does not itself re-validate the plan.
+For files using host-layer `from:`/`body:` directives, resolve those directives
+before calling the kernel compiler; raw compilation deliberately rejects them.
+See [the resolver](../runtime/src/runtime/session_from_resolver.py).
 
-```powershell
-uv run lisa verify --session-context .\session_context.md --no-log
-```
+2. Start a compatible external host with the session and verify startup.
+The framework workspace does not install `lisa`; consult the
+[CLI reference](https://github.com/Lisa-Harness/lisa-cli) for its current
+`verify` options. A displayed session path alone is not validation.
 
 3. Run the session-plan regression tests:
 

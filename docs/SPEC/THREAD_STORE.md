@@ -1,25 +1,28 @@
 # Thread Store Format Specification
 
-> **Status:** Active. Introduced 2026-08-10.
-> **Implementation:** write path in `runtime/thread.py`; read path (segment derival,
-> sparse-index parsing, zstd decompress, recent-N / range reads) in
-> `sdk/thread/_backend.py` (wrapped by `mcp_server.thread.server` and used by
-> `runtime/state_provider.py`).
+> **Status:** Maintained storage contract.
+> **Implementation:** [runtime write path](../../runtime/src/runtime/thread/),
+> [SDK read path](../../sdk/src/sdk/thread/), and
+> [MCP facade](../../mcp_server/src/mcp_server/thread/server.py).
+
+See [storage and backup](../STORAGE.md) for operational handling and
+[context lifecycle](../CONTEXT_LIFECYCLE.md) for provider-visible projections.
 
 ## Overview
 
 The Lisa thread store is a **lossless**, **append-only** conversation
 history backed by a three-tier file layout:
 
-1. **Active segment** — plain JSONL, append-only. This is the only file
-   the recent-N read ever touches, so reads are O(`limit`) in practice
-   rather than O(history). Bounded by `segment_turns` entries.
+1. **Active segment** — plain JSONL, append-only. Recent-N reads start here
+   and spill into sealed history when needed. Bounded by `segment_turns` entries.
 2. **Sealed segments** — zstd-compressed JSONL, one per sealed chunk.
    Sealing happens at append time when the active segment crosses
    `segment_turns` — no background scheduler, no cron.
-3. **Sparse index** — one JSON line per sealed segment recording the
-   turn/timestamp range it covers. O(segments) = O(turns /
-   `segment_turns`), i.e. tiny forever.
+3. **Sparse index** — one JSON line per sealed segment recording its
+   turn/timestamp range. Size grows with the number of segments.
+
+Content-addressed result objects live alongside these files and are part
+of the durable evidence store.
 
 The store is keyed by a **base path** (`<thread_dir>/<user_slug>`, no
 file extension). All derived file paths are computed from this base.
@@ -32,6 +35,7 @@ file extension). All derived file paths are computed from this base.
 | `<base>.<seg_id>.jsonl.zst` | Sealed segment — zstd-compressed JSONL |
 | `<base>.index.jsonl` | Sparse segment index — one JSON line per sealed segment |
 | `<base>.dict.zstd` | Trained zstd dictionary (optional) |
+| `<base>.results/r<sha256>.json` | Tool results, model request snapshots, continuation objects |
 
 Where `<base> = <thread_dir>/<user_slug>` and `<seg_id>` is a zero-padded
 4-digit counter (`0001`, `0002`, ...).
@@ -58,7 +62,8 @@ One JSON object per line in the active and sealed segments:
 ```json
 {
   "timestamp_utc": "2026-08-10T12:34:56.789000+00:00",
-  "user_slug": "adam",
+  "turn": 0,
+  "user_slug": "local-user",
   "mode_id": "default",
   "query": "tell me about your context",
   "response_text": "here is my reflection",
@@ -80,7 +85,7 @@ One JSON object per line in the active and sealed segments:
 | `transitioned_to` | string | no | Stage transition target |
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
-| `turn_input` | object | no | Raw, unedited model input captured for every model call in the turn: `{"calls": [{iteration, messages, tools, model_id, provider, reasoning_model, temperature, max_tokens, response_format}, ...]}`. Absent for turns with no model call (host commands). Read back by `/debug [N]`. |
+| `turn_input` | object | no | Model request archive: runtime calls use `{"calls": [{"iteration": 1, "ref": "r<sha256>"}]}`; expand the result object to recover the exact request and `context_budget`. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
 | `transcript` | list[object] | no | Verbatim non-system messages the turn added: its user message, every assistant tool call (with arguments), and every tool result. Replayed messages from earlier turns are excluded. The latest turn and its unfinished task (paused, awaiting approval, host-approved) are replayed at full fidelity; `thread_read_range(include_transcript=true)` returns older ones. Redaction applies on read. |
 | `memory_ids` | list[int] | no | Memory records minted from this turn (auto-capture or `synthesize_and_store_learning`). The thread → memory provenance link. |
 
@@ -114,10 +119,9 @@ One JSON line per sealed segment in `<base>.index.jsonl`:
 
 Removed. The `mine_thread_segment` operation tracks its own per-segment
 completion via a `mine.marker` sidecar written by the memory pack's
-consolidation slice; the thread store no longer reads or writes any digest
-marker. The `digest` / `marker` path entries still derived in
-`sdk/thread/_backend.py::_SegmentPaths` are vestigial — nothing consumes
-them.
+consolidation slice; the thread store no longer reads or writes a lossy
+digest marker. Session `context.history.digest` configures a prompt projection,
+not an on-disk digest sidecar.
 
 ## Write path
 
@@ -135,9 +139,8 @@ them.
 
 Sealing happens **synchronously at append time** when the active segment
 reaches `segment_turns` entries. There is no background scheduler and no
-cron — this matches the house rule "no cron in lightweight hosts". For a
-256-turn segment, sealing (zstd compress + index append + unlink) takes
-<10ms, so the user's turn ack is not delayed.
+cron — this matches the house rule "no cron in lightweight hosts". Sealing cost depends on payload size, compression, and filesystem; there
+is no latency guarantee based only on the entry count.
 
 1. Read the active segment bytes.
 2. Compress with zstd (level 5, optional trained dictionary).
@@ -236,23 +239,21 @@ thread realignment (hard cutover, no compat shims).
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `LISA_THREAD_DIR` | `<data_dir>/threads` | Thread directory |
+| `LISA_THREAD_DIR` | `<data_dir>/data/threads` | Thread directory |
 | `LISA_THREAD_SEGMENT_TURNS` | `256` | Seal threshold — active segment is sealed when it reaches this many entries |
 
 `LISA_THREAD_SEGMENT_TURNS` (256) controls how often the active segment
-is sealed. There is no configurable recent-N context window: context
-injection uses small fixed windows (the recent-conversation excerpt is
-3 turns; turn hooks read the last 30 entries), and the store scales to
-near-infinite history regardless.
+is sealed. Session `context.history` configures recent-message selection,
+digest projection, and optional replay ceilings. Context windows and
+retrieval pages stay bounded even as durable history grows.
 
 ## Scaling notes
 
 ### Segment size rationale
 
-256 turns per segment was chosen so that whole-segment decompress takes
-<10ms (measured on typical conversation data with zstd level 5). This
-keeps both the append path (seal) and the read path (recent-N spill,
-range query) well under user-perceptible latency.
+256 entries is the default seal threshold, not a performance promise.
+Record sizes can differ substantially; test archive latency and memory
+with representative data before changing the threshold.
 
 ### Seekable frames deferral
 
@@ -262,12 +263,4 @@ byte-offset range reads within a compressed file without full
 decompress. This is deferred until segment size grows beyond ~1000 turns
 or decompress latency exceeds ~50ms. The deferral is marked with inline
 `# TODO(seekable-frames):` comments at the compress/decompress call sites
-in `runtime/thread.py` so a later agent can find it.
-
-### Future generalization
-
-`kernel/token_usage.py` has the identical "flat JSONL, read tail"
-pattern (`open("a")` append; `read_text().splitlines()[-limit:]` tail
-read). It is the next candidate for a shared `SegmentedJsonlStore`
-helper. Implementation is deferred until this thread-store change is
-complete, committed, and verified.
+in the [write implementation](../../runtime/src/runtime/thread/_store.py).
