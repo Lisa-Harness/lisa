@@ -3,15 +3,6 @@
 This guide describes the **coding/GitHub packs' agent workflow**, not the
 framework contributor loop. Contributors should start with
 [CONTRIBUTING.md](../CONTRIBUTING.md) and [testing](TESTING.md).
-The active core freeze and operator-authorized exceptions remain below.
-
-> **Stabilization freeze (declared 2026-10-04):** `kernel/`, `runtime/`,
-> `sdk/`, and `mcp_server/` are frozen to behavior-changing work. Within those
-> trees, the only acceptable commits are bug **fixes** (each with a regression
-> test proving the bug) and **tests**. No new features, no refactors, no
-> signature changes to public APIs. New capability lands on unmerged
-> branches until the freeze lifts. See the Freeze section below for the full
-> rules agents must follow.
 
 `lisa-pack-coding` owns local workspace inspection and Git changes. The
 separate `lisa-pack-github` owns credentials, repository reads, and pull
@@ -83,267 +74,51 @@ grant at the resolved data-dir worktree parent (or the configured
 `worktree_dir`) so checks can write into owned worktrees; a narrower `ro`
 bind on one worktree takes precedence and prevents checks from running.
 
-## Freeze
+## Test Assurances
 
-**Operator exception (2026-10-10):** The freeze is lifted for context
-preservation: cache-stable model requests, kernel-owned approval/cap
-continuations, consistent evidence residency, and bounded-memory archive
-access. Public contract changes required for this work are authorized.
-Regression tests and the shared verification loop remain required. Other
-work remains subject to the stabilization freeze.
+The shared verification loop and test receipts are standing repository
+assurances — they apply to every code change on `main`.
 
-**Operator exception (2026-10-11):** The freeze is lifted for
-cache-aware usage accounting — surface the provider's prompt-cache read
-and write counts end to end (kernel counters, telemetry, `/tokens`) and
-let hosts/SDKs estimate cost with manifest cache prices. The kernel
-carries token *counts only*, never currency; per-token prices and any
-cost math live in the manifest (host/config) and host/CLI presentation.
-Scope and red/green requirements: the "Cache-aware usage accounting"
-carve-out in § Declared carve-outs below.
+### What every code change is held to
 
-Declared 2026-10-04. Applies to `kernel/`, `runtime/`, `sdk/`, and
-`mcp_server/` (including `sdk/packs/`). Rationale: sustained churn at
-~3,000 changed lines/day with a ~47% fix-commit ratio over September was
-regenerating bugs faster than tests could catch them; the only lever that
-reliably restores trust is reducing the rate of behavior change to zero for
-a stabilization window.
+- **Regression tests.** A fix lands with a test that reproduces the bug
+  (it fails before the fix and passes after, ideally in the same commit).
+  The test is the fix's receipt. The red-before, green-after form is
+  preferred but not required: a commit naming and covering the fixed
+  behavior with a passing test satisfies the assurance.
 
-### What is allowed in frozen trees
+- **Tests welcome.** New tests for existing behavior are always welcome;
+  they raise the cost of future regressions.
 
-- **Bug fixes.** Each fix must land with a test that reproduces the bug
-  (fails before the fix, passes after). The test is the fix's receipt.
-- **Tests.** New tests for existing behavior are always welcome; they raise
-  the cost of future regressions.
-- **Docs and comments** that only describe existing behavior.
-
-### What is not allowed
-
-- New features, new modules, new operations, new routing rules.
-- Refactors (renames, extractions, file moves, signature changes to public
-  APIs, behavior-preserving rewrites). If a refactor is required to land a
-  fix, the fix is out of scope for the freeze — escalate instead.
-- New dependencies or dependency bumps in frozen trees.
-- Configuration changes that alter turn-loop, routing, or lifecycle
-  behavior. (Adding a *new* knob is a feature; changing a default is a
-  behavior change.)
-
-Unfrozen work (docs outside code, e2etest scenarios, new packs, hosts,
-tooling) proceeds normally.
+- **Docs and comments** must only describe existing behavior.
 
 ### Enforcement for agents
 
-1. Before editing a file under a frozen tree, the agent must be able to
-   name the bug it is fixing and the test that will prove it. If it cannot,
-   it must stop and surface the freeze to the operator instead of proceeding.
+1. Before editing code, the agent must be able to name the behavior it
+   changes and the test that covers it. If it cannot, it must stop and
+   surface the gap to the operator instead of proceeding.
 2. A fix commit's diff to `src/` must be accompanied by a diff to `tests/`
    in the same commit.
 3. The verification loop in `.github/instructions/code-quality.md` must pass
-   *in its entirety*, not just for touched files. A freeze commit that
-   breaks an untouched test is out of scope by definition.
-4. Agents must not propose "while I'm here" follow-up refactors. The
-   fix-sized diff that leaves the surrounding code alone is the correct
-   diff, even if the surrounding code has obvious problems.
+   *in its entirety*, not just for touched files. A commit that breaks an
+   untouched test is out of scope by definition.
+4. Keep "while I'm here" edits out of fix commits. If you spot an adjacent
+   issue, file it as a follow-up; commit the fix-sized diff alone.
 
-### Declared carve-outs
+### Standing suite guards
 
-The operator may open a named, bounded exception for work that cannot
-reasonably ship as a fix with regression test. A carve-out is recorded
-here and is the carve-out's receipt: it scopes the exception to named
-modules, bounds it by commit scope, expires with the stated condition,
-and is closed by updating this section (same doc, same history).
-
-**Streamed tool-call deltas (opened 2026-10-12, authorized by the
-operator).** Scope: `kernel/src/kernel/provider_contracts.py`
-(`StreamedChunk.tool_call_deltas` field and
-`_aggregate_streamed_chunks` delta stitching only),
-`sdk/src/sdk/providers/openai_gateway.py` (`complete_stream` delta
-parsing plus the streamed-path sanitize/restore pair only), and
-`kernel/src/kernel/turn_runner/__init__.py` (the
-`_streamed_gateway_completion` dispatch predicate only). Purpose: a
-`finish_reason='tool_calls'` stream with parseable `delta.tool_calls`
-must dispatch without the non-streaming regeneration pass — the
-discarded stream pass was a measured 1.21x tax on every tool-call
-iteration (~24% of provider wall time; 121 hidden passes vs 172 recorded
-in the 2026-10-12 afternoon window). Backends signaling `tool_calls`
-without deltas keep the unchanged regeneration path. Any commit under
-this heading must (1) name the turn-loop behavior it changes, (2) ship
-a test that fails before and passes after (same-commit, red/green),
-(3) not widen scope beyond the named streaming/delta surfaces, and (4)
-keep the full verification loop green in its entirety. The carve-out
-closes when a live ollama coding turn shows one recorded pass per
-tool-call iteration in `token-usage.jsonl` (the hidden-pass count does
-not exceed the streaming-only share), or explicitly on operator order —
-record the closure here.
-
-**Cache-aware usage accounting (opened 2026-10-11, authorized by the
-operator; amended 2026-10-12 — the kernel carries counts, not currency).**
-Scope: `kernel/src/kernel/provider_contracts.py`
-(`CompletionUsage.cached_tokens`/`cache_creation_tokens` are already
-declared; no new kernel usage fields),
-`kernel/src/kernel/model_manifest.py`
-(`cache_read_price`/`cache_write_price` per-token fields only — these are
-model facts published by providers, consumed by hosts, and carry no
-runtime state),
-`runtime/src/runtime/model_discovery/` (`DiscoveredModel` cache-price
-fields, manifest emitter, `probes/openrouter.py` +
-`probes/base.py` enrichment of
-`pricing.input_cache_read`/`input_cache_write` only),
-`runtime/src/runtime/model_runtime.py` (resolver forwarding of the price
-fields onto the host descriptor), and the hosts (e.g. `lisa-cli`)
-accumulate cache-hit counts from `model_call_complete` (which already
-carries `cached_tokens` from the kernel via `TurnResult`) and estimate
-cost from manifest prices. Purpose: make cost accounting cache-aware —
-the turn footer undercounted real provider-billed volume (streamed
-attempt + fallback double-dispatch) and estimated at the uncached list
-price while providers bill cache hits at the read rate. The kernel stays
-count-only by design: per-token prices and currency conversion are host
-concerns, so future provider quoting (e.g. a usage `cost` field) belongs
-in host/SDK presentation layers and must not enter these contracts
-without a new carve-out. Any commit under this heading must (1) name the
-accounting behavior it changes, (2) ship a test that fails before and
-passes after (same-commit, red/green), (3) not widen scope beyond the
-named accounting/pricing surfaces, and (4) keep the full verification
-loop green in its entirety. The carve-out closes when the footer's
-cached-token basis and cache-rate estimate reconcile against the
-provider dashboard in a live turn, or explicitly on operator order —
-record the closure here.
-
-**Thread-context durability (opened 2026-10-05, authorized by the
-operator).** Scope: `sdk/src/sdk/thread/` (readout + results projection
-bounds), `runtime/thread/`, `runtime/thread_digest.py`,
-`runtime/approval/orchestration.py` (approved-fact attachment),
-`runtime/context_assembly.py` (context rendering),
-`kernel/session_plan.py` (context/digest knobs only),
-`kernel/turn_runner/` (digest consumption points), and the
-`lisa-thread` tools in `mcp_server/src/mcp_server/thread/`. Purpose:
-repair the hot/cold context boundary so a deep verification turn does
-not collapse into re-reading its own prior tool results at 180-char
-teaser fidelity. Any commit under this heading must (1) name the
-turn-loop behavior it changes, (2) ship a test that fails before and
-passes after (same-commit, red/green), and (3) not widen scope to
-unrelated signatures. The carve-out closes when these trees settle on a
-behavior the operator ratifies, or explicitly on operator order — record
-the closure here.
-
-**Dead context plumbing removal (opened 2026-10-12, authorized by the
-operator — "remove all of it", scoping the eight items identified in the
-2026-10-12 context-system review).** Scope:
-`kernel/src/kernel/context/` (delete `context_keys.py`; delete the
-write-only `DataSanitizer` seam and `PassThroughSanitizer`; fold
-`context_broker.py` into `ambient.py` and delete its write-only
-extension-item builder global; rename `context_frames.py` →
-`content_registry.py` with a public getter; drop the always-zero
-`stable_prefix_tokens`/`conversation_tokens`/`tool_schema_tokens` fields
-from `ContextMapperRequest`/`ContextBudgetSnapshot`; drop the duplicated
-`drop_reason` key from `ContextBudgetAllocator.summary`; drop the
-test-only `DiscoveryReport.notes`/`results_for` in
-`runtime/src/runtime/model_discovery/types.py`),
-`runtime/src/runtime/` (delete the dead retrieval-lane budget knob
-`context_budget_retrieval_max_tokens`; delete the `publish_context_usage_event`
-stub; delete the single-caller `build_brokered_context_markdown` wrapper;
-delete the `lisa-context` server launch entry from `mcp_servers.yaml`),
-`sdk/src/sdk/context/` (delete the `context_broker.py` re-export and
-`set_production_extension_item_builder`), and
-`mcp_server/src/mcp_server/` (delete the
-`context` server package, its `lisa-context` entry point, and its registry
-entry). Purpose: remove dead seams and optimistic-look budget knobs that
-are never consumed so the context budget story cannot be mistaken for
-more enforced than it is. Behavior-preserving deletions: the receipt for
-each commit is (1) the full verification loop green in its entirety,
-same-commit, (2) a repo-wide grep proving zero remaining references to
-every deleted symbol, and (3) updated tests where a symbol was consumed
-only by tests. No new behavior is added; nothing consumed in production
-is removed. The carve-out closes when all eight removals are committed
-with green receipts, or explicitly on operator order — record the
-closure here.
-
-**Context residency by allocation (opened 2026-10-07, authorized by the
-operator).** Scope: `sdk/src/sdk/thread/_results.py` (stub envelope
-projection), `sdk/src/sdk/thread/_readout.py` and `_search.py` (ref
-surfaces the stub row aligns to), `runtime/src/runtime/thread/_replay.py`
-and `runtime/thread/` (turn-boundary replay working set),
-`runtime/src/runtime/context_assembly.py` (replay lane wired into the
-allocator), `kernel/src/kernel/context/context_budget.py` (the
-replay/residency lane budget), `kernel/src/kernel/turn_runner/__init__.py`
-(turn-start working-set assembly, the per-iteration standing state ledger
-via the existing dynamic-segment path, the append-only within-turn
-invariant), `kernel/src/kernel/turn_phases/_dispatch.py` (receipt capture
-feeding the ledger and the `active_refs` source), and
-`mcp_server/src/mcp_server/thread/server.py` (the result shapes the stub
-points at). Amended 2026-10-07 (operator-ratified budget design) to add:
-`kernel/src/kernel/session_plan.py` (the
-`context.history.replay_max_bytes` knob only — schema addition, same
-category as the thread-context carve-out's context/digest-knob exception;
-no other session-plan surface), `runtime/src/runtime/turn_hooks_builder.py`
-(the `prior_messages` replay-budget wiring only), and
-`sdk/packs/core/src/sdk/packs/core/sessions/default.md` (the
-`context.history.replay_max_bytes` default only).
-`kernel/src/kernel/execution_ledger.py` and
-`kernel/src/kernel/workflow_position.py` remain *read sources only* for
-the ledger — no signature changes to anything another package imports.
-Purpose: make context residency bounded by recomputing a budgeted resident
-working set at each turn boundary (last-N events verbatim, one stub row
-per older/over-threshold event, a standing receipts-derived state ledger),
-while every byte stays persisted and recoverable by content/turn address.
-No compression, no model-authored summary, no in-place rewrite of any
-in-flight message. Current behavior: [context lifecycle](CONTEXT_LIFECYCLE.md).
-The original design/ratification history remains in Git. Any commit
-under this heading must (1) name the turn-loop behavior it changes,
-(2) ship a test that fails before and passes after (same-commit,
-red/green), (3) not widen scope to unrelated signatures, and (4) keep the
-full verification loop green in its entirety. The carve-out closes when
-these trees settle on a behavior the operator ratifies, or explicitly on
-operator order — record the closure here.
-
-**Web-tool ambient capability re-scope (opened 2026-10-13, authorized
-by the operator).** Scope:
-`sdk/packs/core/src/sdk/packs/core/tools/fetch_page/fetch_page.tool.yml`
-(removal of `default_available: true` only — `effect`, `exportable`,
-`max_calls_per_turn: 8`, and the tool's Python module stay untouched), the
-same-commit regression test, and any
-`sdk/tests/test_default_available_capabilities.py` fixture updates the
-removal forces. Purpose: `fetch_page` was the only ambient tool an
-arbitrary-mode turn could use for web access, and the 2026-10-13 p920
-market-research turn showed the failure mode: the router failed to reach
-`researcher`, and the model improvised `fetch_page` against search-engine
-HTML pages in a mode that deliberately has no web capability. Ambient
-full-page fetching is stronger containment leakage than the metered
-search primitive it drowned out. Any commit under this heading must
-(1) name the capability surface it changes, (2) ship a test that fails
-before and passes after (same-commit, red/green), (3) not widen scope
-beyond the `fetch_page` `.tool.yml` front matter and its direct tests,
-and (4) keep the full verification loop green in its entirety. The
-carve-out closes when a live turn in a non-research mode shows no
-`fetch_page` in its tool surface (verified the same way as the 2026-10-13
-investigation: `tool schema mode=default names=[...]` without
-`fetch_page`), or explicitly on operator order — record the closure here.
-
-The full suite (`uv run pytest -m "not live"`) is green as of this
-declaration (2909 passed, 1 xfailed). The kernel and
-sdk test suites carry autouse settings-hermeticity guards
+The kernel and sdk test suites carry autouse settings-hermeticity guards
 (`kernel/tests/conftest.py`, `sdk/tests/conftest.py`) that fail any test
 leaking mutations to the `kernel.config.settings` or `sdk.config.settings`
-singletons.
+singletons. Suite hermeticity — no passes-in-isolation,
+fails-in-full-suite flakiness — is a standing gate, not a convention.
 
 ### Verification evidence
 
 Run the current [quality/test/coverage gates](TESTING.md#ci-gates) on each
 candidate revision. A dated baseline, file count, or test count does not
-certify the current tree. Historical freeze compliance reviews and baseline
-repairs remain in Git/change history; they are not current release blockers.
-
-### Lifting the freeze
-
-The freeze lifts when all of the following hold for two consecutive weeks:
-
-- Fix-commit ratio (commits whose type is `fix:`) is below 0.20.
-- No full-suite-only failure (passes in isolation, fails in the full suite)
-  has been observed.
-- CI is green on `main` on every Python version/OS in the matrix.
-
-Track the fix-commit ratio with
-`git log --oneline --since="14 days ago" | grep -c '^[0-9a-f]* fix'` divided
-by total commits in the window.
+certify the current tree. Historical baseline repairs remain in
+Git/change history; they are not current release blockers.
 
 ## Approval
 

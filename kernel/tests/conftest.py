@@ -84,8 +84,8 @@ def _bridge_turnhooks_complete_to_gateway() -> Any:
 # one of its fields and forget to restore it (or restore it via an exception
 # path) poison every later test in the process, producing the classic
 # "passes in isolation, fails in the full suite" flakiness that plagued the
-# 2026-09 baselines. Under the 2026-10-04 kernel freeze the suite must be
-# hermetic by construction, not by convention. This autouse snapshot/restore
+# 2026-09 baselines. The suite must be hermetic by construction, not by
+# convention. This autouse snapshot/restore
 # wrapper makes that a gate: any test that leaves the singleton dirty fails
 # with a diff of the polluted fields, and every test runs against the
 # pristine pre-suite snapshot.
@@ -120,7 +120,7 @@ def _settings_hermeticity_guard() -> Any:
         )
         raise AssertionError(
             "Test mutated kernel.config.settings without restoring it.\n"
-            "The freeze requires a hermetic suite; wrap mutations in\n"
+            "The suite requires hermeticity; wrap mutations in\n"
             "try/finally (or use monkeypatch) so later tests are isolated.\n"
             f"Leaked fields:\n{diff}"
         )

@@ -5,13 +5,13 @@ Current work and acceptance criteria belong in
 [GitHub issues](https://github.com/Lisa-Harness/lisa/issues); delivered work
 belongs in the [changelog](../CHANGELOG.md).
 
-## Current constraint: stabilization
+## Stability
 
-Kernel, runtime, SDK, and first-party MCP behavior remains under the
-[stabilization freeze](CODING_WORKFLOW.md#freeze), with recorded scoped
-exceptions. Fixes need reproducing regression tests. New capabilities or
-refactors in those trees require an explicit exception or an unmerged branch.
-Documentation, test coverage, and unfrozen tooling can progress independently.
+Kernel, runtime, SDK, and first-party MCP behavior are held to standing
+[test assurances](CODING_WORKFLOW.md#test-assurances): the full verification
+loop and regression coverage for fixes, plus scoped, receipted changes when
+work cannot ship in a single commit. Application workflows normally belong
+in packs; transports belong in hosts.
 
 ## Priorities
 
@@ -34,7 +34,7 @@ Documentation, test coverage, and unfrozen tooling can progress independently.
 ## Proposing work
 
 Open an issue describing the user need, current evidence, proposed boundary,
-testable outcome, compatibility impact, and whether the freeze permits it.
+testable outcome, and compatibility impact.
 Separate existing bugs from optional future designs. A past RFC or a fixed
 incident is not an outstanding roadmap commitment.
 

@@ -40,7 +40,7 @@ def _settings_hermeticity_guard() -> Any:
         )
         raise AssertionError(
             "Test mutated sdk.config.settings without restoring it.\n"
-            "The freeze requires a hermetic suite; wrap mutations in\n"
+            "The suite requires hermeticity; wrap mutations in\n"
             "try/finally (or use monkeypatch) so later tests are isolated.\n"
             f"Leaked fields:\n{diff}"
         )

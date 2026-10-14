@@ -133,6 +133,5 @@ The kernel test support is public for pack/extension authors. Use injected
 fakes and isolated configuration; do not import private app modules or live
 external packs into kernel unit tests.
 
-See [testing](../docs/TESTING.md) for the full CI matrix/gates,
-[contributing](../CONTRIBUTING.md), and the
-[active stabilization freeze](../docs/CODING_WORKFLOW.md#freeze).
+See [testing](../docs/TESTING.md) for the full CI matrix/gates and
+[contributing](../CONTRIBUTING.md).

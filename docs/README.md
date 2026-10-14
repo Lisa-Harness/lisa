@@ -51,8 +51,9 @@ The [project README](../README.md) explains the project and its current status.
 - [Contributing](../CONTRIBUTING.md) and [Python development](python-BCP.md).
 - [Testing](TESTING.md), [packstest](../packstest/README.md), and
   [whole-runtime scenarios](../e2etest/README.md).
-- [Coding workflow and active freeze](CODING_WORKFLOW.md). The coding-pack
-  workflow is distinct from contributing to this framework.
+- [Coding workflow](CODING_WORKFLOW.md), including the standing test
+  assurances. The coding-pack workflow is distinct from contributing to this
+  framework.
 - [Release checklist](RELEASE_CHECKLIST.md) and [roadmap](ROADMAP.md).
 - [Security policy](../SECURITY.md) and [Code of Conduct](../CODE_OF_CONDUCT.md).
 - [Copilot customization guide](COPILOT_CUSTOMIZATION_GUIDE.md).

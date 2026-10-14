@@ -28,9 +28,9 @@ and injected services, not runtime internals or another pack.
 - [Memory architecture](../../docs/MEMORY_ARCHITECTURE.md)
 - [External pack registry](https://github.com/Lisa-Harness/lisa-packs)
 
-Bundled pack prompts/modes are part of behavior and are subject to the
-[freeze](../../docs/CODING_WORKFLOW.md#freeze). Editing a prompt is not
-automatically a documentation-only change.
+Bundled pack prompts/modes are part of behavior and are held to the same
+[test assurances](../../docs/CODING_WORKFLOW.md#test-assurances) as code.
+Editing a prompt is not automatically a documentation-only change.
 
 ## Verification
 

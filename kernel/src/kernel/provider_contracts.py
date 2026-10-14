@@ -228,7 +228,7 @@ class StreamedChunk:
     include usage in the stream."""
 
     tool_call_deltas: list[dict[str, Any]] = field(default_factory=list)
-    """Tool-call fragments streamed in this chunk (v1.1 carve-out).
+    """Tool-call fragments streamed in this chunk (2026-10-12 delta stitching).
 
     Each entry mirrors one OpenAI ``delta.tool_calls`` element: ``index``
     (int, the stitch key), optional ``id``/``type`` on the first fragment of
@@ -398,7 +398,7 @@ def _stitch_tool_call_delta(
 def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletion:
     """Aggregate a list of ``StreamedChunk`` into one ``StreamedCompletion``.
 
-    v1 streamed tokens only; the 2026-10-12 carve-out adds tool-call delta
+    v1 streamed tokens only; the 2026-10-12 change adds tool-call
     stitching (gateway yields ``tool_call_deltas`` fragments; this helper
     assembles them by ``index`` into the OpenAI tool-call shape so the turn
     runner can dispatch without the non-streaming regeneration pass). The

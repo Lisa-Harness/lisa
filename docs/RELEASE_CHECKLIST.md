@@ -11,8 +11,8 @@ packs.
 
 ## Scope and compatibility
 
-- [ ] Choose the release commit, version, and intended audience. Respect the
-  [active freeze](CODING_WORKFLOW.md#freeze); tagging does not lift it.
+- [ ] Choose the release commit, version, and intended audience. Confirm the
+  [test assurances](CODING_WORKFLOW.md#test-assurances) hold for the tree.
 - [ ] Review [CHANGELOG.md](../CHANGELOG.md), including breaking API,
   configuration, data-format, and pack/host compatibility changes.
 - [ ] Document required upgrade steps and tested host/pack revisions.

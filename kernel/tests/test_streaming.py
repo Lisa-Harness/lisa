@@ -252,7 +252,7 @@ async def test_turn_runner_stream_tool_calls_falls_back_to_complete() -> None:
     assert "final answer" in result.response_text
 
 
-# ── Streaming tool-call deltas (freeze carve-out: one-pass tool turns) ──
+# ── Streaming tool-call deltas (2026-10-12 one-pass tool turns) ──
 
 
 def test_aggregate_stitches_tool_call_deltas_by_index() -> None:
@@ -641,7 +641,7 @@ async def test_turn_runner_truncated_completion_no_tools_no_retry() -> None:
     """A stripped-tools truncation is retried only when the turn began
     with a tool surface.
 
-    The freeze-gated ``test_turn_runner_truncated_completion_without_tools_
+    The sibling test ``test_turn_runner_truncated_completion_without_tools_
     is_not_retried`` pins the no-tools-at-all contract: a plain chat turn
     that finishes at the cap is a natural completion, no retry. This case
     fills the other gap: a turn that *started* with tools (a

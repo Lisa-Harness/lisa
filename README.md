@@ -20,9 +20,10 @@ Review the [changelog](CHANGELOG.md) before updating a host or pack.
 Python 3.11+ is required; CI tests 3.11 and 3.12 on Linux, macOS, and Windows.
 Individual packs can have additional platform requirements.
 
-Core behavior is under a [stabilization freeze](docs/CODING_WORKFLOW.md#freeze).
-Documentation, tests, and fixes with regressions are welcome; new core features
-or refactors need a recorded maintainer exception.
+Core behavior is stabilized: every change is held to the
+[test assurances](docs/CODING_WORKFLOW.md#test-assurances) — full
+verification loop and regression coverage. Documentation, tests, and fixes
+are welcome.
 
 ## Start here
 

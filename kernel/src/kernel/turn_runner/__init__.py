@@ -3015,12 +3015,12 @@ async def _streamed_gateway_completion(
     if aggregated.finish_reason == "tool_calls" and not aggregated.tool_calls:
         # Fall back to non-streaming for the structured tool-call payload.
         # A ``tool_calls`` finish WITH streamed deltas dispatches directly
-        # off the aggregated stream (the 2026-10-12 one-pass carve-out:
-        # the regeneration was a measured 1.21x tax on every tool-call
-        # iteration). Backends that signal ``tool_calls`` without deltas
-        # (v1 transports that strip ``delta.tool_calls``) keep the
-        # regeneration path with its truncation rescue (the 2026-10-08
-        # "ran out without doing anything" incident).
+        # off the aggregated stream (the regeneration was a measured 1.21x
+        # tax on every tool-call iteration). Backends that signal
+        # ``tool_calls`` without deltas (v1 transports that strip
+        # ``delta.tool_calls``) keep the regeneration path with its
+        # truncation rescue (the 2026-10-08 "ran out without doing
+        # anything" incident).
         completion = await _rescue_truncated_fallback_completion(
             gateway=gateway,
             fallback_request=fallback_request,

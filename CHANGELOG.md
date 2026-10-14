@@ -57,8 +57,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   signal `tool_calls` with no deltas keep the regeneration path unchanged.
 - **Why:** The discarded stream pass was a measured 1.21x tax on every
   tool-call iteration and ~24% of provider wall time (121 hidden passes vs 172
-  recorded calls in the 2026-10-12 afternoon window). Done under the
-  "Streamed tool-call deltas" freeze carve-out (`docs/CODING_WORKFLOW.md`).
+  recorded calls in the 2026-10-12 afternoon window).
 - **Tests:** `kernel/tests/test_streaming.py`
   (`test_aggregate_stitches_tool_call_deltas_by_index`,
   `test_turn_runner_stream_tool_deltas_skip_the_fallback_complete`),
@@ -90,9 +89,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 #### Dead context plumbing — unconsumed seams, always-zero budget fields, and the duplicate broker path
 
 - **What:** Removed the eight pieces of dead or misleading context
-  plumbing identified in the 2026-10-12 context-system review, under the
-  "Dead context plumbing removal" freeze carve-out
-  (`docs/CODING_WORKFLOW.md`): (1) `kernel/context/context_keys.py`
+  plumbing identified in the 2026-10-12 context-system review:
+  (1) `kernel/context/context_keys.py`
   (zero importers); (2) the never-invoked `DataSanitizer` seam —
   `seams.protocols.DataSanitizer`, `context/data_sanitizer.py`
   (`PassThroughSanitizer`), `ContextSeams.data_sanitizer`, and the
@@ -142,9 +140,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 #### Context residency by allocation — bounded replay working set, stub coherence, standing state ledger
 
-- **What:** The three-rule residency design shipped under the
-  "Context residency by allocation" freeze carve-out
-  (original RFC now consolidated into [context lifecycle](docs/CONTEXT_LIFECYCLE.md)):
+- **What:** The three-rule residency design shipped with the original RFC
+  consolidated into [context lifecycle](docs/CONTEXT_LIFECYCLE.md):
   (R2) the turn-start replay working set is
   recomputed under a byte budget — `build_open_task_messages` /
   `project_tool_messages` accept `budget_bytes`; three tighten-only layers

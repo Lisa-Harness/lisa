@@ -145,9 +145,9 @@ class _StubDeltaToolCall:
 async def test_openai_gateway_stream_parses_tool_call_deltas() -> None:
     """Tool-call fragments reach ``StreamedChunk.tool_call_deltas``.
 
-    Regression for the 2026-10-12 one-pass carve-out: the turn loop paid a
-    non-streaming regeneration of the whole content after every
-    ``finish_reason='tool_calls'`` stream because the gateway dropped
+    Regression for the 2026-10-12 one-pass tool-call streaming change: the
+    turn loop paid a non-streaming regeneration of the whole content after
+    every ``finish_reason='tool_calls'`` stream because the gateway dropped
     ``delta.tool_calls`` on the floor.
     """
     events = [

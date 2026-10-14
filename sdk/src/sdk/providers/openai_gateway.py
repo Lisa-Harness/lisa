@@ -1648,7 +1648,7 @@ class OpenAICompatibleGateway:
     async def complete_stream(self, request: CompletionRequest) -> AsyncIterator[StreamedChunk]:
         """Stream completion chunks from an OpenAI-compatible endpoint.
 
-        v1 streamed tokens only; the 2026-10-12 one-pass carve-out adds
+        v1 streamed tokens only; the 2026-10-12 one-pass change adds
         tool-call delta parsing: an OpenAI-style ``delta.tool_calls`` list is
         forwarded per chunk as ``tool_call_deltas`` (index/id/name/argument
         fragments the kernel stitches). Backends that don't stream tool

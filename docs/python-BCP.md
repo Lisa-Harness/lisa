@@ -38,4 +38,4 @@ Start with a narrow reproduction, add a regression test, and verify the
 relevant behavior before broader gates. Do not rely on private data directories,
 live credentials, or sibling packs in unit tests.
 See [CONTRIBUTING.md](../CONTRIBUTING.md), [logging](LOGGING.md), and the
-[active freeze](CODING_WORKFLOW.md#freeze) before making core changes.
+[coding workflow](CODING_WORKFLOW.md) before making core changes.

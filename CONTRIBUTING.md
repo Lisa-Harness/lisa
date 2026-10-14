@@ -8,8 +8,8 @@ Read the [Code of Conduct](CODE_OF_CONDUCT.md) and use the
 
 - Search [issues](https://github.com/Lisa-Harness/lisa/issues) for existing work.
   For a substantial API or architecture change, discuss scope before coding.
-- Check the active [stabilization freeze and exceptions](docs/CODING_WORKFLOW.md#freeze).
-  Core features and refactors are not currently open-ended contribution areas.
+- Check the package boundaries and current [coding workflow](docs/CODING_WORKFLOW.md).
+  Application workflows normally belong in packs, not the core packages.
   Documentation describing existing behavior is allowed.
 - Follow the [package boundaries](docs/BOUNDARIES.md). Application workflows
   normally belong in packs; transport rendering belongs in hosts.
@@ -40,9 +40,10 @@ CLI does not automatically use local framework changes; see
 5. Commit and open a pull request with the problem, solution, verification,
    and any compatibility impact.
 
-Code fixes under the freeze need a regression test that fails before the
-fix and passes after, in the same commit. Do not weaken tests, coverage
-floors, or the direct-I/O allowlist to manufacture a passing result.
+Code fixes need a regression test in the same commit (see
+[test assurances](docs/CODING_WORKFLOW.md#test-assurances)). Do not weaken
+tests, coverage floors, or the direct-I/O allowlist to manufacture a passing
+result.
 
 ## Pack changes
 
@@ -68,9 +69,10 @@ audits or one-off incident reports to the maintained corpus.
 
 ## Pull request checklist
 
-- [ ] Scope respects the active freeze and package boundaries.
+- [ ] Scope respects the package boundaries and the
+  [test assurances](docs/CODING_WORKFLOW.md#test-assurances).
 - [ ] Relevant tests and required CI gates pass; skipped/unrun checks are stated.
-- [ ] A fix includes its regression test; a behavior change has explicit approval.
+- [ ] A fix includes its regression test; a behavior change includes its tests.
 - [ ] Public APIs have typed contracts, docstrings, and co-maintained tests.
 - [ ] Errors are observable; no silent success-shaped fallback or broad catch
   outside a justified boundary.
