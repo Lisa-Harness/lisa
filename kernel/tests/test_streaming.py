@@ -149,6 +149,38 @@ def test_streamed_completion_adapter_keeps_reasoning_separate() -> None:
     assert adapter.reasoning_content == "thinking about it"
 
 
+def test_streamed_completion_adapter_surfaces_finish_reason() -> None:
+    """The adapter exposes the aggregated ``finish_reason`` for diagnostics.
+
+    Real gateways set ``finish_reason`` on ``CompletionResult`` so the
+    reasoning-tail caveat can add its truncation clause and the turn-loop
+    diagnostics can distinguish a budget-starved stop from a clean one
+    (2026-10-13 turn 789: the streamed burnout caveat read
+    ``finish_reason=unknown`` because the adapter hid the aggregate). The
+    completion-loop reads it via ``getattr``, so the adapter needs a real
+    attribute, not just the ``__repr__``.
+    """
+    sc = StreamedCompletion(
+        content="",
+        reasoning_content="pondering",
+        finish_reason="length",
+    )
+    adapter = StreamedCompletionAdapter(sc)
+    assert adapter.finish_reason == "length"
+
+
+def test_streamed_completion_adapter_truncated_surfaces_aggregate() -> None:
+    """The adapter exposes the aggregate's ``finish_reason`` default.
+
+    A stream that never carries an explicit finish aggregates to ``stop``;
+    the adapter must surface that default (burnout predicates read
+    ``finish_reason`` via ``getattr`` and must not crash on absence).
+    """
+    sc = StreamedCompletion(content="partial")
+    adapter = StreamedCompletionAdapter(sc)
+    assert adapter.finish_reason == "stop"
+
+
 # ── Turn runner streaming path ───────────────────────────────────────────
 
 
@@ -805,6 +837,243 @@ async def test_turn_runner_rescues_truncated_fallback_after_tool_calls_stream() 
     )
     # …and the turn did NOT end on the token-cap abort wrapper.
     assert "reached its token cap before emitting a tool call" not in result.response_text
+
+
+# ── Reasoning-burnout rescue (finish_reason='stop', 2026-10-13) ────────
+
+
+@dataclass(frozen=True, slots=True)
+class _BurnoutStubCompletion:
+    """Stub completion for the clean-stop burnout shape.
+
+    ``glmfash``-style reasoning models bill chain-of-thought against
+    ``max_tokens`` and can end with ``finish_reason='stop'`` even after
+    the whole budget went to thinking — the stop is not clean, it is the
+    reasoning loop giving up mid-sentence. Carries flat token counters so
+    the stub gateway's usage normalization keeps them (the counters ride
+    ``usage.completion_tokens`` on the normalized ``CompletionResult``).
+    """
+
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+    finish_reason: str | None = None
+    reasoning_content: str = ""
+    reasoning_tokens: int = 0
+    completion_tokens: int = 0
+    prompt_tokens: int = 0
+    total_tokens: int = 0
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rescues_reasoning_burnout_completion() -> None:
+    """A non-streaming completion that burns its budget on reasoning and
+    ends ``stop`` with empty content and no tool calls is retried once at
+    a doubled budget.
+
+    Regression for the 2026-10-13 turn 789 stall (glm-5.3-flash:cloud,
+    coding_execute): the model re-deliberated a ``coding_edit_files``
+    payload across the entire per-call budget — 16k tokens, then the
+    doubled 32k rescue after a sibling truncation — and both rounds
+    ended with no visible content, no tool call, and a 121KB reasoning
+    tail. The truncation rescues only fired on ``finish_reason='length'``;
+    this clean-stop burnout shape passed straight through to the
+    reasoning-tail caveat and the turn ended with nothing dispatched —
+    the user had to say "continue and finish" to make progress.
+    """
+    calls: list[int] = []
+    completions = [
+        # First call: whole budget burned on thinking; clean stop;
+        # no content, no tool call — invisible to the length rescues.
+        # First call (tools offered): the model makes no tool calls, runs
+        # out of its budget narrating a summary, and truncates.
+        _BurnoutStubCompletion(
+            content="",
+            prompt_tokens=10000,
+            total_tokens=26000,
+            finish_reason="stop",
+            reasoning_content="Let me format carefully — multiline literals: " * 2000,
+            reasoning_tokens=16000,
+            completion_tokens=16000,
+        ),
+        # Retry (doubled budget): the payload fits — the edit lands.
+        _BurnoutStubCompletion(
+            content="",
+            finish_reason="stop",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "memory.add",
+                        "arguments": json.dumps({"content": "edited"}),
+                    },
+                }
+            ],
+        ),
+        # Iteration 2 after the dispatch: a clean final answer.
+        _BurnoutStubCompletion(content="Edit applied and recorded.", finish_reason="stop"),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+
+    assert calls[:2] == [4096, 8192], f"expected one burnout retry at 2x, got {calls}"
+    # The tool-call dispatch from the retried completion runs iteration 2
+    # (base budget again), whose final answer lands the turn.
+    assert "Edit applied and recorded." in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_reasoning_burnout_below_burn_share_not_retried() -> None:
+    """A clean-stop empty completion that did NOT burn near the budget is
+    NOT retried — a cheap empty completion stays a cheap yield.
+    """
+    calls: list[int] = []
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        return _BurnoutStubCompletion(
+            content="",
+            prompt_tokens=10000,
+            total_tokens=11200,
+            finish_reason="stop",
+            reasoning_content="a brief stray thought",
+            reasoning_tokens=400,
+            completion_tokens=1200,
+        )
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn=None)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="hello there", hooks=hooks)
+
+    assert calls == [4096], "no retry for an empty completion far under budget"
+    # Below the burn share the caveat content ends the turn as a natural
+    # completion (the reasoning-tail caveat IS content), not a yield.
+    assert result.yielded is None
+    assert "no visible answer" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_reasoning_burnout_respects_context_cap() -> None:
+    """The burnout retry budget is bounded by the model's context window."""
+    calls: list[int] = []
+    completions = [
+        _BurnoutStubCompletion(
+            content="",
+            prompt_tokens=10000,
+            total_tokens=18192,
+            finish_reason="stop",
+            reasoning_content="burned thinking",
+            reasoning_tokens=8192,
+            completion_tokens=8192,
+        ),
+        _BurnoutStubCompletion(content="done at last", finish_reason="stop"),
+    ]
+    call_idx = {"n": 0}
+
+    async def complete_fn(**kwargs: Any):
+        calls.append(kwargs.get("max_tokens"))
+        completion = completions[call_idx["n"]]
+        call_idx["n"] += 1
+        return completion
+
+    hooks = TurnHooks(
+        models=ModelHooks(
+            complete=complete_fn,
+            resolve_model=lambda _mid: SimpleNamespace(
+                provider="test",
+                model_id="small-model",
+                display_name="Small Model",
+                reasoning_model=False,
+                thinking_model=False,
+                context_window=9000,
+            ),
+        ),
+    )
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+
+    budget = result.model_requests[0]["context_budget"]
+    assert calls == [4096, 9000 - budget["input_tokens"] - budget["margin_tokens"]]
+    assert "done at last" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rescues_reasoning_burnout_stream() -> None:
+    """A streamed burnout (stop, empty content, reasoning-only, no tool
+    calls, whole budget burned) is retried once at a doubled budget.
+
+    The 2026-10-13 turn 789 iteration ran on the streaming path; the
+    burnout rescue must cover it too, or the doubled-budget retry only
+    ever fires on the sibling `length` shape.
+    """
+    calls: list[int] = []
+
+    def _stream_fn(chunks_by_call: list[list[StreamedChunk]]):
+        call_idx = {"n": 0}
+
+        async def stream_fn(**kwargs: Any):
+            calls.append(kwargs.get("max_tokens"))
+            chunks = chunks_by_call[call_idx["n"]]
+            call_idx["n"] += 1
+            for chunk in chunks:
+                yield chunk
+
+        return stream_fn
+
+    chunks_by_call = [
+        # First call: reasoning streams the whole budget, no content. The
+        # trailing usage chunk is what real Ollama streams send last —
+        # the burnout predicate needs it to verify the burn.
+        [
+            StreamedChunk(reasoning_content="deliberating the payload " * 500),
+            StreamedChunk(
+                finish_reason="stop",
+                usage=CompletionUsage(
+                    prompt_tokens=10000, completion_tokens=4096, total_tokens=14096
+                ),
+            ),
+        ],
+        # Retry: the payload fits — the edit lands as a tool call.
+        [
+            StreamedChunk(reasoning_content="brief check"),
+            StreamedChunk(finish_reason="tool_calls"),
+        ],
+    ]
+    stream_fn = _stream_fn(chunks_by_call)
+
+    async def complete_fn(**kwargs: Any):
+        return _BurnoutStubCompletion(content="", finish_reason="stop")
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+
+    assert calls == [4096, 8192], f"expected one burnout stream retry at 2x, got {calls}"
+    # The streamed burnout aggregate cannot carry usage (no usage chunk in
+    # the stub), so pin the fallback behavior instead: the turn did not end
+    # on the reasoning-tail caveat with nothing dispatched.
+    assert "no visible answer" not in result.response_text
 
 
 # ── on_delta per-chunk forwarding (v1 streaming display) ──────────────

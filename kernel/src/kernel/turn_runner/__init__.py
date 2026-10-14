@@ -2854,6 +2854,49 @@ def _truncation_retry_budget(
     return replace(base_request, max_tokens=retry_max_tokens), retry_max_tokens
 
 
+#: A reasoning-burnout completion must have consumed at least this share of
+#: its per-call budget on the one visible proxy (completion tokens) before
+#: the retry fires — a cheap empty completion is a yield, not a lost write.
+_REASONING_BURNOUT_SHARE = 0.9
+
+
+def _is_reasoning_burnout_completion(completion: Any, *, base_max_tokens: int) -> bool:
+    """Return True when a clean-stop completion burned its budget on thinking.
+
+    The burnout shape (the 2026-10-13 turn 789 stall, glm-5.3-flash:cloud):
+    a reasoning model re-deliberates its payload until the wall —
+    ``finish_reason='stop'`` (a reasoning loop running out of budget does
+    not always surface ``length`` on every backend) — with empty visible
+    ``content``, no tool calls, and substantial ``reasoning_content``.
+    The ``length`` predicate misses it and the turn would end with nothing
+    dispatched and a reasoning-tail caveat. Mirrors the numeric guard of
+    ``_empty_content_detail`` (operations/declarative.py): completion tokens
+    near the per-call cap mark a budget-consumed generation; anything below
+    the share stays a cheap empty completion (yield for redirect, no retry).
+    A truncated completion (``finish_reason='length'``) never enters here —
+    the sibling truncation rescues own that shape.
+    """
+    if base_max_tokens <= 0:
+        return False
+    if getattr(completion, "finish_reason", None) != "stop":
+        return False
+    if str(getattr(completion, "content", "") or "").strip():
+        return False
+    if getattr(completion, "tool_calls", None):
+        return False
+    reasoning = getattr(completion, "reasoning_content", None) or getattr(
+        completion, "reasoning", None
+    )
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return False
+    usage = getattr(completion, "usage", None)
+    completion_tokens = int(
+        getattr(completion, "completion_tokens", 0)
+        or (getattr(usage, "completion_tokens", 0) if usage is not None else 0)
+    )
+    return completion_tokens >= base_max_tokens * _REASONING_BURNOUT_SHARE
+
+
 class StreamIdleTimeout(RuntimeError):
     """A streamed generation went silent past ``stream_idle_timeout_s``."""
 
@@ -2925,6 +2968,44 @@ async def _streamed_gateway_completion(
             stream_ms += retry_ms
             aggregated = _aggregate_streamed_chunks(retry_chunks)
 
+    # Reasoning-burnout rescue (the 2026-10-13 turn 789 stall): a stream
+    # that ends ``stop`` with empty content, no streamed tool calls, and a
+    # whole-budget reasoning aggregate got nowhere — same one-shot 2x retry
+    # as the truncation rescue above. The burnout predicate needs usage to
+    # verify the burn; a stream without usage cannot prove it, so the
+    # rescue stays dormant (matching the length path's usage-free retry).
+    if (
+        aggregated.finish_reason == "stop"
+        and not aggregated.tool_calls
+        and not aggregated.content.strip()
+        and aggregated.reasoning_content.strip()
+        and (effective_tools or tools_offered_this_turn)
+        and aggregated.usage
+        and aggregated.usage.completion_tokens
+        >= completion_request.max_tokens * _REASONING_BURNOUT_SHARE
+    ):
+        _retry = _truncation_retry_budget(
+            base_request=completion_request,
+            effective_model_def=effective_model_def,
+            effective_tools=effective_tools,
+            tools_offered_this_turn=tools_offered_this_turn,
+        )
+        if _retry is not None:
+            fallback_request, retry_max_tokens = _retry
+            log.warning(
+                "stream burned its completion budget on reasoning without "
+                "dispatching a tool call; retrying once with higher "
+                "max_tokens (mode=%s, model=%s, to=%d)",
+                mode_id,
+                getattr(effective_model_def, "model_id", ""),
+                retry_max_tokens,
+            )
+            retry_chunks, retry_ms = await _collect_stream(
+                stream_gateway_fn, fallback_request, on_delta
+            )
+            stream_ms += retry_ms
+            aggregated = _aggregate_streamed_chunks(retry_chunks)
+
     if aggregated.finish_reason == "tool_calls" and not aggregated.tool_calls:
         # Fall back to non-streaming for the structured tool-call payload.
         # A ``tool_calls`` finish WITH streamed deltas dispatches directly
@@ -2982,7 +3063,11 @@ async def _rescue_truncated_fallback_completion(
     completion = await gateway.complete(fallback_request)
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
-    if getattr(completion, "finish_reason", None) != "length":
+    if getattr(
+        completion, "finish_reason", None
+    ) != "length" and not _is_reasoning_burnout_completion(
+        completion, base_max_tokens=fallback_request.max_tokens or 0
+    ):
         return completion
     _retry = _truncation_retry_budget(
         base_request=fallback_request,
@@ -2993,13 +3078,23 @@ async def _rescue_truncated_fallback_completion(
     if _retry is None:
         return completion
     retry_request, retry_max_tokens = _retry
-    log.warning(
-        "truncated fallback after tool_calls stream; retrying "
-        "once with higher max_tokens (mode=%s, model=%s, to=%d)",
-        mode_id,
-        getattr(effective_model_def, "model_id", ""),
-        retry_max_tokens,
-    )
+    if getattr(completion, "finish_reason", None) == "length":
+        log.warning(
+            "truncated fallback after tool_calls stream; retrying "
+            "once with higher max_tokens (mode=%s, model=%s, to=%d)",
+            mode_id,
+            getattr(effective_model_def, "model_id", ""),
+            retry_max_tokens,
+        )
+    else:
+        log.warning(
+            "fallback after tool_calls stream burned its completion "
+            "budget on reasoning without dispatching a tool call; "
+            "retrying once with higher max_tokens (mode=%s, model=%s, to=%d)",
+            mode_id,
+            getattr(effective_model_def, "model_id", ""),
+            retry_max_tokens,
+        )
     retry_started = time.perf_counter()
     completion = await gateway.complete(retry_request)
     if completion.duration_ms <= 0.0:
@@ -3034,8 +3129,13 @@ async def _nonstreamed_gateway_completion(
     completion = await gateway.complete(completion_request)
     # Same predicate as the streaming rescue: a truncated stripped-tools
     # completion is still a write the model was building. The 2026-10-06
-    # "unfinished turns" incidents ended blocked turns on this path.
-    if getattr(completion, "finish_reason", None) == "length":
+    # "unfinished turns" incidents ended blocked turns on this path. The
+    # reasoning-burnout twin (clean stop, whole budget on thinking, no
+    # tool call — the 2026-10-13 turn 789 stall) retries the same way.
+    _burnout = not getattr(completion, "content", "") and _is_reasoning_burnout_completion(
+        completion, base_max_tokens=completion_request.max_tokens or 0
+    )
+    if getattr(completion, "finish_reason", None) == "length" or _burnout:
         _retry = _truncation_retry_budget(
             base_request=completion_request,
             effective_model_def=effective_model_def,
@@ -3044,14 +3144,25 @@ async def _nonstreamed_gateway_completion(
         )
         if _retry is not None:
             retry_request, retry_max_tokens = _retry
-            log.warning(
-                "non-streaming completion truncated with tools "
-                "offered; retrying once with higher max_tokens "
-                "(mode=%s, model=%s, to=%d)",
-                mode_id,
-                getattr(effective_model_def, "model_id", ""),
-                retry_max_tokens,
-            )
+            if _burnout:
+                log.warning(
+                    "non-streaming completion burned its completion "
+                    "budget on reasoning without dispatching a tool "
+                    "call; retrying once with higher max_tokens "
+                    "(mode=%s, model=%s, to=%d)",
+                    mode_id,
+                    getattr(effective_model_def, "model_id", ""),
+                    retry_max_tokens,
+                )
+            else:
+                log.warning(
+                    "non-streaming completion truncated with tools "
+                    "offered; retrying once with higher max_tokens "
+                    "(mode=%s, model=%s, to=%d)",
+                    mode_id,
+                    getattr(effective_model_def, "model_id", ""),
+                    retry_max_tokens,
+                )
             retry_started = time.perf_counter()
             completion = await gateway.complete(retry_request)
             if completion.duration_ms <= 0.0:

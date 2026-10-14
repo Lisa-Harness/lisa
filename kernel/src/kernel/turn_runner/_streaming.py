@@ -32,6 +32,7 @@ class StreamedCompletionAdapter:
         "_aggregated",
         "content",
         "duration_ms",
+        "finish_reason",
         "reasoning_content",
         "tool_calls",
         "usage",
@@ -46,6 +47,13 @@ class StreamedCompletionAdapter:
         self.content = aggregated.content
         self.tool_calls = aggregated.tool_calls
         self.usage = aggregated.usage
+        # Surfaced flat for the same diagnostics the non-streaming
+        # ``CompletionResult`` carries: the reasoning-tail caveat's
+        # truncation clause and the turn-loop empty-completion warnings read
+        # ``finish_reason`` via ``getattr``. The 2026-10-13 turn 789 streamed
+        # burnout caveat reported ``finish_reason=unknown`` because the
+        # adapter hid the aggregate's termination signal.
+        self.finish_reason = aggregated.finish_reason
         # Surfaced flat for the turn-runner's duration extraction; the stream
         # carries no per-chunk duration, so the caller measures and stamps it.
         self.duration_ms = 0.0
