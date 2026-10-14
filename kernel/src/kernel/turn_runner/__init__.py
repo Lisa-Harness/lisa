@@ -2856,7 +2856,8 @@ def _truncation_retry_budget(
 
 #: A reasoning-burnout completion must have consumed at least this share of
 #: its per-call budget on the one visible proxy (completion tokens) before
-#: the retry fires — a cheap empty completion is a yield, not a lost write.
+#: the retry fires — below the share, a cheap empty completion keeps its
+#: prior end-of-turn behavior (reasoning-tail caveat, no retry).
 _REASONING_BURNOUT_SHARE = 0.9
 
 
@@ -2971,11 +2972,16 @@ async def _streamed_gateway_completion(
     # Reasoning-burnout rescue (the 2026-10-13 turn 789 stall): a stream
     # that ends ``stop`` with empty content, no streamed tool calls, and a
     # whole-budget reasoning aggregate got nowhere — same one-shot 2x retry
-    # as the truncation rescue above. The burnout predicate needs usage to
-    # verify the burn; a stream without usage cannot prove it, so the
-    # rescue stays dormant (matching the length path's usage-free retry).
+    # as the truncation rescue above. One shot per iteration: when the
+    # ``length`` rescue above already ran, its retry result owns this
+    # iteration (chaining a second stream at the same doubled budget
+    # would re-spend twice with no headroom gained). The burnout predicate
+    # needs usage to verify the burn; a stream without usage cannot prove
+    # it, so the rescue stays dormant (matching the length path's
+    # usage-free retry).
     if (
-        aggregated.finish_reason == "stop"
+        fallback_request is completion_request
+        and aggregated.finish_reason == "stop"
         and not aggregated.tool_calls
         and not aggregated.content.strip()
         and aggregated.reasoning_content.strip()

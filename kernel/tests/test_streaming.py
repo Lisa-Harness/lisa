@@ -884,16 +884,17 @@ async def test_turn_runner_rescues_reasoning_burnout_completion() -> None:
     completions = [
         # First call: whole budget burned on thinking; clean stop;
         # no content, no tool call — invisible to the length rescues.
-        # First call (tools offered): the model makes no tool calls, runs
-        # out of its budget narrating a summary, and truncates.
+        # completion_tokens==4096 matches a real on-the-wire burn (usage
+        # is capped at the request's max_tokens; the incident's 16k
+        # figure was the doubled budget its rescue had by then).
         _BurnoutStubCompletion(
             content="",
             prompt_tokens=10000,
-            total_tokens=26000,
+            total_tokens=14096,
             finish_reason="stop",
             reasoning_content="Let me format carefully — multiline literals: " * 2000,
-            reasoning_tokens=16000,
-            completion_tokens=16000,
+            reasoning_tokens=4096,
+            completion_tokens=4096,
         ),
         # Retry (doubled budget): the payload fits — the edit lands.
         _BurnoutStubCompletion(
@@ -937,7 +938,9 @@ async def test_turn_runner_rescues_reasoning_burnout_completion() -> None:
 @pytest.mark.asyncio
 async def test_turn_runner_reasoning_burnout_below_burn_share_not_retried() -> None:
     """A clean-stop empty completion that did NOT burn near the budget is
-    NOT retried — a cheap empty completion stays a cheap yield.
+    NOT retried — below the share the reasoning-tail caveat ends the turn
+    as a natural completion (only a completion with neither content nor
+    reasoning reaches the yield path).
     """
     calls: list[int] = []
 
@@ -1070,10 +1073,78 @@ async def test_turn_runner_rescues_reasoning_burnout_stream() -> None:
         result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
 
     assert calls == [4096, 8192], f"expected one burnout stream retry at 2x, got {calls}"
-    # The streamed burnout aggregate cannot carry usage (no usage chunk in
-    # the stub), so pin the fallback behavior instead: the turn did not end
-    # on the reasoning-tail caveat with nothing dispatched.
+    # The streamed-path rescue fired on the carried usage (the trailing
+    # usage chunk proves the burn); the retried stream ended tool_calls
+    # and the fallback complete() produced the turn's response — the turn
+    # did not end on the reasoning-tail caveat with nothing dispatched.
     assert "no visible answer" not in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_burnout_rescue_skipped_after_length_rescue() -> None:
+    """One rescue per streamed iteration: the burnout block stays dormant
+    when the ``length`` rescue already consumed this iteration's retry.
+
+    Chaining a second stream at the same doubled budget would re-spend
+    twice with no headroom gained (the length retry above set
+    ``fallback_request`` to the doubled request; a second hop targeting
+    ``2 * original`` is capped right back at the same size).
+    """
+    calls: list[int] = []
+
+    def _stream_fn(chunks_by_call: list[list[StreamedChunk]]):
+        call_idx = {"n": 0}
+
+        async def stream_fn(**kwargs: Any):
+            calls.append(kwargs.get("max_tokens"))
+            chunks = chunks_by_call[call_idx["n"]]
+            call_idx["n"] += 1
+            for chunk in chunks:
+                yield chunk
+
+        return stream_fn
+
+    chunks_by_call = [
+        # First call: truncated mid payload with tools offered — the
+        # length rescue consumes the iteration's one shot.
+        [
+            StreamedChunk(content="Writing both files now."),
+            StreamedChunk(
+                finish_reason="length",
+                usage=CompletionUsage(
+                    prompt_tokens=10000, completion_tokens=4096, total_tokens=14096
+                ),
+            ),
+        ],
+        # Length-rescue retry: the aggregate is the burnout shape (clean
+        # stop, whole doubled budget burned on reasoning, no tool call),
+        # but the burnout block must NOT fire a second stream.
+        [
+            StreamedChunk(reasoning_content="still deliberating " * 500),
+            StreamedChunk(
+                finish_reason="stop",
+                usage=CompletionUsage(
+                    prompt_tokens=10000, completion_tokens=8192, total_tokens=18192
+                ),
+            ),
+        ],
+    ]
+    stream_fn = _stream_fn(chunks_by_call)
+
+    async def complete_fn(**kwargs: Any):
+        return _BurnoutStubCompletion(content="", finish_reason="stop")
+
+    hooks = _build_minimal_hooks(complete_fn, stream_fn)
+    with patch(
+        "kernel.turn_runner._compute_capability_routing_hint",
+        return_value="",
+    ):
+        result = await run_turn(mode_id="default", query="make the edit", hooks=hooks)
+
+    assert calls == [4096, 8192], f"expected exactly one rescue per iteration, got {calls}"
+    # The length-rescue aggregate owns the iteration's end: the reasoning
+    # tail surfaces as the (bounded) caveat response.
+    assert result.content_source == "reasoning_tail"
 
 
 # ── on_delta per-chunk forwarding (v1 streaming display) ──────────────
