@@ -127,6 +127,18 @@ the table above). Two properties keep it from becoming a silent failure:
   turn-loop paths (streaming and non-streaming) retry a
   `finish_reason=length` truncation once at 2× budget, capped by the
   model's context window. The pathological bound is 32768.
+- **Burnout self-heals once too (2026-10-13).** The truncation rescues
+  only fired on `finish_reason=length`, but a reasoning model that
+  re-deliberates until the wall can also end `finish_reason=stop` with
+  empty content, no tool call, and its whole budget spent on thinking
+  (glm-5.3-flash:cloud, turn 789: two truncation retries plus a clean-stop
+  32k reasoning burn; the turn ended handing back a 121KB reasoning-tail
+  caveat with nothing dispatched). The same one-shot 2× retry now covers
+  that shape: a `stop` completion with empty content, no tool calls, and
+  completion tokens at ≥90% of the per-call budget retries once at the
+  doubled budget (context-window capped). Completions below the 90% burn
+  share keep the cheap-empty-completion yield behavior; `length` stops
+  still take the truncation rescue.
 
 **Scope updates (2026-10-06, `docs/SPEC/BUDGET_SCOPES_RFC.md`):** the
 budget is no longer a single process-wide knob. Manifest model entries
@@ -203,6 +215,18 @@ so `max_completion_tokens: 16384` is honest headroom, not a cut. Per the
 manifest loader, `0`/absent inherits the process default; the floor for
 any declared value is 1024, and the value must not exceed the model's
 declared `context_window` when both are set.
+
+**Declared (2026-10-13, `artifacts/config/models.yaml`):** the Ollama
+cloud family now carries observed ceilings from `artifacts/logs/token-usage.jsonl`
+turn-loop completions — `glm-5.2:cloud: 8192` (n=130, p95=1998, max=3942),
+`kimi-k3:cloud: 8192` (n=114, p95=2474, max=7506),
+`deepseek-v4.1-flash:cloud: 16384` (n=114, p95=8192, max=16384),
+`glm-5.3:cloud: 32768` (n=832, p95=22396, max=49442), and
+`glm-5.3-flash:cloud: 32768` (n=412, p95=11152, but the 2026-10-13 turn 789
+burnout hit 32768). The tighter ceilings make the burnout share (≥90% of
+the effective budget) bite sooner on the models that never legitimately
+need 16k+, so a stray reasoning dump retries once at their observed scale
+instead of doubling off the process default.
 
 ### `context_window` on the manifest entry
 

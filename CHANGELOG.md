@@ -4,6 +4,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### A reasoning model that burns its completion budget on a clean stop no longer strands the turn
+
+- **What:** the turn loop's completion rescues now cover the burnout
+  shape: a `finish_reason='stop'` completion with empty visible content,
+  no tool calls, substantial `reasoning_content`, and completion tokens at
+  ≥90% of the per-call budget is retried once at the doubled budget
+  (context-window capped) on all three paths — streamed, non-streaming,
+  and the tool-calls-fallback regeneration. `StreamedCompletionAdapter`
+  also surfaces the aggregate's `finish_reason` now, so streamed-path
+  diagnostics no longer read `finish_reason=unknown`.
+- **Why:** the 2026-10-13 turn 789 stall (glm-5.3-flash:cloud,
+  coding_execute): the model re-deliberated a `coding_edit_files` payload
+  across its whole budget — a `length` truncation, the doubled 32k rescue,
+  then a clean-stop 32k reasoning burn — and the turn ended handing back a
+  121KB reasoning-tail caveat with nothing dispatched. The rescues only
+  matched `finish_reason='length'`; a reasoning loop running out of budget
+  does not always surface `length` on every backend.
+- **Tests:** `kernel/tests/test_streaming.py`
+  (`test_turn_runner_rescues_reasoning_burnout_completion`,
+  `test_turn_runner_rescues_reasoning_burnout_stream`,
+  `test_turn_runner_reasoning_burnout_below_burn_share_not_retried`,
+  `test_turn_runner_reasoning_burnout_respects_context_cap`,
+  `test_streamed_completion_adapter_surfaces_finish_reason`,
+  `test_streamed_completion_adapter_truncated_surfaces_aggregate`).
+
 ### Changed
 
 #### Streamed tool calls dispatch in one pass — no non-streaming regeneration
