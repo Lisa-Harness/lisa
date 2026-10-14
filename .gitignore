@@ -22,6 +22,7 @@ Thumbs.db
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.lisa-tmp/
 coverage/
 .coverage
 .coverage.*
