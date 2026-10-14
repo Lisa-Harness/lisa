@@ -71,6 +71,29 @@ async def test_handler_appends_multiple_events_without_collapsing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idempotency_keys_survive_a_frozen_wall_clock(monkeypatch) -> None:
+    """Uniqueness must not depend on wall-clock tick granularity.
+
+    Regression (2026-10-13 windows CI): Windows ticks ``time.time_ns`` at
+    ~15.6ms, so three events published within one tick all received the
+    same ``emitted_at:time_ns`` key and collapsed onto one dedupe identity
+    (``assert 1 == 3``). A zero-progress clock must still produce strictly
+    increasing suffixes.
+    """
+    from kernel import token_usage
+
+    monkeypatch.setattr(token_usage.time, "time_ns", lambda: 500_000_000)
+    monkeypatch.setattr(token_usage, "_time_ns_suffix", token_usage._time_ns_suffix)
+    monkeypatch.setattr(token_usage, "_LAST_IDEMPOTENCY_SUFFIX", -1)
+
+    first = token_usage._time_ns_suffix()
+    second = token_usage._time_ns_suffix()
+    third = token_usage._time_ns_suffix()
+
+    assert len({first, second, third}) == 3
+
+
+@pytest.mark.asyncio
 async def test_handler_ignores_non_token_usage_events() -> None:
     with TemporaryDirectory() as td:
         path = Path(td) / "token-usage.jsonl"

@@ -217,8 +217,23 @@ class TokenUsageTelemetryHandler:
 
 
 def _time_ns_suffix() -> str:
-    """Return a short nanosecond suffix for idempotency keys."""
-    return str(time.time_ns() % 1_000_000_000)
+    """Return a short strictly-monotonic nanosecond suffix for idempotency keys.
+
+    Windows wall clocks tick at ~15.6ms, so raw ``time.time_ns()`` returns
+    the identical value for events published within one tick and collapsed
+    three legitimate events onto one idempotency key (2026-10-13 windows CI:
+    ``assert 1 == 3``). Track the last issued value and always advance past
+    it so each key in a process is unique.
+    """
+    global _LAST_IDEMPOTENCY_SUFFIX  # noqa: PLW0603
+    value = time.time_ns() % 1_000_000_000
+    if value <= _LAST_IDEMPOTENCY_SUFFIX:
+        value = _LAST_IDEMPOTENCY_SUFFIX + 1
+    _LAST_IDEMPOTENCY_SUFFIX = value
+    return str(value)
+
+
+_LAST_IDEMPOTENCY_SUFFIX = -1
 
 
 def build_token_usage_event(
