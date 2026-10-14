@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -474,7 +475,14 @@ def test_live_result_redaction_and_integrity_are_enforced(tmp_path: Path) -> Non
     assert json.loads(reader.find_content(stub["ref"], "secret"))["matches"] == []
     path = result_object_path(thread, stub["ref"])
     assert json.loads(path.read_text())["content"] == original
-    assert path.stat().st_mode & 0o777 == 0o600
+    # Owner-only persistence: POSIX can assert the exact 0o600 mode; Windows
+    # os.chmod cannot clear group/other write bits (only the read-only bit
+    # maps), so there the assertion is the owner-writable bit (the strict
+    # mode check stays POSIX-only).
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+    else:
+        assert path.stat().st_mode & 0o200
     path.write_text('{"content":"tampered"}')
     with pytest.raises(ValueError, match="integrity"):
         reader.read_content(stub["ref"])
