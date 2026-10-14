@@ -227,6 +227,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def decide_pending_approval(
+    runtime: HostRuntime,
+    request_id: str,
+    *,
+    approve: bool,
+    transport: TransportCallbacks,
+    remember: str | None = None,
+    remember_default: bool = False,
+) -> Any:
+    """Decide one approval by value through the typed approval core.
+
+    Public typed seam for hosts that speak values (not the slash grammar):
+    injects this module's ``_route_model_turn`` as the continuation router,
+    so the post-approval synthesis turn reuses the single-turn machinery
+    while the caller never imports a private symbol.
+    """
+    from runtime.approval import decide_approval
+
+    return await decide_approval(
+        runtime,
+        request_id,
+        approve=approve,
+        transport=transport,
+        route_model_turn=_route_model_turn,
+        remember=remember,
+        remember_default=remember_default,
+    )
+
+
 async def handle_message(
     runtime: HostRuntime,
     message: str,

@@ -186,14 +186,20 @@ async def try_affirmative_approval_resume(
     if len(pending) != 1:
         return None
     request_id = pending[0].invocation.request_id
-    final_command = decision_cmd.format(id=request_id)
-    logger.debug("approval decision: treating %r as %s", stripped, final_command)
-    result_text = await handle_approval_command(
+    remember = "--remember" in decision_cmd
+    logger.debug(
+        "approval decision: treating %r as /%s %s",
+        stripped,
+        "deny" if decision_cmd.startswith("/deny") else "approve",
+        request_id,
+    )
+    result_text = await decide_approval(
         runtime,
-        final_command,
+        request_id,
         approve=not decision_cmd.startswith("/deny"),
         transport=transport,
         route_model_turn=route_model_turn,
+        remember_default=remember,
     )
     from runtime.types import HostCommandResult as _HostCommandResult
 
@@ -307,9 +313,9 @@ async def maybe_auto_continue_approval(
         invocation.target_id,
         request_id[:8],
     )
-    result = await handle_approval_command(
+    result = await decide_approval(
         runtime,
-        f"/approve {request_id}",
+        request_id,
         approve=True,
         transport=transport,
         route_model_turn=route_model_turn,
@@ -804,11 +810,9 @@ async def _deny_approval_record(
 
 async def _load_approval_record(
     runtime: HostRuntime,
-    command: str,
-    *,
-    approve: bool,
+    request_id: str,
 ) -> tuple[Any, str | None]:
-    """Load the approval record addressed by the command.
+    """Load the approval record addressed by ``request_id``.
 
     Returns:
         A ``(record, error_text)`` tuple. ``error_text`` is ``None`` on
@@ -816,47 +820,41 @@ async def _load_approval_record(
         return immediately. ``record`` is ``None`` alongside a non-None
         ``error_text``.
     """
-    request_id, _remember = _parse_approval_command(command, approve=approve)
-    verb = "approve" if approve else "deny"
     if not request_id:
-        return None, f"Usage: /{verb} <request_id>"
+        return None, "Usage: /approve|/deny <request_id>"
     record = await runtime.services.approval_service.get(request_id)
     if record is None:
         return None, f"No pending approval request named '{request_id}'."
     return record, None
 
 
-async def handle_approval_command(
+async def decide_approval(
     runtime: HostRuntime,
-    command: str,
+    request_id: str,
     *,
     approve: bool,
     transport: TransportCallbacks,
     route_model_turn: RouteModelTurnFn,
+    remember: str | None = None,
+    remember_default: bool = False,
     auto_approved: bool = False,
 ) -> str | HostCommandResult:
-    """Approve or deny one persisted invocation without asking the model.
+    """Decide one persisted approval by value — the typed core.
 
-    Identity handling is two-stage. The primary path rebuilds the identity
-    from the live runtime — the same identity the turn path used, so a
-    pending approval inside one process resolves exactly. When that rebuild
-    cannot match (mode handoffs reset ``current_mode_id`` across process
-    boundaries; the invocation's identity carries the *owning* mode), the
-    recorded owner identity on the saved invocation is used instead: the
-    record is a host-persisted claim, and the id was minted by the approval
-    service that owns this data dir, so the operator's explicit id reference
-    is the session-boundary decision. Cross-user references are still
-    rejected — the fallback only ever matches the record's own owner.
+    This is the seam one-shot hosts (the CLI) and the string dispatcher
+    (:func:`handle_approval_command`) both call. ``request_id`` is the
+    concrete id (never a command string); ``remember`` is the explicit
+    allow-rule prefix; ``remember_default`` selects the default-prefix
+    behavior (program + first subcommand) when ``remember`` is ``None``.
 
-    Returns a plain ``str`` for the deny and failure paths; a successful
-    approve returns a ``HostCommandResult`` from the post-approval
-    continuation turn so ``operator_exit`` survives the command dispatch.
-    The internal ``auto_approved`` path resumes after a policy-approved action
-    even when the owning mode reports after manual approvals.
+    Semantics are identical to the string form: two-stage identity
+    resolution (live identity, then the recorded owner on mismatch),
+    deny settles the paired recovery record, approve executes the action
+    and runs the post-approval continuation turn. Returns a plain ``str``
+    for the deny and failure paths; a successful approve returns a
+    ``HostCommandResult`` from the continuation turn.
     """
-
-    request_id, remember = _parse_approval_command(command, approve=approve)
-    record, load_error = await _load_approval_record(runtime, command, approve=approve)
+    record, load_error = await _load_approval_record(runtime, request_id)
     if load_error is not None:
         return load_error
 
@@ -887,10 +885,55 @@ async def handle_approval_command(
         runtime,
         record,
         request_id=request_id,
-        command=command,
         remember=remember,
+        remember_default=remember_default,
         transport=transport,
         route_model_turn=route_model_turn,
+        auto_approved=auto_approved,
+    )
+
+
+async def handle_approval_command(
+    runtime: HostRuntime,
+    command: str,
+    *,
+    approve: bool,
+    transport: TransportCallbacks,
+    route_model_turn: RouteModelTurnFn,
+    auto_approved: bool = False,
+) -> str | HostCommandResult:
+    """Approve or deny one persisted invocation without asking the model.
+
+    Parse adapter over :func:`decide_approval`: the ``/<verb> <request_id>
+    [--remember [prefix]]`` command form is parsed here and the typed core
+    executes the decision. Kept for the string dispatcher
+    (``handle_message``) and any host that speaks the slash grammar.
+
+    Identity handling is two-stage: the live runtime's identity first (the
+    same identity the turn path used, so a pending approval inside one
+    process resolves exactly), then the recorded owner identity on the
+    saved invocation when the rebuild cannot match — the record is a
+    host-persisted claim, and the id was minted by the approval service that
+    owns this data dir. Cross-user references are still rejected.
+
+    Returns a plain ``str`` for the deny and failure paths; a successful
+    approve returns a ``HostCommandResult`` from the post-approval
+    continuation turn so ``operator_exit`` survives the command dispatch.
+    The internal ``auto_approved`` path resumes after a policy-approved action
+    even when the owning mode reports after manual approvals.
+    """
+
+    request_id, remember = _parse_approval_command(command, approve=approve)
+    return await decide_approval(
+        runtime,
+        request_id,
+        approve=approve,
+        transport=transport,
+        route_model_turn=route_model_turn,
+        remember=remember,
+        # ``--remember`` present with no explicit prefix: use the default
+        # (program + first subcommand) prefix.
+        remember_default=remember is None and "--remember" in command,
         auto_approved=auto_approved,
     )
 
@@ -900,8 +943,8 @@ async def _continue_approved_record(
     record: Any,
     *,
     request_id: str,
-    command: str,
     remember: str | None,
+    remember_default: bool,
     transport: TransportCallbacks,
     route_model_turn: RouteModelTurnFn,
     auto_approved: bool,
@@ -916,7 +959,7 @@ async def _continue_approved_record(
         runtime.session.current_mode_id = saved.mode_id
         if saved.reason == "auto_approval_cap":
             saved = saved.grant_auto_approval_allowance()
-        if "--remember" in command:
+        if remember is not None or remember_default:
             _remember_allow_rule(runtime, record.invocation, remember)
         routed = await route_model_turn(
             runtime,
@@ -943,7 +986,7 @@ async def _continue_approved_record(
     # program / program+subcommand, e.g. "git status" from "git status -sb"),
     # which is the natural "this thing, repeatedly" scope; an explicit flag
     # value overrides it. Host-side write — the CLI never edits policy.yaml.
-    if not error and "--remember" in command:
+    if not error and (remember is not None or remember_default):
         _remember_allow_rule(runtime, record.invocation, remember)
 
     # ── Post-approval continuation ───────────────────────────────────
@@ -1050,6 +1093,7 @@ def _recovery_identity_for_invocation(
 __all__ = [
     "approval_identity",
     "build_approval_data",
+    "decide_approval",
     "handle_approval_command",
     "is_affirmative_resume",
     "maybe_auto_continue_approval",

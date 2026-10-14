@@ -20,13 +20,21 @@ immediately — but there was no in-host way to *read* the effective policy or
   named list (``allow``/``ask``/``deny``).
 - ``/policy rule list`` — render the rules with their remove addresses.
 
+The typed cores (:func:`set_policy_mode`, :func:`set_policy_bare`,
+:func:`add_policy_rule`, :func:`remove_policy_rule`,
+:func:`render_policy_rules`) take values — no command string, no quoting
+round trip — and own the same write paths. One-shot hosts call them
+directly; ``handle_policy_command`` is the slash-grammar parse adapter
+over them for the string dispatcher (``handle_message``).
+
 The host owns every policy write (the same rule ``--remember`` obeys): a
-transport never edits ``policy.yaml`` itself, it sends command text. Mode,
-bare, and rule edits preserve the other rule lists and rewrite the document
-with the standard commented header via :func:`runtime.policy.write_policy` (the
-same serializer ``remember_allow_prefix`` uses), so hand-authored comments on
-other keys survive an operator's next manual edit but a mode flip never
-silently drops rules.
+transport never edits ``policy.yaml`` itself, it either sends command text
+or calls the typed cores. Mode, bare, and rule edits preserve the other
+rule lists and rewrite the document with the standard commented header via
+:func:`runtime.policy.write_policy` (the same serializer
+``remember_allow_prefix`` uses), so hand-authored comments on other keys
+survive an operator's next manual edit but a mode flip never silently
+drops rules.
 
 Dependency direction: ``_policy`` → ``runtime.policy``, ``runtime.runtime``. It is
 imported lazily by ``runtime.handle_message`` so the dispatcher's import cost
@@ -56,7 +64,15 @@ from runtime.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["handle_policy_command"]
+__all__ = [
+    "add_policy_rule",
+    "handle_policy_command",
+    "remove_policy_rule",
+    "render_policy_document",
+    "render_policy_rules",
+    "set_policy_bare",
+    "set_policy_mode",
+]
 
 #: Token index of the first argument after the verb ("/policy mode trust" ->
 #: parts[2] == "trust").
@@ -209,50 +225,8 @@ def _parse_rule_add_flags(raw: str) -> tuple[PolicyRule | None, str]:
     return rule, ""
 
 
-def _handle_rule_add(runtime: HostRuntime, args: str) -> str:
-    """Handle ``/policy rule add <list> [flags]``."""
-    parts = args.split(None, 1)
-    list_name = parts[0].lower() if parts else ""
-    if list_name not in _RULE_LISTS:
-        return f"Unknown rule list {list_name!r}. Use: {'|'.join(_RULE_LISTS)}."
-    rule, error = _parse_rule_add_flags(parts[1] if len(parts) > 1 else "")
-    if rule is None:
-        return error
-    if rule.when:
-        # Compile-check BEFORE the write: a non-compiling expression would
-        # fail the whole document to ask-mode defaults on the next load —
-        # the add must be rejected, not poison the policy.
-        errors = validate_rule_expressions([rule])
-        if errors:
-            return f"Rejected: {errors[0]}"
-    data_dir = Path(runtime.paths.data_dir)
-    policy = load_policy(data_dir)
-    getattr(policy, list_name).append(rule)
-    write_policy(data_dir, policy)
-    logger.info("policy: rule added to %s: %s", list_name, rule.describe())
-    return f"Rule added to **{list_name}**: {rule.describe()}. Takes effect immediately."
-
-
-def _handle_rule_remove(runtime: HostRuntime, args: str) -> str:
-    """Handle ``/policy rule remove <list>:<n>``."""
-    address = args.strip().lower()
-    list_name, sep, raw_index = address.partition(":")
-    if not sep or list_name not in _RULE_LISTS or not raw_index.isdigit():
-        return "Usage: /policy rule remove <list>:<n> (e.g. allow:2). See /policy rule list."
-    index = int(raw_index)
-    data_dir = Path(runtime.paths.data_dir)
-    policy = load_policy(data_dir)
-    rules = getattr(policy, list_name)
-    if not 1 <= index <= len(rules):
-        return f"No rule {list_name}:{index} — the list has {len(rules)} rule(s)."
-    removed = rules.pop(index - 1)
-    write_policy(data_dir, policy)
-    logger.info("policy: rule removed from %s: %s", list_name, removed.describe())
-    return f"Removed {list_name}:{index} ({removed.describe()}). Takes effect immediately."
-
-
-def _handle_rule_list(runtime: HostRuntime) -> str:
-    """Handle ``/policy rule list`` — rules with their remove addresses."""
+def render_policy_rules(runtime: HostRuntime) -> str:
+    """Render the rule lists with their remove addresses (typed core)."""
     policy, load_errors = load_policy_with_errors(Path(runtime.paths.data_dir))
     lines: list[str] = ["## Policy rules"]
     if load_errors:
@@ -281,6 +255,124 @@ _VERB_REMOVE = "remove"
 _VERB_LIST = "list"
 
 
+def set_policy_mode(runtime: HostRuntime, mode: PolicyMode) -> str:
+    """Set the fallback approval mode (typed core for hosts and the CLI).
+
+    Returns the reply text; the caller owns transport emission and any
+    thread entry. Same write path as ``/policy mode``.
+    """
+    _set_policy_fields(runtime, mode=mode)
+    return f"Policy mode set to **{mode.value}**. Takes effect immediately."
+
+
+def set_policy_bare(runtime: HostRuntime, value: bool) -> str:
+    """Toggle ``bare_requires_approval`` (typed core for hosts and the CLI).
+
+    Returns the reply text; the caller owns transport emission and any
+    thread entry. Same write path as ``/policy bare``.
+    """
+    _set_policy_fields(runtime, bare_requires_approval=value)
+    return f"bare_requires_approval set to **{str(value).lower()}**. Takes effect immediately."
+
+
+def add_policy_rule(
+    runtime: HostRuntime,
+    list_name: str,
+    *,
+    tool: str = "",
+    effect: str = "",
+    pack: str = "",
+    command_prefix: str = "",
+    when: str = "",
+) -> str:
+    """Append one rule to the named list (typed core for hosts and the CLI).
+
+    The CEL ``when`` expression arrives as a value — no quoting round trip.
+    It is compile-checked BEFORE the write (a non-compiling expression would
+    fail the whole document to ask-mode defaults on the next load — the add
+    must be rejected, not poison the policy). At least one matcher is
+    required: an empty rule matches nothing, so an accidental bare add must
+    be rejected loudly instead of silently inert.
+
+    Returns the reply text; the caller owns transport emission and any
+    thread entry.
+    """
+    list_name = list_name.strip().lower()
+    if list_name not in _RULE_LISTS:
+        return f"Unknown rule list {list_name!r}. Use: {'|'.join(_RULE_LISTS)}."
+    fields: dict[str, str] = {}
+    for key, value in (
+        ("tool", tool),
+        ("effect", effect),
+        ("pack", pack),
+        ("command_prefix", command_prefix),
+        ("when", when),
+    ):
+        if value.strip():
+            fields[key] = value.strip()
+    rule = PolicyRule(**fields)  # type: ignore[arg-type]
+    if not any((rule.tool, rule.effect, rule.pack, rule.command_prefix, rule.when)):
+        return "A rule needs at least one matcher (--tool/--effect/--pack/--prefix/--when)."
+    if rule.when:
+        # Compile-check BEFORE the write: a non-compiling expression would
+        # fail the whole document to ask-mode defaults on the next load —
+        # the add must be rejected, not poison the policy.
+        errors = validate_rule_expressions([rule])
+        if errors:
+            return f"Rejected: {errors[0]}"
+    data_dir = Path(runtime.paths.data_dir)
+    policy = load_policy(data_dir)
+    getattr(policy, list_name).append(rule)
+    write_policy(data_dir, policy)
+    logger.info("policy: rule added to %s: %s", list_name, rule.describe())
+    return f"Rule added to **{list_name}**: {rule.describe()}. Takes effect immediately."
+
+
+def remove_policy_rule(runtime: HostRuntime, address: str) -> str:
+    """Remove rule ``<list>:<n>`` from the policy document (typed core).
+
+    Returns the reply text; the caller owns transport emission and any
+    thread entry. Same write path as ``/policy rule remove``.
+    """
+    address = address.strip().lower()
+    list_name, sep, raw_index = address.partition(":")
+    if not sep or list_name not in _RULE_LISTS or not raw_index.isdigit():
+        return "Usage: /policy rule remove <list>:<n> (e.g. allow:2). See /policy rule list."
+    index = int(raw_index)
+    data_dir = Path(runtime.paths.data_dir)
+    policy = load_policy(data_dir)
+    rules = getattr(policy, list_name)
+    if not 1 <= index <= len(rules):
+        return f"No rule {list_name}:{index} — the list has {len(rules)} rule(s)."
+    removed = rules.pop(index - 1)
+    write_policy(data_dir, policy)
+    logger.info("policy: rule removed from %s: %s", list_name, removed.describe())
+    return f"Removed {list_name}:{index} ({removed.describe()}). Takes effect immediately."
+
+
+def _handle_rule_add(runtime: HostRuntime, args: str) -> str:
+    """Handle ``/policy rule add <list> [flags]`` (slash-grammar adapter)."""
+    parts = args.split(None, 1)
+    list_name = parts[0].lower() if parts else ""
+    rule, error = _parse_rule_add_flags(parts[1] if len(parts) > 1 else "")
+    if rule is None:
+        return error
+    return add_policy_rule(
+        runtime,
+        list_name,
+        tool=rule.tool or "",
+        effect=rule.effect or "",
+        pack=rule.pack or "",
+        command_prefix=rule.command_prefix or "",
+        when=rule.when or "",
+    )
+
+
+def _handle_rule_remove(runtime: HostRuntime, args: str) -> str:
+    """Handle ``/policy rule remove <list>:<n>`` (slash-grammar adapter)."""
+    return remove_policy_rule(runtime, args)
+
+
 def _handle_rule(runtime: HostRuntime, stripped: str) -> str:
     """Dispatch ``/policy rule ...`` subcommands from the original-cased text."""
     # Parse verbs case-insensitively but keep the original casing for flag
@@ -295,7 +387,7 @@ def _handle_rule(runtime: HostRuntime, stripped: str) -> str:
             "[--pack P] [--prefix PX] [--when EXPR] | remove <list>:<n> | list."
         )
     if verb == _VERB_LIST:
-        return _handle_rule_list(runtime)
+        return render_policy_rules(runtime)
     remainder = parts[_RULE_REMAINDER_INDEX] if len(parts) > _RULE_REMAINDER_INDEX else ""
     if verb == _VERB_ADD:
         return _handle_rule_add(runtime, remainder)
@@ -303,23 +395,28 @@ def _handle_rule(runtime: HostRuntime, stripped: str) -> str:
 
 
 def _handle_mode(runtime: HostRuntime, parts: list[str]) -> str:
-    """Handle ``/policy mode <m>``."""
+    """Handle ``/policy mode <m>`` (slash-grammar adapter)."""
     raw_mode = parts[_ARG_TOKEN_INDEX].strip() if len(parts) > _ARG_TOKEN_INDEX else ""
     try:
         mode = PolicyMode(raw_mode)
     except ValueError:
         known = "|".join(m.value for m in PolicyMode)
         return f"Unknown mode {raw_mode!r}. Use: {known}."
-    _set_policy_fields(runtime, mode=mode)
-    return f"Policy mode set to **{mode.value}**. Takes effect immediately."
+    return set_policy_mode(runtime, mode)
 
 
-def handle_policy_command(
+def handle_policy_command(  # noqa: PLR0911  # one return per slash subcommand
     runtime: HostRuntime,
     stripped: str,
     message: str,
 ) -> str:
-    """Handle ``/policy`` and its subcommands.
+    """Handle ``/policy`` and its subcommands (slash-grammar adapter).
+
+    Parses the command string and delegates to the typed cores
+    (:func:`set_policy_mode`, :func:`set_policy_bare`,
+    :func:`add_policy_rule`, :func:`remove_policy_rule`,
+    :func:`render_policy_document`, :func:`render_policy_rules`) — the same
+    value seam one-shot hosts call directly.
 
     Returns the reply text; the dispatcher owns transport emission and the
     thread entry. Deliberately synchronous: every policy read/write on this
@@ -342,14 +439,11 @@ def handle_policy_command(
     if sub == "bare":
         raw = parts[_ARG_TOKEN_INDEX].strip() if len(parts) > _ARG_TOKEN_INDEX else ""
         if raw in {"on", "true", "1", "yes"}:
-            value = True
-        elif raw in {"off", "false", "no"}:
-            value = False
-        else:
-            current = load_policy(Path(runtime.paths.data_dir)).bare_requires_approval
-            return f"Usage: /policy bare on|off (currently {str(current).lower()})."
-        _set_policy_fields(runtime, bare_requires_approval=value)
-        return f"bare_requires_approval set to **{str(value).lower()}**. Takes effect immediately."
+            return set_policy_bare(runtime, True)
+        if raw in {"off", "false", "no"}:
+            return set_policy_bare(runtime, False)
+        current = load_policy(Path(runtime.paths.data_dir)).bare_requires_approval
+        return f"Usage: /policy bare on|off (currently {str(current).lower()})."
 
     if sub in {"", "show", "status"}:
         return render_policy_document(runtime)

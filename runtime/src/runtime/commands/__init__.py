@@ -32,22 +32,11 @@ Public surface
 - :func:`handle_pack_command`
 - :func:`handle_models_command`
 - :func:`format_help`
-- :func:`render_capability_help`
-- :func:`render_debug_turn`
-- :func:`render_runtime_settings`
-- :func:`format_token_stats`
-- :func:`build_capability_snapshot`
-- :func:`predict_model`
-- :func:`set_runtime_route_preview`
-- :func:`preferred_model_id_for_route`
-- :func:`model_alias_for_mode`
-- :func:`render_pack_list`
-- :func:`render_modes_list`
-- :func:`render_operations_list`
-- :func:`render_tools_list`
-- :func:`mode_support_gap`
-- :func:`format_unsupported_mode`
-- :func:`format_operation_error`
+- :func:`set_policy_mode`
+- :func:`set_policy_bare`
+- :func:`add_policy_rule`
+- :func:`remove_policy_rule`
+- :func:`handle_policy_command` (slash-grammar adapter over the typed cores)
 
 The private helpers tests reach for (``_resolve_model``,
 ``_parse_models_subcommand``, ``_render_discover_notes``, the pack spec
@@ -130,8 +119,13 @@ from runtime.commands._packs import (
     set_pack_enabled,
 )
 from runtime.commands._policy import (
+    add_policy_rule,
     handle_policy_command,
+    remove_policy_rule,
     render_policy_document,
+    render_policy_rules,
+    set_policy_bare,
+    set_policy_mode,
 )
 from runtime.commands._render import (
     build_capability_snapshot,
@@ -202,6 +196,7 @@ __all__ = [
     "_set_turn_context",
     "_validate_pack_spec_for_install",
     "_write_installed_packs_lock",
+    "add_policy_rule",
     "build_capability_snapshot",
     "discover_models",
     "escape_markdown_cell",
@@ -228,6 +223,7 @@ __all__ = [
     "pack_require_git_ref",
     "predict_model",
     "preferred_model_id_for_route",
+    "remove_policy_rule",
     "render_capability_help",
     "render_command_help",
     "render_debug_turn",
@@ -238,6 +234,7 @@ __all__ = [
     "render_operations_list",
     "render_pack_list",
     "render_policy_document",
+    "render_policy_rules",
     "render_runtime_settings",
     "render_tools_list",
     "resolve_pack_name",
@@ -248,6 +245,8 @@ __all__ = [
     "run_pack_update",
     "run_pack_update_all",
     "set_pack_enabled",
+    "set_policy_bare",
+    "set_policy_mode",
     "set_runtime_route_preview",
 ]
 

@@ -22,13 +22,15 @@ The two modules
   :func:`unresolved_approval_text`, ...).
 - :mod:`runtime.approval.orchestration` — the durable-state flow: identity
   rebuild, affirmative-resume detection, policy auto-continue, thread
-  record + synthesis turn, paired-recovery settlement, and the dispatch
-  entry point :func:`handle_approval_command`.
+  record + synthesis turn, paired-recovery settlement, the typed core
+  :func:`decide_approval`, and its slash-grammar parse adapter
+  :func:`handle_approval_command`.
 
 Public surface
 --------------
 - :func:`approval_identity`
 - :func:`build_approval_data`
+- :func:`decide_approval`
 - :func:`handle_approval_command`
 - :func:`is_affirmative_resume`
 - :func:`maybe_auto_continue_approval`
@@ -42,11 +44,14 @@ Public surface
 - :func:`approval_action_receipt`
 
 .. note::
-   ``handle_approval_command``, ``try_affirmative_approval_resume``, and
+   ``decide_approval``, ``handle_approval_command``,
+   ``try_affirmative_approval_resume``, and
    ``maybe_auto_continue_approval`` take a ``route_model_turn`` callable.
    ``runtime.handle_message`` injects its own ``_route_model_turn`` so the
    post-approval synthesis turn reuses the single-turn machinery without
-   a circular import.
+   a circular import. ``decide_approval`` is the typed seam (values in, no
+   command string); ``handle_approval_command`` is its slash-grammar parse
+   adapter for the string dispatcher.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ from __future__ import annotations
 from runtime.approval.orchestration import (
     approval_identity,
     build_approval_data,
+    decide_approval,
     handle_approval_command,
     is_affirmative_resume,
     maybe_auto_continue_approval,
@@ -74,6 +80,7 @@ __all__ = [
     "approval_identity",
     "approval_result_text",
     "build_approval_data",
+    "decide_approval",
     "decision_state_text",
     "handle_approval_command",
     "is_affirmative_resume",
