@@ -822,7 +822,7 @@ def _assemble_dynamic_user_context(
     # model-aware context budgets.
     context_plan = runtime.session_plan.manifest.context
     resolved_model = resolve_model("default")
-    model_context_window = getattr(resolved_model, "context_window", 0) or 0
+    model_context_window = _model_context_window_tokens(resolved_model)
 
     def _snapshot_sink(snapshot: Any) -> None:
         # Stash the mapper's ContextBudgetSnapshot on the runtime so
@@ -1098,6 +1098,18 @@ def _runtime_model_resolver(runtime: HostRuntime, model_id: str) -> StubModelDef
         data_dir=runtime.paths.data_dir,
         path=runtime.paths.models_path,
     )
+
+
+def _model_context_window_tokens(model_def: Any) -> int:
+    """Return the model's declared context window, or the shared default.
+
+    Mirrors ``kernel.context.context_budget.model_context_window_tokens``:
+    discovery cannot always determine a window (e.g. Ollama ``:cloud``
+    models), and a raw ``0`` violates the mapper request's ``ge=1`` contract.
+    """
+    from kernel.context.context_budget import model_context_window_tokens as _kernel_default
+
+    return _kernel_default(model_def)
 
 
 def _build_slice_callables(

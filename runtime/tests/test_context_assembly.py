@@ -190,3 +190,90 @@ def test_recent_conversation_wins_history_budget_over_manifest(
     # or truncated to the lane remainder — never full-strength alongside the
     # recent excerpt. Assert it was not allocated its full 6552 chars.
     assert context.count("xxxx") < 6552
+
+
+def test_mapped_context_survives_model_without_declared_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model manifest with no ``context_window`` must not fail the turn.
+
+    Regression: ``glm-5.3:cloud``-style manifest entries (discovery cannot
+    determine a window) resolve with ``context_window == 0``; the hook path
+    passed that raw 0 into ``ContextMapperRequest.model_context_window_tokens``
+    (kernel ``ge=1``) and every turn died with a Pydantic ``ValidationError``
+    before any model call. The kernel owns the shared default
+    (``settings.context_default_window_tokens``) — the host must apply the
+    same fallback, mirroring ``model_context_window_tokens`` /
+    ``fit_request_context``.
+    """
+
+    from datetime import UTC, datetime
+
+    from kernel.models import ContextItem, UnifiedState
+    from kernel.session_plan import ContextLanePlan, ContextPlan, ContextSourceRule
+    from runtime.turn_hooks_builder import _model_context_window_tokens
+
+    monkeypatch.setattr(
+        context_assembly,
+        "build_ambient_facts",
+        lambda **kwargs: "- timezone: UTC",
+    )
+
+    now = datetime.now(UTC).isoformat()
+    state = UnifiedState(
+        compiled_at=now,
+        context_items=[
+            ContextItem(
+                item_id="state:alert:test",
+                namespace="alerts",
+                source="test",
+                source_type="intake",
+                evidence_type="alert",
+                title="Test alert",
+                body="Worker error rate exceeded 10%",
+                collected_at=now,
+                salience_score=1.0,
+                confidence=0.95,
+                metadata={"provenance": "system_observed"},
+            ),
+        ],
+    )
+
+    class _WindowlessModel:
+        model_id = "glm-5.3:cloud"
+        context_window = 0
+
+    # Unit pin: a 0/absent window resolves to the kernel's shared default.
+    assert _model_context_window_tokens(_WindowlessModel()) == 131_072
+
+    # Turn-path pin: the assembled context includes the mapped alert instead
+    # of dying on ContextMapperRequest validation.
+    context = context_assembly.assemble_dynamic_user_context(
+        "default",
+        "what's the alert?",
+        "",
+        content_loader=lambda _path: "",
+        user_slug="adam",
+        timezone="UTC",
+        state=state,
+        session_context_loader=lambda: "",
+        recent_thread_excerpt_builder=lambda _n: "",
+        context_plan=ContextPlan(
+            lanes=(
+                ContextLanePlan(lane_id="operational", render_order=0),
+                ContextLanePlan(lane_id="general", render_order=10),
+            ),
+            sources=(
+                ContextSourceRule(
+                    rule_id="alerts",
+                    lane_id="operational",
+                    evidence_types=("alert",),
+                    priority=100,
+                ),
+                ContextSourceRule(rule_id="general", lane_id="general", fallback=True),
+            ),
+        ),
+        model_context_window_tokens=_model_context_window_tokens(_WindowlessModel()),
+    )
+
+    assert "Test alert" in context
