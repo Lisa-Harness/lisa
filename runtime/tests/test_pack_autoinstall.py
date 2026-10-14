@@ -98,7 +98,7 @@ def _make_runtime(
         ),
         pytest.param(
             {"lisa-pack-cloudflare": PackInstallSpec(source="C:/Code/lisa-pack-cloudflare")},
-            ("C:/Code/lisa-pack-cloudflare", True, "auto_install.source"),
+            (str(Path("C:/Code/lisa-pack-cloudflare")), True, "auto_install.source"),
             id="local-path-needs-no-pin",
         ),
     ],

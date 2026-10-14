@@ -41,6 +41,11 @@ def _persist_result(base: Path, result: dict[str, Any]) -> str:
         temporary.flush()
         os.fsync(temporary.fileno())
         temporary_path = Path(temporary.name)
+    if os.name == "nt":
+        # POSIX NamedTemporaryFile is owner-only by construction; on Windows
+        # the temp file inherits the umask (typically 0666), so tighten it
+        # explicitly to keep persisted (redacted) tool outputs owner-only.
+        os.chmod(temporary_path, 0o600)
     try:
         os.replace(temporary_path, path)
     finally:

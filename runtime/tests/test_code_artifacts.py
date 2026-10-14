@@ -587,13 +587,17 @@ def _host_with_declared_bwrap(data_dir: Path) -> HostRuntime:
     return runtime
 
 
-def _coding_factory_for_host(runtime: HostRuntime, repo: object):
+def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Path | None = None):
     from kernel.capability_binding import ExecutionFloorView
     from kernel.models import ToolResult
     from packstest.context import ToolContextFactory
 
     factory = ToolContextFactory(
         root=repo.root,
+        # Set data_dir explicitly: the root/.packstest-data fallback would
+        # drop worktrees INSIDE the source workspace and trip the coding
+        # pack's outside-source-workspace boundary check.
+        data_dir=data_dir,
         pack_config={
             "workspace_root": str(repo.root),
             "checks": [{"id": "smoke", "argv": ["true"], "timeout_seconds": 30}],
@@ -714,7 +718,7 @@ async def _restart_edited_candidate(
     (Path(edited.worktree_path) / "app.txt").write_text("fixed after restart\n", encoding="utf-8")
     restarted = _host_with_declared_bwrap(data_dir)
     assert _resumable_task_id(restarted.paths.thread_path, "continue") == "task-original"
-    factory = _coding_factory_for_host(restarted, repo)
+    factory = _coding_factory_for_host(restarted, repo, data_dir=data_dir)
     artifact = await factory.artifact_store.get(artifact_id)
     assert artifact is not None and artifact.revision == 1
     worktree = Path(artifact.worktree_path)
@@ -782,7 +786,7 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
     )
 
     restarted = _host_with_declared_bwrap(host_dir)
-    factory = _coding_factory_for_host(restarted, repo)
+    factory = _coding_factory_for_host(restarted, repo, data_dir=host_dir)
     approval_module = importlib.import_module("runtime.approval.orchestration")
 
     async def approved_action(*, invocation: object, hooks: object) -> ToolResult:
