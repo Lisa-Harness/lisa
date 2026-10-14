@@ -92,10 +92,15 @@ class ProxyPool:
 
         last_error: Exception | None = None
         for attempt in range(self._STARTUP_ATTEMPTS):
+            # An empty env map must inherit the parent environment (same
+            # semantics as ``env=None``): on Windows an explicit empty dict
+            # strips ``SystemRoot`` and the child's winsock fails to
+            # initialize (WinError 10106) — observed on CI runners.
+            child_env = config.env or None
             process = await asyncio.create_subprocess_exec(
                 config.command,
                 *config.args,
-                env=config.env,
+                env=child_env,
                 cwd=config.cwd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
