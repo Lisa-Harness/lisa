@@ -75,6 +75,19 @@ def _has_producer(group: str) -> bool:
     return group in _sibling_declared_groups()
 
 
+def _producer_source(group: str) -> str:
+    """Return a human-readable source description for the producer scan."""
+    try:
+        eps = importlib.metadata.entry_points(group=group)
+        if len(list(eps)) > 0:
+            return "installed entry points"
+    except Exception:  # pylint: disable=broad-except
+        pass
+    if group in _sibling_declared_groups():
+        return "sibling pack checkout"
+    return "no known producer source"
+
+
 def _consumer_exists(consumer_site: str) -> bool:
     """Return True if the consumer site (module.attr) is importable."""
     if "." not in consumer_site:
@@ -112,7 +125,7 @@ def test_endpoint_has_producer(endpoint) -> None:
         pytest.skip(f"{endpoint.group}: registered known orphan (live consumer, no producer yet)")
     assert _has_producer(endpoint.group), (
         f"{endpoint.group}: no producers declared in any installed pyproject.toml "
-        f"or sibling pack checkout. "
+        f"or sibling pack checkout ({_producer_source(endpoint.group)}). "
         f"Either add an entry point to a pack, or remove the endpoint from the registry."
     )
 

@@ -26,11 +26,13 @@ class Endpoint:
         contract_name: The Protocol/ABC class name.
         consumer_site: The ``module.attr`` that loads this group at runtime.
         description: What this endpoint does, for pack authors.
-        known_orphan: True when no producer exists anywhere yet but the
-            endpoint stays registered (live consumer + intended public
-            surface). The producer test asserts NOT known_orphan instead
-            of failing, so the registry documents the orphan honestly
-            rather than turning the suite red.
+        known_orphan: True when no producer exists in the harness repo
+            itself but the endpoint stays registered (live consumer +
+            intended public surface). The producer test asserts NOT
+            known_orphan instead of failing, so the registry documents the
+            orphan honestly rather than turning the suite red. The test
+            additionally accepts producers declared in sibling pack
+            checkout pyprojects when a local sibling exists.
     """
 
     group: str
@@ -63,6 +65,10 @@ REGISTRY: list[Endpoint] = [
             "Each collector returns a typed Pydantic snapshot that the "
             "bottom-half tick converts to a ``ContextItem`` record."
         ),
+        # Producers live in external repo packs (lisa-packs-wip: cloudflare,
+        # github, ...), not in the harness repo — reference implementations
+        # are outside the published distributions.
+        known_orphan=True,
     ),
     Endpoint(
         group="lisa.extensions.context_items",
@@ -75,6 +81,9 @@ REGISTRY: list[Endpoint] = [
             "a ``list[ContextItem]``. The session-owned context mapper "
             "merges these into ranked, lane-ordered context for each turn."
         ),
+        # Same as signal_connectors: producers are external-repo packs;
+        # the harness consumes via EntryPointExtensionItemBuilder.
+        known_orphan=True,
     ),
     Endpoint(
         group="lisa.extensions.host_commands",
@@ -100,6 +109,8 @@ REGISTRY: list[Endpoint] = [
             "``UnifiedState``. Common uses: anomaly detection, trend analysis, "
             "state derivation."
         ),
+        # Same as signal_connectors: producers are external-repo packs.
+        known_orphan=True,
     ),
 ]
 
