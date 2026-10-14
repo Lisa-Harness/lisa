@@ -258,9 +258,21 @@ CONTENTS = [
     "😀" * 70_000,
 ]
 
+# Short stable IDs: pytest injects parametrized test IDs (up to the full
+# content length) into PYTEST_CURRENT_TEST, a Windows-capped environment
+# variable (32767 chars) — the raw content payloads blew past that cap and
+# errored every case in `TestResultWindow` at setup/teardown on Windows runners.
+CONTENT_IDS = [
+    "empty",
+    "plain-ascii",
+    "escapes",
+    "unicode-mixed",
+    "emoji-solo",
+]
+
 
 class TestResultWindow:
-    @pytest.mark.parametrize("content", CONTENTS)
+    @pytest.mark.parametrize("content", CONTENTS, ids=CONTENT_IDS)
     @pytest.mark.parametrize("offset", [0, 1, 65_535, 65_536, 100_000])
     def test_window_matches_full_load(self, tmp_path: Path, content: str, offset: int):
         base = tmp_path / "u"
