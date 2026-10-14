@@ -53,7 +53,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from functools import partial
 from math import ceil
 from types import SimpleNamespace
@@ -62,6 +62,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from kernel import model_budgets
 from kernel.approval import (
     ApprovalInvocation,
     ApprovalRequired,
@@ -311,60 +312,41 @@ _STALLED_WRITE_PATTERNS = re.compile(
 # ``max_completion_tokens`` too, so discovery must flag them as reasoning;
 # an unflagged gpt-5 deployment stays at 4096 and truncates.
 # Bounded by the model's context window when known.
-_REASONING_CAPABILITY_MARKER = "reasoning"
+#
+# The budget math, the reasoning-capability detection, the burnout
+# predicate, and the retry-budget arithmetic live in
+# ``kernel.model_budgets`` so the pack operations that call
+# ``ctx.host.complete`` directly (notably the markdown forge) share the
+# exact same policy. The names below are aliases kept so existing
+# turn-runner call sites and tests read their historical shape.
+_REASONING_CAPABILITY_MARKER = model_budgets._REASONING_CAPABILITY_MARKER
 
 #: Legacy lean per-iteration completion budget for non-reasoning models.
 #: Reasoning-capable models get ``settings.turn_completion_max_tokens``
 #: (default 16384) instead; see ``_turn_completion_max_tokens``.
-_LEGACY_TURN_COMPLETION_MAX_TOKENS = 4096
+_LEGACY_TURN_COMPLETION_MAX_TOKENS = model_budgets._LEGACY_TURN_COMPLETION_MAX_TOKENS
 
 
 def _turn_completion_max_tokens(model_def: Any) -> int:
     """Return the per-iteration completion budget for a model definition.
 
-    Reasoning-capable models (``reasoning_model``/``thinking_model`` flags
-    or a ``reasoning`` capability string) get ``settings.turn_completion_max_tokens``
-    (default 8192); everything else keeps the legacy 4096. Always bounded by
-    the model's ``context_window`` when the manifest declares one, and by
-    the model's declared ``max_completion_tokens`` ceiling when set
-    (BUDGET_SCOPES_RFC scope 1 — the per-model value may only tighten:
-    min of settings budget and model ceiling).
+    Thin delegate: the reasoning-aware budget math lives in
+    ``kernel.model_budgets`` so pack operation rescues (e.g. the markdown
+    forge) agree with the turn-loop budget.
     """
-    budget = int(getattr(_kernel_settings, "turn_completion_max_tokens", 0) or 0)
-    if budget <= 0:
-        budget = _LEGACY_TURN_COMPLETION_MAX_TOKENS
-    flags_reasoning = bool(
-        getattr(model_def, "reasoning_model", False) or getattr(model_def, "thinking_model", False)
-    )
-    caps_reasoning = _REASONING_CAPABILITY_MARKER in {
-        str(cap).lower() for cap in (getattr(model_def, "capabilities", ()) or ())
-    }
-    model_ceiling = int(getattr(model_def, "max_completion_tokens", 0) or 0)
-    if model_ceiling > 0:
-        budget = min(budget, model_ceiling)
-    if not (flags_reasoning or caps_reasoning):
-        # Never exceed the legacy budget for plain models, even when the
-        # configured reasoning budget is lower.
-        return min(_LEGACY_TURN_COMPLETION_MAX_TOKENS, budget)
-    cap_window = int(getattr(model_def, "context_window", 0) or 0)
-    if cap_window > 0:
-        return min(budget, cap_window)
-    return budget
+    return model_budgets._turn_completion_max_tokens(model_def)
 
 
 def _effective_completion_max_tokens(model_def: Any, *, mode_budget_tokens: int = 0) -> int:
     """Effective per-call completion budget after the mode's declaration.
 
-    BUDGET_SCOPES_RFC scope 2 precedence: min(mode, model, settings), the
-    narrowest declaration wins. A mode value may only tighten — a mode
-    declaring more than its model/settings budget inherits the smaller
-    value. ``mode_budget_tokens`` 0/absent keeps the model/settings path
-    exactly as before.
+    Thin delegate: BUDGET_SCOPES_RFC scope 2 precedence (min(mode, model,
+    settings)) lives in ``kernel.model_budgets`` with the shared budget
+    math.
     """
-    budget = _turn_completion_max_tokens(model_def)
-    if mode_budget_tokens > 0:
-        budget = min(budget, int(mode_budget_tokens))
-    return budget
+    return model_budgets._effective_completion_max_tokens(
+        model_def, mode_budget_tokens=mode_budget_tokens
+    )
 
 
 def _fold_mode_turn_budget(turn_budget: TurnBudget | None, mode_config: Any) -> TurnBudget | None:
@@ -2837,65 +2819,38 @@ def _truncation_retry_budget(
     rescuable (no tools offered, or the doubled budget cannot exceed the
     base — e.g. capped at the context window). Callers own the
     ``finish_reason`` read; this helper owns the budget math and the
-    request clone.
+    request clone. The math itself lives in ``kernel.model_budgets`` so
+    pack operation rescues agree with the turn-loop rescues.
     """
     if not (effective_tools or tools_offered_this_turn):
         return None
     base_max_tokens = int(base_request.max_tokens or 0)
-    retry_max_tokens = base_max_tokens * 2
-    cap_window = int(getattr(effective_model_def, "context_window", 0) or 0)
-    if base_request.context_budget is not None:
-        budget = base_request.context_budget
-        cap_window = budget.window_tokens - budget.margin_tokens - budget.input_tokens
-    if cap_window > 0:
-        retry_max_tokens = min(retry_max_tokens, cap_window)
+    retry_max_tokens = model_budgets._retry_budget_tokens(
+        base_max_tokens=base_max_tokens,
+        model_def=effective_model_def,
+        context_budget=base_request.context_budget,
+    )
     if retry_max_tokens <= base_max_tokens:
         return None
-    return replace(base_request, max_tokens=retry_max_tokens), retry_max_tokens
+    return (
+        model_budgets._replacement_retry_request(base_request, retry_max_tokens=retry_max_tokens),
+        retry_max_tokens,
+    )
+
+
+# Reasoning-burnout completion diagnostics: the predicates and the numeric
+# guard live in ``kernel.model_budgets`` (shared with pack operation
+# rescues); the private names here keep the turn-runner call sites and the
+# existing tests reading their historical shape.
+_is_reasoning_burnout_completion = model_budgets._is_reasoning_burnout_completion
 
 
 #: A reasoning-burnout completion must have consumed at least this share of
 #: its per-call budget on the one visible proxy (completion tokens) before
-#: the retry fires — below the share, a cheap empty completion keeps its
-#: prior end-of-turn behavior (reasoning-tail caveat, no retry).
-_REASONING_BURNOUT_SHARE = 0.9
-
-
-def _is_reasoning_burnout_completion(completion: Any, *, base_max_tokens: int) -> bool:
-    """Return True when a clean-stop completion burned its budget on thinking.
-
-    The burnout shape (the 2026-10-13 turn 789 stall, glm-5.3-flash:cloud):
-    a reasoning model re-deliberates its payload until the wall —
-    ``finish_reason='stop'`` (a reasoning loop running out of budget does
-    not always surface ``length`` on every backend) — with empty visible
-    ``content``, no tool calls, and substantial ``reasoning_content``.
-    The ``length`` predicate misses it and the turn would end with nothing
-    dispatched and a reasoning-tail caveat. Mirrors the numeric guard of
-    ``_empty_content_detail`` (operations/declarative.py): completion tokens
-    near the per-call cap mark a budget-consumed generation; anything below
-    the share stays a cheap empty completion (yield for redirect, no retry).
-    A truncated completion (``finish_reason='length'``) never enters here —
-    the sibling truncation rescues own that shape.
-    """
-    if base_max_tokens <= 0:
-        return False
-    if getattr(completion, "finish_reason", None) != "stop":
-        return False
-    if str(getattr(completion, "content", "") or "").strip():
-        return False
-    if getattr(completion, "tool_calls", None):
-        return False
-    reasoning = getattr(completion, "reasoning_content", None) or getattr(
-        completion, "reasoning", None
-    )
-    if not isinstance(reasoning, str) or not reasoning.strip():
-        return False
-    usage = getattr(completion, "usage", None)
-    completion_tokens = int(
-        getattr(completion, "completion_tokens", 0)
-        or (getattr(usage, "completion_tokens", 0) if usage is not None else 0)
-    )
-    return completion_tokens >= base_max_tokens * _REASONING_BURNOUT_SHARE
+#: the retry fires — a cheap empty completion is a yield, not a lost write.
+#: The constant moved to ``kernel.model_budgets``; this alias keeps the
+#: historical turn-runner name importable for tests.
+_REASONING_BURNOUT_SHARE = model_budgets._REASONING_BURNOUT_SHARE
 
 
 class StreamIdleTimeout(RuntimeError):
