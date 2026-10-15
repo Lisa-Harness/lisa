@@ -298,6 +298,62 @@ def test_digest_live_state_pending_blocker_stays_live(tmp_path: Path) -> None:
     assert "awaiting user" in by_id["thread:open_objectives"].body
 
 
+def test_digest_resolves_blockers_on_later_same_task_evidence(tmp_path: Path) -> None:
+    """F3: recorded blockers drop from open objectives on later evidence.
+
+    The 2026-10-14 self-review found objectives surfaced as open every
+    turn although later manifest turns showed the work landed and one
+    question was superseded — stale blockers re-billed each turn and
+    nudged the model to re-litigate finished work. A later same-task
+    entry that proceeded without a blocker is resolution evidence; a
+    task whose latest recorded turn is still blocked stays open.
+    """
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="push the release",
+        response_text="blocked: task_completion",
+        task_id="task-1",
+        block_origin="task_completion",
+        timestamp_utc="2026-10-02T16:00:00+00:00",
+    )
+    _write_entry(
+        thread_path,
+        query="which output format?",
+        response_text="awaiting your decision",
+        task_id="task-1",
+        yielded=True,
+        yield_question="Which output format?",
+        timestamp_utc="2026-10-02T16:10:00+00:00",
+    )
+    _write_entry(
+        thread_path,
+        query="push the release",
+        response_text="pushed and merged; format settled",
+        task_id="task-1",
+        timestamp_utc="2026-10-02T16:20:00+00:00",
+    )
+    _write_entry(
+        thread_path,
+        query="fix the flaky test",
+        response_text="blocked: task_completion",
+        task_id="task-2",
+        block_origin="task_completion",
+        timestamp_utc="2026-10-02T16:30:00+00:00",
+    )
+
+    items = build_thread_context_items(thread_path)
+
+    by_id = {item.item_id: item for item in items}
+    objectives = by_id["thread:open_objectives"]
+    # task-1's blocker and yielded question are resolved by the later
+    # clean same-task turn; task-2 has no later evidence and stays open.
+    assert "push the release" not in objectives.body
+    assert "which output format?" not in objectives.body
+    assert "fix the flaky test" in objectives.body
+    assert "blocked turn (task_completion)" in objectives.body
+
+
 def test_digest_without_live_state_leaves_recorded_blocker_unannotated(tmp_path: Path) -> None:
     """Without a live snapshot the digest preserves today's behavior."""
     thread_path = tmp_path / "thread"

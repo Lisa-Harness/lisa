@@ -178,6 +178,35 @@ def _superseded_note(
     return f" [superseded (live approval store: {outcome})]"
 
 
+def _resolved_on_evidence(
+    entry: dict[str, Any],
+    later_entries: list[tuple[int, dict[str, Any]]],
+) -> bool:
+    """Return True when a later same-task entry resolves this blocker.
+
+    F3 (2026-10-14 self-review): recorded blockers and yielded questions
+    re-rendered as open every turn although later manifest turns showed
+    the work landed — stale blockers re-billed each turn and nudged the
+    model to re-litigate finished work. A later entry carrying the same
+    task id and no blocker/yield marker is resolution evidence: the
+    objective proceeded past the blocker. Entries without a task id
+    never resolve on evidence (a later turn cannot be attributed to
+    them); live-approval reconciliation stays in ``_superseded_note``.
+    """
+    task_id = str((entry.get("provenance") or {}).get("task_id") or "")
+    if not task_id:
+        return False
+    for _, later in later_entries:
+        later_provenance = later.get("provenance") or {}
+        if str(later_provenance.get("task_id") or "") != task_id:
+            continue
+        later_blocked = later_provenance.get("block_origin") or later.get("block_origin")
+        later_pending = later_provenance.get("pending_approval_request_id") or later.get("yielded")
+        if not (later_blocked or later_pending):
+            return True
+    return False
+
+
 def _append_task_state_item(
     items: list[ContextItem],
     entries: list[tuple[int, dict[str, Any]]],
@@ -369,11 +398,17 @@ def _append_open_objectives_item(
     live_state: Any = None,
 ) -> None:
     lines: list[str] = []
-    for _, entry in reversed(entries):
+    for pos in range(len(entries) - 1, -1, -1):
+        _, entry = entries[pos]
         provenance = entry.get("provenance") or {}
         blocked = provenance.get("block_origin") or entry.get("block_origin")
         pending = provenance.get("pending_approval_request_id") or entry.get("yielded")
         if not (blocked or pending):
+            continue
+        # F3: a later same-task entry that proceeded without a blocker
+        # resolves this objective — drop it instead of re-listing the
+        # finished work as open every turn.
+        if _resolved_on_evidence(entry, entries[pos + 1 :]):
             continue
         query = str(entry.get("query") or "").strip()
         response = str(entry.get("response_text") or "").strip()
