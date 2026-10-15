@@ -241,6 +241,58 @@ def test_budget_briefing_stage_budget_line() -> None:
     assert "stage budget: 3 completed with 6 remaining" in briefing
 
 
+def test_budget_briefing_count_lines_state_semantics_explicitly() -> None:
+    """Every count line states used-vs-remaining semantics explicitly (F2).
+
+    The 2026-10-14 self-review found ``step: 74/75 iters`` (remaining)
+    rendered beside ``iteration: 1 of 300`` (used) and
+    ``calls: coding_read_file:46/50`` (remaining) — three count lines,
+    two semantics, zero labels. The stage line already spells out
+    ``N completed with M remaining``; the per-step and per-target lines
+    must do the same instead of relying on positional ``N/M`` that was
+    consistently misread as a progress bar.
+    """
+    state = SimpleNamespace(
+        iteration=1,
+        step_iteration=1,
+        step_tool_calls=16,
+        turns_in_stage=0,
+        call_ledger_counts={"coding_read_file": 4},
+        sub_turn_kind=None,
+        action_tool_ids=set(),
+        called_tool_names=set(),
+        effect_receipts=[],
+    )
+    tool_schemas = [{"function": {"name": "coding_read_file"}}]
+    with patch(
+        "kernel.capability.resolve_capability_for_turn_limit",
+        return_value=SimpleNamespace(max_calls_per_turn=50),
+    ):
+        briefing = _build_budget_briefing(
+            state=state,
+            max_tool_iterations=300,
+            per_step_max_iterations=75,
+            per_step_max_tool_calls=150,
+            stage_nudge_cap=9,
+            tool_schemas=tool_schemas,
+            operation_catalog={},
+            tool_catalog={},
+            execution_policy=None,
+            budget_exhausted=False,
+        )
+    # Used-semantics line keeps its explicit "N of M" form.
+    assert "iteration: 1 of 300" in briefing
+    # Remaining-semantics lines now say "remaining" instead of bare N/M.
+    assert "step: 74 of 75 iterations remaining" in briefing
+    assert "step: 134 of 150 calls remaining" in briefing
+    # Per-target limits state used/max explicitly.
+    assert "calls: coding_read_file 4 of 50 used" in briefing
+    # No bare remaining/max N/M count format survives.
+    assert "74/75" not in briefing
+    assert "134/150" not in briefing
+    assert "coding_read_file:46/50" not in briefing
+
+
 def test_budget_briefing_stage_budget_omitted_when_zero_turns() -> None:
     """When ``turns_in_stage`` is 0 the stage-budget line is omitted (iteration 1)."""
     state = SimpleNamespace(

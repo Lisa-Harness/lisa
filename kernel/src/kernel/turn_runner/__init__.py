@@ -610,9 +610,9 @@ def _build_budget_briefing(
     # Resolve the effective per-turn cap for each advertised tool. Only
     # tools that declare a finite ``max_calls_per_turn`` (tightened by the
     # execution policy) are surfaced — unlimited tools add noise. On
-    # iteration 1, emit the full contract (used/max); on later iterations,
-    # emit only tools that are *partially consumed* (used > 0 and remaining
-    # > 0) so the block stays super-brief.
+    # iteration 1, emit the full contract; on later iterations, emit only
+    # tools that are *partially consumed* (used > 0) so the block stays
+    # super-brief. Entries state used/max semantics explicitly (F2).
     per_target_line = _build_per_target_call_limits(
         state=state,
         tool_schemas=tool_schemas,
@@ -719,7 +719,10 @@ def _build_budget_count_lines(
     iteration/tool-call sub-budget (only when a WorkflowPosition is wired).
     The stage format is explicitly ``N completed with M remaining`` to
     prevent the completed/remaining confusion that the old ``N/M`` format
-    caused.
+    caused. Every count line states its semantics explicitly (F2, 2026-10-14
+    self-review): ``iteration: N of M`` is used/max, while the stage and
+    per-step lines spell out ``remaining`` — bare positional ``N/M`` was
+    consistently misread as a progress bar.
     """
     lines: list[str] = []
     if max_tool_iterations > 0 and state.iteration > 0:
@@ -730,10 +733,10 @@ def _build_budget_count_lines(
         lines.append(f"stage budget: {turns_in_stage} completed with {stage_remaining} remaining")
     if per_step_max_iterations > 0 and state.step_iteration > 0:
         step_remaining = per_step_max_iterations - state.step_iteration
-        lines.append(f"step: {step_remaining}/{per_step_max_iterations} iters")
+        lines.append(f"step: {step_remaining} of {per_step_max_iterations} iterations remaining")
     if per_step_max_tool_calls > 0 and state.step_tool_calls > 0:
         step_tc_remaining = per_step_max_tool_calls - state.step_tool_calls
-        lines.append(f"step: {step_tc_remaining}/{per_step_max_tool_calls} calls")
+        lines.append(f"step: {step_tc_remaining} of {per_step_max_tool_calls} calls remaining")
     return lines
 
 
@@ -750,10 +753,12 @@ def _build_per_target_call_limits(
     Resolve the effective per-turn cap for each advertised tool. Only
     tools that declare a finite ``max_calls_per_turn`` (tightened by the
     execution policy) are surfaced — unlimited tools add noise. On
-    iteration 1, emit the full contract (used/max); on later iterations,
-    emit only tools that are *partially consumed* (used > 0 and remaining
-    > 0) so the block stays super-brief. Returns "" when no tool has a
-    finite cap.
+    iteration 1, emit the full contract; on later iterations, emit only
+    tools that are *partially consumed* (used > 0) so the block stays
+    super-brief. Each entry states used/max semantics explicitly —
+    ``name N of M used`` (F2, 2026-10-14 self-review: the old
+    ``name:remaining/max`` form was misread as used/max). Returns "" when
+    no tool has a finite cap.
     """
     from kernel.capability import resolve_capability_for_turn_limit
 
@@ -776,11 +781,10 @@ def _build_per_target_call_limits(
         if max_calls <= 0:
             continue
         used = state.call_ledger_counts.get(name, 0) if hasattr(state, "call_ledger_counts") else 0
-        remaining = max(0, max_calls - used)
-        # Iteration 1: emit the full contract (used=0 → remaining=max).
+        # Iteration 1: emit the full contract (used=0 → "0 of M used").
         # Later iterations: emit only partially-consumed tools (used > 0).
         if state.iteration <= 1 or used > 0:
-            per_target_parts.append(f"{name}:{remaining}/{max_calls}")
+            per_target_parts.append(f"{name} {used} of {max_calls} used")
     if per_target_parts:
         return "calls: " + ", ".join(per_target_parts)
     return ""
