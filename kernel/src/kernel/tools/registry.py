@@ -489,6 +489,9 @@ def project_execution_floor(provider: Any, tool_id: str) -> ExecutionFloorView |
         paths=MappingProxyType({str(path): str(access) for path, access in paths.items()})
         if isinstance(paths, Mapping)
         else MappingProxyType({}),
+        network=floor.get("network") if isinstance(floor.get("network"), str) else None,
+        device=floor.get("device") if isinstance(floor.get("device"), str) else None,
+        ipc=floor.get("ipc") if isinstance(floor.get("ipc"), str) else None,
     )
 
 

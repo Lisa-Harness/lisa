@@ -38,6 +38,13 @@ class ExecutionFloorView:
     execution: str | None = None
     persistence: str | None = None
     paths: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    # Sandbox postures the composing capability must re-request explicitly
+    # (bwrap's policy join treats an unspecified request axis as the pack's
+    # restrictive default, so a floor allowance like ``network: allow`` only
+    # takes effect when the caller forwards it).
+    network: str | None = None
+    device: str | None = None
+    ipc: str | None = None
 
 
 @runtime_checkable
