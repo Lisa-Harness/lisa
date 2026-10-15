@@ -30,10 +30,28 @@ _LEARNING_ROOT: Path = (Path(__file__).resolve().parents[2] / "sdk" / "packs" / 
 
 @pytest.fixture(autouse=True)
 def _isolate_default_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep ``HostConfig.from_env()`` defaults off the developer's real ``~/.lisa``."""
+    """Keep ``HostConfig.from_env()`` defaults off the developer's real ``~/.lisa``.
+
+    The live host process exports runtime state at startup
+    (``runtime.mcp_pool``: ``LISA_THREAD_DIR``, ``FRAMEWORK_ROOT``,
+    ``LISA_TIMEZONE``, ``LISA_USER_SLUG``); a test run launched from that
+    host (the sandboxed coding `test` check) inherits them, and config
+    resolution would then resolve the REAL thread dir despite an explicit
+    ``data_dir`` (2026-10-15: 78 ``Errno 30`` failures under the sandbox's
+    read-only data-dir mount). Scrub every ambient runtime-state var here;
+    tests that need one set it themselves afterwards.
+    """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
-    for name in ("LISA_DATA_DIR", "LISA_PROFILE", "LISA_PACKS_VENV"):
+    for name in (
+        "LISA_DATA_DIR",
+        "LISA_PROFILE",
+        "LISA_PACKS_VENV",
+        "LISA_THREAD_DIR",
+        "FRAMEWORK_ROOT",
+        "LISA_USER_SLUG",
+        "LISA_USER_ID",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 

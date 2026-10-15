@@ -200,7 +200,17 @@ class TestCostTierFromPrice:
 
 class TestProbe:
     @pytest.mark.asyncio
-    async def test_skipped_without_key(self) -> None:
+    async def test_skipped_without_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A probe with no visible key skips — but only for THIS process.
+
+        The skip contract keys off the probe's own environment view; a test
+        run launched from the live host inherits a real ``OPENROUTER_API_KEY``
+        through the process env (2026-10-15: the sandboxed check logged a
+        real ``GET openrouter.ai/api/v1/models``), so the test must scrub the
+        key from its own env rather than rely on ambient absence.
+        """
+        for name in ("LISA_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
         probe = OpenRouterProbe()
         result = await probe.probe(_client(httpx.MockTransport(lambda r: httpx.Response(200))), 8.0)
         assert result.status is ProbeStatus.SKIPPED

@@ -85,18 +85,23 @@ class TestInferModulePath:
         py.write_text("")
         assert _infer_module_path(py, tools) == "tools.status.status"
 
-    def test_walk_terminates_for_home_rooted_pack(self) -> None:
-        """A real-world home-rooted pack path terminates without hanging.
+    def test_walk_terminates_for_home_rooted_pack(self, tmp_path: Path) -> None:
+        """A home-rooted pack path terminates without hanging.
 
         Mirrors ``/home/<user>/<repo>/<pack>/lisa_packs/<pack>/operations/…``
         with no ``src/`` or ``site-packages`` anywhere in the ancestor
-        chain. The dotted path still includes the ``lisa_packs.<pack>``
-        anchor chain when import resolution succeeds; the contract under
-        test is that the call **returns** rather than spinning.
+        chain. The walk runs against a synthesized ``tmp_path / home`` tree
+        rather than the real ``Path.home()`` (2026-10-15: the coding-pack
+        sandbox read-only mounts ``$HOME``; a test writing under it fails
+        with ``Errno 30``, and a test that mutates the real home is not
+        hermetic anywhere). The dotted path still includes the
+        ``lisa_packs.<pack>`` anchor chain when import resolution succeeds;
+        the contract under test is that the call **returns** rather than
+        spinning.
         """
         import shutil
 
-        scratch = Path.home() / "_lisa_test_walk_home_pack"
+        scratch = tmp_path / "home" / "_lisa_test_walk_home_pack"
         pack_pkg = scratch / "lisa_packs" / "walkhome"
         ops = pack_pkg / "operations"
         ops.mkdir(parents=True)
