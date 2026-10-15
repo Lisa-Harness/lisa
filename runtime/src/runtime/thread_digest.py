@@ -55,9 +55,10 @@ _CONFIDENCE = 0.9
 _FACT_CLAIM_CHARS = 200
 #: Rendering cap for the item: newest facts win when the budget runs out.
 _FACT_ITEM_BUDGET_CHARS = 2048
-#: Closing directive on every digest body — the same past/present framing
-#: the recent_conversation lane and readout pages carry. Post-hoc (after
-#: the data) so a small fast model reads it as a closing directive, not a
+#: Shared past/present framing carried once per digest assembly by the
+#: ``thread:epistemics`` item (F4) — the same framing the
+#: recent_conversation lane and readout pages carry. Post-hoc (after the
+#: data) so a small fast model reads it as a closing directive, not a
 #: preamble it blurs into the data (2026-08-22 "dogmatic about old
 #: history" finding; re-confirmed by the 2026-10-05 turn-510 stale-yield
 #: loop where "status: awaiting_approval" was read as the live present).
@@ -114,6 +115,10 @@ def build_thread_context_items(
     _append_verified_facts_item(items, entries, redaction)
     _append_recent_history_item(items, entries, redaction, recent_limit, body_chars)
     _append_open_objectives_item(items, entries, redaction, objective_lines, live_state)
+    # F4: one shared epistemics footer instead of a copy in every body —
+    # emitted only when at least one other digest item exists.
+    if items:
+        _append_epistemics_item(items, entries)
     return items
 
 
@@ -265,7 +270,6 @@ def _render_task_state(
     blocker = view.get("blocker")
     if blocker:
         lines.append(f"blocker: {blocker}")
-    lines.append(_PAST_PRESENT_DIRECTIVE)
     return "\n".join(lines)
 
 
@@ -366,17 +370,30 @@ def _render_recent_history(
     budget = body_chars
     # Newest-first truncation: ``recent_entries`` bounds how many of the
     # most recent exchanges appear, not the oldest ones in the window.
-    for _, entry in reversed(entries[-recent_limit:]):
+    window = entries[-recent_limit:]
+    window_start = len(entries) - len(window)
+    for window_pos in range(len(window) - 1, -1, -1):
+        _, entry = window[window_pos]
         query = str(entry.get("query") or "").strip()
         if not query:
             continue
-        response = str(entry.get("response_text") or "").strip()
-        if redaction is not None:
-            query = redaction.redact(query)
-            response = redaction.redact(response)
-        preview = response[:160] if response else ""
         timestamp = str(entry.get("timestamp_utc") or "unknown")
-        line = f"- [recorded {timestamp}] {query[:200]}: {preview}".rstrip()
+        provenance = entry.get("provenance") or {}
+        blocked = provenance.get("block_origin") or entry.get("block_origin")
+        pending = provenance.get("pending_approval_request_id") or entry.get("yielded")
+        if (blocked or pending) and not _resolved_on_evidence(
+            entry, entries[window_start + window_pos + 1 :]
+        ):
+            # F4: open objectives owns the canonical copy of a still-open
+            # turn; history keeps a ref instead of re-billing the content.
+            line = f"- [recorded {timestamp}] canonical copy in open objectives"
+        else:
+            response = str(entry.get("response_text") or "").strip()
+            if redaction is not None:
+                query = redaction.redact(query)
+                response = redaction.redact(response)
+            preview = response[:160] if response else ""
+            line = f"- [recorded {timestamp}] {query[:200]}: {preview}".rstrip()
         if budget - len(line) < 0:
             break
         lines.append(line)
@@ -385,9 +402,7 @@ def _render_recent_history(
             break
     if not lines:
         return ""
-    # Post-hoc footer after the data, newest already first in the emitted
-    # block: same past/present framing the readout pages carry.
-    return "\n".join([*lines, "", _PAST_PRESENT_DIRECTIVE])
+    return "\n".join(lines)
 
 
 def _append_open_objectives_item(
@@ -434,11 +449,40 @@ def _append_open_objectives_item(
             source_type="general",
             evidence_type="open_objectives",
             title="Unfinished turns (blocked or awaiting approval/user)",
-            body="\n".join([*lines, "", _PAST_PRESENT_DIRECTIVE]),
+            body="\n".join(lines),
             collected_at=str(entries[-1][1].get("timestamp_utc") or ""),
             salience_score=_SALIENCE_OPEN_OBJECTIVES,
             confidence=_CONFIDENCE,
             tags=["thread_digest", "open_objectives"],
+            metadata={"provenance": "system_observed", "scope": "recorded_history"},
+        )
+    )
+
+
+def _append_epistemics_item(
+    items: list[ContextItem],
+    entries: list[tuple[int, dict[str, Any]]],
+) -> None:
+    """Carry the shared past/present directive once per digest assembly.
+
+    F4 (2026-10-14 self-review): the directive repeated in every digest
+    body, billing the same framing tokens N times per turn. One item owns
+    it; the per-body appends were removed. Emitted only when at least one
+    other digest item exists — a lone footer with no data is noise.
+    """
+    items.append(
+        ContextItem(
+            item_id="thread:epistemics",
+            namespace=_DIGEST_NAMESPACE,
+            source=_DIGEST_SOURCE,
+            source_type="general",
+            evidence_type="epistemics",
+            title="Epistemics framing (recorded past, not live present)",
+            body=_PAST_PRESENT_DIRECTIVE,
+            collected_at=str(entries[-1][1].get("timestamp_utc") or ""),
+            salience_score=_SALIENCE_TASK_STATE,
+            confidence=_CONFIDENCE,
+            tags=["thread_digest", "epistemics"],
             metadata={"provenance": "system_observed", "scope": "recorded_history"},
         )
     )

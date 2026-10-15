@@ -146,6 +146,7 @@ def test_default_context_sources_admit_digest_items_without_authored_rules() -> 
     plan = ContextPlan()
     assert [rule.rule_id for rule in plan.sources] == [
         "thread_digest",
+        "thread_digest_epistemics",
         "history_fallback",
     ]
 

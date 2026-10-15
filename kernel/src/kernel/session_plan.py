@@ -492,6 +492,13 @@ def _default_context_sources() -> tuple[ContextSourceRule, ...]:
             evidence_types=("task_state", "recent_history", "open_objectives"),
             priority=100,
         ),
+        ContextSourceRule(
+            rule_id="thread_digest_epistemics",
+            lane_id="retrieval",
+            evidence_types=("epistemics",),
+            priority=100,
+            pinned=True,
+        ),
         ContextSourceRule(rule_id="history_fallback", lane_id="history", fallback=True),
     )
 

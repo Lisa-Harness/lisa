@@ -72,7 +72,8 @@ def test_digest_settings_disable_and_resize_the_push(tmp_path: Path) -> None:
     # past/present closing directive.
     assert history.body.startswith("- [recorded 2026-10-02T16:39:06+00:00] turn two: two")
     assert history.body.count("\n- ") == 0  # only the newest exchange fits
-    assert "not the live present" in history.body
+    footer = next(item for item in items if item.item_id == "thread:epistemics")
+    assert "not the live present" in footer.body
 
 
 def test_digest_returns_empty_without_thread(tmp_path: Path) -> None:
@@ -98,6 +99,7 @@ def test_digest_derives_task_state_history_and_objectives(tmp_path: Path) -> Non
         "thread:task_state",
         "thread:recent_history",
         "thread:open_objectives",
+        "thread:epistemics",
     }
     for item in items:
         assert isinstance(item, ContextItem)
@@ -111,7 +113,10 @@ def test_digest_derives_task_state_history_and_objectives(tmp_path: Path) -> Non
     assert task_state.metadata["selection"] == "latest_recorded"
     history = by_id["thread:recent_history"]
     assert "older turn" in history.body
-    assert "fix the router bug" in history.body
+    # F4: the blocked turn's content is canonical in open objectives;
+    # history collapses it to a ref line.
+    assert "fix the router bug" not in history.body
+    assert "canonical copy in open objectives" in history.body
     objectives = by_id["thread:open_objectives"]
     assert "blocked turn (task_completion)" in objectives.body
     assert "fix the router bug" in objectives.body
@@ -146,6 +151,7 @@ def test_digest_skips_open_objectives_when_turns_are_clean(tmp_path: Path) -> No
     assert [item.item_id for item in items] == [
         "thread:task_state",
         "thread:recent_history",
+        "thread:epistemics",
     ]
 
 
@@ -153,13 +159,13 @@ def test_digest_skips_open_objectives_when_turns_are_clean(tmp_path: Path) -> No
 
 
 def test_digest_items_frame_recorded_state_as_past(tmp_path: Path) -> None:
-    """Every digest body must close with the recorded-not-current directive.
+    """The digest must frame its content as the recorded past.
 
-    The recent_conversation lane and the readout pages already carry a
-    recorded-history footer, but the thread digest items did not — the model
-    read "status: awaiting_approval" as the live present (2026-10-05
+    The model read "status: awaiting_approval" as the live present (2026-10-05
     turn-510 stale-yield loop: it re-derived "approve request 4803a869"
-    from a recorded blocker that no longer existed).
+    from a recorded blocker that no longer existed). F4 moves the shared
+    framing onto one epistemics item instead of repeating it in every
+    body; each content item still marks its lines as recorded.
     """
     thread_path = tmp_path / "thread"
     _write_entry(thread_path, query="warm the build cache", response_text="started")
@@ -173,9 +179,18 @@ def test_digest_items_frame_recorded_state_as_past(tmp_path: Path) -> None:
 
     items = build_thread_context_items(thread_path)
 
+    by_id = {item.item_id: item for item in items}
+    # F4: the shared framing lives on the epistemics item, not every body.
+    footer = by_id["thread:epistemics"]
+    assert "This is the recorded past" in footer.body
+    assert "current turn" in footer.body
     for item in items:
+        if item.item_id == "thread:epistemics":
+            continue
         assert "recorded" in item.body.lower()
-        assert "not verified live state" in item.body or "current turn" in item.body
+    # Task state keeps its inline status qualifier distinguishing the
+    # recorded observation from live state.
+    assert "not verified live state" in by_id["thread:task_state"].body
 
 
 def test_task_state_names_the_recorded_turn_and_the_live_baseline(tmp_path: Path) -> None:
@@ -191,8 +206,9 @@ def test_task_state_names_the_recorded_turn_and_the_live_baseline(tmp_path: Path
     items = build_thread_context_items(thread_path)
     task_state = next(item for item in items if item.item_id == "thread:task_state")
 
+    footer = next(item for item in items if item.item_id == "thread:epistemics")
     assert "recorded at turn" in task_state.body
-    assert "Live state is what tools return" in task_state.body
+    assert "Live state is what tools return" in footer.body
 
 
 def test_recent_history_lines_carry_recorded_timestamps(tmp_path: Path) -> None:
@@ -217,6 +233,53 @@ def test_recent_history_lines_carry_recorded_timestamps(tmp_path: Path) -> None:
     assert history.body.index("second turn") < history.body.index("first turn")
     assert "[recorded 2026-10-05T02:00:00+00:00]" in history.body
     assert "[recorded 2026-10-05T01:00:00+00:00]" in history.body
+
+
+def test_digest_dedupes_blocked_entries_and_single_epistemics_footer(tmp_path: Path) -> None:
+    """F4: one canonical mention per fact; one shared epistemics footer.
+
+    The 2026-10-14 self-review found the same blocked turn billed in both
+    the recent-history transcript and the open-objectives block, and the
+    recorded-past disclaimer repeated in every digest body. The digest
+    must carry the blocked turn's content once (open objectives owns it)
+    and state the epistemics framing exactly once per assembly.
+    """
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="summarize the logs",
+        response_text="done summarizing",
+        timestamp_utc="2026-10-02T15:00:00+00:00",
+    )
+    _write_entry(
+        thread_path,
+        query="ship the release",
+        response_text="blocked: task_completion",
+        task_id="task-1",
+        block_origin="task_completion",
+        timestamp_utc="2026-10-02T16:00:00+00:00",
+    )
+    _write_entry(
+        thread_path,
+        query="check the CI status",
+        response_text="CI green",
+        timestamp_utc="2026-10-02T17:00:00+00:00",
+    )
+
+    items = build_thread_context_items(thread_path)
+
+    by_id = {item.item_id: item for item in items}
+    # One shared epistemics footer instead of a copy in every body.
+    footer = by_id["thread:epistemics"]
+    assert "This is the recorded past" in footer.body
+    assert sum(item.body.count("This is the recorded past") for item in items) == 1
+    # The blocked turn's content is canonical in open objectives; recent
+    # history collapses it to a ref instead of duplicating query+response.
+    objectives = by_id["thread:open_objectives"]
+    history = by_id["thread:recent_history"]
+    assert "ship the release" in objectives.body
+    assert "ship the release" not in history.body
+    assert "canonical copy in open objectives" in history.body
 
 
 # ── live approval reconciliation ───────────────────────────────────────
