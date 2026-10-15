@@ -8,6 +8,11 @@ import re
 from kernel.models import MemoryRecallAnswer, MemoryRecallEvidence, MemoryRecord
 
 _RANKED_MIN_TOKEN_LEN = 3
+#: Minimum lexical relevance a record must clear to lead the ranked block
+#: (2026-10-14 self-review F1). Records below the floor still surface — the
+#: backend vouched for them — but only after every record that clears it,
+#: regardless of salience. Salience breaks ties among relevant records only.
+_RELEVANCE_FLOOR = 0.2
 
 
 def _tokenize(text: str) -> set[str]:
@@ -26,18 +31,24 @@ def build_memory_recall_answer(
     limit: int,
     deep: bool = False,
 ) -> MemoryRecallAnswer:
-    """Rank records by lexical overlap plus salience and build the recall answer.
+    """Rank records by relevance first, then salience, and build the recall answer.
 
     The backend (``memory.search``) already filtered for semantic relevance
     before we get here — the records it returned are candidates, not raw
-    noise. Lexical overlap is a *ranking signal*, not a hard filter: records
-    with zero token overlap are kept and ranked by salience alone so that
-    semantically-relevant but lexically-disjoint memories (the common case
-    when the model paraphrases a stored fact) still surface. ``deep`` is
-    accepted for API parity with the operation contract but, because the
-    backend already filtered, it does not change which records survive —
-    only the relative ranking weights shift (deep mode weights salience
-    over lexical overlap).
+    noise. But the backend's vouch is not a ranking: a high-salience record
+    with zero query overlap must not lead the block over a lexically
+    relevant one (the 2026-10-14 self-review F1 finding — live, a harness
+    self-assessment query surfaced an off-topic product-strategy memory
+    first). Ranking is therefore relevance-first:
+
+    - A record clearing ``_RELEVANCE_FLOOR`` lexical overlap leads the block;
+      salience breaks ties only among relevant records.
+    - Records below the floor (including zero-overlap ones) still surface —
+      semantically-relevant but lexically-disjoint memories (the common case
+      when the model paraphrases a stored fact) must not be dropped — but
+      they rank after every relevant record, by salience.
+    - ``deep`` no longer flips salience above relevance; it only tightens
+      the tie-break weight salience carries among relevant records.
     """
     if not records:
         return MemoryRecallAnswer(
@@ -47,21 +58,28 @@ def build_memory_recall_answer(
         )
 
     query_tokens = _tokenize(query)
-    ranked: list[tuple[float, MemoryRecord]] = []
+    ranked: list[tuple[float, bool, MemoryRecord]] = []
     for record in records:
         haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
         overlap = len(query_tokens.intersection(_tokenize(haystack)))
         lexical_score = overlap / max(len(query_tokens), 1) if query_tokens else 0.0
-        # In deep mode, salience dominates (the backend vouched for relevance,
-        # so trust its score); in normal mode, lexical overlap is the primary
-        # signal with salience as a tiebreaker. Either way the record survives.
-        if deep:
-            combined = min(1.0, max(0.0, record.salience) + lexical_score * 0.2)
+        # Relevance-first ranking (2026-10-14 self-review F1): a record must
+        # clear the relevance floor to lead the block; salience only breaks
+        # ties among relevant records. Below-floor records still surface
+        # (the backend vouched for them) but rank after every relevant one.
+        # ``deep`` tightens the salience tiebreak weight; it never lets
+        # salience outrank relevance.
+        salience = max(0.0, min(1.0, record.salience))
+        relevant = lexical_score >= _RELEVANCE_FLOOR
+        tiebreak_weight = 0.5 if deep else 0.2
+        if relevant:
+            combined = min(1.0, lexical_score + salience * tiebreak_weight)
         else:
-            combined = min(1.0, lexical_score + max(0.0, record.salience) * 0.2)
-        ranked.append((combined, record))
+            combined = min(1.0, salience * tiebreak_weight)
+        ranked.append((combined, relevant, record))
 
-    ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
+    # Relevant records lead; ties break by combined score, then record id.
+    ranked.sort(key=lambda item: (item[1], item[0], item[2].id), reverse=True)
     top = ranked[: max(1, min(int(limit or 1), 8))]
     if not top:
         return MemoryRecallAnswer(
@@ -71,8 +89,8 @@ def build_memory_recall_answer(
         )
 
     evidence: list[MemoryRecallEvidence] = []
-    for score, record in top:
-        reasons = ["lexical overlap"] if score > (record.salience * 0.2) else ["salience match"]
+    for score, relevant, record in top:
+        reasons = ["lexical overlap"] if relevant else ["salience match"]
         # Memory → thread provenance: surface the turn index the learning
         # was distilled from (when the record carries one) so recall output
         # renders a verifiable pointer instead of an unanchored claim.

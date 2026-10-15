@@ -54,6 +54,68 @@ def test_build_memory_recall_answer_ranks_overlap_then_salience() -> None:
     assert [item.memory_id for item in recall.evidence] == [1, 2]
 
 
+def test_build_memory_recall_answer_deep_ranks_relevant_over_salient_disjoint() -> None:
+    """Regression (2026-10-14 self-review F1): deep-mode recall ranked by
+    ``salience + lexical * 0.2`` so a high-salience record with zero query
+    overlap led the block over a lexically relevant one — live, a harness
+    self-assessment query surfaced an off-topic product-strategy memory
+    first. Relevance must lead: a record must clear a minimum lexical
+    relevance floor to lead; salience only breaks ties among relevant
+    records. The disjoint-records-by-salience fallback applies only when
+    nothing clears the floor."""
+    recall = build_memory_recall_answer(
+        query="harness self-assessment review findings",
+        records=[
+            _record(
+                record_id=1,
+                content="Product strategy: dnsmasq-web reservation feature roadmap.",
+                salience=0.9,
+            ),
+            _record(
+                record_id=2,
+                content="Harness self-review findings: surface harness bugs, act after research.",
+                salience=0.3,
+            ),
+        ],
+        limit=2,
+        deep=True,
+    )
+
+    assert recall.found is True
+    # The lexically relevant record leads despite lower salience.
+    assert recall.evidence[0].memory_id == 2
+    # The disjoint high-salience record still surfaces (backend vouched for
+    # it) but never leads when a relevant record exists.
+    assert [item.memory_id for item in recall.evidence] == [2, 1]
+
+
+def test_build_memory_recall_answer_deep_all_disjoint_falls_back_to_salience() -> None:
+    """When no record clears the relevance floor, the disjoint-records
+    fallback keeps ranking by salience (the false-negative regression the
+    2026-10-05 deep-mode test guards must not come back)."""
+    recall = build_memory_recall_answer(
+        query="provenance metadata",
+        records=[
+            _record(
+                record_id=1,
+                content="Every assistant reply carries an attribution envelope.",
+                salience=0.9,
+            ),
+            _record(
+                record_id=2,
+                content="We stamp AI outputs with an origin trace.",
+                salience=0.7,
+            ),
+        ],
+        limit=5,
+        deep=True,
+    )
+
+    assert recall.found is True
+    assert len(recall.evidence) == 2
+    assert recall.evidence[0].memory_id == 1
+
+
 def test_build_memory_recall_answer_zero_overlap_returns_not_found() -> None:
     recall = build_memory_recall_answer(
         query="completely unrelated query",

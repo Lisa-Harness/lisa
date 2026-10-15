@@ -86,22 +86,22 @@ class TestInferModulePath:
         assert _infer_module_path(py, tools) == "tools.status.status"
 
     def test_walk_terminates_for_home_rooted_pack(self, tmp_path: Path) -> None:
-        """A home-rooted pack path terminates without hanging.
+        """A real-world home-rooted pack path terminates without hanging.
 
         Mirrors ``/home/<user>/<repo>/<pack>/lisa_packs/<pack>/operations/…``
         with no ``src/`` or ``site-packages`` anywhere in the ancestor
-        chain. The walk runs against a synthesized ``tmp_path / home`` tree
-        rather than the real ``Path.home()`` (2026-10-15: the coding-pack
-        sandbox read-only mounts ``$HOME``; a test writing under it fails
-        with ``Errno 30``, and a test that mutates the real home is not
-        hermetic anywhere). The dotted path still includes the
-        ``lisa_packs.<pack>`` anchor chain when import resolution succeeds;
-        the contract under test is that the call **returns** rather than
-        spinning.
-        """
-        import shutil
+        chain. The dotted path still includes the ``lisa_packs.<pack>``
+        anchor chain when import resolution succeeds; the contract under
+        test is that the call **returns** rather than spinning.
 
-        scratch = tmp_path / "home" / "_lisa_test_walk_home_pack"
+        The layout is built under ``tmp_path`` instead of the real home
+        directory: the walk has no ``$HOME`` special-casing (it climbs to
+        the filesystem root and resolves anchors via ``sys.path``), so a
+        deep tmp_path chain exercises the identical code path while keeping
+        the test hermetic. The real home dir is read-only in check sandboxes
+        and would otherwise be littered on every dev machine.
+        """
+        scratch = tmp_path / "_lisa_test_walk_home_pack"
         pack_pkg = scratch / "lisa_packs" / "walkhome"
         ops = pack_pkg / "operations"
         ops.mkdir(parents=True)
@@ -109,13 +109,10 @@ class TestInferModulePath:
         py = ops / "demo" / "demo.py"
         py.parent.mkdir()
         py.write_text("")
-        try:
-            result = _infer_module_path(py, ops)
-            # Termination is the contract; the tail (operations.demo.demo)
-            # must still be present regardless of how the anchor resolved.
-            assert result.endswith("operations.demo.demo")
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+        result = _infer_module_path(py, ops)
+        # Termination is the contract; the tail (operations.demo.demo)
+        # must still be present regardless of how the anchor resolved.
+        assert result.endswith("operations.demo.demo")
 
     def test_site_packages_nested_package_path(self, tmp_path: Path) -> None:
         """Site-packages paths for non-top-level packages resolve full dotted path.
