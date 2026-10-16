@@ -13,6 +13,8 @@ so no individual probe can accidentally leak a raw exception string.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
+from datetime import date
 from typing import Any
 
 import httpx
@@ -31,8 +33,10 @@ class ProviderProbe:
     """Base class for provider probes.
 
     Subclasses set ``provider`` and implement ``_probe`` returning either
-    a ``tuple`` of models (success) or raising — in which case the base
-    ``probe`` method wraps the exception in a typed result.
+    a ``tuple`` of models (success), a fully-formed :class:`ProbeResult`
+    (success with ``dropped_model_ids`` or another nuanced status), or
+    raising — in which case the base ``probe`` method wraps the exception
+    in a typed result.
 
     Returning ``None`` from ``_probe`` signals ``ProbeStatus.EMPTY``
     (200 OK but no models). Returning a tuple signals ``OK``.
@@ -68,6 +72,8 @@ class ProviderProbe:
             )
 
         elapsed = int((time.perf_counter() - start) * 1000)
+        if isinstance(models, ProbeResult):
+            return replace(models, elapsed_ms=models.elapsed_ms or elapsed)
         if not models:
             return ProbeResult(
                 provider=self.provider,
@@ -85,7 +91,7 @@ class ProviderProbe:
         self,
         client: httpx.AsyncClient,
         timeout: float,
-    ) -> tuple[DiscoveredModel, ...] | None:
+    ) -> tuple[DiscoveredModel, ...] | ProbeResult | None:
         raise NotImplementedError
 
 
@@ -107,6 +113,7 @@ def _model(
     description: str = "",
     structured_reliability: float = 0.0,
     completion_api: str = "chat_completions",
+    expires_at: date | None = None,
 ) -> DiscoveredModel:
     """Construct a :class:`DiscoveredModel` with the shared heuristic.
 
@@ -147,6 +154,7 @@ def _model(
         structured_reliability=structured_reliability,
         completion_api=completion_api,
         prompt_cache_breakpoints=uses_prompt_cache_breakpoints(provider, model_id),
+        expires_at=expires_at,
     )
 
 

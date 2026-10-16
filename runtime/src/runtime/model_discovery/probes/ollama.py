@@ -1,4 +1,12 @@
-"""Ollama probe — local model tags."""
+"""Ollama probe — local model tags.
+
+Retirement-aware: Ollama's ``/api/tags`` keeps listing cloud-hosted
+models after the remote host retires them (verified live: a retired tag
+answers ``/api/show`` and ``/api/chat`` with HTTP 410 Gone). Every tag
+is therefore checked against ``/api/show`` — a 410 drops the model from
+discovery (recorded as a UI note) instead of letting a dead model win
+the default pin.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,7 @@ from typing import Any
 import httpx
 
 from ..classify import apply_known_override, env_any, is_code_model
-from ..types import DiscoveredModel
+from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
 _LISA_OLLAMA_HOST_ENV = "LISA_OLLAMA_HOST"
@@ -40,8 +48,14 @@ async def _fetch_show(
     base: str,
     model_id: str,
     timeout: float,
-) -> dict | None:
-    """Best-effort per-model ``/api/show`` enrichment, or ``None``.
+) -> tuple[dict | None, bool]:
+    """Best-effort per-model ``/api/show`` enrichment.
+
+    Returns ``(show_payload, gone)``. ``show_payload`` is ``None`` on
+    transient failure (the caller degrades to tag-based enrichment).
+    ``gone`` is True only when Ollama explicitly reports the model
+    retired (HTTP 410 Gone) — retired cloud tags stay in ``/api/tags``
+    but every generation call fails, so the caller must drop them.
 
     A failure for a single model must never fail discovery — we degrade to
     the tag-based heuristic when ``/api/show`` is unavailable or errors.
@@ -52,11 +66,13 @@ async def _fetch_show(
             json={"model": model_id},
             timeout=timeout,
         )
+        if response.status_code == httpx.codes.GONE:
+            return None, True
         response.raise_for_status()
         payload = response.json()
-        return payload if isinstance(payload, dict) else None
+        return (payload if isinstance(payload, dict) else None), False
     except Exception:  # pylint: disable=broad-except
-        return None
+        return None, False
 
 
 class OllamaProbe(ProviderProbe):
@@ -66,7 +82,7 @@ class OllamaProbe(ProviderProbe):
         self,
         client: httpx.AsyncClient,
         timeout: float,
-    ) -> tuple[DiscoveredModel, ...] | None:
+    ) -> tuple[DiscoveredModel, ...] | ProbeResult | None:
         host = env_any(_LISA_OLLAMA_HOST_ENV, "OLLAMA_HOST")
         base = _normalize_host(host)
 
@@ -75,14 +91,27 @@ class OllamaProbe(ProviderProbe):
         payload = response.json()
         rows = _extract_rows(payload, "models")
         models: list[DiscoveredModel] = []
+        retired: list[str] = []
         for item in rows:
             if not isinstance(item, dict):
                 continue
             model_id = str(item.get("name") or "").strip()
             if not model_id:
                 continue
-            show = await _fetch_show(client, base, model_id, timeout)
+            show, gone = await _fetch_show(client, base, model_id, timeout)
+            if gone:
+                retired.append(model_id)
+                continue
             models.append(_enrich_ollama_model(model_id, item, show_payload=show))
+        if retired:
+            # Return a fully-formed result (base ``probe`` passes it
+            # through) so OK carries the dropped ids as a UI note.
+            return ProbeResult(
+                provider=self.provider,
+                status=ProbeStatus.OK if models else ProbeStatus.EMPTY,
+                models=tuple(models),
+                dropped_model_ids=tuple(retired),
+            )
         return tuple(models) if models else None
 
 

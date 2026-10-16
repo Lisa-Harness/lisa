@@ -4,6 +4,41 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Model discovery is retirement-aware and never pins a dead or dying model
+
+- **What:** `/models discover` now drops retired and expired models before
+  they can win a pin. The Ollama probe checks every tag against
+  `/api/show` — a 410 Gone drops the tag (Ollama keeps retired cloud tags
+  in `/api/tags` while every generation call fails). The OpenRouter probe
+  honors the catalog's per-model `expiration_date` (expired rows are
+  dropped; upcoming expiries are carried on the model and emitted as
+  `expires_at` in the proposal) and excludes `:batch` Batch-API-only
+  twins the interactive turn loop cannot drive. The default/mode-pin
+  heuristics additionally skip any model that is expired, expiring
+  within 30 days, or batch-only — dropped models never enter the
+  proposal at all; soon-expiring ones stay listed (with `expires_at`
+  visible) but cannot be pinned. Dropped ids are rendered as a note in
+  the discovery output. The gpt-5 variant ranker now strips provider
+  prefixes (`openai/gpt-5.4-mini` previously collapsed to the same rank
+  as `openai/gpt-5.2-mini`, leaving discovery order to pick the cloud
+  default), and the Anthropic 404 fallback tuple was refreshed from
+  dated 2025 snapshot ids to stable aliases.
+- **Why:** a from-scratch demo pinned `deepseek-v4-flash:cloud` as the
+  default — retired on Ollama's remote host on 2026-09-25 while still
+  listed by `/api/tags` (verified live: 410 Gone on both `/api/show` and
+  `/api/chat`). No layer consulted retirement state, so the generated
+  `models.proposed.yaml` was broken on its first turn.
+- **Tests:** `runtime/src/runtime/model_discovery/tests/test_probes.py`
+  (`test_retired_410_model_dropped_with_note`),
+  `test_openrouter_probe.py` (`test_expired_rows_dropped_with_note`,
+  `test_upcoming_expiry_carried_on_model`, `test_batch_variants_excluded`),
+  `test_manifest.py` (`test_local_default_skips_expired_model`,
+  `test_local_default_skips_soon_expiring_model`,
+  `test_cloud_default_skips_batch_variant`,
+  `test_cloud_default_prefers_cheaper_variant_with_prefix`).
+
 ### Changed
 
 #### The runtime stamps the yield's context and resume mode on `HostCommandResult.data`

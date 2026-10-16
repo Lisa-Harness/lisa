@@ -19,11 +19,13 @@ _LISA_ANTHROPIC_API_KEY_ENV = "LISA_ANTHROPIC_API_KEY"
 _ANTHROPIC_VERSION = "2023-06-01"
 
 # Conservative fallback used only when the live list endpoint is absent.
-# These IDs are stable aliases that Anthropic maintains across versions.
+# Stable version-agnostic aliases (verified in the live catalog) — dated
+# snapshot ids (``claude-...-20250929``) retire and pin the same broken
+# default class this fallback would otherwise re-create.
 _FALLBACK_MODELS = (
-    "claude-sonnet-4-5-20250929",
-    "claude-haiku-4-5-20251001",
-    "claude-opus-4-1-20250805",
+    "claude-sonnet-5",
+    "claude-haiku-5-5",
+    "claude-opus-5",
 )
 
 

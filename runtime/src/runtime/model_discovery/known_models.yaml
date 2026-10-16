@@ -98,12 +98,6 @@ ollama:deepseek-v4.1-flash:cloud:
   cost_tier: standard
   latency_tier: medium
 
-ollama:deepseek-v4-flash:cloud:
-  display_name: Deepseek V4 Flash:Cloud
-  capabilities: [text, tools, structured_output, reasoning]
-  cost_tier: standard
-  latency_tier: medium
-
 azure_openai:gpt-5.4:
   display_name: GPT-5.4 (Azure)
   capabilities: [text, tools, structured_output, code, vision]

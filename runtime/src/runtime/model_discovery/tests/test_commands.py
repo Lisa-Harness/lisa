@@ -90,6 +90,42 @@ class TestRenderDiscoverNotes:
         for note in notes:
             assert "AIzaSySECRET" not in note
 
+    def test_dropped_models_produce_note_on_ok(self) -> None:
+        """OK results that dropped retired models surface a UI note.
+
+        Regression guard for the 2026-10 demo incident: retired Ollama
+        cloud tags must be visible in discovery output so operators see
+        why a listed tag is missing from the proposal.
+        """
+        report = _build_report(
+            ProbeResult(
+                provider="ollama",
+                status=ProbeStatus.OK,
+                models=(DiscoveredModel(model_id="alive:cloud", provider="ollama"),),
+                dropped_model_ids=("retired:cloud",),
+            )
+        )
+        notes = _render_discover_notes(report)
+        assert len(notes) == 1
+        assert "retired:cloud" in notes[0]
+        assert "retired/expired" in notes[0]
+
+    def test_dropped_note_truncates_long_lists(self) -> None:
+        """More than six dropped ids roll into a count, not a wall of text."""
+        report = _build_report(
+            ProbeResult(
+                provider="ollama",
+                status=ProbeStatus.OK,
+                models=(DiscoveredModel(model_id="alive:cloud", provider="ollama"),),
+                dropped_model_ids=tuple(f"retired-{i}:cloud" for i in range(9)),
+            )
+        )
+        notes = _render_discover_notes(report)
+        assert len(notes) == 1
+        assert "retired-5:cloud" in notes[0]
+        assert "retired-6:cloud" not in notes[0]
+        assert "(+3 more)" in notes[0]
+
 
 def _build_report(*results: ProbeResult):
     from runtime.model_discovery import DiscoveryReport

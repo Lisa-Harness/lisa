@@ -10,6 +10,8 @@ via ``links.next``, and the SKIPPED signal when no key is set.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import httpx
 import pytest
 
@@ -301,3 +303,60 @@ class TestProbe:
             "openai/gpt-5.4",
             "anthropic/claude-sonnet-5",
         ]
+
+    @pytest.mark.asyncio
+    async def test_expired_rows_dropped_with_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Past-``expiration_date`` catalog rows are dropped, not discovered.
+
+        OpenRouter keeps expired rows in the catalog (observed live:
+        retired tags served 410 Gone while still listed); pinning one as
+        a default recreates the broken-default demo failure.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+        payload = _single_row_payload(
+            _row(expiration_date=(date.today() - timedelta(days=10)).isoformat())
+        )
+
+        probe = OpenRouterProbe()
+        result = await probe.probe(_client(_handler_for(payload)), 8.0)
+        assert result.status is ProbeStatus.EMPTY
+        assert result.models == ()
+        assert result.dropped_model_ids == ("openai/gpt-5.4",)
+        assert "openai/gpt-5.4" in (result.note_line() or "")
+
+    @pytest.mark.asyncio
+    async def test_upcoming_expiry_carried_on_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A future ``expiration_date`` lands on the model so pin
+        heuristics can skip it inside the horizon."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+        expiry = date.today() + timedelta(days=5)
+        payload = _single_row_payload(_row(expiration_date=expiry.isoformat()))
+
+        probe = OpenRouterProbe()
+        result = await probe.probe(_client(_handler_for(payload)), 8.0)
+        assert result.status is ProbeStatus.OK
+        assert result.models[0].expires_at == expiry
+
+    @pytest.mark.asyncio
+    async def test_batch_variants_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``:batch`` twins are excluded — the interactive turn loop
+        cannot drive Batch-API-only models."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+        payload = _single_row_payload(_row())
+        payload["data"].append(_row(id="openai/gpt-5.4:batch", name="GPT-5.4 (batch)"))
+
+        probe = OpenRouterProbe()
+        result = await probe.probe(_client(_handler_for(payload)), 8.0)
+        assert result.status is ProbeStatus.OK
+        assert [m.model_id for m in result.models] == ["openai/gpt-5.4"]
+        # Batch twins are silently excluded (not "dropped") — they are
+        # separate catalog rows for the same interactive model, not
+        # retired entries.
+        assert result.dropped_model_ids == ()
+
+
+def _handler_for(payload: dict[str, object]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    return httpx.MockTransport(handler)

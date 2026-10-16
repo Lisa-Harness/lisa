@@ -1,14 +1,16 @@
 """Shared helpers for model discovery probes.
 
-Environment resolution and model-classification heuristics live here so
-every probe reads credentials through the same path and applies the same
-reasoning/low-latency tagging rules.
+Environment resolution, model-classification heuristics, and
+expiry/viability predicates live here so every probe reads credentials
+through the same path and applies the same reasoning/low-latency tagging
+and retirement-awareness rules.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -136,6 +138,60 @@ def is_local_provider(provider: str) -> bool:
 def is_cloud_provider(provider: str) -> bool:
     """Return True if ``provider`` is treated as cloud (non-local)."""
     return not is_local_provider(provider)
+
+
+def parse_expiry_date(raw: object) -> date | None:
+    """Parse a provider-published expiry scalar into a ``date``.
+
+    Accepts ISO 8601 dates/datetimes (``2026-10-20``,
+    ``2026-10-20T00:00:00Z``, ``2026-10-20T00:00:00.000+00:00``). Returns
+    ``None`` for empty or unparseable values so an unknown expiry never
+    disqualifies a model.
+    """
+    if isinstance(raw, (datetime, date)):
+        return raw.date() if isinstance(raw, datetime) else raw
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+#: Horizon (days) within which a model's expiry makes it ineligible for
+#: default/mode pins. A model dying in under a month would leave a fresh
+#: install broken almost immediately — skip it before pinning.
+PIN_EXPIRY_HORIZON_DAYS = 30
+
+
+def model_expires_within(
+    expires_at: date | None,
+    *,
+    days: int,
+    today: date | None = None,
+) -> bool:
+    """Return True if ``expires_at`` falls within the next ``days`` days."""
+    if expires_at is None:
+        return False
+    return expires_at <= (today or date.today()) + timedelta(days=days)
+
+
+def is_model_expired(expires_at: date | None, *, today: date | None = None) -> bool:
+    """Return True if ``expires_at`` is today or in the past."""
+    if expires_at is None:
+        return False
+    return expires_at <= (today or date.today())
+
+
+def is_batch_only_model(model_id: str) -> bool:
+    """Return True for Batch-API-only variants the host cannot drive live.
+
+    OpenRouter exposes ``:batch`` twins of interactive models. They only
+    accept asynchronous Batch API jobs — an interactive agent loop
+    pinning one fails on the first turn.
+    """
+    return model_id.strip().lower().endswith(":batch")
 
 
 @lru_cache(maxsize=1)

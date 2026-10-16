@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -151,6 +152,158 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(models)
         assert len(payload["models"]) == 1
         assert payload["models"][0]["provider"] == "openai"
+
+    # ── Pin viability (retirement awareness) ──────────────────────────
+    #
+    # Regression guards for the 2026-10 demo incident: from-scratch
+    # discovery pinned a retired Ollama cloud tag as default. Expired,
+    # soon-expiring, and batch-only models must never win a pin.
+
+    def test_local_default_skips_expired_model(self) -> None:
+        """An expired local model listed by the provider loses the default pin."""
+        models = (
+            DiscoveredModel(
+                model_id="retired:cloud",
+                provider="ollama",
+                context_window=1048576,
+                expires_at=date(2026, 9, 25),
+            ),
+            DiscoveredModel(model_id="alive:cloud", provider="ollama", context_window=1048576),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "alive:cloud"}
+        # The expired model stays listed (with its expiry visible) — it
+        # only loses pin eligibility.
+        listed_ids = {row["model_id"] for row in payload["models"]}
+        assert "retired:cloud" in listed_ids
+
+    def test_local_default_skips_soon_expiring_model(self) -> None:
+        """A model dying within the pin horizon is not pinned."""
+        soon = date.today() + timedelta(days=7)
+        models = (
+            DiscoveredModel(
+                model_id="dying:cloud",
+                provider="ollama",
+                context_window=262144,
+                expires_at=soon,
+            ),
+            DiscoveredModel(model_id="stable:cloud", provider="ollama", context_window=262144),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "stable:cloud"}
+
+    def test_far_future_expiry_stays_pin_viable(self) -> None:
+        """A model expiring beyond the horizon is still pin-eligible."""
+        far = date.today() + timedelta(days=200)
+        models = (
+            DiscoveredModel(
+                model_id="stable:cloud",
+                provider="ollama",
+                context_window=262144,
+                expires_at=far,
+            ),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "stable:cloud"}
+
+    def test_cloud_default_skips_batch_variant(self) -> None:
+        """A ``:batch`` (Batch-API-only) twin never wins the cloud default."""
+        models = (
+            DiscoveredModel(model_id="openai/gpt-5.4-nano:batch", provider="openrouter"),
+            DiscoveredModel(model_id="openai/gpt-5.4-nano", provider="openrouter"),
+            DiscoveredModel(model_id="openai/gpt-5.4-mini", provider="openrouter"),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "openai/gpt-5.4-nano"}
+
+    def test_cloud_default_prefers_cheaper_variant_with_prefix(self) -> None:
+        """Provider-prefixed gpt-5 ids rank by variant, not discovery order.
+
+        The old rank parser could not see behind ``openai/`` — every
+        prefixed variant collapsed to (tier, 5.0), so discovery order
+        decided the cloud default.
+        """
+        models = (
+            DiscoveredModel(model_id="openai/gpt-5.4-mini", provider="openrouter"),
+            DiscoveredModel(model_id="openai/gpt-5.2-mini", provider="openrouter"),
+            DiscoveredModel(model_id="openai/gpt-5.4", provider="openrouter"),
+        )
+        payload = build_manifest_payload(models)
+        # Same size tier (mini); lower variant 5.2 wins over 5.4.
+        assert payload["mode_models"] == {"default": "openai/gpt-5.2-mini"}
+
+    def test_expired_only_set_falls_back_to_listing_default(self) -> None:
+        """When every model is expired, discovery still names a default
+        rather than emitting an unusable manifest."""
+        models = (
+            DiscoveredModel(
+                model_id="retired-a:cloud",
+                provider="ollama",
+                context_window=1048576,
+                expires_at=date(2026, 9, 25),
+            ),
+            DiscoveredModel(
+                model_id="retired-b:cloud",
+                provider="ollama",
+                context_window=262144,
+                expires_at=date(2026, 9, 25),
+            ),
+        )
+        payload = build_manifest_payload(models)
+        # A default is still pinned (to the mid-range of the expired set)
+        # so the manifest stays loadable; the operator sees the expiry
+        # dates in the emitted rows and the probe's dropped note.
+        assert payload["mode_models"]["default"] in {"retired-a:cloud", "retired-b:cloud"}
+
+    def test_code_pin_skips_retired_model(self) -> None:
+        """Preset annotations never resolve to a retired code model."""
+        from runtime.model_discovery.manifest import _pick_code_model
+
+        models = (
+            DiscoveredModel(
+                model_id="retired-coder:cloud",
+                provider="ollama",
+                capabilities=("text", "tools", "code"),
+                expires_at=date(2026, 9, 25),
+            ),
+            DiscoveredModel(
+                model_id="alive-coder:cloud",
+                provider="ollama",
+                capabilities=("text", "tools", "code"),
+            ),
+        )
+        assert _pick_code_model(models, "fallback") == "alive-coder:cloud"
+
+    def test_reasoning_pin_skips_retired_model(self) -> None:
+        """Preset annotations never resolve to a retired reasoning model."""
+        from runtime.model_discovery.manifest import _pick_reasoning_model
+
+        models = (
+            DiscoveredModel(
+                model_id="retired-thinker:cloud",
+                provider="ollama",
+                reasoning_model=True,
+                expires_at=date(2026, 9, 25),
+            ),
+            DiscoveredModel(
+                model_id="alive-thinker:cloud",
+                provider="ollama",
+                reasoning_model=True,
+            ),
+        )
+        fallback = models[1]
+        picked = _pick_reasoning_model(models, fallback)
+        assert picked.model_id == "alive-thinker:cloud"
+
+    def test_expires_at_emitted_on_model_rows(self) -> None:
+        """Upcoming expiry dates are written on the emitted model rows so
+        operators see a model's retirement horizon in the proposal."""
+        expiry = date.today() + timedelta(days=60)
+        models = (
+            DiscoveredModel(model_id="dying-soon:cloud", provider="ollama", expires_at=expiry),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["models"][0]["expires_at"] == expiry.isoformat()
 
 
 class TestRouterBlock:

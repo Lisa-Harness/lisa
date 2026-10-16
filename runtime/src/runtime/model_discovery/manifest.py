@@ -1,7 +1,10 @@
 """Manifest construction and atomic serialization.
 
 Discrete default selection plus atomic YAML writes. The algorithm is
-deliberately stable and order-independent:
+deliberately stable and order-independent, and it is pin-viability-aware:
+a model that is expired, expiring within the pin horizon, or batch-only
+(``:batch``) never becomes a default — the 2026-10 demo incident pinned
+a retired Ollama cloud tag because nothing consulted retirement state.
 
 - **default model**: when any local (ollama) models are present, the default
   is the local *mid-range* model — the median by ``context_window`` — because
@@ -21,7 +24,16 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
-from .classify import is_cloud_provider, is_gpt_5_family, is_local_provider, is_reasoning_model
+from .classify import (
+    PIN_EXPIRY_HORIZON_DAYS,
+    is_batch_only_model,
+    is_cloud_provider,
+    is_gpt_5_family,
+    is_local_provider,
+    is_model_expired,
+    is_reasoning_model,
+    model_expires_within,
+)
 from .types import DiscoveredModel
 from .yaml_emit import compact_list, dump_manifest
 
@@ -44,6 +56,27 @@ def _dedupe(models: tuple[DiscoveredModel, ...]) -> tuple[DiscoveredModel, ...]:
     return tuple(seen.values())
 
 
+def _is_pin_viable(model: DiscoveredModel) -> bool:
+    """Return True when a model may be pinned as a default/mode default.
+
+    A pin must survive long enough to matter. Ineligible models stay in
+    the manifest list (with their expiry visible) but never become a
+    default:
+
+    - **Batch-only** (``:batch``): asynchronous Batch-API twins the
+      interactive turn loop cannot drive — the first turn would fail.
+    - **Expired**: the provider published an expiry date already past.
+    - **Expiring soon**: within the pin horizon
+      (``PIN_EXPIRY_HORIZON_DAYS``); a fresh install pinning a model
+      that dies in days re-creates the broken-default demo.
+    """
+    if is_batch_only_model(model.model_id):
+        return False
+    if is_model_expired(model.expires_at):
+        return False
+    return not model_expires_within(model.expires_at, days=PIN_EXPIRY_HORIZON_DAYS)
+
+
 def _choose_default_model(models: tuple[DiscoveredModel, ...]) -> DiscoveredModel:
     """Pick the default model with a discrete algorithm.
 
@@ -56,13 +89,18 @@ def _choose_default_model(models: tuple[DiscoveredModel, ...]) -> DiscoveredMode
        (nano < mini < full, then lowest variant), falling back to the
        first cloud model if no gpt-5+ was probed.
     3. Otherwise: the first model overall.
+
+    In every branch, only *pin-viable* models (:func:`_is_pin_viable`)
+    are eligible — batch-only, expired, and soon-expiring models are
+    never pinned. The viable subset falls back to the full list when it
+    is empty, so discovery never fails to name a default.
     """
 
-    local = tuple(m for m in models if is_local_provider(m.provider))
+    local = tuple(m for m in models if is_local_provider(m.provider) and _is_pin_viable(m))
     if local:
         return _mid_range_model(local)
 
-    cloud = tuple(m for m in models if is_cloud_provider(m.provider))
+    cloud = tuple(m for m in models if is_cloud_provider(m.provider) and _is_pin_viable(m))
     if cloud:
         gpt5 = tuple(m for m in cloud if is_gpt_5_family(m.model_id))
         if gpt5:
@@ -70,6 +108,14 @@ def _choose_default_model(models: tuple[DiscoveredModel, ...]) -> DiscoveredMode
             # lowest variant, then discovery order via stable min().
             return min(gpt5, key=_gpt5_cost_rank)
         return cloud[0]
+
+    local_any = tuple(m for m in models if is_local_provider(m.provider))
+    if local_any:
+        return _mid_range_model(local_any)
+
+    cloud_any = tuple(m for m in models if is_cloud_provider(m.provider))
+    if cloud_any:
+        return cloud_any[0]
 
     # No models at all — caller guards this, but be defensive.
     return models[0]
@@ -103,9 +149,16 @@ def _gpt5_cost_rank(model: DiscoveredModel) -> tuple[int, float]:
     - ``variant``: numeric suffix after ``gpt-5`` (``gpt-5.4`` → 5.4; bare
       ``gpt-5`` → 5.0). Lower variant = cheaper within a size tier.
 
+    The provider prefix is stripped first (``openai/gpt-5.4-nano`` →
+    ``gpt-5.4-nano``) — without that, prefixed ids never matched the
+    ``gpt-5.`` startswith and every OpenRouter gpt-5 variant collapsed
+    to rank (tier, 5.0), leaving discovery order to pick the winner.
+
     ``min()`` is stable, so equal keys preserve discovery order.
     """
     raw = model.model_id.strip().lower()
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
     variant = 5.0
     if raw.startswith("gpt-5."):
         try:
@@ -121,10 +174,14 @@ def _pick_reasoning_model(
     models: tuple[DiscoveredModel, ...],
     fallback: DiscoveredModel,
 ) -> DiscoveredModel:
-    """Pick a reasoning model for preset annotations, else the fallback."""
+    """Pick a reasoning model for preset annotations, else the fallback.
+
+    Only pin-viable models are picked so a preset annotation never
+    routes turns to a retired or batch-only model.
+    """
 
     for model in models:
-        if model.reasoning_model or is_reasoning_model(model.model_id):
+        if _is_pin_viable(model) and (model.reasoning_model or is_reasoning_model(model.model_id)):
             return model
     return fallback
 
@@ -288,6 +345,8 @@ def _apply_optional_model_fields(entry: dict[str, Any], model: DiscoveredModel) 
         value = getattr(model, field)
         if value:
             entry[field] = value
+    if model.expires_at is not None:
+        entry["expires_at"] = model.expires_at.isoformat()
     if model.pricing_currency and model.pricing_currency != "USD":
         entry["pricing_currency"] = model.pricing_currency
     if model.completion_api and model.completion_api != "chat_completions":
@@ -301,10 +360,12 @@ def _pick_code_model(
     """Pick a code-capable model for the coding-focused preset annotation.
 
     Scans discovered models for one with ``"code"`` in its capabilities.
-    Falls back to ``fallback_model_id`` when no code-capable model is found.
+    Falls back to ``fallback_model_id`` when no code-capable model is
+    found. Only pin-viable models are picked so a preset annotation never
+    routes turns to a retired or batch-only model.
     """
     for model in models:
-        if model.capabilities and "code" in model.capabilities:
+        if _is_pin_viable(model) and model.capabilities and "code" in model.capabilities:
             return model.model_id
     return fallback_model_id
 

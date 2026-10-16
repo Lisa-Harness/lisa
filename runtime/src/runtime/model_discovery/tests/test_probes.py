@@ -8,6 +8,8 @@ on a server error.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -182,6 +184,63 @@ class TestOllamaProbe:
         assert result.status is ProbeStatus.OK
         assert len(result.models) == 1
         assert result.models[0].model_id == "gemma3:latest"
+
+    @pytest.mark.asyncio
+    async def test_retired_410_model_dropped_with_note(self) -> None:
+        """Regression guard for the 2026-10 demo incident.
+
+        Ollama's ``/api/tags`` keeps listing retired cloud models even
+        though ``/api/show`` (and every generation call) answers 410 Gone.
+        The probe must drop the tag and record it as a UI note, never let
+        it into ``models`` where it could win the default pin.
+        """
+
+        def _handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path == "/api/tags":
+                return httpx.Response(
+                    200,
+                    json={
+                        "models": [
+                            {"name": "retired:cloud"},
+                            {"name": "alive:cloud"},
+                        ]
+                    },
+                )
+            body = json.loads(req.content)
+            if body.get("model") == "retired:cloud":
+                return httpx.Response(
+                    410,
+                    json={"error": "retired:cloud was retired on September 25, 2026."},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": ["completion", "tools"],
+                    "model_info": {"general.context_length": 1048576},
+                },
+            )
+
+        transport = httpx.MockTransport(_handler)
+        result = await OllamaProbe().probe(_client(transport), timeout=5.0)
+        assert result.status is ProbeStatus.OK
+        assert [m.model_id for m in result.models] == ["alive:cloud"]
+        assert result.dropped_model_ids == ("retired:cloud",)
+        assert "retired:cloud" in (result.note_line() or "")
+
+    @pytest.mark.asyncio
+    async def test_retired_410_with_no_survivors_is_empty(self) -> None:
+        """All tags retired → EMPTY with the dropped ids still noted."""
+
+        def _handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path == "/api/tags":
+                return httpx.Response(200, json={"models": [{"name": "retired:cloud"}]})
+            return httpx.Response(410, json={"error": "retired"})
+
+        transport = httpx.MockTransport(_handler)
+        result = await OllamaProbe().probe(_client(transport), timeout=5.0)
+        assert result.status is ProbeStatus.EMPTY
+        assert result.models == ()
+        assert result.dropped_model_ids == ("retired:cloud",)
 
 
 # ── OpenAI probe ──────────────────────────────────────────────────────
@@ -659,7 +718,7 @@ class TestAnthropicProbe:
         assert result.models[0].provider == "anthropic"
         # Verify the fallback IDs match the current stale-free tuple
         fallback_ids = {m.model_id for m in result.models}
-        assert "claude-sonnet-4-5-20250929" in fallback_ids
+        assert "claude-sonnet-5" in fallback_ids
         assert result.error is not None
         assert "conservative" in result.error.safe_message.lower()
 

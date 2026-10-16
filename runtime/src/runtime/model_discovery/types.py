@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 
@@ -35,6 +36,10 @@ class ProbeStatus(StrEnum):
     RATE_LIMITED = "rate_limited"  # 429
     SCHEMA = "schema"  # 200 but unparseable body
     UNKNOWN = "unknown"
+
+
+#: Cap on dropped-model ids rendered in one UI note line.
+_NOTE_ID_LIMIT = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +90,9 @@ class DiscoveredModel:
     # Azure GPT-5.6+ caches only prefixes that end at a prompt-cache
     # breakpoint; the manifest flag makes the gateway place them.
     prompt_cache_breakpoints: bool = False
+    #: Provider-published retirement date (OpenRouter ``expiration_date``).
+    #: ``None`` = the provider did not publish one — NOT "never expires".
+    expires_at: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,13 +111,22 @@ class ProbeError:
 
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
-    """Outcome of probing one provider."""
+    """Outcome of probing one provider.
+
+    ``dropped_model_ids`` names ids the provider still *lists* but that
+    are retired/expired; they are excluded from ``models`` and surfaced
+    as a :meth:`note_line` entry so the operator sees why a listed tag
+    is missing from the proposal.
+    """
 
     provider: str
     status: ProbeStatus
     models: tuple[DiscoveredModel, ...] = ()
     error: ProbeError | None = None
     elapsed_ms: int = 0
+    #: Ids the provider still lists but that are retired/expired (Ollama
+    #: 410-Gone cloud models, OpenRouter past-``expiration_date`` rows).
+    dropped_model_ids: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -124,10 +141,18 @@ class ProbeResult:
     def note_line(self) -> str | None:
         """Return a UI-safe note for this result, or None if nothing to say.
 
-        ``OK`` and ``SKIPPED`` produce no note (they are the quiet cases).
-        Everything else produces a single line drawn from ``safe_message``.
+        Dropped retired/expired ids always produce a note, regardless of
+        status — an operator scanning "why is this listed tag missing"
+        needs it even when every model was dropped (EMPTY). Otherwise
+        ``OK`` and ``SKIPPED`` produce no note, and every other status
+        renders a single line drawn from ``safe_message``.
         """
 
+        if self.dropped_model_ids:
+            listed = ", ".join(self.dropped_model_ids[:_NOTE_ID_LIMIT])
+            if len(self.dropped_model_ids) > _NOTE_ID_LIMIT:
+                listed += f" (+{len(self.dropped_model_ids) - _NOTE_ID_LIMIT} more)"
+            return f"{self.provider}: skipped retired/expired models: {listed}"
         if self.status in (ProbeStatus.OK, ProbeStatus.SKIPPED):
             return None
         if self.error is not None:

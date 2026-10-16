@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from runtime.model_discovery.classify import (
     apply_known_override,
+    is_batch_only_model,
+    is_model_expired,
     load_known_models,
+    model_expires_within,
+    parse_expiry_date,
     uses_prompt_cache_breakpoints,
 )
 from runtime.model_discovery.manifest import build_manifest_payload
@@ -108,6 +114,38 @@ class TestAnthropicEnrichment:
             {"display_name": "Claude Sonnet 5"},
         )
         assert model.display_name == "Claude Sonnet 5"
+
+
+class TestExpiryHeuristics:
+    """Guards for the retirement-awareness helpers in ``classify``."""
+
+    def test_parse_expiry_date_iso_date(self) -> None:
+        assert parse_expiry_date("2026-10-20") == date(2026, 10, 20)
+
+    def test_parse_expiry_date_zoned_datetime(self) -> None:
+        assert parse_expiry_date("2026-10-20T00:00:00Z") == date(2026, 10, 20)
+
+    def test_parse_expiry_date_empty_and_bad(self) -> None:
+        assert parse_expiry_date("") is None
+        assert parse_expiry_date(None) is None
+        assert parse_expiry_date("not-a-date") is None
+
+    def test_is_model_expired(self) -> None:
+        assert is_model_expired(date(2026, 9, 25), today=date(2026, 10, 16)) is True
+        assert is_model_expired(date(2026, 10, 16), today=date(2026, 10, 16)) is True
+        assert is_model_expired(date(2026, 12, 31), today=date(2026, 10, 16)) is False
+        assert is_model_expired(None, today=date(2026, 10, 16)) is False
+
+    def test_model_expires_within(self) -> None:
+        assert model_expires_within(date(2026, 10, 20), days=30, today=date(2026, 10, 16)) is True
+        assert model_expires_within(date(2027, 1, 1), days=30, today=date(2026, 10, 16)) is False
+        assert model_expires_within(None, days=30, today=date(2026, 10, 16)) is False
+
+    def test_is_batch_only_model(self) -> None:
+        assert is_batch_only_model("openai/gpt-5.4:batch") is True
+        assert is_batch_only_model("GPT-5.4:BATCH") is True
+        assert is_batch_only_model("openai/gpt-5.4") is False
+        assert is_batch_only_model("mistralai/mistral-large") is False
 
 
 class TestAzureEnrichment:
@@ -471,7 +509,6 @@ class TestKnownModelsRegistry:
             "glm-5.3:cloud",
             "glm-5.3-flash:cloud",
             "deepseek-v4.1-flash:cloud",
-            "deepseek-v4-flash:cloud",
         ):
             enrichment = apply_known_override(
                 "ollama",

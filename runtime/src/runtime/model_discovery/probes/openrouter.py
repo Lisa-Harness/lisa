@@ -13,13 +13,28 @@ Filtered to chat-capable text models (``text`` among the input, not a
 media/embedding output modality) to keep the emitted manifest lean; the raw
 catalog spans image/audio/embedding models the host cannot drive as chat
 completions.
+
+Retirement-aware: the catalog publishes per-model ``expiration_date``;
+rows past that date are dropped (recorded as a UI note), upcoming
+expiries are carried on the model so pin heuristics can avoid them.
+``:batch`` variants (Batch-API-only twins) are excluded — the interactive
+turn loop cannot drive them.
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 import httpx
 
-from ..classify import apply_known_override, env_any, is_code_model
+from ..classify import (
+    apply_known_override,
+    env_any,
+    is_batch_only_model,
+    is_code_model,
+    is_model_expired,
+    parse_expiry_date,
+)
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _model
 
@@ -56,11 +71,12 @@ class OpenRouterProbe(ProviderProbe):
         self,
         client: httpx.AsyncClient,
         timeout: float,
-    ) -> tuple[DiscoveredModel, ...] | None:
+    ) -> tuple[DiscoveredModel, ...] | ProbeResult | None:
         api_key = env_any(_LISA_OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY")
         headers = {"Authorization": f"Bearer {api_key}"}
 
         models: list[DiscoveredModel] = []
+        dropped: list[str] = []
         url: str | None = _OPENROUTER_MODELS_URL
         seen: set[str] = set()
         for _ in range(_MAX_PAGES):
@@ -83,11 +99,26 @@ class OpenRouterProbe(ProviderProbe):
                 if not _is_chat_capable(row):
                     continue
                 seen.add(model_id)
-                models.append(_enrich_openrouter_model(model_id, row))
+                if is_batch_only_model(model_id):
+                    # Batch-API-only twin of an interactive model — the
+                    # host cannot drive it on the turn loop.
+                    continue
+                expiry = parse_expiry_date(row.get("expiration_date"))
+                if is_model_expired(expiry):
+                    dropped.append(model_id)
+                    continue
+                models.append(_enrich_openrouter_model(model_id, row, expires_at=expiry))
             # Follow pagination via ``links.next`` when present.
             links = payload.get("links") if isinstance(payload, dict) else None
             next_url = links.get("next") if isinstance(links, dict) else None
             url = next_url if (isinstance(next_url, str) and next_url.strip()) else None
+        if dropped:
+            return ProbeResult(
+                provider=self.provider,
+                status=ProbeStatus.OK if models else ProbeStatus.EMPTY,
+                models=tuple(models),
+                dropped_model_ids=tuple(dropped),
+            )
         return tuple(models) if models else None
 
 
@@ -119,13 +150,16 @@ def _as_str_set(value: object) -> set[str]:
     return set()
 
 
-def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
+def _enrich_openrouter_model(
+    model_id: str, row: dict, *, expires_at: date | None = None
+) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` from one OpenRouter model row.
 
     OpenRouter provides capability and pricing metadata directly, so
     capabilities, tiers, and context window come from the API payload, not
     inference — with a known-models override layered on top for the models it
-    under-reports.
+    under-reports. ``expires_at`` carries the catalog's published
+    ``expiration_date`` (``None`` = not published).
     """
 
     display_name = str(row.get("name") or "").strip() or model_id
@@ -206,6 +240,7 @@ def _enrich_openrouter_model(model_id: str, row: dict) -> DiscoveredModel:
         cache_read_price=float(merged.get("cache_read_price") or 0.0),
         cache_write_price=float(merged.get("cache_write_price") or 0.0),
         description=str(merged.get("description") or ""),
+        expires_at=expires_at,
     )
 
 
