@@ -9230,7 +9230,17 @@ async def _finalize_turn_result(
     log: logging.Logger,
 ) -> TurnResult:
     """Resolve the final response and run post-turn completion effects."""
-    if getattr(state, "capability_limit_hit", False) and not yielded:
+    if getattr(state, "capability_limit_hit", False) and not yielded and not content.strip():
+        # The capability-cap yield is a fallback for a turn that ends with
+        # NO content — the model kept calling the capped tool until the loop
+        # broke empty. When the model recovered after a cap rejection and
+        # produced a final answer, that answer wins: discarding it (the
+        # 2026-10-17 turns 873/874 incident: fetch_page hit its 8-call cap
+        # mid-turn, the model delegated research, rewrote the files, and
+        # finished cleanly — then the finished answer was erased and
+        # replaced with a fabricated "resource budget" question) converts a
+        # recovered turn into a false exhaustion claim that persists to the
+        # thread and re-fires on later turns.
         content = ""
     if not content:
         content, content_source, yielded, pending_yield = await _resolve_empty_turn_content(

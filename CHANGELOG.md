@@ -4,6 +4,81 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### A recovered turn no longer reports a fabricated resource-budget exhaustion
+
+- **What:** the sticky `capability_limit_hit` latch no longer discards a
+  turn's final answer. A per-target call cap rejection mid-turn (the
+  model exceeding `fetch_page`'s 8-per-turn cap, say) sets the latch and
+  feeds the rejection back so the model can adapt; when the model then
+  recovers — delegates research, lands its writes, finishes cleanly —
+  the finished answer now stands. The fabricated "I've reached a resource
+  budget for this turn" yield fires only when the turn genuinely ends
+  with no content, preserving the b79ba861 contract that a capped-out
+  loop is never mistaken for a natural empty completion.
+- **Why:** the 2026-10-17 turns 873/874 incident: `fetch_page` hit its
+  cap mid-turn, the model observed the rejection, delegated the remaining
+  verification, rewrote all three `vhs-demo` files, and produced a complete
+  final answer — which `_finalize_turn_result` erased (`content = ""`)
+  and replaced with the resource-budget question. The operator saw a
+  false exhaustion claim while the work was done; the fabricated claim
+  persisted to the thread unredacted and re-fired on later turns.
+- **Tests:** `kernel/tests/test_turn_runner.py`
+  (`test_run_turn_execution_policy_caps_specific_capability_calls` now
+  pins the recovered-final-answer contract;
+  `test_capability_cap_with_no_final_content_surfaces_resource_budget_yield`
+  pins the complementary empty-end yield).
+
+#### The fabricated resource-budget claim is redacted from thread context
+
+- **What:** `sdk/thread/redaction.py`'s `DEFAULT_REDACTION_PATTERNS` and
+  the core pack's `content/redaction_patterns.yml` add
+  `I've reached a resource budget[^\n]*` — the b79ba861 fallback
+  question text — so read-time redaction strikes it from thread excerpts
+  exactly like the older cap-fire phrasings ("I've hit my iteration
+  budget", "iteration cap N reached", "turn budget exhausted").
+- **Why:** the redaction set was authored against the *old* yield
+  phrasings; b79ba861's new "resource budget" text matched none of the
+  patterns, so the fabricated exhaustion claim persisted into model
+  context and the model read its own false self-report back as ground
+  truth (the re-fire loop the pattern set exists to break).
+- **Tests:** `runtime/tests/test_thread.py`
+  (`test_core_pack_redaction_patterns_match_defaults` pins YAML/framework
+  parity), `runtime/tests/test_bootstrap.py` (pattern-count assertions
+  now derive from `DEFAULT_REDACTION_PATTERNS` instead of a literal).
+
+#### Routing intent detection quarantines host-authored piped-data blocks
+
+- **What:** `_detect_query_intents` strips `<piped-input>` blocks from
+  the scan surface before matching mode keywords/patterns; a query that
+  is only the block detects no intents. An unclosed marker truncates the
+  scan surface at the marker (everything after it is data).
+- **Why:** the 2026-10-17 VHS incident: a pasted tape's own directive
+  `Set Shell bash` matched shell mode's `bash` keyword inside the PASTED
+  DATA, the routing hint demanded a `transition_stage` to shell, and
+  when the model kept working on the tape the forced-action enforcer
+  synthesized the handoff itself — yanking the coding turn into shell
+  mode mid-task and (via the handoff's persisted owner mode) leaving
+  later turns starting there too.
+- **Tests:** `kernel/tests/test_turn_runner.py`
+  (`test_detect_query_intents_strips_piped_input_blocks`,
+  `test_detect_query_intents_piped_input_only_query_detects_nothing`,
+  `test_detect_query_intents_unclosed_piped_input_block_truncates_scan`).
+
+#### fetch_page's max_chars bounds are visible in the tool schema
+
+- **What:** the `max_chars` parameter description now states the
+  500–20000 acceptance range (and the slice-don't-exceed guidance), so
+  the schema the model sees warns before the pydantic rejection fires.
+- **Why:** the 2026-10-17 turns 873/874: the model issued `max_chars`
+  40000/120000/80000 fetches — three of the tool's eight per-turn calls
+  burned on schema rejections whose bound was invisible in the
+  description, directly accelerating the cap that triggered the
+  exhaustion incident above.
+- **Tests:** `sdk/packs/core/tests/test_fetch_page_tool.py` (existing
+  suite; the schema surfaces the new description verbatim).
+
 ### Added
 
 #### Sandbox capability: pack-contributed floors with exclusive merge

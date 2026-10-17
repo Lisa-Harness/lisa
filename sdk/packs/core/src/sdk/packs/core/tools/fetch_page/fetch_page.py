@@ -50,7 +50,12 @@ class Parameters(BaseModel):
         default=_MAX_TEXT_CHARS,
         ge=500,
         le=20000,
-        description="Max extracted text characters to return.",
+        description=(
+            "Max extracted text characters to return. Must be between "
+            "500 and 20000 (values outside the range are rejected before "
+            "the fetch). To read a long document, fetch it in slices "
+            "rather than exceeding the cap."
+        ),
     )
 
 

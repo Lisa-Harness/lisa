@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from runtime.bootstrap import _configure_logging, build_runtime
 from runtime.config import HostConfig
-from sdk.thread import ThreadRedactionPolicy
+from sdk.thread import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
 
 
 class _RecordingConfigurator:
@@ -122,7 +122,7 @@ def test_build_runtime_full_eager_path(monkeypatch: pytest.MonkeyPatch) -> None:
     policy: ThreadRedactionPolicy = probes["redact"][0]
     assert isinstance(policy, ThreadRedactionPolicy)
     # Framework defaults merged with the (deduped) pack pattern.
-    assert pattern_count(policy) == 6
+    assert pattern_count(policy) == len(DEFAULT_REDACTION_PATTERNS) + 1
     assert policy.redact("pack-extra text") != "pack-extra text"
 
 

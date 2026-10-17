@@ -2255,9 +2255,73 @@ async def test_run_turn_execution_policy_caps_specific_capability_calls() -> Non
 
     assert result.tool_call_count == 1
     # Unified turn lifecycle: the capability cap (web_search limited to 1)
-    # followed by the iteration cap forces a yield for ``default`` mode.
-    # The model's "Done." synthesis is replaced by a redirect question.
-    assert "iteration budget" in result.response_text or "resource budget" in result.response_text
+    # rejected the model's second call, the model observed the rejection,
+    # and its recovered final synthesis stands — a per-target cap mid-turn
+    # must not erase a turn that finishes cleanly afterward (the
+    # 2026-10-17 turns 873/874 incident: fetch_page hit its 8-call cap,
+    # the model delegated research, rewrote the files, finished — and the
+    # finished answer was replaced with a fabricated "resource budget"
+    # question that persisted to the thread as a false exhaustion claim).
+    assert result.response_text == "Done."
+    assert "resource budget" not in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_capability_cap_with_no_final_content_surfaces_resource_budget_yield() -> None:
+    """A model that gives up (empty, no tool calls) after a cap still yields.
+
+    The complementary contract to the recovered case above: when a capped
+    tool call was rejected, the latch is set, and the model then breaks the
+    loop with NO content and no tool calls, the fallback yield honestly
+    tells the operator a resource cap fired (the b79ba861 contract — the
+    rejection is not mistaken for a natural empty completion).
+    """
+    completion_count = 0
+
+    async def call_rejected_then_give_up(**kwargs: Any) -> _StubCompletion:
+        nonlocal completion_count
+        completion_count += 1
+        if completion_count <= 2:
+            # The second call is rejected at the cap (1/turn), setting the
+            # latch and feeding the rejection back to the model.
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_{completion_count}",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q": "test"}',
+                        },
+                    }
+                ],
+            )
+        # The model observes the rejection, produces nothing further, and
+        # breaks the loop naturally: empty content, no tool calls.
+        return _StubCompletion(content="")
+
+    hooks = _build_minimal_hooks(call_rejected_then_give_up)
+    hooks.operations.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        max_tool_iterations=6,
+        execution_policy=ExecutionPolicy(
+            capability_limits={
+                "web_search": CapabilityExecutionPolicy(max_invocations_per_turn=1),
+            }
+        ),
+    )
+
+    # One real dispatch before the cap; the rejected call is not dispatched
+    # (it does not count as a tool call).
+    assert result.tool_call_count == 1
+    assert (
+        result.response_text
+        == "I've reached a resource budget for this turn. How would you like me to proceed?"
+    )
 
 
 @pytest.mark.asyncio
@@ -4617,6 +4681,120 @@ def test_detect_query_intents_still_scans_genuine_user_text() -> None:
         )
 
     assert "bookkeeping" in detected
+
+
+def test_detect_query_intents_strips_piped_input_blocks() -> None:
+    """Host-authored ``<piped-input>`` blocks are data, not routing requests.
+
+    Regression for the 2026-10-17 incident: a coding turn pasted a VHS
+    tape for diagnosis whose content included the directive ``Set Shell
+    bash``. Shell mode's ``bash`` keyword matched inside the PASTED DATA,
+    the routing hint demanded a ``transition_stage`` to shell, and when
+    the model kept working on the tape the forced-action enforcer
+    synthesized the handoff itself — yanking the coding turn into shell
+    mode mid-task and (via the handoff's persisted owner mode) leaving
+    later turns stuck there too.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    shell_cfg = _mode_config(
+        mode_id="shell",
+        routing_intent_tags=["shell", "terminal"],
+        routing_intent_keywords={"shell": ["shell", "bash"], "terminal": ["terminal"]},
+    )
+    coding_cfg = _mode_config(
+        mode_id="coding_execute",
+        routing_intent_tags=["code", "write"],
+        routing_intent_keywords={"code": ["fix this tape"], "write": ["rewrite"]},
+    )
+    patched_catalog = {"shell": shell_cfg, "coding_execute": coding_cfg}
+
+    pasted_tape_query = (
+        "<piped-input>\n"
+        "File: smoke.tape\n"
+        "Set Shell bash\n"
+        "Set Theme Dracula\n"
+        "Set WaitTimeout 3s\n"
+        "</piped-input>\n\n"
+        "still failing after the timeout fix — fix this tape for me"
+    )
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query=pasted_tape_query,
+            routing_targets=["shell", "coding_execute"],
+        )
+
+    # The directive's coding intent is detected; the tape's `Set Shell
+    # bash` line contributes nothing.
+    assert detected == {"code"}
+    assert "shell" not in detected
+
+
+def test_detect_query_intents_piped_input_only_query_detects_nothing() -> None:
+    """A query that is ONLY a piped-data block scans nothing — there is no
+    directive prose to route from, so no intent gap can fire a hint or the
+    forced-action enforcer.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    shell_cfg = _mode_config(
+        mode_id="shell",
+        routing_intent_tags=["shell", "terminal"],
+        routing_intent_keywords={"shell": ["shell", "bash"], "terminal": ["terminal"]},
+    )
+    patched_catalog = {"shell": shell_cfg}
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query=(
+                "<piped-input>\n"
+                "Set Shell bash\n"
+                "Type export PS1='>'\n"
+                "</piped-input>"
+            ),
+            routing_targets=["shell"],
+        )
+
+    assert detected == set()
+
+
+def test_detect_query_intents_unclosed_piped_input_block_truncates_scan() -> None:
+    """An unclosed ``<piped-input>`` marker still quarantines the payload —
+    hosts (and models echoing the convention) may truncate the message
+    before the close tag; everything from the marker must stay data.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _detect_query_intents
+
+    shell_cfg = _mode_config(
+        mode_id="shell",
+        routing_intent_tags=["shell", "terminal"],
+        routing_intent_keywords={"shell": ["shell", "bash"], "terminal": ["terminal"]},
+    )
+    patched_catalog = {"shell": shell_cfg}
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        detected = _detect_query_intents(
+            query="look at this:\n<piped-input>\nSet Shell bash\nSet Theme Dracula",
+            routing_targets=["shell"],
+        )
+
+    assert detected == set()
 
 
 def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:

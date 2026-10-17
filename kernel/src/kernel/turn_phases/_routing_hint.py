@@ -39,6 +39,42 @@ _FORK_MIN_GAP_INTENTS = 2
 # here at the single choke point every intent scan passes through.
 _APPROVAL_CONTINUATION_PREFIX = "the approved action `"
 
+#: Host-authored piped-data block markers. Hosts that attach stdin/file
+#: payloads to a turn wrap them in a ``<piped-input>`` block ahead of the
+#: user's directive so the model can tell data from instruction; the
+#: kernel symmetrically excludes the block from intent scanning: keywords
+#: inside pasted DATA (a config file, a log, a VHS tape's ``Set Shell
+#: bash`` line) are not routing requests. A query that is ONLY the block
+#: (no directive) scans nothing.
+_PIPED_INPUT_OPEN = "<piped-input>"
+_PIPED_INPUT_CLOSE = "</piped-input>"
+
+
+def _strip_piped_input_blocks(query: str) -> str:
+    """Remove host-authored ``<piped-input>`` blocks from the scan surface.
+
+    Every complete open/close block is excised verbatim (case-insensitive
+    markers); an unclosed open marker truncates the scan surface to the
+    text before it (the host wraps payloads whose content the kernel must
+    not treat as instructions). Returns the residual prose — which may be
+    empty when the whole query was data.
+    """
+    lowered = query.lower()
+    residual_parts: list[str] = []
+    cursor = 0
+    while True:
+        start = lowered.find(_PIPED_INPUT_OPEN, cursor)
+        if start == -1:
+            residual_parts.append(query[cursor:])
+            break
+        residual_parts.append(query[cursor:start])
+        end = lowered.find(_PIPED_INPUT_CLOSE, start)
+        if end == -1:
+            # Unclosed block: everything from the marker is data.
+            break
+        cursor = end + len(_PIPED_INPUT_CLOSE)
+    return "".join(residual_parts)
+
 
 def _is_host_synthesized_continuation(query: str) -> bool:
     """True for host-generated approval/tool-result continuation queries.
@@ -275,11 +311,30 @@ def _detect_query_intents(
     match fires on any mention — "the whole cloudservers thing was a side
     quest, so lets rewind" matched ``cloudservers``'s ``cloud`` keyword and
     routed the user INTO ``cloudservers`` (2026-08-27 incident).
+
+    Piped-data guard: ``<piped-input>`` blocks (host-authored payload
+    wrappers) are stripped before matching; a query that is only the block
+    detects no intents.
     """
     if not routing_targets:
         _log.debug("query intent detection: no routing targets to match")
         return set()
     catalog = get_workflow_catalog()
+
+    # Piped-data guard: hosts attach stdin/file payloads inside a
+    # ``<piped-input>`` block ahead of the directive; keywords inside the
+    # payload are data, not routing requests (the 2026-10-17 incident: a
+    # pasted VHS tape's ``Set Shell bash`` line matched shell mode's
+    # keywords, the forced-action enforcer yanked the coding turn into
+    # shell mode mid-task, and the forced handoff's ``handoff_to`` made
+    # shell the sticky home mode for later turns). Scan only the
+    # directive prose that remains after the block.
+    query = _strip_piped_input_blocks(query)
+    if not query.strip():
+        _log.info(
+            "query intent detection: query is only piped data; skipping intent scan"
+        )
+        return set()
     query_lower = query.lower()
 
     # Host-synthesized continuation guard: the approval continuation embeds

@@ -46,6 +46,12 @@ DEFAULT_REDACTION_PATTERNS: tuple[str, ...] = (
     r"I've hit my iteration budget[^\n]*",
     # Model-authored: "I've hit my iteration budget for this turn. ..."
     r"I've hit my iteration budget for this turn[^\n]*",
+    # Harness-fabricated capability-cap yield: "I've reached a resource
+    # budget for this turn. ..." — b79ba861's fallback question text. The
+    # 2026-10-17 turns 873/874 incident showed the claim persisting
+    # unredacted (none of the older phrasings match it), so the model read
+    # its own false exhaustion report back as ground truth.
+    r"I've reached a resource budget[^\n]*",
     # Harness pause diagnostic: "stuck in <mode> for N iterations (cap)"
     r"stuck in \w+ for \d+ iterations \(cap\)[^\n]*",
     # Harness yield: "iteration cap N reached"
