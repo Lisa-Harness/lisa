@@ -1234,12 +1234,17 @@ async def _execute_mode_turn(
     _set_turn_context(runtime, run_context)
 
     # Emit stage callback.
+    # ``turn_index`` rides the payload so transports can label their output
+    # with the same turn number the model briefing and the thread entry carry
+    # — one source of truth across the model's self-address, persistence, and
+    # operator-facing rendering.
     await transport.on_stage(
         "model_call",
         {
             "mode_id": mode.mode_id,
             "model_id": resolved_model.model_id,
             "provider": resolved_model.provider,
+            "turn_index": turn_index,
         },
     )
 

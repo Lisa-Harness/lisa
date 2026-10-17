@@ -696,6 +696,55 @@ async def test_host_turn_allocates_and_persists_task_identity(
     assert seen_task_ids[2] != seen_task_ids[0]
 
 
+@pytest.mark.asyncio
+async def test_host_turn_stamps_turn_index_on_model_call_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``model_call`` stage payload carries the thread's turn index.
+
+    Transports read this to label their output ("turn 41" on the CLI
+    footer/Response rule) with the same number the model briefing shows and
+    the thread entry stamps — one source of truth across model self-address,
+    persistence, and operator-facing rendering.
+    """
+    from kernel.models import WorkflowModeConfig
+    from kernel.turn_runner import TurnResult
+    from runtime.callbacks import NullTransport
+
+    runtime = _host_with_declared_bwrap(tmp_path)
+    turn_module = importlib.import_module("runtime.handle_message")
+    mode = WorkflowModeConfig(mode_id="default", start_stage_id="none", mode_kind="chat")
+    monkeypatch.setattr(turn_module, "get_workflow_catalog", lambda: {"default": mode})
+
+    seen: list[tuple[str, dict[str, object] | None]] = []
+
+    class StageRecordingTransport(NullTransport):
+        async def on_stage(
+            self, label: str, data: dict[str, object] | None = None
+        ) -> None:
+            seen.append((label, data))
+
+    async def fake_run_turn(*, hooks: object, **_kwargs: object) -> TurnResult:
+        return TurnResult(response_text="done")
+
+    monkeypatch.setattr(turn_module, "run_turn", fake_run_turn)
+    result = await turn_module._execute_mode_turn(
+        runtime, "fix it", "default", "fix it", StageRecordingTransport()
+    )
+    assert not getattr(result, "is_error", False)
+    model_calls = [d for label, d in seen if label == "model_call"]
+    assert len(model_calls) == 1
+    payload = model_calls[0] or {}
+    # One source of truth: the staged number is the number stamped on the
+    # thread entry the turn persists.
+    entries = load_thread_range(
+        thread_path=runtime.paths.thread_path, start_turn=0, end_turn=0
+    )
+    assert len(entries) == 1
+    assert isinstance(entries[0].get("turn"), int)
+    assert payload.get("turn_index") == entries[0]["turn"]
+
+
 async def _restart_edited_candidate(
     data_dir: Path,
     repo: object,
