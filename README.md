@@ -4,26 +4,25 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Lisa is a Python framework for building tool-using AI agents. It provides an
+Lisa is a very extensible and modular AI agent harness. It provides an
 inspectable model/tool loop, mode and workflow routing, scoped memory, durable
 conversation history, exact-action approvals, and composable capability packs.
 Hosts supply the user interface; packs supply tasks, tools, and authored content.
 
-Use Lisa to build a CLI, chat integration, or headless agent with explicit
-execution contracts. It is not a hosted service, a model, or an OS sandbox.
+This repo contains the abstract kernel, runtime and SDK.
 
 ## Project status
 
-Workspace packages are version **0.1.0**. Treat API and data contracts as
-pre-1.0: breaking changes use hard cutovers, not compatibility shims.
+The first release **0.1.0** is very "alpha."
+Treat API and data contracts as pre-1.0:
+we may break them!
 Review the [changelog](CHANGELOG.md) before updating a host or pack.
 Python 3.11+ is required; CI tests 3.11 and 3.12 on Linux, macOS, and Windows.
 Individual packs can have additional platform requirements.
 
 Core behavior is stabilized: every change is held to the
 [test assurances](docs/CODING_WORKFLOW.md#test-assurances) — full
-verification loop and regression coverage. Documentation, tests, and fixes
-are welcome.
+verification loop and regression coverage.
 
 ## Start here
 
