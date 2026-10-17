@@ -158,19 +158,71 @@ def render_debug_turn(runtime: HostRuntime, arg: str) -> str:
 _LAST_LOOKBACK = 8
 
 
-def _last_explicit_turn_text(runtime: HostRuntime, turn_index: int) -> str:
-    """Return turn ``turn_index``'s response text, verbatim, or a diagnostic."""
+def resolve_last_turn(runtime: HostRuntime, arg: str) -> tuple[int | None, str]:
+    """Resolve a ``/last`` request to ``(turn_index, response_text)``.
+
+    ``arg`` is the stripped argument — empty for the default (the previous
+    model turn's response) or a non-negative integer turn index. The turn
+    index is the global thread number of the replayed entry — the same
+    number the prompt surfaces render — so the operator can address the
+    replayed turn without counting. ``None`` means the result is a
+    diagnostic (usage error, not-found turn, no-completed-turns, or a
+    default walk with no prior model response), not a replayed response.
+
+    Reads the durable thread directly (the same source of truth as
+    :func:`render_debug_turn`), so resolution works identically after a
+    restart.
+    """
+    arg = arg.strip()
+    if arg:
+        if not arg.isdigit():
+            return None, "Usage: /last [turn_number]"
+        return _resolve_explicit_turn(runtime, int(arg))
+    return _resolve_default_turn(runtime)
+
+
+def _resolve_explicit_turn(runtime: HostRuntime, turn_index: int) -> tuple[int | None, str]:
+    """Load one explicit turn's response, verbatim, or a not-found/empty diagnostic."""
     entries = load_thread_range(
         thread_path=runtime.paths.thread_path,
         start_turn=turn_index,
         end_turn=turn_index,
     )
     if not entries:
-        return f"Turn {turn_index} not found in the thread log."
+        return None, f"Turn {turn_index} not found in the thread log."
     response_text = str(entries[0].get("response_text") or "")
     if not response_text:
-        return f"Turn {turn_index} has no response text."
-    return response_text
+        return None, f"Turn {turn_index} has no response text."
+    return turn_index, response_text
+
+
+def _resolve_default_turn(runtime: HostRuntime) -> tuple[int | None, str]:
+    """Walk the recent window back to the last model response.
+
+    The walk skips host-command turns and empty responses so ``/last``
+    after ``/settings`` (or another ``/last``) still replays the last
+    *model* response. The replayed entry's own ``turn`` stamp is the
+    number; entries without one fall back to their positional index.
+    """
+    next_turn = next_turn_index(thread_path=runtime.paths.thread_path)
+    if next_turn <= 0:
+        return None, "No completed turns yet."
+    start_turn = max(0, next_turn - _LAST_LOOKBACK)
+    entries = load_thread_range(
+        thread_path=runtime.paths.thread_path,
+        start_turn=start_turn,
+        end_turn=next_turn - 1,
+    )
+    for offset, entry in enumerate(reversed(entries)):
+        if is_host_command_query(str(entry.get("query") or "")):
+            continue
+        response_text = str(entry.get("response_text") or "")
+        if response_text:
+            raw_turn = entry.get("turn")
+            if isinstance(raw_turn, int) and raw_turn >= 0:
+                return raw_turn, response_text
+            return start_turn + (len(entries) - 1 - offset), response_text
+    return None, "No prior model response in the recent window."
 
 
 def render_last_turn(runtime: HostRuntime, arg: str) -> str:
@@ -178,35 +230,12 @@ def render_last_turn(runtime: HostRuntime, arg: str) -> str:
 
     ``arg`` is the stripped argument after ``/last`` — empty for the default
     (the previous model turn's response) or a non-negative integer turn
-    index. Reads the durable thread directly (the same source of truth as
-    :func:`render_debug_turn`), so replay works identically after a restart.
-
-    The default walk skips host-command turns and empty responses so
-    ``/last`` after ``/settings`` (or another ``/last``) still replays the
-    last *model* response. An explicit index replays that exact turn's
-    response — explicit intent beats the heuristic.
+    index. Verbatim companion of :func:`resolve_last_turn` (which also
+    reports the replayed turn index): transports that need the number call
+    that instead; this stays byte-identical to the response for piped/
+    machine-readable consumers.
     """
-    arg = arg.strip()
-    if arg:
-        if not arg.isdigit():
-            return "Usage: /last [turn_number]"
-        return _last_explicit_turn_text(runtime, int(arg))
-
-    next_turn = next_turn_index(thread_path=runtime.paths.thread_path)
-    if next_turn <= 0:
-        return "No completed turns yet."
-    entries = load_thread_range(
-        thread_path=runtime.paths.thread_path,
-        start_turn=max(0, next_turn - _LAST_LOOKBACK),
-        end_turn=next_turn - 1,
-    )
-    for entry in reversed(entries):
-        if is_host_command_query(str(entry.get("query") or "")):
-            continue
-        response_text = str(entry.get("response_text") or "")
-        if response_text:
-            return response_text
-    return "No prior model response in the recent window."
+    return resolve_last_turn(runtime, arg)[1]
 
 
 def render_runtime_settings(runtime: HostRuntime) -> str:

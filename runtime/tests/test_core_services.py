@@ -570,6 +570,54 @@ async def test_last_bad_argument_usage_error(tmp_path: Path) -> None:
     assert "Usage: /last [turn_number]" in output.text
 
 
+@pytest.mark.asyncio
+async def test_resolve_last_turn_reports_replayed_turn_index(tmp_path: Path) -> None:
+    """``resolve_last_turn`` returns the replayed entry's turn stamp.
+
+    Hosts surface this number so a replayed response is addressable — the
+    same global turn index the prompt output and thread entry carry.
+    """
+    from runtime.commands import resolve_last_turn
+    from runtime.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="first question",
+        response_text="first answer",
+        turn=0,
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="second question",
+        response_text="second answer",
+        turn=1,
+    )
+
+    # Default walk: the newest model response with its own number.
+    turn_index, text = resolve_last_turn(runtime, "")
+    assert turn_index == 1
+    assert text == "second answer"
+
+    # Explicit index: that exact turn, same number back.
+    turn_index, text = resolve_last_turn(runtime, "0")
+    assert turn_index == 0
+    assert text == "first answer"
+
+    # Diagnostics carry no turn (None), text unchanged.
+    for arg, needle in (
+        ("abc", "Usage: /last [turn_number]"),
+        ("42", "Turn 42 not found in the thread log."),
+    ):
+        diagnostic_turn, diagnostic_text = resolve_last_turn(runtime, arg)
+        assert diagnostic_turn is None
+        assert needle in diagnostic_text
+
+
 # ── System prompt assembly ────────────────────────────────────────────
 
 

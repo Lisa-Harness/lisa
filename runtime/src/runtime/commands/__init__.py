@@ -136,6 +136,7 @@ from runtime.commands._render import (
     render_debug_turn,
     render_last_turn,
     render_runtime_settings,
+    resolve_last_turn,
 )
 from runtime.commands._routing import (
     format_operation_error,
@@ -237,6 +238,7 @@ __all__ = [
     "render_policy_rules",
     "render_runtime_settings",
     "render_tools_list",
+    "resolve_last_turn",
     "resolve_pack_name",
     "resolve_pack_source_kind",
     "run_explicit_slice_command",
