@@ -17,7 +17,7 @@ Public surface
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -28,6 +28,14 @@ from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
+from kernel.sandbox_floor import (
+    SandboxFloorContext,
+    collect_pack_floor,
+    discover_sandbox_floor_contributions,
+    discover_sandbox_implementations,
+    merge_sandbox_floor,
+    resolve_sandbox_owner,
+)
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
@@ -52,6 +60,7 @@ from sdk.providers.token_counting import count_request_tokens
 
 from runtime.capability_bindings import SessionCapabilityBindings
 from runtime.code_artifacts import verify_checked_commit
+from runtime.content_roots import load_disabled_pack_names
 from runtime.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
@@ -1222,8 +1231,6 @@ def _build_item_builder_context(
     source pack name. The runtime context hands pack entry-point
     functions access to host resources.
     """
-    from runtime.content_roots import load_disabled_pack_names
-
     disabled_packs = load_disabled_pack_names(runtime.paths.data_dir)
     item_builder = EntryPointExtensionItemBuilder(
         excluded_packs=disabled_packs,
@@ -1237,6 +1244,116 @@ def _build_item_builder_context(
 
 def _declared_config_owners(runtime: HostRuntime) -> set[str]:
     return runtime.session_plan.manifest.declared_pack_owners()
+
+
+def _merged_sandbox_floor(
+    runtime: HostRuntime,
+) -> tuple[str | None, dict[str, Any] | None, tuple[str, ...]]:
+    """Resolve the sandbox owner + the exclusive-merged floor for the session.
+
+    Follows the memory-capability shape: the session's explicit
+    ``providers.capabilities.sandbox`` selection wins, a single registered
+    implementation auto-owns, ambiguity raises. Contributions are merged
+    exclusively onto the harness-authored floor
+    (``resources.packs.configuration[owner]["sandbox"]["floor"]``) and the
+    final mapping is validated by the implementation (bwrap's
+    ``floor_from_config`` semantics) so the merge never produces a floor
+    the enforcer cannot parse.
+
+    Returns ``(owner_pack_name, merged_floor_or_None, contributing_packs)``.
+    ``owner_pack_name`` is ``None`` when no implementation is registered
+    (e.g. a Windows host without bubblewrap): contributions are still
+    validated pack-to-pack — a manifest conflict is a load-time authoring
+    error regardless of platform — but the merged floor is inert (same
+    posture as configuration naming absent packs).
+    """
+    manifest = runtime.session_plan.manifest
+    pack_configurations = manifest.resources.packs.configuration
+    selected = str(manifest.providers.capabilities.get("sandbox") or "")
+    disabled = load_disabled_pack_names(runtime.paths.data_dir)
+
+    implementations = discover_sandbox_implementations(excluded_packs=disabled)
+    owner = resolve_sandbox_owner(implementations, selected)
+    contribution_entries = discover_sandbox_floor_contributions(excluded_packs=disabled)
+    context = SandboxFloorContext(
+        data_dir=str(runtime.paths.data_dir),
+        workspace_root=_session_workspace_root(runtime),
+    )
+    if owner is None:
+        if selected:
+            logger.warning(
+                "Session selects sandbox capability owner %r but no matching "
+                "sandbox implementation is active; sandbox policy is inert "
+                "this session.",
+                selected,
+            )
+        # No sandbox implementation is active (e.g. a Windows host without
+        # bubblewrap). Pack-vs-pack agreement is still validated — a manifest
+        # conflict is an authoring bug on every platform — but the merged
+        # floor is inert (same posture as configuration naming absent
+        # packs), so the authored-floor anchor requirement does not apply:
+        # there is no enforced posture to anchor.
+        contributions = collect_pack_floor(contribution_entries, pack_configurations, context)
+        merge_sandbox_floor({}, contributions)
+        return None, None, ()
+
+    entry_config = pack_configurations.get(owner.pack_name)
+    authored: dict[str, Any] | None = None
+    if isinstance(entry_config, Mapping) and isinstance(entry_config.get("sandbox"), Mapping):
+        authored = dict(entry_config["sandbox"].get("floor") or {})
+
+    contributions = collect_pack_floor(contribution_entries, pack_configurations, context)
+
+    def _validate(floor: Mapping[str, Any]) -> None:
+        # owner is non-None here; the local name keeps mypy happy about the
+        # dataclass field access inside a closure.
+        assert owner is not None
+        owner.validate_floor(floor)
+
+    merge = merge_sandbox_floor(authored, contributions, validator=_validate)
+    if merge.contributing_packs:
+        logger.info(
+            "Sandbox floor contributions merged from packs: %s (owner %s).",
+            ", ".join(merge.contributing_packs),
+            owner.pack_name,
+        )
+    return owner.pack_name, dict(merge.floor), merge.contributing_packs
+
+
+def _session_workspace_root(runtime: HostRuntime) -> str:
+    """Best-effort session workspace root for contribution factories."""
+    configurations = runtime.session_plan.manifest.resources.packs.configuration
+    for entry in configurations.values():
+        if isinstance(entry, Mapping):
+            root = entry.get("workspace_root")
+            if isinstance(root, str) and root:
+                return root
+    return ""
+
+
+def _materialize_sandbox_floor(
+    configuration: Mapping[str, Mapping[str, Any]],
+    owner_pack_name: str | None,
+    merged_floor: Mapping[str, Any] | None,
+) -> dict[str, Mapping[str, Any]]:
+    """Return pack configurations with the merged floor materialized on the owner.
+
+    The merged floor replaces the owner's authored ``sandbox.floor`` in the
+    binding configuration so every reader (the implementation's floor
+    reader and the kernel's ``project_execution_floor``) resolves one
+    identical final floor. A deep copy keeps the session plan immutable.
+    """
+    if owner_pack_name is None or merged_floor is None:
+        return dict(configuration)
+    out: dict[str, Mapping[str, Any]] = {
+        pack: dict(values) for pack, values in configuration.items()
+    }
+    owner_config = dict(out.get(owner_pack_name) or {})
+    sandbox_config = dict(owner_config.get("sandbox") or {})
+    sandbox_config["floor"] = dict(merged_floor)
+    owner_config["sandbox"] = sandbox_config
+    out[owner_pack_name] = owner_config
+    return out
 
 
 def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindings:
@@ -1259,8 +1376,14 @@ def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindi
         for definition in get_tool_catalog().values()
         if definition.owner_id
     )
-    return SessionCapabilityBindings(
+    owner_pack, merged_floor, _contributing = _merged_sandbox_floor(runtime)
+    configuration = _materialize_sandbox_floor(
         runtime.session_plan.manifest.resources.packs.configuration,
+        owner_pack,
+        merged_floor,
+    )
+    return SessionCapabilityBindings(
+        configuration,
         capabilities=capability_refs or None,
         declared_owners=_declared_config_owners(runtime),
     )

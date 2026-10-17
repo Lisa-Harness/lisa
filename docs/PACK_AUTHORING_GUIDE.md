@@ -230,6 +230,44 @@ Inspect the built wheel to ensure Markdown/YAML actually ships.
 | `lisa.extensions.model_routers` | Model selection backend |
 | `lisa.extensions.model_router_configs` | Default router configuration contribution |
 | `lisa.extensions.provider_gateways` | Provider gateway backend |
+| `lisa.extensions.sandbox` | Sandbox implementation declaration (floor owner) |
+| `lisa.extensions.sandbox_floors` | Pack sandbox-floor needs (paths/postures contribution) |
+
+### Sandbox capability contributions
+
+The sandbox capability follows the memory-capability shape: the kernel owns
+the concept (a named capability whose floor is a declarative vocabulary),
+one pack owns the implementation (today `lisa-pack-bwrap`), and any pack
+may contribute floor needs. Two groups cooperate:
+
+- `lisa.extensions.sandbox` — the implementation pack declares itself: an
+  entry returning `{"pack_name": ..., "validate_floor": callable}` where
+  the validator parses the final merged floor and raises on values the
+  implementation cannot enforce. Sessions select the owner explicitly via
+  `providers.capabilities.sandbox: <pack>`; a single registered
+  implementation auto-owns; ambiguity is a load error.
+- `lisa.extensions.sandbox_floors` — a consumer pack declares its needs:
+  an entry returning `(pack_config, context) -> mapping | None`, where the
+  mapping is a subset of the floor vocabulary (`execution`,
+  `persistence`, `network`, `device`, `ipc`, `paths`,
+  `tmpfs_budget_bytes`, `timeout_ceiling_seconds`). `context` carries
+  `data_dir` (the host data root, for dynamically-derived paths) and
+  `workspace_root`.
+
+Contributions merge **exclusively** onto the harness-authored floor
+(`resources.packs.configuration[owner].sandbox.floor`) at session
+assembly: scalar axes named by two packs must carry identical values
+(disagreement is a load-time policy error naming both packs); `paths`
+union with per-path agreement (overlapping grants with the same access
+are compatible; `rw` vs `capture` on one path is an error, as are nested
+paths with different access). A contribution may only *add* to the
+authored floor — restating an axis the floor already satisfies is inert;
+contradicting it is an error. Contributions require an authored floor to
+attach to (even an empty `floor: {}`): the floor is the session's security
+posture, so every effective floor starts from something the harness
+wrote. The merged floor is validated by the implementation before it is
+materialized, so load-time errors name the exact axis, values, and packs
+involved — never a mid-turn dispatch failure.
 
 Backends need not be content packs. Hosts decide which contribution groups
 to discover. Entry-point loading must be import-safe, with no credential

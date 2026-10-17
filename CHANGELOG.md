@@ -4,6 +4,44 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Sandbox capability: pack-contributed floors with exclusive merge
+
+- **What:** the sandbox is now a named kernel capability
+  (`providers.capabilities.sandbox`) in the memory-capability shape: the
+  kernel owns the concept and a declarative floor vocabulary, one pack owns
+  the implementation (today `lisa-pack-bwrap`, declaring itself via the new
+  `lisa.extensions.sandbox` entry point), and any pack may contribute floor
+  needs via `lisa.extensions.sandbox_floors`. Contributions merge
+  **exclusively** onto the harness-authored floor at session assembly
+  (`kernel.sandbox_floor`): scalar axes named by two packs must carry
+  identical values, `paths` union with per-path agreement, a contribution
+  may only add to the authored floor (identical restatement is inert,
+  contradiction is a load-time policy error naming both authors, the axis,
+  and both values), and contributions require an authored floor to attach
+  to (even an empty one). The merged floor is validated by the
+  implementation's own parser before materialization, then written into the
+  owner's binding configuration under `sandbox.floor` — so the
+  implementation's `floor_from_config` and the kernel's
+  `project_execution_floor` (what composing packs verify against) resolve
+  one identical floor.
+- **Why:** the floor was authored statically while pack needs are
+  runtime-derived — the 2026-10-14 `coding_run_check` abort ("bwrap sandbox
+  floor does not permit worktree writes") happened because the coding
+  pack's worktree parent derives from the host `data_dir` at runtime, and
+  the hand-copied floor paths drifted after a data-dir switch. The same
+  holds for language-platform caches (uv's `~/.cache/uv`, Go's
+  `~/.cache/go-build` + `~/go/pkg/mod`): the toolchain sets the location,
+  so the first consumer (lisa-pack-coding) derives both the worktree
+  parent and the configured toolchain's cache roots from its own config.
+  Packs know their own sandbox needs; this gives them a trusted channel
+  to declare them without widening what the model can forge. Platform
+  consistency: with no implementation registered (a Windows host without
+  bubblewrap), pack-vs-pack agreement is still validated but the floor
+  is inert, and consumers fail closed exactly as before — the facility
+  changes no enforcement.
+
 ### Fixed
 
 #### Model discovery is retirement-aware and never pins a dead or dying model
