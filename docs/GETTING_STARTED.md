@@ -1,18 +1,14 @@
 # Getting started
 
-Lisa Harness is the framework. The terminal application is the separate
-[lisa-cli project](https://github.com/Lisa-Harness/lisa-cli). Choose the path
-below that matches your goal.
+The [lisa](..) repository hosts the abstract kernel, runtime and SDK,
+whereas the [lisa-cli](../../lisa-cli) is a runnable host.
+It is a CLI tool and this guide will help you get it running!
 
 ## Prerequisites
 
 - Python 3.11 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-- Git for working from source.
-- For live use: access to a supported model provider, a credential where
-  required, and a model with the capabilities your chosen mode needs.
-- For additional packs: their dependencies, credentials, and platform
-  requirements. A Linux bubblewrap integration is not portable merely
-  because framework tests pass on Windows and macOS.
+- Model access via a supported provider, e.g. Ollama or an Anthropic/OpenAI or OpenRouter API Key.
+- Git if you want to run it from source.
 
 ## Run the terminal host
 

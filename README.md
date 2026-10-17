@@ -4,42 +4,35 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Lisa is a very extensible and modular AI agent harness. It provides an
-inspectable model/tool loop, mode and workflow routing, scoped memory, durable
-conversation history, exact-action approvals, and composable capability packs.
-Hosts supply the user interface; packs supply tasks, tools, and authored content.
-
-This repo contains the abstract kernel, runtime and SDK.
-
-## Project status
-
-The first release **0.1.0** is very "alpha."
-Treat API and data contracts as pre-1.0:
-we may break them!
-Review the [changelog](CHANGELOG.md) before updating a host or pack.
-Python 3.11+ is required; CI tests 3.11 and 3.12 on Linux, macOS, and Windows.
-Individual packs can have additional platform requirements.
-
-Core behavior is stabilized: every change is held to the
-[test assurances](docs/CODING_WORKFLOW.md#test-assurances) — full
-verification loop and regression coverage.
+Lisa is an composable, extensible and modular AI agent harness.
+It provides an
+inspectable tool-enabled turn loop,
+intent-driven mode switching,
+event-driven model routing,
+read, write and execute approvals,
+an abstract runtime,
+an SDK that includes a "pack" loader.
+A hosts supplies the
+user interface / communication transport,
+manages the MCP servers and model proxies,
+and load the modes, operations, proxies, servers and tools from packs.
 
 ## Start here
 
 | Goal | Guide |
 | --- | --- |
-| Run an agent | [Getting started](docs/GETTING_STARTED.md) and the separate [CLI host](https://github.com/Lisa-Harness/lisa-cli) |
-| Build a host | [Host integration](docs/HOST_INTEGRATION.md) |
-| Add a mode, operation, or tool | [Pack authoring](docs/PACK_AUTHORING_GUIDE.md) |
-| Configure a session | [Configuration](docs/CONFIGURATION.md) and [session authoring](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md) |
-| Understand/debug the engine | [Architecture](docs/BOUNDARIES.md) and [troubleshooting](docs/TROUBLESHOOTING.md) |
+| Run the agent harness | [Getting started](docs/GETTING_STARTED.md) and the separate [CLI host](https://github.com/Lisa-Harness/lisa-cli) |
+| Use the runtime to create a host | [Host integration](docs/HOST_INTEGRATION.md) |
+| Create your own modes pack | [Pack authoring](docs/PACK_AUTHORING_GUIDE.md) |
+| Configure the session context | [Configuration](docs/CONFIGURATION.md) and [session authoring](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md) |
+| Understand/debug the harness | [Architecture](docs/BOUNDARIES.md) and [troubleshooting](docs/TROUBLESHOOTING.md) |
 | Contribute | [Contributing](CONTRIBUTING.md) and [testing](docs/TESTING.md) |
 
 The [documentation index](docs/README.md) links the full reference corpus.
 
 ## Quick start
 
-**To run Lisa**, install the independently maintained CLI:
+**To run Lisa**, install [lisa-cli](../lisa-cli):
 
 ```sh
 uv tool install lisa-cli
@@ -85,13 +78,13 @@ Packs use kernel/SDK contracts, not runtime internals or cross-pack imports.
 
 | Directory | Distribution | Responsibility |
 | --- | --- | --- |
-| [kernel](kernel/README.md) | `lisa-harness-kernel` | Turn loop, FSMs, registries, approvals, execution/session contracts |
+| [kernel](kernel/README.md) | `lisa-harness-kernel` | Turn loop, registries, approvals, execution/session contracts |
 | [sdk](sdk/README.md) | `lisa-harness-sdk` | Content discovery, provider gateways, CEL router, storage/memory primitives |
 | [runtime](runtime/README.md) | `lisa-harness-runtime` | Composition, configuration, MCP lifecycle, commands, thread writes |
 | [mcp_server](mcp_server/README.md) | `lisa-harness-mcp-servers` | MCP adapters for catalog, content, memory, guard, storage, and thread |
 | [sdk/packs](sdk/packs/README.md) | `lisa-pack-*` | Core, memory, introspect, and recovery reference packs |
-| [packstest](packstest/README.md) | `lisa-harness-packstest` | Offline pack tests and deterministic evals |
-| [e2etest](e2etest/README.md) | `lisa-harness-e2e` | Whole-runtime scenarios with live/scripted models; `lisa-e2e` runner |
+| [packstest](packstest/README.md) | `lisa-harness-packstest` | Offline testing and deterministic pack evaluation |
+| [e2etest](e2etest/README.md) | `lisa-harness-e2e` | Full-runtime testing with live and scripted models; `lisa-e2e` runner |
 
 ### How a turn works
 
