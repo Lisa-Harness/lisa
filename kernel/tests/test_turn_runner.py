@@ -4757,12 +4757,7 @@ def test_detect_query_intents_piped_input_only_query_detects_nothing() -> None:
         return_value=patched_catalog,
     ):
         detected = _detect_query_intents(
-            query=(
-                "<piped-input>\n"
-                "Set Shell bash\n"
-                "Type export PS1='>'\n"
-                "</piped-input>"
-            ),
+            query=("<piped-input>\nSet Shell bash\nType export PS1='>'\n</piped-input>"),
             routing_targets=["shell"],
         )
 

@@ -1,6 +1,7 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -33,7 +34,7 @@ jobs:
 
       - name: Verify tag and package versions
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           python - <<'PY'
           import os
@@ -49,6 +50,8 @@ jobs:
               "sdk/packs/memory": "lisa-pack-memory",
               "sdk/packs/recovery": "lisa-pack-recovery",
               "runtime": "lisa-harness-runtime",
+              "packstest": "lisa-harness-packstest",
+              "e2etest": "lisa-harness-e2e",
           }
           tag = os.environ["RELEASE_TAG"]
           for directory, expected_name in packages.items():
@@ -59,7 +62,7 @@ jobs:
                       f"found {project['name']!r}"
                   )
               expected_tag = f"v{project['version']}"
-              if tag != expected_tag:
+              if tag and tag != expected_tag:
                   raise SystemExit(
                       f"release tag {tag!r} does not match {expected_name} version "
                       f"{project['version']!r} (expected {expected_tag!r})"
@@ -68,19 +71,13 @@ jobs:
 
       - name: Build packages
         run: |
-          uv build --no-cache --out-dir dist --package lisa-harness-kernel
-          uv build --no-cache --out-dir dist --package lisa-harness-sdk
-          uv build --no-cache --out-dir dist --package lisa-harness-mcp-servers
-          uv build --no-cache --out-dir dist --package lisa-pack-core
-          uv build --no-cache --out-dir dist --package lisa-pack-introspect
-          uv build --no-cache --out-dir dist --package lisa-pack-memory
-          uv build --no-cache --out-dir dist --package lisa-pack-recovery
-          uv build --no-cache --out-dir dist --package lisa-harness-runtime
+          uv build --no-sources --all-packages --out-dir dist
 
       - name: Verify build outputs
         run: |
-          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 8
-          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 10
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 10
+          uvx --from twine twine check dist/*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,6 +88,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,3 +103,22 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+  release:
+    name: Create GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+
+      - name: Publish release with distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "$RELEASE_TAG" --generate-notes --latest

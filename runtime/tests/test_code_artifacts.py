@@ -719,9 +719,7 @@ async def test_host_turn_stamps_turn_index_on_model_call_stage(
     seen: list[tuple[str, dict[str, object] | None]] = []
 
     class StageRecordingTransport(NullTransport):
-        async def on_stage(
-            self, label: str, data: dict[str, object] | None = None
-        ) -> None:
+        async def on_stage(self, label: str, data: dict[str, object] | None = None) -> None:
             seen.append((label, data))
 
     async def fake_run_turn(*, hooks: object, **_kwargs: object) -> TurnResult:
@@ -737,9 +735,7 @@ async def test_host_turn_stamps_turn_index_on_model_call_stage(
     payload = model_calls[0] or {}
     # One source of truth: the staged number is the number stamped on the
     # thread entry the turn persists.
-    entries = load_thread_range(
-        thread_path=runtime.paths.thread_path, start_turn=0, end_turn=0
-    )
+    entries = load_thread_range(thread_path=runtime.paths.thread_path, start_turn=0, end_turn=0)
     assert len(entries) == 1
     assert isinstance(entries[0].get("turn"), int)
     assert payload.get("turn_index") == entries[0]["turn"]

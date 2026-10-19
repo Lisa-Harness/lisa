@@ -331,9 +331,7 @@ def _detect_query_intents(
     # directive prose that remains after the block.
     query = _strip_piped_input_blocks(query)
     if not query.strip():
-        _log.info(
-            "query intent detection: query is only piped data; skipping intent scan"
-        )
+        _log.info("query intent detection: query is only piped data; skipping intent scan")
         return set()
     query_lower = query.lower()
 
@@ -356,14 +354,13 @@ def _detect_query_intents(
         abandonment_markers = get_topic_abandonment_markers()
     except RuntimeError:
         abandonment_markers = ()
-    if abandonment_markers:
-        has_marker = any(marker in query_lower for marker in abandonment_markers)
-        if has_marker:
-            _log.info(
-                "query intent detection: topic-abandonment marker present; "
-                "suppressing matched targets' intents (markers=%s)",
-                [m for m in abandonment_markers if m in query_lower],
-            )
+    has_marker = any(marker in query_lower for marker in abandonment_markers)
+    if has_marker:
+        _log.info(
+            "query intent detection: topic-abandonment marker present; "
+            "suppressing matched targets' intents (markers=%s)",
+            [m for m in abandonment_markers if m in query_lower],
+        )
     detected: set[str] = set()
     for target_id in routing_targets:
         mode_config = catalog.get(target_id)
@@ -384,7 +381,7 @@ def _detect_query_intents(
         # record it as abandoned so the covering/fork logic below also skips
         # it. A genuine request for the same mode would not co-occur with a
         # marker in the same query.
-        if abandonment_markers and any(marker in query_lower for marker in abandonment_markers):
+        if has_marker:
             abandoned_targets.add(target_id)
             _log.info(
                 "query intent detection: target=%s matched but suppressed "

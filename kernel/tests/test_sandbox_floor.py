@@ -6,6 +6,8 @@ binding materialization; these cover the policy join itself.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from kernel.sandbox_floor import (
     SandboxFloorConflict,
@@ -164,7 +166,7 @@ def test_path_conflict_with_authored_floor_raises() -> None:
 def test_paths_normalize_tilde_so_agreement_compares_real_paths() -> None:
     contributions = {
         "lisa-pack-coding": {"paths": {"~/.cache/uv": "rw"}},
-        "lisa-pack-finances": {"paths": {"/home/adam/.cache/uv": "rw"}},
+        "lisa-pack-finances": {"paths": {str(Path.home() / ".cache" / "uv"): "rw"}},
     }
     merge = merge_sandbox_floor({}, contributions)
     assert len(merge.floor["paths"]) == 1

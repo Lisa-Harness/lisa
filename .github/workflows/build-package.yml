@@ -1,0 +1,67 @@
+name: Build a Python package
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: Expected Python distribution name
+        required: true
+        type: string
+      project-directory:
+        description: Directory containing the package pyproject.toml
+        default: .
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify package and tag
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          PROJECT_DIRECTORY: ${{ inputs.project-directory }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(
+              Path(os.environ["PROJECT_DIRECTORY"], "pyproject.toml").read_text()
+          )["project"]
+          if project["name"] != os.environ["PACKAGE_NAME"]:
+              raise SystemExit(f"unexpected distribution name: {project['name']!r}")
+          tag = os.environ["RELEASE_TAG"]
+          if tag and tag != f"v{project['version']}":
+              raise SystemExit(f"tag {tag!r} does not match version {project['version']!r}")
+          PY
+
+      - name: Build and check distributions
+        env:
+          PROJECT_DIRECTORY: ${{ inputs.project-directory }}
+        run: |
+          uv build --no-sources --out-dir dist "$PROJECT_DIRECTORY"
+          test "$(find dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 1
+          uvx --from twine twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error

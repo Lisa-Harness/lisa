@@ -134,6 +134,36 @@ Read [storage](docs/STORAGE.md) and the [security policy](SECURITY.md).
 - [Private vulnerability reporting](SECURITY.md).
 - [Roadmap](docs/ROADMAP.md): priorities, not delivery promises.
 
+## Publishing releases
+
+The `Publish` workflow validates CI, builds wheels and source distributions for
+all ten workspace packages, checks distribution metadata, and retains the build
+artifacts. Run it manually on `main` to validate without publishing. Pushing a
+`v<version>` tag additionally publishes to PyPI and creates a GitHub release with
+the distributions attached. Every package version must match the tag.
+
+Before the first tag, register GitHub pending publishers in
+[PyPI publishing settings](https://pypi.org/manage/account/publishing/).
+Use owner `Lisa-Harness`, workflow `publish.yml`, and leave the environment blank.
+Each distribution needs its own registration:
+
+| Repository | PyPI project names |
+| --- | --- |
+| `lisa` | `lisa-harness-kernel`, `lisa-harness-sdk`, `lisa-harness-mcp-servers`, `lisa-harness-runtime`, `lisa-harness-packstest`, `lisa-harness-e2e`, `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-recovery` |
+| `lisa-cli` | `lisa-cli` |
+| Each `lisa-pack-*` repository | The matching repository name: `lisa-pack-bash`, `lisa-pack-brave`, `lisa-pack-bwrap`, `lisa-pack-coding`, `lisa-pack-markdown`, `lisa-pack-okf`, `lisa-pack-personas`, `lisa-pack-powershell`, `lisa-pack-search`, `lisa-pack-serper`, `lisa-pack-tavily` |
+
+These 13 repositories publish 22 distributions. No PyPI API token is needed.
+Only distribution building is shared through `build-package.yml`; each
+repository's own `publish.yml` performs the Trusted Publishing exchange.
+
+For the first release, tag and verify `lisa` first, then the standalone packs,
+then `lisa-cli`. The CLI's CI resolves dependencies from PyPI, without local
+source overrides, so its framework and optional pack dependencies must already
+be available there. Keep local `[tool.uv.sources]` overrides for development.
+Do not push tags until the pending publishers are configured and validation
+has passed. PyPI versions cannot be overwritten after publication.
+
 ## License
 
 [MIT](LICENSE), copyright 2026 The Migus Group. External hosts, packs,
