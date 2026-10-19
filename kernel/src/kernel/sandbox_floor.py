@@ -295,7 +295,7 @@ def _validate_floor_shape(pack_name: str, floor: Mapping[str, Any]) -> None:
 
 
 def _normalize_paths(pack_name: str, floor: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize path keys (expanduser + str) so agreement compares real paths."""
+    """Expand users and normalize separators so agreement compares real paths."""
     out = dict(floor)
     raw_paths = floor.get("paths")
     if raw_paths is None:
@@ -306,7 +306,8 @@ def _normalize_paths(pack_name: str, floor: Mapping[str, Any]) -> dict[str, Any]
             "mapping of path -> access, not a scalar. See bwrap floor authoring."
         )
     out["paths"] = {
-        str(Path(str(raw_path)).expanduser()): access for raw_path, access in raw_paths.items()
+        Path(str(raw_path)).expanduser().as_posix(): access
+        for raw_path, access in raw_paths.items()
     }
     return out
 
@@ -379,6 +380,7 @@ def merge_sandbox_floor(
             "the harness",
             f"{type(authored).__name__} (not a mapping)",
         )
+    authored = _normalize_paths("the harness", authored)
 
     for pack, contribution in live.items():
         _validate_floor_shape(pack, contribution)

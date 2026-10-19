@@ -172,6 +172,24 @@ def test_paths_normalize_tilde_so_agreement_compares_real_paths() -> None:
     assert len(merge.floor["paths"]) == 1
 
 
+def test_authored_paths_normalize_tilde_before_comparing_contributions() -> None:
+    path = Path.home() / ".cache" / "uv"
+    merge = merge_sandbox_floor(
+        {"paths": {"~/.cache/uv": "rw"}},
+        {"lisa-pack-coding": {"paths": {str(path): "rw"}}},
+    )
+    assert merge.floor["paths"] == {path.as_posix(): "rw"}
+
+
+def test_normalized_authored_paths_still_reject_conflicting_access() -> None:
+    path = Path.home() / ".cache" / "uv"
+    with pytest.raises(SandboxFloorConflict, match="harness"):
+        merge_sandbox_floor(
+            {"paths": {"~/.cache/uv": "ro"}},
+            {"lisa-pack-coding": {"paths": {str(path): "rw"}}},
+        )
+
+
 def test_unknown_floor_key_in_contribution_raises() -> None:
     contributions = {"lisa-pack-coding": {"network": "deny", "cool_factor": 11}}
     with pytest.raises(SandboxFloorConflict) as excinfo:
