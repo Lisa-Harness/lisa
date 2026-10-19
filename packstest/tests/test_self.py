@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from packstest.catalog import (
+    _probe_entry_callable,
     activate_tool,
     build_tool_catalog,
     check_tool_yaml_schema,
@@ -20,6 +21,29 @@ from packstest.catalog import (
 from packstest.context import ToolContextFactory, make_context
 from packstest.git import git_repo
 from packstest.store import MemoryWorkProductStore
+
+
+def test_entry_point_runtime_factory_is_not_called_with_fake_inputs() -> None:
+    def factory(pack_config: dict, *, context: object) -> object:
+        raise AssertionError("runtime inputs are required")
+
+    assert _probe_entry_callable(factory) is factory
+
+
+def test_entry_point_zero_argument_factory_is_invoked() -> None:
+    assert _probe_entry_callable(lambda: "content-root") == "content-root"
+
+
+def test_entry_point_internal_type_error_is_not_retried() -> None:
+    calls = []
+
+    def factory(config: object = None) -> object:
+        calls.append(config)
+        raise TypeError("broken factory")
+
+    with pytest.raises(TypeError, match="broken factory"):
+        _probe_entry_callable(factory)
+    assert calls == [None]
 
 
 def _write_tool(root: Path, tool_id: str, provider_id: str) -> None:

@@ -216,34 +216,16 @@ def _probe_entry_callable(callable_obj: Any) -> Any:
 
     - Zero-arg factories (``get_content_root()``) and classes with
       all-default ``__init__`` — callable with no arguments.
-    - Two-arg contracts such as ``build_context_items(runtime_context,
-      state)`` — the framework only ever calls these with arguments at
-      item-build time, so requiring a no-arg probe call would flag every
-      valid builder as broken. For these, a successful load is proven by
-      calling with stub positional arguments.
+    - Runtime factories requiring arguments are loaded without invocation.
+      Their inputs belong to the runtime, not to a load-time probe.
     """
 
+    signature = inspect.signature(callable_obj)
     try:
-        return callable_obj()
+        signature.bind()
     except TypeError:
-        # Zero-arg invocation rejected — inspect the signature and retry
-        # with ``None`` placeholders for required parameters so factory
-        # contracts like ``build_context_items(runtime_context, state)``
-        # are validated for loadability rather than arg-count strictness.
-        try:
-            sig = inspect.signature(callable_obj)
-        except (TypeError, ValueError):
-            raise
-        required = [
-            param
-            for param in sig.parameters.values()
-            if param.kind
-            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            and param.default is inspect.Parameter.empty
-        ]
-        if not required:
-            raise
-        return callable_obj(*([None] * len(required)))
+        return callable_obj
+    return callable_obj()
 
 
 def _ensure_source_importable(pack_path: Path) -> list[Path]:
