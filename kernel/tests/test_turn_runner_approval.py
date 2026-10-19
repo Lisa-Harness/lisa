@@ -613,6 +613,99 @@ async def test_checked_commit_backstop_reminds_once_without_fabricating_work() -
 
 
 @pytest.mark.asyncio
+async def test_checked_commit_soft_accepts_turn_that_never_attempted_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A checked_commit turn that did real non-worktree work is accepted cleanly.
+
+    Regression for the 2026-10-18 incident (11 lisa turns): the
+    ``coding_execute`` executor mode ran honest diagnostic work (bash
+    probes, storage writes) without ever invoking its worktree producer,
+    and every turn surfaced the misleading "This task has not created or
+    worked on a worktree." footnote — which then persisted into the
+    thread record and was re-read back to later turns by the
+    recent-conversation digest (one turn even echoed it into its own
+    prose, doubling the footer). The block message only applies when the
+    producer WAS attempted or the turn made NO tool calls (the
+    hallucinated-success case); a turn that dispatched real diagnostic
+    tools but never invoked the producer completes cleanly without a
+    footnote.
+    """
+
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            authored_allowed_tool_ids=["probe_file"],
+            allowed_tool_ids=["probe_file"],
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+    prose = "Diagnosis complete: the backend selected is gnome_keyring and the wallet opened."
+
+    async def read_file_probe(_ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(tool_id="probe_file", output_text="probe result")
+
+    tool_catalog = {
+        "probe_file": ToolDefinition(
+            tool_id="probe_file",
+            effect="execute",
+            parameters_schema=_Parameters,
+            implementation_module=SimpleNamespace(execute=read_file_probe),
+        )
+    }
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", tool_catalog)
+
+    calls_made = 0
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        # One dispatch, then the closing prose: the shape of the incident
+        # turns (real diagnostic calls, then a final answer).
+        nonlocal calls_made
+        calls_made += 1
+        if calls_made == 1:
+            return _Completion(
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "function": {"name": "probe_file", "arguments": '{"path":"log/main.txt"}'},
+                    }
+                ],
+            )
+        return _Completion(content=prose)
+
+    verifier_calls: list[str] = []
+
+    async def verify(request: Any) -> TaskCompletionEvidence:
+        verifier_calls.append(request.task_id)
+        return TaskCompletionEvidence(
+            verified=False, reason="This task has not created or worked on a worktree."
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value=tool_catalog),
+    ):
+        result = await run_turn(mode_id="executor", query="diagnose it", hooks=hooks)
+
+    # The producer was never attempted: the verifier is not consulted and
+    # the turn completes cleanly without the worktree footnote.
+    assert verifier_calls == []
+    assert result.blocked is False
+    assert result.block_origin == ""
+    assert "has not created or worked on a worktree" not in result.response_text
+    assert prose in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_checked_commit_block_appends_below_model_prose() -> None:
     """A checked-commit block must not swallow the surfaced content.
 
@@ -685,3 +778,30 @@ async def test_append_completion_block_preserves_and_appends() -> None:
     assert _append_completion_block("trailing\n", msg) == f"trailing\n\n{msg}"
     assert _append_completion_block("", msg) == msg
     assert _append_completion_block("   ", msg) == msg
+
+
+@pytest.mark.asyncio
+async def test_append_completion_block_is_idempotent() -> None:
+    """The block helper never doubles an already-appended block message.
+
+    Regression for the 2026-10-18 21:13 turn: the model echoed the
+    worktree footnote it had re-read from the thread digest, and the
+    contract appended it again — the response carried the SAME
+    sentence twice with a blank line between. When the message is
+    already the trailing footnote the content passes through
+    unchanged; a DIFFERENT trailing line still appends.
+    """
+    from kernel.turn_runner import _append_completion_block
+
+    msg = "This task has not created or worked on a worktree."
+    already = f"Status report.\n\n{msg}"
+    assert _append_completion_block(already, msg) == already
+    assert _append_completion_block(already + "\n", msg) == already
+    assert _append_completion_block(f"{msg}", msg) == msg
+    # The sentence may also be the tail of a longer last line (the model
+    # echoed it after its own prose on the same line) — the trailing
+    # match still counts as already-appended.
+    assert _append_completion_block(f"Status report. {msg}", msg) == f"Status report. {msg}"
+    # A genuinely different trailing sentence still appends.
+    different = "Status report."
+    assert _append_completion_block(different, msg) == f"Status report.\n\n{msg}"

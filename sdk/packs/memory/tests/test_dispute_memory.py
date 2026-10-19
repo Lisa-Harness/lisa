@@ -251,6 +251,44 @@ async def test_execute_no_identifier_reports_not_found() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "guessed_id",
+    [
+        "mem_2026-10-18_vscode_keychain_lxqt",  # slug-style invented id (2026-10-18 incident)
+        "not-a-number",
+        "",  # id text stripped to nothing by the guard
+    ],
+)
+async def test_execute_non_numeric_id_reports_not_found_without_crashing(
+    guessed_id: str,
+) -> None:
+    """A non-numeric ``memory_id`` is "not found", NOT an unclassified ValueError.
+
+    Regression for the 2026-10-18 turn: a model guessed a slug-style id
+    (``mem_2026-10-18_vscode_keychain_lxqt``) that no backend ever issued
+    and the operation crashed with ``OperationExecutionError:
+    ValueError: invalid literal for int() with base 10`` because
+    ``_find_disputed_record_by_id`` called ``int(memory_id)`` unguarded.
+    A non-numeric id now takes the not-found path (whose message already
+    steers the caller to ``search_query``, which succeeded in the
+    incident turn).
+    """
+
+    async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:  # pragma: no cover
+        raise AssertionError("memory.get must not be called with an unparseable id")
+
+    ctx = _ctx(
+        params={"memory_id": guessed_id, "correction": "fixed"},
+        execute_tool_fn=execute_tool,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.output_text.startswith("⛔ Could not find a memory record to dispute.")
+    assert "ValueError" not in result.output_text
+
+
+@pytest.mark.asyncio
 async def test_execute_add_error_reports_write_failure() -> None:
     async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:
         if tool_id == "memory.get":

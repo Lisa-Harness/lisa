@@ -29,7 +29,12 @@ class Parameters(BaseModel):
 
     memory_id: str = Field(
         default="",
-        description="The ID of the memory record to dispute. Provide this OR search_query.",
+        description=(
+            "Numeric ID of the memory record to dispute, exactly as shown "
+            "in memory.search or memory-stored results (e.g. `227`). Never "
+            "invent an id; if you only know the content, use search_query. "
+            "Provide this OR search_query."
+        ),
     )
     search_query: str = Field(
         default="",
@@ -81,8 +86,23 @@ async def _find_disputed_record_by_id(
     """Fetch the target record directly by id (surface-scoped server-side).
 
     A wrong-scope id returns ``None`` ("not found") rather than a
-    cross-surface record.
+    cross-surface record. A NON-NUMERIC id also returns ``None`` — models
+    sometimes guess a slug-style id (``mem_<date>_<slug>``) that no
+    backend ever issued (first-party lisa_memory ids are integers;
+    external backends use UUID strings). Treating an unparseable id as
+    "not found" routes the caller to the existing friendly
+    not-found/search guidance instead of an unclassified ValueError
+    escape (the 2026-10-18 production incident).
     """
+    try:
+        native_id = int(memory_id)
+    except (TypeError, ValueError):
+        logger.warning(
+            "dispute_memory: non-numeric memory_id %r is not a native id; "
+            "treat as not found (caller should retry with search_query)",
+            memory_id,
+        )
+        return None
     get_result = await ctx.host.execute_tool(
         "memory.get",
         ToolExecutionContext(
@@ -93,7 +113,7 @@ async def _find_disputed_record_by_id(
             surface_id=ctx.surface_id,
             memory_scope=ctx.memory_scope,
             mode_id=ctx.mode_id,
-            parameters=_scoped_parameters(ctx, {"memory_id": int(memory_id)}),
+            parameters=_scoped_parameters(ctx, {"memory_id": native_id}),
         ),
     )
     if getattr(get_result, "error", None):

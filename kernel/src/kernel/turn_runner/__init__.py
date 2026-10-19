@@ -2245,10 +2245,21 @@ def _append_completion_block(content: str, block_message: str) -> str:
     swallowed. Regression for the 2026-10-03 turns 477/478 incident: a
     checked-commit block replaced the cap-pause diagnostic with its
     one-line reason, hiding why the turn paused.
+
+    Idempotent (2026-10-18 incident): when the block message is already
+    the trailing footnote, the content is returned unchanged. A model can
+    echo a previously-appended block it re-read from the thread record
+    (older entries that predate the soft-accept fix carry the trailer in
+    their persisted ``response_text``, and the recent-conversation digest
+    feeds those texts back); appending again produced the doubled block
+    the 21:13 turn surfaced.
     """
     if not content.strip():
         return block_message
-    return content.rstrip() + "\n\n" + block_message
+    stripped = content.rstrip()
+    if stripped.endswith(block_message):
+        return stripped
+    return stripped + "\n\n" + block_message
 
 
 def _apply_turn_completion_contract(
@@ -2260,6 +2271,7 @@ def _apply_turn_completion_contract(
     yielded: bool,
     checked_commit_evidence: TaskCompletionEvidence | None,
     log: logging.Logger,
+    accepted_without_worktree: bool = False,
 ) -> tuple[str, bool, str]:
     """Apply the parent-turn completion contract (Phase 8) to the final content.
 
@@ -2290,7 +2302,16 @@ def _apply_turn_completion_contract(
             or state.plan_failed
             or (state.fork_results and any(r.status != "ok" for r in (state.fork_results or [])))
         ),
-        task_completion=mode_config.task_completion if mode_config else "none",
+        # Soft-accepted diagnostic turns skip the checked-commit contract
+        # entirely: passing ``checked_commit`` with a None evidence would
+        # re-arm the same mislabeling block the soft-accept just declined
+        # (the resolver falls back to "No current checked commit for this
+        # task." when the evidence is None).
+        task_completion=(
+            "none"
+            if accepted_without_worktree
+            else (mode_config.task_completion if mode_config else "none")
+        ),
         checked_commit_verified=(
             checked_commit_evidence.verified if checked_commit_evidence is not None else False
         ),
@@ -9197,6 +9218,99 @@ def _apply_iteration_lifecycle_action(
     )
 
 
+async def _resolve_checked_commit_evidence(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    mode_id: str,
+    mode_config: Any,
+    cap_pause_reason: str,
+    pending_operator_exit: Literal["", "paused", "stopped", "terminated"],
+    yielded: bool,
+    log: logging.Logger,
+) -> tuple[TaskCompletionEvidence | None, bool]:
+    """Resolve the checked-commit evidence and the soft-accept flag.
+
+    Called only for a ``task_completion="checked_commit"`` mode that did
+    not yield. Returns ``(evidence, accepted_without_worktree)``.
+
+    Soft-accept rule (2026-10-18 incident): the mode's checked-commit
+    contract is a promise to COMMIT CODE, not to never run diagnostics in
+    the mode. A turn that did real in-mode work without once invoking the
+    worktree producer (e.g. the ``coding_execute`` diagnostic turns that
+    probed the keyring chain) is honest non-worktree work — it completes
+    cleanly, and the mode's contract is skipped in
+    :func:`_apply_turn_completion_contract`. The block stays for the cases
+    it exists for: the producer WAS attempted, the turn made NO tool
+    calls (a zero-call turn claiming completion is the
+    hallucinated-success case the contract exists to catch), or the turn
+    was cap-paused mid-work (an interrupted executor turn still carries
+    the checked-commit promise — the 2026-10-03 turns 477/478 regression
+    keeps its diagnostic + footnote).
+    """
+    if mode_config is None or mode_config.task_completion != "checked_commit" or yielded:
+        return None, False
+    producer = mode_config.task_artifact_tool_id
+    receipt_artifact_ids = tuple(
+        sorted(
+            {
+                receipt.artifact_id
+                for receipt in state.effect_receipts
+                if receipt.artifact_id and bare_tool_name(receipt.capability_id) == producer
+            }
+        )
+    )
+    _producer_attempts = set(state.called_tool_names) | {
+        bare_tool_name(name) for name in state.called_tool_names
+    }
+    if (
+        producer
+        and not receipt_artifact_ids
+        and not cap_pause_reason
+        and not pending_operator_exit
+        and state.total_tool_calls > 0
+        and producer not in _producer_attempts
+    ):
+        log.info(
+            "checked_commit mode=%s produced no worktree and never attempted "
+            "%s; accepting as honest non-worktree work instead of blocking",
+            mode_id,
+            producer,
+        )
+        return None, True
+    verifier = hooks.services.verify_task_completion
+    if not producer or len(receipt_artifact_ids) > 1:
+        return (
+            TaskCompletionEvidence(
+                verified=False, reason="Cannot identify one worktree for this task."
+            ),
+            False,
+        )
+    if not hooks.identity.task_id or verifier is None:
+        return (
+            TaskCompletionEvidence(
+                verified=False,
+                reason="Task identity or checked-commit verifier is unavailable.",
+            ),
+            False,
+        )
+    try:
+        evidence = await verifier(
+            TaskCompletionRequest(
+                task_id=hooks.identity.task_id,
+                origin_tool_id=producer,
+                receipt_artifact_ids=receipt_artifact_ids,
+            )
+        )
+    except Exception:
+        log.exception("checked-commit verification failed for task %s", hooks.identity.task_id)
+        evidence = TaskCompletionEvidence(
+            verified=False,
+            reason="Could not verify a current checked commit for this task.",
+        )
+    return evidence, False
+
+
 async def _finalize_turn_result(
     *,
     state: Any,
@@ -9282,44 +9396,16 @@ async def _finalize_turn_result(
     if terminal_content:
         content = terminal_content
 
-    checked_commit_evidence: TaskCompletionEvidence | None = None
-    if mode_config is not None and mode_config.task_completion == "checked_commit" and not yielded:
-        producer = mode_config.task_artifact_tool_id
-        receipt_artifact_ids = tuple(
-            sorted(
-                {
-                    receipt.artifact_id
-                    for receipt in state.effect_receipts
-                    if receipt.artifact_id and bare_tool_name(receipt.capability_id) == producer
-                }
-            )
-        )
-        verifier = hooks.services.verify_task_completion
-        if not producer or len(receipt_artifact_ids) > 1:
-            checked_commit_evidence = TaskCompletionEvidence(
-                verified=False, reason="Cannot identify one worktree for this task."
-            )
-        elif not hooks.identity.task_id or verifier is None:
-            checked_commit_evidence = TaskCompletionEvidence(
-                verified=False, reason="Task identity or checked-commit verifier is unavailable."
-            )
-        else:
-            try:
-                checked_commit_evidence = await verifier(
-                    TaskCompletionRequest(
-                        task_id=hooks.identity.task_id,
-                        origin_tool_id=producer,
-                        receipt_artifact_ids=receipt_artifact_ids,
-                    )
-                )
-            except Exception:
-                log.exception(
-                    "checked-commit verification failed for task %s", hooks.identity.task_id
-                )
-                checked_commit_evidence = TaskCompletionEvidence(
-                    verified=False,
-                    reason="Could not verify a current checked commit for this task.",
-                )
+    checked_commit_evidence, accepted_without_worktree = await _resolve_checked_commit_evidence(
+        state=state,
+        hooks=hooks,
+        mode_id=mode_id,
+        mode_config=mode_config,
+        cap_pause_reason=cap_pause_reason,
+        pending_operator_exit=pending_operator_exit,
+        yielded=yielded,
+        log=log,
+    )
 
     content, turn_blocked, block_origin = _apply_turn_completion_contract(
         state=state,
@@ -9329,6 +9415,7 @@ async def _finalize_turn_result(
         yielded=yielded,
         checked_commit_evidence=checked_commit_evidence,
         log=log,
+        accepted_without_worktree=accepted_without_worktree,
     )
     content, turn_blocked, block_origin = await _apply_output_guard(
         hooks=hooks,
