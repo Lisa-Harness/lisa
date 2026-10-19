@@ -144,8 +144,10 @@ the distributions attached. Every package version must match the tag.
 
 Before the first tag, register GitHub pending publishers in
 [PyPI publishing settings](https://pypi.org/manage/account/publishing/).
-Use owner `Lisa-Harness`, workflow `publish.yml`, and leave the environment blank.
-Each distribution needs its own registration:
+Use owner `Lisa-Harness` and workflow `publish.yml`. For this repository, set
+the environment to `pypi-<project-name>` (for example,
+`pypi-lisa-harness-kernel`). For the CLI and standalone pack repositories,
+leave the environment blank. Each distribution needs its own registration:
 
 | Repository | PyPI project names |
 | --- | --- |
@@ -156,6 +158,16 @@ Each distribution needs its own registration:
 These 13 repositories publish 22 distributions. No PyPI API token is needed.
 Only distribution building is shared through `build-package.yml`; each
 repository's own `publish.yml` performs the Trusted Publishing exchange.
+
+PyPI currently permits only three pending publishers at a time and requires
+distinct configurations for pending projects. The ten framework distributions
+therefore publish in separate jobs with project-specific GitHub environments.
+For initial setup, register kernel, SDK, and MCP servers first. After release
+validation passes, their first uploads convert these pending registrations to
+active publishers and free slots for the next three registrations. Continue
+in batches, rerunning only failed publishing jobs after each new registration.
+The framework GitHub release is created only after all ten publishing jobs
+succeed. Do not move a release tag or try to overwrite an uploaded version.
 
 For the first release, tag and verify `lisa` first, then the standalone packs,
 then `lisa-cli`. The CLI's CI resolves dependencies from PyPI, without local
