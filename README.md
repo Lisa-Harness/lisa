@@ -173,8 +173,9 @@ For the first release, tag and verify `lisa` first, then the standalone packs,
 then `lisa-cli`. The CLI's CI resolves dependencies from PyPI, without local
 source overrides, so its framework and optional pack dependencies must already
 be available there. Keep local `[tool.uv.sources]` overrides for development.
-Do not push tags until the pending publishers are configured and validation
-has passed. PyPI versions cannot be overwritten after publication.
+Do not push tags until the initial batch of pending publishers is configured
+and release validation has passed. PyPI versions cannot be overwritten after
+publication.
 
 ## License
 
