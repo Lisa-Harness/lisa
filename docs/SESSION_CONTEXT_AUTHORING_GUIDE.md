@@ -80,8 +80,13 @@ providers:
   modes:
     default: lisa-pack-core
   operations:
-    web_search: lisa-pack-search
+    # `web_search` is a TOOL, not an operation — it belongs under
+    # `providers.tools` below. The search pack's operations are
+    # `web_research` and `discussion_briefing`.
+    web_research: lisa-pack-search
   tools:
+    # Both lisa-pack-search and lisa-pack-brave ship tool_id `web_search`.
+    # This line resolves that collision.
     web_search: lisa-pack-brave
   capabilities:
     memory: lisa-pack-memory
@@ -147,7 +152,6 @@ context:
     authority: 0.10
     recency: 0.05
     diversity_lambda: 0.80
-    relevance_provider: lexical
   budget:
     output_reserve_tokens: 1024
     safety_margin_tokens: 512
@@ -157,6 +161,217 @@ Primary goals this week:
 - Ship migration with rollback checkpoints.
 - Keep postmortems blameless and action-oriented.
 ```
+
+## Worked Example: Memory, Markdown, Search, and Tavily
+
+A complete, deployable session that wires four packs together: **`lisa-pack-memory`**
+(long-term recall and learning), **`lisa-pack-markdown`** (document forging and
+consolidation), **`lisa-pack-search`** (the research *operations* — `web_research`,
+`discussion_briefing`), and **`lisa-pack-tavily`** (the concrete `web_search`
+*tool* provider). `lisa-pack-core` supplies the default mode and the
+`fetch_page` tool.
+
+You need a search pack like `lisa-pack-tavily` (or `lisa-pack-serper`),
+because research mode uses `tool_id: web_search`,
+so `lisa-pack-search` ships a stub that just tells you to install one,
+like `lisa-pack-tavily` which ships a real `web_search`.
+However,
+if you load both packs,
+the kernel bootstrap raises a `CatalogCollisionError`.
+To avoid that,
+declare the which pack owns `web_search` in `providers.tools`.
+
+> **The Tavily API key is required.** Without it `web_search` fails on every
+> call with `Tavily search is not configured. Set TAVILY_SEARCH_API_KEY to
+> enable it.` Export it in the host's environment before starting the session:
+>
+> ```bash
+> export TAVILY_SEARCH_API_KEY="tvly-..."
+> ```
+>
+> The other Tavily knobs — `TAVILY_SEARCH_ENDPOINT`, `TAVILY_SEARCH_MAX_RESULTS`,
+> `TAVILY_SEARCH_SEARCH_DEPTH`, `TAVILY_SEARCH_TOPIC` — are optional and
+> default to `https://api.tavily.com/search`, `5`, `basic`, and `general`.
+> The key is read from the environment only; there is no session-front-matter
+> slot for it, because a secret must never live in a versioned session file.
+
+```markdown
+---
+schema_version: 2
+name: research-desk
+surface:
+  type: personal_dm
+  id: host-console
+  memory_scope: personal
+
+resources:
+  packs:
+    # `required` drives auto-install at boot; every missing required pack
+    # is installed from the git-root template unless auto_install overrides it.
+    #
+    # lisa-pack-core is bundled with the framework (sdk/packs/core) and is
+    # always-on via the host's pack_policy, so it needs no install source.
+    # lisa-pack-memory is also bundled (sdk/packs/memory). Only the three
+    # external packs below are auto-installed.
+    required:
+      - lisa-pack-core
+      - lisa-pack-memory
+      - lisa-pack-markdown
+      - lisa-pack-search
+      - lisa-pack-tavily
+    auto_install:
+      lisa-pack-tavily:
+        source: git+https://github.com/Lisa-Harness/lisa-pack-tavily.git@v0.1.0
+        pin: v0.1.0
+      lisa-pack-search:
+        source: git+https://github.com/Lisa-Harness/lisa-pack-search.git@v0.1.0
+        pin: v0.1.0
+      lisa-pack-markdown:
+        source: git+https://github.com/Lisa-Harness/lisa-pack-markdown.git@v0.1.0
+        pin: v0.1.0
+    configuration:
+      lisa-pack-memory:
+        # Real configuration key for the memory pack. The pack reads its own
+        # block as `ctx.pack_config`; the framework does not interpret it.
+        # This raises the distillation LLM token budget, which matters for
+        # local OpenAI-compatible backends (Ollama) that truncate the JSON
+        # envelope when the budget is too small.
+        memory_distill_max_tokens: 16384
+
+providers:
+  modes:
+    default: lisa-pack-core
+  operations:
+    # `web_research` and `discussion_briefing` are owned by the search pack.
+    web_research: lisa-pack-search
+    discussion_briefing: lisa-pack-search
+    # Document forging and multi-source consolidation are the markdown pack's.
+    markdown_forge_document: lisa-pack-markdown
+    markdown_consolidate_sources: lisa-pack-markdown
+    markdown_render_turn: lisa-pack-markdown
+    # Recall and learning are the memory pack's.
+    recall_memory: lisa-pack-memory
+    synthesize_and_store_learning: lisa-pack-memory
+  tools:
+    # Both lisa-pack-search and lisa-pack-tavily declare tool_id
+    # `web_search`. This line is what resolves the collision.
+    web_search: lisa-pack-tavily
+    markdown_generate: lisa-pack-markdown
+  capabilities:
+    # The memory pack ships the bundled `lisa_memory` backend and owns the
+    # `memory` capability. Without this, an alternative memory provider pack
+    # (e.g. lisa-pack-mem0) could take the capability instead.
+    memory: lisa-pack-memory
+
+routing:
+  start_mode: default
+  sequential_connectors: [then, "and then", "based on", once]
+  resume_phrases: [proceed, continue, "go ahead", "keep going"]
+
+context:
+  lanes:
+    - lane_id: operational
+      max_tokens: 1200
+      render_order: 0
+    - lane_id: retrieval
+      max_tokens: 2400
+      render_order: 10
+    - lane_id: history
+      max_tokens: 1200
+      render_order: 20
+  sources:
+    # The thread digest (task_state / recent_history / open_objectives) and
+    # epistemics land in the retrieval lane. These are the *defaults*; they
+    # are re-declared here because authoring `context.sources` replaces the
+    # default rule set wholesale.
+    - rule_id: thread_digest
+      lane_id: retrieval
+      evidence_types: [task_state, recent_history, open_objectives]
+      priority: 100
+    - rule_id: thread_digest_epistemics
+      lane_id: retrieval
+      evidence_types: [epistemics]
+      priority: 100
+      pinned: true
+    # Memory recall results and Tavily search results are retrieval-grade
+    # evidence: they are grounded, citable, and worth outranking the
+    # catch-all.
+    - rule_id: memory_recall
+      lane_id: retrieval
+      packs: [lisa-pack-memory]
+      priority: 80
+    - rule_id: web_research
+      lane_id: retrieval
+      packs: [lisa-pack-tavily, lisa-pack-search]
+      priority: 70
+    # Everything else (live conversation excerpts, ambient items) goes to
+    # the operational lane. Exactly one fallback rule is allowed.
+    - rule_id: catch_all
+      lane_id: operational
+      fallback: true
+  history:
+    recent_message_limit: 8
+    digest:
+      enabled: true
+      recent_entries: 10
+      recent_body_chars: 1800
+      task_view_budget_bytes: 4096
+      max_open_objective_lines: 3
+  memory:
+    consolidation:
+      enabled: true
+      pressure_threshold: 0.6
+      hard_threshold: 0.85
+      min_interval_turns: 8
+      batch_size: 10
+      max_records: 200
+  ranking:
+    relevance: 0.40
+    mode_affinity: 0.15
+    salience: 0.10
+    freshness: 0.10
+    authority: 0.10
+    recency: 0.05
+    diversity_lambda: 0.80
+  budget:
+    output_reserve_tokens: 1024
+    safety_margin_tokens: 512
+    max_materialized_candidates: 32
+---
+You are a research desk with a memory.
+
+Ground every claim in recalled memory or retrieved sources. When a claim
+comes from web research, name the source. When it comes from memory, say
+so. Prefer a documented, consolidated Markdown artifact over a chat
+answer when the user asks for a deliverable.
+```
+
+### Why each block is there
+
+| Block | Reason |
+| --- | --- |
+| `resources.packs.required` | All five packs are auto-installed at boot. A missing required pack is a **hard startup error** — the runtime does not start degraded. |
+| `resources.packs.auto_install` | Pins each external pack to a tagged ref. Git refs **must** pin `@tag/@branch/@sha`; the host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`. |
+| `providers.tools.web_search` | **Required.** `lisa-pack-search` and `lisa-pack-tavily` both ship `tool_id: web_search`. Without this line the catalog raises `CatalogCollisionError` at startup. |
+| `providers.operations.*` | Declares the owner for each research and document operation. Harmless when uncontested, but it makes ownership explicit and survives a future pack that ships a same-ID operation. |
+| `providers.capabilities.memory` | Selects the memory backend owner. A different memory pack in the catalog would otherwise be free to take the capability. |
+| `context.sources` | Authoring it **replaces** the default rule set, so the thread-digest rules are re-declared explicitly. The `catch_all` fallback preserves the operational lane. |
+| `context.memory.consolidation` | Wired through the memory pack's slice provider: when active episodic records cross `pressure_threshold` of `max_records`, the slice fires `consolidate_semantic` outside the turn's latency budget. Set `enabled: false` to let records accumulate until TTL expiry. |
+
+### Adding Tavily to a session that already has a search provider
+
+If the session already selects Brave or Serper for `web_search`, adding
+Tavily means **replacing** the owner, not adding a second one — the
+`web_search` tool ID is singular:
+
+```yaml
+providers:
+  tools:
+    web_search: lisa-pack-tavily   # was: lisa-pack-brave
+```
+
+Both packs stay installed and their *operations* remain reachable, but only
+one pack can own the `web_search` tool ID at a time.
 
 ## Schema Reference
 
@@ -191,7 +406,33 @@ Each sub-key is a `ResourceSelection` with `include`, `exclude`, and `required` 
 | Key | Type | Description |
 | --- | --- | --- |
 | `packs` | `PackSelection` | Pack selection plus pack-owned configuration. `required` drives auto-install; `include`/`exclude` filter catalog activation. Also accepts a `configuration` map and an `auto_install` map. |
-| `servers` | `ResourceSelection` | MCP server include/exclude (session-level). |
+| `servers` | `ResourceSelection` | MCP server include/exclude (session-level). Only `exclude` is read at runtime; `include`/`required` are accepted but inert. |
+| `proxies` | `ResourceSelection` | Proxy server include/exclude/required. Unlike `servers`, all three fields are honored: `include` (when non-empty) is an allowlist, `exclude` drops a proxy, and `required` marks a proxy mandatory. |
+| `modes` | `ResourceSelection` | Mode include/exclude/required. Accepted by the schema but **not read by the runtime** — mode activation is driven by pack selection and `providers.modes`, not by this selector. |
+| `operations` | `ResourceSelection` | Operation include/exclude/required. Accepted by the schema but **not read by the runtime**. |
+| `tools` | `ResourceSelection` | Tool include/exclude/required. Accepted by the schema but **not read by the runtime**. |
+| `signals` | `ResourceSelection` | Signal include/exclude/required. Accepted by the schema but **not read by the runtime**. |
+| `intake` | `ResourceSelection` | Intake include/exclude/required. Accepted by the schema but **not read by the runtime**. |
+| `models` | `ResourceSelection` | Model include/exclude/required. Accepted by the schema but **not read by the runtime**; use `context.models.path` to point at a model manifest. |
+
+Only `packs`, `servers.exclude`, and `proxies` currently affect runtime behavior. The remaining selectors are reserved for future use: they compile and validate, but authoring them has no effect today.
+
+#### `resources.packs.configuration`
+
+A two-level map: **pack ID → configuration object**.
+
+```yaml
+resources:
+  packs:
+    configuration:
+      lisa-pack-bwrap:
+        sandbox:
+          floor:
+            execution: sandbox
+            network: deny
+```
+
+Each pack reads its own key; the framework does not interpret the contents. Keys naming a pack that is not active are ignored. A pack may only *tighten* the framework-authored floor — it cannot loosen it.
 
 #### `resources.packs.auto_install`
 
@@ -382,7 +623,9 @@ Named lanes that group context candidates for rendering. Each lane has a `render
 
 `min_tokens` cannot exceed `max_tokens`; `min_items` cannot exceed `max_items`. Lane IDs must be unique.
 
-The default lanes are `session`, `operational`, `history`, and `retrieval`.
+The default lanes are `session`, `operational`, `history`, and `retrieval` (in that `render_order`).
+
+`max_tokens` and `max_items` are **hard limits** — a candidate that would exceed either is dropped with reason `lane_token_budget_exhausted` or `lane_item_limit_reached`. `min_tokens` and `min_items` are **best-effort coverage targets**: they tell the mapper a lane is still under-covered and should keep admitting candidates, but they are not guarantees. If no eligible candidates remain, the minimum simply goes unmet.
 
 #### `context.sources`
 
@@ -411,6 +654,36 @@ field use OR. Mode/stage, freshness, and explicit-invocation conditions
 also apply. A source-matched candidate failing a condition is dropped,
 not rescued by fallback. See [context routing](CONTEXT_ROUTING_GUIDE.md).
 
+##### How a candidate is routed
+
+1. **Selectors** (`source_kinds`, `sources`, `packs`, `evidence_types`, `tags`) narrow the rule set. Every populated selector must match; alternatives inside one field are OR.
+2. **Conditions** (`modes`, `stages`, `explicit_invocation`, `min_freshness`) are evaluated next. A candidate whose selectors matched but whose conditions fail is **dropped** — the fallback rule does not rescue it.
+3. **Priority** picks the lane. Among the matching rules, the highest `priority` wins. If two rules at that priority name **different** lanes, the mapper raises a `ContextMappingError` — a real authoring conflict, not a silent pick. Ties within one lane are broken by the lowest `rule_id`.
+4. **Fallback** catches candidates that matched no non-fallback rule at all.
+
+See [context routing](CONTEXT_ROUTING_GUIDE.md) for the full selector semantics, the `required` vs `pinned` distinction, and worked examples.
+
+##### Default source rules
+
+Omitting `context.sources` entirely supplies these three rules. Authoring
+`context.sources` **replaces them wholesale** — there is no merge, so a
+session that declares its own rules loses the thread-digest and
+history-fallback behavior unless it re-declares it.
+
+| `rule_id` | `lane_id` | Selector | Priority | Notes |
+| --- | --- | --- | --- | --- |
+| `thread_digest` | `retrieval` | `evidence_types: [task_state, recent_history, open_objectives]` | `100` | The thread digest the model uses to know its recorded state. |
+| `thread_digest_epistemics` | `retrieval` | `evidence_types: [epistemics]` | `100` | `pinned: true` — epistemics bypass MMR diversity filtering. |
+| `history_fallback` | `history` | (fallback) | `0` | Catch-all for every other candidate. |
+
+The digest also emits a `verified_facts` item, which no default rule names —
+it falls through to `history_fallback` and lands in the `history` lane. See
+[the `digest` section](#digest) for the fix.
+
+This is why a session that declares a single `fallback: true` rule into
+`operational` — as the bundled core session does — moves the catch-all out
+of the `history` lane entirely.
+
 #### `context.ranking`
 
 Deterministic scoring weights for the context mapper. All weights are `>= 0.0`.
@@ -428,9 +701,61 @@ Deterministic scoring weights for the context mapper. All weights are `>= 0.0`.
 | `conflict_penalty` | `0.10` | Penalty for conflicting candidates. |
 | `token_cost_penalty` | `0.05` | Penalty for token cost. |
 | `diversity_lambda` | `0.75` | MMR diversity trade-off (`0.0-1.0`). |
-| `relevance_provider` | `lexical` | Relevance scoring backend: `lexical`, `semantic`, or `hybrid`. |
+| `relevance_provider` | `lexical` | Relevance scoring backend. **Not implemented — the mapper always scores relevance lexically**, regardless of this value. The field validates and compiles, but setting it to `semantic` or `hybrid` changes nothing. |
 
-Positive weights are normalized to sum to 1.0 at runtime. At least one positive weight is required.
+##### How a candidate is scored
+
+Every candidate gets a component per weight, then one base score:
+
+```text
+base_score = Σ (normalized_weight × component)
+           - conflict_penalty × conflict_component
+           - token_cost_penalty × token_cost_component
+```
+
+The eight **positive** weights (`relevance`, `mode_affinity`, `salience`,
+`freshness`, `authority`, `continuity`, `user_priority`, `recency`) are
+normalized to sum to 1.0 among themselves. `conflict_penalty` and
+`token_cost_penalty` are **not** part of that normalization — they are raw
+multiplicative penalties applied after. Setting all eight positive weights
+to `0.0` raises `SessionPlanError` at compile time.
+
+##### The scoring components
+
+| Weight | Range | How it is computed |
+| --- | --- | --- |
+| `relevance` | `0.0`–`1.0` | Lexical overlap. Query and candidate are lowercased, tokenized on `[a-z0-9']+`, and stripped of 19 stopwords (`a`, `about`, `an`, `and`, `are`, `at`, `be`, `for`, `from`, `how`, `in`, `is`, `it`, `of`, `on`, `or`, `the`, `to`, `with`). Candidate terms come from title + content + tags. The score is `matched_query_terms / total_query_terms` — the denominator is the **query** size, so a long query scores low even for a good match. An empty query scores `0.0`. |
+| `mode_affinity` | `0.6`–`1.0` | `1.0` when the candidate's `mode_ids` include the active mode, otherwise `0.6`. A candidate with no `mode_ids` gets `0.6`. Candidates whose `mode_ids` exclude the active mode are gated out before scoring. |
+| `salience` | `0.0`–`1.0` | The producer's declared salience, passed through unchanged. |
+| `freshness` | `0.0`–`1.0` | `1.0` when the candidate has no expiry or has not expired. After expiry it decays as `exp(-stale_seconds / ttl_seconds)`, where TTL is `expires_at - collected_at`. A candidate with no `collected_at` scores `0.0`. `min_freshness` on a source rule compares against this component. |
+| `authority` | `0.0`–`1.0` | `authority × confidence × provenance_multiplier`. The multiplier comes from the host's provenance table (below), so a speculative item with perfect authority and confidence still scores `0.30`. |
+| `continuity` | `0.0`–`1.0` | The producer's declared continuity with prior turns, passed through unchanged. Defaults to `0.0`. |
+| `user_priority` | `0.0`–`1.0` | The user-declared priority, passed through unchanged. Defaults to `0.0`. |
+| `recency` | `0.0`–`1.0` | `exp(-ln(2) × age_hours / 24)` — a 24-hour half-life on `collected_at`. A candidate with no `collected_at` scores `0.5` (neutral, not zero). |
+| `conflict` | `0.0`–`1.0` | From the host's conflict-risk table: `low` → `0.0`, `medium` → `0.5`, `high` → `1.0`. Subtracted, weighted by `conflict_penalty`. |
+| `token_cost` | `0.0`–`1.0` | `token_count / available_context_tokens`, clamped to `1.0`. Token count is the candidate's own estimate, else `ceil(len(content) / 4)` (the host's chars-per-token ratio). Penalizes bulky candidates. |
+
+The host's two scoring tables are configurable via
+`CONTEXT_MAPPER_PROVENANCE_AUTHORITY` and `CONTEXT_MAPPER_CONFLICT_PENALTY`
+(JSON objects). The defaults are:
+
+| Provenance | Multiplier | | Conflict risk | Penalty |
+| --- | --- | --- | --- | --- |
+| `authoritative` | `1.00` | | `low` | `0.0` |
+| `system_observed` | `0.98` | | `medium` | `0.5` |
+| `user_asserted` | `0.75` | | `high` | `1.0` |
+| `recalled_memory` | `0.70` | | | |
+| `inferred` | `0.55` | | | |
+| `diagnostic` | `0.45` | | | |
+| `speculative` | `0.30` | | | |
+
+##### Selection order and diversity
+
+Selection runs in three passes:
+
+1. **Forced.** Candidates marked `required` (by the rule or by the producer) and candidates marked `pinned` are selected first, in that order, before any scoring competition. A `required` candidate that does not fit the budget raises `ContextBudgetError`; a `pinned` candidate that does not fit is dropped with `pinned_budget_exhausted`. This is the only difference between the two: required cannot be silently dropped.
+2. **Lane minimums.** Lanes still under their `min_items`/`min_tokens` coverage target get first claim on eligible candidates.
+3. **MMR.** Remaining candidates are chosen by maximal marginal relevance: `diversity_lambda × base_score - (1 - diversity_lambda) × similarity`, where similarity is the maximum Jaccard term overlap against already-selected candidates. Two candidates sharing a non-empty `conflict_key` are treated as fully similar (`1.0`). `diversity_lambda: 1.0` is pure score ranking; `0.0` is pure anti-similarity. The default `0.75` weighs score 75% against similarity 25%.
 
 #### `context.budget`
 
@@ -440,7 +765,45 @@ Model-aware budget limits applied after fixed per-turn reservations.
 | --- | --- | --- | --- |
 | `output_reserve_tokens` | `int >= 1` | `1024` | Tokens reserved for model output. |
 | `safety_margin_tokens` | `int >= 0` | `512` | Safety margin tokens. |
-| `max_materialized_candidates` | `int >= 1` | `32` | Maximum candidates materialized into the prompt. |
+| `max_materialized_candidates` | `int >= 1` | `32` | Maximum candidates materialized into the prompt. **Not implemented — accepted by the schema but never read by the runtime.** Use lane `max_items` to bound how many candidates a lane can contribute. |
+
+##### How the budget is computed
+
+The mapper's global context allowance is:
+
+```text
+available_context_tokens = max(0,
+    model_context_window_tokens
+  - output_reserve_tokens
+  - safety_margin_tokens
+)
+```
+
+Both reservations are deducted **before** any candidate is admitted, so every
+candidate competes inside the already-reduced window. `model_context_window_tokens`
+comes from the resolved model's declared `context_window` in the model
+manifest, falling back to the host default (131072) when the manifest entry
+does not declare one.
+
+A candidate is admitted only if it fits all three limits, checked in this
+order:
+
+1. the **global** remaining-token budget;
+2. the lane's `max_tokens`;
+3. the lane's `max_items`.
+
+A candidate that fails check 1 is dropped as `global_budget_exhausted`; check 2
+as `lane_token_budget_exhausted`; check 3 as `lane_item_limit_reached`. Lane
+`min_tokens` and `min_items` are coverage *targets* — they make a lane
+compete harder for candidates, but are not guarantees.
+
+> These mapper reservations are **not** the whole provider-request budget.
+> Whole-request sizing separately accounts for the serialized system and user
+> messages, tool schemas and arguments, the response-format schema, the
+> requested completion room, and a request margin. The mapper's
+> `output_reserve_tokens` and `safety_margin_tokens` are an earlier, separate
+> reservation for optional context — setting them does not change how the
+> provider request is sized.
 
 #### `context.history`
 
@@ -448,17 +811,84 @@ Conversation history settings for context assembly.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `include_recent_conversation` | `true` | Include recent conversation evidence |
-| `include_reflection` | `false` | Include the diagnostic reflection |
-| `recent_message_limit` | `6` | Recent-message selection limit; non-negative |
-| `replay_max_bytes` | absent | Optional 1–1048576-byte replay ceiling, tighten-only against a finite host ceiling |
-| `digest` | object | Bounded task-state/recent-history/open-objective projection |
+| `include_recent_conversation` | `true` | Include the recent-conversation excerpt. Read by the runtime. |
+| `include_reflection` | `false` | Include the diagnostic reflection. **Not implemented — accepted by the schema but never read by the runtime.** |
+| `recent_message_limit` | `6` | Recent-message selection limit; non-negative. **Not implemented — never read by the runtime.** The recent-conversation excerpt is built with a fixed three-item limit; use `digest.recent_entries` to size the digest's recent-history item. |
+| `replay_max_bytes` | absent | Optional 1–1048576-byte replay ceiling, tighten-only against a finite host ceiling. |
+| `digest` | object | Bounded task-state/recent-history/open-objective projection. |
 
-`digest` fields are `enabled` (true), `recent_entries` (10),
-`recent_body_chars` (1800), `task_view_budget_bytes` (4096), and
-`max_open_objective_lines` (3). This deterministic prompt projection is
-not the removed lossy digest sidecar or in-place thread compaction.
-The underlying thread remains lossless.
+##### `include_recent_conversation`
+
+Gates one section only: the recent-conversation excerpt, which is appended to
+the **`history`** lane. It does not gate the thread manifest or the digest
+items. The excerpt is built from the thread store with a hard-coded
+three-entry limit, and host-only command queries are filtered out of it.
+
+The excerpt is additionally suppressed by the host's replay policy in
+`manual` trigger mode and when the query is shorter than the configured
+`min_query_chars` — so `include_recent_conversation: true` is a permission,
+not a guarantee.
+
+##### `replay_max_bytes`
+
+Bounds the **turn-start replay working set**: the total tool-result bytes
+replayed verbatim for the open task. Content beyond the ceiling collapses
+into recoverable reference stubs that keep the addressing information for
+the original result; the model re-expands a stub through
+`thread_read_content`. Nothing is lost — the thread store remains the
+lossless ground truth, and this knob governs *residency*, not storage.
+
+The effective ceiling is the **minimum** of the session knob and the host's
+`context_budget_replay_max_bytes` (env `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES`,
+default `0` = no host ceiling). So:
+
+- session value **below** the host ceiling → the session value applies;
+- session value **above** the host ceiling → the host ceiling wins, the
+  session value is clamped down;
+- host ceiling `0` → any positive session value applies;
+- neither positive → no explicit ceiling; the request allocator decides.
+
+##### `digest`
+
+The digest is a **bounded, lossy projection** of the lossless thread, pushed
+into the `retrieval` lane each turn so the model starts knowing its recorded
+state instead of re-reading it through tools. It is not in-place thread
+compaction, and it is not the removed lossy digest sidecar.
+
+| Key | Default | Bound | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | `true` | — | `false` → the digest is omitted entirely and the model falls back to tool pulls only. |
+| `recent_entries` | `10` | 1–40 | How many recent thread exchanges the recent-history item summarizes. The digest loads up to `recent_entries × 4` source entries and selects the last `recent_entries`. Fewer available entries is not an error. |
+| `recent_body_chars` | `1800` | 200–8000 | Character budget for the recent-history body. Rendering stops before the line that would exceed it. |
+| `task_view_budget_bytes` | `4096` | 1024–16384 | Byte budget for the task view. The rendered view additionally caps each objective and latest-response field at 400 characters. |
+| `max_open_objective_lines` | `3` | 1–10 | How many open-objective lines the item carries. |
+
+The digest emits these evidence types, which the default `context.sources`
+rules route as follows:
+
+| Evidence type | Default rule | Default lane |
+| --- | --- | --- |
+| `task_state` | `thread_digest` | `retrieval` |
+| `recent_history` | `thread_digest` | `retrieval` |
+| `open_objectives` | `thread_digest` | `retrieval` |
+| `epistemics` | `thread_digest_epistemics` (pinned) | `retrieval` |
+| `verified_facts` | *(no dedicated rule)* | `history` via the fallback |
+
+> **`verified_facts` is a gap in the default rules.** The thread digest emits
+> a `verified_facts` item, but no default source rule names that evidence
+> type, so it falls through to the `history_fallback` catch-all and lands in
+> the `history` lane instead of `retrieval`. Verified facts are
+> high-value retrieval-grade evidence, so a session that wants them in
+> `retrieval` should declare a rule for them explicitly:
+>
+> ```yaml
+> context:
+>   sources:
+>     - rule_id: verified_facts
+>       lane_id: retrieval
+>       evidence_types: [verified_facts]
+>       priority: 100
+> ```
 
 #### `context.memory`
 
@@ -469,6 +899,21 @@ latency; it does not compact the lossless thread in place.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `consolidation` | `MemoryConsolidationTuning` | (see below) | Episodic-pressure-triggered memory consolidation. |
+
+The block only takes effect when the **memory pack is active** — it is
+implemented by the memory pack's slice provider, which the host wires through
+the `lisa.extensions.slice_providers` entry point. A session that does not
+include `lisa-pack-memory` can set these knobs, but nothing will read them.
+
+Two record kinds are involved:
+
+- **Episodic** records are the active, accumulating source records. They are
+  counted for pressure and loaded in batches for consolidation.
+- **Semantic** records are durable distilled facts, produced either by
+  `consolidate_semantic` (which also *retires* the episodic sources it
+  distilled) or by `mine_thread_segment` (which does not retire anything).
+
+Neither path rewrites or compacts the lossless thread store.
 
 ##### `context.memory.consolidation`
 
@@ -486,9 +931,54 @@ Thresholds are fractions of `max_records` (`0.0`-`1.0`). The slice pressure curv
 | `batch_size` | `int >= 1` | `10` | Records consolidated per invocation. |
 | `min_episodic_count` | `int >= 1` | `5` | Don't fire below this many active episodic records. |
 | `max_records` | `int >= 1` | `200` | Denominator for the pressure fraction. |
-| `preferred_model_id` | `string` | `default` | Model ID used for the consolidate operation. |
+| `preferred_model_id` | `string` | `default` | Model ID used for the consolidate operation. **Not implemented — the value is carried into the slice config but the slice does not pass it when invoking the operation.** |
 | `consolidate_operation` | `string` | `consolidate_semantic` | Operation ID invoked to consolidate. |
-| `mine_on_segment_seal` | `bool` | `true` | Mine newly sealed thread segments when consolidation runs. |
+| `mine_on_segment_seal` | `bool` | `true` | Mine newly sealed thread segments on every slice pass. Independent of the consolidation fire decision. |
+
+##### The fire decision
+
+Pressure is `episodic_count / max_records`. The active count comes from
+`memory.count` (filtered to `memory_kind: episodic`, `status: active`), with
+a bounded `memory.list` fallback when `memory.count` is unavailable.
+
+| Condition | Behavior |
+| --- | --- |
+| pressure below `pressure_threshold` | No fire. |
+| pressure at or above `hard_threshold` | Fires immediately — the pressure budget and `min_interval_turns` are both overridden. |
+| between the thresholds | Fires only if **all** hold: the count is at least `min_episodic_count`, the slice's pressure-derived `budget_ms` is at least 150 ms, and `min_interval_turns` turns have elapsed since the last fire. |
+
+The "slice pressure curve" is the kernel's pressure-derived slice budget
+(`SlicePolicy.budget_ms`) — the time the host is willing to spend on
+post-turn work. The between-thresholds branch defers to a less-pressured
+turn when the budget is too small to start an LLM distillation call.
+
+`min_interval_turns` is tracked by a turn counter kept in a
+`last_consolidation.json` sidecar beside the memory database, so the
+interval survives restarts.
+
+##### What a slice pass does
+
+The slice runs **two independent jobs** every time it is invoked, in this
+order. Only the second one is gated by the fire decision.
+
+1. **Mine newly sealed thread segments.** If `mine_on_segment_seal` is on,
+   the slice scans the thread segment index for sealed segments not yet
+   mined, distills each into 1–3 semantic records carrying
+   `thread_turn_lo`/`thread_turn_hi` provenance via `mine_thread_segment`,
+   and advances a `mine.marker` sidecar. Mining is idempotent per segment
+   and at most 2 segments are mined per pass. The lossless segment is
+   retained — mining adds records, it does not replace them. **This job
+   runs on every slice pass, whether or not consolidation fires.**
+2. **Consolidate under memory pressure.** Only when the fire decision says
+   so: load up to `batch_size` active episodic records, then invoke
+   `consolidate_operation` (default `consolidate_semantic`) with the batch
+   and the scope identifiers (`user_slug`, `workspace_id`, `memory_scope`,
+   `surface_id`). The operation distills the batch into one durable semantic
+   record and retires the episodic sources.
+
+Every failure along the way — count, list, mining, the operation itself, or
+the sidecar write — is caught, logged, and turned into a diagnostic outcome.
+A consolidation failure never breaks the turn.
 
 Example:
 
@@ -514,6 +1004,8 @@ How the mapper resolves candidates that conflict on the same logical claim. The 
 | `surface_conflict` | Keep both and annotate the conflict so the model can reason about it. |
 | `drop_lower_authority` | Drop the lower-authority candidate without surfacing. |
 
+> **Not implemented.** The `conflict_policy` field validates and compiles, but no runtime code reads it. The mapper always applies a *soft* conflict penalty: conflicting candidates lose score through the `conflict_penalty` ranking weight and are de-duplicated by MMR similarity, but none of the three policies above is actually enacted. Treat the value as aspirational; do not rely on `surface_conflict` to surface a disagreement to the model.
+
 ```yaml
 context:
   conflict_policy: surface_conflict
@@ -532,10 +1024,35 @@ providers:
   tools:
     web_search: lisa-pack-brave  # Brave owns the web_search tool
   capabilities:
-    memory: lisa-pack-mem0            # mem0 owns the memory capability
+    memory: lisa-pack-memory         # the memory pack owns the memory capability
 ```
 
-Provider IDs are normalized: `lisa-pack-brave`, `brave`, and `brave_pack` all match the same pack. Selection is exact — there is no ordered preference list. If the selected pack is not active, the catalog entry is absent (no fallback).
+Provider IDs are matched **exactly**, after lowercasing and converting
+underscores to hyphens. Use the pack's **distribution name** — the
+`[project] name` in its `pyproject.toml` — e.g. `lisa-pack-brave`. The bare
+slug `brave` normalizes to `brave`, which does **not** match
+`lisa-pack-brave`; a `providers` entry naming the bare slug will fail to
+resolve and the catalog reports the available provider names in the error.
+
+> Alias resolution (`lisa-pack-brave` ≡ `brave` ≡ `brave_pack`) applies to
+> **pack activation** — `resources.packs.include`/`exclude`/`required` and
+> the `from:` directive — where the host expands the alias set. It does
+> **not** apply to `providers` ownership, which is an exact match against
+> the discovered distribution name.
+
+Selection is exact — there is no ordered preference list. If the selected
+pack is not active, the catalog entry is absent (no fallback).
+
+**When a collision actually happens.** The catalog groups candidates by resource ID. A single candidate is used as-is. Two or more candidates from the same pack's directory are one pack, not a collision. But `lisa-pack-search`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` each ship a tool with `tool_id: web_search` from *different* pack roots — that is a genuine collision and needs an explicit `providers.tools.web_search` entry.
+
+Resolution order when several candidates share an ID:
+
+1. One candidate → used directly.
+2. Exactly one **overlay** candidate (an entry under the host's overlay root) → it wins automatically, even over an explicit `providers` selection.
+3. Two or more overlay candidates → `CatalogCollisionError` (ambiguous).
+4. Two or more non-overlay candidates → an explicit `providers.<kind>` selection is **required**; without it, `CatalogCollisionError`.
+
+When a selection is present but matches zero or more than one candidate, `CatalogCollisionError` names the available providers.
 
 ---
 
@@ -636,8 +1153,18 @@ The compiler (`compile_session_plan`) enforces:
 - `providers` entries require non-empty resource and provider IDs.
 - All `context.ranking` weights must be `>= 0.0`; `diversity_lambda` must be `0.0-1.0`.
 - `context.lanes` `min_tokens <= max_tokens` and `min_items <= max_items`.
+- Every `resources.packs.auto_install` key must also appear in `resources.packs.required`.
+- `execution` numeric limits must be `>= 1`; `execution.capabilities` and `execution.scopes` keys must be non-empty, and each nested numeric value must be `>= 1`.
+- `context.memory.consolidation.hard_threshold` must be `>= pressure_threshold`.
+- `context.history.replay_max_bytes` must be `1`-`1048576`; `context.history.digest` fields are bounded (`recent_entries` 1–40, `recent_body_chars` 200–8000, `task_view_budget_bytes` 1024–16384, `max_open_objective_lines` 1–10).
+- `context.sources[].min_freshness` must be `0.0`-`1.0`; `context.budget.output_reserve_tokens` must be `>= 1` and `safety_margin_tokens` `>= 0`; `max_materialized_candidates` must be `>= 1`.
 
 Any violation raises `SessionPlanError` (a `ValueError` subclass). The host renders this as a startup error and exits.
+
+Two further errors are raised **after** compilation, at catalog build time, and are not `SessionPlanError`:
+
+- `CatalogCollisionError` — two active packs contribute the same mode, operation, or tool ID and the session plan did not declare the owner in `providers`. See [provider selection](#provider-selection).
+- `ContextMappingError` — two `context.sources` rules at the same priority match one candidate but name different lanes.
 
 ---
 
@@ -650,11 +1177,11 @@ providers:
   modes:
     default: lisa-pack-core
   operations:
-    web_search: lisa-pack-search
+    web_research: lisa-pack-search    # the search pack's research operation
   tools:
-    web_search: lisa-pack-brave
+    web_search: lisa-pack-brave       # Brave owns the web_search tool
   capabilities:
-    memory: lisa-pack-mem0
+    memory: lisa-pack-memory          # the memory pack owns the memory capability
 ```
 
 ### Operational Alerts Lane
@@ -717,6 +1244,19 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 - **`context_routing` is gone**: the legacy namespace-based routing block was removed. There is no `context_routing` key and no `ContextRoutingConfig`; use the `context` block (`lanes` + `sources`) instead. A `ContextRoutingConfig` reference in old code or docs is stale.
 - **`ContextItem.namespace` is a label, not a selector**: the mapper selects on `source`, `pack`, `source_type`, `evidence_type`, and `tags` — never on `namespace`. Setting `namespace="alerts"` does not route an item to an `alerts` lane; author a `context.sources` rule matching `evidence_types: [alert]` or `sources: [...]` instead.
 - **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv produces a `Duplicate operation ID`/`Duplicate tool ID` collision at boot because the catalog subprocess sees two content-root paths for one pack. Keep external packs in the packs venv only; uninstall them from the main `.venv`. (Bundled packs are fine in the main `.venv` — they are not installed into the packs venv.)
+- **Two search provider packs without a `providers.tools` entry**: `lisa-pack-search`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` all ship a tool with `tool_id: web_search`. Activating more than one without declaring the owner raises a `CatalogCollisionError` at startup. Exactly one pack can own `web_search` at a time.
+- **A search provider pack without its API key**: the pack installs and the tool appears in the catalog, but every call fails with a "not configured" error naming the missing environment variable (for Tavily, `TAVILY_SEARCH_API_KEY`). The key is read from the environment, never from front matter — a secret does not belong in a versioned session file.
+- **`lisa-pack-search` alone is not a working search**: its `web_search` tool is a deliberate stub that returns "provider unavailable". It ships the research *operations* (`web_research`, `discussion_briefing`); a concrete provider pack (Tavily, Brave, Serper) supplies the tool.
+- **Authoring `context.sources` drops the default rules**: the default rule set is replaced wholesale, not merged. A session that declares its own sources loses the `thread_digest`, `thread_digest_epistemics`, and `history_fallback` rules unless it re-declares them.
+- **Two source rules at the same priority naming different lanes**: the mapper raises a `ContextMappingError` rather than picking one. Split the priorities.
+- **`auto_install` for a pack that is not `required`**: the compiler rejects it. `auto_install` customizes *how* a required pack installs; it never decides *whether* it installs.
+- **`relevance_provider: semantic` does nothing**: the field is schema-only. Relevance is always scored lexically.
+- **`conflict_policy: surface_conflict` does nothing**: the field is schema-only. Conflicting candidates are only softly penalized through the `conflict_penalty` ranking weight.
+- **`include_reflection` does nothing**: the field is schema-only.
+- **`recent_message_limit` does nothing**: the field is schema-only. The recent-conversation excerpt uses a fixed three-entry limit; size the digest's recent-history item with `digest.recent_entries` instead.
+- **`max_materialized_candidates` does nothing**: the field is schema-only. Bound a lane's candidate count with `context.lanes[].max_items` instead.
+- **`preferred_model_id` in the memory consolidation block does nothing**: the value reaches the slice config but is not passed to the operation. The consolidate operation picks its own model from its own definition.
+- **`verified_facts` lands in the `history` lane, not `retrieval`**: the thread digest emits a `verified_facts` item, but no default source rule names that evidence type, so the `history_fallback` catch-all takes it. Add an explicit rule to route it to `retrieval`.
 
 ---
 
