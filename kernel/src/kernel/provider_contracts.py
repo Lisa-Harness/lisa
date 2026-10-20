@@ -585,6 +585,10 @@ def _names_are_incompatible(staged_name: str, fragment_name: str) -> bool:
     They are used only to REFUSE a merge, never to allow one. Two names
     are incompatible when neither is a prefix of the other, so a name
     streamed in pieces is never mistaken for a different tool.
+
+    A name that is a prefix of the other is compatible — that is the
+    shape of a name streamed in pieces. A repeated name is identical and
+    compatible too.
     """
     if not staged_name or not fragment_name:
         return False
@@ -602,19 +606,27 @@ def _can_continue_call(
 
     The rules, in order:
 
-    1. A call with no arguments yet takes the fragment's first piece.
+    1. A fragment with no payload continues the staged call when it
+       names the same tool, and starts a call of its own when it names a
+       different one — otherwise the two names would be glued into a
+       name no tool has.
     2. A fragment that completes the staged call's payload continues it.
-    3. Two names that plainly name different tools are never one call.
-    4. Two partial payloads are one call: neither can start a call.
+    3. Two partial payloads are one call: neither can start a call.
+    4. Two names that plainly name different tools are never one call.
+
+    The name is checked only where the payload cannot decide. A name
+    streamed in pieces is not a prefix of its own second half, so a name
+    check placed first would split a call whose name arrived in pieces.
+    The name refuses a merge the payload could not resolve.
     """
     staged_arguments = staged["arguments"]
-    if not staged_arguments or not arguments:
-        return True
+    if not arguments or not staged_arguments:
+        return not _names_are_incompatible(staged["name"], name)
     if _concatenation_is_one_object(staged_arguments, arguments):
         return True
-    if _names_are_incompatible(staged["name"], name):
-        return False
-    return not _arguments_are_complete(staged_arguments) and not _arguments_are_complete(arguments)
+    if not _arguments_are_complete(staged_arguments) and not _arguments_are_complete(arguments):
+        return True
+    return not _names_are_incompatible(staged["name"], name)
 
 
 def _candidate_for_a_known_id(
@@ -690,7 +702,7 @@ def _select_staged_slot(
     index: int | None,
     name: str,
     arguments: str,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Return the staged call a fragment belongs to, starting one if needed.
 
     The rules:
@@ -717,13 +729,13 @@ def _select_staged_slot(
             # fragment must also not glue a second payload onto it. A
             # backend that repeats its id on every fragment sends a
             # PARTIAL payload each time, and that continues the call.
-            if _can_continue_call(staged_call, name, arguments):
-                return staged_call
-            entry = _start_new_staged_slot(staged, index)
-            entry["id"] = call_id
-            if name:
-                entry["name"] = name
-            return entry
+            #
+            # A fragment that cannot continue the call must not be given
+            # the same id either: two tool calls sharing an id are
+            # rejected by the backend on their own. The fragment is
+            # dropped instead — a call that cannot be dispatched cleanly
+            # is better absent than duplicated.
+            return staged_call if _can_continue_call(staged_call, name, arguments) else None
         candidate = _candidate_for_a_known_id(staged, call_id, index, name)
     else:
         candidate = _candidate_for_a_fragment(staged, index)
@@ -783,6 +795,12 @@ def _stitch_tool_call_delta(
     arguments = str(function.get("arguments") or "")
 
     entry = _select_staged_slot(staged, call_id, index, name, arguments)
+    if entry is None:
+        # The fragment cannot continue the call its id names and must
+        # not be given that id again. It is dropped: a tool call that
+        # cannot be dispatched cleanly is better absent than duplicated,
+        # and the kernel refuses an unparseable payload anyway.
+        return
     if entry.get("_index") is None and index is not None:
         # Remember where the backend placed this call: a later
         # continuation fragment carries the same index and must find it.

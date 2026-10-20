@@ -1834,3 +1834,70 @@ def test_aggregate_keeps_a_late_id_at_its_own_index() -> None:
     assert len(result.tool_calls) == 2
     payloads = sorted(call["function"]["arguments"] for call in result.tool_calls)
     assert payloads == ['{"p":1}', '{"p":2}']
+
+
+def test_aggregate_never_gives_two_calls_the_same_id() -> None:
+    """Two tool calls never share an id.
+
+    A duplicate tool-call id is rejected by the backend on its own — it
+    answers 500 where a glued payload answers 400 — and no repair path
+    in the gateway touches it. A fragment that cannot continue the call
+    its id names must therefore be dropped rather than given the same id
+    again.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "tool_a", "arguments": '{"x":1}'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "tool_b", "arguments": '{"y":2}'},
+                }
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    ids = [call["id"] for call in result.tool_calls if call["id"]]
+    assert len(ids) == len(set(ids)), "two tool calls must not share an id"
+
+
+def test_aggregate_never_glues_two_different_tool_names() -> None:
+    """Two plainly different tools never share a call.
+
+    The name check must refuse the merge even when the payload cannot:
+    the OpenAI streaming convention sends the first fragment's argument
+    string empty, and the payload has nothing to say about the two
+    tools.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "read_file", "arguments": ""}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_2",
+                    "function": {"name": "list_files", "arguments": '{"b":1}'},
+                }
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    names = [call["function"]["name"] for call in result.tool_calls]
+    assert "read_filelist_files" not in names, "two tool names must not be glued"
+    assert "read_file" in names
+    assert "list_files" in names
+    for call in result.tool_calls:
+        arguments = call["function"]["arguments"]
+        if arguments:
+            assert isinstance(json.loads(arguments), dict)
