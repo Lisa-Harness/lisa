@@ -56,6 +56,51 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_write_file_leaves_binary_content_exact`,
   `test_append_file_reports_appended_bytes`).
 
+#### The MCP environment export no longer outlives the compile
+
+- **What:** `runtime.mcp_pool.compile_mcp_configs` and
+  `compile_proxy_configs` export `FRAMEWORK_ROOT`, `LISA_TIMEZONE`,
+  `LISA_THREAD_DIR`, `LISA_USER_SLUG` and the two
+  `LISA_THREAD_REDACTION_*` variables only for as long as the manifest
+  load and the config compile need them. The ambient process
+  environment is byte-for-byte what it was before the call.
+- **Why:** the export existed so the manifest's `${VAR}` references
+  expand and the child process inherits the host's resolved values — not
+  so the host process kept them. Leaving them behind made the host
+  process permanently carry the values it resolved at startup, so any
+  later `HostConfig.from_env()` in the same process resolved its thread
+  dir, user slug, timezone and thread-redaction from the previous
+  runtime's values instead of its own (Lisa-Harness/lisa#3). In the
+  test suite that made results order-dependent: a test that built a
+  runtime through `HostConfig.from_env` silently picked up the
+  previous test's `tmp_path`. The same defect applied to a long-lived
+  host that rebuilds a runtime.
+- **Not changed:** the values the child receives. The manifest
+  expansion and the compiled `MCPClientConfig.env` carry exactly the
+  same values as before, and a variable the host resolved no value for
+  (`LISA_THREAD_REDACTION_PATTERNS` when the host has no custom
+  patterns) is still absent from the child rather than inherited from
+  a stale parent shell.
+- **In-process servers:** the in-process `lisa-thread` server resolved
+  its redaction policy from the ambient environment at connect time,
+  which is after the export window closes. It now takes the
+  host-resolved policy through the compiled config, matching how it
+  already received `LISA_THREAD_DIR`, `LISA_USER_SLUG` and
+  `LISA_TIMEZONE`. Without that, dropping the ambient export would
+  have silently disabled redaction for the in-process server.
+- **Tests:** the runtime suite now has an autouse environment
+  hermeticity guard that restores `os.environ` after every test and
+  fails the test that leaked, mirroring the existing `kernel` and `sdk`
+  settings guards. The in-tree workaround that defensively deleted the
+  leaked variables in `runtime/tests/test_replay_budget_wiring.py` is
+  gone.
+- **Regression tests:**
+  `runtime/tests/test_mcp_pool_env_propagation.py`
+  (`test_compile_mcp_configs_leaves_os_environ_unchanged`,
+  `test_compile_mcp_configs_restores_preexisting_env_values`),
+  `mcp_server/src/mcp_server/thread/tests/test_thread_server.py`
+  (`test_thread_read_range_redaction_uses_explicit_values_over_env`).
+
 ## [0.1.1] — 2026-10-20
 
 ### Fixed

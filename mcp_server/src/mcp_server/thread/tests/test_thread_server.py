@@ -10,6 +10,7 @@ covered by the SDK-level ``sdk/tests/test_thread_search.py`` and
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
@@ -596,3 +597,48 @@ async def test_thread_read_range_redaction_disabled_via_env(
     )
     data = json.loads(_tool_text(result))["entries"]
     assert "stuck in default for 6 iterations (cap)" in data[0]["response_text"]
+
+
+@pytest.mark.asyncio
+async def test_thread_read_range_redaction_uses_explicit_values_over_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The in-process path takes the redaction contract from the host.
+
+    The host resolves the redaction policy and passes it through the
+    compiled config; the in-process server must use those values rather
+    than reading the ambient environment. A stale ambient value (here
+    "disabled") would otherwise silently turn redaction off for the
+    in-process server while the subprocess server still redacted.
+    """
+    from mcp_server.thread.server import _init, mcp
+
+    monkeypatch.setenv("LISA_THREAD_REDACTION_ENABLED", "0")
+    monkeypatch.setenv("LISA_THREAD_REDACTION_PATTERNS", "stale-ambient-pattern")
+
+    _init(
+        Namespace(
+            data_dir=str(tmp_path),
+            thread_dir=str(tmp_path / "threads"),
+            user_slug="tester",
+            thread_redaction_enabled="1",
+            thread_redaction_patterns="",
+        )
+    )
+
+    thread_path = tmp_path / "threads" / "tester"
+    _write_active_entry(
+        thread_path,
+        query="q",
+        response_text="stuck in default for 6 iterations (cap).",
+    )
+
+    result = await mcp.call_tool(
+        "thread_read_range",
+        {"start_turn": 0, "end_turn": 999},
+    )
+    data = json.loads(_tool_text(result))["entries"]
+    # The host-resolved policy (enabled, framework defaults) applied —
+    # the ambient "disabled" value did not.
+    assert "stuck in default for 6 iterations (cap)" not in data[0]["response_text"]

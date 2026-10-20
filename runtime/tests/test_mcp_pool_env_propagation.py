@@ -102,12 +102,16 @@ async def test_compile_mcp_configs_overrides_empty_lisa_user_slug_env(
     monkeypatch.setenv("LISA_TIMEZONE", "")
     _stub_discovery(monkeypatch)
 
-    mcp_pool.compile_mcp_configs(runtime)
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert os.environ["LISA_USER_SLUG"] == "testing"
-    assert os.environ["LISA_THREAD_DIR"] == str(runtime.config.resolved_thread_dir)
-    assert os.environ["FRAMEWORK_ROOT"]
-    assert os.environ["LISA_TIMEZONE"] == runtime.config.timezone
+    # The host's resolved values reach the compiled configs (the expansion
+    # of ${LISA_USER_SLUG} into cli_args and the child environment), and
+    # the polluted shell values never survive into them.
+    env = {config.server_id: (config.env or {}) for config in [*warm, *cold]}
+    assert all(value == "testing" for value in [env["lisa-thread"]["LISA_USER_SLUG"]])
+    assert env["lisa-thread"]["LISA_THREAD_DIR"] == str(runtime.config.resolved_thread_dir)
+    assert env["lisa-thread"]["FRAMEWORK_ROOT"]
+    assert env["lisa-thread"]["LISA_TIMEZONE"] == runtime.config.timezone
 
 
 @pytest.mark.asyncio
@@ -125,10 +129,11 @@ async def test_compile_mcp_configs_skips_thread_dir_env_when_no_thread(
     monkeypatch.delenv("LISA_USER_SLUG", raising=False)
     _stub_discovery(monkeypatch)
 
-    mcp_pool.compile_mcp_configs(runtime)
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert "LISA_THREAD_DIR" not in os.environ
-    assert os.environ["LISA_USER_SLUG"] == "testing"
+    env = {config.server_id: (config.env or {}) for config in [*warm, *cold]}
+    assert "LISA_THREAD_DIR" not in env["lisa-thread"]
+    assert env["lisa-thread"]["LISA_USER_SLUG"] == "testing"
 
 
 @pytest.mark.asyncio
@@ -156,12 +161,13 @@ async def test_compile_mcp_configs_exports_thread_redaction_env(
     runtime = _make_runtime(tmp_path, user_slug="testing")
     _stub_discovery(monkeypatch)
 
-    mcp_pool.compile_mcp_configs(runtime)
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
 
     # Default config: enabled with no custom patterns → "1" and the
-    # patterns var is popped (server falls back to DEFAULT_REDACTION_PATTERNS).
-    assert os.environ["LISA_THREAD_REDACTION_ENABLED"] == "1"
-    assert "LISA_THREAD_REDACTION_PATTERNS" not in os.environ
+    # patterns var is absent (server falls back to DEFAULT_REDACTION_PATTERNS).
+    env = {config.server_id: (config.env or {}) for config in [*warm, *cold]}
+    assert env["lisa-thread"]["LISA_THREAD_REDACTION_ENABLED"] == "1"
+    assert "LISA_THREAD_REDACTION_PATTERNS" not in env["lisa-thread"]
 
 
 @pytest.mark.asyncio
@@ -183,8 +189,58 @@ async def test_compile_mcp_configs_exports_custom_redaction_patterns(
     )
     _stub_discovery(monkeypatch)
 
-    mcp_pool.compile_mcp_configs(runtime)
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
 
+    env = {config.server_id: (config.env or {}) for config in [*warm, *cold]}
     assert (
-        os.environ["LISA_THREAD_REDACTION_PATTERNS"] == "leaked_secret_\\d+\nstale_warning[^\\n]*"
+        env["lisa-thread"]["LISA_THREAD_REDACTION_PATTERNS"]
+        == "leaked_secret_\\d+\nstale_warning[^\\n]*"
     )
+
+
+@pytest.mark.asyncio
+async def test_compile_mcp_configs_leaves_os_environ_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``compile_mcp_configs`` must not mutate the ambient environment.
+
+    Regression test for Lisa-Harness/lisa#3. The export exists so the
+    manifest's ``${VAR}`` references expand and the child process
+    inherits the host's resolved values — not so the host process keeps
+    them. Leaving them behind made every later ``HostConfig.from_env()``
+    in the same process resolve ``thread_dir``, ``user_slug``,
+    ``timezone`` and thread-redaction from the previous runtime's
+    values, which made the test suite order-dependent.
+    """
+    runtime = _make_runtime(tmp_path, user_slug="testing")
+    _stub_discovery(monkeypatch)
+
+    before = dict(os.environ)
+    mcp_pool.compile_mcp_configs(runtime)
+    after = dict(os.environ)
+
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_compile_mcp_configs_restores_preexisting_env_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A pre-existing env value survives compilation unchanged.
+
+    The export is scoped, not destructive: a var that was already set
+    before the call is restored to its prior value afterwards, not
+    dropped and not overwritten with the host's value.
+    """
+    monkeypatch.setenv("LISA_TIMEZONE", "America/New_York")
+    runtime = _make_runtime(tmp_path, user_slug="testing")
+    _stub_discovery(monkeypatch)
+
+    before = dict(os.environ)
+    mcp_pool.compile_mcp_configs(runtime)
+    after = dict(os.environ)
+
+    assert after == before
+    assert after["LISA_TIMEZONE"] == "America/New_York"

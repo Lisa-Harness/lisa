@@ -66,7 +66,11 @@ _REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
 _REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
 
 
-def _resolve_redaction_policy() -> ThreadRedactionPolicy | None:
+def _resolve_redaction_policy(
+    *,
+    enabled_value: str | None = None,
+    patterns_value: str | None = None,
+) -> ThreadRedactionPolicy | None:
     """Resolve the redaction policy from the environment contract.
 
     The store's own redaction only covers ``build_recent_excerpt`` /
@@ -78,11 +82,21 @@ def _resolve_redaction_policy() -> ThreadRedactionPolicy | None:
     those patterns only (hard cutover, no merge — same contract as the
     host config); ``none`` or ``LISA_THREAD_REDACTION_ENABLED=0`` → no
     redaction (``None``).
+
+    ``enabled_value`` / ``patterns_value`` carry the values the host
+    resolved and passed through the compiled config, so an in-process
+    server does not read the ambient environment. When ``enabled_value``
+    is ``None`` the values are read from the environment instead — the
+    subprocess path, where the child's own environment carries them.
     """
-    enabled = os.getenv(_REDACTION_ENABLED_ENV, "").strip().lower()
+    if enabled_value is None:
+        enabled = os.getenv(_REDACTION_ENABLED_ENV, "").strip().lower()
+        raw = os.getenv(_REDACTION_PATTERNS_ENV, "").strip()
+    else:
+        enabled = enabled_value.strip().lower()
+        raw = (patterns_value or "").strip()
     if enabled in {"0", "false", "no", "off"}:
         return None
-    raw = os.getenv(_REDACTION_PATTERNS_ENV, "").strip()
     if raw.lower() == "none":
         return None
     if raw:
@@ -94,7 +108,12 @@ def _resolve_redaction_policy() -> ThreadRedactionPolicy | None:
     return ThreadRedactionPolicy.from_patterns(patterns)
 
 
-def _build_thread_store(base: Path) -> tuple[ThreadStore, ThreadRedactionPolicy | None]:
+def _build_thread_store(
+    base: Path,
+    *,
+    enabled_value: str | None = None,
+    patterns_value: str | None = None,
+) -> tuple[ThreadStore, ThreadRedactionPolicy | None]:
     """Build the ``(store, redaction_policy)`` pair from the env contract.
 
     Single constructor for every store this server builds (lifespan, CLI
@@ -103,7 +122,10 @@ def _build_thread_store(base: Path) -> tuple[ThreadStore, ThreadRedactionPolicy 
     returned policy for the server-side projection of raw ``load_range``
     / ``load_recent`` results.
     """
-    policy = _resolve_redaction_policy()
+    policy = _resolve_redaction_policy(
+        enabled_value=enabled_value,
+        patterns_value=patterns_value,
+    )
     if policy is None:
         return ThreadStore(base), None
     return ThreadStore(base, redaction=policy), policy
@@ -168,6 +190,8 @@ def _resolve_deps(ctx: Context[Any, Any] | None) -> ThreadDeps:
 class _ThreadConfig:
     thread_dir: Path = Path()
     user_slug: str = ""
+    redaction_enabled: str | None = None
+    redaction_patterns: str | None = None
 
 
 _cfg = _ThreadConfig()
@@ -177,7 +201,11 @@ _cfg = _ThreadConfig()
 async def _lifespan(_app: MCPServer) -> AsyncIterator[ThreadDeps]:
     """Build the ThreadStore from the resolved CLI config and yield deps."""
     base = _cfg.thread_dir / _cfg.user_slug if _cfg.user_slug else _cfg.thread_dir
-    store, policy = _build_thread_store(base)
+    store, policy = _build_thread_store(
+        base,
+        enabled_value=_cfg.redaction_enabled,
+        patterns_value=_cfg.redaction_patterns,
+    )
     deps = ThreadDeps(store=store, redaction=policy)
     set_deps_for_test(deps)
     yield deps
@@ -468,8 +496,17 @@ def _init(args: Any) -> None:
     user_slug = getattr(args, "user_slug", "") or ""
     _cfg.thread_dir = Path(thread_dir) if thread_dir else data_dir / DATA_DIR / "threads"
     _cfg.user_slug = user_slug
+    # The in-process path hands the host-resolved redaction contract over
+    # the compiled config; the subprocess path leaves these unset so the
+    # server reads them from its own environment.
+    _cfg.redaction_enabled = getattr(args, "thread_redaction_enabled", None)
+    _cfg.redaction_patterns = getattr(args, "thread_redaction_patterns", None)
     base = _cfg.thread_dir / user_slug if user_slug else _cfg.thread_dir
-    store, policy = _build_thread_store(base)
+    store, policy = _build_thread_store(
+        base,
+        enabled_value=_cfg.redaction_enabled,
+        patterns_value=_cfg.redaction_patterns,
+    )
     set_deps_for_test(ThreadDeps(store=store, redaction=policy))
 
 

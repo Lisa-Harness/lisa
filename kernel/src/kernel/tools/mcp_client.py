@@ -1203,6 +1203,10 @@ class MCPToolPool:
             readonly=self._in_process_readonly(config),
             thread_dir=self._in_process_env(config, "LISA_THREAD_DIR"),
             user_slug=self._in_process_env(config, "LISA_USER_SLUG"),
+            thread_redaction_enabled=self._in_process_env(config, "LISA_THREAD_REDACTION_ENABLED"),
+            thread_redaction_patterns=self._in_process_env(
+                config, "LISA_THREAD_REDACTION_PATTERNS"
+            ),
             backend=self._in_process_env(config, "LISA_GUARD_BACKEND", "passthrough"),
             timezone=self._in_process_env(config, "LISA_TIMEZONE", "UTC"),
             embedding_model=self._in_process_env(config, "LISA_EMBEDDING_MODEL"),

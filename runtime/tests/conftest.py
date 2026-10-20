@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from kernel.ipsar_fsm import (
@@ -53,6 +54,66 @@ def _isolate_default_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "LISA_USER_ID",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _environ_hermeticity_guard() -> Any:
+    """Restore ``os.environ`` after every test and fail on a leak.
+
+    The runtime's own autouse guards cover ``kernel.config.settings`` and
+    ``sdk.config.settings``; the process environment had no equivalent,
+    so a test that wrote to ``os.environ`` directly (bypassing
+    ``monkeypatch``) leaked its values into every later test. The
+    runtime's MCP export was one such writer (Lisa-Harness/lisa#3): the
+    exported values outlived the compile call, and the next test's
+    ``HostConfig.from_env()`` resolved its thread dir, user slug,
+    timezone and thread-redaction from the previous runtime's values
+    instead of its own.
+
+    This guard snapshots the environment before the test and restores it
+    afterwards, so a leak cannot reach the next test. It fails the test
+    that caused the leak rather than letting the damage surface later
+    as an unrelated order-dependent failure.
+
+    Only the runtime-state variables are compared: the suite legitimately
+    mutates a few others (``LISA_RESTART_RESUME_MESSAGE``), and
+    ``PYTEST_CURRENT_TEST`` changes on its own as pytest advances
+    through the test's own setup/call/teardown phases.
+    """
+    watched = (
+        "FRAMEWORK_ROOT",
+        "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES",
+        "LISA_DATA_DIR",
+        "LISA_PACKS_VENV",
+        "LISA_PROFILE",
+        "LISA_SESSION_CONTEXT_PATH",
+        "LISA_THREAD_DIR",
+        "LISA_THREAD_REDACTION_ENABLED",
+        "LISA_THREAD_REDACTION_PATTERNS",
+        "LISA_TIMEZONE",
+        "LISA_USER_ID",
+        "LISA_USER_SLUG",
+    )
+    before = {name: os.environ.get(name) for name in watched}
+    yield
+
+    after = {name: os.environ.get(name) for name in watched}
+    leaked = {name: (before[name], after[name]) for name in watched if before[name] != after[name]}
+    for name, prior in before.items():
+        if prior is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prior
+    if leaked:
+        diff = "\n".join(
+            f"  {name}: before={old!r} after={new!r}" for name, (old, new) in sorted(leaked.items())
+        )
+        raise AssertionError(
+            "Test mutated the process environment without restoring it.\n"
+            "The suite requires hermeticity; use monkeypatch for env changes "
+            "so they are undone at teardown.\n"
+            f"Leaked variables:\n{diff}"
+        )
 
 
 # search, markdown, and letta migrated to ../../lisa_packs/<name>

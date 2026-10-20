@@ -26,6 +26,8 @@ import dataclasses
 import logging
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -580,8 +582,8 @@ def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
     return [*warm_configs, *cold_configs]
 
 
-def _export_mcp_environment(runtime: HostRuntime, workspace_root: str) -> None:
-    """Export the MCP manifest-expansion environment for subprocess servers.
+def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str | None]:
+    """Build the MCP manifest-expansion environment for subprocess servers.
 
     Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
     the manifest's path-like fields (venv_dir, command_path, etc.).
@@ -595,14 +597,28 @@ def _export_mcp_environment(runtime: HostRuntime, workspace_root: str) -> None:
     ``<data_dir>/threads`` instead of ``<data_dir>/threads/<slug>``
     and return ``[]``). The host is the authoritative source for these
     values once it has resolved them from CLI flags and config.
+
+    Returns the exported values as a mapping rather than writing them to
+    ``os.environ``. The caller scopes them to the manifest-load and
+    compile window (see :func:`_exported_mcp_environment`) so the
+    process environment is unchanged afterwards.
+
+    A ``None`` value means the variable must be ABSENT inside the scope
+    — the host resolved no value for it, so a stale parent-shell value
+    must not be inherited by the child. ``LISA_THREAD_REDACTION_PATTERNS``
+    is the one such case: with no configured patterns the server falls
+    back to the framework defaults, and a stale shell value would
+    silently replace them.
     """
     config = runtime.config
-    os.environ["FRAMEWORK_ROOT"] = workspace_root
-    os.environ["LISA_TIMEZONE"] = config.timezone
+    exported: dict[str, str | None] = {
+        "FRAMEWORK_ROOT": workspace_root,
+        "LISA_TIMEZONE": config.timezone,
+    }
     if not config.no_thread:
-        os.environ["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
+        exported["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
     if config.user_slug:
-        os.environ["LISA_USER_SLUG"] = config.user_slug
+        exported["LISA_USER_SLUG"] = config.user_slug
     # Thread-read redaction: the same env contract ``runtime.config`` resolves
     # for the host's in-process excerpt/manifest/search reads. The read-only
     # lisa-thread subprocess applies the same policy to ``thread_read_range``
@@ -614,11 +630,57 @@ def _export_mcp_environment(runtime: HostRuntime, workspace_root: str) -> None:
     # an unredacted store; unset patterns fall back to the framework
     # defaults inside the server. Unconditional assignment (never
     # ``setdefault``) per the parent-shell pollution note above.
-    os.environ["LISA_THREAD_REDACTION_ENABLED"] = "1" if config.thread_redaction_enabled else "0"
+    exported["LISA_THREAD_REDACTION_ENABLED"] = "1" if config.thread_redaction_enabled else "0"
     if config.thread_redaction_enabled and config.thread_redaction_patterns:
-        os.environ["LISA_THREAD_REDACTION_PATTERNS"] = "\n".join(config.thread_redaction_patterns)
+        exported["LISA_THREAD_REDACTION_PATTERNS"] = "\n".join(config.thread_redaction_patterns)
     else:
-        os.environ.pop("LISA_THREAD_REDACTION_PATTERNS", None)
+        exported["LISA_THREAD_REDACTION_PATTERNS"] = None
+    return exported
+
+
+@contextmanager
+def _exported_mcp_environment(runtime: HostRuntime, workspace_root: str) -> Iterator[None]:
+    """Scope the MCP manifest-expansion environment to the compile window.
+
+    The exported values are needed in two places, and only inside this
+    window:
+
+    1. Manifest load — ``load_mcp_server_manifest`` expands
+       ``${FRAMEWORK_ROOT}`` / ``${LISA_THREAD_DIR}`` /
+       ``${LISA_USER_SLUG}`` into ``cli_args`` and ``venv_dir``.
+    2. Compile — ``compile_env`` snapshots ``os.environ`` into the
+       spawned server's environment, and the stdio transport replaces the
+       child's environment with that snapshot.
+
+    Writing them to the ambient environment and leaving them there made
+    the host process permanently carry the values it resolved at startup
+    (Lisa-Harness/lisa#3). Any later ``HostConfig.from_env()`` in the
+    same process then resolved ``thread_dir``, ``user_slug``,
+    ``timezone`` and thread-redaction from the stale startup values
+    instead of its own inputs — an order-dependent leak across the
+    test suite and across any long-lived host that rebuilds a runtime.
+
+    This context manager writes the values for the duration of the
+    window and restores the previous state on exit: a var that was
+    absent before is removed again, and a var that was present is
+    restored to its prior value. The export therefore stays invisible
+    to everything outside the window.
+    """
+    exported = _mcp_environment(runtime, workspace_root)
+    previous: dict[str, str | None] = {name: os.environ.get(name) for name in exported}
+    for name, value in exported.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    try:
+        yield
+    finally:
+        for name, prior in previous.items():
+            if prior is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = prior
 
 
 def _resolve_session_capability_preferences(
@@ -914,35 +976,37 @@ def compile_mcp_configs(
     if session_cap_preferences:
         selected_capability_providers = session_cap_preferences
 
-    _export_mcp_environment(runtime, workspace_root)
-
     registry = MCPServerRegistry()
 
-    # Framework-owned (first-party) + user-owned servers.
-    memory_config = _register_host_and_user_servers(
-        registry, host_manifest_path, user_manifest_path
-    )
+    # The exported values are needed for manifest expansion and for the
+    # compiled child environment; both happen inside this scope, and the
+    # ambient environment is restored on exit.
+    with _exported_mcp_environment(runtime, workspace_root):
+        # Framework-owned (first-party) + user-owned servers.
+        memory_config = _register_host_and_user_servers(
+            registry, host_manifest_path, user_manifest_path
+        )
 
-    excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
-    if user_manifest_path is not None and user_manifest_path.exists():
-        excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
-    excluded_pack_servers |= session_exclude_servers
+        excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+        if user_manifest_path is not None and user_manifest_path.exists():
+            excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
+        excluded_pack_servers |= session_exclude_servers
 
-    memory_candidates: list[MemoryProviderCandidate] = []
-    _register_pack_servers(registry, roots, excluded_pack_servers, memory_candidates)
+        memory_candidates: list[MemoryProviderCandidate] = []
+        _register_pack_servers(registry, roots, excluded_pack_servers, memory_candidates)
 
-    selected_config, memory_owner_slug = _select_memory_owner(
-        memory_candidates, selected_capability_providers
-    )
-    if selected_config is not None:
-        memory_config = selected_config
+        selected_config, memory_owner_slug = _select_memory_owner(
+            memory_candidates, selected_capability_providers
+        )
+        if selected_config is not None:
+            memory_config = selected_config
 
-    runtime.services.memory_config = memory_config
-    runtime.services.memory_config_pack_slug = memory_owner_slug
+        runtime.services.memory_config = memory_config
+        runtime.services.memory_config_pack_slug = memory_owner_slug
 
-    compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
-    compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
-    compiled = _rewrite_in_process_configs(runtime, compiled)
+        compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+        compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
+        compiled = _rewrite_in_process_configs(runtime, compiled)
 
     warm = [c for c in compiled if c.warm]
     cold = [c for c in compiled if not c.warm]
@@ -963,7 +1027,6 @@ def compile_proxy_configs(  # noqa: C901
     if discovery is None:
         discovery = discover_framework(runtime, seed_lock=False)
     workspace_root = str(FRAMEWORK_ROOT)
-    os.environ["FRAMEWORK_ROOT"] = workspace_root
     registry = ProxyServerRegistry()
     plan_proxies = runtime.session_plan.manifest.resources.proxies
     included = {entry.strip().lower() for entry in plan_proxies.include if entry.strip()}
@@ -995,29 +1058,36 @@ def compile_proxy_configs(  # noqa: C901
             logger.warning("Skipping invalid %s proxy manifest at %s", source, path, exc_info=True)
             return []
 
-    for spec in load(discovery.host_manifest_path, source="host"):
-        add(spec, proxy_id=spec.proxy_id)
-    if discovery.user_manifest_path is not None and discovery.user_manifest_path.exists():
-        for spec in load(discovery.user_manifest_path, source="user"):
+    with _exported_mcp_environment(runtime, workspace_root):
+        # FRAMEWORK_ROOT is needed for ${FRAMEWORK_ROOT} expansion in the
+        # proxy manifests and for the compiled proxy environment; scope it
+        # to the load/compile window so the ambient environment is left
+        # unchanged.
+        for spec in load(discovery.host_manifest_path, source="host"):
             add(spec, proxy_id=spec.proxy_id)
+        if discovery.user_manifest_path is not None and discovery.user_manifest_path.exists():
+            for spec in load(discovery.user_manifest_path, source="user"):
+                add(spec, proxy_id=spec.proxy_id)
 
-    used_pack_slugs: set[str] = set()
-    for root in discovery.roots:
-        manifest_path = root / "mcp_servers.yaml"
-        if not manifest_path.exists():
-            continue
-        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
-        for spec in load(manifest_path, source="pack"):
-            add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
+        used_pack_slugs: set[str] = set()
+        for root in discovery.roots:
+            manifest_path = root / "mcp_servers.yaml"
+            if not manifest_path.exists():
+                continue
+            pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
+            for spec in load(manifest_path, source="pack"):
+                add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
 
-    providers = sorted({provider for spec in registry.all_specs() for provider in spec.providers})
-    provider_base_urls = direct_provider_base_urls(runtime, providers)
+        providers = sorted(
+            {provider for spec in registry.all_specs() for provider in spec.providers}
+        )
+        provider_base_urls = direct_provider_base_urls(runtime, providers)
 
-    return compile_proxy_registry(
-        registry,
-        workspace_root=workspace_root,
-        provider_base_urls=provider_base_urls,
-    )
+        return compile_proxy_registry(
+            registry,
+            workspace_root=workspace_root,
+            provider_base_urls=provider_base_urls,
+        )
 
 
 # ── Pack slug + policy helpers ───────────────────────────────────────

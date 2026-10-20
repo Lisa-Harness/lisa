@@ -17,26 +17,6 @@ from runtime.testing import build_test_runtime
 from runtime.turn_hooks_builder import build_turn_hooks
 
 
-@pytest.fixture(autouse=True)
-def _clean_thread_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Del env vars that earlier tests (e.g. ``compile_mcp_configs``'s
-    module-level exports) leak into the process; ``HostConfig.from_env``
-    would otherwise resolve our thread_dir/redaction from a polluter's
-    tmp_path instead of the fixture's data_dir."""
-    for env_name in (
-        "LISA_THREAD_DIR",
-        "LISA_USER_SLUG",
-        "LISA_DATA_DIR",
-        "LISA_PROFILE",
-        "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES",
-        "LISA_THREAD_REDACTION_ENABLED",
-        "LISA_THREAD_REDACTION_PATTERNS",
-        "LISA_SESSION_CONTEXT_PATH",
-        "LISA_TIMEZONE",
-    ):
-        monkeypatch.delenv(env_name, raising=False)
-
-
 def _seed_open_task(thread_path: Path, n_results: int = 6, result_size: int = 6000) -> None:
     """Append one paused turn whose six sub-threshold results accumulate.
 
