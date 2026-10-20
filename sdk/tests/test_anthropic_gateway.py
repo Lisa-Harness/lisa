@@ -997,7 +997,7 @@ def test_repair_rejects_an_integer_beyond_the_float64_range() -> None:
     prevent.
     """
     assert _repair_openai_tool_arguments('{"x": %s}' % ("1" * 310)) == "{}"
-    assert _repair_openai_tool_arguments('{"x": %s}' % ("1" * 309)) == "{}"
+    assert _repair_openai_tool_arguments('{"x": %s}' % ("1" * 400)) == "{}"
 
 
 def test_repair_keeps_an_integer_within_the_float64_range() -> None:
@@ -1023,3 +1023,42 @@ def test_coerce_tool_arguments_object_rejects_an_oversized_integer() -> None:
     """The shared coercion rejects an integer beyond the float64 range."""
 
     assert _coerce_tool_arguments_object('{"x": %s}' % ("1" * 310)) == {}
+
+
+def test_repair_keeps_a_large_64_bit_integer() -> None:
+    """A 64-bit id is a legitimate tool argument and must survive.
+
+    The backend's decoder is float64-based, so it rejects an integer
+    beyond the float64 range. It does NOT reject a 64-bit id: the
+    boundary was observed live at 309 versus 310 digits. Rejecting
+    anything above 2**53 silently replaced real arguments — a snowflake
+    id, a nanosecond timestamp — with an empty object.
+    """
+    for value in (
+        9007199254740993,
+        1234567890123456789,
+        1750000000000000000,
+        18446744073709551615,
+    ):
+        payload = f'{{"id": {value}}}'
+        assert _repair_openai_tool_arguments(payload) == payload
+
+
+def test_repair_keeps_an_integer_below_the_float64_boundary() -> None:
+    """A 309-digit integer is still inside the float64 range."""
+
+    digits = "1" * 309
+    payload = f'{{"id": {digits}}}'
+    assert _repair_openai_tool_arguments(payload) == payload
+
+
+def test_repair_degrades_a_too_deeply_nested_payload() -> None:
+    """A payload too deep for the JSON parser is repaired, not raised.
+
+    The request builders run OUTSIDE the gateways' ``try`` blocks, so an
+    escaping ``RecursionError`` reached the host as an unhandled error
+    instead of a provider error.
+    """
+    deep = '{"a":' * 20000 + "1" + "}" * 20000
+    assert _repair_openai_tool_arguments(deep) == "{}"
+    assert _coerce_tool_arguments_object(deep) == {}

@@ -1540,3 +1540,94 @@ def test_aggregate_keeps_one_call_whole_when_the_id_arrives_late() -> None:
     assert call["id"] == "call_a"
     assert call["function"]["name"] == "tool_a"
     assert json.loads(call["function"]["arguments"]) == {"x": 1}
+
+
+def test_aggregate_separates_calls_at_a_shared_index_when_the_first_has_no_id() -> None:
+    """A call with an id never merges into an id-less call at the same index.
+
+    This is the shape the 2026-10-19 incident actually had: Ollama
+    streams every parallel call at ``index: 0``. When the first call
+    carried no id and the second carried one, adopting the occupant
+    merged them into one call named ``list_filesread_file`` with two
+    JSON objects end to end — the glued payload the backend rejects with
+    ``400 invalid tool call arguments``.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "function": {"name": "list_files", "arguments": '{"path":"."}'}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_b",
+                    "function": {"name": "read_file", "arguments": '{"path":"a.md"}'},
+                }
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2, "a call with an id must not merge into an id-less call"
+    assert result.tool_calls[0]["function"]["name"] == "list_files"
+    assert result.tool_calls[1]["id"] == "call_b"
+    assert result.tool_calls[1]["function"]["name"] == "read_file"
+
+
+def test_aggregate_keeps_one_call_whole_without_an_index() -> None:
+    """A continuation with neither an id nor an index continues its call.
+
+    The OpenAI-compatible gateway always supplies an index, but
+    ``StreamedChunk.tool_call_deltas`` does not require one. Treating a
+    missing index as a new call split the call in two, leaving one entry
+    with an empty id and one with an empty name — neither parseable, and
+    the empty name produced a 500 on replay.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"id": "call_a", "function": {"name": "tool_a", "arguments": '{"x":'}}
+            ]
+        ),
+        StreamedChunk(tool_call_deltas=[{"function": {"arguments": "1}"}}]),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call["id"] == "call_a"
+    assert call["function"]["name"] == "tool_a"
+    assert json.loads(call["function"]["arguments"]) == {"x": 1}
+
+
+def test_aggregate_a_negative_backend_index_keeps_its_own_call() -> None:
+    """A negative backend index cannot land on a stitcher-allocated slot.
+
+    The stitcher allocates slots of its own for calls that share an
+    index. Those slots must be unreachable by any index a backend can
+    send, including a negative one.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_a", "function": {"name": "a_tool", "arguments": "{}"}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_b", "function": {"name": "b_tool", "arguments": "{}"}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": -1, "id": "call_c", "function": {"name": "c_tool", "arguments": "{}"}}
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert [call["id"] for call in result.tool_calls] == ["call_a", "call_b", "call_c"]
+    assert [call["function"]["name"] for call in result.tool_calls] == [
+        "a_tool",
+        "b_tool",
+        "c_tool",
+    ]

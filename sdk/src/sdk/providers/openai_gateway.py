@@ -1249,10 +1249,6 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 #: answered ``400 invalid tool call arguments``.
 _MAX_FINITE_FLOAT = 1.7976931348623157e308
 
-#: The largest integer a float64 represents exactly. Beyond it an
-#: integer loses precision, which a strict decoder may also reject.
-_MAX_EXACT_INT = 2**53
-
 
 def _reject_non_finite_json_constant(_name: str) -> Any:
     """Reject the non-standard JSON constants Python accepts by default.
@@ -1275,11 +1271,16 @@ def _number_is_transport_safe(value: Any) -> bool:
     310-digit integer happily. A strict backend decodes JSON numbers as
     float64 and rejects anything beyond that range with ``400 invalid
     tool call arguments``.
+
+    The bound is the float64 range, not the exactly-representable range:
+    a 64-bit id such as a snowflake or a nanosecond timestamp is a
+    legitimate tool argument, and the backend accepts it. Rejecting
+    those would silently replace a real argument with an empty object.
     """
     if isinstance(value, bool):
         return True
     if isinstance(value, int):
-        return abs(value) <= _MAX_EXACT_INT
+        return abs(value) <= _MAX_FINITE_FLOAT
     if isinstance(value, float):
         return -_MAX_FINITE_FLOAT <= value <= _MAX_FINITE_FLOAT
     return True
@@ -1308,20 +1309,33 @@ def _payload_is_transport_safe(payload: Any) -> bool:
     Two encoders stand between the payload and the socket, and the
     validation must model both: the backend's float64-based decoder and
     the transport's UTF-8 encoder.
+
+    The walk is iterative on purpose. ``json.loads`` and ``json.dumps``
+    are C-implemented and tolerate far deeper nesting than Python's own
+    recursion limit; a recursive walker here would become the narrowest
+    limit in the chain and raise an uncaught ``RecursionError`` out of
+    the gateway — a crash rather than a repair.
     """
-    if isinstance(payload, bool) or payload is None:
-        return True
-    if isinstance(payload, (int, float)):
-        return _number_is_transport_safe(payload)
-    if isinstance(payload, str):
-        return _string_is_transport_safe(payload)
-    if isinstance(payload, dict):
-        return all(
-            _payload_is_transport_safe(key) and _payload_is_transport_safe(value)
-            for key, value in payload.items()
-        )
-    if isinstance(payload, list):
-        return all(_payload_is_transport_safe(item) for item in payload)
+    stack: list[Any] = [payload]
+    while stack:
+        current = stack.pop()
+        if current is None or isinstance(current, bool):
+            continue
+        if isinstance(current, (int, float)):
+            if not _number_is_transport_safe(current):
+                return False
+            continue
+        if isinstance(current, str):
+            if not _string_is_transport_safe(current):
+                return False
+            continue
+        if isinstance(current, dict):
+            for key, value in current.items():
+                stack.append(key)
+                stack.append(value)
+            continue
+        if isinstance(current, list):
+            stack.extend(current)
     return True
 
 
@@ -1332,13 +1346,19 @@ def _parse_tool_arguments_object(raw_arguments: Any) -> dict[str, Any] | None:
     it decodes to a JSON object, carries no non-finite float, and
     survives the backend's float64 decoder and the transport's UTF-8
     encoder.
+
+    A payload too deeply nested for the JSON parser raises
+    ``RecursionError``; it is caught here so the call is repaired rather
+    than crashing the gateway — the request builders run OUTSIDE the
+    gateways' ``try`` blocks, so an escaping exception would reach the
+    host as an unhandled error instead of a provider error.
     """
     if isinstance(raw_arguments, dict):
         candidate: Any = raw_arguments
     elif isinstance(raw_arguments, str):
         try:
             candidate = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return None
     else:
         return None
@@ -1346,7 +1366,7 @@ def _parse_tool_arguments_object(raw_arguments: Any) -> dict[str, Any] | None:
         return None
     try:
         json.dumps(candidate, allow_nan=False)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if not _payload_is_transport_safe(candidate):
         return None
@@ -1368,8 +1388,6 @@ def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     kernel reads it as a legitimate "no parameters" call — the backend
     parses the string as JSON and an empty string is not JSON.
     """
-    if not isinstance(raw_arguments, str):
-        return True
     return _parse_tool_arguments_object(raw_arguments) is not None
 
 
