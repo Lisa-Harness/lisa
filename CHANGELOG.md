@@ -11,11 +11,16 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **What:** the kernel's streamed tool-call stitcher now identifies a call
   by its `id` rather than by the index it arrived on, so parallel calls
   that share an index stay separate, a call is never split by a repeated
-  id, and the slots the stitcher allocates cannot collide with a backend's
-  own indices. The OpenAI-compatible gateway repairs a tool call whose
-  arguments do not parse into the empty object before replaying it, so a
-  refused call cannot kill the turn that follows it. The Anthropic, Google
-  and Bedrock gateways coerce the same payloads through one shared helper.
+  id or by an id that arrives late, calls at distinct indices stay
+  separate even without an id, and the slots the stitcher allocates
+  cannot collide with a backend's own indices. The OpenAI-compatible
+  gateway repairs a tool call whose arguments do not parse into the empty
+  object before replaying it, so a refused call cannot kill the turn that
+  follows it. The Anthropic, Google and Bedrock gateways coerce the same
+  payloads through one shared helper. The repair validates against strict
+  JSON: it rejects the non-finite constants Python accepts, integers
+  beyond the float64 range a strict backend decodes with, and lone
+  surrogates the transport's UTF-8 encoder cannot write.
 - **Why:** the 2026-10-19 MiniMax M3.1 Flash turn failure. Ollama streams
   every parallel tool call with `index: 0` and distinguishes them only by
   `id`; stitching by `index` alone merged three calls into one named
@@ -30,7 +35,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_aggregate_keeps_fragments_of_one_call_together`,
   `test_aggregate_keeps_indexed_calls_with_distinct_indices_apart`,
   `test_aggregate_keeps_a_call_whole_when_the_id_repeats`,
-  `test_aggregate_synthetic_slot_does_not_collide_with_a_later_index`);
+  `test_aggregate_synthetic_slot_does_not_collide_with_a_later_index`,
+  `test_aggregate_separates_distinct_indices_without_ids`,
+  `test_aggregate_keeps_one_call_whole_when_the_id_arrives_late`);
   `sdk/tests/test_anthropic_gateway.py`
   (`test_normalize_repairs_unparseable_tool_call_arguments`,
   `test_normalize_repairs_length_cut_tool_call_arguments`,
@@ -44,7 +51,15 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_coerce_tool_arguments_object_keeps_a_valid_dict`,
   `test_anthropic_tool_use_input_is_always_an_object`,
   `test_normalize_repairs_the_flat_tool_call_shape`,
-  `test_responses_input_repairs_unparseable_tool_call_arguments`).
+  `test_responses_input_repairs_unparseable_tool_call_arguments`,
+  `test_repair_rejects_an_integer_beyond_the_float64_range`,
+  `test_repair_keeps_an_integer_within_the_float64_range`,
+  `test_repair_rejects_a_lone_surrogate`,
+  `test_coerce_tool_arguments_object_rejects_an_oversized_integer`);
+  `sdk/tests/test_google_gateway.py`
+  (`test_gemini_tool_call_args_are_coerced_to_an_object`);
+  `sdk/tests/test_bedrock_gateway.py`
+  (`test_bedrock_tool_call_args_are_coerced_to_an_object`).
 
 #### A recovered turn no longer reports a fabricated resource-budget exhaustion
 

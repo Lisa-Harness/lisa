@@ -366,3 +366,34 @@ def test_gateway_for_google_still_returns_gemini_gateway() -> None:
 
     provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("google") is GoogleGeminiGateway
+
+
+@pytest.mark.asyncio
+async def test_bedrock_tool_call_args_are_coerced_to_an_object() -> None:
+    """A payload that is not a usable JSON object never reaches Bedrock.
+
+    The three non-OpenAI gateways each parsed the arguments with their
+    own ``except json.JSONDecodeError`` handler, so a payload Python
+    accepts but a strict backend rejects (``NaN``) reached the wire and
+    crashed ``httpx`` before any request was made.
+    """
+    response = {"output": {"message": {"content": [{"text": "done"}]}}}
+    gateway, client = _gateway(response)
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_nan",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"x": NaN}'},
+                }
+            ],
+        },
+    ]
+    await gateway.complete(_request(list(messages)))
+    converse_messages = client.captured_kwargs["messages"]
+    tu = converse_messages[1]["content"][0]["toolUse"]
+    assert tu["input"] == {}

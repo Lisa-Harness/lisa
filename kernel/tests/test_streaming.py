@@ -1491,3 +1491,52 @@ def test_aggregate_synthetic_slot_does_not_collide_with_a_later_index() -> None:
     assert by_id["call_c"]["function"]["arguments"] == '{}{"w":4}', (
         "the continuation belongs to the call at its own index"
     )
+
+
+def test_aggregate_separates_distinct_indices_without_ids() -> None:
+    """Two calls at distinct indices stay two calls even without ids.
+
+    The gateway drops the ``id`` key when a backend sends an empty id, so
+    a call can arrive with an index and no id. Merging such a call into
+    whichever call started last reproduced the original 2026-10-19
+    incident: one tool call with a glued-together name and two JSON
+    objects end to end.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "tool_a", "arguments": '{"x":1}'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 1, "function": {"name": "tool_b", "arguments": '{"y":2}'}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2, "distinct indices must not be merged"
+    assert [call["function"]["name"] for call in result.tool_calls] == ["tool_a", "tool_b"]
+    assert json.loads(result.tool_calls[0]["function"]["arguments"]) == {"x": 1}
+    assert json.loads(result.tool_calls[1]["function"]["arguments"]) == {"y": 2}
+
+
+def test_aggregate_keeps_one_call_whole_when_the_id_arrives_late() -> None:
+    """An id that arrives on a later fragment names the call already staged.
+
+    The OpenAI streaming contract does not guarantee the id arrives on
+    the first fragment. When it arrives later, the call it names is the
+    one already staged at that index — treating it as a new call split
+    the call's arguments across two entries, one with an empty id and one
+    with an empty name, neither parseable.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "tool_a", "arguments": '{"x":'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "id": "call_a", "function": {"arguments": "1}"}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 1, "the id must adopt the staged call, not split it"
+    call = result.tool_calls[0]
+    assert call["id"] == "call_a"
+    assert call["function"]["name"] == "tool_a"
+    assert json.loads(call["function"]["arguments"]) == {"x": 1}

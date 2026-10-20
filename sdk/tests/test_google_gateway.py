@@ -478,3 +478,34 @@ def test_gateway_for_anthropic_still_returns_anthropic_gateway() -> None:
 
     provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("anthropic") is AnthropicGateway
+
+
+@pytest.mark.asyncio
+async def test_gemini_tool_call_args_are_coerced_to_an_object() -> None:
+    """A payload that is not a usable JSON object never reaches Gemini.
+
+    The three non-OpenAI gateways each parsed the arguments with their
+    own ``except json.JSONDecodeError`` handler, so a payload Python
+    accepts but a strict backend rejects (``NaN``) reached the wire and
+    crashed ``httpx`` before any request was made.
+    """
+    data = {"candidates": [{"content": {"parts": [{"text": "done"}]}}]}
+    gateway, client = _gateway(data)
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_nan",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"x": NaN}'},
+                }
+            ],
+        },
+    ]
+    await gateway.complete(_request(list(messages)))
+    contents = client.captured_json["contents"]
+    fc = contents[1]["parts"][0]["functionCall"]
+    assert fc["args"] == {}

@@ -1241,6 +1241,18 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 
 # ── Normalization helpers ────────────────────────────────────────────────
 
+#: The largest magnitude a float64 can hold. A strict backend decodes
+#: JSON numbers as float64, so an integer beyond this range is not
+#: representable and its decoder rejects it — Python's ``int`` is
+#: unbounded, so ``json`` accepts and re-emits it happily. The boundary
+#: was observed live: a 309-digit integer replayed, a 310-digit one
+#: answered ``400 invalid tool call arguments``.
+_MAX_FINITE_FLOAT = 1.7976931348623157e308
+
+#: The largest integer a float64 represents exactly. Beyond it an
+#: integer loses precision, which a strict decoder may also reject.
+_MAX_EXACT_INT = 2**53
+
 
 def _reject_non_finite_json_constant(_name: str) -> Any:
     """Reject the non-standard JSON constants Python accepts by default.
@@ -1254,6 +1266,91 @@ def _reject_non_finite_json_constant(_name: str) -> Any:
     """
 
     raise ValueError(f"non-finite JSON constant: {_name}")
+
+
+def _number_is_transport_safe(value: Any) -> bool:
+    """Return True when a JSON number survives a float64-based decoder.
+
+    Python's ``int`` is unbounded, so ``json`` accepts and re-emits a
+    310-digit integer happily. A strict backend decodes JSON numbers as
+    float64 and rejects anything beyond that range with ``400 invalid
+    tool call arguments``.
+    """
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int):
+        return abs(value) <= _MAX_EXACT_INT
+    if isinstance(value, float):
+        return -_MAX_FINITE_FLOAT <= value <= _MAX_FINITE_FLOAT
+    return True
+
+
+def _string_is_transport_safe(value: str) -> bool:
+    """Return True when a string survives the transport's UTF-8 encoder.
+
+    ``httpx`` encodes with ``ensure_ascii=False`` and then UTF-8 encodes
+    the result, so a lone surrogate — which a cut multi-byte character
+    can produce — raises ``UnicodeEncodeError`` before the request is
+    even made. A check that round-tripped with ``ensure_ascii=True``
+    would not see it, because that encoder escapes the surrogate back
+    into ASCII.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _payload_is_transport_safe(payload: Any) -> bool:
+    """Return True when a decoded payload survives the wire encoders.
+
+    Two encoders stand between the payload and the socket, and the
+    validation must model both: the backend's float64-based decoder and
+    the transport's UTF-8 encoder.
+    """
+    if isinstance(payload, bool) or payload is None:
+        return True
+    if isinstance(payload, (int, float)):
+        return _number_is_transport_safe(payload)
+    if isinstance(payload, str):
+        return _string_is_transport_safe(payload)
+    if isinstance(payload, dict):
+        return all(
+            _payload_is_transport_safe(key) and _payload_is_transport_safe(value)
+            for key, value in payload.items()
+        )
+    if isinstance(payload, list):
+        return all(_payload_is_transport_safe(item) for item in payload)
+    return True
+
+
+def _parse_tool_arguments_object(raw_arguments: Any) -> dict[str, Any] | None:
+    """Return a tool call's arguments as a dict, or None when unusable.
+
+    The single parse every gateway shares. A payload is usable only when
+    it decodes to a JSON object, carries no non-finite float, and
+    survives the backend's float64 decoder and the transport's UTF-8
+    encoder.
+    """
+    if isinstance(raw_arguments, dict):
+        candidate: Any = raw_arguments
+    elif isinstance(raw_arguments, str):
+        try:
+            candidate = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    else:
+        return None
+    if not isinstance(candidate, dict):
+        return None
+    try:
+        json.dumps(candidate, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    if not _payload_is_transport_safe(candidate):
+        return None
+    return candidate
 
 
 def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
@@ -1273,19 +1370,7 @@ def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     """
     if not isinstance(raw_arguments, str):
         return True
-    try:
-        parsed = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
-    except (json.JSONDecodeError, ValueError):
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    # An overflowing float parses to infinity without tripping
-    # ``parse_constant``; a round trip with ``allow_nan=False`` catches it.
-    try:
-        json.dumps(parsed, allow_nan=False)
-    except (TypeError, ValueError):
-        return False
-    return True
+    return _parse_tool_arguments_object(raw_arguments) is not None
 
 
 def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
@@ -1315,22 +1400,30 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
     an error; this only makes the REPLAY of that refusal survivable. The
     discarded payload is logged so the incident stays diagnosable.
     """
+    payload_type = type(raw_arguments).__name__
     if isinstance(raw_arguments, str):
         if _is_parseable_tool_arguments(raw_arguments):
             return raw_arguments
+        if not raw_arguments.strip():
+            # A zero-parameter call: the kernel reads an empty argument
+            # string as "no parameters" and the backend reads it as
+            # invalid JSON. The conversion is routine, so it is logged at
+            # debug level and does not dilute a real incident's warning.
+            logger.debug(
+                "replaying a zero-parameter tool call with an empty argument "
+                "string as an empty object (tool=%r)",
+                tool_name or "?",
+            )
+            return "{}"
     elif isinstance(raw_arguments, dict):
-        try:
+        if _parse_tool_arguments_object(raw_arguments) is not None:
             return json.dumps(raw_arguments, allow_nan=False)
-        except (TypeError, ValueError):
-            pass
-    else:
-        raw_arguments = None
     logger.warning(
         "replaying a tool call with unusable arguments as an empty object "
         "(tool=%r, payload=%s); the backend rejects the original payload "
         "with 400 invalid tool call arguments",
         tool_name or "?",
-        type(raw_arguments).__name__,
+        payload_type,
     )
     return "{}"
 
@@ -1342,27 +1435,16 @@ def _coerce_tool_arguments_object(raw_arguments: Any) -> dict[str, Any]:
     an object, and every one of them used to parse them independently —
     each catching only ``json.JSONDecodeError``. A payload Python accepts
     but a strict backend rejects (``NaN``, ``Infinity``, an overflowing
-    float) slipped through, and a non-object payload (``null``, ``[1,2]``,
-    ``123``) reached the backend as a malformed tool input. This helper is
-    the single coercion every gateway shares: anything that is not a
-    JSON object becomes the empty object.
+    float, an integer beyond float64 range) slipped through, and a
+    non-object payload (``null``, ``[1,2]``, ``123``) reached the backend
+    as a malformed tool input. This helper is the single coercion every
+    gateway shares: anything that is not a usable JSON object becomes the
+    empty object.
     """
-    if isinstance(raw_arguments, dict):
-        candidate = raw_arguments
-    elif isinstance(raw_arguments, str):
-        try:
-            candidate = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-    else:
+    parsed = _parse_tool_arguments_object(raw_arguments)
+    if parsed is None:
         return {}
-    if not isinstance(candidate, dict):
-        return {}
-    try:
-        json.dumps(candidate, allow_nan=False)
-    except (TypeError, ValueError):
-        return {}
-    return candidate
+    return parsed
 
 
 def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:

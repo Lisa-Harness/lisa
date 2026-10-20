@@ -985,3 +985,41 @@ def test_responses_input_repairs_unparseable_tool_call_arguments() -> None:
     function_calls = [item for item in items if item.get("type") == "function_call"]
     assert len(function_calls) == 1
     assert function_calls[0]["arguments"] == "{}"
+
+
+def test_repair_rejects_an_integer_beyond_the_float64_range() -> None:
+    """An integer too large for a float64 is rejected by a strict backend.
+
+    Python's ``int`` is unbounded, so ``json`` accepts and re-emits a
+    310-digit integer happily. A strict backend decodes JSON numbers as
+    float64 and rejects anything beyond that range with ``400 invalid
+    tool call arguments`` — the exact error the repair exists to
+    prevent.
+    """
+    assert _repair_openai_tool_arguments('{"x": %s}' % ("1" * 310)) == "{}"
+    assert _repair_openai_tool_arguments('{"x": %s}' % ("1" * 309)) == "{}"
+
+
+def test_repair_keeps_an_integer_within_the_float64_range() -> None:
+    """A large but representable integer survives untouched."""
+
+    assert _repair_openai_tool_arguments('{"x": 9007199254740991}') == ('{"x": 9007199254740991}')
+
+
+def test_repair_rejects_a_lone_surrogate() -> None:
+    """A lone surrogate crashes the transport's UTF-8 encoder.
+
+    ``httpx`` encodes with ``ensure_ascii=False`` and then UTF-8 encodes
+    the result, so a lone surrogate — which a cut multi-byte character
+    can produce — raises ``UnicodeEncodeError`` before the request is
+    made. A round trip with ``ensure_ascii=True`` does not see it,
+    because that encoder escapes the surrogate back into ASCII.
+    """
+    assert _repair_openai_tool_arguments('{"text": "\\ud800"}') == "{}"
+    assert _coerce_tool_arguments_object('{"text": "\\ud800"}') == {}
+
+
+def test_coerce_tool_arguments_object_rejects_an_oversized_integer() -> None:
+    """The shared coercion rejects an integer beyond the float64 range."""
+
+    assert _coerce_tool_arguments_object('{"x": %s}' % ("1" * 310)) == {}
