@@ -40,6 +40,29 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### The documentation gate no longer reports sibling-repository links, and a doc-only change no longer runs the test matrix
+
+- **What:** the documentation gate skipped links that point outside the
+  repository. The workspace holds sibling repositories next to this one,
+  and the corpus links to them (`../lisa-cli` in `README.md` and
+  `docs/GETTING_STARTED.md`). The gate reported those links as broken,
+  because the target does not exist inside this repository.
+- **Why:** the gate cannot say whether a link into a sibling repository
+  resolves, and the CI checkout does not contain the sibling repositories
+  at all, so the same corpus passed locally and failed in CI. A gate that
+  reports a defect that is not a defect trains its readers to ignore it.
+- **What:** the gate now resolves a link against the repository root and
+  leaves it alone when the target falls outside that root. Links inside
+  the repository are still checked, including their anchors.
+- **What:** the corpus assertion moved out of the unit suite. It had
+  lived in `packstest/tests/test_check_docs.py`, which is part of the
+  test matrix, so a documentation-only change still ran the full
+  six-job, three-platform suite. The corpus check is the gate's own job
+  and runs in the documentation workflow, where it belongs.
+- **Compatibility:** no public behavior changes. The documentation
+  workflow, the CI path filters, and the release workflow are unchanged
+  from the commit that introduced them.
+
 #### Text writes are newline-terminated, and their receipts say so
 
 - **What:** `lisa-storage.write_file` stores text content

@@ -264,6 +264,15 @@ def _is_external(target: str) -> bool:
     return bool(_URL_SCHEME_RE.match(target)) or target.startswith("//")
 
 
+def _is_inside(candidate: Path, root: Path) -> bool:
+    """Report whether a path lies inside the repository root."""
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _resolve_target(rel_path: str, path_part: str) -> str:
     """Resolve a link's path part to a repo-relative path."""
     if not path_part:
@@ -283,13 +292,19 @@ def _check_link(
         return None
     path_part, _, fragment = target.partition("#")
     resolved = _resolve_target(rel_path, path_part)
-    if not (repo_root / resolved).exists():
+    absolute = (repo_root / resolved).resolve()
+    if not _is_inside(absolute, repo_root):
+        # The link points at a sibling repository in the developer's
+        # workspace (for example ``../lisa-cli``). It is not part of this
+        # repository, so this gate cannot say whether it resolves.
+        return None
+    if not absolute.exists():
         return Finding(rel_path, index, "link-target", f"link target does not exist: {target}")
     if not fragment:
         return None
     known = anchors_by_path.get(resolved)
     if known is None:
-        known = _heading_anchors(repo_root / resolved)
+        known = _heading_anchors(absolute)
         anchors_by_path[resolved] = known
     if known and fragment.lower() not in known:
         return Finding(

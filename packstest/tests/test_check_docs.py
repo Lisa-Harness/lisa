@@ -38,9 +38,6 @@ check_docs = _load_module()
 class TestCorpusSelection:
     """The corpus is the maintained documentation, not runtime content."""
 
-    def test_repo_corpus_is_clean(self) -> None:
-        assert check_docs.check_corpus(_REPO_ROOT) == []
-
     def test_guides_and_readmes_are_included(self) -> None:
         assert check_docs._is_documentation("docs/README.md")
         assert check_docs._is_documentation("docs/SPEC/THREAD_STORE.md")
@@ -162,3 +159,19 @@ class TestDetectedDefects:
             encoding="utf-8",
         )
         assert self._rules(repo) == set()
+
+    def test_sibling_repository_link_is_not_resolved(self, repo: Path) -> None:
+        # The workspace holds sibling repositories next to this one, and the
+        # corpus links to them (``../lisa-cli``). Those links point outside
+        # this repository, so the gate cannot say whether they resolve and
+        # must leave them alone.
+        (repo / "docs" / "guide.md").write_text(
+            "# Guide\n\nSee [cli](../../lisa-cli).\n", encoding="utf-8"
+        )
+        assert self._rules(repo) == set()
+
+    def test_missing_in_repository_link_is_still_reported(self, repo: Path) -> None:
+        (repo / "docs" / "guide.md").write_text(
+            "# Guide\n\nSee [gone](gone.md).\n", encoding="utf-8"
+        )
+        assert "link-target" in self._rules(repo)
