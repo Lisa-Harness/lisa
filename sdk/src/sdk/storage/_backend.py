@@ -36,12 +36,49 @@ logger = logging.getLogger(__name__)
 #: layout is byte-exact).
 _BINARY_SUFFIXES = frozenset(
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff",
-        ".pdf", ".zip", ".gz", ".bz2", ".xz", ".7z", ".tar", ".jar", ".whl",
-        ".so", ".dylib", ".dll", ".exe", ".bin", ".class", ".o", ".a",
-        ".pyc", ".wasm", ".woff", ".woff2", ".ttf", ".otf", ".eot",
-        ".mp3", ".mp4", ".m4a", ".mov", ".avi", ".mkv", ".wav", ".flac",
-        ".sqlite", ".sqlite3", ".db",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".tiff",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".7z",
+        ".tar",
+        ".jar",
+        ".whl",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".exe",
+        ".bin",
+        ".class",
+        ".o",
+        ".a",
+        ".pyc",
+        ".wasm",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".mp3",
+        ".mp4",
+        ".m4a",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".wav",
+        ".flac",
+        ".sqlite",
+        ".sqlite3",
+        ".db",
     }
 )
 
@@ -281,16 +318,7 @@ class StorageBackend:
             stored = content + "\n"
             newline_added = True
         try:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(stored, encoding="utf-8")
-            return json.dumps(
-                {
-                    "ok": True,
-                    "path": path,
-                    "bytes": len(stored.encode("utf-8")),
-                    "trailing_newline_added": newline_added,
-                }
-            )
+            payload = stored.encode("utf-8")
         except UnicodeEncodeError:
             # The payload is not encodable as UTF-8 (a lone surrogate, which
             # a cut multi-byte character can produce). It is not text, so
@@ -298,6 +326,25 @@ class StorageBackend:
             # file either — report that instead of raising out of the
             # tool.
             return json.dumps({"error": "content is not valid UTF-8 text"})
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            # Binary mode, so the stored bytes are exactly the bytes that
+            # were sent. In text mode Python rewrites every ``\n`` as
+            # ``\r\n`` on Windows: the same content would store as 6 bytes
+            # on POSIX and 7 on Windows, and the receipt's ``bytes`` would
+            # report a number the file does not have. A storage primitive
+            # is byte-faithful; the same guard already guards
+            # ``append_file``.
+            with resolved.open("wb") as handle:
+                handle.write(payload)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "path": path,
+                    "bytes": len(payload),
+                    "trailing_newline_added": newline_added,
+                }
+            )
         except OSError as exc:
             return json.dumps({"error": f"write failed: {exc}"})
 
@@ -471,8 +518,7 @@ class StorageBackend:
             # newline="" disables platform newline translation so disk bytes
             # match the input exactly (a storage primitive should be
             # byte-faithful; ``write_file`` has the same property via
-            # ``write_text``'s default, which also needs guarding — but
-            # that's an existing concern out of scope here).
+            # binary mode).
             with resolved.open("a", encoding="utf-8", newline="") as handle:
                 handle.write(content)
             return json.dumps(
@@ -512,6 +558,11 @@ class StorageBackend:
 
         Creates the parent directory if needed. Respects ``readonly``.
         Returns a JSON object with ``ok``, ``which``, and ``bytes``.
+
+        The manifest is stored byte-faithfully (the same guard
+        ``write_file`` uses): text mode would rewrite ``\n`` as ``\r\\n``
+        on Windows, and the manifest is parsed by YAML, not by a text
+        editor.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
@@ -520,8 +571,13 @@ class StorageBackend:
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
         try:
+            payload = content.encode("utf-8")
+        except UnicodeEncodeError:
+            return json.dumps({"error": "content is not valid UTF-8 text"})
+        try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            return json.dumps({"ok": True, "which": which, "bytes": len(content.encode("utf-8"))})
+            with path.open("wb") as handle:
+                handle.write(payload)
+            return json.dumps({"ok": True, "which": which, "bytes": len(payload)})
         except OSError as exc:
             return json.dumps({"error": f"write_model_manifest failed: {exc}"})

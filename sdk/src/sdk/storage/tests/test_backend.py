@@ -391,6 +391,40 @@ def test_append_file_rejects_non_utf8_content(tmp_path: Path) -> None:
     assert receipt["error"] == "content is not valid UTF-8 text"
 
 
+def test_write_file_stores_exact_bytes_on_every_platform(tmp_path: Path) -> None:
+    """The stored bytes are the bytes that were sent, on every platform.
+
+    Text mode rewrites ``\\n`` as ``\\r\\n`` on Windows, so the same
+    content stored 6 bytes on POSIX and 7 on Windows — and the receipt's
+    ``bytes`` reported a size the file did not have. The write is
+    byte-faithful, so the receipt and the file agree everywhere.
+    """
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("exact.txt", "12345\n"))
+    stored = (b.files_root() / "exact.txt").read_bytes()
+    assert stored == b"12345\n"
+    assert receipt["bytes"] == len(stored)
+    assert receipt["bytes"] == 6
+
+
+def test_write_file_does_not_translate_inner_newlines(tmp_path: Path) -> None:
+    """A newline inside the content stays a newline, not ``\\r\\n``."""
+    b = _backend(tmp_path)
+    b.write_file("inner.txt", "a\nb\nc\n")
+    stored = (b.files_root() / "inner.txt").read_bytes()
+    assert stored == b"a\nb\nc\n"
+    assert b"\r\n" not in stored
+
+
+def test_write_model_manifest_stores_exact_bytes(tmp_path: Path) -> None:
+    """The manifest is stored byte-faithfully too."""
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_model_manifest("version: 1\n", "proposal"))
+    stored = b.manifest_path("proposal").read_bytes()
+    assert stored == b"version: 1\n"
+    assert receipt["bytes"] == len(stored) == 11
+
+
 def test_readonly_rejects_writes(tmp_path: Path) -> None:
     b = _readonly_backend(tmp_path)
     assert json.loads(b.write_file("a.txt", "a"))["error"] == "server is read-only"

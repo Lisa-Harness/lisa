@@ -111,9 +111,7 @@ async def test_write_file_newline_terminates_text(storage_setup: None) -> None:
     """
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool(
-        "write_file", {"path": "plan.md", "content": "ends the turn."}
-    )
+    result = await mcp.call_tool("write_file", {"path": "plan.md", "content": "ends the turn."})
     data = json.loads(_tool_text(result))
     assert data["ok"] is True
     assert data["trailing_newline_added"] is True
@@ -128,9 +126,7 @@ async def test_write_file_leaves_binary_content_exact(storage_setup: None) -> No
     """A binary format is not text; its trailing bytes stay untouched."""
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool(
-        "write_file", {"path": "image.png", "content": "PNG-not-really"}
-    )
+    result = await mcp.call_tool("write_file", {"path": "image.png", "content": "PNG-not-really"})
     data = json.loads(_tool_text(result))
     assert data["ok"] is True
     assert data["trailing_newline_added"] is False

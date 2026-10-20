@@ -194,13 +194,10 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "(data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "shutil.rmtree(legacy_checkpoints)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
-        'resolved.write_text(stored, encoding="utf-8")',
         "resolved.unlink()",
         "resolved.mkdir(parents=True, exist_ok=True)",
         "checkpoints_root.mkdir(parents=True, exist_ok=True)",
-        'path.write_text(json.dumps(bundle, default=str, indent=2), encoding="utf-8")',
         "path.parent.mkdir(parents=True, exist_ok=True)",
-        'path.write_text(content, encoding="utf-8")',
     ),
     "sdk/packs/memory/src/sdk/packs/memory/slice_provider.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",

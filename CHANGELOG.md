@@ -29,6 +29,13 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **Not affected:** binary content. A path with a binary suffix
   (`.png`, `.db`, `.pdf`, …) is stored byte-for-byte, because those
   formats put significant data in their final bytes.
+- **Byte-faithful on every platform:** `write_file` and
+  `write_model_manifest` write in binary mode, so the stored bytes are
+  exactly the bytes that were sent. In text mode Python rewrites every
+  `\n` as `\r\n` on Windows: the same content stored 6 bytes on POSIX and
+  7 on Windows, and the receipt's `bytes` reported a size the file did
+  not have. A storage primitive that reports a byte count must store
+  that many bytes.
 - **Tests:** `sdk/src/sdk/storage/tests/test_backend.py`
   (`test_write_file_adds_missing_trailing_newline`,
   `test_write_file_keeps_existing_trailing_newline`,
@@ -38,8 +45,12 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_write_file_empty_content_is_untouched`,
   `test_write_file_leaves_binary_suffix_content_exact`,
   `test_write_file_rejects_non_utf8_content`,
+  `test_write_file_stores_exact_bytes_on_every_platform`,
+  `test_write_file_does_not_translate_inner_newlines`,
+  `test_write_model_manifest_stores_exact_bytes`,
   `test_append_file_reports_appended_bytes`,
-  `test_append_file_empty_append_reports_no_bytes_appended`),
+  `test_append_file_empty_append_reports_no_bytes_appended`,
+  `test_append_file_rejects_non_utf8_content`),
   `mcp_server/tests/test_storage_server.py`
   (`test_write_file_newline_terminates_text`,
   `test_write_file_leaves_binary_content_exact`,
