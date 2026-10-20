@@ -1631,3 +1631,109 @@ def test_aggregate_a_negative_backend_index_keeps_its_own_call() -> None:
         "b_tool",
         "c_tool",
     ]
+
+
+def test_aggregate_keeps_a_call_whole_when_the_name_repeats() -> None:
+    """A backend that repeats the tool name does not split its call.
+
+    The OpenAI chunk contract makes the name optional and per-delta, so
+    a backend may repeat it on every fragment. The name is not a
+    discriminator: the call's identity comes from its id and its
+    completion from its payload.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "function": {"name": "tool_a", "arguments": '{"x":'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "tool_a", "arguments": "1}"}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call["id"] == "call_a"
+    assert call["function"]["name"] == "tool_a", "a repeated name must not double"
+    assert json.loads(call["function"]["arguments"]) == {"x": 1}
+
+
+def test_aggregate_joins_a_tool_name_streamed_in_pieces() -> None:
+    """A tool name streamed in pieces is joined, not split into two calls."""
+
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "list_", "arguments": '{"p'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "files", "arguments": 'ath":"."}'}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call["function"]["name"] == "list_files"
+    assert json.loads(call["function"]["arguments"]) == {"path": "."}
+
+
+def test_aggregate_gives_a_late_id_the_call_it_names() -> None:
+    """A late id at a shared index names the call that is waiting for it.
+
+    Two calls share an index; the second one's id arrives on a later
+    fragment. Adopting the first call instead would bind the id — and
+    the arguments — to the wrong tool.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "function": {"name": "tool_a", "arguments": '{"x":1}'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "tool_b", "arguments": '{"y":2}'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "id": "call_b", "function": {"arguments": "{}"}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2
+    by_id = {call["id"]: call for call in result.tool_calls}
+    assert by_id["call_a"]["function"]["name"] == "tool_a"
+    assert by_id["call_b"]["function"]["name"] == "tool_b", (
+        "the late id must name the call that was waiting for it"
+    )
+
+
+def test_aggregate_never_glues_two_complete_payloads() -> None:
+    """Two complete payloads never end up in one call.
+
+    The glued payload — two JSON objects end to end — is what the
+    backend rejects with ``400 invalid tool call arguments``. A fragment
+    carrying a whole payload starts a call of its own.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "function": {"arguments": '{"x":1}'}},
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "function": {"arguments": '{"y":2}'}},
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    for call in result.tool_calls:
+        parsed = json.loads(call["function"]["arguments"])
+        assert isinstance(parsed, dict), "a call must hold one JSON object"
