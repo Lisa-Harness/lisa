@@ -45,6 +45,7 @@ def _isolate_default_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     for name in (
+        "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES",
         "LISA_DATA_DIR",
         "LISA_PROFILE",
         "LISA_PACKS_VENV",
