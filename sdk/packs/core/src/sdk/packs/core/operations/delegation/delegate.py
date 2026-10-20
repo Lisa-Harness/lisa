@@ -176,6 +176,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         stage_id=params.stage_id,
         max_tool_iterations=params.max_tool_iterations,
         model_alias=params.model_alias,
+        # Thread the operation's own wall-clock ceiling so the child
+        # force-completes gracefully before the registry's hard cancel.
+        timeout_seconds=int(getattr(ctx, "operation_timeout_seconds", 0) or 0),
     )
 
     result = await host.delegate(spec)

@@ -184,3 +184,69 @@ async def test_default_delegate_fn_model_yield_propagates_question(
     assert result.status == "model_yield"
     assert result.yield_action is not None
     assert result.yield_action.question == "which version of rust?"
+
+
+# ── Child wall-budget arming (2026-10-19 delegate timeout fix) ────────
+
+
+@pytest.mark.asyncio
+async def test_default_delegate_fn_arms_child_wall_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spec carrying the operation timeout arms the child's wall budget.
+
+    The child must run with ``max_wall_ms = timeout - grace`` so
+    ``budget_forces_final`` completes it gracefully before the registry's
+    hard ``asyncio.wait_for`` cancel discards all child work.
+    """
+    captured = _stub_child(monkeypatch, TurnResult(response_text="ok"))
+
+    await _delegate(
+        DelegationSpec(
+            target_mode_id="ponder",
+            query="test",
+            timeout_seconds=300,
+        )
+    )
+
+    child_budget = captured["turn_budget"]
+    assert child_budget is not None
+    expected_ms = (300 - _kernel_settings.delegation_grace_seconds) * 1000
+    assert child_budget.max_wall_ms == expected_ms
+
+
+@pytest.mark.asyncio
+async def test_default_delegate_fn_no_timeout_leaves_budget_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spec without timeout_seconds (legacy callers) passes the parent budget through."""
+    captured = _stub_child(monkeypatch, TurnResult(response_text="ok"))
+
+    await _delegate(DelegationSpec(target_mode_id="ponder", query="test"))
+
+    assert captured["turn_budget"] is None  # _delegate() passes turn_budget=None
+
+
+@pytest.mark.asyncio
+async def test_default_delegate_fn_armed_deadline_tightens_existing_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing parent wall ceiling is min()'d against the armed deadline — never loosened."""
+    from kernel.models import TurnBudget
+
+    captured = _stub_child(monkeypatch, TurnResult(response_text="ok"))
+    parent_budget = TurnBudget(max_tool_calls=10, max_wall_ms=3_600_000)
+
+    await _default_delegate_fn(
+        DelegationSpec(target_mode_id="ponder", query="test", timeout_seconds=300),
+        hooks=TurnHooks(),
+        turn_budget=parent_budget,
+        execution_policy=None,
+        depth=0,
+    )
+
+    child_budget = captured["turn_budget"]
+    assert child_budget.max_wall_ms == (300 - _kernel_settings.delegation_grace_seconds) * 1000
+    assert child_budget.max_tool_calls == 10  # non-wall fields pass through
+    # The parent's budget object is not mutated.
+    assert parent_budget.max_wall_ms == 3_600_000

@@ -81,6 +81,53 @@ async def _default_execute_operation(
     return await execute_operation(operation_id, ctx)
 
 
+def _child_wall_deadline_ms(timeout_seconds: int) -> int:
+    """Return the armed child wall deadline in ms; 0 when unset or non-positive."""
+    if timeout_seconds <= 0:
+        return 0
+    return max(0, (timeout_seconds - _kernel_settings.delegation_grace_seconds) * 1000)
+
+
+def _arm_child_wall_budget(
+    turn_budget: TurnBudget | None,
+    timeout_seconds: int,
+) -> TurnBudget | None:
+    """Tighten a child sub-turn budget so it beats the operation's hard cancel.
+
+    The delegate/fork operations wrap a full recursive ``run_turn`` inside
+    the registry's ``asyncio.wait_for(timeout_seconds)`` — a hard cancel
+    that discards ALL child work and surfaces as a bare
+    ``Operation 'delegate' timed out`` error (the 2026-10-19 incident:
+    two 300s children cancelled mid-flight, the parent re-delegating
+    from scratch each time).
+
+    This arms the child's own ``TurnBudget.max_wall_ms`` at
+    ``timeout_seconds - delegation_grace_seconds`` so the turn loop's
+    ``budget_forces_final`` fires first: the child gets one final
+    no-tools completion, returns its partial output, and the classifier
+    maps it to ``status="interrupted"`` with the partial text — an honest
+    result the parent can act on instead of a retry-amplifying error.
+
+    Tighten-only: an existing budget's wall ceiling is min()'d against
+    the spec deadline (never loosened); other fields pass through
+    untouched. Returns the budget unchanged when ``timeout_seconds`` is
+    unset (0) or the armed deadline is non-positive.
+    """
+    armed_ms = _child_wall_deadline_ms(timeout_seconds)
+    if armed_ms <= 0:
+        return turn_budget
+    if turn_budget is None:
+        return TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=armed_ms,
+        )
+    if turn_budget.max_wall_ms and turn_budget.max_wall_ms <= armed_ms:
+        return turn_budget
+    return turn_budget.model_copy(update={"max_wall_ms": armed_ms})
+
+
 async def _default_delegate_fn(
     spec: DelegationSpec,
     *,
@@ -111,6 +158,15 @@ async def _default_delegate_fn(
     fork children) so a delegate child does not re-route and create a
     loop. The seam is independent of this decision; the briefing
     function handles either case.
+
+    Per spec §6.5, when the spec carries the delegate operation's
+    ``timeout_seconds`` (threaded from ``ctx.operation_timeout_seconds``
+    by the pack handler), the child's wall budget is armed at
+    ``timeout_seconds - delegation_grace_seconds`` so
+    ``budget_forces_final`` fires before the registry's hard
+    ``asyncio.wait_for`` cancel: the child returns partial output
+    classified ``interrupted`` instead of being cancelled mid-flight
+    with all work discarded (the 2026-10-19 delegate timeouts).
     """
 
     _dlog = logger_override or logger
@@ -138,7 +194,11 @@ async def _default_delegate_fn(
         )
 
     started = time.monotonic()
-    child_budget = turn_budget
+    # Arm the child's wall budget so it force-completes gracefully just
+    # before the registry's hard ``asyncio.wait_for`` cancel would discard
+    # all child work (spec.timeout_seconds is threaded from the delegate
+    # operation's own ``timeout_seconds``).
+    child_budget = _arm_child_wall_budget(turn_budget, spec.timeout_seconds)
     child_max_iters = (
         spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
     )
@@ -338,6 +398,13 @@ async def _default_fork_fn(
             logger_override=_flog,
             emit_stage=emit_stage,
             max_tool_iterations=child_max_iters,
+            # Arm each child's wall budget so it force-completes
+            # gracefully just before the registry's hard
+            # ``asyncio.wait_for`` cancel would discard the fan-out
+            # (spec.timeout_seconds is threaded from the fork operation's
+            # own ``timeout_seconds``). Children run in parallel, so the
+            # deadline applies per child, not divided.
+            wall_deadline_ms=_child_wall_deadline_ms(spec.timeout_seconds),
         )
     except TimeoutError:
         # ``_execute_fork_fanout`` catches per-child timeouts and maps

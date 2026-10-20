@@ -194,6 +194,132 @@ async def test_default_fork_fn_interrupted_on_harness_yield(
     assert result.succeeded == 0
 
 
+# ── Fan-out wall-budget arming (2026-10-19 fork timeout fix) ────────────
+
+
+@pytest.mark.asyncio
+async def test_default_fork_fn_arms_child_wall_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spec carrying the operation timeout arms each child's wall budget.
+
+    Children run in parallel, so the armed deadline (timeout - grace)
+    applies to EACH child (tighten-only against the divided parent
+    share), not divided across them — each child must force-complete
+    before the registry's hard ``asyncio.wait_for`` cancel discards the
+    fan-out.
+    """
+    from kernel.config import settings as _kernel_settings
+
+    captured: list[dict[str, Any]] = []
+
+    async def fake_run_turn(**kwargs: Any) -> TurnResult:
+        captured.append(kwargs)
+        return TurnResult(response_text="ok")
+
+    monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
+
+    spec = ForkSpec(
+        targets=[
+            ForkTarget(mode_id="default", query="test one"),
+            ForkTarget(mode_id="explainer", query="test two"),
+        ],
+        timeout_seconds=120,
+    )
+    await _default_fork_fn(
+        spec,
+        hooks=TurnHooks(),
+        pool=_noop_pool(),
+        resolve_model=lambda mid: None,
+        complete=_noop_complete,
+        exec_op=_noop_exec_op,
+        turn_budget=None,
+        execution_policy=None,
+        turn_start_mono=0.0,
+    )
+
+    assert len(captured) == 2
+    armed_ms = (120 - _kernel_settings.delegation_grace_seconds) * 1000
+    for kw in captured:
+        child_budget = kw["turn_budget"]
+        assert child_budget is not None
+        # Per-child deadline (parallel children), NOT divided by N.
+        assert child_budget.max_wall_ms == armed_ms
+
+
+@pytest.mark.asyncio
+async def test_default_fork_fn_armed_deadline_tightens_divided_share(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parent wall share smaller than the deadline passes through unchanged."""
+    from kernel.models import TurnBudget
+
+    captured: list[dict[str, Any]] = []
+
+    async def fake_run_turn(**kwargs: Any) -> TurnResult:
+        captured.append(kwargs)
+        return TurnResult(response_text="ok")
+
+    monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
+
+    # Parent wall = 60s across 2 children → each share 30s, below the
+    # armed 90s deadline: the tighter divided share wins.
+    spec = ForkSpec(
+        targets=[
+            ForkTarget(mode_id="default", query="test one"),
+            ForkTarget(mode_id="explainer", query="test two"),
+        ],
+        timeout_seconds=120,
+    )
+    await _default_fork_fn(
+        spec,
+        hooks=TurnHooks(),
+        pool=_noop_pool(),
+        resolve_model=lambda mid: None,
+        complete=_noop_complete,
+        exec_op=_noop_exec_op,
+        turn_budget=TurnBudget(max_tool_calls=10, max_wall_ms=60_000),
+        execution_policy=None,
+        turn_start_mono=0.0,
+    )
+
+    assert len(captured) == 2
+    for kw in captured:
+        child_budget = kw["turn_budget"]
+        assert child_budget is not None
+        assert child_budget.max_wall_ms == 30_000  # min(60s/2, 120s-grace)
+        assert child_budget.max_tool_calls == 5  # divided field untouched by arming
+
+
+@pytest.mark.asyncio
+async def test_default_fork_fn_no_timeout_leaves_budget_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spec without timeout_seconds (legacy callers) passes the parent budget through."""
+    captured: list[dict[str, Any]] = []
+
+    async def fake_run_turn(**kwargs: Any) -> TurnResult:
+        captured.append(kwargs)
+        return TurnResult(response_text="ok")
+
+    monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
+
+    spec = ForkSpec(targets=[ForkTarget(mode_id="default", query="test")])
+    await _default_fork_fn(
+        spec,
+        hooks=TurnHooks(),
+        pool=_noop_pool(),
+        resolve_model=lambda mid: None,
+        complete=_noop_complete,
+        exec_op=_noop_exec_op,
+        turn_budget=None,
+        execution_policy=None,
+        turn_start_mono=0.0,
+    )
+
+    assert captured[0]["turn_budget"] is None
+
+
 async def _noop_complete(**kwargs: Any) -> Any:
     """Stand-in for the ``complete`` callable (unused by stubbed run_turn)."""
     return SimpleNamespace(content="", tool_calls=[], finish_reason="stop", truncated=False)

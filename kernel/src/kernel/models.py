@@ -279,6 +279,13 @@ class OperationExecutionContext(BaseModel):
     # same no-fallback contract applies to operations that write/persist
     # caches (e.g. ``fetch_page``) or need the host data root.
     data_dir: str = Field(default="", exclude=True)
+    # The invoking operation's wall-clock ceiling in seconds (from
+    # ``OperationDefinition.timeout_seconds``), set by ``execute_operation``
+    # before dispatch. Operations that recurse into sub-turns (delegate /
+    # fork) thread this into the child spec so the child force-completes
+    # gracefully just before the registry's hard ``asyncio.wait_for`` cancel
+    # would discard all child work. 0 means no timeout authored.
+    operation_timeout_seconds: int = Field(default=0, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -1712,6 +1719,19 @@ class ForkSpec(BaseModel):
             "Empty means use each target mode's resolved model."
         ),
     )
+    timeout_seconds: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Wall-clock ceiling for the whole fan-out, threaded from "
+            "the fork operation's ``timeout_seconds``. When non-zero, "
+            "each child's TurnBudget wall share is tightened so it "
+            "force-completes gracefully (returning partial output as "
+            "status=interrupted) just before the operation registry's "
+            "hard asyncio.wait_for cancel would discard all children. "
+            "0 preserves the legacy deadline-blind behavior."
+        ),
+    )
 
 
 class ForkResult(BaseModel):
@@ -1801,6 +1821,19 @@ class DelegationSpec(BaseModel):
         description=(
             "Optional model alias override for the child turn. Empty "
             "means use the target mode's resolved model."
+        ),
+    )
+    timeout_seconds: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Wall-clock ceiling for the whole child sub-turn, threaded "
+            "from the delegate operation's ``timeout_seconds``. When "
+            "non-zero, the child's TurnBudget is tightened so it "
+            "force-completes gracefully (returning partial output as "
+            "status=interrupted) just before the operation registry's "
+            "hard asyncio.wait_for cancel would discard all child "
+            "work. 0 preserves the legacy deadline-blind behavior."
         ),
     )
 

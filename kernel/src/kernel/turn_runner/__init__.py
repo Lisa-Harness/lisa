@@ -18,9 +18,11 @@ __all__ = [
     # (tests patch/mock these via ``kernel.turn_runner.<name>``).
     "_StubModelDef",
     "_aggregate_child_usage",
+    "_arm_child_wall_budget",
     "_build_budget_briefing",
     "_build_recovery_identity",
     "_build_sub_turn_contract",
+    "_child_wall_deadline_ms",
     "_coordinator_routing_hint",
     "_current_recovery_stage_id",
     "_default_assemble_system_prompt",
@@ -219,7 +221,9 @@ from kernel.turn_phases._turn_state import _TurnState
 # ``from kernel.turn_runner import <name>`` both resolve.
 from ._defaults import (
     _aggregate_child_usage,
+    _arm_child_wall_budget,
     _build_recovery_identity,
+    _child_wall_deadline_ms,
     _coordinator_routing_hint,
     _current_recovery_stage_id,
     _default_assemble_system_prompt,

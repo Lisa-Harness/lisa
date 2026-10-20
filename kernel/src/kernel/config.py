@@ -150,6 +150,17 @@ class Settings(BaseSettings):
     # that would otherwise recurse indefinitely. Override via
     # ``DELEGATE_MAX_DEPTH``.
     delegate_max_depth: int = 4
+    # Grace window subtracted from a delegation/fork operation's
+    # ``timeout_seconds`` when arming the child sub-turn's wall budget.
+    # The child's ``budget_forces_final`` fires at
+    # ``timeout_seconds - grace`` so the child completes gracefully
+    # (returning partial output, classified ``interrupted``) before the
+    # operation registry's hard ``asyncio.wait_for`` cancel at
+    # ``timeout_seconds`` discards all child work — the 2026-10-19
+    # delegate timeouts. 30s covers one final forced no-tools completion
+    # on a slow cloud model. Override via
+    # ``DELEGATION_GRACE_SECONDS``.
+    delegation_grace_seconds: int = 30
 
     # ── Turn runner: per-step sub-budgets ─────────────────────────────────
     # Per-step iteration sub-budget. Each workflow step (the span between
@@ -431,6 +442,7 @@ class Settings(BaseSettings):
         "fork_child_max_tool_iterations",
         "delegate_child_max_tool_iterations",
         "delegate_max_depth",
+        "delegation_grace_seconds",
         "per_step_max_iterations",
         "per_step_max_tool_calls",
         "turn_completion_max_tokens",

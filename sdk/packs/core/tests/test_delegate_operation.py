@@ -82,6 +82,33 @@ async def test_delegate_returns_ok_result(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_delegate_threads_operation_timeout_into_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handler threads ctx.operation_timeout_seconds into the spec.
+
+    This is the seam that lets the child arm its wall budget before the
+    registry's hard cancel (the 2026-10-19 delegate timeout fix).
+    """
+    _patched_catalog(monkeypatch, {"search"})
+
+    captured: dict[str, Any] = {}
+
+    async def fake_delegate_fn(spec: DelegationSpec) -> DelegationResult:
+        captured["timeout_seconds"] = spec.timeout_seconds
+        return DelegationResult(target_mode_id="search", status="ok")
+
+    ctx = _ctx_with_host(
+        params={"target_mode_id": "search", "query": "find rust async news"},
+        delegate_fn=fake_delegate_fn,
+    )
+    ctx.operation_timeout_seconds = 300
+    await delegate_mod.execute(ctx)
+
+    assert captured["timeout_seconds"] == 300
+
+
+@pytest.mark.asyncio
 async def test_delegate_fails_loudly_on_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unknown target mode returns an error, not a silent fallback."""
     _patched_catalog(monkeypatch, {"search"})

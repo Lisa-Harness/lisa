@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from kernel.turn_runner import TurnHooks
 
 __all__ = [
+    "_arm_fork_child_wall",
     "_build_minimal_context",
     "_execute_fork_fanout",
     "_fork_child_budget",
@@ -247,6 +248,30 @@ def _fork_child_budget(turn_budget: TurnBudget | None, n: int) -> TurnBudget | N
     )
 
 
+def _arm_fork_child_wall(
+    child_budget: TurnBudget | None,
+    wall_deadline_ms: int,
+) -> TurnBudget:
+    """Tighten one child's wall budget to the operation's deadline (grace already applied).
+
+    Children run in parallel, so unlike the delegate path the deadline is
+    applied to each child rather than divided: the registry's
+    ``asyncio.wait_for`` covers the whole fan-out, and every child must
+    force-complete before it fires. Missing/unlimited wall fields are
+    replaced by the deadline; existing smaller ceilings pass through.
+    """
+    if child_budget is None:
+        return TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=wall_deadline_ms,
+        )
+    if child_budget.max_wall_ms and child_budget.max_wall_ms <= wall_deadline_ms:
+        return child_budget
+    return child_budget.model_copy(update={"max_wall_ms": wall_deadline_ms})
+
+
 async def _run_fork_child(
     *,
     idx: int,
@@ -259,6 +284,7 @@ async def _run_fork_child(
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     logger_override: logging.Logger | None,
     max_tool_iterations: int = 0,
+    wall_deadline_ms: int = 0,
 ) -> None:
     """Run one fork child: emit start, run the child turn, store result, emit complete.
 
@@ -268,6 +294,11 @@ async def _run_fork_child(
     _flog = logger_override or logging.getLogger(__name__)
     started = time.monotonic()
     child_budget = _fork_child_budget(turn_budget, n)
+    # Children run in parallel: the operation deadline applies to each
+    # child individually (tighten-only against the divided share), so a
+    # child force-completes gracefully before the registry's hard cancel.
+    if wall_deadline_ms > 0:
+        child_budget = _arm_fork_child_wall(child_budget, wall_deadline_ms)
     if emit_stage is not None:
         await emit_stage(
             "fork_child_start",
@@ -315,6 +346,7 @@ async def _execute_fork_fanout(
     logger_override: logging.Logger | None,
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     max_tool_iterations: int = 0,
+    wall_deadline_ms: int = 0,
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 
@@ -325,6 +357,14 @@ async def _execute_fork_fanout(
     The parent turn's ``TurnBudget`` is divided equally across N children.
     Each child gets a sub-budget. If a child exhausts its sub-budget, it
     returns a partial result.
+
+    ``wall_deadline_ms`` is the operation-level wall ceiling (armed from
+    the fork operation's ``timeout_seconds`` minus the delegation grace).
+    Children run in parallel, so the deadline applies to EACH child, not
+    divided: each child's wall budget is min(parent share, deadline) so
+    it force-completes gracefully before the operation registry's hard
+    ``asyncio.wait_for`` cancel discards the whole fan-out. 0 disables
+    the ceiling (legacy behavior).
 
     ``emit_stage`` is the parent turn's ``_emit_stage`` helper. When set,
     the fan-out emits ``fork_start`` / ``fork_child_start`` (one per
@@ -367,6 +407,7 @@ async def _execute_fork_fanout(
             emit_stage=emit_stage,
             logger_override=_flog,
             max_tool_iterations=max_tool_iterations,
+            wall_deadline_ms=wall_deadline_ms,
         )
 
     try:

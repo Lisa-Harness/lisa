@@ -918,6 +918,7 @@ async def execute_operation(
         )
 
     ctx.operation_id = operation_id
+    ctx.operation_timeout_seconds = definition.timeout_seconds
     _resolve_execution_configuration(definition, ctx)
     provider = ctx.capability_binding_provider
     if provider is not None:
