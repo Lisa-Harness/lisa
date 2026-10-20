@@ -11,7 +11,7 @@ lisa-harness-sdk = { workspace = true }
 
 [project]
 name = "lisa-harness-mcp-servers"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lisa first-party MCP servers — context, memory, guard, content, catalog, storage, thread, and shared CLI config"
 requires-python = ">=3.11"
 

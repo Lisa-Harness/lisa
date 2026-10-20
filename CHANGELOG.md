@@ -2201,7 +2201,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 - Added the catalog-native local coding workflow: bounded workspace inspection, isolated Git worktrees, checked patch application, named finite checks, protected-branch commit and non-force push controls, and artifact-backed GitHub pull-request publication. Effectful steps require a host-owned exact approval and resume only the approved invocation.
 
-#### Kernel (`lisa-kernel`)
+#### Kernel (`lisa-harness-kernel`)
 
 - Extension front matter support: `WorkflowModeConfig.extra_front_matter` now carries every app/pack-owned front-matter key the kernel does not interpret (e.g. `lenses` — mode perspective tags like `lens.conversation`, `lens.reflection`). The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindings, workshop config) and passes everything else through opaquely as extension data. Hosts and packs read `extra_front_matter` directly; the kernel never names, validates, or curates app-owned keys, so adding a new app-owned front-matter key requires no kernel change.
 - Front-matter overrides via an optional sibling `_overrides.yaml` file beside each `_mode.md`. Apps can manage extension front matter (and a small set of kernel-owned but overridable fields: `description`, `default_model`) without editing pack-owned `_mode.md` files. The boundary is a **denylist**: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config); attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched. Overrides are deep-merged on top of the authored front matter; list values replace (not concatenate).
@@ -2288,7 +2288,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - **Phase 1 — Context seams**: 6 new Protocols in `kernel/seams/protocols.py` (`ContentRegistry`, `ModelPolicy`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionItemBuilder`) with 6 default implementations under `kernel/context/`. `ContextSeams` dataclass on `TurnHooks` with lazy default factories. 3 context modules rewritten to depend on seams instead of `app.*` imports. 5 dead modules deleted. ~50 new config fields for context broker, memory, and passive intelligence settings. Full design spec in `docs/MCP_NATIVE_DESIGN.md`.
 - **Phase 2 — MCP tool pool**: `kernel/tools/mcp_client.py` (`MCPToolPool`, `MCPClientConfig`, `MCPToolSpec`, `MCPToolResult`) and `kernel/tools/schema_translator.py` (OpenAI + Anthropic stub translators). `TurnHooks.build_extra_tool_schemas` and `execute_tool` replaced by `mcp_tool_servers: list[MCPClientConfig]`. Turn runner tool loop rewritten: `pool.list_tools()` → translate to OpenAI → send → translate back → `pool.call_tool()`. `build_openai_operation_schema` removed — operations are no longer advertised as tool schemas. Little Lisa updated: `execute_tool` removed from `TurnHooks`, `mcp_tool_servers=[]` wired, `operation_catalog` kwarg removed from `run_turn`.
 
-#### Kernel (`lisa-kernel`)
+#### Kernel (`lisa-harness-kernel`)
 
 - Durable token-usage telemetry handler (`kernel/token_usage.py`) with `TokenUsageTelemetryHandler` (appends every `TokenUsageEvent` to `token-usage.jsonl` under the host's data directory, with timestamp+nanosecond idempotency keys) and `build_token_usage_event` factory. Closes the gap where `TokenUsageEvent` was defined but never published or persisted.
 - `CompletionUsage.duration_ms` field on provider results so time-based providers (e.g. Ollama local GPU time) can be billed by wall-clock duration alongside token counts.
@@ -2305,18 +2305,18 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 ### Changed
 
-#### Kernel (`lisa-kernel`)
+#### Kernel (`lisa-harness-kernel`)
 
 - Renamed kernel subpackages for narrative coherence: `kernel/io/` → `kernel/seams/` (host-injection protocols), `kernel/signal_connectors/` + `kernel/data_sources/` + `kernel/domain_knowledge/` → `kernel/intake/` (unified external data collection), `kernel/intelligence/` → `kernel/synthesis/` (post-collection pipeline). Entry-point group names unchanged in this phase; migration planned with deprecation window.
 - Operation registry now skips `.py` modules that have a sibling `<stem>.operation.md` declarative entrypoint. These modules hold the Pydantic response-format contract for a prompt-authored operation, not a runtime `execute(ctx)` entrypoint, so they no longer trigger spurious `missing '<stem>.yml'` warnings during catalog load.
 - `_extract_completion_usage` (turn runner) now returns a 7-tuple including `cached_tokens`, `reasoning_tokens`, `duration_ms`, and `latency_ms`; callers updated accordingly.
 - `_extract_usage_counts` (Little Lisa) now returns a 5-tuple including `cached_tokens` and `reasoning_tokens`; both call sites updated.
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-10-19
 
 ### Added
 
-#### Kernel (`lisa-kernel`)
+#### Kernel (`lisa-harness-kernel`)
 
 - Runtime-neutral FSM engine (`ipsar_fsm.py`) with mode catalog loading, stage validation, transition tool schema, and operation lifecycle hooks (entry, pre-turn, post-turn).
 - IPSAR route resolution (`ipsar.py`) for detecting user-facing mode targets from natural-language messages.
