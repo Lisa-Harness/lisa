@@ -305,6 +305,127 @@ def test_aggregate_without_deltas_keeps_empty_tool_calls() -> None:
     assert result.finish_reason == "tool_calls"
 
 
+def test_aggregate_separates_parallel_calls_sharing_an_index() -> None:
+    """Parallel calls that reuse one index stay separate calls.
+
+    Regression for the 2026-10-19 MiniMax M3.1 Flash turn failure: Ollama
+    streams every parallel tool call with ``index: 0`` and tells them
+    apart only by ``id``. Stitching by ``index`` alone concatenated them
+    into one garbage call named
+    ``lisa-storage.list_fileslisa-storage.read_file`` with three JSON
+    objects glued end to end. The turn loop then refused the unparseable
+    payload, and the next request replayed the broken call and died on
+    ``400 invalid tool call arguments``.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "lisa-storage.list_files", "arguments": '{"path":"."}'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_2",
+                    "function": {"name": "lisa-storage.read_file", "arguments": '{"path":"a.md"}'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_3",
+                    "function": {"name": "lisa-storage.read_file", "arguments": '{"path":"b.md"}'},
+                }
+            ],
+            finish_reason="tool_calls",
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 3, "each parallel call must stay its own call"
+    names = [call["function"]["name"] for call in result.tool_calls]
+    assert names == [
+        "lisa-storage.list_files",
+        "lisa-storage.read_file",
+        "lisa-storage.read_file",
+    ]
+    assert [call["id"] for call in result.tool_calls] == ["call_1", "call_2", "call_3"]
+    for call, expected in zip(
+        result.tool_calls,
+        [{"path": "."}, {"path": "a.md"}, {"path": "b.md"}],
+        strict=True,
+    ):
+        assert json.loads(call["function"]["arguments"]) == expected
+
+
+def test_aggregate_keeps_fragments_of_one_call_together() -> None:
+    """Continuation fragments of a single call still merge by index.
+
+    The shared-index split must not break the normal OpenAI shape, where
+    one call's arguments arrive across many fragments that all carry the
+    same id (or no id at all).
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "lisa-storage.write_file", "arguments": ""},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "function": {"arguments": '{"path":"a.md",'}},
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "function": {"arguments": '"content":"hi"}'}},
+            ],
+            finish_reason="tool_calls",
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call["id"] == "call_1"
+    assert call["function"]["name"] == "lisa-storage.write_file"
+    assert json.loads(call["function"]["arguments"]) == {"path": "a.md", "content": "hi"}
+
+
+def test_aggregate_keeps_indexed_calls_with_distinct_indices_apart() -> None:
+    """The ordinary OpenAI shape (one index per call) is unchanged."""
+
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "a_tool", "arguments": "{}"},
+                },
+                {
+                    "index": 1,
+                    "id": "call_2",
+                    "function": {"name": "b_tool", "arguments": "{}"},
+                },
+            ],
+            finish_reason="tool_calls",
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert [call["id"] for call in result.tool_calls] == ["call_1", "call_2"]
+    assert [call["function"]["name"] for call in result.tool_calls] == ["a_tool", "b_tool"]
+
+
 @pytest.mark.asyncio
 async def test_turn_runner_stream_tool_deltas_skip_the_fallback_complete() -> None:
     """A tool_calls stream with parsed deltas dispatches without regenerating.

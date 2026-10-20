@@ -381,11 +381,34 @@ def _stitch_tool_call_delta(
     ``index`` is the stitch key (OpenAI streams fragment one call across
     many chunks); missing index appends a new call. ``id``/``type`` arrive
     once on the first fragment; ``name``/``arguments`` concatenate.
+
+    Some backends stream every parallel call with the SAME ``index`` (0)
+    and rely on the call ``id`` to tell the calls apart — Ollama's
+    MiniMax M3.1 Flash does exactly this. Stitching those by ``index``
+    alone concatenated the calls into one garbage call:
+    ``lisa-storage.list_fileslisa-storage.read_file`` carrying three JSON
+    objects glued end to end. The unparseable result was then correctly
+    refused by the turn loop, but the broken call stayed in the message
+    history and the next request replayed it — a strict backend answered
+    ``400 invalid tool call arguments`` and killed the turn.
+
+    An ``id`` marks the first fragment of a call, so a fragment carrying
+    an id that is not the staged entry's id starts a NEW call rather than
+    merging into the occupied slot.
     """
-    index = int(delta.get("index", len(staged)))
-    entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
-    if delta.get("id"):
-        entry["id"] = str(delta["id"])
+    raw_index = delta.get("index")
+    index = int(raw_index) if raw_index is not None else ((max(staged) + 1) if staged else 0)
+    call_id = str(delta.get("id") or "")
+    entry = staged.get(index)
+    if entry is None:
+        entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
+    elif call_id and entry["id"] and entry["id"] != call_id:
+        # A new call reusing an occupied index: allocate a fresh slot so
+        # the parallel calls stay separate instead of concatenating.
+        index = max(staged) + 1
+        entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
+    if call_id:
+        entry["id"] = call_id
     if delta.get("type"):
         entry["type"] = str(delta["type"])
     function = delta.get("function") or {}

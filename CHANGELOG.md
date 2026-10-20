@@ -6,6 +6,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### Parallel tool calls that share a stream index are no longer merged into one
+
+- **What:** the kernel's streamed tool-call stitcher now starts a new call
+  when a fragment carries an `id` that belongs to a different call, instead
+  of concatenating it into the call that already occupies the slot. The
+  OpenAI-compatible gateway also repairs a tool call whose arguments do
+  not parse into the empty object before replaying it, so a refused call
+  cannot kill the turn that follows it.
+- **Why:** the 2026-10-19 MiniMax M3.1 Flash turn failure. Ollama streams
+  every parallel tool call with `index: 0` and distinguishes them only by
+  `id`; stitching by `index` alone merged three calls into one named
+  `lisa-storage.list_fileslisa-storage.read_filelisa-storage.read_file`
+  with three JSON objects glued end to end. The turn loop correctly
+  refused to dispatch the unparseable payload, but the broken call stayed
+  in the message history. The next request replayed it and Ollama
+  answered `400 invalid tool call arguments`, killing the turn. Backends
+  that use distinct indices per call are unaffected.
+- **Tests:** `kernel/tests/test_streaming.py`
+  (`test_aggregate_separates_parallel_calls_sharing_an_index`,
+  `test_aggregate_keeps_fragments_of_one_call_together`,
+  `test_aggregate_keeps_indexed_calls_with_distinct_indices_apart`);
+  `sdk/tests/test_anthropic_gateway.py`
+  (`test_normalize_repairs_unparseable_tool_call_arguments`,
+  `test_normalize_repairs_length_cut_tool_call_arguments`,
+  `test_normalize_repairs_empty_tool_call_arguments_string`,
+  `test_normalize_keeps_parseable_tool_call_arguments_untouched`).
+
 #### A recovered turn no longer reports a fabricated resource-budget exhaustion
 
 - **What:** the sticky `capability_limit_hit` latch no longer discards a

@@ -719,3 +719,130 @@ def test_normalize_no_trailing_nudge_when_require_thought_signature_false() -> N
     normalized = normalize_openai_messages(messages, require_thought_signature=False)
     # Trailing assistant with its (orphaned) tool_calls pruned stays last.
     assert normalized[-1]["role"] == "assistant"
+
+
+# ── normalize_openai_messages: unparseable tool-call arguments repair ──
+
+
+def test_normalize_repairs_unparseable_tool_call_arguments() -> None:
+    """A tool call whose arguments never parsed is replayed as ``{}``.
+
+    Regression for the 2026-10-19 MiniMax M3.1 Flash turn failure: three
+    parallel tool calls were stitched into one call whose arguments were
+    three JSON objects glued end to end. The kernel refused to dispatch
+    it, but the broken call stayed in the message history and the next
+    request replayed it. Ollama validates the arguments of every
+    assistant ``tool_calls`` entry in the history and answered
+    ``400 invalid tool call arguments``, which killed the whole turn.
+
+    The original values do not exist (the payload was cut), so the empty
+    object is the honest repair: it keeps the history well-formed and
+    lets the model re-issue the call.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "review the code"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_merged",
+                    "type": "function",
+                    "function": {
+                        "name": "lisa-storage.list_fileslisa-storage.read_file",
+                        "arguments": ('{"prefix":"demo"}{"path":"a.md"}{"path":"b.md"}'),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_merged", "content": "truncated"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    call = normalized[1]["tool_calls"][0]
+    assert call["function"]["arguments"] == "{}"
+
+
+def test_normalize_repairs_length_cut_tool_call_arguments() -> None:
+    """A length-cut arguments payload is repaired the same way.
+
+    The 2026-09-23 finances incident produced the same shape from a
+    different cause: ``finish_reason='length'`` cut the arguments
+    mid-payload. The kernel refuses to dispatch such a call, so the
+    replay must not kill the turn either.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "write the ledger"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_cut",
+                    "type": "function",
+                    "function": {
+                        "name": "lisa-storage.write_file",
+                        "arguments": '{"path": "ledgers/2024.beancount", "content": "2024-01-02',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_cut", "content": "truncated"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    call = normalized[1]["tool_calls"][0]
+    assert call["function"]["arguments"] == "{}"
+
+
+def test_normalize_repairs_empty_tool_call_arguments_string() -> None:
+    """An empty argument string is not valid JSON on the wire.
+
+    The kernel reads an empty string as a legitimate "no parameters"
+    call, but the backend parses the string as JSON and rejects it.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_empty",
+                    "type": "function",
+                    "function": {"name": "list_threads", "arguments": ""},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_empty", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    call = normalized[1]["tool_calls"][0]
+    assert call["function"]["arguments"] == "{}"
+
+
+def test_normalize_keeps_parseable_tool_call_arguments_untouched() -> None:
+    """A well-formed payload is replayed byte-for-byte."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_ok",
+                    "type": "function",
+                    "function": {
+                        "name": "lisa-storage.read_file",
+                        "arguments": '{"path": "README.md"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_ok", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    call = normalized[1]["tool_calls"][0]
+    assert call["function"]["arguments"] == '{"path": "README.md"}'

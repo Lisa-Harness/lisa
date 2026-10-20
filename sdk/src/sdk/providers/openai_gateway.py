@@ -834,7 +834,7 @@ def build_openai_responses_input(
                             "name": _sanitize_responses_tool_name(
                                 str(function_payload.get("name", "") or "")
                             ),
-                            "arguments": _normalize_openai_tool_arguments(
+                            "arguments": _repair_openai_tool_arguments(
                                 function_payload.get("arguments", "")
                             ),
                             "status": "completed",
@@ -1239,6 +1239,30 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 # ── Normalization helpers ────────────────────────────────────────────────
 
 
+def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
+    """Return True when a tool-call argument payload is acceptable to a backend.
+
+    Backends validate the arguments string of every assistant ``tool_calls``
+    entry they receive in the history and answer ``400 invalid tool call
+    arguments`` when it does not parse as a JSON object. That check applies
+    to REPLAYED history too, not only to the call the backend just
+    produced: a call the kernel refused (a length-cut payload, or a call
+    whose parallel siblings were stitched together) stays in the message
+    history, and the next request replays it and dies on the 400.
+
+    An empty argument string is NOT acceptable on the wire even though the
+    kernel reads it as a legitimate "no parameters" call — the backend
+    parses the string as JSON and an empty string is not JSON.
+    """
+    if not isinstance(raw_arguments, str):
+        return True
+    try:
+        parsed = json.loads(raw_arguments)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(parsed, dict)
+
+
 def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
     if isinstance(raw_arguments, str):
         return raw_arguments
@@ -1248,6 +1272,33 @@ def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
         return json.dumps(raw_arguments)
     except TypeError:
         return str(raw_arguments)
+
+
+def _repair_openai_tool_arguments(raw_arguments: Any) -> str:
+    """Return an argument payload a strict backend will accept on replay.
+
+    A tool call whose arguments never parsed — because the completion was
+    cut mid-payload, or because parallel calls were stitched together —
+    cannot be repaired into its original values; those values do not
+    exist. Replaying it verbatim is what turns a recoverable turn into a
+    dead one: the backend answers ``400 invalid tool call arguments`` and
+    the whole turn fails. The empty object is the honest repair — it
+    states "this call carried no usable arguments" and keeps the history
+    well-formed, so the model can re-issue the call.
+
+    The kernel already refused to dispatch such a call and fed the model
+    an error; this only makes the REPLAY of that refusal survivable.
+    """
+    if isinstance(raw_arguments, str):
+        if _is_parseable_tool_arguments(raw_arguments):
+            return raw_arguments
+        return "{}"
+    if isinstance(raw_arguments, dict):
+        try:
+            return json.dumps(raw_arguments)
+        except (TypeError, ValueError):
+            return "{}"
+    return "{}"
 
 
 def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -1263,7 +1314,7 @@ def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
         "type": tool_call.get("type", "function") or "function",
         "function": {
             "name": str(raw_name or ""),
-            "arguments": _normalize_openai_tool_arguments(raw_arguments),
+            "arguments": _repair_openai_tool_arguments(raw_arguments),
         },
     }
     thought_sig = tool_call.get("thought_signature")
