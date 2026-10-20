@@ -14,9 +14,13 @@ jobs:
     name: Validate release commit
     uses: ./.github/workflows/ci.yml
 
+  docs:
+    name: Validate documentation
+    uses: ./.github/workflows/docs.yml
+
   build:
     name: Build distributions
-    needs: ci
+    needs: [ci, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read

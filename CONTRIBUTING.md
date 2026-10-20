@@ -67,6 +67,13 @@ Validate local links, complete examples, paths, and ownership of commands.
 For prose-only changes, no live model test is required. Do not add working-tree
 audits or one-off incident reports to the maintained corpus.
 
+Run the [documentation gate](docs/TESTING.md#documentation-gate) before
+committing a doc change:
+
+```sh
+uv run python scripts/check_docs.py
+```
+
 ## Pull request checklist
 
 - [ ] Scope respects the package boundaries and the

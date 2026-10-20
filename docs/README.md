@@ -69,8 +69,7 @@ The [project README](../README.md) explains the project and its current status.
 
 Guides describe shipped behavior; specifications describe maintained
 contracts. Proposals must say what is not implemented and must not be used
-as setup instructions. The [blog](blog/) contains dated explanations, not
-API or support guarantees.
+as setup instructions.
 
 Keep one canonical reference for each concept and link to it from module
 READMEs. Put current work in issues and change history in the changelog/Git,

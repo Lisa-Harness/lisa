@@ -1,0 +1,29 @@
+name: Docs
+
+on:
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Documentation quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The doc gate is stdlib-only, so it runs without installing the
+      # workspace. It stays cheap enough to run on every change, which is
+      # what catches a code move that breaks a documented link.
+      - name: Check documentation structure
+        run: python scripts/check_docs.py

@@ -102,7 +102,7 @@ and never write it into redirected output as if it were the requested
 artifact. One-shot hosts exit non-zero instead. A non-empty
 `yield_mode_id` means a reply resumes in that mode; an empty value resumes
 in place. For one-shot hosts the question is durable on the thread (`yielded`
-+ `yield_question`), so scripts can also resolve it via `/resume`.
+and `yield_question`), so scripts can also resolve it via `/resume`.
 
 ## Integration checklist
 

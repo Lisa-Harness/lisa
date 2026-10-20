@@ -69,6 +69,45 @@ to hide a regression. `xfail_strict = true` makes unexpected passes fail.
 The `lisa verify` CLI smoke check is separate: the framework workspace does
 not install `lisa`, and the current framework CI does not run that command.
 
+## Documentation gate
+
+The [Docs workflow](../.github/workflows/docs.yml) runs a documentation-only
+check on every push and pull request. It is stdlib-only, so it needs no
+workspace install and stays cheap enough to run on every change:
+
+```sh
+uv run python scripts/check_docs.py
+```
+
+The gate checks the maintained corpus — the guides under `docs/`, the
+root-level policy files, and every package `README.md` or `AUTHORING.md` —
+for relative links that do not resolve, `#anchor` fragments that match no
+heading, code fences with no language or no closing fence, files that do not
+end with exactly one newline, trailing whitespace, and lists that start
+without a blank line.
+
+Markdown that is *not* documentation is out of scope: pack content (modes,
+operations, prompts, sessions), test fixtures, and Copilot customization
+files are inputs to the runtime or the agent host, and the tests that load
+them cover them. A change to one of those files still runs the full CI
+matrix; a change to a guide does not.
+
+## When CI runs
+
+The [CI workflow](../.github/workflows/ci.yml) skips the quality, test, and
+coverage matrix when a push or pull request changes only documentation
+(`docs/**`, root-level `*.md`, and any `README.md` or `AUTHORING.md`). The
+documentation gate still runs, so a doc-only change is still checked.
+
+Markdown that the runtime or the agent host loads is *not* documentation and
+does not trigger the skip: pack content, test fixtures, and the files under
+`.github/` that carry Copilot customizations all run the full matrix. A
+`README.md` placed inside a scanned content directory would be treated as
+content, not documentation, and would need its own exception.
+
+The release workflow calls both CI and the documentation gate, so a tag
+build is validated regardless of which files the release commit touched.
+
 ## Pack and host changes
 
 Use [packstest](../packstest/README.md) before any installed-package route:
@@ -95,3 +134,11 @@ Check relative links, heading targets, command ownership, and example schema
 validity. Validate complete examples against the current compiler/catalog;
 label partial blocks explicitly. Documentation-only edits do not need a
 live model run. Do not claim all quality gates passed based on a link check.
+
+The [documentation gate](#documentation-gate) checks links, anchors, code
+fences, and whitespace in the maintained corpus. Run it before committing a
+doc change:
+
+```sh
+uv run python scripts/check_docs.py
+```

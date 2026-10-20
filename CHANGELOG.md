@@ -4,6 +4,40 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### A documentation gate, and a CI matrix that skips documentation-only changes
+
+- **What:** a new [Docs workflow](.github/workflows/docs.yml) runs
+  `scripts/check_docs.py` on every push and pull request. The gate checks
+  the maintained documentation corpus — the guides under `docs/`, the
+  root-level policy files, and every package `README.md` or
+  `AUTHORING.md` — for relative links that do not resolve, `#anchor`
+  fragments that match no heading, code fences with no language or no
+  closing fence, files that do not end with exactly one newline, trailing
+  whitespace, and lists that start without a blank line. It is stdlib-only,
+  so it needs no workspace install.
+- **Why:** the full quality, test, and coverage matrix is the right gate
+  for a code change and the wrong gate for a prose change. A guide edit
+  was paying for a six-job, three-platform test run that could not observe
+  anything about the edit, while the defects a prose change actually
+  causes — a moved file behind a link, a renamed heading behind an anchor
+  — went unchecked because no job looked at the documentation at all.
+- **What:** the [CI workflow](.github/workflows/ci.yml) now skips its
+  matrix when a push or pull request changes only documentation
+  (`docs/**`, root-level `*.md`, and any `README.md` or `AUTHORING.md`).
+  The documentation gate still runs, so a doc-only change is still
+  checked.
+- **Not affected:** Markdown that the runtime or the agent host loads is
+  not documentation. Pack content (modes, operations, prompts, sessions),
+  test fixtures, and the Copilot customization files under `.github/` all
+  run the full matrix, because a change to any of them changes behavior
+  rather than prose.
+- **Release safety:** the release workflow calls both CI and the
+  documentation gate, and a `workflow_call` trigger ignores path filters,
+  so a tag build is validated regardless of which files the release
+  commit touched.
+
 ### Fixed
 
 #### Text writes are newline-terminated, and their receipts say so

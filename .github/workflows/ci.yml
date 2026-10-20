@@ -4,8 +4,25 @@ on:
   workflow_call:
   push:
     branches: [main]
+    # A documentation-only change does not affect the code, so the full
+    # quality/test/coverage matrix is skipped. The Docs workflow still runs
+    # and checks the documentation itself. Markdown that the runtime or the
+    # agent host loads -- pack content (modes, operations, prompts,
+    # sessions), test fixtures, and Copilot customization files -- is not
+    # documentation and is deliberately not ignored here: a README placed
+    # in a scanned content directory would need its own exception.
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "**/README.md"
+      - "**/AUTHORING.md"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "**/README.md"
+      - "**/AUTHORING.md"
 
 jobs:
   quality:
