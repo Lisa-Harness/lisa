@@ -153,9 +153,9 @@ leave the environment blank. Each distribution needs its own registration:
 | --- | --- |
 | `lisa` | `lisa-harness-kernel`, `lisa-harness-sdk`, `lisa-harness-mcp-servers`, `lisa-harness-runtime`, `lisa-harness-packstest`, `lisa-harness-e2e`, `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-recovery` |
 | `lisa-cli` | `lisa-cli` |
-| Each `lisa-pack-*` repository | The matching repository name: `lisa-pack-bash`, `lisa-pack-brave`, `lisa-pack-bwrap`, `lisa-pack-coding`, `lisa-pack-markdown`, `lisa-pack-okf`, `lisa-pack-personas`, `lisa-pack-powershell`, `lisa-pack-search`, `lisa-pack-serper`, `lisa-pack-tavily` |
+| Each `lisa-pack-*` repository | The matching repository name: `lisa-pack-bash`, `lisa-pack-brave`, `lisa-pack-bwrap`, `lisa-pack-coding`, `lisa-pack-headroom`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-personas`, `lisa-pack-powershell`, `lisa-pack-search`, `lisa-pack-serper`, `lisa-pack-tavily` |
 
-These 13 repositories publish 22 distributions. No PyPI API token is needed.
+These 16 repositories publish 25 distributions. No PyPI API token is needed.
 Only distribution building is shared through `build-package.yml`; each
 repository's own `publish.yml` performs the Trusted Publishing exchange.
 
