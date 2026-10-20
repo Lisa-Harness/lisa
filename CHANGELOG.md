@@ -48,7 +48,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_aggregate_joins_a_tool_name_streamed_in_pieces`,
   `test_aggregate_gives_a_late_id_the_call_it_names`,
   `test_aggregate_never_glues_two_complete_payloads`,
-  `test_aggregate_never_glues_across_indices`);
+  `test_aggregate_never_glues_across_indices`,
+  `test_aggregate_never_glues_a_repeated_id_with_two_payloads`,
+  `test_aggregate_keeps_a_late_id_at_its_own_index`);
   `sdk/tests/test_anthropic_gateway.py`
   (`test_normalize_repairs_unparseable_tool_call_arguments`,
   `test_normalize_repairs_length_cut_tool_call_arguments`,

@@ -1770,3 +1770,67 @@ def test_aggregate_never_glues_across_indices() -> None:
     by_name = {call["function"]["name"]: call for call in result.tool_calls}
     assert json.loads(by_name["tool_a"]["function"]["arguments"]) == {"x": 1}
     assert json.loads(by_name["tool_b"]["function"]["arguments"]) == {"y": 2}
+
+
+def test_aggregate_never_glues_a_repeated_id_with_two_payloads() -> None:
+    """A repeated id does not let two payloads glue into one call.
+
+    The id names the call, but the id alone is not enough to continue
+    it: the fragment must also not glue a second payload onto the
+    staged one. A backend that repeats its id on every fragment sends a
+    PARTIAL payload each time, and that continues the call.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "tool_a", "arguments": '{"x":1}'},
+                }
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "tool_b", "arguments": '{"y":2}'},
+                }
+            ]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    for call in result.tool_calls:
+        assert isinstance(json.loads(call["function"]["arguments"]), dict), (
+            "a call must hold one JSON object"
+        )
+
+
+def test_aggregate_keeps_a_late_id_at_its_own_index() -> None:
+    """A late id never adopts a call the backend placed at another index.
+
+    Searching the whole stream for a call still waiting for an id
+    routed the continuation to a call at a different index and merged
+    two calls that never shared one.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "read_file", "arguments": '{"p":'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {
+                    "index": 1,
+                    "id": "call_2",
+                    "function": {"name": "read_file", "arguments": '{"p":'},
+                }
+            ]
+        ),
+        StreamedChunk(tool_call_deltas=[{"index": 0, "function": {"arguments": "1}"}}]),
+        StreamedChunk(tool_call_deltas=[{"index": 1, "function": {"arguments": "2}"}}]),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2
+    payloads = sorted(call["function"]["arguments"] for call in result.tool_calls)
+    assert payloads == ['{"p":1}', '{"p":2}']

@@ -630,12 +630,24 @@ def _candidate_for_a_known_id(
     one index sends each call's own name, and the late id belongs to
     the call with that name. A call that already carries an id is a
     different call.
+
+    Only the calls the backend placed at this fragment's index are
+    considered. A call at another index is a different call, and
+    adopting it would merge two calls that never shared one.
     """
     waiting = [
         candidate
-        for candidate in list(staged.values())
+        for candidate in _calls_at_index(staged, index)
         if not candidate["id"] and not _call_is_complete(candidate)
     ]
+    if not waiting and index is None:
+        # Without an index there is nothing to narrow the search to, so
+        # any call still waiting for an id may be the one.
+        waiting = [
+            candidate
+            for candidate in list(staged.values())
+            if not candidate["id"] and not _call_is_complete(candidate)
+        ]
     if not waiting:
         return None
     for candidate in waiting:
@@ -646,7 +658,11 @@ def _candidate_for_a_known_id(
             return candidate
     if len(waiting) == 1:
         return waiting[0]
-    return None
+    # Several calls are waiting at this index and the fragment did not
+    # name one of them. The most recently started is the current call
+    # at the index: the backend interleaves the calls, and the id
+    # belongs to the one it is currently filling.
+    return waiting[-1]
 
 
 def _candidate_for_a_fragment(
@@ -697,7 +713,17 @@ def _select_staged_slot(
     if call_id:
         staged_call = _find_staged_by_id(staged, call_id)
         if staged_call is not None:
-            return staged_call
+            # The id names the call, but the id alone is not enough: the
+            # fragment must also not glue a second payload onto it. A
+            # backend that repeats its id on every fragment sends a
+            # PARTIAL payload each time, and that continues the call.
+            if _can_continue_call(staged_call, name, arguments):
+                return staged_call
+            entry = _start_new_staged_slot(staged, index)
+            entry["id"] = call_id
+            if name:
+                entry["name"] = name
+            return entry
         candidate = _candidate_for_a_known_id(staged, call_id, index, name)
     else:
         candidate = _candidate_for_a_fragment(staged, index)
