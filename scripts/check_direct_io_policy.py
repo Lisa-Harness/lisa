@@ -194,7 +194,7 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "(data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "shutil.rmtree(legacy_checkpoints)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
-        'resolved.write_text(content, encoding="utf-8")',
+        'resolved.write_text(stored, encoding="utf-8")',
         "resolved.unlink()",
         "resolved.mkdir(parents=True, exist_ok=True)",
         "checkpoints_root.mkdir(parents=True, exist_ok=True)",

@@ -30,6 +30,43 @@ _FILES_SUBDIR = "files"
 
 logger = logging.getLogger(__name__)
 
+#: Suffixes whose bytes are not text. A file with one of these suffixes is
+#: stored exactly as given — normalizing its trailing bytes would corrupt
+#: the format (a PNG's final byte is part of its IEND chunk, a DB's page
+#: layout is byte-exact).
+_BINARY_SUFFIXES = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff",
+        ".pdf", ".zip", ".gz", ".bz2", ".xz", ".7z", ".tar", ".jar", ".whl",
+        ".so", ".dylib", ".dll", ".exe", ".bin", ".class", ".o", ".a",
+        ".pyc", ".wasm", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".mp3", ".mp4", ".m4a", ".mov", ".avi", ".mkv", ".wav", ".flac",
+        ".sqlite", ".sqlite3", ".db",
+    }
+)
+
+
+def _is_text_content(path: str, content: str) -> bool:
+    """Return True when ``content`` may be normalized as text.
+
+    A payload is text when it decodes as UTF-8 and the target path does
+    not name a binary format. The suffix check is what keeps a PNG or a
+    SQLite database byte-exact: normalizing its trailing bytes would
+    corrupt the format, and those formats are exactly the ones whose
+    final byte is significant.
+
+    Decodability is the other half. A string that is not valid UTF-8
+    cannot be a text document, and it must be stored as given.
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix in _BINARY_SUFFIXES:
+        return False
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
 
 class PathRejected(Exception):
     """Raised when a path is denied by the glob denylist policy.
@@ -215,7 +252,22 @@ class StorageBackend:
         """Write text content to a file in the files sandbox.
 
         Creates parent directories as needed. Respects ``readonly``.
-        Returns a JSON object with ``ok``, ``path``, and ``bytes``.
+
+        Text content is stored newline-terminated: a POSIX text file ends
+        with a newline, and a file whose final byte is missing is read
+        back by tools (and by ``cat``) as if the last line were cut off.
+        The 2026-10-19 incident wrote a session plan whose final newline
+        the model had dropped, and ``cat`` glued the shell prompt onto
+        the last line of the file. The receipt reports
+        ``trailing_newline_added`` so the caller knows the stored bytes
+        differ from the bytes it sent.
+
+        Binary content — a path with a binary suffix, or a payload that
+        is not valid UTF-8 — is stored exactly as given. Normalizing
+        those bytes would corrupt the format.
+
+        Returns a JSON object with ``ok``, ``path``, ``bytes``, and
+        ``trailing_newline_added``.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
@@ -223,10 +275,29 @@ class StorageBackend:
         if err is not None:
             return err
         assert resolved is not None
+        stored = content
+        newline_added = False
+        if content and not content.endswith("\n") and _is_text_content(path, content):
+            stored = content + "\n"
+            newline_added = True
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(content, encoding="utf-8")
-            return json.dumps({"ok": True, "path": path, "bytes": len(content.encode("utf-8"))})
+            resolved.write_text(stored, encoding="utf-8")
+            return json.dumps(
+                {
+                    "ok": True,
+                    "path": path,
+                    "bytes": len(stored.encode("utf-8")),
+                    "trailing_newline_added": newline_added,
+                }
+            )
+        except UnicodeEncodeError:
+            # The payload is not encodable as UTF-8 (a lone surrogate, which
+            # a cut multi-byte character can produce). It is not text, so
+            # it was not normalized, and it cannot be stored as a text
+            # file either — report that instead of raising out of the
+            # tool.
+            return json.dumps({"error": "content is not valid UTF-8 text"})
         except OSError as exc:
             return json.dumps({"error": f"write failed: {exc}"})
 
@@ -378,8 +449,15 @@ class StorageBackend:
         """Append text content to a file in the files sandbox.
 
         Creates parent directories as needed. Creates the file if it does
-        not exist. Respects ``readonly``. Returns a JSON object with
-        ``ok``, ``path``, and ``bytes`` (the new total file size in bytes).
+        not exist. Respects ``readonly``.
+
+        Returns a JSON object with ``ok``, ``path``, ``bytes`` (the new
+        total file size in bytes), and ``appended_bytes`` (the number of
+        bytes this call added). The two differ when the append added
+        nothing: an empty append is a genuine no-op, but the old
+        receipt reported ``ok`` for it, and a receipt that claims a
+        write happened when no bytes moved is not proof of an effect.
+        ``appended_bytes`` is the field that distinguishes the two.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
@@ -388,6 +466,7 @@ class StorageBackend:
             return err
         assert resolved is not None
         try:
+            appended = len(content.encode("utf-8"))
             resolved.parent.mkdir(parents=True, exist_ok=True)
             # newline="" disables platform newline translation so disk bytes
             # match the input exactly (a storage primitive should be
@@ -396,7 +475,16 @@ class StorageBackend:
             # that's an existing concern out of scope here).
             with resolved.open("a", encoding="utf-8", newline="") as handle:
                 handle.write(content)
-            return json.dumps({"ok": True, "path": path, "bytes": resolved.stat().st_size})
+            return json.dumps(
+                {
+                    "ok": True,
+                    "path": path,
+                    "bytes": resolved.stat().st_size,
+                    "appended_bytes": appended,
+                }
+            )
+        except UnicodeEncodeError:
+            return json.dumps({"error": "content is not valid UTF-8 text"})
         except OSError as exc:
             return json.dumps({"error": f"append failed: {exc}"})
 

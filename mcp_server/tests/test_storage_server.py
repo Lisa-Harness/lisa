@@ -92,10 +92,70 @@ async def test_write_read_roundtrip(storage_setup: None) -> None:
     data = json.loads(_tool_text(write_result))
     assert data["ok"] is True
     assert data["bytes"] > 0
+    # The receipt states that the stored text is newline-terminated.
+    assert data["trailing_newline_added"] is True
 
     read_result = await mcp.call_tool("read_file", {"path": "reports/daily.md"})
     text = _tool_text(read_result)
     assert "# Hello" in text
+
+
+@pytest.mark.asyncio
+async def test_write_file_newline_terminates_text(storage_setup: None) -> None:
+    """The tool's end-to-end write contract: text lands newline-terminated.
+
+    A file whose final newline is missing reads back as if its last line
+    were cut off — ``cat`` glued the shell prompt onto the last line of a
+    session plan on 2026-10-19. Storage owns file semantics, so it
+    enforces the rule and reports that it did.
+    """
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool(
+        "write_file", {"path": "plan.md", "content": "ends the turn."}
+    )
+    data = json.loads(_tool_text(result))
+    assert data["ok"] is True
+    assert data["trailing_newline_added"] is True
+    assert data["bytes"] == len(b"ends the turn.\n")
+
+    read_result = await mcp.call_tool("read_file", {"path": "plan.md"})
+    assert _tool_text(read_result) == "ends the turn.\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_leaves_binary_content_exact(storage_setup: None) -> None:
+    """A binary format is not text; its trailing bytes stay untouched."""
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool(
+        "write_file", {"path": "image.png", "content": "PNG-not-really"}
+    )
+    data = json.loads(_tool_text(result))
+    assert data["ok"] is True
+    assert data["trailing_newline_added"] is False
+    assert data["bytes"] == len(b"PNG-not-really")
+
+
+@pytest.mark.asyncio
+async def test_append_file_reports_appended_bytes(storage_setup: None) -> None:
+    """The append receipt proves an effect landed.
+
+    An empty append changes nothing; ``appended_bytes`` says so, which
+    the resulting file size alone cannot.
+    """
+    from mcp_server.storage.server import mcp
+
+    first = await mcp.call_tool("append_file", {"path": "log.txt", "content": "K1\n"})
+    data = json.loads(_tool_text(first))
+    assert data["appended_bytes"] == 3
+    assert data["bytes"] == 3
+
+    empty = await mcp.call_tool("append_file", {"path": "log.txt", "content": ""})
+    data = json.loads(_tool_text(empty))
+    assert data["ok"] is True
+    assert data["appended_bytes"] == 0
+    assert data["bytes"] == 3
 
 
 @pytest.mark.asyncio
@@ -108,7 +168,7 @@ async def test_read_file_range_roundtrip(storage_setup: None) -> None:
     assert data["content"] == "2345"
     assert data["start"] == 2
     assert data["length"] == 4
-    assert data["total"] == 10
+    assert data["total"] == 11
     assert data["eof"] is False
 
 

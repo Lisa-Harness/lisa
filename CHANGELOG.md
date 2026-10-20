@@ -2,6 +2,49 @@
 
 All notable changes to the Lisa Harness will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+#### Text writes are newline-terminated, and their receipts say so
+
+- **What:** `lisa-storage.write_file` stores text content
+  newline-terminated and reports `trailing_newline_added` in its receipt,
+  so the caller knows when the stored bytes differ from the bytes it
+  sent. `lisa-storage.append_file` reports `appended_bytes` alongside
+  the resulting file size. The write also reports a clean error for
+  content that cannot be encoded as UTF-8 instead of raising out of the
+  tool.
+- **Why:** the 2026-10-19 glued-prompt defect. A session plan was
+  written without its final newline and `cat` painted the shell prompt
+  onto the last line of the file. The newline was never in the model's
+  emitted tool-call arguments — the provider's payload lacked it — and
+  the storage backend faithfully stored what it received, so every layer
+  between the provider and the disk is byte-faithful. Storage is the
+  layer that owns file semantics, so it enforces the POSIX text-file
+  rule and reports that it did, rather than leaving the defect to
+  recur silently on the next write. The `append_file` receipt reported
+  `ok` for an append that moved no bytes, so the receipt did not prove
+  an effect had landed; `appended_bytes` is the field that does.
+- **Not affected:** binary content. A path with a binary suffix
+  (`.png`, `.db`, `.pdf`, …) is stored byte-for-byte, because those
+  formats put significant data in their final bytes.
+- **Tests:** `sdk/src/sdk/storage/tests/test_backend.py`
+  (`test_write_file_adds_missing_trailing_newline`,
+  `test_write_file_keeps_existing_trailing_newline`,
+  `test_write_file_keeps_exactly_one_trailing_newline`,
+  `test_write_file_keeps_leading_newline`,
+  `test_write_file_xy_control_keeps_its_bytes`,
+  `test_write_file_empty_content_is_untouched`,
+  `test_write_file_leaves_binary_suffix_content_exact`,
+  `test_write_file_rejects_non_utf8_content`,
+  `test_append_file_reports_appended_bytes`,
+  `test_append_file_empty_append_reports_no_bytes_appended`),
+  `mcp_server/tests/test_storage_server.py`
+  (`test_write_file_newline_terminates_text`,
+  `test_write_file_leaves_binary_content_exact`,
+  `test_append_file_reports_appended_bytes`).
+
 ## [0.1.1] — 2026-10-20
 
 ### Fixed

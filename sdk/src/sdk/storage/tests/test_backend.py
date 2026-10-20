@@ -83,7 +83,9 @@ def test_write_read_roundtrip(tmp_path: Path) -> None:
     w = json.loads(b.write_file("reports/daily.md", "# Hello"))
     assert w["ok"] is True
     assert w["bytes"] > 0
-    assert b.read_file("reports/daily.md") == "# Hello"
+    # Text content is stored newline-terminated (the POSIX text-file rule).
+    assert w["trailing_newline_added"] is True
+    assert b.read_file("reports/daily.md") == "# Hello\n"
 
 
 def test_read_absent_returns_error(tmp_path: Path) -> None:
@@ -141,7 +143,9 @@ def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")
     data = json.loads(b.stat_file("stat_me.txt"))
-    assert data["size"] == 5
+    # The stored file is newline-terminated, so it is one byte longer than
+    # the text that was written.
+    assert data["size"] == 6
     assert data["is_dir"] is False
 
 
@@ -159,7 +163,7 @@ def test_read_file_range_roundtrip(tmp_path: Path) -> None:
     assert data["content"] == "2345"
     assert data["start"] == 2
     assert data["length"] == 4
-    assert data["total"] == 10
+    assert data["total"] == 11
     assert data["eof"] is False
 
 
@@ -167,8 +171,8 @@ def test_read_file_range_eof(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("range.txt", "0123456789")
     data = json.loads(b.read_file_range("range.txt", start=8, length=10))
-    assert data["content"] == "89"
-    assert data["length"] == 2
+    assert data["content"] == "89\n"
+    assert data["length"] == 3
     assert data["eof"] is True
 
 
@@ -178,7 +182,7 @@ def test_read_file_range_start_past_end(tmp_path: Path) -> None:
     data = json.loads(b.read_file_range("range.txt", start=50, length=10))
     assert data["content"] == ""
     assert data["length"] == 0
-    assert data["total"] == 3
+    assert data["total"] == 4
     assert data["eof"] is True
 
 
@@ -189,7 +193,7 @@ def test_read_file_range_char_safe_multibyte(tmp_path: Path) -> None:
     b.write_file("multi.txt", text)
     data = json.loads(b.read_file_range("multi.txt", start=1, length=1))
     assert data["content"] == "á"
-    assert data["total"] == 3
+    assert data["total"] == 4
 
 
 def test_read_file_range_defaults_from_zero(tmp_path: Path) -> None:
@@ -197,7 +201,7 @@ def test_read_file_range_defaults_from_zero(tmp_path: Path) -> None:
     b.write_file("range.txt", "hello")
     data = json.loads(b.read_file_range("range.txt"))
     assert data["start"] == 0
-    assert data["content"] == "hello"
+    assert data["content"] == "hello\n"
     assert data["eof"] is True
 
 
@@ -249,6 +253,142 @@ def test_append_file_traversal_rejected(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.append_file("../escape.txt", "x"))
     assert "error" in data
+
+
+# ── Trailing-newline write contract ──────────────────────────────────────────
+#
+# The 2026-10-19 incident: a session plan was written without its final
+# newline, and ``cat`` glued the shell prompt onto the last line of the
+# file. The loss was NOT in storage — it was in the model's emitted tool
+# arguments — but storage is the layer that owns file semantics, so it
+# enforces the POSIX text-file rule and says so in the receipt.
+
+
+def test_write_file_adds_missing_trailing_newline(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("plan.md", "ends the turn."))
+    assert receipt["ok"] is True
+    assert receipt["trailing_newline_added"] is True
+    assert receipt["bytes"] == len(b"ends the turn.\n")
+    assert b.read_file("plan.md") == "ends the turn.\n"
+
+
+def test_write_file_keeps_existing_trailing_newline(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("plan.md", "ends the turn.\n"))
+    assert receipt["trailing_newline_added"] is False
+    assert receipt["bytes"] == len(b"ends the turn.\n")
+    assert b.read_file("plan.md") == "ends the turn.\n"
+
+
+def test_write_file_keeps_exactly_one_trailing_newline(tmp_path: Path) -> None:
+    """A doubled trailing newline is content, not a missing newline."""
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("plan.md", "C1\nC2\n\n"))
+    assert receipt["trailing_newline_added"] is False
+    assert b.read_file("plan.md") == "C1\nC2\n\n"
+
+
+def test_write_file_keeps_leading_newline(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("plan.md", "\nB1\nB2"))
+    assert receipt["trailing_newline_added"] is True
+    assert b.read_file("plan.md") == "\nB1\nB2\n"
+
+
+def test_write_file_xy_control_keeps_its_bytes(tmp_path: Path) -> None:
+    """The ``XY`` control from the 2026-10-19 probe.
+
+    ``XY`` contains no newline, so it cannot discriminate a strip from an
+    omission — the flaw that made the original diagnosis wrong. It is
+    kept as the control: the payload is stored verbatim apart from the
+    text-file newline rule, and the receipt states that it was added.
+    """
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("probe.txt", "XY"))
+    assert receipt["ok"] is True
+    assert receipt["trailing_newline_added"] is True
+    assert receipt["bytes"] == 3
+    assert b.read_file("probe.txt") == "XY\n"
+
+
+def test_write_file_empty_content_is_untouched(tmp_path: Path) -> None:
+    """An empty write is empty — there is no newline to add."""
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("empty.txt", ""))
+    assert receipt["ok"] is True
+    assert receipt["trailing_newline_added"] is False
+    assert receipt["bytes"] == 0
+    assert b.read_file("empty.txt") == ""
+
+
+def test_write_file_leaves_binary_suffix_content_exact(tmp_path: Path) -> None:
+    """A binary format is stored byte-for-byte.
+
+    Normalizing the trailing byte of a PNG or a database would corrupt
+    it: those formats put significant data in their final bytes.
+    """
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("image.png", "PNG-not-really"))
+    assert receipt["trailing_newline_added"] is False
+    assert receipt["bytes"] == len(b"PNG-not-really")
+    assert (b.files_root() / "image.png").read_bytes() == b"PNG-not-really"
+
+
+def test_write_file_rejects_non_utf8_content(tmp_path: Path) -> None:
+    """Content that is not valid UTF-8 is not text and is not storable.
+
+    A lone surrogate (which a cut multi-byte character can produce) cannot
+    be encoded as UTF-8, so it can never be written as a text file. The
+    write reports an error instead of raising out of the tool.
+    """
+    b = _backend(tmp_path)
+    receipt = json.loads(b.write_file("broken.txt", "bad\ud800end"))
+    assert "error" in receipt
+    assert receipt["error"] == "content is not valid UTF-8 text"
+
+
+def test_write_file_receipt_reports_added_newline_only_once(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    first = json.loads(b.write_file("plan.md", "one"))
+    assert first["trailing_newline_added"] is True
+    second = json.loads(b.write_file("plan.md", "one\n"))
+    assert second["trailing_newline_added"] is False
+
+
+def test_append_file_reports_appended_bytes(tmp_path: Path) -> None:
+    """The receipt proves an effect landed.
+
+    ``bytes`` is the resulting file size, so it cannot tell an append
+    that moved bytes from one that moved none. ``appended_bytes`` is the
+    field that can.
+    """
+    b = _backend(tmp_path)
+    first = json.loads(b.append_file("log.txt", "line1\n"))
+    assert first["ok"] is True
+    assert first["appended_bytes"] == len(b"line1\n")
+    assert first["bytes"] == len(b"line1\n")
+    second = json.loads(b.append_file("log.txt", "line2\n"))
+    assert second["appended_bytes"] == len(b"line2\n")
+    assert second["bytes"] == len(b"line1\nline2\n")
+
+
+def test_append_file_empty_append_reports_no_bytes_appended(tmp_path: Path) -> None:
+    """An empty append is a genuine no-op, and the receipt says so."""
+    b = _backend(tmp_path)
+    b.append_file("log.txt", "K1\n")
+    receipt = json.loads(b.append_file("log.txt", ""))
+    assert receipt["ok"] is True
+    assert receipt["appended_bytes"] == 0
+    assert receipt["bytes"] == 3
+    assert b.read_file("log.txt") == "K1\n"
+
+
+def test_append_file_rejects_non_utf8_content(tmp_path: Path) -> None:
+    """Content that cannot be encoded as UTF-8 is reported, not raised."""
+    b = _backend(tmp_path)
+    receipt = json.loads(b.append_file("broken.txt", "bad\ud800end"))
+    assert receipt["error"] == "content is not valid UTF-8 text"
 
 
 def test_readonly_rejects_writes(tmp_path: Path) -> None:

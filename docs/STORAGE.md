@@ -44,6 +44,28 @@ paths and deny-glob checks; [lisa-storage](../mcp_server/README.md) exposes
 that backend. This file sandbox is not an OS sandbox for arbitrary Python
 pack code or shell processes.
 
+### Write contract
+
+`write_file` stores **text** content newline-terminated. A POSIX text file
+ends with a newline, and a file whose final byte is missing reads back as
+if its last line were cut off — `cat` glued the shell prompt onto the
+last line of a session plan on 2026-10-19. The receipt reports
+`trailing_newline_added` so the caller knows the stored bytes differ from
+the bytes it sent, and `bytes` reports the size of the bytes actually
+stored.
+
+The rule applies to text only. Content whose path carries a binary
+suffix (`.png`, `.db`, `.pdf`, …) is stored byte-for-byte: those formats
+put significant data in their final bytes, and normalizing them corrupts
+the file. Content that is not valid UTF-8 is rejected with an error
+rather than written — a lone surrogate cannot be encoded as a text file.
+
+`append_file` appends exactly the bytes it is given. Its receipt reports
+`bytes` (the resulting file size) **and** `appended_bytes` (what this
+call added). The size alone cannot tell an append that moved bytes from
+an empty append that moved none, and a receipt that claims a write
+happened when no bytes moved is not proof of an effect.
+
 Host-owned persistence and backend implementations sometimes need direct I/O.
 The repository's [direct-I/O check](../scripts/check_direct_io_policy.py) is
 an AST-based contributor gate:
