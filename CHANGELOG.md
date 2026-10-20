@@ -13,16 +13,16 @@ All notable changes to the Lisa Harness will be documented in this file.
   parallel calls that share an index stay separate, a call is never
   split by a repeated id, a late id, a repeated tool name or a name
   streamed in pieces, calls at distinct indices stay separate even
-  without an id, and two complete payloads are never glued into one. The
-  slots the stitcher allocates cannot collide with a backend's own
-  indices. The OpenAI-compatible gateway repairs a tool call whose
-  arguments do not parse into the empty object before replaying it, so a
-  refused call cannot kill the turn that follows it. The Anthropic,
-  Google and Bedrock gateways coerce the same payloads through one
-  shared helper. The repair validates against strict JSON: it rejects
-  the non-finite constants Python accepts, integers beyond the float64
-  range a strict backend decodes with, and lone surrogates the
-  transport's UTF-8 encoder cannot write — while keeping legitimate
+  without an id, and no call ever ends up holding two payloads glued
+  together. The slots the stitcher allocates cannot collide with a
+  backend's own indices. The OpenAI-compatible gateway repairs a tool
+  call whose arguments do not parse into the empty object before
+  replaying it, so a refused call cannot kill the turn that follows it.
+  The Anthropic, Google and Bedrock gateways coerce the same payloads
+  through one shared helper. The repair validates against strict JSON:
+  it rejects the non-finite constants Python accepts, integers beyond
+  the float64 range a strict backend decodes with, and lone surrogates
+  the transport's UTF-8 encoder cannot write — while keeping legitimate
   large integers such as 64-bit ids.
 - **Why:** the 2026-10-19 MiniMax M3.1 Flash turn failure. Ollama streams
   every parallel tool call with `index: 0` and distinguishes them only by
@@ -47,7 +47,8 @@ All notable changes to the Lisa Harness will be documented in this file.
   `test_aggregate_keeps_a_call_whole_when_the_name_repeats`,
   `test_aggregate_joins_a_tool_name_streamed_in_pieces`,
   `test_aggregate_gives_a_late_id_the_call_it_names`,
-  `test_aggregate_never_glues_two_complete_payloads`);
+  `test_aggregate_never_glues_two_complete_payloads`,
+  `test_aggregate_never_glues_across_indices`);
   `sdk/tests/test_anthropic_gateway.py`
   (`test_normalize_repairs_unparseable_tool_call_arguments`,
   `test_normalize_repairs_length_cut_tool_call_arguments`,

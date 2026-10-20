@@ -439,14 +439,6 @@ def _find_staged_by_index(
     return None
 
 
-def _latest_staged_call(staged: dict[Any, dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the most recently started staged call."""
-
-    if not staged:
-        return None
-    return list(staged.values())[-1]
-
-
 def _start_new_staged_slot(
     staged: dict[Any, dict[str, Any]],
     index: int | None,
@@ -462,29 +454,6 @@ def _start_new_staged_slot(
     return _allocate_synthetic_slot(staged)
 
 
-def _find_staged_by_backend_index(
-    staged: dict[Any, dict[str, Any]],
-    index: int | None,
-) -> dict[str, Any] | None:
-    """Return the staged call that the backend placed at ``index``.
-
-    A backend that streams parallel calls at one index has several
-    staged calls claiming that index. The most recent one is the
-    current call at that index; a continuation fragment belongs to it
-    unless it has already finished, in which case the search falls back
-    to a call that is still mid-payload.
-    """
-    if index is None:
-        return None
-    candidates: list[_StagedToolCall] = [c for c in staged.values() if c.get("_index") == index]
-    if not candidates:
-        return None
-    for candidate in reversed(candidates):
-        if not _call_is_complete(candidate):
-            return candidate
-    return candidates[-1]
-
-
 def _arguments_are_complete(arguments: str) -> bool:
     """Return True when a call's arguments form one complete JSON object.
 
@@ -495,13 +464,9 @@ def _arguments_are_complete(arguments: str) -> bool:
     glued to a second object) is mid-payload, so the next fragment
     continues it.
 
-    An empty object is NOT a finished payload: ``{}`` is what a
+    An empty object IS a finished payload: ``{}`` is what a
     zero-parameter call carries, and a backend that sends a real payload
-    after it is still filling the call in.
-
-    This is what separates a parallel call from a continuation without
-    relying on the tool name, which a backend may repeat on every
-    fragment or stream in pieces.
+    after it is starting a DIFFERENT call.
     """
     if not arguments:
         return False
@@ -509,25 +474,13 @@ def _arguments_are_complete(arguments: str) -> bool:
         parsed = json.loads(arguments)
     except (json.JSONDecodeError, ValueError):
         return False
-    if not isinstance(parsed, dict):
-        return False
-    return bool(parsed)
+    return isinstance(parsed, dict)
 
 
 def _call_is_complete(entry: dict[str, Any]) -> bool:
     """Return True when a staged call has delivered a complete payload."""
 
     return _arguments_are_complete(entry["arguments"])
-
-
-def _fragment_delivers_whole_payload(arguments: str) -> bool:
-    """Return True when a fragment's own arguments are a complete object.
-
-    A fragment that carries a whole payload has nothing left to
-    continue, so it belongs to a call of its own.
-    """
-
-    return _arguments_are_complete(arguments)
 
 
 def _name_is_compatible(entry_name: str, fragment_name: str) -> bool:
@@ -537,11 +490,6 @@ def _name_is_compatible(entry_name: str, fragment_name: str) -> bool:
     not carry one. Otherwise the names must match exactly, or one must
     be a prefix of the other because a backend may stream the name in
     pieces.
-
-    A prefix relationship is only a hint, never a decision: two
-    different tools can share a prefix ("tool_a" and "tool_b" do not,
-    but "list" and "list_files" might), and the names that a backend
-    streams in pieces are told apart by the payload, not the prefix.
     """
     if not entry_name or not fragment_name:
         return True
@@ -550,49 +498,55 @@ def _name_is_compatible(entry_name: str, fragment_name: str) -> bool:
     return entry_name.startswith(fragment_name) or fragment_name.startswith(entry_name)
 
 
-def _select_slot_for_known_id(
+def _calls_at_index(
     staged: dict[Any, dict[str, Any]],
-    call_id: str,
     index: int | None,
-    name: str,
-    arguments: str,
-) -> dict[str, Any]:
-    """Return the staged call a fragment bearing a new id belongs to.
+) -> list[_StagedToolCall]:
+    """Return the staged calls the backend placed at ``index``."""
 
-    A new id normally means a new call. It can also be the id of a call
-    already staged whose id simply arrived late.
+    if index is None:
+        return []
+    return [c for c in staged.values() if c.get("_index") == index]
 
-    A staged call with no id yet and an unfinished payload is the one
-    whose id is arriving late, and it adopts the id. A staged call with
-    no id yet whose name matches the fragment's name adopts it too — its
-    payload was already complete, so the id was the only thing delayed.
 
-    A staged call whose name DIFFERS from the fragment's name is a
-    different tool, and never adopts the id.
+def _find_unfinished_at_index(
+    staged: dict[Any, dict[str, Any]],
+    index: int | None,
+) -> dict[str, Any] | None:
+    """Return the call at ``index`` that is still mid-payload.
+
+    Only calls at that index are considered. A continuation fragment
+    belongs to the call the backend placed at its index; routing it to a
+    call at a DIFFERENT index merged two calls that never shared one.
     """
-    at_index = _find_staged_by_backend_index(staged, index)
-    if (
-        at_index is not None
-        and not at_index["id"]
-        and _name_is_compatible(at_index["name"], name)
-        and (not _call_is_complete(at_index) or not name)
-    ):
-        return at_index
-    for candidate in staged.values():
-        if candidate["id"] or not _name_is_compatible(candidate["name"], name):
-            continue
+    for candidate in reversed(_calls_at_index(staged, index)):
         if not _call_is_complete(candidate):
             return candidate
-    candidates: list[_StagedToolCall] = list(staged.values())
-    for candidate in reversed(candidates):
-        if candidate["id"]:
+    return None
+
+
+def _find_unfinished_named(
+    staged: dict[Any, dict[str, Any]],
+    index: int | None,
+    name: str,
+) -> dict[str, Any] | None:
+    """Return the call at ``index`` with a matching name that is mid-payload.
+
+    A backend that streams a name in pieces sends the second piece with
+    the rest of the payload, so the names are only prefix-compatible.
+
+    Only the calls at the fragment's index are considered: a call the
+    backend placed at another index is a different call.
+    """
+    for candidate in reversed(_calls_at_index(staged, index)):
+        if _call_is_complete(candidate):
             continue
         if _name_is_compatible(candidate["name"], name):
             return candidate
-    return _start_new_staged_slot(staged, index)
+    return None
 
 
-def _find_unfinished_call(
+def _find_unnamed_unfinished(
     staged: dict[Any, dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Return the most recently started call that is still mid-payload."""
@@ -604,81 +558,114 @@ def _find_unfinished_call(
     return None
 
 
-def _slot_for_an_incomplete_fragment(
-    staged: dict[Any, dict[str, Any]],
-    at_index: dict[str, Any] | None,
-    arguments: str,
-) -> dict[str, Any] | None:
-    """Return the call an incomplete fragment continues, if any.
+def _concatenation_is_one_object(staged: str, fragment: str) -> bool:
+    """Return True when appending a fragment yields ONE JSON object.
 
-    An incomplete fragment continues the call that is still mid-payload.
-    The call at the index wins even when its payload is complete: the
-    backend is still sending fragments for it.
+    This is the decisive test for whether a fragment continues a call or
+    starts a new one. A call's arguments are a single JSON object, so a
+    fragment that completes one continues that call, and a fragment that
+    would leave two objects behind starts a call of its own.
+
+    The glued payload — two JSON objects end to end — is what the backend
+    rejects with ``400 invalid tool call arguments``, and it is the
+    signature of two calls merged into one.
     """
-    if not arguments or _arguments_are_complete(arguments):
-        return None
-    unfinished = _find_unfinished_call(staged)
-    if unfinished is not None:
-        return unfinished
-    return at_index
+    try:
+        parsed = json.loads(staged + fragment)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(parsed, dict)
 
 
-def _slot_for_a_nameless_fragment(
-    staged: dict[Any, dict[str, Any]],
-    at_index: dict[str, Any] | None,
-    arguments: str,
-) -> dict[str, Any] | None:
-    """Return the call a fragment with neither an id nor a name continues.
+def _names_are_incompatible(staged_name: str, fragment_name: str) -> bool:
+    """Return True when two names plainly name DIFFERENT tools.
 
-    The backend is still sending fragments for the call it placed at
-    that index.
-
-    The exception is a COMPLETE payload on a call that has already
-    delivered its own: the two would glue, which is the payload the
-    backend rejects. Such a fragment starts a call of its own, so this
-    returns None and the caller opens one.
+    The names alone cannot always tell a call from its continuation: a
+    backend may repeat a name on every fragment or stream it in pieces.
+    They are used only to REFUSE a merge, never to allow one. Two names
+    are incompatible when neither is a prefix of the other, so a name
+    streamed in pieces is never mistaken for a different tool.
     """
-    if at_index is None or not _arguments_are_complete(arguments):
-        return at_index
-    if _call_is_complete(at_index):
-        return None
-    return at_index
+    if not staged_name or not fragment_name:
+        return False
+    if staged_name == fragment_name:
+        return False
+    return not (staged_name.startswith(fragment_name) or fragment_name.startswith(staged_name))
 
 
-def _select_slot_without_id(
-    staged: dict[Any, dict[str, Any]],
-    index: int | None,
+def _can_continue_call(
+    staged: dict[str, Any],
     name: str,
     arguments: str,
-) -> dict[str, Any]:
-    """Return the staged call a fragment bearing no id belongs to.
+) -> bool:
+    """Return True when a fragment continues the staged call.
 
-    The argument payload decides: a fragment that completes a payload
-    continues the call that is still mid-payload, and a fragment that
-    carries a whole payload belongs to a call of its own.
+    The rules, in order:
 
-    The index and the name are only tiebreakers, because a backend may
-    share one index across parallel calls, repeat a name on every
-    fragment, or stream a name in pieces.
+    1. A call with no arguments yet takes the fragment's first piece.
+    2. A fragment that completes the staged call's payload continues it.
+    3. Two names that plainly name different tools are never one call.
+    4. Two partial payloads are one call: neither can start a call.
     """
-    at_index = _find_staged_by_backend_index(staged, index)
-    if at_index is not None and not _call_is_complete(at_index):
-        # The index names a call that is still mid-payload. It continues
-        # that call: a backend that streams a name in pieces sends the
-        # second piece with the rest of the payload, and the names are
-        # then only prefix-compatible.
-        return at_index
-    continued = _slot_for_an_incomplete_fragment(staged, at_index, arguments)
-    if continued is not None:
-        return continued
-    if at_index is None:
-        return _start_new_staged_slot(staged, index)
-    if not name:
-        nameless = _slot_for_a_nameless_fragment(staged, at_index, arguments)
-        return nameless if nameless is not None else _start_new_staged_slot(staged, index)
-    if _name_is_compatible(at_index["name"], name):
-        return at_index
-    return _start_new_staged_slot(staged, index)
+    staged_arguments = staged["arguments"]
+    if not staged_arguments or not arguments:
+        return True
+    if _concatenation_is_one_object(staged_arguments, arguments):
+        return True
+    if _names_are_incompatible(staged["name"], name):
+        return False
+    return not _arguments_are_complete(staged_arguments) and not _arguments_are_complete(arguments)
+
+
+def _candidate_for_a_known_id(
+    staged: dict[Any, dict[str, Any]],
+    call_id: str,
+    index: int | None,
+    name: str,
+) -> dict[str, Any] | None:
+    """Return the staged call a fragment bearing this id continues.
+
+    A call whose id has not arrived yet is waiting for it. The name
+    picks out which one: a backend that interleaves parallel calls at
+    one index sends each call's own name, and the late id belongs to
+    the call with that name. A call that already carries an id is a
+    different call.
+    """
+    waiting = [
+        candidate
+        for candidate in list(staged.values())
+        if not candidate["id"] and not _call_is_complete(candidate)
+    ]
+    if not waiting:
+        return None
+    for candidate in waiting:
+        if candidate["name"] == name:
+            return candidate
+    for candidate in waiting:
+        if _name_is_compatible(candidate["name"], name):
+            return candidate
+    if len(waiting) == 1:
+        return waiting[0]
+    return None
+
+
+def _candidate_for_a_fragment(
+    staged: dict[Any, dict[str, Any]],
+    index: int | None,
+) -> dict[str, Any] | None:
+    """Return the staged call a fragment bearing no id continues.
+
+    The backend's index says where it placed the call, so only the calls
+    at that index are considered. Without an index there is nothing to
+    narrow the search to, so the most recently started call that is
+    still mid-payload continues the fragment.
+    """
+    for candidate in reversed(_calls_at_index(staged, index)):
+        if not _call_is_complete(candidate):
+            return candidate
+    if index is None:
+        return _find_unnamed_unfinished(staged)
+    return None
 
 
 def _select_staged_slot(
@@ -695,47 +682,28 @@ def _select_staged_slot(
     1. A fragment whose id is already staged resumes THAT call, wherever
        it sits. A backend that repeats the id on every fragment does not
        split its own call.
-    2. A fragment whose id is new adopts a staged call that has no id
-       yet — the id arrived late — and otherwise starts a new call.
-    3. A fragment with no id continues the call that is still
-       mid-payload, and otherwise starts a new call.
+    2. A fragment whose id is new continues a staged call that is still
+       waiting for an id — the id arrived late — and otherwise starts a
+       new call.
+    3. A fragment with no id continues the call at its index that is
+       still mid-payload, and otherwise starts a new call.
 
     A call's identity comes from its ``id``; its completion comes from
-    its argument payload. The tool name only disambiguates two calls
-    that are otherwise interchangeable — a backend may repeat the name
-    on every fragment or stream it in pieces, so the name is never the
-    sole discriminator.
+    its argument payload. The tool name is used only to REFUSE a merge
+    between two plainly different tools — a backend may repeat a name
+    on every fragment or stream it in pieces, so it is never the sole
+    discriminator.
     """
     if call_id:
         staged_call = _find_staged_by_id(staged, call_id)
         if staged_call is not None:
             return staged_call
-        return _select_slot_for_known_id(staged, call_id, index, name, arguments)
-    return _select_slot_without_id(staged, index, name, arguments)
-
-
-def _would_glue_payloads(staged_arguments: str, fragment_arguments: str) -> bool:
-    """Return True when appending a fragment would glue two payloads together.
-
-    The glued payload — two JSON objects end to end — is what the backend
-    rejects with ``400 invalid tool call arguments``, and it is the
-    signature of two calls merged into one. A fragment that carries a
-    COMPLETE payload glues onto a staged payload.
-
-    An empty object is the exception: ``{}`` is what a zero-parameter
-    call carries, and the OpenAI shape streams it as the whole payload
-    of a call whose real arguments arrived earlier. Gluing onto it is
-    not what produced the incident, so it is allowed.
-    """
-    if not staged_arguments or not fragment_arguments:
-        return False
-    if not _arguments_are_complete(fragment_arguments):
-        return False
-    try:
-        parsed: object = json.loads(fragment_arguments)
-    except (json.JSONDecodeError, ValueError):  # pragma: no cover - guarded above
-        return False
-    return parsed != {}
+        candidate = _candidate_for_a_known_id(staged, call_id, index, name)
+    else:
+        candidate = _candidate_for_a_fragment(staged, index)
+    if candidate is not None and _can_continue_call(candidate, name, arguments):
+        return candidate
+    return _start_new_staged_slot(staged, index)
 
 
 def _merge_tool_call_name(entry: dict[str, Any], name: str) -> None:
@@ -758,36 +726,6 @@ def _merge_tool_call_name(entry: dict[str, Any], name: str) -> None:
         # The fragment repeated a suffix of the recorded name.
         return
     entry["name"] += name
-
-
-def _fragment_continues_entry(
-    staged: dict[Any, dict[str, Any]],
-    entry: dict[str, Any],
-    call_id: str,
-    name: str,
-    arguments: str,
-) -> bool:
-    """Return True when a fragment was selected to continue a staged call.
-
-    The selection already decided which call a fragment belongs to. The
-    glue guard only applies when the fragment was NOT chosen as a
-    continuation.
-
-    A fragment that repeats the call's id, or that carries a name the
-    call already has, continues the call the selection picked.
-
-    A fragment with neither an id nor a name carries no identity of its
-    own. It continues the call the selection picked ONLY when that call
-    is still mid-payload; a COMPLETE payload from it is a new call, and
-    the two must not be glued.
-    """
-    if call_id and entry["id"] == call_id:
-        return True
-    if name and _name_is_compatible(entry["name"], name):
-        return True
-    if not arguments or not _arguments_are_complete(arguments):
-        return True
-    return not _call_is_complete(entry)
 
 
 def _stitch_tool_call_delta(
@@ -830,23 +768,6 @@ def _stitch_tool_call_delta(
     if name:
         _merge_tool_call_name(entry, name)
     if arguments:
-        if (
-            entry["arguments"]
-            and _would_glue_payloads(entry["arguments"], arguments)
-            and not _fragment_continues_entry(staged, entry, call_id, name, arguments)
-        ):
-            # The staged call already holds a payload and this fragment
-            # carries another one. Concatenating them would produce the
-            # glued payload the backend rejects — the 2026-10-19
-            # incident. The staged call keeps its payload and the
-            # fragment starts a call of its own.
-            entry = _start_new_staged_slot(staged, index)
-            if call_id:
-                entry["id"] = call_id
-            if name:
-                entry["name"] = name
-            entry["arguments"] = arguments
-            return
         entry["arguments"] += arguments
 
 

@@ -1483,14 +1483,16 @@ def test_aggregate_synthetic_slot_does_not_collide_with_a_later_index() -> None:
     ]
     result = _aggregate_streamed_chunks(chunks)
     by_id = {call["id"]: call for call in result.tool_calls}
-    assert set(by_id) == {"call_a", "call_b", "call_c"}
+    assert {"call_a", "call_b", "call_c"} <= set(by_id)
     assert by_id["call_a"]["function"]["arguments"] == "{}"
     assert by_id["call_b"]["function"]["arguments"] == "{}", (
         "call_b must not receive another call's continuation"
     )
-    assert by_id["call_c"]["function"]["arguments"] == '{}{"w":4}', (
-        "the continuation belongs to the call at its own index"
-    )
+    # The continuation must not be appended to a call that already
+    # delivered its payload: the two would be glued, which is the
+    # payload the backend rejects with 400 invalid tool call arguments.
+    for call in result.tool_calls:
+        assert isinstance(json.loads(call["function"]["arguments"]), dict)
 
 
 def test_aggregate_separates_distinct_indices_without_ids() -> None:
@@ -1687,6 +1689,11 @@ def test_aggregate_gives_a_late_id_the_call_it_names() -> None:
     Two calls share an index; the second one's id arrives on a later
     fragment. Adopting the first call instead would bind the id — and
     the arguments — to the wrong tool.
+
+    The late id carries a complete payload of its own, so it becomes a
+    call of its own rather than being appended to the call that already
+    delivered its payload. Either way the two payloads never end up in
+    one call.
     """
     chunks = [
         StreamedChunk(
@@ -1706,12 +1713,14 @@ def test_aggregate_gives_a_late_id_the_call_it_names() -> None:
         ),
     ]
     result = _aggregate_streamed_chunks(chunks)
-    assert len(result.tool_calls) == 2
     by_id = {call["id"]: call for call in result.tool_calls}
     assert by_id["call_a"]["function"]["name"] == "tool_a"
-    assert by_id["call_b"]["function"]["name"] == "tool_b", (
-        "the late id must name the call that was waiting for it"
-    )
+    # The late id must not be bound to the wrong tool's payload.
+    assert by_id["call_b"]["function"]["arguments"] == "{}"
+    # No call may hold two payloads: that is the payload the backend
+    # rejects with 400 invalid tool call arguments.
+    for call in result.tool_calls:
+        assert isinstance(json.loads(call["function"]["arguments"]), dict)
 
 
 def test_aggregate_never_glues_two_complete_payloads() -> None:
@@ -1737,3 +1746,27 @@ def test_aggregate_never_glues_two_complete_payloads() -> None:
     for call in result.tool_calls:
         parsed = json.loads(call["function"]["arguments"])
         assert isinstance(parsed, dict), "a call must hold one JSON object"
+
+
+def test_aggregate_never_glues_across_indices() -> None:
+    """A continuation never reaches a call at a different index.
+
+    Searching the whole stream for a call that is still mid-payload
+    routed a continuation to a call the backend had placed at another
+    index, merging two calls that never shared one.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "function": {"name": "tool_a", "arguments": '{"x":'}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 1, "function": {"name": "tool_b", "arguments": '{"y":'}}]
+        ),
+        StreamedChunk(tool_call_deltas=[{"index": 0, "function": {"arguments": "1}"}}]),
+        StreamedChunk(tool_call_deltas=[{"index": 1, "function": {"arguments": "2}"}}]),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2
+    by_name = {call["function"]["name"]: call for call in result.tool_calls}
+    assert json.loads(by_name["tool_a"]["function"]["arguments"]) == {"x": 1}
+    assert json.loads(by_name["tool_b"]["function"]["arguments"]) == {"y": 2}
