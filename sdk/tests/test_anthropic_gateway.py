@@ -17,8 +17,16 @@ from kernel.provider_contracts import (
     CompletionResult,
     ModelDescriptor,
 )
-from sdk.providers.anthropic_gateway import AnthropicGateway
-from sdk.providers.openai_gateway import normalize_openai_messages
+from sdk.providers.anthropic_gateway import (
+    AnthropicGateway,
+    _build_anthropic_messages,
+)
+from sdk.providers.openai_gateway import (
+    _coerce_tool_arguments_object,
+    _repair_openai_tool_arguments,
+    build_openai_responses_input,
+    normalize_openai_messages,
+)
 
 # ── Test helpers ──────────────────────────────────────────────────────
 
@@ -846,3 +854,134 @@ def test_normalize_keeps_parseable_tool_call_arguments_untouched() -> None:
     normalized = normalize_openai_messages(messages)
     call = normalized[1]["tool_calls"][0]
     assert call["function"]["arguments"] == '{"path": "README.md"}'
+
+
+# ── tool-call arguments: strict JSON across every gateway ──
+
+
+def test_repair_rejects_python_lenient_json_constants() -> None:
+    """``NaN``/``Infinity`` are rejected by strict backends, not just by Python.
+
+    ``json.loads`` accepts the non-standard constants and an overflowing
+    float such as ``1e999``; strict backends reject all of them and
+    ``httpx`` refuses to serialize them at all. A payload Python calls
+    valid therefore reached the wire as a 400 (or a client-side crash) and
+    the repair skipped it.
+    """
+    for raw in ('{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}', '{"x": 1e999}'):
+        assert _repair_openai_tool_arguments(raw) == "{}", raw
+
+
+def test_repair_keeps_a_finite_large_float() -> None:
+    """A large but finite float is valid JSON and must survive untouched."""
+
+    assert _repair_openai_tool_arguments('{"x": 1e308}') == '{"x": 1e308}'
+
+
+def test_repair_rejects_a_non_object_json_payload() -> None:
+    """A tool call's arguments must be a JSON object on the wire."""
+
+    for raw in ("[1,2]", "null", "123", '"text"'):
+        assert _repair_openai_tool_arguments(raw) == "{}", raw
+
+
+def test_repair_rejects_a_dict_holding_a_non_finite_float() -> None:
+    """A dict argument with ``NaN`` cannot be serialized; it is repaired."""
+
+    assert _repair_openai_tool_arguments({"x": float("nan")}) == "{}"
+
+
+def test_coerce_tool_arguments_object_rejects_invalid_payloads() -> None:
+    """The shared coercion accepts only a JSON object."""
+
+    assert _coerce_tool_arguments_object('{"a": 1}') == {"a": 1}
+    for raw in ('{"a":1}{"b":2}', '{"x": NaN}', "[1,2]", "null", "123", ""):
+        assert _coerce_tool_arguments_object(raw) == {}, raw
+
+
+def test_coerce_tool_arguments_object_keeps_a_valid_dict() -> None:
+    """A dict argument passes through unchanged."""
+
+    assert _coerce_tool_arguments_object({"a": 1}) == {"a": 1}
+
+
+def test_anthropic_tool_use_input_is_always_an_object() -> None:
+    """The Anthropic path coerces the same way the OpenAI path does.
+
+    The three non-OpenAI gateways each parsed the arguments with their
+    own ``except json.JSONDecodeError`` handler, so a payload Python
+    accepts but a strict backend rejects (``NaN``) reached the wire and
+    crashed ``httpx`` before any request was made.
+    """
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_nan",
+                    "type": "function",
+                    "function": {"name": "a_tool", "arguments": '{"x": NaN}'},
+                }
+            ],
+        },
+    ]
+    converted = _build_anthropic_messages(messages)
+    tool_use = converted[1]["content"][0]
+    assert tool_use["type"] == "tool_use"
+    assert tool_use["input"] == {}
+
+
+def test_normalize_repairs_the_flat_tool_call_shape() -> None:
+    """The flat tool-call shape the kernel produces is repaired too.
+
+    ``extract_openai_tool_calls`` returns ``{"id", "type", "name",
+    "arguments"}`` with no ``function`` wrapper, and that is the shape the
+    turn runner records in the assistant message.
+    """
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_flat",
+                    "type": "function",
+                    "name": "a_tool",
+                    "arguments": '{"a":1}{"b":2}',
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_flat", "content": "err"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    assert normalized[1]["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+def test_responses_input_repairs_unparseable_tool_call_arguments() -> None:
+    """The Responses path repairs the same payloads the chat path does."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_cut",
+                    "type": "function",
+                    "function": {
+                        "name": "a_tool",
+                        "arguments": '{"path": "a.md", "content": "2024-01-02',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_cut", "content": "err"},
+    ]
+    items = build_openai_responses_input(messages)
+    function_calls = [item for item in items if item.get("type") == "function_call"]
+    assert len(function_calls) == 1
+    assert function_calls[0]["arguments"] == "{}"

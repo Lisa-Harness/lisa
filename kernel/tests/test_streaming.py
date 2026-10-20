@@ -1415,3 +1415,79 @@ def test_stream_idle_timeout_setting_env_override() -> None:
 
     assert Settings.model_validate({"stream_idle_timeout_s": "120"}).stream_idle_timeout_s == 120
     assert Settings.model_validate({"stream_idle_timeout_s": "0"}).stream_idle_timeout_s == 0
+
+
+def test_aggregate_keeps_a_call_whole_when_the_id_repeats() -> None:
+    """A backend that repeats the id on every fragment does not split its call.
+
+    The OpenAI contract does not guarantee the id arrives only on the first
+    fragment. A backend that shares one index across parallel calls AND
+    repeats the id on each fragment would have its own call misread as a
+    new call, splitting one call's arguments across two entries and
+    leaving two tool calls with the same id — fatal to a replay, because
+    a duplicate tool-call id is rejected on its own.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_a", "function": {"name": "a_tool", "arguments": '{"x":'}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_b", "function": {"name": "b_tool", "arguments": '{"y":'}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "id": "call_a", "function": {"arguments": "1}"}}]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[{"index": 0, "id": "call_b", "function": {"arguments": "2}"}}]
+        ),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    assert len(result.tool_calls) == 2
+    ids = [call["id"] for call in result.tool_calls]
+    assert ids == ["call_a", "call_b"], "ids must stay unique and in arrival order"
+    assert result.tool_calls[0]["function"]["arguments"] == '{"x":1}'
+    assert result.tool_calls[1]["function"]["arguments"] == '{"y":2}'
+
+
+def test_aggregate_synthetic_slot_does_not_collide_with_a_later_index() -> None:
+    """A slot the stitcher allocates cannot shadow a real index.
+
+    The stitcher allocates its own slot for a parallel call that reuses an
+    occupied index. Allocating in the backend's own index keyspace let
+    that synthetic slot collide with a real index arriving later, and the
+    collision appended one call's continuation to another call's
+    arguments.
+    """
+    chunks = [
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_a", "function": {"name": "a_tool", "arguments": "{}"}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 0, "id": "call_b", "function": {"name": "b_tool", "arguments": "{}"}}
+            ]
+        ),
+        StreamedChunk(
+            tool_call_deltas=[
+                {"index": 1, "id": "call_c", "function": {"name": "c_tool", "arguments": "{}"}}
+            ]
+        ),
+        # A continuation for the call at index 1.
+        StreamedChunk(tool_call_deltas=[{"index": 1, "function": {"arguments": '{"w":4}'}}]),
+    ]
+    result = _aggregate_streamed_chunks(chunks)
+    by_id = {call["id"]: call for call in result.tool_calls}
+    assert set(by_id) == {"call_a", "call_b", "call_c"}
+    assert by_id["call_a"]["function"]["arguments"] == "{}"
+    assert by_id["call_b"]["function"]["arguments"] == "{}", (
+        "call_b must not receive another call's continuation"
+    )
+    assert by_id["call_c"]["function"]["arguments"] == '{}{"w":4}', (
+        "the continuation belongs to the call at its own index"
+    )

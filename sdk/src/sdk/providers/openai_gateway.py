@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
@@ -36,6 +37,8 @@ from openai import AsyncOpenAI
 from openai.lib._parsing import type_to_response_format_param
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import ValidationError
+
+logger = logging.getLogger(__name__)
 
 # ── Message normalization ────────────────────────────────────────────────
 
@@ -1239,6 +1242,20 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 # ── Normalization helpers ────────────────────────────────────────────────
 
 
+def _reject_non_finite_json_constant(_name: str) -> Any:
+    """Reject the non-standard JSON constants Python accepts by default.
+
+    ``json.loads`` accepts ``NaN``, ``Infinity`` and ``-Infinity``, and an
+    overflowing float such as ``1e999``. Strict backends (Ollama, and any
+    Go- or JS-based parser) reject all of them, and ``httpx`` refuses to
+    serialize them at all — so a payload Python calls valid reaches the
+    wire as a 400 or a client-side crash. Rejecting them here keeps the
+    two parsers in agreement.
+    """
+
+    raise ValueError(f"non-finite JSON constant: {_name}")
+
+
 def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     """Return True when a tool-call argument payload is acceptable to a backend.
 
@@ -1257,10 +1274,18 @@ def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     if not isinstance(raw_arguments, str):
         return True
     try:
-        parsed = json.loads(raw_arguments)
+        parsed = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
     except (json.JSONDecodeError, ValueError):
         return False
-    return isinstance(parsed, dict)
+    if not isinstance(parsed, dict):
+        return False
+    # An overflowing float parses to infinity without tripping
+    # ``parse_constant``; a round trip with ``allow_nan=False`` catches it.
+    try:
+        json.dumps(parsed, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
@@ -1274,7 +1299,7 @@ def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
         return str(raw_arguments)
 
 
-def _repair_openai_tool_arguments(raw_arguments: Any) -> str:
+def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") -> str:
     """Return an argument payload a strict backend will accept on replay.
 
     A tool call whose arguments never parsed — because the completion was
@@ -1287,18 +1312,57 @@ def _repair_openai_tool_arguments(raw_arguments: Any) -> str:
     well-formed, so the model can re-issue the call.
 
     The kernel already refused to dispatch such a call and fed the model
-    an error; this only makes the REPLAY of that refusal survivable.
+    an error; this only makes the REPLAY of that refusal survivable. The
+    discarded payload is logged so the incident stays diagnosable.
     """
     if isinstance(raw_arguments, str):
         if _is_parseable_tool_arguments(raw_arguments):
             return raw_arguments
-        return "{}"
-    if isinstance(raw_arguments, dict):
+    elif isinstance(raw_arguments, dict):
         try:
-            return json.dumps(raw_arguments)
+            return json.dumps(raw_arguments, allow_nan=False)
         except (TypeError, ValueError):
-            return "{}"
+            pass
+    else:
+        raw_arguments = None
+    logger.warning(
+        "replaying a tool call with unusable arguments as an empty object "
+        "(tool=%r, payload=%s); the backend rejects the original payload "
+        "with 400 invalid tool call arguments",
+        tool_name or "?",
+        type(raw_arguments).__name__,
+    )
     return "{}"
+
+
+def _coerce_tool_arguments_object(raw_arguments: Any) -> dict[str, Any]:
+    """Return a tool call's arguments as a JSON object, whatever shape it has.
+
+    Every gateway that puts tool calls on the wire needs the arguments as
+    an object, and every one of them used to parse them independently —
+    each catching only ``json.JSONDecodeError``. A payload Python accepts
+    but a strict backend rejects (``NaN``, ``Infinity``, an overflowing
+    float) slipped through, and a non-object payload (``null``, ``[1,2]``,
+    ``123``) reached the backend as a malformed tool input. This helper is
+    the single coercion every gateway shares: anything that is not a
+    JSON object becomes the empty object.
+    """
+    if isinstance(raw_arguments, dict):
+        candidate = raw_arguments
+    elif isinstance(raw_arguments, str):
+        try:
+            candidate = json.loads(raw_arguments, parse_constant=_reject_non_finite_json_constant)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    else:
+        return {}
+    if not isinstance(candidate, dict):
+        return {}
+    try:
+        json.dumps(candidate, allow_nan=False)
+    except (TypeError, ValueError):
+        return {}
+    return candidate
 
 
 def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -1314,7 +1378,9 @@ def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
         "type": tool_call.get("type", "function") or "function",
         "function": {
             "name": str(raw_name or ""),
-            "arguments": _repair_openai_tool_arguments(raw_arguments),
+            "arguments": _repair_openai_tool_arguments(
+                raw_arguments, tool_name=str(raw_name or "")
+            ),
         },
     }
     thought_sig = tool_call.get("thought_signature")

@@ -8,12 +8,14 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 #### Parallel tool calls that share a stream index are no longer merged into one
 
-- **What:** the kernel's streamed tool-call stitcher now starts a new call
-  when a fragment carries an `id` that belongs to a different call, instead
-  of concatenating it into the call that already occupies the slot. The
-  OpenAI-compatible gateway also repairs a tool call whose arguments do
-  not parse into the empty object before replaying it, so a refused call
-  cannot kill the turn that follows it.
+- **What:** the kernel's streamed tool-call stitcher now identifies a call
+  by its `id` rather than by the index it arrived on, so parallel calls
+  that share an index stay separate, a call is never split by a repeated
+  id, and the slots the stitcher allocates cannot collide with a backend's
+  own indices. The OpenAI-compatible gateway repairs a tool call whose
+  arguments do not parse into the empty object before replaying it, so a
+  refused call cannot kill the turn that follows it. The Anthropic, Google
+  and Bedrock gateways coerce the same payloads through one shared helper.
 - **Why:** the 2026-10-19 MiniMax M3.1 Flash turn failure. Ollama streams
   every parallel tool call with `index: 0` and distinguishes them only by
   `id`; stitching by `index` alone merged three calls into one named
@@ -26,12 +28,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **Tests:** `kernel/tests/test_streaming.py`
   (`test_aggregate_separates_parallel_calls_sharing_an_index`,
   `test_aggregate_keeps_fragments_of_one_call_together`,
-  `test_aggregate_keeps_indexed_calls_with_distinct_indices_apart`);
+  `test_aggregate_keeps_indexed_calls_with_distinct_indices_apart`,
+  `test_aggregate_keeps_a_call_whole_when_the_id_repeats`,
+  `test_aggregate_synthetic_slot_does_not_collide_with_a_later_index`);
   `sdk/tests/test_anthropic_gateway.py`
   (`test_normalize_repairs_unparseable_tool_call_arguments`,
   `test_normalize_repairs_length_cut_tool_call_arguments`,
   `test_normalize_repairs_empty_tool_call_arguments_string`,
-  `test_normalize_keeps_parseable_tool_call_arguments_untouched`).
+  `test_normalize_keeps_parseable_tool_call_arguments_untouched`,
+  `test_repair_rejects_python_lenient_json_constants`,
+  `test_repair_keeps_a_finite_large_float`,
+  `test_repair_rejects_a_non_object_json_payload`,
+  `test_repair_rejects_a_dict_holding_a_non_finite_float`,
+  `test_coerce_tool_arguments_object_rejects_invalid_payloads`,
+  `test_coerce_tool_arguments_object_keeps_a_valid_dict`,
+  `test_anthropic_tool_use_input_is_always_an_object`,
+  `test_normalize_repairs_the_flat_tool_call_shape`,
+  `test_responses_input_repairs_unparseable_tool_call_arguments`).
 
 #### A recovered turn no longer reports a fabricated resource-budget exhaustion
 

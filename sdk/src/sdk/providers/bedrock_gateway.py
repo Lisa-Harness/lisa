@@ -28,6 +28,7 @@ from kernel.provider_contracts import (
 )
 from kernel.token_usage import coerce_non_negative_int
 from sdk.providers.openai_gateway import (
+    _coerce_tool_arguments_object,
     _normalize_openai_tool_arguments,
     normalize_structured_content,
 )
@@ -230,16 +231,11 @@ def _build_bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
                 function_payload = (
                     tc.get("function") if isinstance(tc.get("function"), dict) else tc
                 )
-                raw_args = function_payload.get("arguments", "{}")
-                if isinstance(raw_args, str):
-                    try:
-                        parsed_args = json.loads(raw_args)
-                    except json.JSONDecodeError:
-                        parsed_args = {}
-                elif isinstance(raw_args, dict):
-                    parsed_args = raw_args
-                else:
-                    parsed_args = {}
+                # A refused call (length-cut payload, or parallel calls
+                # stitched together) stays in the history and is replayed
+                # here; a payload that is not a JSON object would be a
+                # malformed tool input, so it is coerced to the empty one.
+                parsed_args = _coerce_tool_arguments_object(function_payload.get("arguments", "{}"))
                 content_blocks.append(
                     {
                         "toolUse": {

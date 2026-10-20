@@ -372,15 +372,63 @@ def is_pydantic_model_class(obj: Any) -> bool:
     return isinstance(obj, type) and issubclass(obj, PydanticBaseModel)
 
 
+#: Keyspace for slots the stitcher allocates itself. A backend's real
+#: ``index`` values are non-negative, so a negative key can never collide
+#: with one. Allocating in the same keyspace let a synthetic slot collide
+#: with a real index that arrived later, and the collision silently
+#: appended one call's continuation to another call's arguments.
+_SYNTHETIC_SLOT_BASE = -1
+
+
+def _new_staged_tool_call(order: int) -> dict[str, Any]:
+    """Return one empty staged tool call carrying its arrival order."""
+
+    return {"id": "", "type": "", "name": "", "arguments": "", "_order": order}
+
+
+def _allocate_synthetic_slot(staged: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    """Return a new staged call in a slot no backend index can reach."""
+
+    slot = _SYNTHETIC_SLOT_BASE
+    while slot in staged:
+        slot -= 1
+    return staged.setdefault(slot, _new_staged_tool_call(len(staged)))
+
+
+def _find_staged_by_id(
+    staged: dict[int, dict[str, Any]],
+    call_id: str,
+) -> dict[str, Any] | None:
+    """Return the staged call carrying ``call_id``, wherever it sits."""
+
+    for candidate in staged.values():
+        if candidate["id"] == call_id:
+            return candidate
+    return None
+
+
+def _find_staged_by_index(
+    staged: dict[int, dict[str, Any]],
+    index: int | None,
+) -> dict[str, Any] | None:
+    """Return the staged call at ``index``, or the most recently started one."""
+
+    if index is not None and index in staged:
+        return staged[index]
+    if staged:
+        return list(staged.values())[-1]
+    return None
+
+
 def _stitch_tool_call_delta(
     staged: dict[int, dict[str, Any]],
     delta: dict[str, Any],
 ) -> None:
     """Merge one streamed tool-call fragment into its aggregate entry.
 
-    ``index`` is the stitch key (OpenAI streams fragment one call across
-    many chunks); missing index appends a new call. ``id``/``type`` arrive
-    once on the first fragment; ``name``/``arguments`` concatenate.
+    ``id`` is the call identity; ``index`` is only a hint for where a
+    backend placed the call. ``id``/``type`` arrive once on the first
+    fragment; ``name``/``arguments`` concatenate.
 
     Some backends stream every parallel call with the SAME ``index`` (0)
     and rely on the call ``id`` to tell the calls apart — Ollama's
@@ -392,21 +440,29 @@ def _stitch_tool_call_delta(
     history and the next request replayed it — a strict backend answered
     ``400 invalid tool call arguments`` and killed the turn.
 
-    An ``id`` marks the first fragment of a call, so a fragment carrying
-    an id that is not the staged entry's id starts a NEW call rather than
-    merging into the occupied slot.
+    A fragment carrying an id that is already staged resumes THAT call,
+    wherever it sits — so a backend that repeats the id on every fragment
+    does not split its own call. A fragment carrying a genuinely new id
+    starts a new call: in the index slot when that slot is free, in a
+    synthetic slot when the index is already occupied by another call.
+    A fragment with no id continues the call at its index, or the most
+    recently started call when the index is unknown.
     """
-    raw_index = delta.get("index")
-    index = int(raw_index) if raw_index is not None else ((max(staged) + 1) if staged else 0)
     call_id = str(delta.get("id") or "")
-    entry = staged.get(index)
+    raw_index = delta.get("index")
+    index = int(raw_index) if raw_index is not None else None
+
+    entry = _find_staged_by_id(staged, call_id) if call_id else None
     if entry is None:
-        entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
-    elif call_id and entry["id"] and entry["id"] != call_id:
-        # A new call reusing an occupied index: allocate a fresh slot so
-        # the parallel calls stay separate instead of concatenating.
-        index = max(staged) + 1
-        entry = staged.setdefault(index, {"id": "", "type": "", "name": "", "arguments": ""})
+        entry = _find_staged_by_index(staged, index) if not call_id else None
+    if entry is None:
+        if index is not None and index not in staged:
+            entry = staged.setdefault(index, _new_staged_tool_call(len(staged)))
+        else:
+            # The index is taken by another call, or unknown: a shared
+            # index must not merge two parallel calls into one.
+            entry = _allocate_synthetic_slot(staged)
+
     if call_id:
         entry["id"] = call_id
     if delta.get("type"):
@@ -457,7 +513,9 @@ def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletio
             "type": entry["type"] or "function",
             "function": {"name": entry["name"], "arguments": entry["arguments"]},
         }
-        for _, entry in sorted(staged.items())
+        # Arrival order, not slot order: a synthetic slot is negative and
+        # would otherwise sort the parallel calls ahead of the real ones.
+        for _, entry in sorted(staged.items(), key=lambda item: item[1]["_order"])
     ]
     return StreamedCompletion(
         content="".join(parts),
