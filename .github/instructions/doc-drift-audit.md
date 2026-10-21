@@ -31,6 +31,15 @@ mark `UNIMPLEMENTED`. If the implementation differs, mark `MISMATCH`.
 | `UNDOCUMENTED` | Code does something the doc doesn't mention. |
 | `DEAD` | Doc describes a path that is unreachable in production. |
 
+Present the findings as a table before changing anything, with one row per
+non-`MATCH` assertion and the exact file and line as evidence:
+
+| ID | Assertion (from doc) | Label | File:Line | Evidence |
+| --- | --- | --- | --- | --- |
+
+Do not edit files until the findings and the proposed changes have been
+reviewed.
+
 ## 4. Decide remediation direction
 
 - Default: the doc is the spec; the code moves to match it.

@@ -4,6 +4,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Copilot prompts became agents, and the code review agent resolves its own scope
+
+- **What:** the two prompt files under `.github/prompts/` are gone. GitHub
+  Copilot deprecated prompt files, so a prompt is an agent with a different
+  file extension. The `code-review.prompt.md` prompt is now folded into the
+  [Code Reviewer agent](.github/agents/code-review.agent.md), and the
+  `doc-drift.prompt.md` prompt is folded into the
+  [documentation drift instruction](.github/instructions/doc-drift-audit.md).
+- **What:** the Code Reviewer agent now resolves the changeset itself when
+  the user does not name a range. It takes the range from the chat context
+  if one was given, otherwise reviews the working tree, otherwise the most
+  recent commit. Previously the agent refused to infer scope and the
+  separate prompt did the resolving, so a user who asked the agent to
+  "review my changes" got a question instead of a review.
+- **Why:** the prompt existed only to bridge a gap the agent deliberately
+  left open. With prompts deprecated, the gap had to close somewhere, and
+  the user-facing outcome — ask for a review, get a review — is better
+  served by one agent that resolves its own scope.
+- **What:** the documentation drift audit stays an instruction, because it
+  describes a way of working that applies whenever a doc or its code
+  changes, not only when someone asks for an audit. The instruction now
+  also carries the two things the prompt added: a findings table with
+  file-and-line evidence, and the requirement to present findings before
+  editing anything.
+
 ### Added
 
 #### A documentation gate, and a CI matrix that skips documentation-only changes
