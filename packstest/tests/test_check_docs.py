@@ -300,3 +300,19 @@ class TestDetectedDefects:
             encoding="utf-8",
         )
         assert self._rules(repo) == set()
+
+    def test_sibling_repository_link_is_not_resolved(self, repo: Path) -> None:
+        # The workspace holds sibling repositories next to this one, and the
+        # corpus links to them (``../lisa-cli``). Those links point outside
+        # this repository, so the gate cannot say whether they resolve, and
+        # the CI checkout does not contain the sibling repositories at all.
+        (repo / "docs" / "guide.md").write_text(
+            "# Guide\n\nSee [cli](../../lisa-cli).\n", encoding="utf-8"
+        )
+        assert self._rules(repo) == set()
+
+    def test_missing_in_repository_link_is_still_reported(self, repo: Path) -> None:
+        (repo / "docs" / "guide.md").write_text(
+            "# Guide\n\nSee [gone](gone.md).\n", encoding="utf-8"
+        )
+        assert "link-target" in self._rules(repo)
