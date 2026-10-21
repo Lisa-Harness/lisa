@@ -235,6 +235,22 @@ def _slugify(heading: str) -> str:
     return _SLUG_STRIP_RE.sub("", text).replace(" ", "-")
 
 
+def _in_frontmatter(blanked: list[str], index: int) -> bool:
+    """Report whether the line at ``index`` sits inside YAML frontmatter.
+
+    A file that opens with ``---`` carries YAML frontmatter until the
+    next ``---``. The closing delimiter looks exactly like a setext
+    underline, so without this check the last frontmatter line is
+    reported as a heading.
+    """
+    if not blanked or blanked[0].strip() != "---":
+        return False
+    for line in blanked[1:index]:
+        if line.strip() == "---":
+            return False
+    return index >= 1
+
+
 def _iter_headings(lines: list[str]) -> Iterator[tuple[int, str]]:
     """Yield ``(line number, heading text)`` for every heading in a file.
 
@@ -252,6 +268,10 @@ def _iter_headings(lines: list[str]) -> Iterator[tuple[int, str]]:
             continue
         underline = _SETEXT_RE.match(line)
         if underline is None:
+            continue
+        if _in_frontmatter(blanked, index):
+            # The ``---`` that closes YAML frontmatter is a delimiter, not
+            # a setext underline.
             continue
         title = blanked[index - 1].strip()
         if not title or _HEADING_RE.match(blanked[index - 1]) is not None:
