@@ -80,11 +80,13 @@ uv run python scripts/check_docs.py
 ```
 
 The gate checks the maintained corpus — the guides under `docs/`, the
-root-level policy files, and every package `README.md` or `AUTHORING.md` —
-for relative links that do not resolve, `#anchor` fragments that match no
-heading, code fences with no language or no closing fence, files that do not
-end with exactly one newline, trailing whitespace, and lists that start
-without a blank line.
+root-level policy files, and any package `README.md` or `AUTHORING.md`
+outside a package source tree — for relative links that do not resolve,
+`#anchor` fragments that match no heading, code fences with no language or
+no closing fence, files that do not end with exactly one newline, trailing
+whitespace outside code blocks, and lists that start without a blank line.
+Anchor slugs follow the same rules GitHub uses, so a heading's anchor here
+matches the one GitHub renders.
 
 Markdown that is *not* documentation is out of scope: pack content (modes,
 operations, prompts, sessions), test fixtures, and Copilot customization
@@ -95,15 +97,18 @@ matrix; a change to a guide does not.
 ## When CI runs
 
 The [CI workflow](../.github/workflows/ci.yml) skips the quality, test, and
-coverage matrix when a push or pull request changes only documentation
-(`docs/**`, root-level `*.md`, and any `README.md` or `AUTHORING.md`). The
-documentation gate still runs, so a doc-only change is still checked.
+coverage matrix when a push or pull request changes only documentation:
+the guides under `docs/`, the root-level `*.md` files, and any `README.md`
+or `AUTHORING.md`. The documentation gate still runs, so a doc-only change
+is still checked.
 
 Markdown that the runtime or the agent host loads is *not* documentation and
-does not trigger the skip: pack content, test fixtures, and the files under
+does not trigger the skip. Pack content, test fixtures, and the files under
 `.github/` that carry Copilot customizations all run the full matrix. A
-`README.md` placed inside a scanned content directory would be treated as
-content, not documentation, and would need its own exception.
+`README.md` inside a package source tree is a runtime asset rather than a
+guide, so it runs the matrix too. The path filter and the documentation
+gate use the same rule, so a file is never documentation for one and
+behavior for the other.
 
 The release workflow calls both CI and the documentation gate, so a tag
 build is validated regardless of which files the release commit touched.

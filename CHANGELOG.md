@@ -137,9 +137,24 @@ All notable changes to the Lisa Harness will be documented in this file.
   test matrix, so a documentation-only change still ran the full
   six-job, three-platform suite. The corpus check is the gate's own job
   and runs in the documentation workflow, where it belongs.
+- **What:** the CI path filter no longer skips a `README.md` that lives
+  inside a package source tree. The filter ignored `**/README.md`, which
+  also matched `sdk/src/sdk/router/README.md` and the recovery pack's
+  README. Both sit under a registered content root, so a change to one
+  is a runtime change and must run the full matrix. The filter now
+  re-includes the package source trees explicitly, and the gate's corpus
+  uses the same rule, so the two lists cannot drift.
+- **What:** the gate's anchor slugs now match GitHub exactly, including
+  for headings that contain non-ASCII text. The previous rule dropped
+  CJK characters entirely, so a heading's slug did not match the anchor
+  GitHub renders for it.
+- **What:** the gate recognizes setext headings, reports a broken anchor
+  into a file that has no headings at all, and leaves code blocks alone
+  when checking trailing whitespace and tab indentation. A hard tab in a
+  Go example and a two-space Markdown hard break are both legitimate.
 - **Compatibility:** no public behavior changes. The documentation
-  workflow, the CI path filters, and the release workflow are unchanged
-  from the commit that introduced them.
+  workflow and the release workflow are unchanged from the commit that
+  introduced them.
 
 #### Text writes are newline-terminated, and their receipts say so
 
