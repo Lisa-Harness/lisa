@@ -44,6 +44,12 @@ live capability. Check `lisa --help` for the external host's syntax.
 - **Missing old evidence:** thread context is a bounded projection. Use
   thread range/search/content tools to read addressed evidence; don't assume
   absence from the prompt means deletion from storage.
+- **A fetched page was refused:** the fetch error names the HTTP status
+  (`403`, `401`, `429`). A refusal is the site's bot protection, not a
+  Lisa failure — try a different source rather than retrying the same URL.
+  If the same host fails for every URL, check whether the site requires
+  JavaScript rendering: `fetch_page` reads the served HTML and does not
+  execute scripts.
 
 ## Useful diagnostics
 

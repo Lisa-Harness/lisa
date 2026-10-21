@@ -68,6 +68,7 @@ from sdk.content._fetcher import (
     ContentFetcher,
     FetchedResult,
     FetchPolicy,
+    FetchStatusError,
     validate_url,
 )
 from sdk.content._loader_strict import (
@@ -87,6 +88,7 @@ __all__ = [
     "CustomizationBundle",
     "CustomizationDiagnostic",
     "FetchPolicy",
+    "FetchStatusError",
     "FetchedResult",
     "InstructionFile",
     "MissingAuthoredContentError",

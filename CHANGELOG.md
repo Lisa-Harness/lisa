@@ -40,6 +40,84 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### `fetch_page` reaches bot-defended sites, and no longer serves stale content as a fresh success
+
+- **What:** the SDK fetch primitive now sends the navigation headers a
+  browser sends on a top-level document request (`Sec-Fetch-Dest`,
+  `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Upgrade-Insecure-Requests`)
+  alongside its User-Agent. A 2026-10-20 benchmark over 17 research
+  targets (medium, theatlantic, HN, Wikipedia, arxiv, StackOverflow,
+  Substack, Reuters, BBC, GitHub, HuggingFace, Anthropic, TechCrunch)
+  measured **76% HTTP-200 success before and 88% after**; the live
+  end-to-end rate through `fetch_page` is 88% (15/17). The two
+  remaining refusals (StackOverflow 403, Reuters 401) are bot
+  protections that no header set defeats.
+- **Why:** `fetch_page` sent a bare `User-Agent: lisa_framework` and
+  nothing else, which bot defenses read as a scripted client. The
+  ablation matters: the User-Agent *string* was never the deciding
+  factor — an honest `LisaHarness/0.1.1 (+…)` UA, a bare bot token, and
+  a full Chrome impersonation all measured the same 88% once the
+  navigation headers were present, and 71–76% without them. Lisa
+  therefore identifies itself plainly rather than spoofing a browser,
+  and the win comes from the headers that describe a real navigation.
+- **What:** an HTTP error status is no longer masked by the stale-cache
+  fallback. `raise_for_status()` raises `HTTPStatusError`, which is an
+  `httpx.HTTPError`, so a 403 was caught by the *network error* handler
+  and answered with 24-hour-old content reported as `status 200`. Only
+  genuine transport errors (connection refused, timeout) fall back to
+  the stale cache now; a refused fetch raises `FetchStatusError`
+  carrying the status code, and `fetch_page` reports it plainly so the
+  model tries a different source instead of synthesizing from stale
+  text.
+- **What:** the fetch primitive keeps a cookie jar across fetches, so a
+  site that gates content behind a `Set-Cookie` challenge can be
+  fetched at all. Each fetch previously built a fresh
+  `httpx.AsyncClient`, so a cookie was never carried forward: a
+  challenge could never be completed. Cookies set on a redirect hop are
+  kept too (`client.cookies`, not `response.cookies`, which holds only
+  the final response's).
+- **What:** `FetchPolicy` gained `extra_headers`,
+  `browser_navigation_headers`, and `persist_cookies` so a host
+  fetching an API rather than a page can opt out of the navigation
+  headers or supply its own.
+- **Tests:** `sdk/tests/test_fetcher.py` (navigation headers and the
+  opt-out, the redirect-hop guard in both directions, the cookie jar and
+  its opt-out, and the status-honest error path alongside the retained
+  transport-error stale fallback), `sdk/packs/core/tests/test_fetch_page_tool.py`
+  (the status error surfaced to the model).
+
+#### The fetch primitive's redirect hop no longer bypasses the SSRF guard
+
+- **What:** the private-IP guard is re-applied to every redirect hop
+  through an httpx request hook, not only to the entry URL. A public URL
+  that answers `302 Location: http://127.0.0.1:9/secret` is now refused;
+  previously httpx followed the redirect and the request reached the
+  internal address, returning its body.
+- **Why:** `validate_url` is documented as the single source of truth
+  for SSRF rejection and the SDK boundary states that SSRF protections
+  are non-bypassable, but the check ran once, before the request. A
+  redirect is a second URL the guard never saw. The gap was
+  reproducible end to end: a mocked public host returned `INTERNAL
+  SECRET` from a loopback address.
+- **Tests:** `sdk/tests/test_fetcher.py`
+  (`test_redirect_to_private_host_is_blocked`,
+  `test_redirect_to_public_host_is_allowed`).
+
+#### `fetch_page` honors its advertised `max_chars`, and reports binary content as not extractable
+
+- **What:** a per-call `max_chars` is applied to the extracted text, so
+  a request for the advertised maximum of 20000 characters returns that
+  many. The extraction ceiling was a 12000-character constant applied
+  before the per-call value, so every request above 12000 was silently
+  truncated.
+- **What:** a response whose content type is not text/HTML/XML/JSON — a
+  PDF, for instance — is reported as having no extractable text. Tag
+  stripping a PDF yielded binary garbage presented to the model as
+  prose.
+- **Tests:** `sdk/packs/core/tests/test_fetch_page_tool.py`
+  (`test_fetch_page_honors_per_call_max_chars`,
+  `test_fetch_page_reports_non_text_content`).
+
 #### The documentation gate no longer reports sibling-repository links, and a doc-only change no longer runs the test matrix
 
 - **What:** the documentation gate skipped links that point outside the

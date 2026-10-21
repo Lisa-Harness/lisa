@@ -12,6 +12,11 @@ dependency. The extractor strips tags, scripts, styles, and collapses
 whitespace, which is sufficient for grounded synthesis. A richer extractor
 (trafilatura/readability) can be externalized later without changing the
 tool contract.
+
+Sites that defend against bots are handled by the SDK fetch primitive, which
+sends the navigation headers a browser sends on a document request (see
+``sdk.content._fetcher``). A 2026-10-20 benchmark over 17 research targets
+measured 76% success with a bare User-Agent versus 88% with those headers.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from pathlib import Path
 
 from kernel.models import ToolExecutionContext, ToolResult
 from pydantic import BaseModel, Field
-from sdk.content import ContentFetcher, FetchPolicy, validate_url
+from sdk.content import ContentFetcher, FetchPolicy, FetchStatusError, validate_url
 from sdk.packs.core.tools.fetch_page._models import FetchedPage
 
 __all__ = ["Parameters", "execute", "fetch", "get_fetcher", "is_configured"]
@@ -32,6 +37,10 @@ __all__ = ["Parameters", "execute", "fetch", "get_fetcher", "is_configured"]
 _DEFAULT_TIMEOUT_SECONDS: float = 15.0
 _DEFAULT_MAX_BYTES: int = 200_000
 _MAX_TEXT_CHARS: int = 12_000
+# Upper bound the tool advertises in its parameter schema. The extraction
+# ceiling is applied per call, so a request above this is rejected by the
+# schema before the fetch rather than silently truncated afterwards.
+_MAX_CHARS_LIMIT: int = 20_000
 _BLOCK_TAGS = re.compile(
     r"<(script|style|noscript|template|svg|head)\b[\s\S]*?</\1\s*>",
     re.IGNORECASE,
@@ -41,6 +50,11 @@ _WS = re.compile(r"[ \t\r\f\v]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 _TITLE_TAG = re.compile(r"<title\b[^>]*>([\s\S]*?)</title\s*>", re.IGNORECASE)
 
+# Content types whose payload is not HTML or plain text. Stripping tags from
+# a PDF (or any other binary) yields unreadable bytes, so these are reported
+# as "not extractable" instead of being passed off as text.
+_TEXTUAL_CONTENT_TYPES = ("text/", "application/json", "application/xml", "application/xhtml")
+
 
 class Parameters(BaseModel):
     """Structured input parameters for the fetch_page tool."""
@@ -49,7 +63,7 @@ class Parameters(BaseModel):
     max_chars: int = Field(
         default=_MAX_TEXT_CHARS,
         ge=500,
-        le=20000,
+        le=_MAX_CHARS_LIMIT,
         description=(
             "Max extracted text characters to return. Must be between "
             "500 and 20000 (values outside the range are rejected before "
@@ -183,17 +197,19 @@ async def fetch(
     force_refresh: bool = False,
     fetcher: ContentFetcher | None = None,
     data_dir: Path | None = None,
+    max_chars: int = _MAX_TEXT_CHARS,
 ) -> FetchedPage:
     """Fetch one URL via :class:`ContentFetcher` and return extracted text.
 
     Raises:
-        ValueError: on SSRF rejection or network failure with no cache.
+        ValueError: on SSRF rejection, an HTTP error status, or a network
+            failure with no cache.
         RuntimeError: if no ``fetcher`` or ``data_dir`` is supplied and the
             module singleton was never initialized with a data dir.
     """
     f = fetcher if fetcher is not None else get_fetcher(data_dir=data_dir)
     result = await f.fetch(url, policy=_build_policy(force_refresh=force_refresh))
-    text, title = _strip_html(result.text, max_chars=_MAX_TEXT_CHARS)
+    text, title = _strip_html(result.text, max_chars=max_chars)
     return FetchedPage(
         url=result.url,
         status_code=result.status_code,
@@ -201,6 +217,20 @@ async def fetch(
         text=text,
         content_type=result.content_type,
     )
+
+
+def _is_textual(content_type: str) -> bool:
+    """Return True when the payload is HTML/text/XML/JSON we can extract from.
+
+    A PDF or any other binary payload is not extractable by tag-stripping:
+    the "text" would be unreadable bytes. Those are reported as
+    not-extractable rather than passed off as prose.
+    """
+    ctype = (content_type or "").split(";", 1)[0].strip().lower()
+    if not ctype:
+        # No content type: treat as text and let the extractor decide.
+        return True
+    return ctype.startswith(_TEXTUAL_CONTENT_TYPES)
 
 
 async def execute(ctx: ToolExecutionContext) -> ToolResult:
@@ -221,11 +251,34 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
         return ToolResult(tool_id=ctx.tool_id or "fetch_page", error=reason)
 
     try:
-        page = await fetch(url, data_dir=_get_data_dir(ctx))
+        page = await fetch(url, data_dir=_get_data_dir(ctx), max_chars=max_chars)
+    except FetchStatusError as exc:
+        # A status error is a refusal by the site (403/429/5xx), not a
+        # transport failure. Report the status plainly so the model can
+        # try a different source instead of retrying the same URL.
+        return ToolResult(
+            tool_id=ctx.tool_id or "fetch_page",
+            error=(
+                f"Fetch failed: HTTP {exc.status_code} for {url}. "
+                "The site refused this request; try a different source."
+            ),
+        )
     except Exception as exc:  # pylint: disable=broad-except
         return ToolResult(
             tool_id=ctx.tool_id or "fetch_page",
             error=f"Fetch failed: {type(exc).__name__}: {exc}",
+        )
+
+    if not _is_textual(page.content_type):
+        return ToolResult(
+            tool_id=ctx.tool_id or "fetch_page",
+            output_text=(
+                f"No extractable text at {url} "
+                f"(status {page.status_code}, type {page.content_type}). "
+                "This content type is not plain text or HTML; fetch a "
+                "text/HTML source instead."
+            ),
+            output_json={"page": page.model_dump(mode="json")},
         )
 
     if not page.text:
@@ -238,7 +291,9 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
             output_json={"page": page.model_dump(mode="json")},
         )
 
-    # Honor the per-call max_chars even if the default constant was used.
+    # Enforce the per-call bound at the tool boundary as well as inside
+    # ``fetch``: the tool's contract is the advertised maximum, whatever
+    # the fetch implementation returns.
     if len(page.text) > max_chars:
         page = page.model_copy(update={"text": page.text[:max_chars].rsplit(" ", 1)[0] + "\u2026"})
 

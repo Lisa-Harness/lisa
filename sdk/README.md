@@ -23,7 +23,7 @@ for cross-package contracts.
 
 | Module | Responsibility |
 | --- | --- |
-| `content/` | Content catalog and authored-text reading: mode/operation/tool catalog JSON builders, content-root resolution, `ContentReader`, path safety, Copilot customization discovery/parsing (applyTo globbing). Powers the `lisa-content` and `lisa-catalog` MCP servers. |
+| `content/` | Content catalog and authored-text reading: mode/operation/tool catalog JSON builders, content-root resolution, `ContentReader`, path safety, Copilot customization discovery/parsing (applyTo globbing). Also owns the fetch primitive (`ContentFetcher`): L1/L2 caching, conditional GET, a shared cookie jar, the non-bypassable SSRF gate (re-applied on every redirect hop), and the navigation headers that keep bot-defended pages reachable. Powers the `lisa-content`, `lisa-catalog`, and `lisa-fetch` MCP servers. |
 | `context/` | Entry-point-aware extension item building: discovers `lisa.extensions.context_items` entry points and feeds extension evidence into the session-owned context mapper via `ContextSeams.extension_item_builder`. |
 | `config.py` | Public runtime `Settings` (pydantic-settings) for packs/extensions — deliberately narrower than root app config, with owned-source filtering so packs only consume env keys they declare. |
 | `pack_settings.py` | `OwnedSettingsSource` / `build_owned_settings_sources`; importable by external packs without depending on `sdk_packs`. |

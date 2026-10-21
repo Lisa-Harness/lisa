@@ -91,3 +91,26 @@ async def test_fetch_url_ssrf_rejected(tmp_path: Path) -> None:
     _seed_deps(tmp_path)
     with pytest.raises(ValueError, match="private"):
         await fetch_url("https://169.254.169.254/meta")
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_http_error_status_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused fetch raises with its status code, not a generic failure.
+
+    The server must not present a 403 as a transport error, and must not
+    answer with stale content.
+    """
+    from sdk.content import FetchStatusError
+
+    _seed_deps(tmp_path)
+    url = "https://github.com/foo.md"
+
+    async def _forbidden(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        return httpx.Response(403, request=httpx.Request("GET", req_url), content=b"blocked")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _forbidden)
+    with pytest.raises(FetchStatusError) as excinfo:
+        await fetch_url(url)
+    assert excinfo.value.status_code == 403

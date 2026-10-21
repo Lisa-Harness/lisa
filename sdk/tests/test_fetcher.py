@@ -2,7 +2,8 @@
 
 Covers the security gate (SSRF), L1/L2 cache hit/miss/expiry, force_refresh
 bypass, conditional-GET 304 path, stale-fallback on network error, max_bytes
-clamping by the absolute ceiling, and cache=False bypass.
+clamping by the absolute ceiling, cache=False bypass, the redirect-hop SSRF
+guard, the shared cookie jar, and the status-honest error path.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sdk.content import ContentFetcher, FetchPolicy, validate_url
+from sdk.content import ContentFetcher, FetchPolicy, FetchStatusError, validate_url
 
 # ── URL validation ──────────────────────────────────────────────────────────
 
@@ -112,7 +113,18 @@ async def test_fetch_success_caches_and_returns_body(
 
     async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
         assert req_url == url
-        assert kw["headers"].get("User-Agent") == "lisa_framework"
+        # The honest, self-identifying UA plus the navigation headers a
+        # browser sends on a document request. These headers are what unblock
+        # bot-defended sites (the UA string is not — see the benchmark in
+        # ``_fetcher``'s ``_NAVIGATION_HEADERS`` comment).
+        headers = kw["headers"]
+        assert (
+            headers.get("User-Agent")
+            == "LisaHarness/0.1.1 (+https://github.com/Lisa-Framework/lisa)"
+        )
+        assert headers.get("Sec-Fetch-Mode") == "navigate"
+        assert headers.get("Sec-Fetch-Dest") == "document"
+        assert headers.get("Upgrade-Insecure-Requests") == "1"
         return _mock_response(
             req_url,
             content=b"Hello World",
@@ -413,3 +425,258 @@ async def test_with_policy_shares_cache_and_overrides_default(
     assert child._default_policy.cache is False
     # Same L1 dict — cache populated by the base fetch is visible to child.
     assert url in child._l1
+
+
+# ── Navigation headers (bot-defense success rate) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fetch_sends_navigation_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requests carry the navigation headers a browser sends on a document load.
+
+    A 2026-10-20 benchmark over 17 research targets measured 76% success
+    with a bare User-Agent versus 88% with these headers. The ablation
+    showed the User-Agent string was irrelevant — the Sec-Fetch pair and
+    Upgrade-Insecure-Requests were decisive — so Lisa identifies itself
+    honestly rather than impersonating a browser.
+    """
+    fetcher = ContentFetcher(tmp_path)
+    url = "https://example.com/"
+    captured: dict[str, Any] = {}
+
+    async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        captured.update(kw["headers"])
+        return _mock_response(req_url, content=b"ok")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+    await fetcher.fetch(url)
+
+    assert captured["User-Agent"] == "LisaHarness/0.1.1 (+https://github.com/Lisa-Framework/lisa)"
+    assert captured["Sec-Fetch-Dest"] == "document"
+    assert captured["Sec-Fetch-Mode"] == "navigate"
+    assert captured["Sec-Fetch-Site"] == "none"
+    assert captured["Upgrade-Insecure-Requests"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_fetch_can_opt_out_of_navigation_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller fetching an API rather than a page can drop the navigation headers."""
+    fetcher = ContentFetcher(tmp_path)
+    url = "https://api.example.com/data"
+    captured: dict[str, Any] = {}
+
+    async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        captured.update(kw["headers"])
+        return _mock_response(req_url, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+    await fetcher.fetch(url, policy=FetchPolicy(browser_navigation_headers=False))
+
+    assert "Sec-Fetch-Mode" not in captured
+    assert captured["User-Agent"].startswith("LisaHarness/")
+
+
+@pytest.mark.asyncio
+async def test_fetch_extra_headers_override_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caller-supplied headers are merged over the defaults."""
+    fetcher = ContentFetcher(tmp_path)
+    url = "https://api.example.com/data"
+    captured: dict[str, Any] = {}
+
+    async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        captured.update(kw["headers"])
+        return _mock_response(req_url, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+    await fetcher.fetch(
+        url,
+        policy=FetchPolicy(extra_headers={"Accept": "application/json"}),
+    )
+
+    assert captured["Accept"] == "application/json"
+
+
+# ── Redirect-hop SSRF guard ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_private_host_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A public URL that redirects to a private address is refused.
+
+    The entry URL passes the SSRF gate, but httpx follows the 302 to
+    ``http://127.0.0.1/`` without consulting the guard again. The request
+    hook re-validates every hop, so the internal address is never reached.
+    """
+    fetcher = ContentFetcher(tmp_path)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:9/secret"})
+        return httpx.Response(200, content=b"INTERNAL SECRET")
+
+    transport = httpx.MockTransport(_handler)
+    original = httpx.AsyncClient
+
+    def _patched(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched)
+    with pytest.raises(ValueError, match="Blocked"):
+        await fetcher.fetch("https://public.example/start", policy=FetchPolicy(cache=False))
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_public_host_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The redirect guard does not block ordinary public redirects."""
+    fetcher = ContentFetcher(tmp_path)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "https://other.example/final"})
+        return httpx.Response(200, content=b"FINE")
+
+    transport = httpx.MockTransport(_handler)
+    original = httpx.AsyncClient
+
+    def _patched(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched)
+    result = await fetcher.fetch("https://public.example/start", policy=FetchPolicy(cache=False))
+    assert result.text == "FINE"
+
+
+# ── Cookie jar (challenge/cookie flows) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cookie_from_one_fetch_is_replayed_on_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cookie set by one response is sent on the next fetch.
+
+    Without a persistent jar each fetch starts with a fresh client, so a
+    site that gates content behind a cookie can never be fetched.
+    """
+    fetcher = ContentFetcher(tmp_path)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("cookie") is None:
+            return httpx.Response(
+                200,
+                headers={"set-cookie": "session=abc; Path=/"},
+                content=b"CHALLENGE",
+            )
+        return httpx.Response(200, content=b"REAL CONTENT")
+
+    transport = httpx.MockTransport(_handler)
+    original = httpx.AsyncClient
+
+    def _patched(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched)
+    first = await fetcher.fetch("https://site.example/a", policy=FetchPolicy(cache=False))
+    second = await fetcher.fetch("https://site.example/b", policy=FetchPolicy(cache=False))
+
+    assert first.text == "CHALLENGE"
+    assert second.text == "REAL CONTENT"
+
+
+@pytest.mark.asyncio
+async def test_cookie_persistence_can_be_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``persist_cookies=False`` keeps the jar empty between fetches."""
+    fetcher = ContentFetcher(tmp_path)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"set-cookie": "session=abc; Path=/"},
+            content=b"ok",
+        )
+
+    transport = httpx.MockTransport(_handler)
+    original = httpx.AsyncClient
+
+    def _patched(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched)
+    await fetcher.fetch(
+        "https://site.example/a", policy=FetchPolicy(cache=False, persist_cookies=False)
+    )
+
+    assert dict(fetcher._cookies) == {}
+
+
+# ── Status-honest errors ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_http_error_status_raises_instead_of_serving_stale_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 403 raises rather than returning 24h-old content as a fresh success.
+
+    ``raise_for_status`` raises ``HTTPStatusError`` (an ``httpx.HTTPError``),
+    so the transport-error handler used to swallow a 403 and serve the
+    stale cache — making a blocked fetch look like a 200. A status error is
+    not a transport error and must surface with its status code.
+    """
+    fetcher = ContentFetcher(tmp_path)
+    url = "https://site.example/p"
+
+    async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        return _mock_response(req_url, content=b"Stale Content", etag="W/1")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+    await fetcher.fetch(url)
+
+    async def _forbidden(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        return httpx.Response(403, request=httpx.Request("GET", req_url), content=b"blocked")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _forbidden)
+    with pytest.raises(FetchStatusError) as excinfo:
+        await fetcher.fetch(url, policy=FetchPolicy(force_refresh=True))
+
+    assert excinfo.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_transport_error_still_falls_back_to_stale_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine network failure keeps the stale-cache fallback."""
+    fetcher = ContentFetcher(tmp_path)
+    url = "https://site.example/p"
+
+    async def _fake_get(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        return _mock_response(req_url, content=b"Stale Content")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+    await fetcher.fetch(url)
+
+    async def _raise(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
+        raise httpx.ConnectError("Connection failed")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _raise)
+    result = await fetcher.fetch(url, policy=FetchPolicy(force_refresh=True))
+
+    assert result.text == "Stale Content"
+    assert result.from_cache is True

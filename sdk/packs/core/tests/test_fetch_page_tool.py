@@ -110,3 +110,103 @@ async def test_fetch_page_surfaces_transport_error(
     result = await fp.execute(ctx)
 
     assert result.error.startswith("Fetch failed:")
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_honors_per_call_max_chars(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A per-call ``max_chars`` is applied to the extracted text.
+
+    The tool advertises ``max_chars`` up to 20000, so a request above the
+    old 12000 ceiling must actually return the requested amount rather than
+    being silently truncated.
+    """
+    from typing import Any
+
+    from sdk.packs.core.tools.fetch_page import fetch_page as fp
+
+    long_text = "word " * 6000  # ~30k chars
+
+    async def _fake_fetch(url: str, **kwargs: Any) -> FetchedPage:
+        return FetchedPage(
+            url=url,
+            status_code=200,
+            title="Long",
+            text=long_text,
+            content_type="text/html",
+        )
+
+    monkeypatch.setattr(fp, "fetch", _fake_fetch)
+
+    ctx = ToolExecutionContext(
+        tool_id="fetch_page",
+        data_dir=str(tmp_path),
+        parameters={"url": "https://example.com/long", "max_chars": 20_000},
+    )
+    result = await fp.execute(ctx)
+
+    assert result.error == ""
+    body = result.output_json["page"]["text"]
+    assert 19_000 < len(body) <= 20_000
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_reports_non_text_content(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A PDF (or other binary) is reported as not extractable, not as text."""
+    from typing import Any
+
+    from sdk.packs.core.tools.fetch_page import fetch_page as fp
+
+    async def _fake_fetch(url: str, **kwargs: Any) -> FetchedPage:
+        return FetchedPage(
+            url=url,
+            status_code=200,
+            title="",
+            text="%PDF-1.4\nbinary",
+            content_type="application/pdf",
+        )
+
+    monkeypatch.setattr(fp, "fetch", _fake_fetch)
+
+    ctx = ToolExecutionContext(
+        tool_id="fetch_page",
+        data_dir=str(tmp_path),
+        parameters={"url": "https://example.com/doc.pdf"},
+    )
+    result = await fp.execute(ctx)
+
+    assert result.error == ""
+    assert "No extractable text" in result.output_text
+    assert "application/pdf" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_reports_http_error_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A refused fetch reports the HTTP status instead of a generic failure."""
+    from typing import Any
+
+    from sdk.content import FetchStatusError
+    from sdk.packs.core.tools.fetch_page import fetch_page as fp
+
+    async def _raise_fetch(url: str, **kwargs: Any) -> FetchedPage:
+        raise FetchStatusError(url, 403, "Forbidden")
+
+    monkeypatch.setattr(fp, "fetch", _raise_fetch)
+
+    ctx = ToolExecutionContext(
+        tool_id="fetch_page",
+        data_dir=str(tmp_path),
+        parameters={"url": "https://example.com/blocked"},
+    )
+    result = await fp.execute(ctx)
+
+    assert "403" in result.error
+    assert "different source" in result.error
