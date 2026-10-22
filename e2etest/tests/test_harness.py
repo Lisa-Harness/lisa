@@ -116,6 +116,11 @@ def committed_run(tmp_path: Path) -> Evidence:
     _git(workspace, "init", "-q", "-b", "main")
     _git(workspace, "config", "user.email", "t@t")
     _git(workspace, "config", "user.name", "t")
+    # A throwaway fixture repo must not inherit the developer's ambient
+    # ``commit.gpgsign=true``. Signing would launch an interactive pinentry
+    # that no test process can answer, so every fixture commit would fail
+    # with exit 128. Signatures carry no meaning for a disposable repo.
+    _git(workspace, "config", "commit.gpgsign", "false")
     (workspace / "f.txt").write_text("bad\n", encoding="utf-8")
     _git(workspace, "add", "-A")
     _git(workspace, "commit", "-qm", "init")

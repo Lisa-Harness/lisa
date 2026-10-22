@@ -76,6 +76,11 @@ async def git_repo(tmp_path: Path, *, with_remote: bool = True) -> GitRepoFixtur
     await fixture._run("init")
     await fixture._run("config", "user.email", "test@example.invalid")
     await fixture._run("config", "user.name", "Lisa Test")
+    # A throwaway fixture repo must not inherit the developer's ambient
+    # ``commit.gpgsign=true``. Signing would launch an interactive pinentry
+    # that no test process can answer, so every fixture commit would fail
+    # with exit 128. Signatures carry no meaning for a disposable repo.
+    await fixture._run("config", "commit.gpgsign", "false")
     fixture.write("app.txt", "hello\n")
     await fixture._run("add", "app.txt")
     await fixture._run("commit", "-m", "initial")
