@@ -138,7 +138,8 @@ def _render_result_text(result: ForkResult) -> str:
         # write receipts carry the artifact id the parent can resume when
         # a child ended interrupted (the 2026-10-21 delegate incident).
         _write_receipts = [
-            r for r in child.effect_receipts
+            r
+            for r in child.effect_receipts
             if str(r.get("effect", "")) in ("write", "external_write")
         ]
         if _write_receipts:

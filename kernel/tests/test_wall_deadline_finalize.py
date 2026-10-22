@@ -10,7 +10,10 @@ had ALREADY completed (applied edits, created worktree).
 from __future__ import annotations
 
 import asyncio
+import gc
+import inspect
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,8 +52,9 @@ async def test_wall_deadline_cancels_inflight_model_call(_mcp_catalog_setup) -> 
         await asyncio.sleep(5)
         return _SlowStub(content="never seen")
 
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0,
-                        max_wall_ms=500)
+    budget = TurnBudget(
+        max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0, max_wall_ms=500
+    )
     hooks = TurnHooks(models=ModelHooks(complete=complete))
     t0 = time.monotonic()
     result = await run_turn(mode_id="default", query="hello", hooks=hooks, turn_budget=budget)
@@ -72,8 +76,9 @@ async def test_wall_deadline_finalization_tail_is_bounded(_mcp_catalog_setup) ->
     async def complete(**_kwargs: Any) -> _SlowStub:
         return _SlowStub(content="final answer")
 
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0,
-                        max_wall_ms=1)
+    budget = TurnBudget(
+        max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0, max_wall_ms=1
+    )
     hooks = TurnHooks(models=ModelHooks(complete=complete))
     result = await run_turn(mode_id="default", query="hello", hooks=hooks, turn_budget=budget)
     assert isinstance(result.response_text, str)
@@ -83,13 +88,15 @@ def test_remaining_wall_seconds_zero_when_spent() -> None:
     """A spent budget returns 0.0 (fires immediately); absent/unlimited → None."""
     from kernel.turn_runner import _remaining_wall_seconds
 
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0,
-                        max_wall_ms=1_000)
+    budget = TurnBudget(
+        max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0, max_wall_ms=1_000
+    )
     start = time.monotonic() - 2.0  # 2s elapsed against a 1s budget
     assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=start) == 0.0
     assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=time.monotonic()) > 0.0
-    unlimited = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0,
-                           max_wall_ms=0)
+    unlimited = TurnBudget(
+        max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0, max_wall_ms=0
+    )
     assert _remaining_wall_seconds(turn_budget=unlimited, turn_start_mono=start) is None
     assert _remaining_wall_seconds(turn_budget=None, turn_start_mono=start) is None
     # A budget with no captured wall anchor (turn_start_mono <= 0) is unbounded:
@@ -105,7 +112,9 @@ async def test_spent_wall_deadline_closes_unawaited_coroutine() -> None:
     raising ``TimeoutError`` without closing it leaves the coroutine to
     GC, which emits ``coroutine ... was never awaited`` (2026-10-22: the
     end-of-turn checked-commit verifier tripped it). The coroutine body
-    must not run.
+    must not run, and the awaitable must be *closed* rather than merely
+    dropped -- a dropped coroutine is still ``CORO_CREATED`` when the
+    caller holds the only reference.
     """
     from kernel.turn_runner import _bound_by_wall_deadline
 
@@ -115,14 +124,47 @@ async def test_spent_wall_deadline_closes_unawaited_coroutine() -> None:
         started.append(True)
         return "unreachable"
 
+    coro = never_starts()
     with pytest.raises(TimeoutError):
-        await _bound_by_wall_deadline(never_starts(), deadline_s=0.0)
+        await _bound_by_wall_deadline(coro, deadline_s=0.0)
     assert not started, "the skipped coroutine body must never run"
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED, (
+        "the spent-budget path must close the awaitable, not drop it"
+    )
 
     # An already-spent budget (negative remaining time) takes the same path.
+    coro = never_starts()
     with pytest.raises(TimeoutError):
-        await _bound_by_wall_deadline(never_starts(), deadline_s=-1.0)
+        await _bound_by_wall_deadline(coro, deadline_s=-1.0)
     assert not started
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_spent_wall_deadline_collects_without_never_awaited_warning() -> None:
+    """A closed awaitable is collected without a 'never awaited' warning.
+
+    The warning is raised from the coroutine's ``__del__``, so it only
+    surfaces once the caller drops the last reference and the collector
+    runs. Asserting the coroutine's state (the test above) pins the
+    close; this test pins the observable consequence: the garbage
+    collector has nothing to complain about.
+    """
+    from kernel.turn_runner import _bound_by_wall_deadline
+
+    async def never_starts() -> str:
+        return "unreachable"
+
+    coro = never_starts()
+    with pytest.raises(TimeoutError):
+        await _bound_by_wall_deadline(coro, deadline_s=0.0)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        del coro
+        gc.collect()
+    unawaited = [str(w.message) for w in caught if "never awaited" in str(w.message)]
+    assert not unawaited, f"the awaitable must be closed, not dropped: {unawaited}"
 
 
 def test_interrupted_child_error_names_resumable_artifacts() -> None:
@@ -131,8 +173,9 @@ def test_interrupted_child_error_names_resumable_artifacts() -> None:
     from kernel.turn_phases._child_turn import classify_child_turn
     from kernel.turn_runner import TurnResult
 
-    receipt = EffectReceipt(effect="write", capability_id="coding_create_worktree",
-                            artifact_id="wt123")
+    receipt = EffectReceipt(
+        effect="write", capability_id="coding_create_worktree", artifact_id="wt123"
+    )
     child_result = TurnResult(
         response_text="partial",
         tool_call_count=2,
@@ -151,6 +194,7 @@ def test_interrupted_child_error_names_resumable_artifacts() -> None:
     assert "resume" in outcome.error_message.lower()
     # The receipts ride the outcome for the DelegationResult/ForkChildResult.
     assert any(r.artifact_id == "wt123" for r in outcome.effect_receipts)
+
 
 @pytest.mark.asyncio
 async def test_delegate_child_finalizes_before_registry_cancel(

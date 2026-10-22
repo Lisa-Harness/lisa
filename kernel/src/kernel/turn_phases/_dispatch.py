@@ -855,10 +855,7 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
         ledger.record(tool_name)
         logger.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
         tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
-        if (
-            isinstance(exc, OperationTimeoutError)
-            and tool_name in _DELEGATING_OPERATIONS
-        ):
+        if isinstance(exc, OperationTimeoutError) and tool_name in _DELEGATING_OPERATIONS:
             # A delegating operation's hard timeout does NOT discard the
             # side effects the child already produced — the cancel cuts the
             # child's pending report, not its applied edits / created

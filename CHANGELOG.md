@@ -126,9 +126,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   budget. The caller has already constructed the coroutine, so
   dropping it untouched left it to the garbage collector, which
   reported it as never awaited.
-- **Why:** the 2026-10-22 wall-budget incident. The end-of-turn
-  checked-commit verifier is the boundary most often already spent, so
-  the warning fired there and named a coroutine that had never run:
+- **Why:** the 2026-10-22 RuntimeWarning incident, distinct from the
+  2026-10-21 delegate overrun above. The end-of-turn checked-commit
+  verifier is the boundary most often already spent, so the warning
+  fired there and named a coroutine that had never run:
   `RuntimeWarning: coroutine '_resolve_checked_commit_evidence' was
   never awaited`. The verifier was skipped by design for a spent
   budget (its evidence is reported as unverified, not as a failure);
@@ -137,7 +138,8 @@ All notable changes to the Lisa Harness will be documented in this file.
   the skipped coroutine body still never runs. The close disposes of
   the coroutine the caller already built; it does not start it.
 - **Tests:** `kernel/tests/test_wall_deadline_finalize.py`
-  (`test_spent_wall_deadline_closes_unawaited_coroutine`).
+  (`test_spent_wall_deadline_closes_unawaited_coroutine`,
+  `test_spent_wall_deadline_collects_without_never_awaited_warning`).
 
 #### `fetch_page` reaches bot-defended sites, and no longer serves stale content as a fresh success
 

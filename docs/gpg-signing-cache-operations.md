@@ -84,7 +84,7 @@ cache. Verify it before assuming the rest works.
 
 Add to `~/.gnupg/gpg-agent.conf`:
 
-```
+```plaintext
 default-cache-ttl 28800
 max-cache-ttl 28800
 ```
@@ -116,7 +116,7 @@ gpg-connect-agent 'keyinfo --list' /bye
 
 The KEYINFO reply has this field order:
 
-```
+```plaintext
 S KEYINFO <keygrip> <type> <serial> <idstr> <cached> <protection> <fpr> <ttl> <flags>
 ```
 
