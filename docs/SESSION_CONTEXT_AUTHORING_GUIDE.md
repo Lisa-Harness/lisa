@@ -448,7 +448,7 @@ Git refs **must** pin `@tag/@branch/@sha`. The host treats pinning as mandatory 
 
 Local paths are resolved relative to the session-context file's directory, so a session can reference packs checked out alongside it (e.g. `source: ../lisa-packs/brave`). Absolute paths are passed through unchanged.
 
-Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host requests a restart so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
+Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host flags a pending reload so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
 
 ```yaml
 resources:

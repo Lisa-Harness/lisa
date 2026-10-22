@@ -62,8 +62,9 @@ Serialize messages for a runtime/session. Do not treat one mutable
 and some registries are process-global; distinct runtime objects alone do
 not establish strong multi-tenant isolation.
 
-Startup can request a host restart after installing required packs. Honor
-that lifecycle instead of trying to refresh partially initialized imports.
+Startup can flag a pending reload after installing required packs (host
+administrators surface it as a next-launch note). Honor that lifecycle
+instead of trying to refresh partially initialized imports.
 
 ## Transport callbacks
 

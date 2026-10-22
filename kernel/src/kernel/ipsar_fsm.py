@@ -1897,8 +1897,8 @@ def get_workflow_catalog() -> dict[str, WorkflowModeConfig]:
 
     The catalog is populated lazily on first access via the ``lisa-catalog`` MCP
     server. The host must call ``register_content_mcp()`` at startup before any
-    code accesses the catalog. A restart is required to pick up new or modified
-    instruction folders.
+    code accesses the catalog. The catalog is loaded fresh on each host
+    launch, so new or modified instruction folders appear on the next one.
     """
     _ensure_catalog_loaded()
     return _workflow_catalog  # type: ignore[return-value]

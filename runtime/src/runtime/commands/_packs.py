@@ -245,7 +245,7 @@ def set_pack_enabled(
     *,
     enabled: bool,
 ) -> tuple[bool, str]:
-    """Persist explicit activation for one pack and request host restart."""
+    """Persist explicit activation for one pack and flag the runtime reload."""
     lock = _load_installed_packs_lock(runtime)
     resolved = resolve_pack_name(package_name, lock)
     if not resolved:
@@ -303,22 +303,16 @@ def set_pack_enabled(
     runtime.session.request_restart(reason=f"pack {action}: {resolved}")
 
     if enabled:
-        return (
-            True,
-            f"Enabled '{resolved}'. Restart required to reload content roots and MCP manifests.",
-        )
+        return True, f"Enabled '{resolved}'. New packs are active on your next lisa launch."
 
     if cleared:
         return (
             True,
             f"Disabled '{resolved}' and cleared provider selections for: "
             f"{', '.join(sorted(cleared))}. "
-            "Restart required to reload content roots and MCP manifests.",
+            "New packs are active on your next lisa launch.",
         )
-    return (
-        True,
-        f"Disabled '{resolved}'. Restart required to reload content roots and MCP manifests.",
-    )
+    return True, f"Disabled '{resolved}'. New packs are active on your next lisa launch."
 
 
 # ── Trust-policy env helpers ─────────────────────────────────────────
@@ -684,11 +678,10 @@ def run_pack_install_sync(
     Validates the spec against the host trust policy, ensures + seeds the
     packs venv, runs ``uv pip install``, and persists the install lock. When
     ``request_restart`` is ``True`` (the REPL/``/pack install`` path), the
-    runtime is flagged for restart so the user is prompted to relaunch. When
-    ``False`` (the boot auto-install path), the caller manages restart
-    semantics itself — it may batch multiple installs and request one restart
-    after the loop, or none if entry-point discovery sees the new packs
-    in-process.
+    runtime is flagged so the host knows a reload is pending. When
+    ``False`` (the boot auto-install path), the caller manages the flag
+    itself — it may batch multiple installs and flag once after the loop,
+    or not at all when entry-point discovery sees the new packs in-process.
 
     When ``editable`` is ``True`` and the resolved install target is a local
     directory, ``-e`` is prepended to the ``uv pip install`` args so the pack
@@ -765,7 +758,7 @@ def run_pack_install_sync(
     editable_label = " (editable)" if is_local and editable else ""
     return True, (
         f"Installed '{package_name}' from {source_kind} source{editable_label}. "
-        "Restart required to reload entry points, pack catalogs, and MCP manifests."
+        "New packs are active on your next lisa launch."
     )
 
 
@@ -820,12 +813,9 @@ async def run_pack_uninstall(
         cleared_text = ", ".join(sorted(cleared))
         return True, (
             f"Uninstalled '{normalized}' and cleared provider selections for: {cleared_text}. "
-            "Restart required to unload entry points, pack catalogs, and MCP manifests."
+            "Removal takes effect on your next lisa launch."
         )
-    return True, (
-        f"Uninstalled '{normalized}'. "
-        "Restart required to unload entry points, pack catalogs, and MCP manifests."
-    )
+    return True, (f"Uninstalled '{normalized}'. Removal takes effect on your next lisa launch.")
 
 
 # ── Update drivers ───────────────────────────────────────────────────
@@ -854,7 +844,7 @@ def run_pack_update_sync(
 
     Shares the install core (``run_pack_install_sync``) so provenance and
     capability-provider selection stay identical to a fresh install, but the
-    update driver owns restart semantics so the restart reason reflects
+    update driver owns the reload flag so the reason reflects
     ``pack update`` rather than ``pack install``.
 
     Only packs with a real lock entry carrying a re-installable
@@ -916,7 +906,7 @@ async def run_pack_update_all(runtime: HostRuntime) -> tuple[bool, str]:
     Iterates the lock's runtime entries (``package``, ``git``, ``local``),
     skipping bundled packs, entries with no usable ``source_ref``, and
     placeholder refs stamped by lock seeding, and re-installs each remaining
-    entry from its recorded source. A single restart is requested after the
+    entry from its recorded source. A single reload flag is set after the
     batch regardless of how many packs were refreshed; per-pack failures do
     not stop the batch and are listed in the output.
     """
@@ -955,7 +945,7 @@ async def run_pack_update_all(runtime: HostRuntime) -> tuple[bool, str]:
     if updated:
         lines.append(
             "Updated " + ", ".join(sorted(updated)) + ". "
-            "Restart required to reload entry points, pack catalogs, and MCP manifests."
+            "New packs are active on your next lisa launch."
         )
     else:
         lines.append("No packs were updated.")

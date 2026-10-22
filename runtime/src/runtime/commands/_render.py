@@ -525,7 +525,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "or the runtime capability snapshot.",
             "- /pack list|enable <pack>|disable <pack>|install <spec>|uninstall <package> "
             "|update <pack>|update --all manages pack activation and runtime installs "
-            "(restart required after changes).",
+            "(changes are active on the next launch).",
             "- /models show|discover|apply|reload|edit — manage the active model manifest "
             "(run /help models for switches).",
             "- /modes — list every discovered mode (supported and unsupported).",
@@ -672,15 +672,16 @@ def _pack_command_help_text() -> str:
             "- /pack disable <pack> — deactivate an installed pack "
             "(always-on packs cannot be disabled).",
             "- /pack install <spec> — install a pack from a git URL, local path, or bare name.",
-            "    Append ` --resume <message>` to replay a turn after the restart.",
-            "- /pack uninstall <package> — remove an installed pack (restart required).",
+            "    Append ` --resume <message>` to replay a turn after the next launch.",
+            "- /pack uninstall <package> — remove an installed pack.",
             "- /pack update <pack> — reinstall an installed pack in place from its "
-            "recorded source (restart required).",
+            "recorded source.",
             "- /pack update --all — reinstall every runtime-installed pack from its "
-            "recorded source (restart required).",
+            "recorded source.",
             "",
-            "Activation changes take effect after a restart; install/uninstall reseed "
-            "the packs venv and re-discover modes, operations, and commands.",
+            "Activation changes take effect on the next launch; install/uninstall "
+            "reseed the packs venv and modes, operations, and commands are "
+            "re-discovered on the next boot.",
         ]
     )
 

@@ -243,7 +243,7 @@ def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> D
             in_process_mcp=True,
         )
         if runtime.session.restart_required:
-            outcome.aborted = "runtime requested a restart during boot (pack auto-install?)"
+            outcome.aborted = "runtime flagged a pending reload during boot (pack auto-install?)"
             return outcome
         asyncio.run(_drive(runtime, scenario, outcome))
     return outcome

@@ -261,7 +261,7 @@ async def test_run_pack_update_reinstalls_from_recorded_source(
         seen_specs.append(spec)
         return True, (
             "Installed 'lisa-pack-cloudflare' from git source. "
-            "Restart required to reload entry points, pack catalogs, and MCP manifests."
+            "New packs are active on your next lisa launch."
         )
 
     _write_lock(
@@ -400,7 +400,7 @@ async def test_run_pack_update_all_refreshes_runtime_packs_and_skips_bundled(
         _ = rt
         seen_specs.append(spec)
         assert kwargs.get("request_restart") is False
-        return True, f"Installed '{spec}'. Restart required."
+        return True, f"Installed '{spec}'. New packs are active on your next lisa launch."
 
     _write_lock(
         runtime,
