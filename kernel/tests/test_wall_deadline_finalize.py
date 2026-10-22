@@ -146,9 +146,15 @@ async def test_spent_wall_deadline_collects_without_never_awaited_warning() -> N
 
     The warning is raised from the coroutine's ``__del__``, so it only
     surfaces once the caller drops the last reference and the collector
-    runs. Asserting the coroutine's state (the test above) pins the
-    close; this test pins the observable consequence: the garbage
-    collector has nothing to complain about.
+    runs. The test above pins the close directly; this one pins the
+    observable consequence for *this* awaitable: collecting it emits no
+    'never awaited' warning.
+
+    The assertion names this test's own coroutine. A blanket "no
+    warnings" check would pass whenever the coroutine happened to be
+    retained (and so never collected) and would fail on an unrelated
+    test's leak harvested by this ``gc.collect()`` -- both false
+    verdicts about the behavior under test.
     """
     from kernel.turn_runner import _bound_by_wall_deadline
 
@@ -163,7 +169,11 @@ async def test_spent_wall_deadline_collects_without_never_awaited_warning() -> N
         warnings.simplefilter("always")
         del coro
         gc.collect()
-    unawaited = [str(w.message) for w in caught if "never awaited" in str(w.message)]
+    unawaited = [
+        str(w.message)
+        for w in caught
+        if "never awaited" in str(w.message) and "never_starts" in str(w.message)
+    ]
     assert not unawaited, f"the awaitable must be closed, not dropped: {unawaited}"
 
 
