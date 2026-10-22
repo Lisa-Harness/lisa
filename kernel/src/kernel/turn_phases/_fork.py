@@ -196,6 +196,7 @@ async def _run_fork_child_turn(
                 duration_ms=outcome.duration_ms,
                 per_model_usage=[dict(e) for e in outcome.per_model_usage],
                 per_mode_usage=[dict(e) for e in outcome.per_mode_usage],
+                effect_receipts=[dict(r) for r in outcome.effect_receipts],
             ),
             _fork_status,
             elapsed_ms,

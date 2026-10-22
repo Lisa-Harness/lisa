@@ -119,6 +119,20 @@ def _classify_yielded_child(
         "interrupted (not hallucinated)",
         mode_id,
     )
+    # Name the work already dispatched so the parent can resume it instead
+    # of re-running the whole task (the 2026-10-21 delegate incident).
+    _write_receipts = [
+        r
+        for r in child_result.effect_receipts
+        if r.effect in ("write", "external_write") and r.artifact_id
+    ]
+    _resume_hint = ""
+    if _write_receipts:
+        _bits = ", ".join(f"`{r.artifact_id}`" for r in _write_receipts[:5])
+        _resume_hint = (
+            f" It already completed writes on {_bits} — verify and resume "
+            "those artifacts instead of re-creating them."
+        )
     return _child_outcome(
         child_result=child_result,
         mode_id=mode_id,
@@ -127,7 +141,7 @@ def _classify_yielded_child(
         error_message=(
             f"child turn {mode_id} was interrupted by the turn lifecycle "
             f"(force-yielded) before completing its action tools; its "
-            f"reported output is partial."
+            f"reported output is partial.{_resume_hint}"
         ),
         yield_action=_ya,
         usage_kwargs=usage_kwargs,
@@ -281,6 +295,22 @@ def _interrupted_outcome(
             mode_id,
             child_result.operator_exit,
         )
+        # Name the work already dispatched so the parent can resume it
+        # instead of re-running the whole task (the 2026-10-21 delegate
+        # incident: the child's applied edits were invisible to the
+        # parent, which re-delegated from scratch and duplicated them).
+        _write_receipts = [
+            r
+            for r in child_result.effect_receipts
+            if r.effect in ("write", "external_write") and r.artifact_id
+        ]
+        _resume_hint = ""
+        if _write_receipts:
+            _bits = ", ".join(f"`{r.artifact_id}`" for r in _write_receipts[:5])
+            _resume_hint = (
+                f" It already completed writes on {_bits} — verify and "
+                "resume those artifacts instead of re-creating them."
+            )
         return _child_outcome(
             child_result=child_result,
             mode_id=mode_id,
@@ -288,7 +318,8 @@ def _interrupted_outcome(
             status="interrupted",
             error_message=(
                 f"child turn {mode_id} exited via the turn lifecycle "
-                f"({child_result.operator_exit}) before completing its work."
+                f"({child_result.operator_exit}) before completing its "
+                f"work.{_resume_hint}"
             ),
             usage_kwargs=usage_kwargs,
         )

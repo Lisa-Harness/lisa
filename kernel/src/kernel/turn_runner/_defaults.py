@@ -271,6 +271,7 @@ async def _default_delegate_fn(
             depth=depth + 1,
             per_model_usage=[dict(e) for e in outcome.per_model_usage],
             per_mode_usage=[dict(e) for e in outcome.per_mode_usage],
+            effect_receipts=[dict(r) for r in outcome.effect_receipts],
         )
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started) * 1000)

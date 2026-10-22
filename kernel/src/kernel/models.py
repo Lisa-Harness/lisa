@@ -1678,6 +1678,11 @@ class ForkChildResult(BaseModel):
     # tokens attribute to the child modes that ran, not the parent's
     # entry mode.
     per_mode_usage: list[dict[str, Any]] = Field(default_factory=list)
+    # EffectReceipt dicts for every capability the child turn successfully
+    # dispatched (a write receipt carries the artifact/worktree id the
+    # parent can resume). Empty when the child turn never returned (hard
+    # cancel) — the timeout path has no TurnResult to read.
+    effect_receipts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ForkSpec(BaseModel):
@@ -1872,6 +1877,11 @@ class DelegationResult(BaseModel):
     # parent merges this into ``_state.per_mode_usage`` so a delegate's
     # tokens attribute to the child mode that ran.
     per_mode_usage: list[dict[str, Any]] = Field(default_factory=list)
+    # EffectReceipt dicts for every capability the child turn successfully
+    # dispatched (a write receipt carries the artifact/worktree id the
+    # parent can resume). Empty when the child turn never returned (hard
+    # cancel) — the timeout path has no TurnResult to read.
+    effect_receipts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

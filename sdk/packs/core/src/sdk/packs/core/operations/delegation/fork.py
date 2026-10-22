@@ -134,6 +134,21 @@ def _render_result_text(result: ForkResult) -> str:
         lines.append(f"- **Duration**: {child.duration_ms} ms")
         if child.called_tool_names:
             lines.append(f"- **Tools called**: {', '.join(child.called_tool_names)}")
+        # Effect receipts surface the child's completed side effects —
+        # write receipts carry the artifact id the parent can resume when
+        # a child ended interrupted (the 2026-10-21 delegate incident).
+        _write_receipts = [
+            r for r in child.effect_receipts
+            if str(r.get("effect", "")) in ("write", "external_write")
+        ]
+        if _write_receipts:
+            _artifact_bits = [
+                f"`{r.get('capability_id', '')}` → `{r.get('artifact_id', '')}`"
+                for r in _write_receipts
+                if r.get("artifact_id")
+            ]
+            if _artifact_bits:
+                lines.append(f"- **Completed writes**: {'; '.join(_artifact_bits)}")
         if child.error_message:
             lines.append(f"- **Error**: {child.error_message}")
         if child.output_text:

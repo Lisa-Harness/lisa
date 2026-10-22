@@ -107,6 +107,21 @@ def _render_result_text(result: DelegationResult) -> str:
     ]
     if result.called_tool_names:
         lines.append(f"- **Tools called**: {', '.join(result.called_tool_names)}")
+    # Effect receipts surface the child's completed side effects — most
+    # importantly write receipts with artifact ids (worktree / document),
+    # so the parent can resume interrupted work instead of re-delegating
+    # from scratch (the 2026-10-21 delegate incident).
+    _write_receipts = [
+        r for r in result.effect_receipts if str(r.get("effect", "")) in ("write", "external_write")
+    ]
+    if _write_receipts:
+        _artifact_bits = [
+            f"`{r.get('capability_id', '')}` → `{r.get('artifact_id', '')}`"
+            for r in _write_receipts
+            if r.get("artifact_id")
+        ]
+        if _artifact_bits:
+            lines.append(f"- **Completed writes**: {'; '.join(_artifact_bits)}")
     if result.error_message:
         lines.append("")
         lines.append(f"**Error**: {result.error_message}")
