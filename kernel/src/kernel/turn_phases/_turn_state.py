@@ -184,6 +184,12 @@ class _TurnState:
     briefing. Synced from the ledger after each ``ledger.record`` so the
     per-iteration budget briefing can report per-target remaining calls
     without holding a reference to the ledger itself."""
+    wall_budget_expired: bool = False
+    """Set when the turn's wall budget killed an in-flight model call
+    (``_iteration_completion_or_expiry``). The loop condition reads it to
+    break to finalization, which maps the receipts earlier iterations
+    captured to an honest partial-work result (the 2026-10-21 delegate
+    incident)."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)

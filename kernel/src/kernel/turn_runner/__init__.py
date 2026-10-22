@@ -1905,6 +1905,56 @@ def _wire_budget_forces_final(
     return _budget_forces_final
 
 
+def _remaining_wall_seconds(
+    *,
+    turn_budget: TurnBudget | None,
+    turn_start_mono: float,
+) -> float | None:
+    """Return the turn budget's remaining wall time in seconds; ``None`` = unbounded.
+
+    ``max_wall_ms == 0`` (unlimited) and an unset budget both return
+    ``None`` — callers treat ``None`` as "no wall bound". A spent budget
+    returns ``0.0`` so a bound built from it fires immediately (there is
+    no wall time left). Recomputed per call so a mid-turn deadline tracks
+    wall-clock drift, not an armed snapshot.
+    """
+    if turn_budget is None or not turn_budget.max_wall_ms:
+        return None
+    if turn_start_mono <= 0:
+        # No wall anchor was captured (non-turn callers); unbounded.
+        return None
+    elapsed_ms = int((time.monotonic() - turn_start_mono) * 1000)
+    return max(0.0, (turn_budget.max_wall_ms - elapsed_ms) / 1000.0)
+
+
+async def _bound_by_wall_deadline(awaitable: Awaitable[Any], deadline_s: float | None) -> Any:
+    """Await one in-iteration step bounded by the turn's remaining wall time.
+
+    ``budget_forces_final`` is only consulted at iteration boundaries, so a
+    single slow iteration could previously overrun the wall budget: the
+    2026-10-21 delegate incident had the child's armed 270s budget fire at
+    boundaries while one in-flight model call (95s reasoning) plus the
+    finalization tail crossed the registry's 300s hard cancel — the cancel
+    discarded child work the child had ALREADY completed (applied edits,
+    created worktree) because the turn never reached its own graceful
+    finalization. Bounding each await by the remaining wall budget lets the
+    deadline fire mid-iteration; the loop's ``except TimeoutError`` around
+    the model call then breaks to finalization, which maps the partial work
+    to an honest result before any outer hard cancel.
+
+    ``None`` (no wall bound) awaits unbounded. ``<= 0.0`` (budget spent)
+    skips the await entirely and raises ``TimeoutError`` without starting
+    the underlying work — ``wait_for(fut, 0)`` raises ``CancelledError``
+    from the awaiting frame on 3.12+, which must not escape into the
+    turn's own task.
+    """
+    if deadline_s is None:
+        return await awaitable
+    if deadline_s <= 0:
+        raise TimeoutError("turn wall budget spent before the step started")
+    return await asyncio.wait_for(awaitable, timeout=deadline_s)
+
+
 def _wire_resolve_iteration_model(
     *,
     state: Any,
@@ -3274,6 +3324,64 @@ def _record_request_snapshot(state: _TurnState, hooks: TurnHooks, snapshot: dict
         state.model_requests.append(copy.deepcopy(snapshot))
 
 
+async def _iteration_completion_or_expiry(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    mode_id: str,
+    query: str,
+    max_tool_iterations: int,
+    messages: list[dict[str, Any]],
+    effective_model_def: Any,
+    effective_tools: list[dict[str, Any]] | None,
+    sys_segments: SystemPromptSegments,
+    mode_budget_tokens: int,
+    emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    log: logging.Logger,
+    tools_offered_this_turn: bool = False,
+    turn_budget: TurnBudget | None = None,
+    turn_start_mono: float | None = None,
+) -> Any:
+    """Run the iteration's model call, flagging wall-budget expiry on state.
+
+    When the turn's wall budget kills the in-flight call, sets
+    ``state.wall_budget_expired`` (the loop's ``while`` condition breaks on
+    it) and returns ``None``; the caller must not record a completion.
+    A non-budget failure still propagates. The expiry surfaces in the
+    finalization instead of as an unstructured error so the receipts
+    earlier iterations captured reach the parent (the 2026-10-21 delegate
+    incident: the registry's hard cancel discarded completed child edits
+    because the child turn never got to finalize).
+    """
+    try:
+        return await _model_completion_for_iteration(
+            state=state,
+            hooks=hooks,
+            mode_id=mode_id,
+            query=query,
+            max_tool_iterations=max_tool_iterations,
+            messages=messages,
+            effective_model_def=effective_model_def,
+            effective_tools=effective_tools,
+            sys_segments=sys_segments,
+            mode_budget_tokens=mode_budget_tokens,
+            emit_stage=emit_stage,
+            log=log,
+            tools_offered_this_turn=tools_offered_this_turn,
+            turn_budget=turn_budget,
+            turn_start_mono=turn_start_mono,
+        )
+    except TimeoutError:
+        log.warning(
+            "turn wall budget expired mid-model-call "
+            "(mode=%s, iteration=%d); finalizing with partial work",
+            mode_id,
+            state.iteration,
+        )
+        state.wall_budget_expired = True
+        return None
+
+
 async def _model_completion_for_iteration(
     *,
     state: Any,
@@ -3289,6 +3397,8 @@ async def _model_completion_for_iteration(
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
+    turn_budget: TurnBudget | None = None,
+    turn_start_mono: float | None = None,
 ) -> Any:
     """Produce this iteration's completion: planned-handoff synthesis or gateway call.
 
@@ -3450,6 +3560,16 @@ async def _model_completion_for_iteration(
 
     _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
     _complete_started = time.perf_counter()
+    # Bound the whole in-iteration completion (stream + fallback + truncation
+    # rescues) by the turn budget's remaining wall time so a slow iteration
+    # observes its deadline mid-call (the 2026-10-21 delegate overrun: a 95s
+    # reasoning call crossed the armed wall budget that boundary checks could
+    # not see). ``None`` = no wall bound; a spent budget (0.0) fires
+    # immediately and the loop finalizes gracefully.
+    _iteration_wall_s = _remaining_wall_seconds(
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono if turn_start_mono is not None else time.monotonic(),
+    )
     if hooks.models.complete_stream is not None and callable(_stream_gateway_fn):
         # ── Streaming path ──────────────────────────────────────
         # v1: stream tokens to the host. When the stream indicates
@@ -3459,16 +3579,19 @@ async def _model_completion_for_iteration(
         # ``_streamed_gateway_completion`` (with the truncation
         # rescue and tool-call fallback).
         return _audit_request_context(
-            await _streamed_gateway_completion(
-                gateway=_gateway,
-                hooks=hooks,
-                mode_id=mode_id,
-                effective_model_def=effective_model_def,
-                effective_tools=effective_tools,
-                tools_offered_this_turn=tools_offered_this_turn,
-                completion_request=completion_request,
-                complete_started=_complete_started,
-                log=log,
+            await _bound_by_wall_deadline(
+                _streamed_gateway_completion(
+                    gateway=_gateway,
+                    hooks=hooks,
+                    mode_id=mode_id,
+                    effective_model_def=effective_model_def,
+                    effective_tools=effective_tools,
+                    tools_offered_this_turn=tools_offered_this_turn,
+                    completion_request=completion_request,
+                    complete_started=_complete_started,
+                    log=log,
+                ),
+                _iteration_wall_s,
             ),
             request=completion_request,
             state=state,
@@ -3479,15 +3602,18 @@ async def _model_completion_for_iteration(
     # Live in ``_nonstreamed_gateway_completion`` (with the truncation
     # rescue).
     return _audit_request_context(
-        await _nonstreamed_gateway_completion(
-            gateway=_gateway,
-            mode_id=mode_id,
-            effective_model_def=effective_model_def,
-            effective_tools=effective_tools,
-            tools_offered_this_turn=tools_offered_this_turn,
-            completion_request=completion_request,
-            complete_started=_complete_started,
-            log=log,
+        await _bound_by_wall_deadline(
+            _nonstreamed_gateway_completion(
+                gateway=_gateway,
+                mode_id=mode_id,
+                effective_model_def=effective_model_def,
+                effective_tools=effective_tools,
+                tools_offered_this_turn=tools_offered_this_turn,
+                completion_request=completion_request,
+                complete_started=_complete_started,
+                log=log,
+            ),
+            _iteration_wall_s,
         ),
         request=completion_request,
         state=state,
@@ -5656,6 +5782,7 @@ async def _force_final_content_completion(
     complete: Callable[..., Awaitable[Any]],
     record_model_usage: Callable[..., None],
     log: logging.Logger,
+    deadline_s: float | None = None,
 ) -> tuple[str, str]:
     """Force one final no-tools completion when the loop exited with no content.
 
@@ -5665,6 +5792,12 @@ async def _force_final_content_completion(
     generic "did not produce a final response" fallback. Falls back to
     that generic message when the forced completion also returns empty.
     Returns ``(content, content_source)``.
+
+    ``deadline_s`` bounds the completion by the turn budget's remaining wall
+    time (0.0 = unbounded): the forced final is not worth dying for, and an
+    outer cancel that lands inside it discards the whole turn's work (the
+    2026-10-21 delegate incident — the child's edits were already applied
+    when the registry's hard cancel cut the finalization tail).
     """
     # The loop exited due to max_tool_iterations while the model was
     # still calling tools. Force one final no-tools completion so the
@@ -5673,12 +5806,15 @@ async def _force_final_content_completion(
     final_reasoning_tokens = 0
     final_tail_caveat = ""
     try:
-        final_completion = await complete(
-            messages=messages,
-            model_def=effective_model_def,
-            max_tokens=_turn_completion_max_tokens(effective_model_def),
-            temperature=0.4,
-            tools=None,
+        final_completion = await _bound_by_wall_deadline(
+            complete(
+                messages=messages,
+                model_def=effective_model_def,
+                max_tokens=_turn_completion_max_tokens(effective_model_def),
+                temperature=0.4,
+                tools=None,
+            ),
+            deadline_s,
         )
         # Tail-quote extractor at this user-facing site: a reasoning
         # model that burned its budget on the forced final call
@@ -5853,6 +5989,7 @@ async def _resolve_empty_turn_content(
     complete: Callable[..., Awaitable[Any]],
     record_model_usage: Callable[..., None],
     log: logging.Logger,
+    deadline_s: float | None = None,
 ) -> tuple[str, str, bool, YieldAction | None]:
     """Resolve the turn's final content when the loop broke with none.
 
@@ -6001,6 +6138,7 @@ async def _resolve_empty_turn_content(
                 complete=complete,
                 record_model_usage=record_model_usage,
                 log=log,
+                deadline_s=deadline_s,
             )
     return content, content_source, _yielded, pending_yield
 
@@ -6291,6 +6429,7 @@ async def _emit_terminal_stage_summary(
     complete: Callable[..., Awaitable[Any]],
     record_model_usage: Callable[..., None],
     log: logging.Logger,
+    deadline_s: float | None = None,
 ) -> tuple[str, bool]:
     """Force a closing-summary completion when the turn ended on a terminal stage.
 
@@ -6323,12 +6462,15 @@ async def _emit_terminal_stage_summary(
                     sys_segments.replace_base(terminal_prompt)
                 messages[0] = {"role": "system", "content": terminal_prompt}
                 try:
-                    final_completion = await complete(
-                        messages=messages,
-                        model_def=effective_model_def,
-                        max_tokens=_turn_completion_max_tokens(effective_model_def),
-                        temperature=0.4,
-                        tools=None,
+                    final_completion = await _bound_by_wall_deadline(
+                        complete(
+                            messages=messages,
+                            model_def=effective_model_def,
+                            max_tokens=_turn_completion_max_tokens(effective_model_def),
+                            temperature=0.4,
+                            tools=None,
+                        ),
+                        deadline_s,
                     )
                     final_content = getattr(final_completion, "content", "") or ""
                     if final_content.strip():
@@ -9346,8 +9488,20 @@ async def _finalize_turn_result(
     pre_handoff_text: str,
     fork_results: list[ForkChildResult] | None,
     log: logging.Logger,
+    turn_budget: TurnBudget | None = None,
+    turn_start_mono: float | None = None,
 ) -> TurnResult:
     """Resolve the final response and run post-turn completion effects."""
+    # Remaining wall budget for the finalization tail (forced-final
+    # completion, terminal-stage summary, verifier). ``None`` = no wall
+    # bound. The tail's awaits previously ran unbounded, so an outer hard
+    # cancel could land inside them and discard the whole turn's work (the
+    # 2026-10-21 delegate incident — the child's edits were already
+    # applied).
+    deadline_s = _remaining_wall_seconds(
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono if turn_start_mono is not None else time.monotonic(),
+    )
     if getattr(state, "capability_limit_hit", False) and not yielded and not content.strip():
         # The capability-cap yield is a fallback for a turn that ends with
         # NO content — the model kept calling the capped tool until the loop
@@ -9380,6 +9534,7 @@ async def _finalize_turn_result(
             complete=complete,
             record_model_usage=record_model_usage,
             log=log,
+            deadline_s=deadline_s,
         )
 
     terminal_content, workflow_terminated = await _emit_terminal_stage_summary(
@@ -9396,20 +9551,35 @@ async def _finalize_turn_result(
         complete=complete,
         record_model_usage=record_model_usage,
         log=log,
+        deadline_s=deadline_s,
     )
     if terminal_content:
         content = terminal_content
 
-    checked_commit_evidence, accepted_without_worktree = await _resolve_checked_commit_evidence(
-        state=state,
-        hooks=hooks,
-        mode_id=mode_id,
-        mode_config=mode_config,
-        cap_pause_reason=cap_pause_reason,
-        pending_operator_exit=pending_operator_exit,
-        yielded=yielded,
-        log=log,
-    )
+    # The verifier is worth bounding but not worth failing the turn for: a
+    # spent wall budget skips it (evidence stays None — the completion
+    # contract then treats the work as unverified, which an interrupted
+    # turn already reports honestly).
+    try:
+        checked_commit_evidence, accepted_without_worktree = await _bound_by_wall_deadline(
+            _resolve_checked_commit_evidence(
+                state=state,
+                hooks=hooks,
+                mode_id=mode_id,
+                mode_config=mode_config,
+                cap_pause_reason=cap_pause_reason,
+                pending_operator_exit=pending_operator_exit,
+                yielded=yielded,
+                log=log,
+            ),
+            deadline_s,
+        )
+    except TimeoutError:
+        log.warning(
+            "checked-commit verification skipped: turn wall budget spent (mode=%s)",
+            mode_id,
+        )
+        checked_commit_evidence, accepted_without_worktree = None, False
 
     content, turn_blocked, block_origin = _apply_turn_completion_contract(
         state=state,
@@ -9580,7 +9750,7 @@ def _save_pause_continuation(
         state.suspension_reason = ""
 
 
-async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the existing turn loop
+async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares the existing turn loop
     *,
     mode_id: str,
     query: str,
@@ -10008,6 +10178,7 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
     while (
         _state.iteration < max_tool_iterations
         and not _yielded
+        and not _state.wall_budget_expired
         and not _has_terminal_dispatch_failure(_state, _max_handoffs_per_turn)
     ):
         _state.iteration += 1
@@ -10156,7 +10327,7 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
         # Both live in ``_model_completion_for_iteration`` (planned-handoff
         # synthesis short-circuits the model call; otherwise the gateway
         # completes, with streaming and truncation rescues).
-        completion = await _model_completion_for_iteration(
+        completion = await _iteration_completion_or_expiry(
             state=_state,
             hooks=hooks,
             mode_id=mode_id,
@@ -10170,7 +10341,13 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
             emit_stage=_emit_stage,
             log=_log,
             tools_offered_this_turn=bool(tool_schemas),
+            turn_budget=turn_budget,
+            turn_start_mono=turn_start_mono,
         )
+        if completion is None:
+            # Wall budget expired mid-call; the while condition also reads
+            # the flag, but the dispatch path below needs a completion.
+            break
         _iteration_record = await _record_iteration_completion(
             state=_state,
             hooks=hooks,
@@ -10375,4 +10552,6 @@ async def _run_turn_inner(  # noqa: PLR0915  # restored dispatch shares the exis
         pre_handoff_text=_pre_handoff_text,
         fork_results=fork_results,
         log=_log,
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono,
     )
