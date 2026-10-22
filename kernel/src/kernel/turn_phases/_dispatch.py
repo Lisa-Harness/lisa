@@ -26,6 +26,7 @@ from kernel.models import (
     ToolResult,
     YieldAction,
 )
+from kernel.operations.registry import OperationTimeoutError
 from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import execute_tool
@@ -44,6 +45,14 @@ from kernel.turn_phases._turn_state import (
 if TYPE_CHECKING:
     from kernel.models import CallLedger
     from kernel.turn_runner import TurnHooks
+
+#: Delegate/fork are the two operations whose hard timeout can strand work
+#: the child ALREADY completed (edits applied, worktree created) — the
+#: registry's ``asyncio.wait_for`` cancel discards the child turn's pending
+#: report, not its side effects (the 2026-10-21 delegate incident: the
+#: worktree carried a full applied diff the parent never heard about and
+#: re-delegated from scratch).
+_DELEGATING_OPERATIONS = frozenset({"delegate", "fork"})
 
 _log = logging.getLogger(__name__)
 
@@ -681,7 +690,7 @@ async def _continue_policy_approval(
         ctx.approval_request_id = previous
 
 
-async def dispatch_capability(
+async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error paths inline
     *,
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -846,6 +855,27 @@ async def dispatch_capability(
         ledger.record(tool_name)
         logger.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
         tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+        if (
+            isinstance(exc, OperationTimeoutError)
+            and tool_name in _DELEGATING_OPERATIONS
+        ):
+            # A delegating operation's hard timeout does NOT discard the
+            # side effects the child already produced — the cancel cuts the
+            # child's pending report, not its applied edits / created
+            # worktree (the 2026-10-21 delegate incident: the parent saw a
+            # bare timeout, re-delegated from scratch, and duplicated work
+            # the first child had finished). Name the evidence the parent
+            # can verify cheaply before re-issuing.
+            tool_output = (
+                f"{tool_output}\n\n"
+                "The child's report was lost, but side effects it already "
+                "completed are real and verifiable. Before re-delegating "
+                "from scratch: check for completed work (e.g. "
+                "coding_list_worktrees for a worktree the child created, "
+                "coding_status on its artifact id) and resume it instead of "
+                "repeating it; if the child's work is uncommitted or absent, "
+                "re-delegate scoped to the missing remainder."
+            )
         dispatch_error = str(exc)
         await _settle_recovery(
             hooks,
