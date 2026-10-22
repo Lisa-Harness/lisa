@@ -9,6 +9,41 @@ All environment facts were verified on the developer's machine on
 2026-10-22. See `docs/trailing-newline-root-cause-and-gpg-signing-2026-10-22.md`
 in the host workspace for the full analysis and rationale.
 
+## Current state: signing already works
+
+Verified 2026-10-22 on this host: the agent's own commits **are already
+signed, and the signature is good**.
+
+```sh
+$ git log --format='%G? %GS %GK' -2
+G|Adam C. Migus <adam@migusgroup.com>|86DEDFC7398CEC63
+G|Adam C. Migus <adam@migusgroup.com>|86DEDFC7398CEC63
+
+$ git cat-file -p HEAD | head -3
+tree 9d84c8c77bb4908d0c262d6ab5688a92f64f1bbf
+parent 89e22ddab590b98d612f37d9c582be9d10b48426
+author Adam C. Migus <adam@migus.org> 1792688866 -0400
+```
+
+`%G?` = `G` means a **good** signature, verified against the signer's key.
+The commit object carries a `gpgsig` header. The worktree's *local* config
+has no `commit.gpgsign` key — the value `true` comes only from global
+`~/.gitconfig`.
+
+Two consequences:
+
+1. The agent's commit path reaches the operator's real gpg-agent and signs
+   correctly. **The passphrase cache is already primed on this host.**
+2. "Commits do not happen" is **not** a signing problem. Look elsewhere
+   first — a blocked approval, a failed check, a missing worktree, or a
+   dirty tree all block a commit just as effectively as a signing failure,
+   and only the last of those is documented here.
+
+Author identity and signer identity differ (`adam@migus.org` vs
+`adam@migusgroup.com`). Git does not require them to match, but a policy
+that verifies author identity against signer identity will not be
+satisfied by this configuration.
+
 ## Environment facts
 
 | Fact | Value |
@@ -79,8 +114,21 @@ gpg --clearsign --local-user <fingerprint> -o /dev/null /dev/null
 gpg-connect-agent 'keyinfo --list' /bye
 ```
 
-The 4th field after your key's keygrip is the cache indicator. The
-authoritative test is simply whether a commit signs.
+The KEYINFO reply has this field order:
+
+```
+S KEYINFO <keygrip> <type> <serial> <idstr> <cached> <protection> <fpr> <ttl> <flags>
+```
+
+Counting tokens of the whole line, the **cached** indicator is token 7 —
+equivalently the 4th field *after* the keygrip (token 3). An uncached
+secret key reads `S KEYINFO <keygrip> D - - - P - - -`, where the cached
+field is `-`. Once the passphrase is cached that field holds the remaining
+TTL in seconds.
+
+Do not rely on counting positions: take a **before/after diff** of the
+KEYINFO line instead, and treat "does a commit actually sign?" as the
+authoritative test.
 
 ### Step 3 — confirm the agent process shares the agent
 
@@ -93,6 +141,16 @@ gpg-connect-agent 'keyinfo --list' /bye
 
 A cached entry for your key means the agent is shared and the procedure
 works. No cached entry means a private agent — see below.
+
+Compare the agent socket path with the one the operator's terminal uses:
+
+```sh
+gpgconf --list-dirs agent
+```
+
+If the paths differ, the two are talking to different agents and the
+cache will never be shared. Point the process at the operator's agent
+with `GNUPGHOME=$HOME/.gnupg`.
 
 ### Step 4 — work
 
