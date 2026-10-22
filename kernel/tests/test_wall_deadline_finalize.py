@@ -97,6 +97,34 @@ def test_remaining_wall_seconds_zero_when_spent() -> None:
     assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=0.0) is None
 
 
+@pytest.mark.asyncio
+async def test_spent_wall_deadline_closes_unawaited_coroutine() -> None:
+    """A spent deadline closes the never-started awaitable before raising.
+
+    ``_bound_by_wall_deadline`` receives an already-constructed coroutine;
+    raising ``TimeoutError`` without closing it leaves the coroutine to
+    GC, which emits ``coroutine ... was never awaited`` (2026-10-22: the
+    end-of-turn checked-commit verifier tripped it). The coroutine body
+    must not run.
+    """
+    from kernel.turn_runner import _bound_by_wall_deadline
+
+    started: list[bool] = []
+
+    async def never_starts() -> str:
+        started.append(True)
+        return "unreachable"
+
+    with pytest.raises(TimeoutError):
+        await _bound_by_wall_deadline(never_starts(), deadline_s=0.0)
+    assert not started, "the skipped coroutine body must never run"
+
+    # An already-spent budget (negative remaining time) takes the same path.
+    with pytest.raises(TimeoutError):
+        await _bound_by_wall_deadline(never_starts(), deadline_s=-1.0)
+    assert not started
+
+
 def test_interrupted_child_error_names_resumable_artifacts() -> None:
     """An interrupted child's error message carries its completed artifact ids."""
     from kernel.models import YieldAction

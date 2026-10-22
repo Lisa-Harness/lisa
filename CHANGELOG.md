@@ -119,6 +119,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+#### A spent wall deadline no longer leaves an unawaited coroutine behind
+
+- **What:** `_bound_by_wall_deadline` closes the awaitable it was
+  handed before it raises `TimeoutError` for an already-spent wall
+  budget. The caller has already constructed the coroutine, so
+  dropping it untouched left it to the garbage collector, which
+  reported it as never awaited.
+- **Why:** the 2026-10-22 wall-budget incident. The end-of-turn
+  checked-commit verifier is the boundary most often already spent, so
+  the warning fired there and named a coroutine that had never run:
+  `RuntimeWarning: coroutine '_resolve_checked_commit_evidence' was
+  never awaited`. The verifier was skipped by design for a spent
+  budget (its evidence is reported as unverified, not as a failure);
+  the warning only added noise to an honest outcome.
+- **Not changed:** a spent deadline still raises `TimeoutError`, and
+  the skipped coroutine body still never runs. The close disposes of
+  the coroutine the caller already built; it does not start it.
+- **Tests:** `kernel/tests/test_wall_deadline_finalize.py`
+  (`test_spent_wall_deadline_closes_unawaited_coroutine`).
+
 #### `fetch_page` reaches bot-defended sites, and no longer serves stale content as a fresh success
 
 - **What:** the SDK fetch primitive now sends the navigation headers a

@@ -1946,11 +1946,18 @@ async def _bound_by_wall_deadline(awaitable: Awaitable[Any], deadline_s: float |
     skips the await entirely and raises ``TimeoutError`` without starting
     the underlying work — ``wait_for(fut, 0)`` raises ``CancelledError``
     from the awaiting frame on 3.12+, which must not escape into the
-    turn's own task.
+    turn's own task. The caller has already constructed the awaitable, so
+    it is closed here before raising: a never-started coroutine that is
+    merely dropped trips the GC's ``coroutine ... was never awaited``
+    RuntimeWarning (2026-10-22: it fired at the end-of-turn
+    checked-commit verifier, the boundary most often already spent).
     """
     if deadline_s is None:
         return await awaitable
     if deadline_s <= 0:
+        close = getattr(awaitable, "close", None)
+        if close is not None:
+            close()
         raise TimeoutError("turn wall budget spent before the step started")
     return await asyncio.wait_for(awaitable, timeout=deadline_s)
 
