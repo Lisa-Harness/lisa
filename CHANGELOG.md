@@ -6,6 +6,58 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+#### A turn's wall budget now bounds its in-flight model call and finalization tail
+
+- **What:** the turn loop bounds every in-iteration model completion by
+  the turn budget's remaining wall time (`_bound_by_wall_deadline`).
+  `budget_forces_final` was only consulted at iteration boundaries, so
+  one in-flight model call could overrun the budget: the 2026-10-21 turn
+  923 incident had a delegate child armed at 270s (its operation's 300s
+  registry timeout minus the 30s grace) that was cancelled mid-flight by
+  the registry's hard `asyncio.wait_for` — twice — while its last model
+  call was still streaming (14s of completion left in flight). The child
+  turn never reached its own graceful finalization.
+- **Why:** boundary checks cannot see time pass inside an iteration, so
+  the armed child deadline and the outer hard cancel raced, and the hard
+  cancel won exactly when the child was doing its most valuable work.
+- **What:** the finalization tail is bounded by the same remaining
+  budget — the forced no-tools final completion, the terminal-stage
+  summary completion, and the checked-commit verifier. A verifier skipped
+  for a spent budget reports the work as unverified (evidence `None`)
+  instead of failing the turn; the forced-final helpers keep their
+  legacy unbounded behavior when the caller passes no budget.
+- **What:** a wall-budget expiry that lands mid-call no longer raises out
+  of the turn. The loop breaks to finalization (`wall_budget_expired` on
+  the turn state, read in the `while` condition), receipts captured by
+  earlier iterations flow to the parent, and the child-turn classifier
+  names the resumable artifacts in the interrupted child's error
+  message.
+- **Tests:** `kernel/tests/test_wall_deadline_finalize.py` (the
+  in-flight cancellation, the bounded finalization tail, the
+  remaining-budget arithmetic including the no-anchor case, the
+  interrupted-child resume hint, and the delegate child finalizing
+  before its registry cancel).
+
+#### Delegate/fork hard timeouts surface the child's completed work
+
+- **What:** `DelegationResult` and `ForkChildResult` now carry the
+  child's effect receipts, and the pack renderers list completed write
+  artifacts (`capability_id` → `artifact_id`). An interrupted or
+  force-yielded child's error message names the artifacts it already
+  wrote ("It already completed writes on … — verify and resume those
+  artifacts instead of re-creating them").
+- **What:** when the `delegate` or `fork` operation itself hard-times
+  out (the registry cancel, which discards the child's pending report
+  but not its applied edits or created worktree), the model-facing tool
+  error says so and directs the parent to check for completed work
+  (`coding_list_worktrees` / `coding_status`) and resume it instead of
+  re-delegating from scratch — the 2026-10-21 duplicate-work outcome.
+- **Why:** the timeout hid two different facts behind one error: the
+  child's report was lost, and its side effects were already real.
+  Distinguishing them turns a duplicated redo into a resumable job.
+- **Tests:** `kernel/tests/test_wall_deadline_finalize.py`, the
+  delegate/fork pack suites.
+
 #### Copilot prompts became agents, and the code review agent resolves its own scope
 
 - **What:** the two prompt files under `.github/prompts/` are gone. GitHub
