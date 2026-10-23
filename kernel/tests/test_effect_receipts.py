@@ -681,13 +681,13 @@ async def test_parent_turn_with_receipt_is_not_blocked() -> None:
 
 @pytest.mark.asyncio
 async def test_degraded_write_operation_produces_no_receipt() -> None:
-    """A write op returning ``status="degraded"`` does NOT produce a receipt.
+    """A degraded write with NO persisted artifact produces no receipt.
 
     The ``OperationResult.status`` contract lets an operation signal a soft
-    failure (truncated, empty, persisted-with-warning) without raising. The
-    turn runner must not record an ``EffectReceipt`` for a degraded write,
-    so the completion contract treats it as an unverified write — a
-    hallucinated "I wrote it" cannot slip through as success.
+    failure (truncated, empty) without raising. The turn runner must not
+    record an ``EffectReceipt`` for a degraded write that cannot prove its
+    artifact landed, so the completion contract treats it as an unverified
+    write — a hallucinated "I wrote it" cannot slip through as success.
     """
 
     async def stub_execute_operation(
@@ -753,9 +753,170 @@ async def test_degraded_write_operation_produces_no_receipt() -> None:
     ):
         result = await run_turn(mode_id="writer", query="write the file", hooks=hooks)
 
-    # A degraded write must NOT produce a receipt — the completion contract
-    # is not satisfied by a truncated/partial result.
+    # A degraded write without a persisted artifact must NOT produce a
+    # receipt — the completion contract is not satisfied by a
+    # truncated/partial result that cannot prove anything landed.
     assert not any(r.capability_id == "write_file" for r in result.effect_receipts)
+
+
+@pytest.mark.asyncio
+async def test_degraded_write_with_persisted_path_records_receipt() -> None:
+    """A degraded write that persisted its artifact records the receipt.
+
+    The 2026-10-22 forge char-cap incident: a complete 46k-char revision
+    was persisted, then the post-hoc char clamp marked the op ``degraded``.
+    The old behavior recorded no receipt, so the completion contract
+    blocked the whole turn as "hallucinated success" — factually wrong,
+    the file WAS on disk. A degraded write proving its artifact (a storage
+    ``path`` / ``document_path`` json key, or the ``persisted`` flag) now
+    records the receipt, with ``artifact_id`` carrying the path, while the
+    warning still rides the tool result the model sees.
+    """
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(
+            output_text=(
+                "Document forged and stored at `docs/plan.md` (20218 bytes). "
+                "WARNING: persisted truncated after 0 continuation attempt(s)."
+            ),
+            output_json={"path": "docs/plan.md", "bytes": 20218, "truncated": True},
+            status="degraded",
+            error_detail="continuation char_cap: 0 attempt(s), finish_reason='stop'",
+        )
+
+    fake_write_op = SimpleNamespace(
+        effect="write",
+        mode_allowlist=(),
+        description="write a file",
+        parameters_schema={"type": "object", "properties": {}},
+        max_calls_per_turn=0,
+        effective_provider_id=lambda: "test",
+    )
+
+    call_count = 0
+
+    async def writing(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "a.md", "content": "x"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Wrote it.")
+
+    hooks = TurnHooks(
+        models=ModelHooks(
+            complete=writing,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.turn_runner.get_operation_catalog",
+            return_value={"write_file": fake_write_op},
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    receipts = [r for r in result.effect_receipts if r.capability_id == "write_file"]
+    assert len(receipts) == 1
+    assert receipts[0].artifact_id == "docs/plan.md"
+    assert not result.blocked
+
+
+@pytest.mark.asyncio
+async def test_degraded_write_with_persisted_flag_records_receipt() -> None:
+    """The explicit ``persisted: true`` mark also satisfies the write contract."""
+    persisted_catalog = _write_contract_catalog()
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(
+            output_text="Record stored (degraded: partial fields).",
+            output_json={"persisted": True, "memory_id": "mem-7"},
+            status="degraded",
+            error_detail="distill incomplete: 2 of 3 facts emitted",
+        )
+
+    fake_write_op = SimpleNamespace(
+        effect="write",
+        mode_allowlist=(),
+        description="write a record",
+        parameters_schema={"type": "object", "properties": {}},
+        max_calls_per_turn=0,
+        effective_provider_id=lambda: "test",
+    )
+
+    call_count = 0
+
+    async def writing(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "a.md", "content": "x"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Wrote it.")
+
+    hooks = TurnHooks(
+        models=ModelHooks(
+            complete=writing,
+        ),
+        operations=OperationHooks(
+            execute_operation=stub_execute_operation,
+        ),
+    )
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=persisted_catalog,
+        ),
+        patch(
+            "kernel.turn_runner.get_operation_catalog",
+            return_value={"write_file": fake_write_op},
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=persisted_catalog,
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    receipts = [r for r in result.effect_receipts if r.capability_id == "write_file"]
+    assert len(receipts) == 1
+    assert receipts[0].artifact_id == "mem-7"
+    assert not result.blocked
 
 
 # ── Regression: failed MCP write still blocked ───────────────────

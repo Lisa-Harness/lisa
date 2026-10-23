@@ -427,6 +427,14 @@ def _returned_error(
     mcp_result: Any | None,
 ) -> str:
     if op_result is not None and not op_result.is_success:
+        # A degraded write that actually persisted its artifact is a warned
+        # success, not a dispatch failure: the tool result (the forge's
+        # "Document forged and stored … WARNING" summary) must flow to the
+        # model as output, and the receipt path must run. Reporting an
+        # error envelope here would flip ``dispatched_succeeded`` off
+        # before ``_handle_write_receipt`` ever sees the result.
+        if op_result.persisted_artifact:
+            return ""
         return op_result.error_detail or op_result.output_text or f"Operation {op_result.status}."
     if tool_result is not None and tool_result.error.strip():
         return tool_result.error.strip()
@@ -462,15 +470,34 @@ def _handle_write_receipt(
         and isinstance(op_result, OperationResult)
         and not op_result.is_success
     ):
-        dispatched_succeeded = False
-        logger.warning(
-            "operation '%s' returned status=%s (effect=%s); not recording a write receipt. "
-            "detail=%s",
-            tool_name,
-            op_result.status,
-            dispatched_effect,
-            op_result.error_detail or op_result.output_text[:200],
-        )
+        # A degraded write that actually persisted its artifact still landed
+        # real work on disk — the completion contract must see it, or a
+        # recoverable warning (char-cap truncation, lint degradation) is
+        # misreported as a "hallucinated success" and the whole turn is
+        # blocked despite the artifact existing (2026-10-22 forge
+        # char-cap incident). An ``error`` status, or a degraded result
+        # with no persisted artifact, keeps the historical behavior.
+        persisted_artifact = op_result.persisted_artifact
+        if op_result.status == "error" or not persisted_artifact:
+            dispatched_succeeded = False
+            logger.warning(
+                "operation '%s' returned status=%s (effect=%s); not recording a write receipt. "
+                "detail=%s",
+                tool_name,
+                op_result.status,
+                dispatched_effect,
+                op_result.error_detail or op_result.output_text[:200],
+            )
+        else:
+            dispatched_artifact_id = persisted_artifact
+            logger.warning(
+                "operation '%s' returned status=degraded (effect=%s); recording the write "
+                "receipt for its persisted artifact '%s'. detail=%s",
+                tool_name,
+                dispatched_effect,
+                persisted_artifact,
+                op_result.error_detail or op_result.output_text[:200],
+            )
 
     if dispatched_succeeded:
         state.effect_receipts.append(
@@ -612,7 +639,9 @@ def _track_consecutive_errors(
     elif mcp_result is not None and hasattr(mcp_result, "is_error"):
         dispatch_failed = bool(getattr(mcp_result, "is_error", False))
     elif op_result is not None and isinstance(op_result, OperationResult):
-        dispatch_failed = not op_result.is_success
+        # A degraded write with a persisted artifact recorded its receipt;
+        # only an unpersisted degraded/error result counts as dispatch failure.
+        dispatch_failed = op_result.persisted_artifact == ""
 
     if dispatch_failed:
         if state.last_error_tool == tool_name:
@@ -787,8 +816,20 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
             result_preview=(
                 summarize_json_result(tool_output)[:240] if dispatched_succeeded else ""
             ),
-            last_error=dispatch_error,
-            retry_policy=cast(Any, recovery_retry_policy) if dispatch_error else None,
+            # A degraded-but-persisted write succeeded dispatch-wise (its
+            # receipt is recorded); the warning must not flip the recovery
+            # record to stalled-confirm, or the operator is asked to re-run
+            # work that actually landed (2026-10-22 forge char-cap incident).
+            last_error=(
+                dispatch_error
+                if dispatch_error and not (op_result is not None and op_result.persisted_artifact)
+                else ""
+            ),
+            retry_policy=(
+                cast(Any, recovery_retry_policy)
+                if dispatch_error and not (op_result is not None and op_result.persisted_artifact)
+                else None
+            ),
         )
 
     except ApprovalRequired as required:

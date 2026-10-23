@@ -294,9 +294,13 @@ class OperationResult(BaseModel):
     The ``status`` field is the typed success/degradation contract:
     - ``"success"``  — clean result; the write-contract resolver counts it.
     - ``"degraded"`` — completed with warnings (partial / truncated /
-      persisted-but-incomplete). The turn runner does NOT record an
-      ``EffectReceipt`` for a degraded write, so the completion contract
-      treats it as an unverified write.
+      persisted-but-incomplete). By default the turn runner does NOT
+      record an ``EffectReceipt`` for a degraded write, so the completion
+      contract treats it as an unverified write. Exception: a degraded
+      write that actually persisted its artifact (``output_json`` carries
+      ``persisted`` = True, or a storage ``path``) records the receipt —
+      the artifact exists on disk, so a "hallucinated success" block over
+      it would be factually wrong (2026-10-22 forge char-cap incident).
     - ``"error"``    — the operation chose not to raise but failed; the
       ``output_text`` carries a diagnostic message. Treated like
       ``"degraded"`` for receipt purposes.
@@ -315,6 +319,33 @@ class OperationResult(BaseModel):
     def is_success(self) -> bool:
         """Return True when the operation completed cleanly (``status == "success"``)."""
         return self.status == "success"
+
+    @property
+    def persisted_artifact(self) -> str:
+        """Return the artifact id for a degraded write that actually persisted, else "".
+
+        A degraded write signals "completed with warnings", not "nothing
+        happened". When the operation proves its artifact landed (the
+        ``persisted`` flag, or a resolved artifact/path json key), the
+        write receipt stands — the warning rides ``error_detail`` while
+        the completion contract sees a real landed write. Keys beyond
+        ``artifact_id`` cover the common write shapes: a storage ``path``,
+        a ``document_path``, and a memory ``memory_id``.
+        """
+        if self.status != "degraded":
+            return ""
+        oj = self.output_json or {}
+        if oj.get("persisted") is True:
+            artifact = str(
+                oj.get("artifact_id")
+                or oj.get("path")
+                or oj.get("document_path")
+                or oj.get("memory_id")
+                or ""
+            )
+            if artifact:
+                return artifact
+        return str(oj.get("path") or oj.get("document_path") or "")
 
 
 class OperationDefinition(BaseModel):
