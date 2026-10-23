@@ -4,14 +4,14 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Lisa is an composable, extensible and modular AI agent harness.
+Lisa is an composable, extensible and modular AI agent runtime and host.
 It provides an
 inspectable tool-enabled turn loop,
 intent-driven mode switching,
 event-driven model routing,
 read, write and execute approvals,
 an abstract runtime,
-an SDK that includes a "pack" loader.
+and an SDK that includes a "pack" loader.
 A hosts supplies the
 user interface / communication transport,
 manages the MCP servers and model proxies,
@@ -22,29 +22,16 @@ and load the modes, operations, proxies, servers and tools from packs.
 | Goal | Guide |
 | --- | --- |
 | Run the agent harness | [Getting started](docs/GETTING_STARTED.md) and the separate [CLI host](https://github.com/Lisa-Harness/lisa-cli) |
-| Use the runtime to create a host | [Host integration](docs/HOST_INTEGRATION.md) |
+| Use the sandbox feature | [Sandbox Trust Workbook](docs/SANDBOX_TRUST_WORKBOOK.md) |
 | Create your own modes pack | [Pack authoring](docs/PACK_AUTHORING_GUIDE.md) |
 | Configure the session context | [Configuration](docs/CONFIGURATION.md) and [session authoring](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md) |
 | Understand/debug the harness | [Architecture](docs/BOUNDARIES.md) and [troubleshooting](docs/TROUBLESHOOTING.md) |
+| Use the runtime to create a host | [Host integration](docs/HOST_INTEGRATION.md) |
 | Contribute | [Contributing](CONTRIBUTING.md) and [testing](docs/TESTING.md) |
 
 The [documentation index](docs/README.md) links the full reference corpus.
 
-## Quick start
-
-**To run Lisa**, install [lisa-cli](../lisa-cli):
-
-```sh
-uv tool install lisa-cli
-lisa --help
-lisa verify
-```
-
-Configure provider access and a model manifest before a model turn; follow
-[getting started](docs/GETTING_STARTED.md). Live use sends data to the selected
-provider and may incur charges.
-
-**To develop the framework**:
+## Use the source
 
 ```sh
 git clone https://github.com/Lisa-Harness/lisa.git
@@ -52,10 +39,6 @@ cd lisa
 uv sync --frozen --extra dev
 uv run pytest packstest/tests -m "not live" -q
 ```
-
-This installs framework workspace members, **not** `lisa`. A `uv tool install`
-environment is separate from the checkout's `.venv`; framework edits do not
-automatically change an installed CLI.
 
 ## Architecture
 
