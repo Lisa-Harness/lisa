@@ -37,7 +37,7 @@ from kernel.sandbox_floor import (
     resolve_sandbox_owner,
 )
 from kernel.seams.host_adapter import build_callable_host
-from kernel.seams.protocols import ContentRegistry
+from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.token_usage import TOKEN_USAGE_TOPIC
 from kernel.turn_hooks import (
@@ -1221,7 +1221,8 @@ def _stream_requested_signal(runtime: HostRuntime) -> Callable[..., Any] | None:
 def _build_item_builder_context(
     runtime: HostRuntime,
     resolve_model: Callable[[str], Any],
-) -> tuple[EntryPointExtensionItemBuilder, dict[str, Any]]:
+    extra_item_builders: list[ExtensionItemBuilder] | None = None,
+) -> tuple[ExtensionItemBuilder, dict[str, Any]]:
     """Build the shared extension item builder and its runtime context.
 
     The builder is constructed once so every ``build_unified_state`` call
@@ -1230,11 +1231,26 @@ def _build_item_builder_context(
     (minus disabled ones) and tags each contributed record with its
     source pack name. The runtime context hands pack entry-point
     functions access to host resources.
+
+    ``extra_item_builders`` — optional host-supplied builders (the VS Code
+    sidecar's editor-context bridge). When present, a
+    ``CompositeExtensionItemBuilder`` wraps the entry-point builder first
+    (pack items win the ``item_id`` dedup) followed by the host builders,
+    matching the ``DelegatingTransport`` composition pattern.
     """
     disabled_packs = load_disabled_pack_names(runtime.paths.data_dir)
-    item_builder = EntryPointExtensionItemBuilder(
+    entry_builder = EntryPointExtensionItemBuilder(
         excluded_packs=disabled_packs,
     )
+    if extra_item_builders:
+        from sdk.context.composite_item_builder import CompositeExtensionItemBuilder
+
+        # lazy: defers the composite import to the host-supplied path
+        item_builder: ExtensionItemBuilder = CompositeExtensionItemBuilder(
+            [entry_builder, *extra_item_builders]
+        )
+    else:
+        item_builder = entry_builder
     runtime_context: dict[str, Any] = {
         "runtime": runtime,
         "resolve_model": resolve_model,
@@ -1427,6 +1443,8 @@ def build_turn_hooks(
     runtime: HostRuntime,
     context: dict[str, Any] | None = None,
     transport: TransportCallbacks | None = None,
+    *,
+    extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> TurnHooks:
     """Build a ``TurnHooks`` dataclass wired to the host runtime.
 
@@ -1436,6 +1454,11 @@ def build_turn_hooks(
             ``on_turn_complete`` hook updates it with completion metadata.
             When ``None``, a fresh dict is created internally.
         transport: Optional transport callbacks for streaming/debug events.
+        extra_item_builders: Optional host-supplied ``ExtensionItemBuilder``
+            instances (e.g. the VS Code sidecar's editor-context bridge).
+            Composed alongside the installed-pack builder so host-contributed
+            context records flow through the same context-mapper feed.
+            ``None`` (default) behaves exactly as before.
 
     Returns:
         A ``TurnHooks`` ready to pass to ``kernel.turn_runner.run_turn``.
@@ -1470,8 +1493,11 @@ def build_turn_hooks(
     # ``lisa.extensions.context_items`` entry points from installed
     # packs and tags each contributed record with its source pack name.
     # ``_introspect_fn`` is defined below and resolves lazily when the
-    # builder invokes a pack that reads it.
-    _item_builder, _runtime_context = _build_item_builder_context(runtime, _resolve_model)
+    # builder invokes a pack that reads it. Host-supplied builders (the
+    # editor-context bridge) are composed in after the entry-point builder.
+    _item_builder, _runtime_context = _build_item_builder_context(
+        runtime, _resolve_model, extra_item_builders=extra_item_builders
+    )
 
     # ── Model router + provider gateway discovery ────────────────
     # Module-level _resolve_router_for_runtime / _resolve_gateway_provider_for_runtime

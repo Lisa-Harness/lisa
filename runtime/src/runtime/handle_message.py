@@ -48,6 +48,7 @@ from uuid import uuid4
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
+from kernel.seams.protocols import ExtensionItemBuilder
 from kernel.turn_continuation import TurnContinuation, resume_after_pause
 from kernel.turn_phases._routing import TurnDecision, evaluate_turn_decision
 from kernel.turn_runner import (
@@ -260,6 +261,8 @@ async def handle_message(
     runtime: HostRuntime,
     message: str,
     transport: TransportCallbacks | None = None,
+    *,
+    extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> HostCommandResult:
     """Route one user message through the host runtime.
 
@@ -270,6 +273,11 @@ async def handle_message(
         transport: Optional transport callbacks for streaming, debug
             rendering, and error delivery. When ``None``, a
             ``NullTransport`` is used (headless / test mode).
+        extra_item_builders: Optional host-supplied ``ExtensionItemBuilder``
+            instances (e.g. the VS Code sidecar's editor-context bridge).
+            Injected through to ``build_turn_hooks`` so host-contributed
+            context items reach the session-owned context mapper. ``None``
+            (default) behaves exactly as before.
 
     Returns:
         A ``HostCommandResult`` with the response text and optional
@@ -316,7 +324,9 @@ async def handle_message(
     # ``HostCommandResult`` so the transport always receives a string for
     # ``on_response`` and the caller preserves ``operator_exit``.
     try:
-        model_result = await _route_model_turn(runtime, message, tport)
+        model_result = await _route_model_turn(
+            runtime, message, tport, extra_item_builders=extra_item_builders
+        )
     except OperationExecutionError as exc:
         await tport.on_error(f"Operation error: {exc}", exc)
         response_text = format_operation_error(exc)
@@ -644,6 +654,7 @@ async def _route_model_turn(
     *,
     task_id: str = "",
     continuation: TurnContinuation | None = None,
+    extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> str | HostCommandResult:
     """Handle model-backed routing: mode dispatch and run_turn execution.
 
@@ -656,6 +667,10 @@ async def _route_model_turn(
        ``default``). The model hands off between modes mid-turn via
        ``transition_stage`` — no separate planner call.
     4. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
+
+    ``extra_item_builders`` flows through to ``build_turn_hooks`` so a
+    host-supplied item builder (the editor-context bridge) reaches the
+    turn's context assembly on every resume path below.
     """
     # Ensure the (possibly deferred) MCP pool is ready before building
     # turn hooks, which snapshot runtime.resources.mcp_tool_pool.
@@ -669,6 +684,7 @@ async def _route_model_turn(
             transport,
             task_id=continuation.identity.task_id,
             continuation=continuation,
+            extra_item_builders=extra_item_builders,
         )
     if not message.lstrip().startswith("/") and _is_task_resume_request(message):
         paused = _paused_turn_continuation(runtime.paths.thread_path)
@@ -678,6 +694,7 @@ async def _route_model_turn(
                 message,
                 transport,
                 continuation=resume_after_pause(paused, message),
+                extra_item_builders=extra_item_builders,
             )
     if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
@@ -719,7 +736,15 @@ async def _route_model_turn(
                 runtime.start_mode_id,
             )
 
-    return await _execute_mode_turn(runtime, message, mode_id, query, transport, task_id=task_id)
+    return await _execute_mode_turn(
+        runtime,
+        message,
+        mode_id,
+        query,
+        transport,
+        task_id=task_id,
+        extra_item_builders=extra_item_builders,
+    )
 
 
 # ── Turn execution ────────────────────────────────────────────────────
@@ -1148,6 +1173,7 @@ async def _execute_mode_turn(
     *,
     task_id: str = "",
     continuation: TurnContinuation | None = None,
+    extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> HostCommandResult | str:
     """Resolve mode, build context, and run the turn through the kernel.
 
@@ -1155,6 +1181,11 @@ async def _execute_mode_turn(
     the workflow catalog, resolves the model, builds the turn context,
     constructs ``TurnHooks`` via ``build_turn_hooks``, calls ``run_turn``,
     persists the result, and updates token counters.
+
+    ``extra_item_builders`` — optional host-supplied ``ExtensionItemBuilder``
+    instances (the VS Code sidecar's editor-context bridge) composed into
+    the turn's context assembly. Keyword-only so existing positional
+    callers and test stubs are unaffected.
     """
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
@@ -1248,8 +1279,14 @@ async def _execute_mode_turn(
         },
     )
 
-    # Build turn hooks and execute.
-    hooks = build_turn_hooks(runtime, context=run_context, transport=transport)
+    # Build turn hooks and execute. Host-supplied item builders (the editor
+    # context bridge) are composed in alongside the installed-pack builder.
+    hooks = build_turn_hooks(
+        runtime,
+        context=run_context,
+        transport=transport,
+        extra_item_builders=extra_item_builders,
+    )
     _log_turn_start(mode, resolved_model, query or message)
     try:
         result: TurnResult = await run_turn(

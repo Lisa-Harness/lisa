@@ -302,6 +302,7 @@ async def test_explicit_pick_up_resumes_pending_task_in_owning_mode(
         _transport: object,
         *,
         task_id: str = "",
+        extra_item_builders: list[object] | None = None,
     ) -> str:
         captured.update(mode_id=mode_id, task_id=task_id)
         return "routed"
