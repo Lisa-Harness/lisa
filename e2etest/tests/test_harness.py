@@ -122,9 +122,7 @@ def _write_memory_db(data_dir: Path, rows: list[tuple[str, str, str]]) -> None:
             "memory_kind TEXT, status TEXT, content TEXT, "
             "memory_scope TEXT, surface_id TEXT);"
         )
-        conn.executemany(
-            "INSERT INTO memories VALUES ('episodic', 'active', ?, ?, ?)", rows
-        )
+        conn.executemany("INSERT INTO memories VALUES ('episodic', 'active', ?, ?, ?)", rows)
 
 
 def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,11 +139,7 @@ def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(driver_mod, "build_runtime", _fake_build)
     monkeypatch.setattr(driver_mod, "inject_packs_venv_site_packages", lambda _p: Path("/x"))
-    monkeypatch.setattr(
-        driver_mod, "load_script", lambda _p: SimpleNamespace(log=[])
-    )
-
-    import asyncio
+    monkeypatch.setattr(driver_mod, "load_script", lambda _p: SimpleNamespace(log=[]))
 
     async def _noop_drive(runtime: Any, scenario: Any, outcome: Any) -> None:
         return None
@@ -190,7 +184,9 @@ def test_memory_scope_oracle_fails_without_records(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_memory_db(data_dir, [])
     paths = RunPaths(tmp_path, data_dir, None, None, "", tmp_path)
-    (result,) = evaluate((_spec("memory_scope", surface_id="chan-42"),), Evidence(paths, DriverOutcome()))
+    (result,) = evaluate(
+        (_spec("memory_scope", surface_id="chan-42"),), Evidence(paths, DriverOutcome())
+    )
     assert not result.passed and "no memories recorded" in result.detail
 
 

@@ -8,7 +8,7 @@ only-include = ["src/sdk/packs/introspect"]
 
 [project]
 name = "lisa-pack-introspect"
-version = "0.1.2"
+version = "0.2.0"
 description = "Lisa introspect pack - operational self-model, architecture atlas, and reflective self-assessment operations"
 requires-python = ">=3.11"
 dependencies = [

@@ -102,6 +102,13 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(temporary_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Verified executables and checksum sidecars are host-internal cache data.
+    "runtime/src/runtime/mcp_binary_cache.py": (
+        "destination.parent.mkdir(parents=True, exist_ok=True)",
+        "os.replace(temporary_path, destination)",
+        "os.replace(temporary_path, checksum_path)",
+        "temporary_path.unlink(missing_ok=True)",
+    ),
     "runtime/src/runtime/approvals.py": (
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",

@@ -7,7 +7,7 @@ packages = ["src/e2etest"]
 
 [project]
 name = "lisa-harness-e2e"
-version = "0.1.2"
+version = "0.2.0"
 description = "End-to-end scenario harness: drives a full Lisa runtime through pack workflows"
 requires-python = ">=3.11"
 

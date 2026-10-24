@@ -65,8 +65,7 @@ class Evidence:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT memory_kind, status, content, memory_scope, surface_id "
-                "FROM memories"
+                "SELECT memory_kind, status, content, memory_scope, surface_id FROM memories"
             ).fetchall()
         return [dict(r) for r in rows]
 

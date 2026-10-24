@@ -7,7 +7,7 @@ packages = ["src/runtime"]
 
 [project]
 name = "lisa-harness-runtime"
-version = "0.1.2"
+version = "0.2.0"
 description = "Transport-neutral host runtime for Lisa Harness hosts"
 requires-python = ">=3.11"
 dependencies = [

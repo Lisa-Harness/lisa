@@ -230,16 +230,15 @@ async def test_recall_operation_forwards_scope_fields_in_parameters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
+async def test_recall_operation_searches_and_unwraps_canonical_envelope() -> None:
     """recall_memory calls memory.search (not memory.list) and unwraps a
-    Mem0-style paginated envelope dict into records for ranking."""
+    paginated envelope of provider-normalized records for ranking."""
     calls: list[str] = []
 
     async def execute_tool(tool_id: str, _ctx: object) -> ToolResult:
         calls.append(tool_id)
         assert tool_id == "memory.search"
-        # Return a Mem0-style paginated envelope (dict, not list).
-        # The defensive unwrap in recall.py should extract .results.
+        # Providers normalize native field names before publishing memory.search.
         return ToolResult(
             tool_id=tool_id,
             output_text=json.dumps(
@@ -247,14 +246,14 @@ async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
                     "results": [
                         {
                             "id": "uuid-1",
-                            "memory": "We decided to use PostgreSQL for analytics.",
-                            "score": 0.9,
+                            "content": "We decided to use PostgreSQL for analytics.",
+                            "salience": 0.9,
                             "created_at": "2026-07-10T12:00:00Z",
                         },
                         {
                             "id": "uuid-2",
-                            "memory": "We postponed the Redis work.",
-                            "score": 0.5,
+                            "content": "We postponed the Redis work.",
+                            "salience": 0.5,
                             "created_at": "2026-07-11T12:00:00Z",
                         },
                     ],
@@ -275,7 +274,7 @@ async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
 
     # Verify it called memory.search, not memory.list
     assert calls == ["memory.search"]
-    # Verify the Mem0 envelope was unwrapped and ranked
+    # Verify the canonical records were unwrapped and ranked.
     assert result.output_json["found"] is True
     assert "PostgreSQL for analytics" in result.output_text
 

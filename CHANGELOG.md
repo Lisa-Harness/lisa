@@ -4,11 +4,27 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-24
+
+### Added
+
+- Selectable MCP capability providers, including version-pinned binary servers
+  with checksum-verified downloads and caching.
+- Hosts can pass `surface_type` and `surface_id` through `build_runtime` and
+  supply extra context item builders to `handle_message`. Pack-provided items
+  take precedence when item IDs collide.
+- End-to-end scenarios can declare surface identity and verify it through
+  the harness.
+
 ### Fixed
 
 - The stuck-in-stage guard counts only iterations in the current turn, not
   earlier conversation turns in the same workflow mode. New turns and operator
   resumes get a fresh stage budget; within-turn nudges and caps still apply.
+- Git subdirectory pack installs use the pack key for package-name policy
+  checks, including URLs with multiple fragment parameters.
+- In-process memory server initialization uses the default backup retention
+  when the shared argument namespace lacks `backup_keep`.
 
 ### Changed
 
@@ -24,6 +40,21 @@ All notable changes to the Lisa Harness will be documented in this file.
   cached authored text after files change. The
   [prompt startup spec](docs/SPEC/PROMPT_STARTUP.md) prioritizes refresh and
   runtime-owned teardown before further in-process startup optimization.
+- Memory provider bindings now live in pack MCP manifests instead of runtime
+  aliases. Providers publish the stable `memory.add`, `memory.search`, and
+  `memory.list` contract; additional memory tools are provider-dependent.
+
+### Upgrade notes
+
+- Upgrade the framework distributions and bundled packs together to 0.2.0,
+  then restart the host. Hosts release separately; reinstalling an older
+  framework version does not include the turn-budget fix.
+- Alternate memory providers must declare the `memory` capability and its
+  required tools in their MCP manifest. Select the active provider with
+  `providers.capabilities.memory`; runtime-specific memory aliases are gone.
+  See the [memory architecture](docs/MEMORY_ARCHITECTURE.md).
+- New host context-builder and surface-identity parameters are optional.
+  Existing callers can omit them.
 
 ## [0.1.2] — 2026-10-23
 

@@ -2385,8 +2385,7 @@ class MCPToolPool:
         this helper maps the published name to the native name the session
         expects. Pass-through names (not in the map) return unchanged.
         """
-        tool_map = getattr(config, "tool_map", None) or {}
-        return tool_map.get(published_bare, published_bare)
+        return config.tool_map.get(published_bare, published_bare)
 
     async def _call_tool_scoped(
         self,
