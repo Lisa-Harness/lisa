@@ -50,6 +50,22 @@ def memory_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return data_dir / "memory.db"
 
 
+def test_memory_init_accepts_in_process_namespace_without_backup_keep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-process launcher's generic Namespace omits server-specific flags."""
+    from argparse import Namespace
+
+    from mcp_server.memory import server as mem_server
+
+    monkeypatch.setenv("LISA_MEMORY_BACKUP_KEEP", "3")
+    mem_server._init(
+        Namespace(data_dir=str(tmp_path), embedding_model=None, embedding_endpoint=None)
+    )
+
+    assert mem_server._cfg.backup_keep == 3
+
+
 @pytest.mark.asyncio
 async def test_memory_add(memory_env: Path) -> None:
     from mcp_server.memory.server import mcp

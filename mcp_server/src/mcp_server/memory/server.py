@@ -436,7 +436,9 @@ def _init(args: Any) -> None:
     provider, dimension = resolve_embedding_config(args)
     _cfg.embedding_provider = provider
     _cfg.embedding_dimension = dimension
-    _cfg.backup_keep = args.backup_keep
+    # In-process hosts build a generic Namespace without server-specific flags.
+    backup_keep = getattr(args, "backup_keep", None)
+    _cfg.backup_keep = backup_keep if backup_keep is not None else _backup_keep_default()
     # Point-in-time backup before the store opens the DB: dump memory.db to a
     # timestamped SQL file under <data_dir>/backups/ and prune beyond keep.
     backup_memory_db(data_dir=_cfg.data_dir, keep=_cfg.backup_keep)
