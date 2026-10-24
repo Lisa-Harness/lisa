@@ -167,5 +167,26 @@ def test_build_runtime_in_process_mcp_flag(monkeypatch: pytest.MonkeyPatch) -> N
     assert runtime.in_process_mcp is True
 
 
+def test_build_runtime_forwards_surface_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``build_runtime`` must forward surface_type/surface_id to from_env."""
+    captured: dict[str, Any] = {}
+    config = _config(thread_redaction_enabled=False)
+
+    def _recording_from_env(cls: type[HostConfig], **kw: Any) -> HostConfig:
+        captured.update(kw)
+        return config
+
+    _install_bootstrap_fakes(monkeypatch, config=config)
+    # _install_bootstrap_fakes stubs from_env wholesale; replace its stub with
+    # the recorder so we capture the kwargs ``build_runtime`` forwards while
+    # still returning the shared fake config.
+    monkeypatch.setattr(HostConfig, "from_env", classmethod(_recording_from_env))
+
+    build_runtime(host_kind="web", surface_type="teams_channel", surface_id="chan-42")
+
+    assert captured["surface_type"] == "teams_channel"
+    assert captured["surface_id"] == "chan-42"
+
+
 def pattern_count(policy: ThreadRedactionPolicy) -> int:
     return len(policy._compiled)

@@ -64,6 +64,8 @@ def build_runtime(
     state_snapshot_path: str = "",
     streaming: str = "hybrid",
     host_log_path: str = "",
+    surface_type: str = "",
+    surface_id: str = "",
     logging_configurator: LoggingConfigurator | None = None,
     in_process_mcp: bool = False,
 ) -> HostRuntime:
@@ -112,6 +114,8 @@ def build_runtime(
         user_slug=user_slug,
         state_snapshot=state_snapshot_path,
         streaming=streaming,
+        surface_type=surface_type,
+        surface_id=surface_id,
     )
     config = dataclasses.replace(config, host_kind=host_kind)
 
