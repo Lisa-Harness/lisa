@@ -64,7 +64,10 @@ class Evidence:
             return []
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT memory_kind, status, content FROM memories").fetchall()
+            rows = conn.execute(
+                "SELECT memory_kind, status, content, memory_scope, surface_id "
+                "FROM memories"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def committed_artifact(self) -> dict[str, Any] | None:
@@ -203,6 +206,32 @@ def _memory_recorded(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     need = int(args.get("min", 1))
     sample = "; ".join(str(r["content"])[:120] for r in matching[:3])
     return len(matching) >= need, f"{len(matching)}/{len(rows)} memories match {terms}. {sample}"
+
+
+@oracle("memory_scope")
+def _memory_scope(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Assert recorded memories carry the scenario-declared surface scope.
+
+    Proves the host's explicit ``surface.id`` (and any declared
+    ``memory_scope``) flowed from ``build_runtime`` through the turn hooks
+    into the memory store — not the session-plan fallback.
+    """
+    rows = ev.memories
+    if not rows:
+        return False, "no memories recorded"
+    want_surface = args.get("surface_id")
+    want_scope = args.get("scope")
+    bad = [
+        f"scope={r['memory_scope']} surface_id={r['surface_id']}: {str(r['content'])[:80]}"
+        for r in rows
+        if (want_surface is not None and r["surface_id"] != want_surface)
+        or (want_scope is not None and r["memory_scope"] != want_scope)
+    ]
+    detail = (
+        f"{len(rows) - len(bad)}/{len(rows)} memories at surface_id={want_surface} "
+        f"scope={want_scope}"
+    )
+    return not bad, "\n".join([*bad, detail]) if bad else detail
 
 
 # ── code-change outcome (coding pack WorkProduct + git) ─────────────────

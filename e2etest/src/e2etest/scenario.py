@@ -50,6 +50,19 @@ class OracleSpec:
 
 
 @dataclass(frozen=True)
+class SurfaceIdentity:
+    """Explicit surface identity the driver stamps onto the host config.
+
+    When omitted, the runtime falls back to the session plan's declared
+    surface (see ``HostRuntime.__init__``). Used to prove that hosts can
+    scope memory/approvals/policy to an explicit conversation surface.
+    """
+
+    type: str = ""
+    id: str = ""
+
+
+@dataclass(frozen=True)
 class Scenario:
     """A parsed scenario plus the directory its relative paths resolve against."""
 
@@ -64,6 +77,7 @@ class Scenario:
     approvals: Approvals
     budgets: Budgets
     oracles: tuple[OracleSpec, ...]
+    surface: SurfaceIdentity = SurfaceIdentity()
     continue_message: str = "continue"
     yield_reply: str = "Proceed with your best judgment."
     env: dict[str, str] = field(default_factory=dict)
@@ -115,6 +129,7 @@ def load_scenario(path: Path) -> Scenario:
     fixture = raw.get("fixture") or {}
     approvals = raw.get("approvals") or {}
     budgets = raw.get("budgets") or {}
+    surface = raw.get("surface") or {}
     session_context = _resolve(
         base, raw.get("session_context"), key="session_context", required=True
     )
@@ -137,6 +152,10 @@ def load_scenario(path: Path) -> Scenario:
         ),
         budgets=Budgets(**budgets),
         oracles=_oracles(raw.get("oracles") or {}),
+        surface=SurfaceIdentity(
+            type=str(surface.get("type") or ""),
+            id=str(surface.get("id") or ""),
+        ),
         continue_message=str(raw.get("continue_message") or "continue"),
         yield_reply=str(raw.get("yield_reply") or "Proceed with your best judgment."),
         env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},

@@ -240,6 +240,8 @@ def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> D
             data_dir=str(paths.data_dir),
             session_context=str(paths.session_context),
             streaming="none",
+            surface_type=scenario.surface.type,
+            surface_id=scenario.surface.id,
             in_process_mcp=True,
         )
         if runtime.session.restart_required:

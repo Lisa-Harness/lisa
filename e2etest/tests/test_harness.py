@@ -95,6 +95,105 @@ def test_scenario_rejects_missing_turns(tmp_path: Path) -> None:
         load_scenario(path)
 
 
+def test_scenario_parses_surface_identity(tmp_path: Path) -> None:
+    path = _write_scenario(
+        tmp_path,
+        "session_context: ctx.md\nturns: [x]\nsurface: {type: teams_channel, id: chan-42}\n",
+    )
+    scenario = load_scenario(path)
+    assert scenario.surface.type == "teams_channel"
+    assert scenario.surface.id == "chan-42"
+    # Omitted surface block defaults to the session-plan fallback (empty).
+    plain = _write_scenario(tmp_path, "session_context: ctx.md\nturns: [x]\n")
+    default = load_scenario(plain)
+    assert default.surface.type == ""
+    assert default.surface.id == ""
+
+
+def _write_memory_db(data_dir: Path, rows: list[tuple[str, str, str]]) -> None:
+    """Create a minimal memory.db with (content, memory_scope, surface_id) rows."""
+    import sqlite3
+
+    db = data_dir / "data" / "memory.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            "CREATE TABLE memories ("
+            "memory_kind TEXT, status TEXT, content TEXT, "
+            "memory_scope TEXT, surface_id TEXT);"
+        )
+        conn.executemany(
+            "INSERT INTO memories VALUES ('episodic', 'active', ?, ?, ?)", rows
+        )
+
+
+def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run_conversation`` must pass scenario.surface into ``build_runtime``."""
+    captured: dict[str, Any] = {}
+
+    def _fake_build(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        # Return just enough for run_conversation's boot checks; the script
+        # below runs zero turns so _drive never touches the fake.
+        return SimpleNamespace(session=SimpleNamespace(restart_required=False))
+
+    import e2etest.driver as driver_mod
+
+    monkeypatch.setattr(driver_mod, "build_runtime", _fake_build)
+    monkeypatch.setattr(driver_mod, "inject_packs_venv_site_packages", lambda _p: Path("/x"))
+    monkeypatch.setattr(
+        driver_mod, "load_script", lambda _p: SimpleNamespace(log=[])
+    )
+
+    import asyncio
+
+    async def _noop_drive(runtime: Any, scenario: Any, outcome: Any) -> None:
+        return None
+
+    monkeypatch.setattr(driver_mod, "_drive", _noop_drive)
+
+    path = _write_scenario(
+        tmp_path,
+        "session_context: ctx.md\nturns: [x]\n"
+        "surface: {type: teams_channel, id: chan-42}\n"
+        "model: {script: m.py}\n",
+    )
+    (tmp_path / "m.py").write_text("def respond(*a, **k): ...\n", encoding="utf-8")
+    scenario = load_scenario(path)
+    paths = RunPaths(tmp_path, tmp_path / "data", None, None, "", tmp_path)
+
+    driver_mod.run_conversation(scenario, paths, tmp_path / "venv")
+
+    assert captured["surface_type"] == "teams_channel"
+    assert captured["surface_id"] == "chan-42"
+
+
+def test_memory_scope_oracle_matches_scenario_surface(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    _write_memory_db(
+        data_dir,
+        [
+            ("prefers dark mode", "personal", "chan-42"),
+            ("uses UTC times", "personal", "chan-42"),
+        ],
+    )
+    paths = RunPaths(tmp_path, data_dir, None, None, "", tmp_path)
+    evidence = Evidence(paths, DriverOutcome())
+
+    (passed,) = evaluate((_spec("memory_scope", surface_id="chan-42"),), evidence)
+    assert passed.passed, passed.detail
+    (failed,) = evaluate((_spec("memory_scope", surface_id="lobby"),), evidence)
+    assert not failed.passed and "0/2 memories" in failed.detail
+
+
+def test_memory_scope_oracle_fails_without_records(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    _write_memory_db(data_dir, [])
+    paths = RunPaths(tmp_path, data_dir, None, None, "", tmp_path)
+    (result,) = evaluate((_spec("memory_scope", surface_id="chan-42"),), Evidence(paths, DriverOutcome()))
+    assert not result.passed and "no memories recorded" in result.detail
+
+
 def test_approval_payload_accepts_flat_and_nested_shapes() -> None:
     flat = {"schema": "lisa.approval.v1", "request_id": "r1", "target_id": "t"}
     assert approval_payload(HostCommandResult(text="", data=flat)) == flat

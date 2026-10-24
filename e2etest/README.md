@@ -140,6 +140,9 @@ model:
   script: model/<name>.py        # optional; scripted model instead of the live LLM
 policy: policy.yaml              # optional; default is empty `mode: ask`
 env: {NAME: value}               # optional extra process env
+surface: {type: teams_channel, id: chan-42}  # optional explicit surface identity;
+                                 # when omitted the runtime falls back to the
+                                 # session plan's declared surface
 turns:                           # user messages, in order
   - "..."
 approvals:
@@ -201,6 +204,7 @@ Capability and knowledge:
 | --- | --- | --- |
 | `receipt` | `capability` (id or list), `min` | ≥ `min` effect receipts for those capabilities |
 | `memory_recorded` | `mentions_any`, `min` | ≥ `min` stored memories mention any term |
+| `memory_scope` | `surface_id`, `scope` | every stored memory carries the scenario's declared surface id (and memory scope when given) |
 
 Code change (coding pack WorkProduct + git; needs a `fixture.repo`):
 
