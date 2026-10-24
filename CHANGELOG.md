@@ -2,6 +2,19 @@
 
 All notable changes to the Lisa Harness will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Catalog and authored-content adapters reuse long-lived stdio MCP sessions
+  instead of starting a Python server for every call. Framework setup prewarms
+  catalog and content concurrently; catalog invalidation also clears the
+  persistent server cache. Sessions close at process exit and can be closed
+  explicitly with `close_shared_sessions()`.
+- A local startup profile measured catalog/content adapter time falling from
+  approximately 24.8 seconds to 4.4 seconds. These are diagnostic observations,
+  not an end-to-end latency guarantee; the model calls differed between runs.
+
 ## [0.1.2] — 2026-10-23
 
 ### Changed

@@ -1,7 +1,7 @@
 """MCP-backed catalog adapters for workflow modes and operations.
 
 Calls ``list_modes`` and ``list_operations`` on a ``lisa-catalog`` MCP server
-via per-call stdio sessions, deserializes the JSON into kernel model objects,
+via a shared, long-lived stdio session, deserializes the JSON into kernel model objects,
 and for runtime operations imports the implementation module locally.
 
 The kernel never touches the filesystem for content discovery; it delegates
@@ -10,17 +10,15 @@ all scanning and front-matter parsing to the ``lisa-catalog`` server.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from mcp.client.session import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.stdio import StdioServerParameters
 from pydantic import BaseModel
 
+from kernel.context._shared_stdio import SharedStdioSession
 from kernel.models import (
     DefaultIntentBridge,
     OperationDefinition,
@@ -59,6 +57,18 @@ def _extract_text(result: Any) -> str:
     return ""
 
 
+def _shared_session(config: MCPClientConfig) -> SharedStdioSession:
+    """Return the shared stdio session handle for ``config``."""
+    return SharedStdioSession(
+        StdioServerParameters(
+            command=config.command,
+            args=config.args,
+            env=config.env,
+            cwd=config.cwd,
+        )
+    )
+
+
 def _parse_catalog_response(raw_response: str, *, tool: str) -> dict[str, Any]:
     """Decode one catalog object or raise an actionable MCP response error."""
 
@@ -91,37 +101,15 @@ class MCPModeCatalog:
     """
 
     def __init__(self, config: MCPClientConfig) -> None:
-        self._params = StdioServerParameters(
-            command=config.command,
-            args=config.args,
-            env=config.env,
-            cwd=config.cwd,
-        )
+        self._session = _shared_session(config)
         self._catalog: dict[str, WorkflowModeConfig] | None = None
 
+    def prewarm(self) -> None:
+        """Start the shared ``lisa-catalog`` session in the background."""
+        self._session.prewarm()
+
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
-        async def _run() -> str:
-            async with (
-                stdio_client(self._params) as (read, write_stream),
-                ClientSession(read, write_stream) as session,
-            ):
-                await session.initialize()
-                result = await session.call_tool(tool, arguments=arguments)
-                return _extract_text(result)
-
-        # Check for a running event loop BEFORE constructing the coroutine
-        # to avoid the "coroutine was never awaited" RuntimeWarning.
-        try:
-            asyncio.get_running_loop()
-            in_loop = True
-        except RuntimeError:
-            in_loop = False
-
-        if in_loop:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(asyncio.run, _run())
-                return future.result()
-        return asyncio.run(_run())
+        return _extract_text(self._session.call(tool, arguments))
 
     def get_workflow_catalog(self) -> dict[str, WorkflowModeConfig]:
         """Return the mode catalog, loading it from the MCP server on first call."""
@@ -135,8 +123,9 @@ class MCPModeCatalog:
         return self._catalog
 
     def invalidate(self) -> None:
-        """Clear the cached catalog so the next call reloads from the server."""
+        """Clear local and server-side caches so the next call rescans content roots."""
         self._catalog = None
+        self._call("invalidate_catalog", {})
 
 
 def _require_start_stage_id(data: dict[str, Any]) -> str:
@@ -250,37 +239,15 @@ class MCPOperationCatalog:
     """
 
     def __init__(self, config: MCPClientConfig) -> None:
-        self._params = StdioServerParameters(
-            command=config.command,
-            args=config.args,
-            env=config.env,
-            cwd=config.cwd,
-        )
+        self._session = _shared_session(config)
         self._catalog: dict[str, OperationDefinition] | None = None
 
+    def prewarm(self) -> None:
+        """Start the shared ``lisa-catalog`` session in the background."""
+        self._session.prewarm()
+
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
-        async def _run() -> str:
-            async with (
-                stdio_client(self._params) as (read, write_stream),
-                ClientSession(read, write_stream) as session,
-            ):
-                await session.initialize()
-                result = await session.call_tool(tool, arguments=arguments)
-                return _extract_text(result)
-
-        # Check for a running event loop BEFORE constructing the coroutine
-        # to avoid the "coroutine was never awaited" RuntimeWarning.
-        try:
-            asyncio.get_running_loop()
-            in_loop = True
-        except RuntimeError:
-            in_loop = False
-
-        if in_loop:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(asyncio.run, _run())
-                return future.result()
-        return asyncio.run(_run())
+        return _extract_text(self._session.call(tool, arguments))
 
     def get_operation_catalog(self) -> dict[str, OperationDefinition]:
         """Return the operation catalog, loading it from the MCP server on first call."""
@@ -294,8 +261,9 @@ class MCPOperationCatalog:
         return self._catalog
 
     def invalidate(self) -> None:
-        """Clear the cached catalog so the next call reloads from the server."""
+        """Clear local and server-side caches so the next call rescans content roots."""
         self._catalog = None
+        self._call("invalidate_catalog", {})
 
 
 def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
@@ -411,37 +379,15 @@ class MCPToolCatalog:
     """
 
     def __init__(self, config: MCPClientConfig) -> None:
-        self._params = StdioServerParameters(
-            command=config.command,
-            args=config.args,
-            env=config.env,
-            cwd=config.cwd,
-        )
+        self._session = _shared_session(config)
         self._catalog: dict[str, ToolDefinition] | None = None
 
+    def prewarm(self) -> None:
+        """Start the shared ``lisa-catalog`` session in the background."""
+        self._session.prewarm()
+
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
-        async def _run() -> str:
-            async with (
-                stdio_client(self._params) as (read, write_stream),
-                ClientSession(read, write_stream) as session,
-            ):
-                await session.initialize()
-                result = await session.call_tool(tool, arguments=arguments)
-                return _extract_text(result)
-
-        # Check for a running event loop BEFORE constructing the coroutine
-        # to avoid the "coroutine was never awaited" RuntimeWarning.
-        try:
-            asyncio.get_running_loop()
-            in_loop = True
-        except RuntimeError:
-            in_loop = False
-
-        if in_loop:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(asyncio.run, _run())
-                return future.result()
-        return asyncio.run(_run())
+        return _extract_text(self._session.call(tool, arguments))
 
     def get_tool_catalog(self) -> dict[str, ToolDefinition]:
         """Return the tool catalog, loading it from the MCP server on first call."""
@@ -455,8 +401,9 @@ class MCPToolCatalog:
         return self._catalog
 
     def invalidate(self) -> None:
-        """Clear the cached catalog so the next call reloads from the server."""
+        """Clear local and server-side caches so the next call rescans content roots."""
         self._catalog = None
+        self._call("invalidate_catalog", {})
 
 
 def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:

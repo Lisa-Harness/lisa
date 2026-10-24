@@ -483,6 +483,16 @@ def setup_framework(
             catalog_config = dataclasses.replace(catalog_config, env={})
         catalog_config.env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
 
+    # Start the shared lisa-catalog and lisa-content subprocesses together so
+    # their interpreter startups overlap; every catalog/content adapter below
+    # reuses these two long-lived sessions instead of spawning per call.
+    from kernel.context.mcp_catalog import MCPOperationCatalog
+    from kernel.context.mcp_content_registry import MCPContentRegistry
+
+    registry = MCPContentRegistry(content_config)
+    registry.prewarm()
+    MCPOperationCatalog(catalog_config).prewarm()
+
     from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks
     from kernel.operations.registry import (
         execute_operation,
@@ -510,12 +520,10 @@ def setup_framework(
     # assets and the sub-turn contract assets (fork/delegate briefings + midpoint
     # write-nudge). Both modules share the same registry instance.
     from kernel.context.content_registry import set_content_registry
-    from kernel.context.mcp_content_registry import MCPContentRegistry
     from kernel.context.sub_turn_contract import (
         set_content_registry as _set_sub_turn_content_registry,
     )
 
-    registry = MCPContentRegistry(content_config)
     set_content_registry(registry)
     _set_sub_turn_content_registry(registry)
 
