@@ -80,8 +80,15 @@ For a complete program and an observable production transport, see
 | Module | Responsibility |
 | --- | --- |
 | `mcp_pool.py` | Compiles MCP server configurations from the host manifest (`mcp_servers.yaml`) and pack-contributed declarations. |
+| `mcp_binary_cache.py` | Downloads version-pinned binary MCP servers, verifies release checksums, and caches them under the host data directory. |
 | `mcp_servers.yaml` | The host's first-party MCP server manifest (shipped as package data). |
-| `memory_aliases.py` | Registers the generic `memory.*` synthetic aliases on a started MCP pool. |
+| `capability_servers.py` | Selects one MCP implementation for each declared capability. |
+| `ambient_resolvers.py` | Resolves runtime identity for capability-owned MCP tools. |
+
+Binary server manifests may pin a GitHub release with `binary_download`
+(`repository`, `version`, and `binary_name`). The runtime downloads only
+selected implementations, verifies the asset against the release's
+`checksums.txt`, and caches it under `<data_dir>/cache/mcp-binaries/`.
 
 ### Approvals, Policy & Recovery
 

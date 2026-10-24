@@ -2,7 +2,7 @@
 
 Covers:
 - load_mcp_server_manifest: missing file returns empty.
-- load_mcp_server_manifest: parses servers + memory backend config.
+- load_mcp_server_manifest: parses server declarations.
 - ${VAR} env expansion at load time.
 - disabled entries are skipped.
 - data_dir_arg null vs custom flag vs default.
@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from kernel.mcp_launch.policy import AuthKind, AuthSpec, RuntimeKind
 from kernel.mcp_launch.server_manifest import (
+    MCPServerManifestError,
     load_mcp_server_manifest,
 )
 
@@ -23,34 +24,14 @@ from kernel.mcp_launch.server_manifest import (
 
 
 def test_load_manifest_missing_file_returns_empty(tmp_path: Path) -> None:
-    specs, mem = load_mcp_server_manifest(tmp_path / "nope.yaml")
-    assert specs == []
-    assert mem.default_backend is None
+    assert load_mcp_server_manifest(tmp_path / "nope.yaml") == []
 
 
-def test_load_manifest_parses_servers_and_memory(tmp_path: Path) -> None:
+def test_load_manifest_parses_servers(tmp_path: Path) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(
         """
 version: 1
-memory:
-  default_backend: mem0
-  backends:
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers:
-        Authorization: "Bearer ${MEM0_API_KEY_TEST}"
-      tool_names:
-        add: add_memory
-        search: search_memories
-    - id: lisa-context
-      kind: stdio
-      command: "${LISA_MCP_COMMAND}"
-      args: ["--data-dir", "/data"]
-      tool_names:
-        add: add_memory
-        search: search_memory
 servers:
   - server_id: mem0
     runtime_kind: npx
@@ -67,27 +48,103 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, mem = load_mcp_server_manifest(manifest)
-    assert len(specs) == 1  # letta is disabled
+    specs = load_mcp_server_manifest(manifest)
+    assert len(specs) == 1
     assert specs[0].server_id == "mem0"
     assert specs[0].runtime_kind is RuntimeKind.NPX
     assert specs[0].npx_package == "@mem0/mcp"
-    # data_dir_arg null → no injection
     assert specs[0].data_dir_arg is None
-    # tool policy carried through
     assert specs[0].tool_policy.denied_tools == ["delete_memory"]
-    # memory backend config — peer list, two backends
-    assert mem.default_backend == "mem0"
-    backend_ids = [b.id for b in mem.backends]
-    assert backend_ids == ["mem0", "lisa-context"]
-    mem0_backend = next(b for b in mem.backends if b.id == "mem0")
-    assert mem0_backend.kind == "http"
-    assert mem0_backend.url == "https://mcp.mem0.ai/mcp"
-    assert mem0_backend.tool_names["search"] == "search_memories"
-    lisa_backend = next(b for b in mem.backends if b.id == "lisa-context")
-    assert lisa_backend.kind == "stdio"
-    assert lisa_backend.command == "${LISA_MCP_COMMAND}"  # expansion is at host time
-    assert lisa_backend.tool_names["add"] == "add_memory"
+
+
+def test_load_manifest_parses_pinned_binary_download(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: lisa-storage-go
+    runtime_kind: binary
+    binary_download:
+      repository: Lisa-Harness/lisa-go
+      version: v0.1.0
+      binary_name: lisa-storage
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_mcp_server_manifest(manifest)
+
+    assert specs[0].binary_download is not None
+    assert specs[0].binary_download.repository == "Lisa-Harness/lisa-go"
+    assert specs[0].binary_download.version == "v0.1.0"
+    assert specs[0].binary_download.binary_name == "lisa-storage"
+
+
+@pytest.mark.parametrize(
+    ("runtime_kind", "binary_download", "command_path", "message"),
+    [
+        (
+            "python",
+            "repository: org/server\n      version: v1.2.3\n      binary_name: tool",
+            "",
+            "requires runtime_kind=binary",
+        ),
+        (
+            "binary",
+            "repository: org/server\n      version: latest\n      binary_name: tool",
+            "",
+            "invalid binary_download",
+        ),
+        (
+            "binary",
+            "repository: org/server\n      version: v1.2.3\n      binary_name: ../tool",
+            "",
+            "invalid binary_download",
+        ),
+        (
+            "binary",
+            "repository: org/server\n      version: v1.2.3\n      binary_name: tool",
+            "command_path: ./tool",
+            "cannot both be set",
+        ),
+    ],
+)
+def test_load_manifest_rejects_invalid_binary_download(
+    tmp_path: Path,
+    runtime_kind: str,
+    binary_download: str,
+    command_path: str,
+    message: str,
+) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        f"""
+servers:
+  - server_id: downloader
+    runtime_kind: {runtime_kind}
+    {command_path}
+    binary_download:
+      {binary_download}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MCPServerManifestError, match=message):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_rejects_legacy_memory_section(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+memory:
+  default_backend: mem0
+servers: []
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="top-level 'memory' is no longer supported"):
+        load_mcp_server_manifest(manifest)
 
 
 def test_load_manifest_expands_env_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,7 +162,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].env_policy.forced_overrides["MEM0_API_KEY"] == "secret123"
 
 
@@ -135,7 +192,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].cli_args == [
         "--thread-dir",
         "/tmp/threads",
@@ -157,7 +214,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].cli_args == ["--flag", ""]
 
 
@@ -176,7 +233,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].data_dir_arg == "--store-dir"
     assert specs[0].data_dir_subdir == "mem0"
     assert specs[0].ensure_data_dir is True
@@ -194,7 +251,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].data_dir_arg == "--data-dir"
 
 
@@ -214,7 +271,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].workspace_root_arg is None
     assert specs[1].workspace_root_arg == "--workspace-root"
 
@@ -248,7 +305,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     assert specs[0].server_id == "mem0"
     assert specs[0].runtime_kind is RuntimeKind.HTTP
@@ -286,40 +343,9 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     assert specs[0].runtime_kind is RuntimeKind.HTTP
-    assert specs[0].url == "https://api.cloudservers.app/mcp"
-
-
-def test_load_manifest_memory_backend_http_url_expands_env_vars(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """memory.backends kind=http url supports ${VAR} expansion at load time."""
-    monkeypatch.setenv("CLOUDSERVER_MCP_URL", "https://api.cloudservers.app/mcp")
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: cloudservers
-  backends:
-    - id: cloudservers
-      kind: http
-      url: "${CLOUDSERVER_MCP_URL}"
-      tool_names:
-        search: search_memory
-servers:
-  - server_id: cloudservers
-    runtime_kind: http
-    url: "${CLOUDSERVER_MCP_URL}"
-""",
-        encoding="utf-8",
-    )
-    specs, mem = load_mcp_server_manifest(manifest)
-    backend = next(b for b in mem.backends if b.id == "cloudservers")
-    assert backend.kind == "http"
-    assert backend.url == "https://api.cloudservers.app/mcp"
     assert specs[0].url == "https://api.cloudservers.app/mcp"
 
 
@@ -339,7 +365,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     auth = specs[0].auth
     assert isinstance(auth, AuthSpec)
@@ -365,7 +391,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     auth = specs[0].auth
     assert auth.kind is AuthKind.OAUTH2_PKCE
     assert auth.client_id == "my-app"
@@ -391,7 +417,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     auth = specs[0].auth
     assert auth.kind is AuthKind.HEADER
@@ -474,107 +500,6 @@ servers:
         load_mcp_server_manifest(manifest)
 
 
-# ── Default-backend / server-id consistency ─────────────────────────────────
-
-
-def test_default_backend_not_in_backends_raises(tmp_path: Path) -> None:
-    """default_backend must reference a declared memory.backends id."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: mem0
-  backends:
-    - id: lisa_memory
-      kind: stdio
-      command: lisa-memory
-      args: []
-      tool_names: {add: add_memory}
-servers: []
-""",
-        encoding="utf-8",
-    )
-    with pytest.raises(Exception, match=r"not in memory.backends"):
-        load_mcp_server_manifest(manifest)
-
-
-def test_default_backend_no_matching_server_id_raises(tmp_path: Path) -> None:
-    """default_backend must match a servers[] server_id (so scoped dispatch
-    can route). A backend id with no matching server is a manifest error."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: mem0
-  backends:
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers: {Authorization: "Bearer x"}
-      tool_names: {add: add_memory}
-servers:
-  - server_id: letta
-    runtime_kind: http
-    url: https://letta.example/mcp
-""",
-        encoding="utf-8",
-    )
-    with pytest.raises(Exception, match="no matching server_id"):
-        load_mcp_server_manifest(manifest)
-
-
-def test_default_backend_lisa_memory_allowed_without_server_entry(tmp_path: Path) -> None:
-    """The first-party lisa_memory backend is registered in code, not in the
-    manifest's servers list, so it's allowed as default without a servers entry."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: lisa_memory
-  backends:
-    - id: lisa_memory
-      kind: stdio
-      command: lisa-memory
-      args: []
-      tool_names: {add: add_memory}
-servers: []
-""",
-        encoding="utf-8",
-    )
-    specs, mem = load_mcp_server_manifest(manifest)
-    assert mem.default_backend == "lisa_memory"
-    assert specs == []
-
-
-def test_default_backend_matching_server_id_loads(tmp_path: Path) -> None:
-    """default_backend whose id matches a servers[] server_id loads cleanly."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: mem0
-  backends:
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers: {Authorization: "Bearer x"}
-      tool_names: {add: add_memory}
-servers:
-  - server_id: mem0
-    runtime_kind: http
-    url: https://mcp.mem0.ai/mcp
-""",
-        encoding="utf-8",
-    )
-    specs, mem = load_mcp_server_manifest(manifest)
-    assert mem.default_backend == "mem0"
-    assert specs[0].server_id == "mem0"
-
-
 # ── warm / required / disabled launch policy ────────────────────────────────
 
 
@@ -595,7 +520,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     context = next(s for s in specs if s.server_id == "lisa-context")
     assert context.warm is True
     assert context.required is True
@@ -620,7 +545,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     assert specs[0].server_id == "active"
 
@@ -642,77 +567,6 @@ def test_compile_mcp_config_passes_warm_required(tmp_path: Path) -> None:
     assert config.required is True
 
 
-def test_load_manifest_parses_result_maps(tmp_path: Path) -> None:
-    """MemoryBackendSpec parses result_maps from YAML (http backend)."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: mem0
-  backends:
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers:
-        Authorization: "Bearer test-key"
-      tool_names:
-        add: add_memory
-        search: search_memories
-        list: get_memories
-      result_maps:
-        add: lisa_packs.mem0.result_maps.mem0_add_result_map
-        search: lisa_packs.mem0.result_maps.mem0_search_result_map
-        list: lisa_packs.mem0.result_maps.mem0_list_result_map
-servers:
-  - server_id: mem0
-    runtime_kind: http
-    url: https://mcp.mem0.ai/mcp
-    headers:
-      Authorization: "Bearer test-key"
-""",
-        encoding="utf-8",
-    )
-    _specs, mem = load_mcp_server_manifest(manifest)
-    assert mem.default_backend == "mem0"
-    assert len(mem.backends) == 1
-    backend = mem.backends[0]
-    assert backend.result_maps == {
-        "add": "lisa_packs.mem0.result_maps.mem0_add_result_map",
-        "search": "lisa_packs.mem0.result_maps.mem0_search_result_map",
-        "list": "lisa_packs.mem0.result_maps.mem0_list_result_map",
-    }
-
-
-def test_load_manifest_result_maps_default_empty(tmp_path: Path) -> None:
-    """Backends without result_maps get an empty dict (pass-through)."""
-    manifest = tmp_path / "mcp_servers.yaml"
-    manifest.write_text(
-        """
-version: 1
-memory:
-  default_backend: lisa_memory
-  backends:
-    - id: lisa_memory
-      kind: stdio
-      command: lisa-memory
-      tool_names:
-        add: add_memory
-        search: search_memory
-        list: list_memories
-servers:
-  - server_id: lisa-memory
-    runtime_kind: venv_bin
-    entry_point: lisa-memory
-""",
-        encoding="utf-8",
-    )
-    _specs, mem = load_mcp_server_manifest(manifest)
-    assert mem.default_backend == "lisa_memory"
-    backend = mem.backends[0]
-    assert backend.result_maps == {}
-
-
 # ── default_available_tools ─────────────────────────────────────────────────
 
 
@@ -732,7 +586,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].default_available_tools == ("read_file", "stat_file")
 
 
@@ -749,7 +603,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].default_available_tools == ()
 
 
@@ -813,4 +667,216 @@ servers:
         encoding="utf-8",
     )
     with pytest.raises(MCPServerManifestError, match="'default_available_tools' must be a list"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_capability_parsed(tmp_path: Path) -> None:
+    """Capability declarations include their canonical published tool set."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    capability: storage
+    capability_tools: [read_file]
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+""",
+        encoding="utf-8",
+    )
+    specs = load_mcp_server_manifest(manifest)
+    assert specs[0].capability == "storage"
+    assert specs[0].capability_tools == ("read_file",)
+    assert specs[0].tool_map == {}
+
+
+def test_capability_defaults_none(tmp_path: Path) -> None:
+    """Omitting capability yields None (server_id-prefixed tools)."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+""",
+        encoding="utf-8",
+    )
+    specs = load_mcp_server_manifest(manifest)
+    assert specs[0].capability is None
+
+
+def test_capability_rejects_invalid_slug(tmp_path: Path) -> None:
+    """capability must be a bare lowercase slug — dots and uppercase are rejected."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: s
+    capability: "Storage.V2"
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="invalid capability"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_tool_map_parsed_with_capability(tmp_path: Path) -> None:
+    """tool_map parses to a published→native mapping alongside capability."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-memory
+    capability: memory
+    capability_tools: [add, search]
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map:
+      add: add_memory
+      search: search_memory
+""",
+        encoding="utf-8",
+    )
+    specs = load_mcp_server_manifest(manifest)
+    assert specs[0].capability == "memory"
+    assert specs[0].capability_tools == ("add", "search")
+    assert specs[0].tool_map == {"add": "add_memory", "search": "search_memory"}
+
+
+def test_capability_requires_canonical_tool_contract(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    capability: storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="'capability_tools' is required"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_tool_map_rejects_reused_native_name(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-memory
+    capability: memory
+    capability_tools: [add, search]
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map:
+      add: native_tool
+      search: native_tool
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="multiple published tools"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_optional_capability_tools_are_extensions_not_required_contract(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-memory
+    capability: memory
+    capability_tools: [add, search, list]
+    capability_optional_tools: [get, retire]
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map:
+      add: add_memory
+      search: search_memory
+      list: list_memories
+      get: get_memory
+      retire: retire_memory
+""",
+        encoding="utf-8",
+    )
+    specs = load_mcp_server_manifest(manifest)
+    assert specs[0].capability_tools == ("add", "search", "list")
+    assert specs[0].capability_optional_tools == ("get", "retire")
+
+
+def test_tool_map_without_capability_raises(tmp_path: Path) -> None:
+    """tool_map without a capability claim is rejected."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map:
+      read_file: read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="'tool_map' requires 'capability'"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_tool_map_rejects_namespaced_key(tmp_path: Path) -> None:
+    """tool_map keys are bare published names — prefixed ids are rejected."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    capability: storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map:
+      storage.read_file: read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="must be a bare published tool name"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_tool_map_rejects_non_mapping(tmp_path: Path) -> None:
+    """tool_map must be a mapping."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: s
+    capability: storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    tool_map: read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="'tool_map' must be a mapping"):
         load_mcp_server_manifest(manifest)

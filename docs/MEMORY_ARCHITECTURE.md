@@ -10,15 +10,18 @@ kernel database or the same thing as conversation history.
 | Kernel contracts | Scoped contexts, typed memory results, execution/slice seams |
 | [SDK memory](../sdk/src/sdk/memory/) | SQLite store, retrieval, embeddings integration, backup primitives |
 | [Memory MCP adapter](../mcp_server/src/mcp_server/memory/) | Transport, resolved configuration, backend access |
-| [Memory pack](../sdk/packs/memory/) | Learning/recall operations, backend manifest, consolidation slice |
-| Runtime | Activation, generic `memory.*` aliases, identity, pre/post-turn wiring |
+| [Memory pack](../sdk/packs/memory/) | Learning/recall operations, capability manifest, consolidation slice |
+| Runtime | Capability selection, MCP lifecycle, ambient identity, pre/post-turn wiring |
 | Host | Authentication, credentials, authorized scope, retention and delivery |
 
-The bundled memory pack declares its own MCP servers/backends in
+The bundled memory pack declares its MCP server in
 [mcp_servers.yaml](../sdk/packs/memory/src/sdk/packs/memory/mcp_servers.yaml).
-The runtime merges pack declarations under namespaced server IDs and exposes
-generic `memory.*` aliases for the selected backend. External memory providers
-can replace the integration without moving persistence into the kernel.
+The runtime selects one `memory` capability implementation and publishes the
+required `memory.add`, `memory.search`, and `memory.list` tools under stable
+IDs. Provider-specific argument and result adaptation belongs in the selected
+pack's MCP server. Optional tools such as `memory.get` and `memory.retire` may
+be declared by an implementation, but are not part of the swappable core
+contract and may be absent from other providers.
 
 Installation does not imply activation. Enable/select the memory pack in the
 host/session and resolve duplicate owners with `providers.capabilities.memory`

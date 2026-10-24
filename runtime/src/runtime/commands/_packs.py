@@ -206,13 +206,13 @@ def _pack_contributes_memory_capability(package_name: str) -> bool:
         if not manifest_path.is_file():
             continue
         try:
-            _, memory = load_mcp_server_manifest(manifest_path)
+            specs = load_mcp_server_manifest(manifest_path)
         except MCPServerManifestError:
             continue
-        if memory.default_backend or memory.backends:
+        if any(spec.capability == "memory" for spec in specs):
             return True
 
-    return normalized.startswith("lisa-pack-mem")
+    return False
 
 
 def _auto_select_capability_provider_on_install(

@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from kernel.mcp_binary import MCPBinaryDownload
+
 __all__ = [
     "AliasSpec",
     "AmbientSource",
@@ -272,6 +274,9 @@ class MCPServerSpec:
     command_path: str | None = None
     """Explicit command path for runtime_kind=BINARY or NODE."""
 
+    binary_download: MCPBinaryDownload | None = None
+    """Version-pinned GitHub release source for a runtime_kind=BINARY server."""
+
     script_path: str | None = None
     """Script path for runtime_kind=NODE."""
 
@@ -393,12 +398,53 @@ class MCPServerSpec:
     """Bare native tool names on this server that should be ambient-available
     to every mode, mirroring the ``default_available: true`` flag pack
     ``.tool.yml`` tools declare. The SDK catalog loader merges their
-    namespaced ids (``server_id.tool``) into each mode's
+    published ids (``<capability>.<tool>`` for capability servers,
+    ``server_id.tool`` otherwise) into each mode's
     ``allowed_tool_ids`` unless the mode opts out via
-    ``accept_default_capabilities: false`` or lists the namespaced id in
+    ``accept_default_capabilities: false`` or lists the published id in
     ``excluded_tool_ids``. Use this to ship ambient MCP-native capabilities
-    (e.g. ``lisa-storage.read_file``) without a delegate pack tool and
+    (e.g. ``storage.read_file``) without a delegate pack tool and
     without forcing every mode author to re-list the id."""
+
+    capability: str | None = None
+    """Capability this server is an implementation of (e.g. ``storage``,
+    ``thread``, ``memory``, ``fetch``).
+
+    When set, the server competes for ownership of that capability with
+    every other declared implementation (built-in host-manifest servers and
+    pack-contributed servers alike). The selected winner publishes its
+    tools under the capability prefix (``<capability>.<tool>``) instead of
+    ``<server_id>.<tool>``, so the model-facing tool ids — and every
+    ambient/default id downstream — are identical regardless of which
+    implementation (Python, Go, third-party) is selected. Unselected
+    candidates are not registered at all; there is exactly one live
+    implementation per capability per pool."""
+
+    tool_map: dict[str, str] = field(default_factory=dict)
+    """Published→native tool name mapping for capability servers.
+
+    Keys are the canonical published names (``<capability>.<tool>`` minus
+    the prefix — e.g. ``read_file`` for ``storage.read_file``); values are
+    the native MCP wire tool names on this server. Entries absent from the
+    map pass through under their published name. This only maps names; a
+    server claiming a capability must itself implement that capability's
+    argument, result, safety, and semantic contract. Provider-specific
+    adaptation belongs in the pack's MCP server, not in the host."""
+
+    capability_tools: tuple[str, ...] = field(default_factory=tuple)
+    """Canonical bare tool names in this capability's required contract.
+
+    Every implementation of one capability must declare the same required
+    tool set. The pool publishes these names (mapping through ``tool_map``
+    where declared) and fails explicitly if a server does not expose them.
+    This allows the host to validate Python/Go/pack swappability without
+    knowing implementation-specific tools.
+    """
+
+    capability_optional_tools: tuple[str, ...] = field(default_factory=tuple)
+    """Additional published tools this implementation supports beyond the
+    required capability contract. These are opt-in extensions and may vary
+    across providers; a declared extension must be present on the server."""
 
 
 @dataclass(frozen=True, slots=True)

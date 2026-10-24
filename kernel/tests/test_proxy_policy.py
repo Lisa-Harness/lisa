@@ -428,7 +428,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert len(specs) == 1
     policy = specs[0].proxy_policy
     assert policy is not None
@@ -469,7 +469,7 @@ servers:
 """,
         encoding="utf-8",
     )
-    specs, _ = load_mcp_server_manifest(manifest)
+    specs = load_mcp_server_manifest(manifest)
     assert specs[0].proxy_policy.ambient == {}
 
 

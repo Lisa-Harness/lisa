@@ -3,9 +3,7 @@
 Owns the four host-persisted services every turn and command can reach
 without recomputing: the policy-deciding approval service, the recovery
 store, the code-change artifact store, and the token-usage telemetry
-appender. Also carries the capability-selected memory provider config
-(``memory_config_pack_slug`` names which pack won the memory capability,
-and ``memory_config`` is the resolved MCP server config).
+appender.
 
 Extracted from ``runtime.runtime`` so service construction and identity live
 in one visible place instead of being assembled inline in the runtime
@@ -16,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from kernel.token_usage import TokenUsageTelemetryHandler
 from sdk.layout import LOGS_DIR, STATE_DIR
@@ -43,10 +40,6 @@ class HostServices:
     recovery_service: FileRecoveryService
     code_change_artifact_store: FileCodeChangeArtifactStore
     token_usage_handler: TokenUsageTelemetryHandler
-    #: The resolved memory MCP server config selected by capability
-    #: provider policy, plus the pack slug that won the capability.
-    memory_config: Any = None
-    memory_config_pack_slug: str | None = None
 
     @classmethod
     def build(cls, data_dir: Path) -> HostServices:

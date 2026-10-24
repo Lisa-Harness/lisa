@@ -57,7 +57,7 @@ def _compile_first_party(tmp_path: Path) -> dict[str, MCPClientConfig]:
     real compiler path (registry → compile_registry) so the assertion covers
     exactly what production compiles.
     """
-    specs, _memory = load_mcp_server_manifest(_REPO_MANIFEST)
+    specs = load_mcp_server_manifest(_REPO_MANIFEST)
     registry = MCPServerRegistry()
     for spec in specs:
         registry.register(spec)

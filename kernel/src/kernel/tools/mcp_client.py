@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kernel.mcp_binary import MCPBinaryDownload
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -248,6 +250,40 @@ class MCPClientConfig:
     """Generic alias specs (``AliasSpec``) mapping stable model-facing
     names to native tools on this server. The host registers each alias
     as a synthetic tool after pool start."""
+
+    capability: str | None = None
+    """Capability this server is the selected implementation of (e.g.
+    ``storage``, ``thread``, ``memory``). When set, the pool publishes
+    this server's tools under the capability prefix
+    (``<capability>.<tool>``) instead of ``server_id.tool`` so the
+    model-facing ids — and every ambient/default id downstream — are
+    identical regardless of which implementation is live. The server_id
+    stays the real implementation id (in-process resolution, scoped
+    dispatch, and log paths key on it)."""
+
+    capability_tools: tuple[str, ...] = ()
+    """Canonical bare tool names declared by the selected capability
+    implementation. The pool publishes only these tools (mapping names
+    through ``tool_map``) and validates that the server exposes the full
+    declared surface."""
+
+    capability_optional_tools: tuple[str, ...] = ()
+    """Provider-specific published tools beyond the required capability
+    contract. Declared extensions are published only after presence
+    validation; they are not required from alternate implementations."""
+
+    tool_map: dict[str, str] = field(default_factory=dict)
+    """Published→native tool name mapping for capability servers
+    (``capability`` set). Keys are published names without the capability
+    prefix; values are native MCP wire names. Names absent from the map
+    publish under their own name. Applied by the pool when publishing
+    tools and when dispatching published ids back to native names."""
+
+    binary_download: MCPBinaryDownload | None = None
+    """Pinned source metadata for a binary that the runtime resolves before pool start."""
+
+    binary_cache_dir: str | Path | None = None
+    """Runtime-owned cache root for a binary download, set by the host compiler."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,6 +1033,11 @@ class MCPToolPool:
             await self._connect_in_process(config)
             return
 
+        if config.binary_download is not None and not config.command:
+            raise MCPConnectionError(
+                f"MCP binary for server '{config.server_id}' was not resolved by the host runtime"
+            )
+
         # Optionally pre-create the data directory before spawning. A server
         # may own a managed subfolder under the host data-dir and expect it to
         # exist; the host guarantees it here so the server can use it (possibly
@@ -1739,36 +1780,83 @@ class MCPToolPool:
 
     def _merge_namespaced_catalog_tools(
         self,
+        config: MCPClientConfig,
         catalog_tools: list[MCPToolSpec],
     ) -> None:
         """Merge tool_policy/proxy_policy-filtered tools into the model-facing catalog.
 
-        The merged index is keyed by the namespaced name
-        (``server_id.tool_name``). This eliminates cross-server collisions
-        by construction — two servers exposing the same bare name land under
-        different namespaces and both appear in the catalog. Same-server
-        duplicates are genuine server-side duplicates: first-registered-wins
-        with a warning.
+        The merged index is keyed by the published name. For a capability
+        server (``config.capability`` set — the selected implementation of
+        that capability), the published name is
+        ``<capability>.<published>`` where ``published`` is the bare tool
+        name or its ``tool_map`` entry — implementation-independent, so
+        the model-facing ids are identical regardless of which server
+        (Python, Go, third-party) won the capability. For ordinary
+        servers the published name stays ``server_id.tool_name``.
+
+        Collisions on published names across servers cannot happen for
+        capability servers (one owner per capability, registered at
+        compile time); same-server duplicates are genuine server-side
+        duplicates: first-registered-wins with a warning.
         """
+        capability = getattr(config, "capability", None)
+        tool_map: dict[str, str] = getattr(config, "tool_map", None) or {}
+        capability_tools: tuple[str, ...] = getattr(config, "capability_tools", ()) or ()
+        optional_tools: tuple[str, ...] = getattr(config, "capability_optional_tools", ()) or ()
+        if capability and not capability_tools:
+            raise ValueError(
+                f"MCP server '{config.server_id}' claims capability '{capability}' "
+                "without declaring capability_tools"
+            )
+        declared_tools = capability_tools + optional_tools
+        native_contract = {
+            tool_map.get(published, published): published for published in declared_tools
+        }
+        available_names = {spec.name for spec in catalog_tools}
+        missing_required = sorted(
+            tool_map.get(published, published)
+            for published in capability_tools
+            if tool_map.get(published, published) not in available_names
+        )
+        if capability and missing_required:
+            raise ValueError(
+                f"MCP server '{config.server_id}' claims capability '{capability}' "
+                f"but is missing required tools: {', '.join(missing_required)}"
+            )
+        missing_optional = sorted(
+            tool_map.get(published, published)
+            for published in optional_tools
+            if tool_map.get(published, published) not in available_names
+        )
+        if capability and missing_optional:
+            raise ValueError(
+                f"MCP server '{config.server_id}' declares optional capability tools "
+                f"that are missing: {', '.join(missing_optional)}"
+            )
+        published_prefix = capability if capability else config.server_id
+        native_to_published = {native: published for native, published in native_contract.items()}
         for spec in catalog_tools:
-            namespaced = namespaced_tool_name(spec.server_id, spec.name)
+            if capability and spec.name not in native_to_published:
+                continue
+            published_bare = native_to_published.get(spec.name, spec.name)
+            published = namespaced_tool_name(published_prefix, published_bare)
             namespaced_spec = MCPToolSpec(
                 server_id=spec.server_id,
-                name=namespaced,
+                name=published,
                 description=spec.description,
                 input_schema=spec.input_schema,
                 read_only_hint=spec.read_only_hint,
             )
-            if namespaced in self._tool_index:
+            if published in self._tool_index:
                 logger.warning(
                     "MCP tool name collision within namespace %r: "
                     "server %r lists duplicate tool %r; first entry wins.",
-                    namespaced,
+                    published,
                     spec.server_id,
                     spec.name,
                 )
                 continue
-            self._tool_index[namespaced] = (spec.server_id, namespaced_spec)
+            self._tool_index[published] = (spec.server_id, namespaced_spec)
             self._tools.append(namespaced_spec)
 
     async def _refresh_tool_index(self) -> None:
@@ -1824,7 +1912,7 @@ class MCPToolPool:
                     )
                     for spec in catalog_tools
                 ]
-            self._merge_namespaced_catalog_tools(catalog_tools)
+            self._merge_namespaced_catalog_tools(config, catalog_tools)
 
         # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
         # Synthetic tools are not rediscovered from servers — they are owned
@@ -2247,6 +2335,10 @@ class MCPToolPool:
                     is_error=True,
                 )
         bare_name = self._strip_namespace_prefix(tool_id, target_server_id)
+        # Capability servers: translate the published bare name back to the
+        # native wire name via the config's tool_map (published→native).
+        if config is not None and getattr(config, "capability", None):
+            bare_name = self._native_name_for_published(config, bare_name)
         mapped = self._apply_dispatch_arg_map(tool_id, arguments)
         # Proxy policy: inject ambient scope (user_id, agent_id, app_id, …)
         # from the host runtime after the dispatch arg map. This closes the
@@ -2282,6 +2374,19 @@ class MCPToolPool:
         if "." in tool_id:
             return bare_tool_name(tool_id)
         return tool_id
+
+    @staticmethod
+    def _native_name_for_published(config: MCPClientConfig, published_bare: str) -> str:
+        """Translate a published bare tool name back to its native wire name.
+
+        For capability servers the catalog publishes ``<capability>.<published>``
+        ids, where ``published`` may differ from the native MCP wire name
+        (``tool_map``). Dispatch strips the capability prefix first, then
+        this helper maps the published name to the native name the session
+        expects. Pass-through names (not in the map) return unchanged.
+        """
+        tool_map = getattr(config, "tool_map", None) or {}
+        return tool_map.get(published_bare, published_bare)
 
     async def _call_tool_scoped(
         self,

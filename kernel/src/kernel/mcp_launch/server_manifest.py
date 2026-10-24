@@ -1,8 +1,8 @@
 """Declarative external MCP server manifest loader.
 
 Mirrors :mod:`kernel.model_manifest`: a YAML file declares external MCP
-servers (e.g. Mem0, Letta) plus a memory-backend designation, and the
-host merges the resulting :class:`MCPServerSpec` entries into its
+servers (e.g. Mem0, Letta), and the host merges the resulting
+:class:`MCPServerSpec` entries into its
 :class:`~kernel.mcp_launch.policy.MCPServerRegistry` alongside the
 first-party specs.
 
@@ -20,6 +20,9 @@ belongs in env; path-like config stays in CLI args per the launch contract.
 A server entry may be marked ``disabled: true`` to keep it declared but
 excluded from compilation (useful for opt-in backends).
 
+Binary servers may declare a pinned GitHub ``binary_download`` source;
+the runtime resolves and verifies it before starting the MCP pool.
+
 Data-dir adaptation: each server may specify ``data_dir_arg`` (the flag name
 to inject, or ``null`` for servers that manage their own storage),
 ``data_dir_subdir`` (a namespaced subfolder of the host data-dir the server
@@ -30,12 +33,12 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from kernel.mcp_binary import MCPBinaryDownload
 from kernel.mcp_launch.policy import (
     AliasSpec,
     AmbientSource,
@@ -52,8 +55,6 @@ from kernel.mcp_launch.policy import (
 
 __all__ = [
     "MCPServerManifestError",
-    "MemoryBackendConfig",
-    "MemoryBackendSpec",
     "load_mcp_server_manifest",
 ]
 
@@ -62,65 +63,13 @@ __all__ = [
 #: (``"Bearer ${MEM0_API_KEY}"``).
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+#: Capability ids double as prefixes of model-facing tool ids
+#: (``<capability>.<tool>``), so they must be bare lowercase slugs.
+_CAPABILITY_NAME_RE = re.compile(r"[a-z][a-z0-9_-]*")
+
 
 class MCPServerManifestError(ValueError):
     """Raised when an mcp_servers manifest is structurally invalid."""
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryBackendSpec:
-    """One declared memory backend — a peer in the memory.backends list.
-
-    Each backend is provider-agnostic: it declares its connection ``kind``
-    (http, stdio) plus the tool names the generic aliases route to. The host
-    builds the right client per ``kind`` and wires it behind the generic
-    ``memory.add`` / ``memory.search`` / ``memory.list`` / ``memory.get`` /
-    ``memory.delete`` synthetic aliases. No backend-specific knowledge lives
-    in the schema — adding a new backend is a YAML entry, not a code change.
-    """
-
-    id: str
-    kind: str  # "http" | "stdio"
-    tool_names: dict[str, str] = field(default_factory=dict)
-    result_maps: dict[str, str] = field(default_factory=dict)
-    """Dotted import paths to output-normalization adapters, keyed by
-    generic operation name (``add``, ``search``, ``list``, ``get``, ``delete``). Each value is a
-    ``module.path:function_name`` string resolved lazily by the host when
-    building the alias. When empty (the default for first-party backends like
-    lisa_memory that already return the canonical shape), the alias passes
-    the raw ``output_text`` through unchanged.
-
-    This is the symmetric counterpart of ``tool_names``: ``tool_names`` maps
-    generic input names to native tool names (input dispatch), and
-    ``result_maps`` maps generic operation names to output adapters (output
-    normalization). Together they make the alias boundary the single
-    chokepoint for both directions of backend-specific translation."""
-    # http connection details (kind="http")
-    # ${VAR} expansion happens in the manifest loader before the spec is built.
-    url: str = ""
-    headers: dict[str, str] = field(default_factory=dict)
-    # stdio connection details (kind="stdio")
-    command: str = ""
-    args: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)
-    cwd: str | None = None
-    agent_id: str = "lisa"
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryBackendConfig:
-    """Memory backend configuration: which backend is default + the backends list.
-
-    The host uses ``default_backend`` to decide which
-    :class:`~kernel.memory_protocol.MemoryStore` to inject as the default,
-    and ``backends`` to build each one. Each backend in the list is a peer
-    (lisa-context, mem0, a future backend, …); the default picks one by id.
-    Chaining (fan-out writes / merged reads across backends) is a future
-    extension — the router already holds a ``backends`` dict keyed by id.
-    """
-
-    default_backend: str | None = None
-    backends: tuple[MemoryBackendSpec, ...] = ()
 
 
 def _expand_env_value(raw: Any) -> str:
@@ -142,18 +91,18 @@ def _expand_env_value(raw: Any) -> str:
 
 def load_mcp_server_manifest(
     path: Path,
-) -> tuple[list[MCPServerSpec], MemoryBackendConfig]:
-    """Load external MCP server specs + memory backend config from YAML.
+) -> list[MCPServerSpec]:
+    """Load MCP server specs from YAML.
 
-    Returns ``([], MemoryBackendConfig())`` when the file does not exist,
-    so hosts can call this unconditionally and treat a missing manifest as
-    "no external servers".
+    Returns an empty list when the file does not exist, so hosts can call
+    this unconditionally and treat a missing manifest as "no external
+    servers".
 
     Raises :class:`MCPServerManifestError` on structural problems (not a
     mapping, server entries missing required fields, bad runtime kind, …).
     """
     if not path.exists():
-        return [], MemoryBackendConfig()
+        return []
 
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -163,213 +112,12 @@ def load_mcp_server_manifest(
     if not isinstance(raw, dict):
         raise MCPServerManifestError(f"mcp_servers manifest must be a mapping: {path}")
 
-    memory_config = _parse_memory_section(raw.get("memory") or {})
-    specs = _parse_server_entries(raw.get("servers") or [], path)
-    _validate_default_backend_server(memory_config, specs, path)
-    return specs, memory_config
-
-
-def _validate_default_backend_server(
-    memory_config: MemoryBackendConfig,
-    specs: list[MCPServerSpec],
-    path: Path,
-) -> None:
-    """Ensure the default memory backend's id matches a registered server.
-
-    The host pins memory-alias dispatch to ``default_backend`` by id (see
-    ``_register_memory_synthetic_tools``); that id must equal a
-    ``server_id`` in the pool so the scoped call resolves. HTTP backends are
-    also registered as tool servers, so this is required for any default
-    backend kind. A mismatch is a manifest error, not a silent fallback.
-    """
-    if memory_config.default_backend is None:
-        return
-    declared_ids = {s.id for s in memory_config.backends}
-    if memory_config.default_backend not in declared_ids:
+    if "memory" in raw:
         raise MCPServerManifestError(
-            f"memory.default_backend {memory_config.default_backend!r} is not in "
-            f"memory.backends {sorted(declared_ids)} in {path}"
+            f"{path}: top-level 'memory' is no longer supported; declare a server "
+            "with capability: memory"
         )
-    server_ids = {s.server_id for s in specs}
-    if memory_config.default_backend not in server_ids:
-        # The first-party backends (lisa_memory in the manifest, lisa-memory in
-        # the pool) are registered in code, not in the manifest's servers
-        # list, so allow them through. Any other id must have a matching
-        # servers entry to be routable as the default.
-        if memory_config.default_backend in {"lisa-memory", "lisa_memory"}:
-            return
-        raise MCPServerManifestError(
-            f"memory.default_backend {memory_config.default_backend!r} has no matching "
-            f"server_id in the servers list {sorted(server_ids)} in {path} — the host "
-            "pins alias dispatch to this id, so it must match a registered server."
-        )
-
-
-def _parse_memory_section(raw: Any) -> MemoryBackendConfig:
-    if not isinstance(raw, dict):
-        return MemoryBackendConfig()
-    default_backend = raw.get("default_backend")
-    if default_backend is not None:
-        default_backend = str(default_backend).strip() or None
-    backends_raw = raw.get("backends") or []
-    backends = _parse_memory_backends(backends_raw)
-    return MemoryBackendConfig(default_backend=default_backend, backends=backends)
-
-
-def _validated_backend_id(
-    entry: dict[str, Any],
-    index: int,
-    seen_ids: set[str],
-) -> str:
-    """Return the validated backend id for one ``memory.backends`` entry."""
-    backend_id = str(entry.get("id") or "").strip()
-    if not backend_id:
-        raise MCPServerManifestError(f"memory.backends[{index}]: 'id' is required")
-    if backend_id in seen_ids:
-        raise MCPServerManifestError(
-            f"memory.backends[{index}]: duplicate backend id {backend_id!r}"
-        )
-    seen_ids.add(backend_id)
-    return backend_id
-
-
-def _validated_backend_mapping(
-    entry: dict[str, Any],
-    backend_id: str,
-    index: int,
-    key: str,
-) -> dict[str, str]:
-    """Return a str-to-str mapping from one backend entry, or raise when invalid."""
-    raw = entry.get(key) or {}
-    if not isinstance(raw, dict):
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: '{key}' must be a mapping"
-        )
-    return {str(k): str(v) for k, v in raw.items()}
-
-
-def _build_http_memory_backend(
-    entry: dict[str, Any],
-    backend_id: str,
-    index: int,
-    *,
-    tool_names: dict[str, str],
-    result_maps: dict[str, str],
-    agent_id: str,
-) -> MemoryBackendSpec:
-    """Build one ``kind=http`` memory backend spec from its manifest entry."""
-    url = _expand_env_value(entry.get("url") or "").strip()
-    if not url:
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: 'url' is required for kind=http"
-        )
-    headers_raw = entry.get("headers") or {}
-    if not isinstance(headers_raw, dict):
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: 'headers' must be a mapping"
-        )
-    headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
-    return MemoryBackendSpec(
-        id=backend_id,
-        kind="http",
-        tool_names=tool_names,
-        result_maps=result_maps,
-        url=url,
-        headers=headers,
-        agent_id=agent_id,
-    )
-
-
-def _build_stdio_memory_backend(
-    entry: dict[str, Any],
-    backend_id: str,
-    index: int,
-    *,
-    tool_names: dict[str, str],
-    result_maps: dict[str, str],
-    agent_id: str,
-) -> MemoryBackendSpec:
-    """Build one ``kind=stdio`` memory backend spec from its manifest entry."""
-    command = str(entry.get("command") or "").strip()
-    if not command:
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: 'command' is required for kind=stdio"
-        )
-    args_raw = entry.get("args") or []
-    if not isinstance(args_raw, list):
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: 'args' must be a list"
-        )
-    args = [_expand_env_value(a) for a in args_raw]
-    env_raw = entry.get("env") or {}
-    if not isinstance(env_raw, dict):
-        raise MCPServerManifestError(
-            f"memory.backends[{index}] {backend_id!r}: 'env' must be a mapping"
-        )
-    env = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
-    cwd = entry.get("cwd")
-    if cwd is not None:
-        cwd = str(cwd) or None
-    return MemoryBackendSpec(
-        id=backend_id,
-        kind="stdio",
-        tool_names=tool_names,
-        result_maps=result_maps,
-        command=command,
-        args=args,
-        env=env,
-        cwd=cwd,
-        agent_id=agent_id,
-    )
-
-
-def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
-    """Parse the memory.backends list into MemoryBackendSpec entries.
-
-    Each entry is a peer: an id, a kind (http | stdio), connection details,
-    and tool_names mapping the generic aliases to that backend's tools.
-    """
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise MCPServerManifestError("'memory.backends' must be a list of backend entries")
-    specs: list[MemoryBackendSpec] = []
-    seen_ids: set[str] = set()
-    for index, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise MCPServerManifestError(f"memory.backends[{index}] must be a mapping")
-        backend_id = _validated_backend_id(entry, index, seen_ids)
-        kind = str(entry.get("kind") or "").strip()
-        if kind not in {"http", "stdio"}:
-            raise MCPServerManifestError(
-                f"memory.backends[{index}] {backend_id!r}: 'kind' must be 'http' or 'stdio'"
-            )
-        tool_names = _validated_backend_mapping(entry, backend_id, index, "tool_names")
-        result_maps = _validated_backend_mapping(entry, backend_id, index, "result_maps")
-        agent_id = str(entry.get("agent_id") or "lisa")
-        if kind == "http":
-            specs.append(
-                _build_http_memory_backend(
-                    entry,
-                    backend_id,
-                    index,
-                    tool_names=tool_names,
-                    result_maps=result_maps,
-                    agent_id=agent_id,
-                )
-            )
-        else:  # stdio
-            specs.append(
-                _build_stdio_memory_backend(
-                    entry,
-                    backend_id,
-                    index,
-                    tool_names=tool_names,
-                    result_maps=result_maps,
-                    agent_id=agent_id,
-                )
-            )
-    return tuple(specs)
+    return _parse_server_entries(raw.get("servers") or [], path)
 
 
 def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:
@@ -399,6 +147,8 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': invalid runtime_kind {runtime_raw!r} (valid: {valid})"
         ) from exc
+
+    binary_download = _parse_binary_download(entry, server_id, index, runtime_kind)
 
     env_raw = entry.get("env") or {}
     if not isinstance(env_raw, dict):
@@ -454,9 +204,20 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     default_available_tools = _parse_default_available_tools(
         entry.get("default_available_tools"), server_id, index, path
     )
+    capability, tool_map, capability_tools, capability_optional_tools = _parse_capability_contract(
+        entry,
+        server_id,
+        index,
+        path,
+        default_available_tools,
+    )
 
     return MCPServerSpec(
         server_id=server_id,
+        capability=capability,
+        tool_map=tool_map,
+        capability_tools=capability_tools,
+        capability_optional_tools=capability_optional_tools,
         runtime_kind=runtime_kind,
         module=entry.get("module"),
         package=entry.get("package"),
@@ -465,6 +226,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         command_path=_expand_env_value(entry.get("command_path"))
         if entry.get("command_path")
         else None,
+        binary_download=binary_download,
         script_path=_expand_env_value(entry.get("script_path"))
         if entry.get("script_path")
         else None,
@@ -491,6 +253,53 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         aliases=aliases,
         default_available_tools=default_available_tools,
     )
+
+
+def _parse_binary_download(
+    entry: dict[str, Any],
+    server_id: str,
+    index: int,
+    runtime_kind: RuntimeKind,
+) -> MCPBinaryDownload | None:
+    raw = entry.get("binary_download")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'binary_download' must be a mapping"
+        )
+    if runtime_kind is not RuntimeKind.BINARY:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'binary_download' requires runtime_kind=binary"
+        )
+    if entry.get("command_path"):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'command_path' and 'binary_download' "
+            "cannot both be set"
+        )
+
+    repository = raw.get("repository")
+    version = raw.get("version")
+    binary_name = raw.get("binary_name")
+    if (
+        not isinstance(repository, str)
+        or not isinstance(version, str)
+        or not isinstance(binary_name, str)
+    ):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': binary_download requires string "
+            "repository, version, and binary_name fields"
+        )
+    try:
+        return MCPBinaryDownload(
+            repository=repository,
+            version=version,
+            binary_name=binary_name,
+        )
+    except ValueError as exc:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': invalid binary_download: {exc}"
+        ) from exc
 
 
 def _parse_bearer_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
@@ -658,10 +467,9 @@ def _parse_default_available_tools(
 ) -> tuple[str, ...]:
     """Parse the optional ``default_available_tools`` list on a server entry.
 
-    Each entry is a bare native tool name on the server (e.g. ``read_file``).
-    The host namespaces them to ``server_id.tool`` when merging into mode
-    allowlists, so authors list bare names here and never repeat the
-    ``server_id.`` prefix. Format::
+    Each entry is a bare published tool name (e.g. ``read_file``). The host
+    namespaces it to ``<capability>.tool`` for capability servers and
+    ``server_id.tool`` otherwise, so authors never repeat a prefix. Format::
 
         default_available_tools:
           - read_file
@@ -697,6 +505,172 @@ def _parse_default_available_tools(
         seen.add(name)
         names.append(name)
     return tuple(names)
+
+
+def _parse_capability(raw: Any, server_id: str, index: int, path: Path) -> str | None:
+    """Parse the optional ``capability`` claim on a server entry.
+
+    A capability claim (``storage``, ``thread``, ``memory``, …) declares
+    that this server is an implementation of that capability. The pool
+    resolves one owner per capability at compile time — selected via
+    ``providers.capabilities.<name>`` in the session plan or defaulted to
+    the built-in host-manifest candidate — and only the winner registers.
+    Losing candidates are skipped entirely; the winner publishes tools
+    under ``<capability>.<tool>``.
+
+    The name must be a bare slug (``[a-z][a-z0-9_-]*``): capability ids
+    are prefixes of model-facing tool ids, so dots and uppercase are
+    rejected to keep the published id space unambiguous.
+    """
+    if raw is None:
+        return None
+    name = str(raw or "").strip()
+    if not name:
+        return None
+    if not _CAPABILITY_NAME_RE.fullmatch(name):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: invalid capability {name!r} "
+            "(must be a bare slug matching [a-z][a-z0-9_-]*)"
+        )
+    return name
+
+
+def _parse_tool_map(raw: Any, server_id: str, index: int, path: Path) -> dict[str, str]:
+    """Parse the optional ``tool_map`` published→native mapping on a server entry.
+
+    Keys are canonical published tool names (bare, without the capability
+    prefix — e.g. ``read_file`` for the published id ``storage.read_file``);
+    values are the native MCP wire tool names on this server. Published
+    names absent from the map pass through unchanged. Format::
+
+        tool_map:
+          read_file: read_file
+          append_file: append_file
+
+    Only valid on capability-claiming servers (the map describes how this
+    implementation satisfies the capability's published contract).
+    Empty keys and values, as well as multiple published tools mapping to
+    one native tool, are rejected.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'tool_map' must be a mapping"
+        )
+    tool_map: dict[str, str] = {}
+    native_names: set[str] = set()
+    for published_raw, native_raw in raw.items():
+        published = str(published_raw or "").strip()
+        native = str(native_raw or "").strip()
+        if not published or not native:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}' in {path}: "
+                "tool_map keys and values must be non-empty strings"
+            )
+        if "." in published:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}' in {path}: "
+                f"tool_map key {published!r} must be a bare published tool name, "
+                "not a namespaced id (omit the capability prefix)"
+            )
+        if native in native_names:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}' in {path}: "
+                f"tool_map maps multiple published tools to native tool {native!r}"
+            )
+        native_names.add(native)
+        tool_map[published] = native
+    return tool_map
+
+
+def _parse_capability_tools(raw: Any, server_id: str, index: int, path: Path) -> tuple[str, ...]:
+    """Parse the canonical bare tool names in a capability's contract."""
+    return _parse_capability_tool_names(raw, "capability_tools", server_id, index, path)
+
+
+def _parse_capability_optional_tools(
+    raw: Any, server_id: str, index: int, path: Path
+) -> tuple[str, ...]:
+    """Parse provider-specific published tools beyond the required contract."""
+    return _parse_capability_tool_names(raw, "capability_optional_tools", server_id, index, path)
+
+
+def _parse_capability_tool_names(
+    raw: Any, key: str, server_id: str, index: int, path: Path
+) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: '{key}' must be a list"
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for pos, item in enumerate(raw):
+        name = str(item or "").strip()
+        if not name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': {key}[{pos}] must be a non-empty string"
+            )
+        if "." in name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': {key} entries must be bare names"
+            )
+        if name in seen:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': duplicate capability tool {name!r}"
+            )
+        seen.add(name)
+        names.append(name)
+    return tuple(names)
+
+
+def _parse_capability_contract(
+    entry: dict[str, Any],
+    server_id: str,
+    index: int,
+    path: Path,
+    default_available_tools: tuple[str, ...],
+) -> tuple[str | None, dict[str, str], tuple[str, ...], tuple[str, ...]]:
+    capability = _parse_capability(entry.get("capability"), server_id, index, path)
+    tool_map = _parse_tool_map(entry.get("tool_map"), server_id, index, path)
+    required_tools = _parse_capability_tools(entry.get("capability_tools"), server_id, index, path)
+    optional_tools = _parse_capability_optional_tools(
+        entry.get("capability_optional_tools"), server_id, index, path
+    )
+    if tool_map and capability is None:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'tool_map' requires 'capability' "
+            "(the map describes how this server satisfies the capability's "
+            "published tool contract)"
+        )
+    if capability and not required_tools:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'capability_tools' is required "
+            "when 'capability' is set"
+        )
+    if (required_tools or optional_tools) and capability is None:
+        key = "capability_tools" if required_tools else "capability_optional_tools"
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: '{key}' requires 'capability'"
+        )
+
+    overlap = set(required_tools) & set(optional_tools)
+    declared_tools = set(required_tools) | set(optional_tools)
+    undeclared = set(tool_map) - declared_tools
+    undeclared.update(set(default_available_tools) - set(required_tools))
+    if capability and overlap:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: tools cannot be both required "
+            f"and optional: {sorted(overlap)}"
+        )
+    if capability and undeclared:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: capability tool names "
+            f"{sorted(undeclared)} are not in capability_tools"
+        )
+    return capability, tool_map, required_tools, optional_tools
 
 
 def _parse_proxy_policy(raw: Any, server_id: str, index: int, path: Path) -> ProxyPolicy:

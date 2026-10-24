@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkable
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kernel.approval import EffectKind
 from kernel.capability_binding import ExecutionFloorView
@@ -1048,13 +1048,9 @@ class MemoryRecord(BaseModel):
     operation_id: str = ""
     instruction_id: str = ""
     memory_tier: MemoryTier = "daily"
-    # Accept both "content" (first-party lisa_memory) and "memory" (Mem0)
-    # as source keys. This is a secondary safety net — the primary
-    # normalization happens at the alias boundary via result_maps.
-    content: str = Field(
-        default="",
-        validation_alias=AliasChoices("content", "memory"),
-    )
+    # Provider-specific response shapes are normalized by the selected pack's
+    # MCP server before they reach this canonical record.
+    content: str = ""
     content_json: dict[str, Any] = Field(default_factory=dict)
     salience: float = 0.0
     created_at: str

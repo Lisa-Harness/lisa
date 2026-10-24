@@ -290,7 +290,7 @@ class TestHostRuntime:
         # tmp_path). Patch them out so _build_pool only exercises the pool.
         with (
             patch.object(MCPToolPool, "_connect", new=_fake_connect),
-            patch("runtime.memory_aliases.register_memory_aliases", new=lambda *a, **k: None),
+            patch("runtime.ambient_resolvers.register_ambient_resolvers", new=lambda *a, **k: None),
             patch("runtime.mcp_pool.register_mcp_aliases", new=lambda *a, **k: None),
         ):
             task = runtime.start_pool_deferred()

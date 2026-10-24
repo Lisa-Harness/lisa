@@ -120,14 +120,13 @@ def _compile_npx_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
 def _compile_binary_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     """Compile a BINARY spec, or ``None`` when the optional binary is absent.
 
-    An empty command_path means the binary is not installed. Pack
-    manifests routinely point BINARY servers/proxies at an opt-in
-    third-party binary via ``command_path: ${SOME_BIN}`` and expect an
-    unset var to degrade to "this server is absent" (the headroom
-    pack contract). Raising here aborts the WHOLE startup for what is
-    an optional capability, so signal a skip instead.
+    An empty command_path with no download source means the optional binary
+    is absent. A configured download source leaves command resolution to
+    the async host startup path.
     """
     if not spec.command_path:
+        if spec.binary_download is not None:
+            return "", []
         return None
     return spec.command_path, []
 
@@ -136,10 +135,8 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     """Build (command, args) for one runtime kind.
 
     Returns the base command and args before standard CLI contract args
-    are appended. Returns ``None`` for a BINARY spec whose
-    ``command_path`` is empty — the optional third-party binary is not
-    installed (e.g. an unexpanded ``${SOME_BIN}`` env reference), so the
-    caller skips the entry instead of spawning.
+    are appended. Returns ``None`` for a BINARY spec with no command path or
+    download source, so the caller skips it instead of spawning.
     """
     compiled: tuple[str, list[str]] | None
     if spec.runtime_kind == RuntimeKind.PYTHON:
@@ -174,10 +171,9 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
     This is the only function that produces MCPClientConfig entries for
     MCPToolPool. The host calls this after registry approval.
 
-    Returns ``None`` when the spec cannot spawn a subprocess because its
-    optional binary is not installed (a BINARY spec whose ``command_path``
-    is empty after ``${VAR}`` expansion). Callers must filter ``None`` —
-    :func:`compile_registry` does this and logs a warning.
+    Returns ``None`` when a BINARY spec has neither an installed command nor
+    a pinned download source. The runtime resolves configured download
+    sources asynchronously before constructing the MCP pool.
     """
     if spec.runtime_kind is RuntimeKind.HTTP:
         _validate_http_auth(spec)
@@ -193,14 +189,14 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
         resolved_data_dir = None
 
     resolved_command = compile_command(spec)
-    if resolved_command is None:
+    if resolved_command is None and spec.binary_download is None:
         logger.warning(
             "Skipping MCP server %r: runtime_kind=binary with empty command_path "
             "(optional binary not installed; check its ${VAR} env reference)",
             spec.server_id,
         )
         return None
-    command, base_args = resolved_command
+    command, base_args = resolved_command or ("", [])
 
     # Build standard CLI contract args. data-dir is injected only when the
     # spec names a flag for it (data_dir_arg is not None) and a data dir was
@@ -236,7 +232,12 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
         warm=spec.warm,
         required=spec.required,
         aliases=spec.aliases,
+        capability=spec.capability,
+        capability_tools=spec.capability_tools,
+        capability_optional_tools=spec.capability_optional_tools,
+        tool_map=dict(spec.tool_map),
         runtime_kind=spec.runtime_kind.value,
+        binary_download=spec.binary_download,
     )
 
 

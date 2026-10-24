@@ -31,13 +31,10 @@ pack_policy:
 # ──────────────────────────────────────────────────────────────────────────
 # Memory backends + memory MCP tool servers
 # ──────────────────────────────────────────────────────────────────────────
-# Memory is pack-owned: the memory pack (sdk/packs/memory/mcp_servers.yaml)
-# declares the ``memory.backends`` list and the ``lisa-memory`` / ``mem0``
-# server entries. The host loads that pack manifest, merges the servers into
-# the pool under namespaced ids (``memory.lisa-memory`` / ``memory.mem0``),
-# and wires the generic ``memory.*`` synthetic aliases to the pack's default
-# backend. Only one pack may contribute the ``memory:`` section; the first
-# contributor wins.
+# Memory is a capability declared by the memory pack and other provider packs.
+# The runtime selects one implementation through
+# ``providers.capabilities.memory`` and publishes the shared ``memory.*``
+# contract from that server.
 #
 # See docs/MEMORY_ARCHITECTURE.md for the layered design.
 
@@ -49,8 +46,7 @@ pack_policy:
 # MCPToolPool. Adding, removing, disabling, or changing the launch policy
 # (warm/cold/required) of any server is a YAML edit, not a code change.
 #
-# Memory servers (lisa-memory, mem0) live in the memory pack manifest, not
-# here — they are pack-contributed and namespaced at compile time.
+# Memory servers live in provider pack manifests, not here.
 #
 # Launch policy fields:
 #   warm: true  → spawned eagerly at pool.start(); kept alive across turns
@@ -97,21 +93,40 @@ servers:
   # No data_dir_subdir: manifests (models.yaml, models.proposed.yaml) live at
   # the top level of the host data_dir, and the server creates its own
   # ``files/`` subdir internally via init_storage().
+  #
+  # ``capability: storage`` makes this the built-in implementation of the
+  # storage capability: the pool publishes its tools as ``storage.*``
+  # (implementation-independent ids) and any competing implementation
+  # (e.g. the Go Connector SDK binary from a pack) resolves against it —
+  # session ``providers.capabilities.storage: <pack>`` selects the alternate.
   - server_id: lisa-storage
+    capability: storage
+    capability_tools:
+      - read_file
+      - read_file_range
+      - write_file
+      - append_file
+      - list_files
+      - delete_file
+      - stat_file
+      - make_dir
+      - read_model_manifest
+      - write_model_manifest
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}"
     warm: false
     data_dir_subdir: "."
-    # Ambient MCP-native tool: ``lisa-storage.read_file`` is merged into
-    # every mode's allowed_tool_ids by the SDK catalog loader (same ambient
-    # contract as ``recall_memory`` / ``fetch_page``), so modes can read
-    # persisted artifacts without re-listing the tool. The bare tool name
-    # is namespaced to ``lisa-storage.read_file`` at merge time; list bare
-    # names here only. Modes opt out via ``excluded_tool_ids`` or
-    # ``accept_default_capabilities: false``.
+    # Ambient MCP-native tools: published as ``storage.read_file`` etc.
+    # and merged into every mode's allowed_tool_ids by the SDK catalog
+    # loader (same ambient contract as ``recall_memory`` /
+    # ``fetch_page``), so modes can read persisted artifacts without
+    # re-listing the tool. List bare published names here only; modes opt
+    # out via ``excluded_tool_ids`` or ``accept_default_capabilities: false``.
     default_available_tools:
       - read_file
+      - read_file_range
       - list_files
+      - stat_file
       - write_file
       - append_file
 
@@ -123,10 +138,19 @@ servers:
   # injected by context_assembly; this server lets the model read
   # deeper when the manifest shows entries it needs.
   #
-  # ``thread_read_range`` is an ambient MCP-native tool: it is merged
-  # into every mode's allowed_tool_ids by the SDK catalog loader, so
-  # modes can read prior thread entries without re-listing the tool.
+  # ``capability: thread`` makes this the built-in thread implementation:
+  # tools publish as ``thread.*`` ids regardless of which implementation
+  # is selected (session ``providers.capabilities.thread: <pack>``
+  # swaps in the Go Connector SDK binary).
   - server_id: lisa-thread
+    capability: thread
+    capability_tools:
+      - thread_read_range
+      - thread_read_recent
+      - thread_search
+      - thread_read_content
+      - thread_find_content
+      - thread_task_view
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}"
     warm: false
@@ -138,6 +162,10 @@ servers:
       - "${LISA_THREAD_DIR}"
       - "--user-slug"
       - "${LISA_USER_SLUG}"
+    # Ambient MCP-native tools, published as ``thread.thread_read_range``
+    # etc. and merged into every mode's allowed_tool_ids by the SDK
+    # catalog loader, so modes can read prior thread entries without
+    # re-listing the tool.
     default_available_tools:
       - thread_read_range
       - thread_read_recent

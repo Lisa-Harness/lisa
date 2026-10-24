@@ -258,9 +258,8 @@ providers:
     web_search: lisa-pack-tavily
     markdown_generate: lisa-pack-markdown
   capabilities:
-    # The memory pack ships the bundled `lisa_memory` backend and owns the
-    # `memory` capability. Without this, an alternative memory provider pack
-    # (e.g. lisa-pack-mem0) could take the capability instead.
+    # The bundled pack provides the required memory.add/search/list contract.
+    # Select an alternate provider explicitly when one is active.
     memory: lisa-pack-memory
 
 routing:
@@ -354,7 +353,7 @@ answer when the user asks for a deliverable.
 | `resources.packs.auto_install` | Pins each external pack to a tagged ref. Git refs **must** pin `@tag/@branch/@sha`; the host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`. |
 | `providers.tools.web_search` | **Required.** `lisa-pack-search` and `lisa-pack-tavily` both ship `tool_id: web_search`. Without this line the catalog raises `CatalogCollisionError` at startup. |
 | `providers.operations.*` | Declares the owner for each research and document operation. Harmless when uncontested, but it makes ownership explicit and survives a future pack that ships a same-ID operation. |
-| `providers.capabilities.memory` | Selects the memory backend owner. A different memory pack in the catalog would otherwise be free to take the capability. |
+| `providers.capabilities.memory` | Selects the owner of the required `memory.add`, `memory.search`, and `memory.list` contract. Provider-specific optional tools may vary. |
 | `context.sources` | Authoring it **replaces** the default rule set, so the thread-digest rules are re-declared explicitly. The `catch_all` fallback preserves the operational lane. |
 | `context.memory.consolidation` | Wired through the memory pack's slice provider: when active episodic records cross `pressure_threshold` of `max_records`, the slice fires `consolidate_semantic` outside the turn's latency budget. Set `enabled: false` to let records accumulate until TTL expiry. |
 
@@ -512,9 +511,16 @@ Explicit ownership decisions for duplicate catalog resources. When multiple acti
 | `modes` | `map<str, str>` | `mode_id` to `pack_name` |
 | `operations` | `map<str, str>` | `operation_id` to `pack_name` |
 | `tools` | `map<str, str>` | `tool_id` to `pack_name` |
-| `capabilities` | `map<str, str>` | `capability` to `pack_name` (e.g. `memory: lisa-pack-mem0`) |
+| `capabilities` | `map<str, str>` | `capability` to provider pack or server ID (e.g. `memory: lisa-pack-mem0`) |
 
 All IDs must be non-empty strings.
+
+For MCP capabilities, `providers.capabilities.<name>` selects one server
+implementation. Without a selection, a built-in host implementation wins;
+when there is no built-in, a sole candidate is selected and competing
+candidates require an explicit choice. The selected server publishes the
+capability's stable `<name>.<tool>` IDs, while provider-specific argument
+and result adaptation stays in its pack-owned MCP server.
 
 ### `execution`
 

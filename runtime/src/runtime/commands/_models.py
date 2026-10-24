@@ -38,6 +38,25 @@ from runtime.runtime import HostRuntime
 logger = logging.getLogger(__name__)
 
 
+def storage_implementation_id(runtime: HostRuntime) -> str:
+    """Return the server id of the live storage-capability implementation.
+
+    The storage capability's winner keeps its real server_id (e.g.
+    ``lisa-storage``, or a Go binary id when a pack supplies the selected
+    implementation), so server-scoped dispatch needs the live id rather
+    than a hardcoded one. Resolves it from the compiled pool configs;
+    falls back to the built-in ``lisa-storage`` when the pool is absent
+    (the call then fails loudly with an unknown-server error rather than
+    silently misrouting).
+    """
+    pool = getattr(runtime.resources, "mcp_tool_pool", None)
+    configs = getattr(pool, "configs", None) or []
+    for config in configs:
+        if getattr(config, "capability", None) == "storage":
+            return config.server_id
+    return "lisa-storage"
+
+
 def _resolve_discover_models_fn() -> Any:
     """Return the discover-models callable, honoring runtime.commands monkeypatches."""
 
@@ -77,10 +96,14 @@ async def _read_manifest_text_from_storage(
     pool = runtime.resources.mcp_tool_pool
     if pool is None:
         return None, "No storage pool available to read model manifests."
+    # Server-scoped dispatch on the storage capability's live implementation
+    # (lisa-storage by default; the storage capability winner — e.g. a Go
+    # Connector SDK binary selected via providers.capabilities.storage —
+    # otherwise). The bare native tool name is unchanged by selection.
     result = await pool.call_tool(
         "read_model_manifest",
         {"which": which},
-        server_id="lisa-storage",
+        server_id=storage_implementation_id(runtime),
     )
     if result.is_error:
         return None, result.output_text or "lisa-storage read_model_manifest call failed."
@@ -118,7 +141,7 @@ async def _write_manifest_text_to_storage(
     result = await pool.call_tool(
         "write_model_manifest",
         {"content": content, "which": which},
-        server_id="lisa-storage",
+        server_id=storage_implementation_id(runtime),
     )
     if result.is_error:
         return result.output_text or "lisa-storage write_model_manifest call failed."

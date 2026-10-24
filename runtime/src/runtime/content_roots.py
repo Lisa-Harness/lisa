@@ -112,7 +112,8 @@ def infer_pack_package_name(root: Path) -> str:
     # SDK workspace packs live under ``sdk/packs/<name>`` and external packs
     # are installed under ``site-packages/lisa_packs/<name>``. Both map to
     # the canonical ``lisa-pack-<name>`` distribution name so session-plan
-    # provider selections (``memory: lisa-pack-mem0``) resolve correctly.
+    # capability selections such as
+    # ``providers.capabilities.memory: lisa-pack-mem0`` resolve correctly.
     if root.parent.name == "packs" and root.parent.parent.name == "sdk" and root_name:
         return f"lisa-pack-{root_name}"
     if root.parent.name == "lisa_packs" and root_name:

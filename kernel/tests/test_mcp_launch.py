@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from kernel.mcp_binary import MCPBinaryDownload
 from kernel.mcp_launch.compiler import (
     compile_command,
     compile_cwd,
@@ -137,6 +138,24 @@ def test_compile_command_binary_missing_returns_none() -> None:
     """
     spec = MCPServerSpec(server_id="h", runtime_kind=RuntimeKind.BINARY, command_path="")
     assert compile_command(spec) is None
+
+
+def test_compile_command_binary_download_awaits_runtime_resolution() -> None:
+    spec = MCPServerSpec(
+        server_id="lisa-storage-go",
+        runtime_kind=RuntimeKind.BINARY,
+        binary_download=MCPBinaryDownload(
+            repository="Lisa-Harness/lisa-go",
+            version="v0.1.0",
+            binary_name="lisa-storage",
+        ),
+    )
+
+    assert compile_command(spec) == ("", [])
+    config = compile_mcp_config(spec)
+    assert config is not None
+    assert config.command == ""
+    assert config.binary_download == spec.binary_download
 
 
 def test_compile_mcp_config_missing_binary_returns_none() -> None:

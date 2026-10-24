@@ -78,6 +78,41 @@ def _write_lock(runtime: HostRuntime, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
+def _write_memory_capability_manifest(
+    root: Path,
+    *,
+    server_id: str,
+    runtime_kind: str,
+    tool_map: dict[str, str],
+) -> None:
+    lines = [
+        "version: 1",
+        "servers:",
+        f"  - server_id: {server_id}",
+        "    capability: memory",
+        "    capability_tools: [add, search, list]",
+        f"    runtime_kind: {runtime_kind}",
+        "    tool_map:",
+    ]
+    lines.extend(f"      {published}: {native}" for published, native in tool_map.items())
+    if runtime_kind == "http":
+        lines.extend(
+            [
+                "    url: http://127.0.0.1:8765/mcp",
+                "    headers:",
+                '      Authorization: "test-token"',
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"    entry_point: {server_id}",
+                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
+            ]
+        )
+    (root / "mcp_servers.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @pytest.mark.asyncio
 async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
     monkeypatch: pytest.MonkeyPatch,
@@ -1112,57 +1147,19 @@ def test_compile_proxy_configs_resolves_provider_overlay_env(
     assert config.env["OPENAI_TARGET_API_URL"] == "http://127.0.0.1:11434/v1/"
 
 
-def test_compile_mcp_configs_namespaces_pack_memory_servers(
+def test_compile_mcp_configs_capability_server_keeps_runtime_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     runtime = _make_runtime(tmp_path)
     pack_root = tmp_path / "memory"
     pack_root.mkdir(parents=True, exist_ok=True)
-
-    pack_manifest_text = (
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: lisa_memory",
-                "  backends:",
-                "    - id: lisa_memory",
-                "      kind: stdio",
-                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
-                "      args:",
-                "        - --data-dir",
-                '        - "${LISA_DATA_DIR}"',
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memory",
-                "        list: list_memories",
-                "    - id: mem0",
-                "      kind: http",
-                "      url: https://mcp.mem0.ai/mcp",
-                "      headers:",
-                '        Authorization: "Bearer ${MEM0_API_KEY}"',
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memories",
-                "        list: get_memories",
-                "servers:",
-                "  - server_id: lisa-memory",
-                "    runtime_kind: venv_bin",
-                "    entry_point: lisa-memory",
-                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
-                "    warm: true",
-                "    required: true",
-                "  - server_id: mem0",
-                "    runtime_kind: http",
-                "    url: http://127.0.0.1:8765/mcp",
-                "    headers:",
-                '      Authorization: "Bearer ${MEM0_API_KEY}"',
-            ]
-        )
-        + "\n"
+    _write_memory_capability_manifest(
+        pack_root,
+        server_id="lisa-memory",
+        runtime_kind="venv_bin",
+        tool_map={"add": "add_memory", "search": "search_memory", "list": "list_memories"},
     )
-    (pack_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
@@ -1170,9 +1167,8 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     warm, cold = mcp_pool.compile_mcp_configs(runtime)
     server_ids = {config.server_id for config in [*warm, *cold]}
 
-    assert "memory.lisa-memory" in server_ids
-    assert "memory.mem0" in server_ids
-    assert runtime.services.memory_config_pack_slug == "memory"
+    assert "lisa-memory" in server_ids
+    assert "memory.lisa-memory" not in server_ids
 
 
 def test_compile_mcp_configs_merges_user_manifest(
@@ -1371,40 +1367,15 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
         + "\n",
         encoding="utf-8",
     )
-    (mem0_root / "mcp_servers.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: mem0",
-                "  backends:",
-                "    - id: mem0",
-                "      kind: http",
-                "      url: https://mcp.mem0.ai/mcp",
-                "      headers:",
-                '        Authorization: "Bearer ${MEM0_API_KEY}"',
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memories",
-                "        list: get_memories",
-                "servers:",
-                "  - server_id: mem0",
-                "    runtime_kind: http",
-                "    url: http://127.0.0.1:8765/mcp",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_memory_capability_manifest(
+        mem0_root,
+        server_id="mem0",
+        runtime_kind="http",
+        tool_map={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
     )
 
-    monkeypatch.setattr(
-        commands._packs,
-        "_validate_pack_spec_for_install",
-        lambda spec: (True, ""),
-    )
-    import subprocess as _subprocess
-
-    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
+    monkeypatch.setattr(commands._packs, "_validate_pack_spec_for_install", lambda spec: (True, ""))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeCompleted())
     monkeypatch.setattr(commands._packs, "discover_installed_content_roots", lambda: [mem0_root])
     monkeypatch.setattr(
         commands._packs, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
@@ -1427,98 +1398,34 @@ def test_compile_mcp_configs_uses_session_plan_memory_provider(
     memory_root.mkdir(parents=True, exist_ok=True)
     mem0_root.mkdir(parents=True, exist_ok=True)
 
-    (memory_root / "pyproject.toml").write_text(
-        "\n".join(
-            [
-                "[project]",
-                'name = "lisa-pack-memory"',
-                'version = "0.1.0"',
-            ]
+    for root, package_name in (
+        (memory_root, "lisa-pack-memory"),
+        (mem0_root, "lisa-pack-mem0"),
+    ):
+        (root / "pyproject.toml").write_text(
+            f'[project]\nname = "{package_name}"\nversion = "0.1.0"\n',
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
+    _write_memory_capability_manifest(
+        memory_root,
+        server_id="lisa-memory",
+        runtime_kind="venv_bin",
+        tool_map={"add": "add_memory", "search": "search_memory", "list": "list_memories"},
     )
-    (mem0_root / "pyproject.toml").write_text(
-        "\n".join(
-            [
-                "[project]",
-                'name = "lisa-pack-mem0"',
-                'version = "0.1.0"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_memory_capability_manifest(
+        mem0_root,
+        server_id="mem0",
+        runtime_kind="http",
+        tool_map={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
     )
 
-    (memory_root / "mcp_servers.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: lisa_memory",
-                "  backends:",
-                "    - id: lisa_memory",
-                "      kind: stdio",
-                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
-                "      args: []",
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memory",
-                "        list: list_memories",
-                "servers:",
-                "  - server_id: lisa-memory",
-                "    runtime_kind: venv_bin",
-                "    entry_point: lisa-memory",
-                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (mem0_root / "mcp_servers.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: mem0",
-                "  backends:",
-                "    - id: mem0",
-                "      kind: http",
-                "      url: https://mcp.mem0.ai/mcp",
-                "      headers:",
-                '        Authorization: "Bearer ${MEM0_API_KEY}"',
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memories",
-                "        list: get_memories",
-                "servers:",
-                "  - server_id: mem0",
-                "    runtime_kind: http",
-                "    url: http://127.0.0.1:8765/mcp",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    _write_lock(
-        runtime,
-        {
-            "packs": [
-                {
-                    "package_name": "lisa-pack-mem0",
-                    "source_kind": "package",
-                    "enabled": True,
-                }
-            ]
-        },
-    )
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [memory_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
+    server_ids = {config.server_id for config in [*warm, *cold]}
 
-    _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
-
-    assert runtime.services.memory_config_pack_slug == "mem0-pack"
+    assert "mem0" in server_ids
+    assert "lisa-memory" not in server_ids
 
 
 def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
@@ -1531,101 +1438,40 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
     memory_root.mkdir(parents=True, exist_ok=True)
     mem0_root.mkdir(parents=True, exist_ok=True)
 
-    (memory_root / "pyproject.toml").write_text(
-        "\n".join(
-            [
-                "[project]",
-                'name = "lisa-pack-memory"',
-                'version = "0.1.0"',
-            ]
+    for root, package_name in (
+        (memory_root, "lisa-pack-memory"),
+        (mem0_root, "lisa-pack-mem0"),
+    ):
+        (root / "pyproject.toml").write_text(
+            f'[project]\nname = "{package_name}"\nversion = "0.1.0"\n',
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
+    _write_memory_capability_manifest(
+        memory_root,
+        server_id="lisa-memory",
+        runtime_kind="venv_bin",
+        tool_map={"add": "add_memory", "search": "search_memory", "list": "list_memories"},
     )
-    (mem0_root / "pyproject.toml").write_text(
-        "\n".join(
-            [
-                "[project]",
-                'name = "lisa-pack-mem0"',
-                'version = "0.1.0"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_memory_capability_manifest(
+        mem0_root,
+        server_id="mem0",
+        runtime_kind="http",
+        tool_map={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
     )
-
-    (memory_root / "mcp_servers.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: lisa_memory",
-                "  backends:",
-                "    - id: lisa_memory",
-                "      kind: stdio",
-                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
-                "      args: []",
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memory",
-                "        list: list_memories",
-                "servers:",
-                "  - server_id: lisa-memory",
-                "    runtime_kind: venv_bin",
-                "    entry_point: lisa-memory",
-                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (mem0_root / "mcp_servers.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "memory:",
-                "  default_backend: mem0",
-                "  backends:",
-                "    - id: mem0",
-                "      kind: http",
-                "      url: https://mcp.mem0.ai/mcp",
-                "      headers:",
-                '        Authorization: "Bearer ${MEM0_API_KEY}"',
-                "      tool_names:",
-                "        add: add_memory",
-                "        search: search_memories",
-                "        list: get_memories",
-                "servers:",
-                "  - server_id: mem0",
-                "    runtime_kind: http",
-                "    url: http://127.0.0.1:8765/mcp",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
     _write_lock(
         runtime,
         {
-            "packs": [
-                {
-                    "package_name": "lisa-pack-mem0",
-                    "source_kind": "package",
-                    "enabled": True,
-                }
-            ],
-            "selected_capability_providers": {
-                "memory": "lisa-pack-mem0",
-            },
+            "selected_capability_providers": {"memory": "lisa-pack-mem0"},
         },
     )
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [memory_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
-    _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
+    server_ids = {config.server_id for config in [*warm, *cold]}
 
-    assert runtime.services.memory_config_pack_slug == "memory-pack"
+    assert "lisa-memory" in server_ids
+    assert "mem0" not in server_ids
 
 
 # ---------------------------------------------------------------------------

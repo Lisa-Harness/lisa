@@ -1,51 +1,50 @@
 ---
 version: 1
 
-# Memory provides the bundled memory fallback (lisa_memory).
-# External providers (such as Mem0) are contributed by separate packs and can
-# replace this default through host provider-selection policy.
-memory:
-  default_backend: lisa_memory
-  backends:
-    - id: lisa_memory
-      kind: stdio
-      command: "${LISA_MCP_COMMAND:lisa-memory}"
-      args:
-        - --data-dir
-        - "${LISA_DATA_DIR}"
-      tool_names:
-        add: add_memory
-        search: search_memory
-        list: list_memories
-        get: get_memory
-        delete: delete_memory
-        retire: retire_memory
-        count: count_memories
+# Memory is a capability: this pack's server claims ``capability: memory``
+# and publishes the canonical ``memory.*`` tool contract via ``tool_map``.
+# The published ids (memory.add / memory.search / …) are identical to the
+# synthetic alias names the model has always seen, so prompts and pack
+# operations that call ``memory.add`` are unchanged.
+#
+# External providers (such as Mem0) contribute their own
+# ``capability: memory`` server from a separate pack and replace this
+# default through session provider selection
+# (``providers.capabilities.memory: <pack>``).
 servers:
   - server_id: lisa-memory
+    capability: memory
+    capability_tools:
+      - add
+      - search
+      - list
+    capability_optional_tools:
+      - get
+      - delete
+      - retire
+      - count
     runtime_kind: venv_bin
     entry_point: lisa-memory
     venv_dir: "${FRAMEWORK_ROOT}"
     warm: true
     required: true
-    # tool_policy hides raw native tools from the model-facing catalog.
-    # The model calls the generic aliases (memory.add / memory.search /
-    # memory.list) instead. Internal dispatch (alias forwarding,
-    # operations) still reaches these tools — the per-server index is
-    # NOT filtered, only the model catalog is.
-    tool_policy:
-      denied_tools:
-        - get_memory
-        - delete_memory
-        - list_memories
-        - retire_memory
-        - count_memories
+    # tool_map publishes the canonical memory.* contract over the native
+    # wire names (published → native). Unmapped native tools stay
+    # internal-only for capability servers.
+    tool_map:
+      add: add_memory
+      search: search_memory
+      list: list_memories
+      get: get_memory
+      delete: delete_memory
+      retire: retire_memory
+      count: count_memories
     # proxy_policy strips the ambient identity field (user_slug) from the
     # native tools' model-facing schema and injects it from the host
     # runtime at dispatch time. The model never sees or sets user_slug —
-    # the ambient resolver registered by register_memory_aliases supplies
-    # the active user. Without this, the native add_memory / search_memory
-    # tools would surface user_slug as a settable parameter and the model
+    # the ambient resolver registered by the host supplies the active
+    # user. Without this, the native add_memory / search_memory tools
+    # would surface user_slug as a settable parameter and the model
     # would be forced to invent one (it has no source of truth).
     proxy_policy:
       ambient:

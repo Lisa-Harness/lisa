@@ -38,6 +38,7 @@ from kernel.session_plan import SessionPlan
 
 from runtime.config import HostConfig
 from runtime.execution_policy import resolve_execution_policy
+from runtime.mcp_binary_cache import resolve_mcp_binary_configs
 from runtime.operator_signal import OperatorSignal
 from runtime.providers import ProviderRegistry
 from runtime.runtime_paths import HostPaths
@@ -224,9 +225,8 @@ class RuntimeResources:
     top to bottom. ``HostRuntime.resources`` holds the single instance.
 
     The methods reference the owning ``HostRuntime`` (passed at construction)
-    for two wiring seam callbacks: the in-process MCP resolver choice and the
-    post-start alias registration that needs ``services.memory_config`` and
-    ``session.current_mode_id``.
+    for the in-process MCP resolver choice and post-start ambient resolver
+    registration that needs current runtime identity.
     """
 
     def __init__(self, runtime: HostRuntime) -> None:
@@ -509,8 +509,11 @@ class RuntimeResources:
         pool_kwargs: dict[str, Any] = {}
         if self._in_process_mcp:
             pool_kwargs["in_process_resolver"] = _make_in_process_resolver()
+        configs = await resolve_mcp_binary_configs(
+            [*self._mcp_warm_configs, *self._mcp_cold_configs]
+        )
         self._mcp_tool_pool = MCPToolPool(
-            [*self._mcp_warm_configs, *self._mcp_cold_configs],
+            configs,
             **pool_kwargs,
         )
         try:
@@ -525,24 +528,14 @@ class RuntimeResources:
                 logger.debug("RuntimeResources: pool aclose after failed start", exc_info=True)
             self._mcp_tool_pool = None
             raise
-        # Register ambient resolvers + the generic ``memory.*`` synthetic
-        # aliases on the now-live pool. This MUST run after ``start()`` so
-        # the alias handlers forward to live server sessions and the
-        # proxy's ambient resolvers are in place before the first turn.
-        # Without this, transport hosts that call ``runtime.start()``
-        # directly (cli, web) would never register
-        # ``memory.add`` / ``memory.search`` / ``memory.list`` — the
-        # learning-pack operations (recall_memory,
-        # synthesize_and_store_learning) reach them via
-        # ``ctx.execute_tool_fn`` and fail with "Tool 'memory.list' is not
-        # registered on any MCP server".
-        from runtime.memory_aliases import register_memory_aliases
-
+        # Ambient values must be in place before the first turn so MCP
+        # proxy policies can enforce runtime scope independently of which
+        # capability implementation was selected.
         rt = self._runtime
-        register_memory_aliases(
+        from runtime.ambient_resolvers import register_ambient_resolvers
+
+        register_ambient_resolvers(
             self._mcp_tool_pool,
-            memory_config=rt.services.memory_config,
-            memory_config_pack_slug=rt.services.memory_config_pack_slug,
             user_slug=rt.config.user_slug,
             current_mode_id=rt.session.current_mode_id,
             app_id="lisa-host",

@@ -28,7 +28,6 @@ import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +36,6 @@ from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import (
     MCPServerManifestError,
-    MemoryBackendConfig,
     load_mcp_server_manifest,
 )
 from kernel.proxy_launch.compiler import ProxyClientConfig, compile_proxy_registry
@@ -45,8 +43,16 @@ from kernel.proxy_launch.manifest import ProxyServerManifestError, load_proxy_se
 from kernel.proxy_launch.policy import ProxyServerRegistry
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
-from sdk.layout import LOGS_DIR, MCP_LOGS_SUBDIR
+from sdk.layout import CACHE_DIR, LOGS_DIR, MCP_LOGS_SUBDIR
 
+from runtime.capability_servers import (
+    CapabilityCandidate,
+    CapabilitySelectionError,
+    log_capability_selection,
+    register_capability_server,
+    select_capability_owner,
+    valid_capability_name,
+)
 from runtime.config import HostConfig
 from runtime.content_roots import (
     always_on_pack_names,
@@ -307,7 +313,7 @@ def _collect_default_tool_ids(
     *,
     server_id_prefix: str = "",
 ) -> set[str]:
-    """Collect namespaced ambient tool ids from one manifest's specs.
+    """Collect published ambient tool ids from one manifest's specs.
 
     Args:
         specs: Parsed ``MCPServerSpec`` entries from one manifest.
@@ -316,13 +322,27 @@ def _collect_default_tool_ids(
             manifests which keep bare server ids.
 
     Returns:
-        The set of namespaced ``server_id.tool`` ambient tool ids.
+        The set of published ambient tool ids. For capability-claiming
+        servers the prefix is the capability (``<capability>.<tool>``) —
+        the id the live catalog publishes regardless of which
+        implementation won selection — and the listed bare names are
+        interpreted as *published* names (post-tool_map). Ordinary
+        servers keep ``server_id.tool`` (pack servers:
+        ``<pack_slug>.<server_id>.<tool>``).
     """
     from kernel.tools.mcp_client import namespaced_tool_name
 
     ids: set[str] = set()
     for spec in specs:
         if spec.disabled or not spec.default_available_tools:
+            continue
+        capability = getattr(spec, "capability", None)
+        if capability:
+            # Capability servers publish under the capability prefix — the
+            # same id regardless of which implementation is selected, so
+            # collecting from losing declarations is harmless (identical ids).
+            for tool_name in spec.default_available_tools:
+                ids.add(namespaced_tool_name(capability, tool_name))
             continue
         namespaced_server_id = (
             f"{server_id_prefix}.{spec.server_id}" if server_id_prefix else spec.server_id
@@ -358,7 +378,7 @@ def resolve_default_mcp_tool_ids(
     ids: set[str] = set()
     # Host manifest first (first-party servers keep their bare server_id).
     try:
-        host_specs, _ = load_mcp_server_manifest(host_manifest_path)
+        host_specs = load_mcp_server_manifest(host_manifest_path)
     except MCPServerManifestError:
         host_specs = []
     ids |= _collect_default_tool_ids(host_specs)
@@ -367,7 +387,7 @@ def resolve_default_mcp_tool_ids(
     # ambient ids the same way lisa-storage.read_file does.
     if user_manifest_path is not None and user_manifest_path.exists():
         try:
-            user_specs, _ = load_mcp_server_manifest(user_manifest_path)
+            user_specs = load_mcp_server_manifest(user_manifest_path)
         except MCPServerManifestError:
             user_specs = []
         ids |= _collect_default_tool_ids(user_specs)
@@ -378,7 +398,7 @@ def resolve_default_mcp_tool_ids(
         if not pack_manifest_path.exists():
             continue
         try:
-            pack_specs, _ = load_mcp_server_manifest(pack_manifest_path)
+            pack_specs = load_mcp_server_manifest(pack_manifest_path)
         except MCPServerManifestError:
             continue
         pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
@@ -561,11 +581,10 @@ def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
     ``warm`` / ``required`` / ``disabled`` launch policy is declared in
     YAML — no hardcoded server list or warm_ids set remains.
 
-    Memory is an MCP feature: ``lisa-memory`` serves the three core
-    memory calls, Mem0 (or any other HTTP/stdio memory server) serves the
-    same three plus its full surface, and the generic ``memory.*``
-    synthetic aliases route to the default backend via the pool. No
-    in-process memory seam remains.
+    Memory is a capability like storage and thread: the selected provider's
+    pack-owned MCP server implements the shared tool contract and publishes
+    stable ``memory.*`` ids. Provider-specific argument and result
+    adaptation stays inside that server.
 
     All first-party servers use ``VENV_BIN`` runtime — they run as native
     console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
@@ -722,17 +741,25 @@ def _register_host_and_user_servers(
     registry: MCPServerRegistry,
     host_manifest_path: Path,
     user_manifest_path: Path | None,
-) -> Any:
+    capability_candidates: list[CapabilityCandidate],
+) -> None:
     """Register first-party and user-owned servers onto the registry.
 
     Framework-owned (first-party) servers from the in-repo mcp_servers.yaml
     keep bare server_ids and cannot be redefined by the user manifest.
     The manifest loader honors ``disabled: true`` by skipping entries, and
     parses ``warm`` / ``required`` onto the spec. The compiler passes
-    them through to MCPClientConfig. The framework manifest no longer
-    carries a ``memory:`` section or memory server entries; memory
-    backends + memory tool servers are contributed by the memory pack
-    (see sdk/packs/memory/mcp_servers.yaml) and merged by the pack pass.
+    them through to MCPClientConfig.
+
+    Capability-claiming servers compete through the same selection policy,
+    regardless of whether they are declared in the host, user, or pack
+    manifest.
+
+    Servers that declare ``capability:`` are NOT registered directly —
+    they are collected into ``capability_candidates`` (``source="builtin"``
+    for the host manifest, ``source="user"`` for the user manifest) and
+    resolved to one owner per capability after every layer has declared
+    its candidates (:func:`_resolve_capability_owners`).
 
     User-owned servers from <data_dir>/mcp_servers.yaml (optional) keep
     bare server_ids (same as first-party), but collide loudly with any
@@ -740,16 +767,20 @@ def _register_host_and_user_servers(
     new servers. Malformed user manifests are logged and skipped (fail
     soft on user config, same as pack manifests).
 
-    Returns:
-        The (possibly None-bearing) memory config from the host manifest.
     """
-    specs, memory_config = load_mcp_server_manifest(host_manifest_path)
+    specs = load_mcp_server_manifest(host_manifest_path)
     for spec in specs:
-        registry.register(spec)
+        _declare_server_or_candidate(
+            registry,
+            spec,
+            capability_candidates,
+            source="builtin",
+            manifest_path=str(host_manifest_path),
+        )
 
     if user_manifest_path is not None and user_manifest_path.exists():
         try:
-            user_specs, user_memory = load_mcp_server_manifest(user_manifest_path)
+            user_specs = load_mcp_server_manifest(user_manifest_path)
         except MCPServerManifestError:
             logger.warning(
                 "Skipping invalid user MCP manifest at %s",
@@ -757,37 +788,129 @@ def _register_host_and_user_servers(
                 exc_info=True,
             )
             user_specs = []
-            user_memory = None
         for spec in user_specs:
-            registry.register(spec)
-        if user_memory is not None and (user_memory.default_backend or user_memory.backends):
-            logger.warning(
-                "User MCP manifest at %s declares a memory section; "
-                "memory backends are pack-owned and ignored from the user manifest.",
-                user_manifest_path,
+            _declare_server_or_candidate(
+                registry,
+                spec,
+                capability_candidates,
+                source="user",
+                manifest_path=str(user_manifest_path),
             )
     elif user_manifest_path is not None and not user_manifest_path.exists():
         logger.debug(
             "User MCP manifest path %s does not exist; skipping user servers.",
             user_manifest_path,
         )
-    return memory_config
+
+
+def _declare_server_or_candidate(
+    registry: MCPServerRegistry,
+    spec: Any,
+    capability_candidates: list[CapabilityCandidate],
+    *,
+    source: str,
+    manifest_path: str,
+    pack_slug: str | None = None,
+    package_name: str | None = None,
+) -> None:
+    """Register one spec, or collect it as a capability candidate.
+
+    A spec with ``capability`` set competes for that capability; it is
+    collected instead of registered, and only the resolved winner is
+    registered later under its real server id (see
+    :func:`runtime.capability_servers.winning_spec_as_capability`).
+    """
+    capability = getattr(spec, "capability", None)
+    if capability and valid_capability_name(capability):
+        capability_candidates.append(
+            CapabilityCandidate(
+                capability=capability,
+                spec=spec,
+                source=source,
+                pack_slug=pack_slug,
+                package_name=package_name,
+                manifest_path=manifest_path,
+            )
+        )
+        return
+    registry.register(spec)
+
+
+def _resolve_capability_owners(
+    registry: MCPServerRegistry,
+    capability_candidates: list[CapabilityCandidate],
+    selected_capability_providers: dict[str, str],
+) -> None:
+    """Resolve and register one owner per claimed capability.
+
+    Called after every manifest layer (host, user, packs) has declared its
+    candidates. For each capability:
+
+    - resolve the winner via
+      :func:`runtime.capability_servers.select_capability_owner` (explicit
+      session selection > built-in > unique candidate; contested
+      capabilities raise);
+    - register the winner's spec under its real server id; the MCP pool
+      publishes ``<capability>.<tool>`` ids from its declared contract —
+      identical model-facing ids regardless of implementation;
+    - log (not register) the losers.
+
+    Raises :class:`CapabilitySelectionError` when a capability cannot be
+    resolved deterministically — a contested or misconfigured capability
+    is a startup error, not a silent fallback.
+    """
+    by_capability: dict[str, list[CapabilityCandidate]] = {}
+    for candidate in capability_candidates:
+        by_capability.setdefault(candidate.capability, []).append(candidate)
+    for capability in sorted(by_capability):
+        candidates = by_capability[capability]
+        contracts = {frozenset(candidate.spec.capability_tools) for candidate in candidates}
+        if len(contracts) > 1:
+            details = "; ".join(
+                f"{candidate.spec.server_id}={sorted(candidate.spec.capability_tools)}"
+                for candidate in sorted(candidates, key=lambda item: item.spec.server_id)
+            )
+            raise CapabilitySelectionError(
+                f"Servers claiming capability {capability!r} declare different "
+                f"capability_tools contracts: {details}"
+            )
+        ambient_contracts = {
+            frozenset(candidate.spec.default_available_tools) for candidate in candidates
+        }
+        if len(ambient_contracts) > 1:
+            details = "; ".join(
+                f"{candidate.spec.server_id}={sorted(candidate.spec.default_available_tools)}"
+                for candidate in sorted(candidates, key=lambda item: item.spec.server_id)
+            )
+            raise CapabilitySelectionError(
+                f"Servers claiming capability {capability!r} declare different "
+                f"default_available_tools: {details}"
+            )
+        selection = select_capability_owner(
+            capability,
+            candidates,
+            selected_provider=selected_capability_providers.get(capability, ""),
+        )
+        log_capability_selection(capability, selection)
+        if selection.winner is not None:
+            register_capability_server(registry, selection.winner)
 
 
 def _register_pack_servers(
     registry: MCPServerRegistry,
     roots: list[Path],
     excluded_pack_servers: set[str],
-    memory_candidates: list[MemoryProviderCandidate],
+    capability_candidates: list[CapabilityCandidate],
 ) -> None:
     """Register pack-contributed servers (namespaced) onto the registry.
 
     Compile-time namespacing (``<pack_slug>.<server_id>``) allows multiple
     packs to declare the same server_id without collision in the global
-    registry. A pack may also contribute memory backends + memory tool
-    servers; ownership is collected into ``memory_candidates`` and selected
-    deterministically by the caller. Malformed pack manifests are logged
-    and skipped defensively.
+    registry. Malformed pack manifests are logged and skipped defensively.
+
+    Capability-claiming pack servers are collected into
+    ``capability_candidates`` (``source="pack"``) instead of registered;
+    the resolved winner retains its real server id for launch and dispatch.
     """
     used_pack_slugs: set[str] = set()
     for root in roots:
@@ -795,7 +918,7 @@ def _register_pack_servers(
         if not pack_manifest_path.exists():
             continue
         try:
-            pack_specs, pack_memory = load_mcp_server_manifest(pack_manifest_path)
+            pack_specs = load_mcp_server_manifest(pack_manifest_path)
         except MCPServerManifestError:
             logger.warning(
                 "Skipping invalid pack MCP manifest at %s",
@@ -807,18 +930,6 @@ def _register_pack_servers(
         pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
         pack_package_name = infer_pack_package_name(root)
 
-        # A pack may contribute memory backends + memory tool servers. Ownership
-        # is selected deterministically from host policy + lock state.
-        if pack_memory.default_backend or pack_memory.backends:
-            memory_candidates.append(
-                MemoryProviderCandidate(
-                    pack_slug=pack_slug,
-                    package_name=pack_package_name,
-                    manifest_path=pack_manifest_path,
-                    memory_config=pack_memory,
-                )
-            )
-
         for spec in pack_specs:
             if pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
                 logger.info(
@@ -828,55 +939,22 @@ def _register_pack_servers(
                 )
                 continue
 
+            capability = getattr(spec, "capability", None)
+            if capability and valid_capability_name(capability):
+                capability_candidates.append(
+                    CapabilityCandidate(
+                        capability=capability,
+                        spec=spec,
+                        source="pack",
+                        pack_slug=pack_slug,
+                        package_name=pack_package_name,
+                        manifest_path=str(pack_manifest_path),
+                    )
+                )
+                continue
+
             namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
             registry.register(namespaced)
-
-
-def _select_memory_owner(
-    memory_candidates: list[MemoryProviderCandidate],
-    selected_capability_providers: dict[str, str],
-) -> tuple[Any, str | None]:
-    """Select the memory-backend owner pack from host policy + candidates.
-
-    Returns:
-        A ``(memory_config, memory_owner_slug)`` tuple. When a candidate
-        owns the memory backend, its memory config replaces the host
-        manifest's (None-bearing) config and its pack slug is stashed for
-        ``_build_turn_hooks``; non-selected candidates are logged and
-        ignored. Otherwise the host manifest's config stands and the
-        owner slug is ``None``.
-    """
-    selected_memory_provider = normalize_pack_name(
-        str(selected_capability_providers.get("memory") or "")
-    )
-    selected_memory_owner = select_capability_provider_owner(
-        candidates=memory_candidates,
-        selected_provider=selected_memory_provider,
-    )
-    if selected_memory_owner is None:
-        return None, None
-
-    memory_config = selected_memory_owner.memory_config
-    memory_owner_slug = selected_memory_owner.pack_slug or None
-    selected_manifest = str(selected_memory_owner.manifest_path)
-    selected_package = selected_memory_owner.package_name
-    logger.info(
-        "Selected memory provider owner: package=%s slug=%s manifest=%s",
-        selected_package,
-        memory_owner_slug or "(none)",
-        selected_manifest,
-    )
-    for candidate in memory_candidates:
-        if candidate is selected_memory_owner:
-            continue
-        logger.info(
-            "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
-            candidate.package_name,
-            candidate.pack_slug,
-            candidate.manifest_path,
-            selected_package,
-        )
-    return memory_config, memory_owner_slug
 
 
 def _with_default_mcp_log_paths(
@@ -895,7 +973,12 @@ def _with_default_mcp_log_paths(
             env["LISA_MCP_LOG_PATH"] = str(
                 server_data_dir / LOGS_DIR / MCP_LOGS_SUBDIR / f"{config.server_id}.jsonl"
             )
-        configured.append(dataclasses.replace(config, env=env))
+        binary_cache_dir = (
+            str(Path(data_dir) / CACHE_DIR / "mcp-binaries")
+            if config.binary_download is not None
+            else None
+        )
+        configured.append(dataclasses.replace(config, env=env, binary_cache_dir=binary_cache_dir))
     return configured
 
 
@@ -982,9 +1065,12 @@ def compile_mcp_configs(
     # compiled child environment; both happen inside this scope, and the
     # ambient environment is restored on exit.
     with _exported_mcp_environment(runtime, workspace_root):
-        # Framework-owned (first-party) + user-owned servers.
-        memory_config = _register_host_and_user_servers(
-            registry, host_manifest_path, user_manifest_path
+        # Framework-owned (first-party) + user-owned servers. Capability
+        # candidates are collected per layer and resolved to one owner
+        # per capability after every layer has declared.
+        capability_candidates: list[CapabilityCandidate] = []
+        _register_host_and_user_servers(
+            registry, host_manifest_path, user_manifest_path, capability_candidates
         )
 
         excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
@@ -992,17 +1078,13 @@ def compile_mcp_configs(
             excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
         excluded_pack_servers |= session_exclude_servers
 
-        memory_candidates: list[MemoryProviderCandidate] = []
-        _register_pack_servers(registry, roots, excluded_pack_servers, memory_candidates)
+        _register_pack_servers(registry, roots, excluded_pack_servers, capability_candidates)
 
-        selected_config, memory_owner_slug = _select_memory_owner(
-            memory_candidates, selected_capability_providers
-        )
-        if selected_config is not None:
-            memory_config = selected_config
-
-        runtime.services.memory_config = memory_config
-        runtime.services.memory_config_pack_slug = memory_owner_slug
+        # One owner per claimed capability; the winner registers under the
+        # bare capability id (model-facing tool ids are implementation-
+        # independent). Contested or misconfigured capabilities fail
+        # startup loudly.
+        _resolve_capability_owners(registry, capability_candidates, selected_capability_providers)
 
         compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
         compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
@@ -1134,71 +1216,6 @@ def load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
     return exclusions
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryProviderCandidate:
-    """One pack's memory-backend contribution + ownership metadata.
-
-    Frozen-slots dataclass so the four keys (``pack_slug``, ``package_name``,
-    ``manifest_path``, ``memory_config``) are accessed as attributes, not
-    string-keyed dict lookups. A typo in a field name is an
-    ``AttributeError`` at the call site, not a silent ``None`` from
-    ``dict.get("…")``. Mirrors the ``PackProviderGatewayEntry`` /
-    ``PackSliceProviderEntry`` pattern in the kernel.
-    """
-
-    pack_slug: str
-    package_name: str
-    manifest_path: Path
-    memory_config: MemoryBackendConfig
-
-
-def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
-    """Return the set of normalized identifiers that refer to one pack."""
-    identifiers = {
-        normalize_pack_name(package_name),
-        normalize_pack_name(pack_slug),
-    }
-    normalized_package = normalize_pack_name(package_name)
-    if normalized_package.startswith("lisa-pack-"):
-        identifiers.add(normalized_package[len("lisa-pack-") :])
-    return {identifier for identifier in identifiers if identifier}
-
-
-def select_capability_provider_owner(
-    *,
-    candidates: list[MemoryProviderCandidate],
-    selected_provider: str,
-) -> MemoryProviderCandidate | None:
-    """Select a capability owner without any host or lock preference fallback."""
-    if not candidates:
-        return None
-
-    selected = normalize_pack_name(selected_provider)
-    if selected:
-        matching = [
-            candidate
-            for candidate in candidates
-            if selected
-            in provider_identifiers_for_pack(
-                package_name=candidate.package_name,
-                pack_slug=candidate.pack_slug,
-            )
-        ]
-        if len(matching) == 1:
-            return matching[0]
-        if not matching:
-            return None
-        raise ValueError(
-            f"Multiple active capability providers match explicit selection '{selected}'."
-        )
-
-    if len(candidates) == 1:
-        return candidates[0]
-    raise ValueError(
-        "Multiple active capability providers require an explicit providers.capabilities selection."
-    )
-
-
 def pack_server_excluded(pack_slug: str, declared_server_id: str, exclusions: set[str]) -> bool:
     """Return True when host policy excludes a pack-contributed server."""
     slug = pack_slug.strip().lower()
@@ -1289,7 +1306,6 @@ def register_mcp_aliases(pool: Any) -> None:
 
 
 __all__ = [
-    "MemoryProviderCandidate",
     "build_catalog_mcp_config",
     "build_content_mcp_config",
     "build_mcp_tool_servers",
@@ -1297,9 +1313,7 @@ __all__ = [
     "configure_runtime",
     "load_pack_server_exclusions",
     "pack_server_excluded",
-    "provider_identifiers_for_pack",
     "register_mcp_aliases",
-    "select_capability_provider_owner",
     "setup_framework",
     "unique_pack_slug_for_root",
 ]
