@@ -8,6 +8,7 @@ stall where ``coding`` was never reached after resume.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
@@ -17,7 +18,9 @@ from kernel.models import WorkflowModeConfig
 from kernel.turn_hooks import (
     ModelHooks,
 )
-from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_phases._lifecycle import ContinueAction, PauseAction
+from kernel.turn_phases._turn_state import _TurnState
+from kernel.turn_runner import TurnHooks, _resolve_iteration_lifecycle, run_turn
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 
@@ -106,6 +109,72 @@ def _instance_with_chain(current_step_id: str = "search_0") -> WorkflowPosition:
         mode_id="coding",
         spawned_from="adhoc",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_turns", [1, 7, 100])
+@pytest.mark.parametrize("step_iteration", [1, 4, 7, 10])
+async def test_stage_budget_counts_only_current_turn_iterations(
+    monkeypatch: pytest.MonkeyPatch, prior_turns: int, step_iteration: int
+) -> None:
+    from kernel.config import settings
+
+    monkeypatch.setattr(settings, "stage_nudge_threshold", 7)
+    monkeypatch.setattr(settings, "stage_nudge_cap", 10)
+    position = WorkflowPosition(mode_id="search", turn_count=prior_turns)
+    hooks = TurnHooks()
+    hooks.workflow.workflow_position = lambda: position
+    stages: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def emit_stage(name: str, payload: dict[str, Any] | None) -> None:
+        stages.append((name, payload))
+
+    turns_in_stage, action = await _resolve_iteration_lifecycle(
+        state=_TurnState(iteration=step_iteration, step_iteration=step_iteration),
+        hooks=hooks,
+        mode_id="search",
+        mode_config=_mode_config(mode_id="search"),
+        yield_policy_override=None,
+        max_tool_iterations=50,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        max_handoffs_per_turn=50,
+        budget_forces_final=lambda: False,
+        pending_yield=None,
+        emit_stage=emit_stage,
+        log=logging.getLogger(__name__),
+    )
+
+    assert turns_in_stage == step_iteration
+    if step_iteration == 10:
+        assert isinstance(action, PauseAction)
+        assert action.reason == "stuck in search for 10 iterations (cap)"
+    else:
+        assert isinstance(action, ContinueAction)
+        assert bool(action.nudge) is (step_iteration >= 7)
+    assert stages[0][1] is not None
+    assert stages[0][1]["turn_count"] == prior_turns
+    assert position.turn_count == prior_turns
+
+
+@pytest.mark.asyncio
+async def test_new_turn_in_long_running_workflow_gets_fresh_stage_budget() -> None:
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="ok")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow.workflow_position = lambda: WorkflowPosition(mode_id="search", turn_count=100)
+    catalog = {"search": _mode_config(mode_id="search")}
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        result = await run_turn(mode_id="search", query="Reply with exactly: ok", hooks=hooks)
+
+    assert result.response_text == "ok"
+    assert result.iteration_count == 1
+    assert result.operator_exit == ""
 
 
 @pytest.mark.asyncio

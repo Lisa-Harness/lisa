@@ -2567,23 +2567,12 @@ async def _resolve_iteration_lifecycle(
         except Exception:  # pylint: disable=broad-except
             _open_records = []
 
-    # Build the turn-state view for the resolver.
-    # ``turns_in_stage`` is the unified stall counter: the workflow
-    # session's per-stage turn count for workflow modes, the per-step
-    # iteration counter (reset on every ``transition_stage``) for
-    # chat/action modes. One counter drives the resolver's single
-    # stuck-in-stage guard pair regardless of mode kind.
-    # Build the turn-state view for the resolver.
-    # ``turns_in_stage`` is the unified stall counter (Phase 6c): the
-    # position's durable per-stage turn count (previous turns) plus
-    # this turn's per-step iteration counter. One counter across turns
-    # and iterations drives the resolver's single stuck-in-stage guard
-    # pair — no mode-kind gate.
+    # Historical workflow turns are not iterations in this turn's budget.
+    # Every user turn gets a fresh stall budget; transitions reset it too.
     _turns_in_stage = state.step_iteration
     if hooks.workflow.workflow_position is not None:
         _wf_position = hooks.workflow.workflow_position()
         if _wf_position is not None:
-            _turns_in_stage = max(0, _wf_position.turn_count - 1) + state.step_iteration
             await emit_stage(
                 "workflow_stage",
                 {

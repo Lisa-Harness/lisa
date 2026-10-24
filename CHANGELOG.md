@@ -4,6 +4,12 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The stuck-in-stage guard counts only iterations in the current turn, not
+  earlier conversation turns in the same workflow mode. New turns and operator
+  resumes get a fresh stage budget; within-turn nudges and caps still apply.
+
 ### Changed
 
 - Catalog and authored-content adapters reuse long-lived stdio MCP sessions

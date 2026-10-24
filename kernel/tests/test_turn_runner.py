@@ -2828,18 +2828,23 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
 
 
 @pytest.mark.asyncio
-async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
-    """After stage_nudge_threshold turns in the same stage, the resolver's
+async def test_run_turn_workflow_stuck_session_nudge_injects_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After stage_nudge_threshold iterations in the same stage, the resolver's
     soft nudge rides the lifecycle briefing (system prompt) — never a
     synthesized user message (Phase 7: one control channel).
     """
+    from kernel.config import settings
     from kernel.workflow_position import WorkflowPosition
+
+    monkeypatch.setattr(settings, "stage_nudge_threshold", 1)
 
     session = WorkflowPosition(
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
-        turn_count=7,  # at the configured nudge threshold
+        turn_count=1,
     )
 
     def workflow_position() -> Any:

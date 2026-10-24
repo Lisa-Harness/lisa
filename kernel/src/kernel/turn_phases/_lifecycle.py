@@ -975,9 +975,9 @@ def resolve_lifecycle_action(
     5. **Stuck-in-stage cap** — ``stage_nudge_cap`` iterations in the same
        stage/mode without a transition. Forces a yield (or finish for action
        modes). Applies uniformly to every mode kind: the loop feeds
-       ``turns_in_stage`` from the workflow session for workflow modes and
-       from the per-step counter (reset on every ``transition_stage``) for
-       chat/action modes, so one counter drives one guard. This is the
+       ``turns_in_stage`` from this turn's per-step iteration counter,
+       reset on every ``transition_stage`` and at the start of a new turn.
+       Historical workflow turns do not consume this budget. This is the
        2026-07-30 "loop max guard 6" fix (yield, don't truncate) unified
        with the 2026-08-05 stuck-in-chat-mode guard — the split into
        workflow-only and chat-only guards was the drift the unification
