@@ -8,12 +8,13 @@ edge by ``kernel.tools.schema_translator``.
 Tool-id keying convention (see ``kernel.tools.registry`` for the full split):
 
     * **MCP-native tools** (this module) are keyed **namespaced** as
-      ``server_id.tool`` in the merged ``_tool_index`` (e.g.
-      ``lisa-storage.read_model_manifest``) so two servers exposing the same
-      bare name never collide in the model-facing catalog. A precomputed
-      ``_bare_to_server_index`` maps bare names → ``server_id`` for internal
-      callers (operations) that pass bare MCP tool names; resolution is an
-      O(1) dict lookup, not a side-effecting scan.
+      ``capability.tool`` for selected capability servers, or
+      ``server_id.tool`` for other servers (e.g.
+      ``storage.read_model_manifest``), in the merged ``_tool_index``.
+      The precomputed ``_bare_to_server_index`` maps bare names to
+      ``server_id`` for internal callers (operations) that pass bare MCP
+      tool names; resolution is an O(1) dict lookup, not a side-effecting
+      scan.
     * **Internal pack tools** (``kernel.tools.registry``) are keyed **bare**
       and dispatched in-process. They are not in this pool's index.
 
@@ -2304,7 +2305,7 @@ class MCPToolPool:
             # ``execute_tool_fn`` with a bare MCP tool name like
             # ``read_model_manifest``) won't find the tool in the merged
             # index because it is keyed by namespaced names
-            # (``lisa-storage.read_model_manifest``). Resolve via the
+            # (``storage.read_model_manifest``). Resolve via the
             # precomputed ``_bare_to_server_index`` (O(1) over connected
             # servers; cold servers lazily connected only when the bare name
             # is absent). Model-facing calls always use namespaced names,

@@ -781,7 +781,7 @@ def _stitch_tool_call_delta(
     and rely on the call ``id`` to tell the calls apart — Ollama's
     MiniMax M3.1 Flash does exactly this. Stitching those by ``index``
     alone concatenated the calls into one garbage call:
-    ``lisa-storage.list_fileslisa-storage.read_file`` carrying three JSON
+    ``storage.list_filesstorage.read_file`` carrying three JSON
     objects glued end to end. The unparseable result was then correctly
     refused by the turn loop, but the broken call stayed in the message
     history and the next request replayed it — a strict backend answered

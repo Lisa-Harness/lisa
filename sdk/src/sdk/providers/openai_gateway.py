@@ -363,7 +363,7 @@ def sanitize_chat_tool_names(
 
     Some OpenAI-compatible backends (OpenRouter upstreams such as Decart,
     and others) enforce ``^[a-zA-Z0-9_-]+$`` on function names and reject
-    Lisa's dotted namespace names (e.g. ``lisa-storage.read_file``) with
+    Lisa's dotted namespace names (e.g. ``storage.read_file``) with
     ``400 backend_invalid_argument``. Sanitize every disallowed character
     to ``_`` on the wire and return the reverse map so extracted tool calls
     can be restored to their original names for the kernel dispatcher.
@@ -713,7 +713,7 @@ def build_openai_responses_kwargs(request: CompletionRequest) -> dict[str, Any]:
 
 # The Responses API rejects tool/function names that don't match
 # ``^[a-zA-Z0-9_-]+$``. Lisa's tool names use dots as namespace separators
-# (e.g. ``lisa-storage.read_file``, ``coding.read_file``); the chat-completions
+# (e.g. ``storage.read_file``, ``coding.read_file``); the chat-completions
 # endpoint accepts them, but the Responses endpoint returns 400
 # ``Invalid 'input[N].name': string does not match pattern``. Sanitize by
 # replacing every disallowed character with ``_`` so the name is always valid
@@ -734,8 +734,8 @@ def build_responses_tool_name_map(
     """Build a ``sanitized_name -> original_name`` reverse map.
 
     The Responses API requires function names matching ``^[a-zA-Z0-9_-]+$``;
-    Lisa's dotted names (e.g. ``lisa-storage.read_file``) are sanitized to
-    ``lisa-storage_read_file`` before being sent. The model returns the
+    Lisa's dotted names (e.g. ``storage.read_file``) are sanitized to
+    ``storage_read_file`` before being sent. The model returns the
     sanitized form; callers use this map to restore the original name so
     the kernel's tool dispatcher can match it against its dotted-name
     catalogs.

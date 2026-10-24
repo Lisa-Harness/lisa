@@ -183,7 +183,7 @@ def _verify_write_contract(
 
     # Match the receipt against the action set using BOTH the raw
     # capability id and its bare form. ``bare_tool_name`` strips a
-    # ``server_id.`` namespace prefix (``lisa-storage.write_file`` →
+    # namespace prefix (``storage.write_file`` →
     # ``write_file``) so a namespaced MCP write matches its bare authored
     # action id; but it ALSO strips the dot from synthetic dotted tool
     # names (``memory.add`` → ``add``), which would wrongly fail to match

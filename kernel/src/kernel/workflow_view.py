@@ -229,7 +229,7 @@ def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
             continue
         ids.add(cap)
         # Bare form: strip a ``provider.`` namespace prefix (e.g.
-        # ``lisa-storage.read_file`` -> ``read_file``).
+        # ``storage.read_file`` -> ``read_file``).
         if "." in cap:
             ids.add(cap.rsplit(".", 1)[-1])
     return ids

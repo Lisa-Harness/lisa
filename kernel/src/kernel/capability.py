@@ -22,8 +22,9 @@ This module owns the canonical resolution contract:
 
 Internal pack tools are keyed **bare** in the tool catalog
 (e.g. ``web_search``). MCP-native tools are keyed **namespaced**
-(``server_id.tool``, e.g. ``lisa-storage.read_model_manifest``); the MCP
-client pool owns that namespace bridging separately (see
+(``capability.tool`` or ``server_id.tool``, e.g.
+``storage.read_model_manifest``); the MCP client pool owns that namespace
+bridging separately (see
 ``kernel.tools.mcp_client``). This module resolves against the kernel
 catalog only — the MCP pool's namespaced index is not consulted here, by
 design, so resolution never spawns a subprocess.
@@ -77,8 +78,8 @@ def resolve_tool_definition(
     Args:
         capability_id: The tool id to resolve. Internal pack tools are keyed
             bare (e.g. ``web_search``); MCP-native tools are keyed namespaced
-            (e.g. ``lisa-storage.read_model_manifest``) but are owned by the
-            MCP client pool, not the kernel tool catalog.
+            (e.g. ``storage.read_model_manifest``) but are owned by the MCP
+            client pool, not the kernel tool catalog.
         tool_catalog: Optional pre-resolved catalog. When omitted, the
             kernel's ``get_tool_catalog()`` is used.
 

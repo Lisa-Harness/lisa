@@ -16,9 +16,9 @@ Tool-id keying convention (two distinct populations, by design):
       ``tool_id`` authored in YAML (e.g. ``web_search``). They have an
       in-process ``implementation_module`` and never spawn a subprocess.
     * **MCP-native tools** (``kernel.tools.mcp_client``) are keyed
-      **namespaced** as ``server_id.tool`` (e.g.
-      ``lisa-storage.read_model_manifest``). They run in subprocesses and
-      have no kernel ``ToolDefinition``.
+      **namespaced** as ``capability.tool`` or ``server_id.tool`` (e.g.
+      ``storage.read_model_manifest``). They run in subprocesses and have
+      no kernel ``ToolDefinition``.
 
 These two populations do not overlap. The MCP client pool owns the
 namespace bridging for the MCP-native population (a bare-name index with a

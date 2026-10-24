@@ -81,12 +81,11 @@ def mcp_alias_tool(
             chokepoint for both input and output normalization.
         target_server_id: Optional server id pinning dispatch to that server.
             When set, the call bypasses the pool's merged namespaced index
-            and routes to this server's own tool index — so the alias can
-            target a specific backend even when multiple servers expose the
-            same bare tool name (e.g. ``mem0``'s ``add_memory`` vs
-            ``lisa-memory``'s ``add_memory`` both appear in the catalog as
-            ``mem0.add_memory`` and ``lisa-memory.add_memory`` respectively,
-            but the alias pins to one). When ``None``, dispatch falls back
+            and routes to this server's own tool index, pinning the alias
+            to its selected backend. The selected backend is published under
+            the shared ``memory`` capability namespace (for example,
+            ``memory.add_memory``).
+            When ``None``, dispatch falls back
             to the merged namespaced index.
     """
 
