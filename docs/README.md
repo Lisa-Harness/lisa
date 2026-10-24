@@ -43,6 +43,8 @@ The [project README](../README.md) explains the project and its current status.
   consolidation, and thread provenance.
 - [Thread store specification](SPEC/THREAD_STORE.md): files, records,
   result references, and bounded read paths.
+- [Prompt startup proposal](SPEC/PROMPT_STARTUP.md): deferred cache/lifecycle,
+  in-process content/catalog, import and CLI correctness work.
 - [Turn-loop invariants](lessons/turn-loop-invariants.md): safeguards and
   regression evidence.
 

@@ -14,6 +14,10 @@ All notable changes to the Lisa Harness will be documented in this file.
 - A local startup profile measured catalog/content adapter time falling from
   approximately 24.8 seconds to 4.4 seconds. These are diagnostic observations,
   not an end-to-end latency guarantee; the model calls differed between runs.
+- **Tracked follow-up:** same-configuration framework rebuilds can retain
+  cached authored text after files change. The
+  [prompt startup spec](docs/SPEC/PROMPT_STARTUP.md) prioritizes refresh and
+  runtime-owned teardown before further in-process startup optimization.
 
 ## [0.1.2] — 2026-10-23
 
