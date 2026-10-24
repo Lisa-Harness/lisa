@@ -2,7 +2,7 @@
 
 All notable changes to the Lisa Harness will be documented in this file.
 
-## [Unreleased]
+## [0.1.2] — 2026-10-23
 
 ### Changed
 

@@ -60,7 +60,7 @@ and version against the pushed `v<version>` tag, builds with `uv build
 --no-cache`, checks the output counts, and publishes through PyPI trusted
 publishing.
 
-Its current eight targets are:
+Its current ten targets are:
 
 | Workspace path | Distribution |
 | --- | --- |
@@ -72,10 +72,11 @@ Its current eight targets are:
 | `sdk/packs/introspect/` | `lisa-pack-introspect` |
 | `sdk/packs/memory/` | `lisa-pack-memory` |
 | `sdk/packs/recovery/` | `lisa-pack-recovery` |
+| `packstest/` | `lisa-harness-packstest` |
+| `e2etest/` | `lisa-harness-e2e` |
 
-`packstest` and `e2etest` are workspace members but are **not** current
-publish targets. Do not advertise registry availability for them based only
-on workspace installation. The root workspace is not a packaged application.
+`packstest` and `e2etest` are workspace members that are current publish
+targets. The root workspace is not a packaged application.
 
 - [ ] Update target versions coherently and refresh the lockfile.
 - [ ] Confirm the proposed tag equals every publish target's version.

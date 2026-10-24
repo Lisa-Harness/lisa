@@ -10,7 +10,7 @@ only-include = ["src/sdk/packs/core"]
 
 [project]
 name = "lisa-pack-core"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lisa core pack - baseline modes, operations, and authored content"
 requires-python = ">=3.11"
 

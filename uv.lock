@@ -1190,7 +1190,7 @@ wheels = [
 
 [[package]]
 name = "lisa-harness"
-version = "0.1.1"
+version = "0.1.2"
 source = { virtual = "." }
 dependencies = [
     { name = "lisa-harness-e2e" },
@@ -1244,7 +1244,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-harness-e2e"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "e2etest" }
 dependencies = [
     { name = "lisa-harness-kernel" },
@@ -1274,7 +1274,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-harness-kernel"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "kernel" }
 dependencies = [
     { name = "httpx" },
@@ -1322,7 +1322,7 @@ provides-extras = ["dev", "memory"]
 
 [[package]]
 name = "lisa-harness-mcp-servers"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "mcp_server" }
 dependencies = [
     { name = "lisa-harness-kernel" },
@@ -1354,7 +1354,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-harness-packstest"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packstest" }
 dependencies = [
     { name = "lisa-harness-kernel" },
@@ -1382,7 +1382,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-harness-runtime"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "runtime" }
 dependencies = [
     { name = "cel-python" },
@@ -1432,7 +1432,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-harness-sdk"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "sdk" }
 dependencies = [
     { name = "cel-python" },
@@ -1478,7 +1478,7 @@ provides-extras = ["bedrock", "dev"]
 
 [[package]]
 name = "lisa-pack-core"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "sdk/packs/core" }
 
 [package.optional-dependencies]
@@ -1500,7 +1500,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-introspect"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "sdk/packs/introspect" }
 dependencies = [
     { name = "lisa-harness-kernel" },
@@ -1524,7 +1524,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-memory"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "sdk/packs/memory" }
 
 [package.optional-dependencies]
@@ -1544,7 +1544,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-recovery"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "sdk/packs/recovery" }
 dependencies = [
     { name = "lisa-harness-kernel" },

@@ -13,7 +13,7 @@ lisa-harness-kernel = { workspace = true }
 
 [project]
 name = "lisa-harness-sdk"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lisa SDK — reusable operations, modes, signal connector shims, and domain models for Lisa-powered bots"
 requires-python = ">=3.11"
 

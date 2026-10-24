@@ -8,7 +8,7 @@ only-include = ["src/sdk/packs/recovery"]
 
 [project]
 name = "lisa-pack-recovery"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lisa recovery pack - operator commands for interrupted dispatch work items"
 requires-python = ">=3.11"
 
