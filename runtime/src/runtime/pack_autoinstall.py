@@ -140,6 +140,11 @@ def _resolve_auto_install_spec(
                     f"auto-install: pack '{pack_name}' has an unpinned git source "
                     f"{source!r}; pin @tag/@branch/@sha is mandatory for auto-install."
                 )
+            if source.lower().startswith("git+"):
+                from runtime.commands._packs import git_spec_with_egg
+
+                # The repo name may differ from the pack name (monorepo subdirectory).
+                return git_spec_with_egg(source, pack_name), editable, "auto_install.source"
             resolved_source = _resolve_local_source(source, session_source_dir)
             return resolved_source, editable, "auto_install.source"
     # Fall back to the bare name; run_pack_install_sync expands it via

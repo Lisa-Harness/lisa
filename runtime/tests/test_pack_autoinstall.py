@@ -85,11 +85,27 @@ def _make_runtime(
                 )
             },
             (
-                "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0",
+                "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0"
+                "#egg=lisa-pack-cloudflare",
                 True,
                 "auto_install.source",
             ),
             id="explicit-pinned-git-source",
+        ),
+        pytest.param(
+            {
+                "lisa-pack-cloudflare": PackInstallSpec(
+                    source="git+https://github.com/Lisa-Harness/lisa-go.git@v0.1.0#subdirectory=pack",
+                    pin="v0.1.0",
+                )
+            },
+            (
+                "git+https://github.com/Lisa-Harness/lisa-go.git@v0.1.0"
+                "#subdirectory=pack&egg=lisa-pack-cloudflare",
+                True,
+                "auto_install.source",
+            ),
+            id="monorepo-subdirectory-git-source",
         ),
         pytest.param(
             {},
@@ -176,7 +192,11 @@ def test_auto_install_installs_missing_required_pack(
     installed = auto_install_required_packs(runtime)
     assert installed == ["lisa-pack-cloudflare"]
     assert call_log == [
-        ("git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0", True)
+        (
+            "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git@v0.2.0"
+            "#egg=lisa-pack-cloudflare",
+            True,
+        )
     ]
     # The caller (discover_framework) requests the restart, not this function.
     assert runtime.session.restart_required is False

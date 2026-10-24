@@ -383,6 +383,33 @@ def _read_local_pack_project_name(path: Path) -> str:
     return str(name).strip() if isinstance(name, str) else ""
 
 
+def _git_fragment_params(fragment: str) -> dict[str, str]:
+    """Parse ``key=value`` pairs from a git URL fragment (``egg``, ``subdirectory``)."""
+    params: dict[str, str] = {}
+    for part in fragment.split("&"):
+        key, sep, value = part.partition("=")
+        if sep and key.strip():
+            params[key.strip().lower()] = value.strip()
+    return params
+
+
+def git_spec_with_egg(spec: str, package_name: str) -> str:
+    """Return a git spec whose fragment names ``package_name`` as its egg.
+
+    Subdirectory installs from a monorepo cannot infer the package name from
+    the repository URL, so callers that know the expected pack name supply it.
+    Specs that already declare an ``egg`` are returned unchanged.
+    """
+    if not _is_git_pack_spec(spec):
+        return spec
+    location, sep, fragment = spec.strip().partition("#")
+    if "egg" in _git_fragment_params(fragment):
+        return spec
+    if not sep or not fragment:
+        return f"{location}#egg={package_name}"
+    return f"{location}#{fragment}&egg={package_name}"
+
+
 def _extract_package_name_from_spec(spec: str) -> str:
     """Infer package name from package or git install spec."""
     raw = spec.strip()
@@ -395,12 +422,11 @@ def _extract_package_name_from_spec(spec: str) -> str:
             return project_name
         return path.name.strip()
     if _is_git_pack_spec(raw):
-        egg_marker = "#egg="
-        lowered = raw.lower()
-        marker_index = lowered.find(egg_marker)
-        if marker_index >= 0:
-            return raw[marker_index + len(egg_marker) :].strip()
-        base = raw.split("@", 1)[0].rstrip("/")
+        location, _, fragment = raw.partition("#")
+        egg = _git_fragment_params(fragment).get("egg", "")
+        if egg:
+            return egg
+        base = location.split("@", 1)[0].rstrip("/")
         tail = base.rsplit("/", 1)[-1]
         return tail[:-4] if tail.lower().endswith(".git") else tail
 

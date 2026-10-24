@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 from kernel.session_plan import compile_session_plan
+from runtime.commands import _packs
 from runtime.config import HostConfig
 from runtime.paths import framework_seed_requirements
 from runtime.runtime import HostRuntime
@@ -596,6 +597,39 @@ def test_validate_pack_spec_for_install_git_host_and_ref_policy(
     )
     assert ok is False
     assert "must pin @tag/@branch/@sha" in reason
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("git+https://github.com/acme/lisa-go.git@v0.1.0#subdirectory=pack", "lisa-go"),
+        (
+            "git+https://github.com/acme/lisa-go.git@v0.1.0"
+            "#subdirectory=pack&egg=lisa-pack-go-connectors",
+            "lisa-pack-go-connectors",
+        ),
+        (
+            "git+https://github.com/acme/lisa-go.git@v0.1.0"
+            "#egg=lisa-pack-go-connectors&subdirectory=pack",
+            "lisa-pack-go-connectors",
+        ),
+    ],
+)
+def test_extract_package_name_from_git_fragment(spec: str, expected: str) -> None:
+    assert commands._extract_package_name_from_spec(spec) == expected
+
+
+def test_validate_pack_spec_for_install_accepts_monorepo_subdirectory_with_egg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
+    spec = _packs.git_spec_with_egg(
+        "git+https://github.com/acme/lisa-go.git@v0.1.0#subdirectory=pack",
+        "lisa-pack-go-connectors",
+    )
+
+    assert spec.endswith("#subdirectory=pack&egg=lisa-pack-go-connectors")
+    assert commands._validate_pack_spec_for_install(spec) == (True, "")
 
 
 def test_validate_pack_spec_for_install_local_folder_accepts_prefixed_project_name(
