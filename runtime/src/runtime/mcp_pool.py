@@ -33,7 +33,7 @@ from typing import Any
 
 from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.compiler import compile_registry
-from kernel.mcp_launch.policy import MCPServerRegistry
+from kernel.mcp_launch.policy import MCPServerRegistry, MCPServerSpec
 from kernel.mcp_launch.server_manifest import (
     MCPServerManifestError,
     load_mcp_server_manifest,
@@ -151,6 +151,22 @@ def _resolve_packs_venv_site_packages(data_dir: Path) -> Path | None:
 
 
 @dataclasses.dataclass(slots=True)
+class _PackManifestSpecs:
+    """One pack root's parsed ``mcp_servers.yaml`` server specs.
+
+    Parsed once by :func:`discover_framework` so the ambient-tool-id
+    resolver and the server registrar share a single parse per manifest.
+    ``slug`` is the compile-time namespacing prefix, derived once in
+    roots order so every consumer namespaces identically.
+    """
+
+    root: Path
+    slug: str
+    manifest_path: Path
+    specs: list[MCPServerSpec]
+
+
+@dataclasses.dataclass(slots=True)
 class _FrameworkDiscovery:
     """Shared discovery result for setup_framework + compile_mcp_configs.
 
@@ -165,6 +181,15 @@ class _FrameworkDiscovery:
     ``<data_dir>/mcp_servers.yaml`` (or an explicit override). It may be
     ``None`` when the file does not exist; callers treat absence as "no
     user servers" (same graceful first-run convention as ``models.yaml``).
+
+    The parsed server specs for every layer are computed here once and
+    carried on ``host_specs`` / ``user_specs`` / ``pack_specs`` so
+    :func:`resolve_default_mcp_tool_ids` and the compile-time server
+    registration consume one parse per manifest instead of each
+    re-reading every layer. A malformed host manifest raises here (the
+    same startup failure the registrar previously produced); malformed
+    user or pack manifests are warned and skipped, matching the
+    registrar's fail-soft behavior.
     """
 
     roots: list[Path]
@@ -172,6 +197,9 @@ class _FrameworkDiscovery:
     lock: dict[str, Any]
     host_manifest_path: Path
     user_manifest_path: Path | None = None
+    host_specs: list[MCPServerSpec] = dataclasses.field(default_factory=list)
+    user_specs: list[MCPServerSpec] = dataclasses.field(default_factory=list)
+    pack_specs: list[_PackManifestSpecs] = dataclasses.field(default_factory=list)
 
 
 def discover_framework(
@@ -240,12 +268,64 @@ def discover_framework(
         if normalize_pack_name(pack_name) not in host_mandatory_packs
     )
     lock = load_installed_packs_lock(runtime.paths.data_dir)
+
+    # Parse every manifest layer once here; both consumers (ambient
+    # tool-id resolution in setup_framework, server registration in
+    # compile_mcp_configs) reuse these specs instead of re-reading files.
+    # The parse runs inside the exported-MCP-environment scope because
+    # ``load_mcp_server_manifest`` expands ``${FRAMEWORK_ROOT}`` /
+    # ``${LISA_USER_SLUG}`` / ``${LISA_THREAD_DIR}`` at parse time; parsing
+    # against the ambient shell would let a stale or empty parent value
+    # win (the 2026-08-25 empty-read incident shape).
+    with _exported_mcp_environment(runtime, str(FRAMEWORK_ROOT)):
+        host_specs = load_mcp_server_manifest(manifest_path)
+        user_specs: list[MCPServerSpec] = []
+        if user_manifest_path is not None and user_manifest_path.exists():
+            try:
+                user_specs = load_mcp_server_manifest(user_manifest_path)
+            except MCPServerManifestError:
+                logger.warning(
+                    "Skipping invalid user MCP manifest at %s",
+                    user_manifest_path,
+                    exc_info=True,
+                )
+        elif user_manifest_path is not None:
+            logger.debug(
+                "User MCP manifest path %s does not exist; skipping user servers.",
+                user_manifest_path,
+            )
+        pack_specs: list[_PackManifestSpecs] = []
+        used_pack_slugs: set[str] = set()
+        for root in roots:
+            pack_manifest_path = root / "mcp_servers.yaml"
+            if not pack_manifest_path.exists():
+                continue
+            try:
+                pack_entry_specs = load_mcp_server_manifest(pack_manifest_path)
+            except MCPServerManifestError:
+                logger.warning(
+                    "Skipping invalid pack MCP manifest at %s",
+                    pack_manifest_path,
+                    exc_info=True,
+                )
+                continue
+            pack_specs.append(
+                _PackManifestSpecs(
+                    root=root,
+                    slug=unique_pack_slug_for_root(root, used_pack_slugs),
+                    manifest_path=pack_manifest_path,
+                    specs=pack_entry_specs,
+                )
+            )
     return _FrameworkDiscovery(
         roots=roots,
         disabled_packs=disabled_packs,
         lock=lock,
         host_manifest_path=manifest_path,
         user_manifest_path=user_manifest_path,
+        host_specs=host_specs,
+        user_specs=user_specs,
+        pack_specs=pack_specs,
     )
 
 
@@ -358,55 +438,33 @@ def _collect_default_tool_ids(
 
 def resolve_default_mcp_tool_ids(
     *,
-    host_manifest_path: Path,
-    pack_roots: list[Path],
-    user_manifest_path: Path | None = None,
+    host_specs: list[MCPServerSpec],
+    pack_specs: list[_PackManifestSpecs],
+    user_specs: list[MCPServerSpec],
 ) -> set[str]:
     """Resolve the namespaced ambient MCP-native tool id set.
 
-    Walks the host manifest plus every pack-contributed ``mcp_servers.yaml``
-    and collects ``default_available_tools`` entries from each spec, namespacing
-    them as ``server_id.tool``. Pack-contributed servers are registered under
-    namespaced ids (``<pack_slug>.<server_id>``) at compile time, so the
-    ambient id the model sees is the same namespaced form the catalog merge
-    and the turn-runner filter use; this helper emits that compile-time
-    namespacing here too (using the pack slug derived the same way as
-    :func:`compile_mcp_configs`). Malformed pack manifests are skipped
-    defensively, mirroring :func:`compile_mcp_configs`.
+    Consumes the manifest specs parsed once by :func:`discover_framework`
+    and collects ``default_available_tools`` entries from each spec,
+    namespacing them as ``server_id.tool``. Pack-contributed servers are
+    registered under namespaced ids (``<pack_slug>.<server_id>``) at
+    compile time, so the ambient id the model sees is the same namespaced
+    form the catalog merge and the turn-runner filter use; the slug on
+    each parsed pack entry is derived once at discovery, identically for
+    every consumer.
 
-    When ``user_manifest_path`` is supplied and exists, its
-    ``default_available_tools`` entries are collected with the same bare-id
-    namespacing as the framework manifest — user-added servers are not
-    pack-prefixed. Malformed user manifests are skipped defensively.
+    Host and user servers keep bare server_ids — user-added servers are
+    not pack-prefixed; their ``default_available_tools`` become ambient
+    ids the same way lisa-storage.read_file does.
     """
     ids: set[str] = set()
     # Host manifest first (first-party servers keep their bare server_id).
-    try:
-        host_specs = load_mcp_server_manifest(host_manifest_path)
-    except MCPServerManifestError:
-        host_specs = []
     ids |= _collect_default_tool_ids(host_specs)
-    # User manifest (bare server_id, same as first-party). User-added
-    # servers are not pack-prefixed; their default_available_tools become
-    # ambient ids the same way lisa-storage.read_file does.
-    if user_manifest_path is not None and user_manifest_path.exists():
-        try:
-            user_specs = load_mcp_server_manifest(user_manifest_path)
-        except MCPServerManifestError:
-            user_specs = []
-        ids |= _collect_default_tool_ids(user_specs)
+    # User manifest (bare server_id, same as first-party).
+    ids |= _collect_default_tool_ids(user_specs)
     # Pack manifests (namespaced as <pack_slug>.<server_id> at compile time).
-    used_pack_slugs: set[str] = set()
-    for root in pack_roots:
-        pack_manifest_path = root / "mcp_servers.yaml"
-        if not pack_manifest_path.exists():
-            continue
-        try:
-            pack_specs = load_mcp_server_manifest(pack_manifest_path)
-        except MCPServerManifestError:
-            continue
-        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
-        ids |= _collect_default_tool_ids(pack_specs, server_id_prefix=pack_slug)
+    for entry in pack_specs:
+        ids |= _collect_default_tool_ids(entry.specs, server_id_prefix=entry.slug)
     return ids
 
 
@@ -432,9 +490,9 @@ def setup_framework(
 
     When ``discovery`` is provided (computed once by
     :func:`discover_framework`), the shared roots / disabled-packs / lock
-    are reused instead of recomputed. When ``None``, this function calls
-    :func:`discover_framework` internally (back-compat for standalone
-    callers like tests).
+    / parsed manifest specs are reused instead of recomputed. When
+    ``None``, this function calls :func:`discover_framework` internally
+    (back-compat for standalone callers like tests).
 
     This function is also the home for kernel-state side effects that were
     previously in ``HostRuntime.__init__``: the session routing-vocabulary
@@ -474,9 +532,9 @@ def setup_framework(
         overlays_dir=runtime.paths.overlays_dir,
     )
     default_mcp_tool_ids = resolve_default_mcp_tool_ids(
-        host_manifest_path=discovery.host_manifest_path,
-        pack_roots=roots,
-        user_manifest_path=discovery.user_manifest_path,
+        host_specs=discovery.host_specs,
+        pack_specs=discovery.pack_specs,
+        user_specs=discovery.user_specs,
     )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
     if default_mcp_tool_ids:
@@ -722,11 +780,18 @@ def _resolve_session_capability_preferences(
 
 def _register_host_and_user_servers(
     registry: MCPServerRegistry,
+    *,
     host_manifest_path: Path,
+    host_specs: list[MCPServerSpec],
     user_manifest_path: Path | None,
+    user_specs: list[MCPServerSpec],
     capability_candidates: list[CapabilityCandidate],
 ) -> None:
     """Register first-party and user-owned servers onto the registry.
+
+    Specs are pre-parsed by :func:`discover_framework`; malformed user
+    manifests were already warned and skipped there. The manifest paths
+    are retained for capability-candidate metadata.
 
     Framework-owned (first-party) servers from the in-repo mcp_servers.yaml
     keep bare server_ids and cannot be redefined by the user manifest.
@@ -747,12 +812,9 @@ def _register_host_and_user_servers(
     User-owned servers from <data_dir>/mcp_servers.yaml (optional) keep
     bare server_ids (same as first-party), but collide loudly with any
     framework server_id — a user cannot override lisa-storage, only add
-    new servers. Malformed user manifests are logged and skipped (fail
-    soft on user config, same as pack manifests).
-
+    new servers.
     """
-    specs = load_mcp_server_manifest(host_manifest_path)
-    for spec in specs:
+    for spec in host_specs:
         _declare_server_or_candidate(
             registry,
             spec,
@@ -761,28 +823,14 @@ def _register_host_and_user_servers(
             manifest_path=str(host_manifest_path),
         )
 
-    if user_manifest_path is not None and user_manifest_path.exists():
-        try:
-            user_specs = load_mcp_server_manifest(user_manifest_path)
-        except MCPServerManifestError:
-            logger.warning(
-                "Skipping invalid user MCP manifest at %s",
-                user_manifest_path,
-                exc_info=True,
-            )
-            user_specs = []
-        for spec in user_specs:
-            _declare_server_or_candidate(
-                registry,
-                spec,
-                capability_candidates,
-                source="user",
-                manifest_path=str(user_manifest_path),
-            )
-    elif user_manifest_path is not None and not user_manifest_path.exists():
-        logger.debug(
-            "User MCP manifest path %s does not exist; skipping user servers.",
-            user_manifest_path,
+    user_manifest_label = str(user_manifest_path) if user_manifest_path is not None else ""
+    for spec in user_specs:
+        _declare_server_or_candidate(
+            registry,
+            spec,
+            capability_candidates,
+            source="user",
+            manifest_path=user_manifest_label,
         )
 
 
@@ -914,40 +962,30 @@ def _with_pack_binary_versions(specs: list[Any], root: Path, package_name: str) 
 
 def _register_pack_servers(
     registry: MCPServerRegistry,
-    roots: list[Path],
+    pack_specs: list[_PackManifestSpecs],
     excluded_pack_servers: set[str],
     capability_candidates: list[CapabilityCandidate],
 ) -> None:
     """Register pack-contributed servers (namespaced) onto the registry.
 
+    Specs are pre-parsed by :func:`discover_framework` with their slugs
+    derived once in roots order; malformed pack manifests were already
+    logged and skipped there.
+
     Compile-time namespacing (``<pack_slug>.<server_id>``) allows multiple
     packs to declare the same server_id without collision in the global
-    registry. Malformed pack manifests are logged and skipped defensively.
+    registry.
 
     Capability-claiming pack servers are collected into
     ``capability_candidates`` (``source="pack"``) instead of registered;
     the resolved winner retains its real server id for launch and dispatch.
     """
-    used_pack_slugs: set[str] = set()
-    for root in roots:
-        pack_manifest_path = root / "mcp_servers.yaml"
-        if not pack_manifest_path.exists():
-            continue
-        try:
-            pack_specs = load_mcp_server_manifest(pack_manifest_path)
-        except MCPServerManifestError:
-            logger.warning(
-                "Skipping invalid pack MCP manifest at %s",
-                pack_manifest_path,
-                exc_info=True,
-            )
-            continue
+    for entry in pack_specs:
+        pack_slug = entry.slug
+        pack_package_name = infer_pack_package_name(entry.root)
+        entry_specs = _with_pack_binary_versions(entry.specs, entry.root, pack_package_name)
 
-        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
-        pack_package_name = infer_pack_package_name(root)
-        pack_specs = _with_pack_binary_versions(pack_specs, root, pack_package_name)
-
-        for spec in pack_specs:
+        for spec in entry_specs:
             if pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
                 logger.info(
                     "Pack MCP server excluded by policy: %s.%s",
@@ -965,7 +1003,7 @@ def _register_pack_servers(
                         source="pack",
                         pack_slug=pack_slug,
                         package_name=pack_package_name,
-                        manifest_path=str(pack_manifest_path),
+                        manifest_path=str(entry.manifest_path),
                     )
                 )
                 continue
@@ -1053,17 +1091,16 @@ def compile_mcp_configs(
     ``_build_turn_hooks`` to consume.
 
     When ``discovery`` is provided (computed once by
-    :func:`discover_framework`), the shared roots / lock / manifest path
-    are reused instead of recomputed. When ``None``, this function calls
-    :func:`discover_framework` internally (back-compat for standalone
-    callers like tests).
+    :func:`discover_framework`), the shared roots / lock / parsed manifest
+    specs are reused instead of recomputed. When ``None``, this function
+    calls :func:`discover_framework` internally (back-compat for
+    standalone callers like tests).
     """
     data_dir = str(runtime.paths.data_dir)
     workspace_root = str(FRAMEWORK_ROOT)
     if discovery is None:
         discovery = discover_framework(runtime, seed_lock=False)
     host_manifest_path = discovery.host_manifest_path
-    roots = discovery.roots
     user_manifest_path = discovery.user_manifest_path
 
     # ── Session-plan resource preferences ──────────────────────────
@@ -1087,7 +1124,12 @@ def compile_mcp_configs(
         # per capability after every layer has declared.
         capability_candidates: list[CapabilityCandidate] = []
         _register_host_and_user_servers(
-            registry, host_manifest_path, user_manifest_path, capability_candidates
+            registry,
+            host_manifest_path=host_manifest_path,
+            host_specs=discovery.host_specs,
+            user_manifest_path=user_manifest_path,
+            user_specs=discovery.user_specs,
+            capability_candidates=capability_candidates,
         )
 
         excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
@@ -1095,7 +1137,9 @@ def compile_mcp_configs(
             excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
         excluded_pack_servers |= session_exclude_servers
 
-        _register_pack_servers(registry, roots, excluded_pack_servers, capability_candidates)
+        _register_pack_servers(
+            registry, discovery.pack_specs, excluded_pack_servers, capability_candidates
+        )
 
         # One owner per claimed capability; the winner registers under the
         # bare capability id (model-facing tool ids are implementation-

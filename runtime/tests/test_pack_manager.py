@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
 from kernel.session_plan import compile_session_plan
 from runtime.commands import _packs
 from runtime.config import HostConfig
@@ -1816,8 +1817,9 @@ def test_resolve_default_mcp_tool_ids_host_and_pack_namespacing(tmp_path: Path) 
     )
 
     ids = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[pack_root],
+        host_specs=load_mcp_server_manifest(host_manifest),
+        pack_specs=[_pack_entry(pack_root)],
+        user_specs=[],
     )
     assert ids == {"lisa-storage.read_file", "pack-memory.lisa-memory.search_memory"}
 
@@ -1842,8 +1844,9 @@ def test_resolve_default_mcp_tool_ids_ignores_disabled(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     ids = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[],
+        host_specs=load_mcp_server_manifest(host_manifest),
+        pack_specs=[],
+        user_specs=[],
     )
     assert ids == set()
 
@@ -1865,8 +1868,9 @@ def test_resolve_default_mcp_tool_ids_empty_when_undeclared(tmp_path: Path) -> N
         encoding="utf-8",
     )
     ids = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[],
+        host_specs=load_mcp_server_manifest(host_manifest),
+        pack_specs=[],
+        user_specs=[],
     )
     assert ids == set()
 
@@ -1874,8 +1878,9 @@ def test_resolve_default_mcp_tool_ids_empty_when_undeclared(tmp_path: Path) -> N
 def test_resolve_default_mcp_tool_ids_missing_manifest(tmp_path: Path) -> None:
     """A missing host manifest yields an empty set (defensive)."""
     ids = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=tmp_path / "nope.yaml",
-        pack_roots=[],
+        host_specs=load_mcp_server_manifest(tmp_path / "nope.yaml"),
+        pack_specs=[],
+        user_specs=[],
     )
     assert ids == set()
 
@@ -1916,15 +1921,15 @@ def test_resolve_default_mcp_tool_ids_user_manifest(tmp_path: Path) -> None:
     )
 
     ids = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[],
-        user_manifest_path=user_manifest,
+        host_specs=load_mcp_server_manifest(host_manifest),
+        pack_specs=[],
+        user_specs=load_mcp_server_manifest(user_manifest),
     )
     assert ids == {"lisa-storage.read_file", "my-search.web_search"}
 
 
 def test_resolve_default_mcp_tool_ids_user_manifest_absent(tmp_path: Path) -> None:
-    """A None or missing user manifest produces no user ambient ids."""
+    """Empty user specs (no user manifest) produce no user ambient ids."""
     host_manifest = tmp_path / "mcp_servers.yaml"
     host_manifest.write_text(
         "\n".join(
@@ -1942,18 +1947,90 @@ def test_resolve_default_mcp_tool_ids_user_manifest_absent(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    # None user_manifest_path — same as not passing it.
-    ids_none = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[],
-        user_manifest_path=None,
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_specs=load_mcp_server_manifest(host_manifest),
+        pack_specs=[],
+        user_specs=[],
     )
-    assert ids_none == {"lisa-storage.read_file"}
+    assert ids == {"lisa-storage.read_file"}
 
-    # Non-existent path — defensive, same result.
-    ids_missing = mcp_pool.resolve_default_mcp_tool_ids(
-        host_manifest_path=host_manifest,
-        pack_roots=[],
-        user_manifest_path=tmp_path / "nope.yaml",
+
+# ── shared discovery single-parse ────────────────────────────────────────────
+
+
+def _pack_entry(root: Path) -> mcp_pool._PackManifestSpecs:
+    """Build the parsed pack-manifest entry :func:`discover_framework` produces."""
+    manifest = root / "mcp_servers.yaml"
+    return mcp_pool._PackManifestSpecs(
+        root=root,
+        slug=mcp_pool.unique_pack_slug_for_root(root, set()),
+        manifest_path=manifest,
+        specs=load_mcp_server_manifest(manifest),
     )
-    assert ids_missing == {"lisa-storage.read_file"}
+
+
+def test_shared_discovery_parses_each_manifest_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A shared discovery cycle parses each manifest layer exactly once.
+
+    ``discover_framework`` parses the host, user, and pack manifests once;
+    the ambient-id resolver and ``compile_mcp_configs`` consume those parsed
+    specs. Before specs were threaded through discovery, each consumer
+    re-parsed every layer itself (2N+2 yaml loads per compile cycle).
+    """
+    runtime = _make_runtime(tmp_path)
+    pack_root = tmp_path / "pack-alpha"
+    pack_root.mkdir(parents=True, exist_ok=True)
+    server_manifest_text = (
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: demo-server",
+                "    runtime_kind: http",
+                "    url: http://127.0.0.1:9000/mcp",
+                "    default_available_tools:",
+                "      - ping",
+            ]
+        )
+        + "\n"
+    )
+    (pack_root / "mcp_servers.yaml").write_text(server_manifest_text, encoding="utf-8")
+    user_manifest = tmp_path / "config" / "mcp_servers.yaml"
+    user_manifest.parent.mkdir(parents=True, exist_ok=True)
+    user_manifest.write_text(server_manifest_text, encoding="utf-8")
+
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_root])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+
+    real_load = mcp_pool.load_mcp_server_manifest
+    load_calls: list[Path] = []
+
+    def counting_load(path: Path) -> list[Any]:
+        load_calls.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(mcp_pool, "load_mcp_server_manifest", counting_load)
+
+    discovery = mcp_pool.discover_framework(runtime, seed_lock=False)
+    ambient_ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_specs=discovery.host_specs,
+        pack_specs=discovery.pack_specs,
+        user_specs=discovery.user_specs,
+    )
+    warm, cold = mcp_pool.compile_mcp_configs(runtime, discovery=discovery)
+
+    # Each manifest layer was read exactly once: host, user, one pack.
+    assert load_calls.count(content_roots.host_mcp_manifest_path()) == 1
+    assert load_calls.count(user_manifest) == 1
+    assert load_calls.count(pack_root / "mcp_servers.yaml") == 1
+    assert len(load_calls) == 3
+
+    # The parsed specs were real: ambient ids and compiled servers exist.
+    assert "demo-server.ping" in ambient_ids
+    assert "pack-alpha.demo-server.ping" in ambient_ids
+    server_ids = {config.server_id for config in [*warm, *cold]}
+    assert "demo-server" in server_ids
+    assert "pack-alpha.demo-server" in server_ids
