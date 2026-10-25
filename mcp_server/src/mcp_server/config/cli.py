@@ -104,12 +104,12 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     Routes through the shared :func:`sdk.logging_setup.configure_logging`
     so MCP servers emit the same JSON format as the hosts. MCP servers run
     as separate stdio subprocesses; their log file lives under the
-    server's ``--data-dir`` (via ``LISA_MCP_LOG_PATH``, injected by
-    ``kernel.mcp_launch.compiler``) and stderr mirroring follows the
+    server's ``--data-dir`` (via ``LISA_MCP_LOG_PATH``, injected by the
+    host at launch) and stderr mirroring follows the
     ``LISA_LOG_STDERR`` env var (default off for subprocesses).
 
     When ``LISA_MCP_LOG_PATH`` is unset (e.g. a server launched outside the
-    host's compiler, or a third-party server that cleared its env), the
+    host pool, or a third-party server that cleared its env), the
     server falls back to a per-server JSONL file at
     ``<cwd>/<server_name>.jsonl`` — never to bare stderr. The MCP Python
     SDK's ``StdioServerParameters`` has no ``stderr=`` field in this

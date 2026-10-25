@@ -45,6 +45,9 @@ The [project README](../README.md) explains the project and its current status.
   result references, and bounded read paths.
 - [Prompt startup proposal](SPEC/PROMPT_STARTUP.md): deferred cache/lifecycle,
   in-process content/catalog, import and CLI correctness work.
+- [Go Connector SDK contract](GO_CONNECTOR_SDK.md): the language-neutral
+  first-party MCP server contract (manifest schema, CLI flags, logging env,
+  spawn shape) implemented by `lisa-go`.
 - [Turn-loop invariants](lessons/turn-loop-invariants.md): safeguards and
   regression evidence.
 
