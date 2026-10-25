@@ -584,35 +584,6 @@ def configure_runtime(runtime: HostRuntime) -> None:
 # ── MCP tool server compilation ──────────────────────────────────────
 
 
-def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
-    """Build the approved MCP server registry and compile it to configs.
-
-    Registers all MCP servers (first-party and external) from
-    ``mcp_servers.yaml`` with the launch policy registry, then compiles
-    them into ``MCPClientConfig`` entries for ``MCPToolPool``. The
-    ``warm`` / ``required`` / ``disabled`` launch policy is declared in
-    YAML — no hardcoded server list or warm_ids set remains.
-
-    Memory is a capability like storage and thread: the selected provider's
-    pack-owned MCP server implements the shared tool contract and publishes
-    stable ``memory.*`` ids. Provider-specific argument and result
-    adaptation stays inside that server.
-
-    All first-party servers use ``VENV_BIN`` runtime — they run as native
-    console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
-    subprocess overhead. No ``uv`` resolution needed.
-
-    Warm vs cold: servers marked ``warm: true`` in the manifest are
-    spawned eagerly at pool ``start()`` and kept alive across turns (with
-    bounded retry and event-driven restart). Servers with ``warm: false``
-    (default) are cold — they are **not** connected at start; they are
-    lazily connected on first ``list_tools`` or ``call_tool`` that needs
-    them.
-    """
-    warm_configs, cold_configs = compile_mcp_configs(runtime)
-    return [*warm_configs, *cold_configs]
-
-
 def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str | None]:
     """Build the MCP manifest-expansion environment for subprocess servers.
 
@@ -1354,7 +1325,6 @@ def register_mcp_aliases(pool: Any) -> None:
 __all__ = [
     "build_catalog_mcp_config",
     "build_content_mcp_config",
-    "build_mcp_tool_servers",
     "compile_mcp_configs",
     "configure_runtime",
     "load_pack_server_exclusions",
