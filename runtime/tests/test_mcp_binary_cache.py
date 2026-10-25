@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -123,3 +124,44 @@ async def test_configs_without_binary_sources_need_no_download() -> None:
     configs = [MCPClientConfig(server_id="host", command="python", args=[])]
 
     assert await resolve_mcp_binary_configs(configs) is configs
+
+
+@pytest.mark.asyncio
+async def test_downloads_run_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.system", lambda: "Linux")
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.machine", lambda: "x86_64")
+    binary = b"pinned Go executable"
+    digest = hashlib.sha256(binary).hexdigest()
+    asset = "lisa-storage-v0.1.0-linux-amd64"
+    in_flight = 0
+    second_request_started = asyncio.Event()
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight
+        name = request.url.path.rsplit("/", maxsplit=1)[-1]
+        if name == "checksums.txt":
+            return httpx.Response(200, content=f"{digest}  {asset}\n", request=request)
+        if name == asset:
+            in_flight += 1
+            if in_flight == 2:
+                second_request_started.set()
+            await second_request_started.wait()
+            in_flight -= 1
+            return httpx.Response(200, content=binary, request=request)
+        return httpx.Response(404, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        resolved = await asyncio.wait_for(
+            resolve_mcp_binary_configs(
+                [_config(tmp_path / "cache-one"), _config(tmp_path / "cache-two")],
+                client=client,
+            ),
+            timeout=10.0,
+        )
+
+    assert second_request_started.is_set()
+    assert Path(resolved[0].command).read_bytes() == binary
+    assert Path(resolved[1].command).read_bytes() == binary

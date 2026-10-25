@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -283,17 +284,24 @@ async def resolve_mcp_binary_configs(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> list[MCPClientConfig]:
-    """Resolve configured downloads before any MCP server process is spawned."""
+    """Resolve configured downloads before any MCP server process is spawned.
+
+    Downloads run concurrently: configs are independent (distinct cache
+    destinations), and first boot with several binary-backed capability
+    packs must not pay additive download latency.
+    """
     if not any(config.binary_download is not None for config in configs):
         return configs
     if client is not None:
-        return [await _ensure_binary(client, config) for config in configs]
+        return list(await asyncio.gather(*(_ensure_binary(client, config) for config in configs)))
 
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=httpx.Timeout(90.0, connect=10.0),
     ) as download_client:
-        return [await _ensure_binary(download_client, config) for config in configs]
+        return list(
+            await asyncio.gather(*(_ensure_binary(download_client, config) for config in configs))
+        )
 
 
 __all__ = ["MCPBinaryDownloadError", "resolve_mcp_binary_configs"]
