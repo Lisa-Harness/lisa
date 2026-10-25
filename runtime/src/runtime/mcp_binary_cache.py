@@ -1,4 +1,4 @@
-"""Download and cache version-pinned MCP server binaries."""
+"""Download and cache release-hosted MCP server binaries."""
 
 from __future__ import annotations
 
@@ -54,6 +54,8 @@ def _platform_suffix() -> tuple[str, str, str]:
 
 
 def _release_url(source: MCPBinaryDownload, asset: str) -> str:
+    if source.version is None:
+        raise MCPBinaryDownloadError(f"{source.binary_name} has no binary release version")
     repository = quote(source.repository, safe="/-._")
     version = quote(source.version, safe="-._")
     asset_name = quote(asset, safe="-._")
@@ -212,6 +214,11 @@ def _download_paths(
     if config.binary_cache_dir is None:
         raise MCPBinaryDownloadError(
             f"{config.server_id} has no runtime-managed binary cache directory"
+        )
+    if source.version is None:
+        raise MCPBinaryDownloadError(
+            f"{config.server_id} has no binary release version; install its pack from a "
+            "vX.Y.Z tag or set binary_download.version"
         )
 
     operating_system, architecture, extension = _platform_suffix()

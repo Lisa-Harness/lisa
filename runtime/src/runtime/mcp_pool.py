@@ -58,6 +58,7 @@ from runtime.content_roots import (
     always_on_pack_names,
     host_mcp_manifest_path,
     infer_pack_package_name,
+    installed_pack_version,
     load_disabled_pack_names,
     load_installed_packs_lock,
     load_pack_policy_dict,
@@ -68,6 +69,9 @@ from runtime.provider_endpoints import direct_provider_base_urls
 from runtime.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
+
+#: Pack versions that map onto a ``vX.Y.Z`` binary release tag.
+_PACK_RELEASE_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 
 
 class PackPrerequisiteError(RuntimeError):
@@ -904,6 +908,39 @@ def _resolve_capability_owners(
             register_capability_server(registry, selection.winner)
 
 
+def _with_pack_binary_versions(specs: list[Any], root: Path, package_name: str) -> list[Any]:
+    """Resolve unversioned pack ``binary_download`` sources to the pack's release.
+
+    A pack that omits ``binary_download.version`` downloads the release tagged
+    with its own installed version, so the tag the pack was installed from is
+    the single version selector. Untagged installs are left unresolved and
+    fail loudly when the binary is fetched.
+    """
+    if not any(
+        spec.binary_download is not None and spec.binary_download.version is None for spec in specs
+    ):
+        return specs
+    pack_version = installed_pack_version(root, package_name)
+    if pack_version is None or not _PACK_RELEASE_VERSION_RE.fullmatch(pack_version):
+        logger.warning(
+            "Pack %s has version %r, which is not a release; its binary MCP servers "
+            "need it installed from a vX.Y.Z tag",
+            package_name,
+            pack_version,
+        )
+        return specs
+    release = f"v{pack_version}"
+    return [
+        dataclasses.replace(
+            spec,
+            binary_download=dataclasses.replace(spec.binary_download, version=release),
+        )
+        if spec.binary_download is not None and spec.binary_download.version is None
+        else spec
+        for spec in specs
+    ]
+
+
 def _register_pack_servers(
     registry: MCPServerRegistry,
     roots: list[Path],
@@ -937,6 +974,7 @@ def _register_pack_servers(
 
         pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
         pack_package_name = infer_pack_package_name(root)
+        pack_specs = _with_pack_binary_versions(pack_specs, root, pack_package_name)
 
         for spec in pack_specs:
             if pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):

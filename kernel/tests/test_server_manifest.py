@@ -80,6 +80,26 @@ servers:
     assert specs[0].binary_download.binary_name == "lisa-storage"
 
 
+def test_load_manifest_allows_binary_download_without_version(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: lisa-storage-go
+    runtime_kind: binary
+    binary_download:
+      repository: Lisa-Harness/lisa-go
+      binary_name: lisa-storage
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_mcp_server_manifest(manifest)
+
+    assert specs[0].binary_download is not None
+    assert specs[0].binary_download.version is None
+
+
 @pytest.mark.parametrize(
     ("runtime_kind", "binary_download", "command_path", "message"),
     [

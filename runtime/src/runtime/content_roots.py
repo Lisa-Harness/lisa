@@ -123,6 +123,25 @@ def infer_pack_package_name(root: Path) -> str:
     return root_name
 
 
+def installed_pack_version(root: Path, package_name: str) -> str | None:
+    """Return the installed distribution version for the pack at ``root``.
+
+    Non-editable packs keep their ``*.dist-info`` beside ``lisa_packs/`` in
+    the packs venv, so ``root``'s ancestors are searched first; editable
+    installs fall back to ``sys.path`` (which includes the packs venv).
+    """
+    import sys
+    from importlib import metadata
+
+    search_path = [str(parent) for parent in root.parents]
+    search_path.extend(entry for entry in sys.path if entry not in search_path)
+    for distribution in metadata.distributions(name=package_name, path=search_path):
+        version = distribution.version
+        if isinstance(version, str) and version:
+            return version
+    return None
+
+
 def pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
     """Build the set of alias strings that refer to ``package_name``."""
     aliases: set[str] = set()

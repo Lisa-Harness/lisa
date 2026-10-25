@@ -101,6 +101,24 @@ async def test_download_rejects_unsupported_platform(
 
 
 @pytest.mark.asyncio
+async def test_download_rejects_unresolved_release_version(tmp_path: Path) -> None:
+    config = MCPClientConfig(
+        server_id="lisa-storage-go",
+        command="",
+        args=[],
+        runtime_kind="binary",
+        binary_download=MCPBinaryDownload(
+            repository="Lisa-Harness/lisa-go",
+            binary_name="lisa-storage",
+        ),
+        binary_cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(MCPBinaryDownloadError, match="no binary release version"):
+        await resolve_mcp_binary_configs([config])
+
+
+@pytest.mark.asyncio
 async def test_configs_without_binary_sources_need_no_download() -> None:
     configs = [MCPClientConfig(server_id="host", command="python", args=[])]
 

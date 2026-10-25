@@ -20,8 +20,9 @@ belongs in env; path-like config stays in CLI args per the launch contract.
 A server entry may be marked ``disabled: true`` to keep it declared but
 excluded from compilation (useful for opt-in backends).
 
-Binary servers may declare a pinned GitHub ``binary_download`` source;
-the runtime resolves and verifies it before starting the MCP pool.
+Binary servers may declare a GitHub ``binary_download`` source; the runtime
+resolves and verifies it before starting the MCP pool. Pack manifests may
+omit ``version`` so the release follows the installed pack's version.
 
 Data-dir adaptation: each server may specify ``data_dir_arg`` (the flag name
 to inject, or ``null`` for servers that manage their own storage),
@@ -283,12 +284,12 @@ def _parse_binary_download(
     binary_name = raw.get("binary_name")
     if (
         not isinstance(repository, str)
-        or not isinstance(version, str)
         or not isinstance(binary_name, str)
+        or (version is not None and not isinstance(version, str))
     ):
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': binary_download requires string "
-            "repository, version, and binary_name fields"
+            "repository and binary_name fields (version is optional)"
         )
     try:
         return MCPBinaryDownload(
