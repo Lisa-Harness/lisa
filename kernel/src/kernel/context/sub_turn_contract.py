@@ -26,6 +26,7 @@ _DELEGATE_CONTRACT_PATH = f"{_SUB_TURN_ASSET_PREFIX}/delegate_contract.md"
 _BUDGET_EXHAUSTED_PATH = f"{_SUB_TURN_ASSET_PREFIX}/budget_exhausted.md"
 _MIDPOINT_NUDGE_PATH = f"{_SUB_TURN_ASSET_PREFIX}/midpoint_write_nudge.md"
 _NO_WRITE_WARNING_PATH = f"{_SUB_TURN_ASSET_PREFIX}/no_write_warning.md"
+_READ_LOOP_NUDGE_PATH = f"{_SUB_TURN_ASSET_PREFIX}/read_loop_nudge.md"
 
 _CONTRACT_PATHS: dict[str, str] = {
     "fork": _FORK_CONTRACT_PATH,
@@ -46,6 +47,7 @@ def set_content_registry(registry: ContentRegistry) -> None:
     read_sub_turn_contract.cache_clear()
     read_sub_turn_budget_exhausted_tail.cache_clear()
     read_sub_turn_midpoint_nudge.cache_clear()
+    read_read_loop_nudge.cache_clear()
     read_no_write_warning.cache_clear()
 
 
@@ -142,6 +144,26 @@ def read_sub_turn_midpoint_nudge() -> str:
 
 
 @lru_cache(maxsize=2)
+def read_read_loop_nudge() -> str:
+    """Load the authored read-loop nudge body (lifecycle-briefing prose).
+
+    Fires once for a turn with read/execute receipts and zero write attempts
+    at the stuck-stage threshold — the reciprocal of the midpoint write-nudge.
+    """
+
+    if _content_registry is None:
+        raise RuntimeError(
+            "Content registry not set. Call set_content_registry() before "
+            "reading sub-turn contract assets."
+        )
+    raw = _content_registry.read_authored_text(_READ_LOOP_NUDGE_PATH)
+    body = _strip_authored_heading(raw)
+    if not body:
+        raise ValueError(f"Authored read-loop-nudge asset is empty: {_READ_LOOP_NUDGE_PATH}.")
+    return body
+
+
+@lru_cache(maxsize=2)
 def read_no_write_warning() -> str:
     """Load the authored no-verified-write warning footnote.
 
@@ -209,3 +231,14 @@ def render_sub_turn_midpoint_nudge(*, action_list: str) -> str:
     """Render the midpoint write-nudge briefing line for a sub-turn child."""
 
     return read_sub_turn_midpoint_nudge().format_map(_MissingKeyDict(action_list=action_list))
+
+
+def render_read_loop_nudge(*, retrieval_calls: int, retrieval_repeats: int) -> str:
+    """Render the read-loop nudge briefing line (read-receipts, zero writes)."""
+
+    return read_read_loop_nudge().format_map(
+        _MissingKeyDict(
+            retrieval_calls=retrieval_calls,
+            retrieval_repeats=retrieval_repeats,
+        )
+    )

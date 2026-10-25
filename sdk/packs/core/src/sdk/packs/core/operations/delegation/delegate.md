@@ -18,6 +18,12 @@ Call `delegate` when:
   feeds the next.
 - You need recursive delegation (a delegate child can itself delegate,
   bounded by `DELEGATE_MAX_DEPTH`).
+- You need a bounded shell answer — what a command prints, why a check
+  fails, what version is installed. Delegate to `probe` with a tightly
+  scoped query and `max_tool_iterations: 8`. Probe is read-only and
+  returns findings; it never mutates and never runs long jobs. Reserve
+  a `shell` child for interactive command-line work that must actually
+  change the machine.
 
 Do NOT call `delegate` when:
 
@@ -28,8 +34,10 @@ Do NOT call `delegate` when:
 
 ## Available Modes
 
-The target `target_mode_id` must be a routable mode from the installed
-catalog. Non-routable modes cannot be delegated to.
+The target `target_mode_id` must be a mode from the installed catalog.
+Most targets are user-routable modes; a non-routable mode (e.g.
+`probe`) is delegate-only by design — it has no user-facing entry and
+exists precisely for parent-mediated delegation.
 
 ## Parameters
 

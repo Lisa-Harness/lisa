@@ -76,6 +76,7 @@ from kernel.config import settings as _kernel_settings
 from kernel.context.request_budget import estimate_request_tokens, fit_request_context
 from kernel.context.sub_turn_contract import (
     render_no_write_warning,
+    render_read_loop_nudge,
     render_sub_turn_contract,
     render_sub_turn_midpoint_nudge,
 )
@@ -2815,16 +2816,13 @@ def _per_iteration_nudges(
             _retrieval_calls,
             _retrieval_repeats,
         )
-        _read_loop_nudge_text = (
-            "READ-LOOP BUDGET WARNING. You have spent many iterations on "
-            "read-only calls without landing your findings. "
-            f"So far this turn: {_retrieval_calls} thread-archive reads, "
-            f"{_retrieval_repeats} of them repeating calls you already made. "
-            "Each read re-bills the context it adds on every later iteration. "
-            "Synthesize what you have now: call your mode's write/document tool "
-            "with the evidence collected so far, delegate the gathering to a "
-            "child, or hand off to the mode that can. Do not issue more of "
-            "the same read calls without a new, specific reason."
+        # The nudge prose is authored Markdown loaded through
+        # ``kernel.context.sub_turn_contract`` (``prompts/
+        # sub_turn/read_loop_nudge.md``); only the retrieval-count
+        # substitution glue lives here.
+        _read_loop_nudge_text = render_read_loop_nudge(
+            retrieval_calls=_retrieval_calls,
+            retrieval_repeats=_retrieval_repeats,
         )
     return _midpoint_nudge_text, _read_loop_nudge_text
 
