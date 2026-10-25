@@ -25,6 +25,7 @@ _CHECKSUM_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 _MAX_CHECKSUMS_BYTES = 1024 * 1024
 _MAX_BINARY_BYTES = 128 * 1024 * 1024
 _CHECKSUM_FIELD_COUNT = 2
+_SIDECAR_FIELD_COUNT = 3
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ async def _ensure_binary(
         expected_digest=expected_digest,
         destination=destination,
     )
-    _write_cached_checksum(checksum_path, expected_digest)
+    _write_cached_checksum(checksum_path, destination, expected_digest)
     logger.info(
         "Downloaded and verified MCP binary %s@%s (%s)",
         source.repository,
@@ -230,32 +231,77 @@ def _download_paths(
     return asset, destination, checksum_path
 
 
+def _cached_sidecar_digest(
+    destination: Path,
+    checksum_path: Path,
+    asset: str,
+) -> tuple[str | None, bool]:
+    """Parse the checksum sidecar into ``(digest, stat_matches)``.
+
+    ``stat_matches`` is True when the current-format sidecar's recorded
+    size and mtime_ns match the cached binary, so the caller can trust
+    the cache without hashing it. Otherwise ``digest`` is the recorded
+    digest to verify against; None means the sidecar is unparseable and
+    the cache entry is invalid.
+    """
+    try:
+        cached_record = checksum_path.read_text(encoding="ascii").strip().lower()
+    except (OSError, UnicodeError) as exc:
+        raise MCPBinaryDownloadError(f"failed to read cached checksum for {asset}: {exc}") from exc
+    fields = cached_record.split()
+    if len(fields) == _SIDECAR_FIELD_COUNT and _CHECKSUM_PATTERN.fullmatch(fields[0]):
+        try:
+            cached_size = int(fields[1])
+            cached_mtime_ns = int(fields[2])
+            stat = destination.stat()
+        except (OSError, ValueError) as exc:
+            raise MCPBinaryDownloadError(f"failed to verify cached binary {asset}: {exc}") from exc
+        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
+            return None, True
+        return fields[0], False
+    if len(fields) == 1 and _CHECKSUM_PATTERN.fullmatch(fields[0]):
+        return fields[0], False
+    return None, False
+
+
 def _cached_binary_is_valid(
     destination: Path,
     checksum_path: Path,
     asset: str,
 ) -> bool:
+    """Return whether the cached binary can launch without a download.
+
+    The sidecar stores ``<digest> <size> <mtime_ns>``. A matching stat
+    signature trusts the cache without re-hashing the binary; a legacy
+    digest-only sidecar or stat drift falls back to the full digest, and
+    a matching hash rewrites the sidecar to the current format so the
+    next boot takes the fast path.
+    """
     if destination.is_symlink() or checksum_path.is_symlink():
         raise MCPBinaryDownloadError(f"refusing symlink in MCP binary cache for {asset}")
     if destination.exists() and not destination.is_file():
         raise MCPBinaryDownloadError(f"cache destination for {asset} is not a regular file")
     if not destination.is_file() or not checksum_path.is_file():
         return False
-    try:
-        cached_digest = checksum_path.read_text(encoding="ascii").strip().lower()
-    except (OSError, UnicodeError) as exc:
-        raise MCPBinaryDownloadError(f"failed to read cached checksum for {asset}: {exc}") from exc
-    if not _CHECKSUM_PATTERN.fullmatch(cached_digest):
+    cached_digest, stat_matches = _cached_sidecar_digest(destination, checksum_path, asset)
+    if stat_matches:
+        return True
+    if cached_digest is None:
         return False
     try:
-        return _file_sha256(destination) == cached_digest
+        matches = _file_sha256(destination) == cached_digest
     except OSError as exc:
         raise MCPBinaryDownloadError(f"failed to verify cached binary {asset}: {exc}") from exc
+    if matches:
+        _write_cached_checksum(checksum_path, destination, cached_digest)
+    return matches
 
 
-def _write_cached_checksum(checksum_path: Path, digest: str) -> None:
+def _write_cached_checksum(checksum_path: Path, destination: Path, digest: str) -> None:
     temporary_path: Path | None = None
     try:
+        stat = destination.stat()
+        record = f"{digest} {stat.st_size} {stat.st_mtime_ns}\n"
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="ascii",
@@ -265,7 +311,7 @@ def _write_cached_checksum(checksum_path: Path, digest: str) -> None:
             delete=False,
         ) as temporary:
             temporary_path = Path(temporary.name)
-            temporary.write(digest)
+            temporary.write(record)
         if temporary_path is None:
             raise MCPBinaryDownloadError(f"failed to create cached checksum {checksum_path.name}")
         os.replace(temporary_path, checksum_path)

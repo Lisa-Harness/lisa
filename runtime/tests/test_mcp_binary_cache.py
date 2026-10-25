@@ -165,3 +165,100 @@ async def test_downloads_run_concurrently(
     assert second_request_started.is_set()
     assert Path(resolved[0].command).read_bytes() == binary
     assert Path(resolved[1].command).read_bytes() == binary
+
+
+@pytest.mark.asyncio
+async def test_stat_fast_path_skips_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.system", lambda: "Linux")
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.machine", lambda: "x86_64")
+    binary = b"pinned Go executable"
+    digest = hashlib.sha256(binary).hexdigest()
+    asset = "lisa-storage-v0.1.0-linux-amd64"
+    requests: list[str] = []
+    hash_calls: list[Path] = []
+
+    def spy(path: Path) -> str:
+        hash_calls.append(path)
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    monkeypatch.setattr("runtime.mcp_binary_cache._file_sha256", spy)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        name = request.url.path.rsplit("/", maxsplit=1)[-1]
+        requests.append(name)
+        if name == "checksums.txt":
+            return httpx.Response(200, content=f"{digest}  {asset}\n", request=request)
+        if name == asset:
+            return httpx.Response(200, content=binary, request=request)
+        return httpx.Response(404, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        first = await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+        second = await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+
+    assert requests == ["checksums.txt", asset]
+    assert hash_calls == []
+    assert Path(first[0].command) == Path(second[0].command)
+    assert Path(second[0].command).read_bytes() == binary
+    cached = Path(second[0].command)
+    record = cached.with_name(f"{asset}.sha256").read_text(encoding="ascii")
+    assert record.strip().split() == [
+        digest,
+        str(cached.stat().st_size),
+        str(cached.stat().st_mtime_ns),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_digest_sidecar_migrates_to_stat_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.system", lambda: "Linux")
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.machine", lambda: "x86_64")
+    binary = b"pinned Go executable"
+    digest = hashlib.sha256(binary).hexdigest()
+    asset = "lisa-storage-v0.1.0-linux-amd64"
+    requests: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        name = request.url.path.rsplit("/", maxsplit=1)[-1]
+        requests.append(name)
+        return httpx.Response(404, request=request)
+
+    config = _config(tmp_path / "cache")
+    destination = tmp_path / "cache" / "Lisa-Harness" / "lisa-go" / "v0.1.0" / asset
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(binary)
+    destination.with_name(f"{asset}.sha256").write_text(digest, encoding="ascii")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        resolved = await resolve_mcp_binary_configs([config], client=client)
+
+    assert requests == []
+    assert Path(resolved[0].command) == destination
+
+    stat = destination.stat()
+    migrated = destination.with_name(f"{asset}.sha256").read_text(encoding="ascii")
+    assert migrated.strip().split() == [
+        digest,
+        str(stat.st_size),
+        str(stat.st_mtime_ns),
+    ]
+
+    hash_calls: list[Path] = []
+
+    def spy(path: Path) -> str:
+        hash_calls.append(path)
+        return digest
+
+    monkeypatch.setattr("runtime.mcp_binary_cache._file_sha256", spy)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        again = await resolve_mcp_binary_configs([config], client=client)
+
+    assert hash_calls == []
+    assert Path(again[0].command) == destination
