@@ -52,7 +52,7 @@ class TestAssembleSystemPromptWithCopilotCustomizations:
 
         assert "## Project Instructions" not in result
         assert "## Instruction:" not in result
-        assert "## Skill:" not in result
+        assert "## Skills" not in result
 
     def test_whitespace_only_copilot_customizations_not_injected(self) -> None:
         result = assemble_system_prompt(
@@ -268,11 +268,13 @@ class TestScopedInstructionDeferral:
 
         assert "SCOPED PYTHON BODY" not in text
         assert "SCOPED DOCS BODY" not in text
-        # Unconditional guidance stays: always-on file, unscoped instruction,
-        # and the skill body.
+        # Unconditional guidance stays: the always-on file and the unscoped
+        # instruction.
         assert "ALWAYS ON RULE" in text
         assert "UNSCOPED BODY" in text
-        assert "SKILL BODY" in text
+        # The skill is indexed, not injected.
+        assert "SKILL BODY" not in text
+        assert "**helper**" in text
 
     def test_matching_path_returns_only_the_matching_body(self, tmp_path: Path) -> None:
         workspace = tmp_path / "ws"
@@ -339,6 +341,94 @@ class TestScopedInstructionDeferral:
         assert runtime.scoped_instruction_text_for_path("/docs/guide.md").count(
             "SCOPED DOCS BODY"
         ) == 1
+
+
+class TestSkillIndex:
+    """Skill bodies load on demand; only name, description, and path are eager."""
+
+    def _runtime(self, tmp_path: Path) -> Any:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        return _runtime_for_workspace(tmp_path, workspace)
+
+    def test_body_is_absent_and_path_is_named(self, tmp_path: Path) -> None:
+        text = self._runtime(tmp_path).copilot_customizations_text
+
+        assert "SKILL BODY" not in text
+        assert "A helper." in text
+        assert ".github/skills/helper/SKILL.md" in text
+
+    def test_index_instructs_reading_rather_than_guessing(self, tmp_path: Path) -> None:
+        text = self._runtime(tmp_path).copilot_customizations_text
+
+        assert "do not guess at its" in text
+
+    def test_model_invocation_opt_out_is_honored(self, tmp_path: Path) -> None:
+        """``disable-model-invocation: true`` must not be listed or injected."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        skill = workspace / ".github" / "skills" / "slash-only"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: slash-only\ndescription: Slash only.\n"
+            "disable-model-invocation: true\n---\nSLASH ONLY BODY\n",
+            encoding="utf-8",
+        )
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        text = runtime.copilot_customizations_text
+
+        assert "SLASH ONLY BODY" not in text
+        assert "slash-only" not in text
+        # A listed skill is still listed.
+        assert "**helper**" in text
+
+    def test_a_skill_that_is_only_an_opt_out_emits_no_section(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        skill = workspace / ".github" / "skills" / "slash-only"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: slash-only\ndescription: Slash only.\n"
+            "disable-model-invocation: true\n---\nBODY\n",
+            encoding="utf-8",
+        )
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert "## Skills" not in runtime.copilot_customizations_text
+
+    def test_description_whitespace_is_collapsed(self, tmp_path: Path) -> None:
+        """A multi-line description would otherwise break the list shape."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        skill = workspace / ".github" / "skills" / "multi"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            '---\nname: multi\ndescription: "Line one.\n\n   Line two."\n---\nBODY\n',
+            encoding="utf-8",
+        )
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert "Line one. Line two." in runtime.copilot_customizations_text
+
+    def test_no_skills_emits_no_section(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        (workspace / ".github").mkdir()
+        (workspace / ".github" / "copilot-instructions.md").write_text(
+            "ONLY RULES\n", encoding="utf-8"
+        )
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        text = runtime.copilot_customizations_text
+
+        assert "ONLY RULES" in text
+        assert "## Skills" not in text
 
 
 class TestPackToolDecoration:

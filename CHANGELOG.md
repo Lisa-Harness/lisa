@@ -36,9 +36,19 @@ All notable changes to the Lisa Harness will be documented in this file.
   at most once per turn and per fork/delegate child. On this repository that
   moves 13 instruction files (19,188 bytes) out of the per-turn system prompt,
   leaving 1,165 bytes unconditional, and a turn that reads a `**/*.py` file
-  receives only the four matching bodies. Skills are still injected
-  unconditionally — they carry no `applyTo`, and on-demand body loading is a
-  separate mechanism, not part of this change.
+  receives only the four matching bodies.
+- **Skill bodies load on demand instead of every turn.** The system prompt now
+  carries a skill index — name, description, and the `SKILL.md` path — and the
+  model reads a body when its task matches, matching Copilot's progressive
+  loading. On a 30-skill corpus that is 18.7 KB of index instead of 224.8 KB of
+  bodies (92% less). Loading is an ordinary source-scope file read of the named
+  path, so no loader tool or pack change was needed. `disable-model-invocation:
+  true` is now honored: the flag was parsed by the SDK and read nowhere, so a
+  skill that opted out of model loading was injected anyway. Such a skill is
+  now neither listed nor injected — Lisa has no skill-slash surface, so listing
+  guidance the model may not load would be the worse outcome. `context: fork`
+  remains parsed-but-unused; running a fork skill as a subturn is a separate
+  change.
 
 ### Documentation
 

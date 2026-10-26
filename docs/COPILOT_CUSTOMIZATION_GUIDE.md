@@ -17,14 +17,16 @@ This repository now uses a compact, intent-driven customization taxonomy under [
 
 The always-on project contract lives in [.github/copilot-instructions.md](../.github/copilot-instructions.md). It is the root rule file for repository-wide guidance.
 
-## How instruction bodies reach the model
+## How customization bodies reach the model
 
-`applyTo` is a filter, not a label. Scoping decides *when* a body costs context:
+Both scoping mechanisms decide *when* a body costs context, so a turn pays only
+for the guidance it can use.
 
-- **Always-on files** (`copilot-instructions.md`, `AGENTS.md`, `CLAUDE.md`),
-  instructions that declare **no** `applyTo`, and **skill** bodies are
-  unconditional. They are assembled into the system prompt on every turn, and
-  skills are not scoped in this pass.
+### Instructions — `applyTo` is a filter, not a label
+
+- **Always-on files** (`copilot-instructions.md`, `AGENTS.md`, `CLAUDE.md`) and
+  instructions that declare **no** `applyTo` are unconditional. They are
+  assembled into the system prompt on every turn.
 - **Instructions that declare `applyTo`** are held out of the system prompt.
   The runtime appends a matching body to the first pack-tool result that
   mentions a matching path, at most once per turn and per fork/delegate child.
@@ -40,6 +42,27 @@ Two consequences worth knowing when authoring:
   path (commit, run-check, a full-workspace listing) is never decorated. Write
   path-scoped rules for guidance a *file* should carry, and unscoped rules for
   process that applies to any turn.
+
+### Skills — the index is eager, the body is on demand
+
+A skill carries no `applyTo`, so it cannot be matched to a path; the model has
+to choose. The system prompt therefore carries a **skill index** — name,
+description, and the path of the `SKILL.md` to read — and never the body.
+
+Loading is an ordinary file read of that path in source scope, so no dedicated
+loader tool is needed and the behavior matches Copilot's progressive loading: a
+skill's own reference files load only if its body names them, and a skill no
+turn loads costs only its index line.
+
+Two behaviors to be aware of:
+
+- **`disable-model-invocation: true` is honored.** Such a skill is neither
+  listed nor injected. Copilot keeps it reachable as a slash command; Lisa has
+  no skill-slash surface, so listing guidance the model is forbidden to load
+  would be worse than omitting it.
+- **The description is the discovery surface.** It is what the model matches
+  against, so put the trigger words in it. A vague description means the skill
+  is never loaded.
 
 ## Agents
 

@@ -135,9 +135,10 @@ def _scoped_instruction_block(instruction: Any) -> str:
 def _unconditional_customization_blocks(bundle: Any) -> list[str]:
     """Render the customization blocks that belong in every system prompt.
 
-    Always-on files and skills apply unconditionally. Instructions apply
-    unconditionally only when they declare no ``applyTo``; scoped ones are
-    deferred to the dispatch that first touches a matching path.
+    Carries always-on files, instructions that declare no ``applyTo``, and the
+    skill *index*. Instructions that declare one are deferred to the dispatch
+    that first touches a matching path, and skill *bodies* are loaded on demand
+    (see :func:`_skill_index_block`).
     """
     parts = [
         f"## Project Instructions\n\n{f.body.strip()}"
@@ -149,12 +150,51 @@ def _unconditional_customization_blocks(bundle: Any) -> list[str]:
         for inst in bundle.instructions
         if inst.body.strip() and not inst.apply_to
     )
-    parts.extend(
-        f"## Skill: {skill.name}\n\n{skill.body.strip()}"
-        for skill in bundle.skills
-        if skill.body.strip()
-    )
+    index = _skill_index_block(bundle.skills)
+    if index:
+        parts.append(index)
     return parts
+
+
+def _skill_index_block(skills: Any) -> str:
+    """Render the skill index: name, description, and path — never the body.
+
+    Mirrors Copilot's progressive loading. The index is the discovery surface
+    (~100 tokens per skill), the body loads when a turn decides it needs the
+    procedure, and a skill's own reference files load only if the body names
+    them. Injecting bodies eagerly costs the full corpus on every request no
+    matter what the turn does.
+
+    Skill bodies have no ``applyTo``, so unlike instructions they cannot be
+    matched to a path; the model must choose. Each entry therefore names the
+    file to read, and the read goes through the ordinary file-read tool in
+    source scope — no dedicated loader is required.
+
+    ``disable_model_invocation`` is honored as an opt-out of model-driven
+    loading: such a skill is neither listed nor injected. Copilot keeps it
+    reachable as a slash command; Lisa exposes no skill-slash surface, so the
+    alternative would be listing guidance the model is forbidden to load.
+    """
+    usable = [
+        skill
+        for skill in skills
+        if skill.body.strip() and not skill.disable_model_invocation
+    ]
+    if not usable:
+        return ""
+    lines = [
+        "## Skills",
+        "",
+        "Each skill below is a procedure you can load on demand. Read the named",
+        "file when your task matches its description; do not guess at its",
+        "contents. Skills you do not load cost nothing.",
+        "",
+    ]
+    for skill in usable:
+        description = " ".join(skill.description.split())
+        lines.append(f"- **{skill.name}** — {description}")
+        lines.append(f"  Load with the file-read tool: `{skill.path}`")
+    return "\n".join(lines)
 
 
 def _make_in_process_resolver():
@@ -861,10 +901,10 @@ class HostRuntime:
         self.resources = RuntimeResources(self)
 
         # ── Copilot customizations cache ──────────────────────────────
-        # Lazily discovered always-on + applyTo-scoped instructions +
-        # skills from .github/{instructions,skills} and .claude/ equivalents.
-        # None means "not yet discovered"; "" means "discovered, nothing
-        # found or discovery failed gracefully."
+        # Lazily discovered always-on + applyTo-scoped instructions, plus the
+        # skill index, from .github/{instructions,skills} and the .claude/
+        # equivalents. None means "not yet discovered"; "" means "discovered,
+        # nothing found or discovery failed gracefully."
         self._copilot_customizations_text: str | None = None
         self._copilot_bundle: Any = None
         # Per-turn dedupe of scoped instruction bodies already appended to a
@@ -890,14 +930,17 @@ class HostRuntime:
         """Unconditional customization guidance for the system prompt.
 
         Carries always-on files (``copilot-instructions.md``, ``AGENTS.md``,
-        ``CLAUDE.md``), instructions that declare no ``applyTo``, and skills.
-        Those apply to everything, so they belong in every request.
+        ``CLAUDE.md``), instructions that declare no ``applyTo``, and the skill
+        index. Those apply to everything, so they belong in every request.
 
-        Instructions that *do* declare ``applyTo`` are deliberately absent.
-        They are appended to a tool result the first time the model touches a
-        matching path — see :meth:`scoped_instruction_text_for_path` — because
-        the system prompt is assembled before any file is known and an
-        unscoped body would be paid for on every turn that never touches it.
+        Two things are held back because the system prompt is assembled before
+        any file or task is known, and paying for them on every turn is waste:
+
+        - Instructions that declare ``applyTo``, appended to a tool result the
+          first time the model touches a matching path — see
+          :meth:`scoped_instruction_text_for_path`.
+        - Skill *bodies*, replaced by a name/description/path index the model
+          reads from when a task matches — see ``_skill_index_block``.
 
         Returns the formatted Markdown block, or ``""`` if discovery fails or
         no customizations are found (graceful degradation). Cached after
