@@ -70,6 +70,12 @@ class TurnResult:
     when the block came from a non-guard lifecycle failure (entry/plan/fork).
     The child-turn classifier reads this to build an accurate
     ``BlockDiagnostic`` instead of assuming every block is a capability gate."""
+    completion_contract: str = ""
+    """Which completion contract the turn satisfied, when it is not the mode's
+    default. ``"diagnostic_soft_accept"`` marks a checked-commit turn accepted
+    without a verified commit because its task declared ``task_goal:
+    diagnostic`` and made no writes. Audit-only in v1: the stamp makes the
+    exception reviewable without surfacing it in the user-facing summary."""
     block_diagnostic: BlockDiagnostic | None = None
     """Structured reason a turn was blocked, when the block came from a gate
     that produces one (currently the capability gate). Carried on the

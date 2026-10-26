@@ -2334,7 +2334,7 @@ def _apply_turn_completion_contract(
     checked_commit_evidence: TaskCompletionEvidence | None,
     log: logging.Logger,
     accepted_without_worktree: bool = False,
-) -> tuple[str, bool, str]:
+) -> tuple[str, bool, str, str]:
     """Apply the parent-turn completion contract (Phase 8) to the final content.
 
     Resolves the completion contract against the turn's receipts and mutates
@@ -2345,7 +2345,11 @@ def _apply_turn_completion_contract(
     it — the 2026-10-03 incident: a checked-commit block swallowed the
     cap-pause diagnostic, hiding why the turn stopped) and stand alone only
     when the turn surfaced no content. Returns
-    ``(content, turn_blocked, block_origin)``.
+    ``(content, turn_blocked, block_origin, completion_contract)``.
+
+    ``completion_contract`` is the audit stamp for a non-default contract
+    outcome: ``"diagnostic_soft_accept"`` when a checked-commit turn was
+    accepted without a verified commit on a declared diagnostic task.
     """
     contract_decision = resolve_completion_contract(
         mode_id=mode_id,
@@ -2436,7 +2440,13 @@ def _apply_turn_completion_contract(
         block_origin = "no_tools"
     elif isinstance(contract_decision, AcceptTurn):
         pass
-    return content, turn_blocked, block_origin
+    # Stamp only a turn that actually accepted: a pre-existing entry/plan/fork
+    # failure blocks the turn regardless of the soft-accept, and stamping it
+    # would claim a diagnostic completion that never happened.
+    completion_contract = (
+        "diagnostic_soft_accept" if accepted_without_worktree and not turn_blocked else ""
+    )
+    return content, turn_blocked, block_origin, completion_contract
 
 
 def _append_post_turn_content(
@@ -9457,6 +9467,70 @@ def _apply_iteration_lifecycle_action(
     )
 
 
+def _resolve_soft_accept(
+    *,
+    state: Any,
+    hooks: TurnHooks,
+    producer: str,
+    mode_id: str,
+    log: logging.Logger,
+) -> tuple[TaskCompletionEvidence | None, bool]:
+    """Decide the checked-commit soft-accept for a producer-less turn.
+
+    The exception is granted on DECLARED INTENT, never on inference. An
+    undeclared task is an ``implementation`` task (fail closed): a successful
+    probe is not evidence of a committed change, so the block names the
+    declaration that would have allowed the soft-accept and the operator
+    override that grants it ad hoc. The remedy is a one-line authored edit,
+    not a retry.
+
+    The mutation guard keeps a misdeclared diagnostic safe: a diagnostic task
+    that produced any ``write``/``external_write`` receipt blocks, so the
+    worst an authoring mistake can do is a loud false-block, never a
+    false-pass with changes on disk.
+    """
+    if hooks.identity.task_goal != "diagnostic":
+        return (
+            TaskCompletionEvidence(
+                verified=False,
+                reason=(
+                    "This task declares `task_goal: implementation` (the default), "
+                    f"so it must commit through `{producer}` but the turn never "
+                    "invoked it. If this task is investigation only, declare "
+                    "`task_goal: diagnostic` on the task, or pass the operator "
+                    "diagnostic override at task creation, and re-run."
+                ),
+            ),
+            False,
+        )
+    write_receipts = [
+        receipt
+        for receipt in state.effect_receipts
+        if receipt.effect in ("write", "external_write")
+    ]
+    if write_receipts:
+        return (
+            TaskCompletionEvidence(
+                verified=False,
+                reason=(
+                    "This task declares `task_goal: diagnostic`, but the turn made "
+                    f"{len(write_receipts)} write(s); a diagnostic task must not "
+                    "mutate the workspace. Commit the work through "
+                    f"`{producer}`, or re-run the investigation without writes."
+                ),
+            ),
+            False,
+        )
+    log.info(
+        "checked_commit mode=%s produced no worktree and never attempted "
+        "%s; task_goal=diagnostic with no writes, accepting as honest "
+        "diagnostic work instead of blocking",
+        mode_id,
+        producer,
+    )
+    return None, True
+
+
 async def _resolve_checked_commit_evidence(
     *,
     state: Any,
@@ -9479,7 +9553,15 @@ async def _resolve_checked_commit_evidence(
     worktree producer (e.g. the ``coding_execute`` diagnostic turns that
     probed the keyring chain) is honest non-worktree work — it completes
     cleanly, and the mode's contract is skipped in
-    :func:`_apply_turn_completion_contract`. The block stays for the cases
+    :func:`_apply_turn_completion_contract`. The exception is granted on
+    DECLARED INTENT, never on inference: only a task whose ``task_goal`` is
+    ``diagnostic`` may soft-accept, and only when the turn also made zero
+    ``write``/``external_write`` receipts (the mutation guard). An undeclared
+    task is an ``implementation`` task and must verify a commit, otherwise a
+    successful probe plus "fixed" prose completes as verified with nothing
+    committed and nothing checked (the 2026-10-25 F1 silent false-pass). The
+    guard means a misdeclared diagnostic can only ever cause a false-block,
+    never a false-pass with changes on disk. The block stays for the cases
     it exists for: the producer WAS attempted, the turn made NO tool
     calls (a zero-call turn claiming completion is the
     hallucinated-success case the contract exists to catch), or the turn
@@ -9510,13 +9592,13 @@ async def _resolve_checked_commit_evidence(
         and state.total_tool_calls > 0
         and producer not in _producer_attempts
     ):
-        log.info(
-            "checked_commit mode=%s produced no worktree and never attempted "
-            "%s; accepting as honest non-worktree work instead of blocking",
-            mode_id,
-            producer,
+        return _resolve_soft_accept(
+            state=state,
+            hooks=hooks,
+            producer=producer,
+            mode_id=mode_id,
+            log=log,
         )
-        return None, True
     verifier = hooks.services.verify_task_completion
     if not producer or len(receipt_artifact_ids) > 1:
         return (
@@ -9674,7 +9756,7 @@ async def _finalize_turn_result(
         )
         checked_commit_evidence, accepted_without_worktree = None, False
 
-    content, turn_blocked, block_origin = _apply_turn_completion_contract(
+    content, turn_blocked, block_origin, completion_contract = _apply_turn_completion_contract(
         state=state,
         mode_id=mode_id,
         mode_config=mode_config,
@@ -9729,6 +9811,7 @@ async def _finalize_turn_result(
         slice_outcomes=slice_outcomes,
         blocked=turn_blocked,
         block_origin=block_origin,
+        completion_contract=completion_contract,
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
         fork_results=state.fork_results if state.fork_results else fork_results,

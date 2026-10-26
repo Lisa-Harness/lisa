@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from kernel.approval import ApprovalService
@@ -298,6 +298,16 @@ class TurnIdentity:
     memory_scope: str = "personal"
     session_plan_digest: str = ""
     task_id: str = ""
+    #: What this task is FOR, declared at task creation by the delegate-spec
+    #: author or the operator. ``implementation`` (the default) means the task
+    #: promises a committed change, so a checked-commit mode must verify one.
+    #: ``diagnostic`` means the task is investigation only, which lets a
+    #: checked-commit mode complete without a worktree producer — but only
+    #: when the turn also made no writes (the mutation guard). Intent varies
+    #: per task, so it lives here rather than on the mode: a mode-level opt-out
+    #: would silently false-pass every implementation task in that mode.
+    #: Fail-closed default: an undeclared task is an implementation task.
+    task_goal: Literal["implementation", "diagnostic"] = "implementation"
 
 
 # ── RecallHooks ─────────────────────────────────────────────────────────

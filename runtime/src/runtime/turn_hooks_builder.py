@@ -950,7 +950,7 @@ class _WiredHooks:
 
 
 def _assemble_turn_hooks(
-    *, runtime: HostRuntime, wired: _WiredHooks, task_id: str = ""
+    *, runtime: HostRuntime, wired: _WiredHooks, task_id: str = "", task_goal: str = ""
 ) -> TurnHooks:
     """Compose the final ``TurnHooks`` dataclass from the wired callables.
 
@@ -969,6 +969,7 @@ def _assemble_turn_hooks(
         memory_scope=runtime.config.memory_scope,
         session_plan_digest=runtime.session_plan.plan_digest,
         task_id=task_id,
+        task_goal="diagnostic" if task_goal == "diagnostic" else "implementation",
     )
     artifact_store = runtime.services.code_change_artifact_store
     return TurnHooks(
@@ -1725,6 +1726,7 @@ def build_turn_hooks(
     return _assemble_turn_hooks(
         runtime=runtime,
         task_id=str(ctx_dict.get("task_id") or ""),
+        task_goal=str(ctx_dict.get("task_goal") or ""),
         wired=_WiredHooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,

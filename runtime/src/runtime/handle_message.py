@@ -838,6 +838,32 @@ def _resumable_task_id(thread_path: Any, message: str) -> str:
     return _resumable_task_context(thread_path, message)[1]
 
 
+#: Operator opt-in that declares a task diagnostic at creation. The ad-hoc
+#: "why do the tests fail?" turn inside a checked-commit mode would otherwise
+#: end in a blocked completion, and an operator who then waves it through by
+#: hand produces an unaudited exception. A declared, stamped exception is the
+#: better trade. This is deliberately an operator surface only: the model has
+#: no path to this value, so the exception can never be self-granted.
+_DIAGNOSTIC_TASK_MARKER = "[task_goal: diagnostic]"
+
+
+def _operator_declared_diagnostic(message: str) -> bool:
+    """Return True when the operator declared this task diagnostic at creation."""
+    return _DIAGNOSTIC_TASK_MARKER in message.lower()
+
+
+def _resolve_task_goal(message: str) -> str:
+    """Resolve the task goal at creation: ``diagnostic`` or ``implementation``.
+
+    The operator escape hatch (F1 Option B, v1): the ad-hoc "why do the tests
+    fail?" turn inside a checked-commit mode would otherwise end in a blocked
+    completion, and an operator who then waves it through by hand produces an
+    unaudited exception. This is an OPERATOR declaration, never a model one,
+    so the exception can never be self-granted.
+    """
+    return "diagnostic" if _operator_declared_diagnostic(message) else "implementation"
+
+
 def _is_task_resume_request(message: str) -> bool:
     """Recognize explicit task continuation without treating it as approval."""
     lowered = " ".join(message.strip().lower().rstrip(".!?").split()).replace("'", "")
@@ -1256,6 +1282,7 @@ async def _execute_mode_turn(
 
     turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
     task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
+    task_goal = _resolve_task_goal(message)
 
     # Resolve the live approval state for recorded blockers before the
     # turn starts. The digest builders are synchronous; this is the async
@@ -1274,8 +1301,7 @@ async def _execute_mode_turn(
         resolved_model=resolved_model,
         mode=mode,
     )
-    run_context["turn_index"] = turn_index
-    run_context["task_id"] = task_id
+    run_context.update(turn_index=turn_index, task_id=task_id, task_goal=task_goal)
 
     _set_turn_context(runtime, run_context)
 

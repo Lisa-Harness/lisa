@@ -687,7 +687,7 @@ async def test_checked_commit_soft_accepts_turn_that_never_attempted_worktree(
     hooks = TurnHooks(
         models=ModelHooks(complete=complete),
         services=HostServiceHandles(verify_task_completion=verify),
-        identity=TurnIdentity(task_id="task-one"),
+        identity=TurnIdentity(task_id="task-one", task_goal="diagnostic"),
     )
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
@@ -696,12 +696,176 @@ async def test_checked_commit_soft_accepts_turn_that_never_attempted_worktree(
     ):
         result = await run_turn(mode_id="executor", query="diagnose it", hooks=hooks)
 
-    # The producer was never attempted: the verifier is not consulted and
-    # the turn completes cleanly without the worktree footnote.
+    # The task declared diagnostic and made no writes: the producer was never
+    # attempted, the verifier is not consulted, and the turn completes cleanly
+    # without the worktree footnote. The soft-accept is stamped for audit.
     assert verifier_calls == []
     assert result.blocked is False
     assert result.block_origin == ""
+    assert result.completion_contract == "diagnostic_soft_accept"
     assert "has not created or worked on a worktree" not in result.response_text
+    assert prose in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_blocks_implementation_goal_without_producer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1: an implementation task cannot soft-accept on a successful probe.
+
+    The 2026-10-25 F1 finding: a checked-commit turn whose task was never
+    declared diagnostic ran a successful non-producer probe, wrote "fixed"
+    prose, and completed as verified \u2014 with nothing committed and nothing
+    checked. The soft-accept exception is granted only to a task declared
+    ``task_goal: diagnostic``; an undeclared (``implementation``) goal must
+    block, and the block must name the declaration that caused it so the
+    remedy is a one-line authored edit.
+    """
+
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            authored_allowed_tool_ids=["probe_file"],
+            allowed_tool_ids=["probe_file"],
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+    prose = "Fixed: the wallet now opens with the correct backend."
+
+    async def read_file_probe(_ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(tool_id="probe_file", output_text="probe result")
+
+    tool_catalog = {
+        "probe_file": ToolDefinition(
+            tool_id="probe_file",
+            effect="execute",
+            parameters_schema=_Parameters,
+            implementation_module=SimpleNamespace(execute=read_file_probe),
+        )
+    }
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", tool_catalog)
+
+    calls_made = 0
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        nonlocal calls_made
+        calls_made += 1
+        if calls_made == 1:
+            return _Completion(
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "function": {"name": "probe_file", "arguments": '{"path":"log/main.txt"}'},
+                    }
+                ],
+            )
+        return _Completion(content=prose)
+
+    async def verify(request: Any) -> TaskCompletionEvidence:
+        return TaskCompletionEvidence(
+            verified=False, reason="This task has not created or worked on a worktree."
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value=tool_catalog),
+    ):
+        result = await run_turn(mode_id="executor", query="fix it", hooks=hooks)
+
+    # The goal was never declared diagnostic: a successful probe is not
+    # evidence of a completed implementation, so the turn blocks and the
+    # message names the declaration and the override.
+    assert result.blocked is True
+    assert result.block_origin == "task_completion"
+    assert "task_goal" in result.response_text
+    assert prose in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_blocks_diagnostic_goal_that_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1 mutation guard: a declared diagnostic task that wrote must block.
+
+    The guard is what makes a misdeclared diagnostic safe. If an author marks
+    a no-mutation implementation task ``diagnostic`` by mistake, the worst
+    outcome must be a loud false-block, never a false-pass with changes on
+    disk. A diagnostic task that produced a write receipt therefore blocks
+    even though the producer was never attempted.
+    """
+
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            authored_allowed_tool_ids=["write_file"],
+            allowed_tool_ids=["write_file"],
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+    prose = "Diagnosis complete: patched the config in place."
+
+    async def write_file_tool(_ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(tool_id="write_file", output_text="written")
+
+    tool_catalog = {
+        "write_file": ToolDefinition(
+            tool_id="write_file",
+            effect="write",
+            parameters_schema=_Parameters,
+            implementation_module=SimpleNamespace(execute=write_file_tool),
+        )
+    }
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", tool_catalog)
+
+    calls_made = 0
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        nonlocal calls_made
+        calls_made += 1
+        if calls_made == 1:
+            return _Completion(
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "function": {"name": "write_file", "arguments": '{"path":"cfg.ini"}'},
+                    }
+                ],
+            )
+        return _Completion(content=prose)
+
+    async def verify(_request: Any) -> TaskCompletionEvidence:
+        return TaskCompletionEvidence(verified=False, reason="no worktree")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one", task_goal="diagnostic"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value=tool_catalog),
+    ):
+        result = await run_turn(mode_id="executor", query="diagnose it", hooks=hooks)
+
+    # Declared diagnostic, but the turn wrote: the guard blocks rather than
+    # soft-accepting, and the stamp is never applied.
+    assert result.blocked is True
+    assert result.block_origin == "task_completion"
+    assert result.completion_contract == ""
+    assert "diagnostic" in result.response_text
     assert prose in result.response_text
 
 
