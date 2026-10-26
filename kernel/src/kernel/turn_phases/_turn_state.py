@@ -190,6 +190,19 @@ class _TurnState:
     break to finalization, which maps the receipts earlier iterations
     captured to an honest partial-work result (the 2026-10-21 delegate
     incident)."""
+    stream_stalled: bool = False
+    """Set when the provider stream went silent past
+    ``stream_idle_timeout_s`` mid-iteration (``StreamIdleTimeout`` caught
+    by ``_iteration_completion_or_expiry``). Distinct from
+    ``wall_budget_expired`` so finalization can name the real cause: a
+    hung upstream instead of an armed turn budget. The loop condition
+    breaks to finalization, which surfaces the partial-work diagnostic
+    instead of the error escaping and the whole turn being discarded (the
+    2026-10-26 14:20 incident: 57 iterations of receipts erased because
+    the RuntimeError passed through to the host's generic handler)."""
+    stream_stall_detail: str = ""
+    """The ``StreamIdleTimeout`` message (window seconds), carried so the
+    finalization diagnostic can state how long the provider was silent."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)

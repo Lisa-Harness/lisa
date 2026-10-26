@@ -195,14 +195,32 @@ def summarize_json_result(tool_output: str) -> str:
     return f"{quote_key}={quote_value[:quote_chars]} {tail}".rstrip()
 
 
-def _track_retrieval_call(state: Any, tool_name: str, tool_arguments: Any) -> None:
+def _track_retrieval_call(
+    state: Any,
+    tool_name: str,
+    tool_arguments: Any,
+    *,
+    tool_def: Any = None,
+) -> None:
     """Count a retrieval-tool call and its distinct argument signature.
 
     Paired fields on ``_TurnState`` give the read-loop nudge its factual
     basis: how many retrieval calls happened and how many repeated
     arguments the model already held.
+
+    Membership is by the tool's resolved ``effect == "read"`` when the
+    catalog definition is available (pack tools like
+    ``coding_read_file`` declare ``effect: read``), falling back to the
+    thread-archive suffix list for definitions the catalog did not
+    surface (the 2026-10-26 loop: a model re-reading one file window at
+    shrinking ranges never registered as retrieval repeats because only
+    ``thread_*`` tools were tracked, so the read-loop nudge kept its
+    "one-shot" silence for the whole 57-iteration burn).
     """
-    if tool_name.rsplit(".", 1)[-1] not in _RETRIEVAL_TOOL_SUFFIXES:
+    if tool_def is not None:
+        if str(getattr(tool_def, "effect", "") or "") != "read":
+            return
+    elif tool_name.rsplit(".", 1)[-1] not in _RETRIEVAL_TOOL_SUFFIXES:
         return
     state.retrieval_calls += 1
     try:
@@ -774,7 +792,14 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
         state.total_tool_calls += 1
         state.step_tool_calls += 1
         state.called_tool_names.add(tool_name)
-        _track_retrieval_call(state, tool_name, tool_arguments)
+        _track_retrieval_call(
+            state,
+            tool_name,
+            tool_arguments,
+            tool_def=(
+                operation_catalog.get(tool_name) or tool_catalog.get(tool_name)
+            ),
+        )
         ledger.record(tool_name)
 
         (
@@ -892,7 +917,12 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
         state.total_tool_calls += 1
         state.step_tool_calls += 1
         state.called_tool_names.add(tool_name)
-        _track_retrieval_call(state, tool_name, tool_arguments)
+        _track_retrieval_call(
+            state,
+            tool_name,
+            tool_arguments,
+            tool_def=(operation_catalog.get(tool_name) or tool_catalog.get(tool_name)),
+        )
         ledger.record(tool_name)
         logger.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
         tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"

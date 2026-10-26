@@ -1385,6 +1385,53 @@ async def test_turn_runner_stalled_stream_aborts_after_idle_timeout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_runner_stream_stall_finalizes_with_partial_work() -> None:
+    """A provider stream that goes silent mid-turn finalizes gracefully.
+
+    Regression for the 2026-10-26 14:20 incident: the watchdog fired
+    after 300s of upstream silence but the ``StreamIdleTimeout``
+    (a ``RuntimeError``) escaped ``run_turn``; the host's generic
+    exception handler rendered "Turn failed" and discarded the whole
+    turn — no thread entry, so the next turn's model was blind to
+    everything the lost turn had done (57 iterations of receipts and
+    transcript erased). The stall is now caught at the iteration
+    boundary like the wall-budget expiry: the turn finalizes with the
+    receipts earlier iterations captured and an honest stream-stall
+    diagnostic, and the thread entry persists.
+    """
+    import asyncio
+
+    def _stalled_stream_fn():
+        async def stream_fn(*_args: Any, **_kwargs: Any):
+            # The upstream accepts the POST and freezes before the first
+            # chunk — the signature in the incident traceback
+            # (``_receive_response_headers`` hung, no chunk ever arrived).
+            if False:  # pragma: no cover — never reached; the sleep hangs first
+                yield StreamedChunk(content="")
+            await asyncio.sleep(30)
+
+        return stream_fn
+
+    hooks = _build_minimal_hooks(
+        complete_fn=_make_stub_complete("should not be reached"), stream_fn=_stalled_stream_fn()
+    )
+
+    async def _no_delta(_content: str, _reasoning: str) -> None:
+        return None
+
+    hooks.models.on_delta = _no_delta
+    with patch("kernel.turn_runner._kernel_settings.stream_idle_timeout_s", 0.05):
+        result = await run_turn(mode_id="default", query="watch the stall", hooks=hooks)
+    # The turn completed instead of raising; the diagnostic names the stall.
+    assert "stream went silent" in result.response_text
+    assert "no chunk" in result.response_text
+    # The turn is not blocked or an operator exit — the thread entry will
+    # persist and the transport returns the prompt normally.
+    assert result.blocked is False
+    assert result.operator_exit == ""
+
+
+@pytest.mark.asyncio
 async def test_turn_runner_healthy_stream_unaffected_by_watchdog() -> None:
     """A stream that keeps producing within the idle window is consumed
     fully — the watchdog never fires on a live generation, even one

@@ -3336,16 +3336,24 @@ async def _iteration_completion_or_expiry(
     turn_budget: TurnBudget | None = None,
     turn_start_mono: float | None = None,
 ) -> Any:
-    """Run the iteration's model call, flagging wall-budget expiry on state.
+    """Run the iteration's model call, flagging budget/stream expiry on state.
 
     When the turn's wall budget kills the in-flight call, sets
     ``state.wall_budget_expired`` (the loop's ``while`` condition breaks on
     it) and returns ``None``; the caller must not record a completion.
-    A non-budget failure still propagates. The expiry surfaces in the
-    finalization instead of as an unstructured error so the receipts
-    earlier iterations captured reach the parent (the 2026-10-21 delegate
-    incident: the registry's hard cancel discarded completed child edits
-    because the child turn never got to finalize).
+    When the provider stream goes silent past ``stream_idle_timeout_s``,
+    the ``StreamIdleTimeout`` is caught here too: the loop finalizes with
+    the receipts earlier iterations captured instead of the timeout
+    escaping ``run_turn`` as an unstructured error that the host renders
+    as "Turn failed" and discards — the discard left no thread entry, so
+    the next turn's model had no record of any of the lost turn's work
+    (the 2026-10-26 14:20 incident: 57 iterations of receipts erased, the
+    operator's mid-turn work invisible to the follow-up turn because the
+    thread jumped from turn 994 to turn 995 with nothing persisted
+    between). Marked on ``state.stream_stalled`` (distinct from
+    ``wall_budget_expired``) so the finalization content can name the real
+    cause honestly.
+    A non-budget, non-stream-stall failure still propagates.
     """
     try:
         return await _model_completion_for_iteration(
@@ -3373,6 +3381,20 @@ async def _iteration_completion_or_expiry(
             state.iteration,
         )
         state.wall_budget_expired = True
+        return None
+    except StreamIdleTimeout as exc:
+        # The stream watchdog fired mid-iteration. Finalize with partial
+        # work — same graceful path as the wall-budget expiry above —
+        # instead of letting the RuntimeError escape run_turn and lose the
+        # whole turn (receipts, transcript, thread entry).
+        log.warning(
+            "provider stream went silent past stream_idle_timeout_s "
+            "(mode=%s, iteration=%d); finalizing with partial work",
+            mode_id,
+            state.iteration,
+        )
+        state.stream_stalled = True
+        state.stream_stall_detail = str(exc)
         return None
 
 
@@ -5963,6 +5985,83 @@ def _build_cap_pause_diagnostic(
     return content
 
 
+def _build_stream_stall_diagnostic(
+    *,
+    state: Any,
+    mode_id: str,
+    log: logging.Logger,
+) -> str:
+    """Build the provider-stream-stall finalization diagnostic.
+
+    The turn broke when the provider stream went silent past
+    ``stream_idle_timeout_s`` (``state.stream_stalled``), not because the
+    model finished or a budget fired. Surface that cause honestly plus the
+    partial work the earlier iterations produced, so the operator can
+    redirect and the follow-up turn's model can read in the thread what
+    was already done.
+    """
+    _last_tool_name = ""
+    if state.effect_receipts:
+        _last = state.effect_receipts[-1]
+        _last_tool_name = str(getattr(_last, "capability_id", "") or "")
+    content = (
+        f"The provider stream went silent and the idle watchdog aborted "
+        f"the generation ({state.stream_stall_detail or 'idle timeout'}) "
+        f"in {mode_id} at iteration {state.iteration}. "
+        f"I did {state.total_tool_calls} tool call(s) before the stall"
+        + (f"; the last was `{_last_tool_name}`" if _last_tool_name else "")
+        + ". Work up to here is preserved in the thread. "
+        "Reply to resume — I'll pick up from the last completed step."
+    )
+    log.info(
+        "turn loop: surfacing stream-stall diagnostic (mode=%s, iteration=%d, "
+        "tool_calls=%d, last_tool=%s)",
+        mode_id,
+        state.iteration,
+        state.total_tool_calls,
+        _last_tool_name,
+    )
+    return content
+
+
+def _yield_fallback_question(
+    *,
+    state: Any,
+    yield_policy: YieldPolicy,
+    max_tool_iterations: int,
+) -> tuple[str, str]:
+    """Build the empty-final-completion fallback question honestly.
+
+    The budget claim is only true when the iteration cap actually fired; an
+    empty final completion at iteration N of N (the 2026-08-30
+    remote-box relapse: kimi-k3:cloud returned empty visible content on
+    1-2 model calls) must NOT be labeled "I've hit my iteration budget" —
+    that fabricated claim is persisted to the thread, the model later
+    reads it back (via the thread manifest or the lisa-thread MCP server)
+    as ground truth, and the pattern re-fires every turn. An authored
+    ``yield_policy.default_question`` still wins in both branches.
+    """
+    if state.iteration >= max_tool_iterations:
+        return (
+            yield_policy.default_question
+            or "I've hit my iteration budget for this turn. How would you like me to proceed?",
+            f"iteration cap {max_tool_iterations} reached with no final content",
+        )
+    return (
+        yield_policy.default_question
+        or (
+            "The model returned an empty response before reaching "
+            "any budget limit. How would you like me to proceed?"
+        ),
+        (
+            f"empty final completion at iteration "
+            f"{state.iteration} of {max_tool_iterations} — budget "
+            f"not exhausted; check the provider response "
+            f"(finish_reason/reasoning extraction)"
+        ),
+    )
+
+
 async def _resolve_empty_turn_content(
     *,
     state: Any,
@@ -5998,142 +6097,143 @@ async def _resolve_empty_turn_content(
     # yield question flip it (the original loop initialized it before the
     # branches — the cap-pause/operator-exit paths leave it False).
     _yielded = False
-    if not content:
-        if state.fork_results and any(result.status != "ok" for result in state.fork_results):
-            _failed_children = [
-                result.target.mode_id for result in state.fork_results if result.status != "ok"
-            ]
-            content = (
-                "Fork child turns failed or were interrupted after read-only calls: "
-                + ", ".join(_failed_children)
-                + ". Their results are unverified."
-            )
-        # ── Cap-pause diagnostic ────────────────────────────────────────
-        # The stuck-in-stage cap (NOT an operator signal) broke the loop
-        # before the model call. Surface a diagnostic so the user knows why
-        # the turn paused and can redirect. This is NOT an operator-initiated
-        # pause — the cap fired because the model was stuck in a loop (often
-        # retrying a failing tool call). The diagnostic lets the user
-        # intervene with the right path or instruction.
-        # ── Cap-pause diagnostic ────────────────────────────────
-        # Built by ``_build_cap_pause_diagnostic`` (last-tool context
-        # and structured operation context).
-        if content:
-            pass
-        elif cap_pause_reason:
-            content = _build_cap_pause_diagnostic(
-                state=state,
-                mode_id=mode_id,
-                cap_pause_reason=cap_pause_reason,
-                log=log,
-            )
-        # ── Operator exit with no content ──────────────────────────────
-        # A PauseAction / StopAction / TerminateAction broke the loop before
-        # the model call. The transport reads ``operator_exit`` to decide
-        # prompt behavior; the operator exit is encoded in
-        # ``terminated``. Do NOT synthesize a yield question — operator
-        # exits do not surface a question (only model-emitted yields and
-        # recovery stalls do). The cap-pause diagnostic above already set
-        # ``content`` for the stuck-in-stage cap case, so skip the fallback
-        # yield paths entirely when the cap diagnostic has already surfaced.
-        elif getattr(state, "capability_limit_hit", False):
-            pending_yield = YieldAction(
-                question=(
-                    "I've reached a resource budget for this turn. "
-                    "How would you like me to proceed?"
-                ),
-                context="capability invocation limit reached",
-            )
-            content = pending_yield.question
-            _yielded = True
-        elif pending_operator_exit:
-            content = ""
-        elif pending_yield is not None:
-            content = pending_yield.question
-            _yielded = True
-        elif _resolve_yield_policy(mode_config, yield_policy_override).allowed:
-            _yield_policy = _resolve_yield_policy(mode_config, yield_policy_override)
-            # Be honest about WHY the turn ended with no content. The budget
-            # claim is only true when the iteration cap actually fired; an
-            # empty final completion at iteration N of N (the 2026-08-30
-            # remote-box relapse: kimi-k3:cloud returned empty visible
-            # content on 1-2 model calls) must NOT be labeled "I've hit my
-            # iteration budget" — that fabricated claim is persisted to the
-            # thread, the model later reads it back (via the thread manifest
-            # or the lisa-thread MCP server) as ground truth, and the
-            # pattern re-fires every turn. An authored
-            # ``yield_policy.default_question`` still wins in both branches.
-            _budget_actually_exhausted = state.iteration >= max_tool_iterations
-            if _budget_actually_exhausted:
-                _fallback_question = _yield_policy.default_question or (
-                    "I've hit my iteration budget for this turn. How would you like me to proceed?"
-                )
-                _fallback_context = (
-                    f"iteration cap {max_tool_iterations} reached with no final content"
-                )
-            else:
-                _fallback_question = _yield_policy.default_question or (
-                    "The model returned an empty response before reaching "
-                    "any budget limit. How would you like me to proceed?"
-                )
-                _fallback_context = (
-                    f"empty final completion at iteration "
-                    f"{state.iteration} of {max_tool_iterations} — budget "
-                    f"not exhausted; check the provider response "
-                    f"(finish_reason/reasoning extraction)"
-                )
-            pending_yield = YieldAction(
-                question=_fallback_question,
-                context=_fallback_context,
-                target_mode_id=_yield_policy.fallback_mode,
-            )
-            content = pending_yield.question
-            _yielded = True
-        else:
-            # Action mode with no yield escape: preserve the legacy forced final.
-            # Diagnostic: log why the loop exited with no usable content so this
-            # class of failure is diagnosable without re-reading the full log.
-            # Common exit causes: max_tool_iterations reached, a hard-failure
-            # guard (entry_failed / handoff cap / fork no_tools) set ``content``,
-            # or the model returned an empty/whitespace completion (often a
-            # reasoning model whose visible answer landed in reasoning_content).
-            log.warning(
-                "turn loop exited with empty content mode=%s iteration=%d/%d "
-                "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
-                "fork_yielded=%s transitioned_to=%s routing_hint=%s",
-                mode_id,
-                state.iteration,
-                max_tool_iterations,
-                state.total_tool_calls,
-                state.handoff_count,
-                state.entry_failed,
-                bool(
-                    state.fork_results is not None
-                    and any(r.status == "no_tools" for r in state.fork_results)
-                ),
-                bool(
-                    state.fork_results is not None
-                    and any(r.status == "yielded" for r in state.fork_results)
-                ),
-                transitioned_to,
-                bool(routing_hint),
-            )
-            # The loop exited due to max_tool_iterations while the model was
-            # still calling tools. Force one final no-tools completion so the
-            # model synthesizes its findings (``_force_final_content_completion``).
-            content, content_source = await _force_final_content_completion(
-                state=state,
-                hooks=hooks,
-                mode_id=mode_id,
-                content=content,
-                content_source=content_source,
-                messages=messages,
-                effective_model_def=effective_model_def,
-                complete=complete,
-                record_model_usage=record_model_usage,
-                log=log,
-                deadline_s=deadline_s,
-            )
+    if content:
+        return content, content_source, _yielded, pending_yield
+    if getattr(state, "stream_stalled", False):
+        # The provider stream went silent past ``stream_idle_timeout_s``
+        # mid-iteration (caught by ``_iteration_completion_or_expiry``, the
+        # same graceful-finalize path as wall-budget expiry). The
+        # diagnostic — not a forced no-tools completion — ends the turn:
+        # the upstream stalled once already; a rescue model call could
+        # hang for another idle window. Name the real cause and the
+        # preserved partial work so the operator can redirect without the
+        # turn's history being erased (the 2026-10-26 14:20 incident: the
+        # uncaught RuntimeError erased 57 iterations of receipts and the
+        # thread entry, so the next turn's model was blind to everything
+        # the lost turn had done).
+        content = _build_stream_stall_diagnostic(state=state, mode_id=mode_id, log=log)
+        return content, content_source, _yielded, pending_yield
+    if state.fork_results and any(result.status != "ok" for result in state.fork_results):
+        _failed_children = [
+            result.target.mode_id for result in state.fork_results if result.status != "ok"
+        ]
+        content = (
+            "Fork child turns failed or were interrupted after read-only calls: "
+            + ", ".join(_failed_children)
+            + ". Their results are unverified."
+        )
+    # ── Cap-pause diagnostic ────────────────────────────────────────
+    # The stuck-in-stage cap (NOT an operator signal) broke the loop
+    # before the model call. Surface a diagnostic so the user knows why
+    # the turn paused and can redirect. This is NOT an operator-initiated
+    # pause — the cap fired because the model was stuck in a loop (often
+    # retrying a failing tool call). The diagnostic lets the user
+    # intervene with the right path or instruction.
+    # ── Cap-pause diagnostic ────────────────────────────────
+    # Built by ``_build_cap_pause_diagnostic`` (last-tool context
+    # and structured operation context).
+    if content:
+        pass
+    elif cap_pause_reason:
+        content = _build_cap_pause_diagnostic(
+            state=state,
+            mode_id=mode_id,
+            cap_pause_reason=cap_pause_reason,
+            log=log,
+        )
+    # ── Operator exit with no content ──────────────────────────────
+    # A PauseAction / StopAction / TerminateAction broke the loop before
+    # the model call. The transport reads ``operator_exit`` to decide
+    # prompt behavior; the operator exit is encoded in
+    # ``terminated``. Do NOT synthesize a yield question — operator
+    # exits do not surface a question (only model-emitted yields and
+    # recovery stalls do). The cap-pause diagnostic above already set
+    # ``content`` for the stuck-in-stage cap case, so skip the fallback
+    # yield paths entirely when the cap diagnostic has already surfaced.
+    elif getattr(state, "capability_limit_hit", False):
+        pending_yield = YieldAction(
+            question=(
+                "I've reached a resource budget for this turn. "
+                "How would you like me to proceed?"
+            ),
+            context="capability invocation limit reached",
+        )
+        content = pending_yield.question
+        _yielded = True
+    elif pending_operator_exit:
+        content = ""
+    elif pending_yield is not None:
+        content = pending_yield.question
+        _yielded = True
+    elif _resolve_yield_policy(mode_config, yield_policy_override).allowed:
+        _yield_policy = _resolve_yield_policy(mode_config, yield_policy_override)
+        # Be honest about WHY the turn ended with no content. The budget
+        # claim is only true when the iteration cap actually fired; an
+        # empty final completion at iteration N of N (the 2026-08-30
+        # remote-box relapse: kimi-k3:cloud returned empty visible
+        # content on 1-2 model calls) must NOT be labeled "I've hit my
+        # iteration budget" — that fabricated claim is persisted to the
+        # thread, the model later reads it back (via the thread manifest
+        # or the lisa-thread MCP server) as ground truth, and the
+        # pattern re-fires every turn. An authored
+        # ``yield_policy.default_question`` still wins in both branches.
+        _fallback_question, _fallback_context = _yield_fallback_question(
+            state=state,
+            yield_policy=_yield_policy,
+            max_tool_iterations=max_tool_iterations,
+        )
+        pending_yield = YieldAction(
+            question=_fallback_question,
+            context=_fallback_context,
+            target_mode_id=_yield_policy.fallback_mode,
+        )
+        content = pending_yield.question
+        _yielded = True
+    else:
+        # Action mode with no yield escape: preserve the legacy forced final.
+        # Diagnostic: log why the loop exited with no usable content so this
+        # class of failure is diagnosable without re-reading the full log.
+        # Common exit causes: max_tool_iterations reached, a hard-failure
+        # guard (entry_failed / handoff cap / fork no_tools) set ``content``,
+        # or the model returned an empty/whitespace completion (often a
+        # reasoning model whose visible answer landed in reasoning_content).
+        log.warning(
+            "turn loop exited with empty content mode=%s iteration=%d/%d "
+            "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
+            "fork_yielded=%s transitioned_to=%s routing_hint=%s",
+            mode_id,
+            state.iteration,
+            max_tool_iterations,
+            state.total_tool_calls,
+            state.handoff_count,
+            state.entry_failed,
+            bool(
+                state.fork_results is not None
+                and any(r.status == "no_tools" for r in state.fork_results)
+            ),
+            bool(
+                state.fork_results is not None
+                and any(r.status == "yielded" for r in state.fork_results)
+            ),
+            transitioned_to,
+            bool(routing_hint),
+        )
+        # The loop exited due to max_tool_iterations while the model was
+        # still calling tools. Force one final no-tools completion so the
+        # model synthesizes its findings (``_force_final_content_completion``).
+        content, content_source = await _force_final_content_completion(
+            state=state,
+            hooks=hooks,
+            mode_id=mode_id,
+            content=content,
+            content_source=content_source,
+            messages=messages,
+            effective_model_def=effective_model_def,
+            complete=complete,
+            record_model_usage=record_model_usage,
+            log=log,
+            deadline_s=deadline_s,
+        )
     return content, content_source, _yielded, pending_yield
 
 
@@ -10174,6 +10274,7 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
         _state.iteration < max_tool_iterations
         and not _yielded
         and not _state.wall_budget_expired
+        and not _state.stream_stalled
         and not _has_terminal_dispatch_failure(_state, _max_handoffs_per_turn)
     ):
         _state.iteration += 1
