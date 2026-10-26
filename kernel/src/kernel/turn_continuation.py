@@ -83,14 +83,24 @@ class TurnContinuation(BaseModel):
 def resume_after_pause(saved: TurnContinuation, note: str) -> TurnContinuation:
     """Continue a paused loop in place with the operator's reply appended.
 
-    A cap pause grants one more of the turn's original allowances; the
-    cumulative counters stay, so every resume is bounded and accounted.
+    A cap pause grants one more of the turn's original allowances plus a
+    fresh stage budget; the cumulative counters stay, so every resume is
+    bounded and accounted.
     """
     state = saved.restore_state()
     if note.strip() and state.messages is not None:
         state.messages.append({"role": "user", "content": note.strip()})
-    update: dict[str, Any] = {"state_json": capture_state(state)}
+    update: dict[str, Any] = {}
     if saved.reason == "cap":
+        # The pause snapshot leaves the stage-stall counter one below the
+        # cap; restored as-is, the resumed loop's first-pass increment
+        # re-hits the stuck-in-stage cap before any model call — the
+        # operator's note never reaches the model and the harness stamps a
+        # second cap diagnostic onto a turn that did no work (the
+        # 2026-10-25 turns 970/971 incident). A fresh allowance comes with
+        # a fresh stage budget, matching a new turn's counter reset.
+        state.step_iteration = 0
+        state.step_tool_calls = 0
         base = saved.base_turn_budget or saved.turn_budget
         update["max_iterations"] = saved.max_iterations + (
             saved.base_max_iterations or saved.max_iterations
@@ -103,6 +113,7 @@ def resume_after_pause(saved: TurnContinuation, note: str) -> TurnContinuation:
                     if getattr(saved.turn_budget, field)
                 }
             )
+    update["state_json"] = capture_state(state)
     return saved.model_copy(update=update)
 
 

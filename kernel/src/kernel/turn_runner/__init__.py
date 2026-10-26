@@ -9983,11 +9983,12 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
         tuple[str | None, str | None, list[ForkChildResult] | None],
         (None, None, None),
     )
-    # A lifecycle action can break the loop on its FIRST pass — a resumed
-    # continuation enters with its restored stall counter one below the
-    # stuck-in-stage cap (``_save_pause_continuation`` decremented before
-    # snapshotting) and the first pass's own increments reach it, so the
-    # cap pauses before any iteration body assigns the model. Seed the
+    # A lifecycle action can break the loop on its FIRST pass — a raw pause
+    # continuation restored without ``resume_after_pause`` enters with its
+    # stall counter one below the stuck-in-stage cap
+    # (``_save_pause_continuation`` decremented before snapshotting) and
+    # the first pass's own increments reach it, so the cap pauses before
+    # any iteration body assigns the model. Seed the
     # effective model from the pre-gate resolution so
     # ``_finalize_turn_result`` always receives a defined model (each loop
     # pass overwrites it; the 2026-10-12 18:00 incident: an unbound

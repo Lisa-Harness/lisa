@@ -341,3 +341,77 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
     assert resumed.operator_exit == "paused"
     assert resumed.continuation is not None
     assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_cap_resume_grants_a_fresh_stage_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cap resume's first pass reaches the model instead of re-pausing.
+
+    Regression for the 2026-10-25 turns 970/971 incident: the pause
+    snapshot leaves ``step_iteration`` one below the stuck-in-stage cap,
+    and ``resume_after_pause`` restored it unchanged. The resumed loop's
+    first-pass increment re-hit the cap and paused before any model call,
+    so the operator's resume note never reached the model while the
+    harness stamped a second "I've hit my iteration budget" diagnostic
+    onto a turn that did no work. ``resume_after_pause`` now resets the
+    stage counters alongside the granted allowance; the raw continuation
+    restored without it still re-pauses (the prior test).
+    """
+
+    async def execute(ctx: Any) -> ToolResult:
+        return ToolResult(output_text=f"result:{ctx.tool_id}")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "read": ToolDefinition(
+                tool_id="read",
+                pack_id="test",
+                effect="read",
+                implementation_module=SimpleNamespace(execute=execute),
+            )
+        },
+    )
+    requests: list[list[dict[str, Any]]] = []
+
+    async def complete(**kwargs: Any) -> Any:
+        requests.append(copy.deepcopy(kwargs["messages"]))
+        if len(requests) >= 3:
+            return SimpleNamespace(content="finished", tool_calls=[])
+        return SimpleNamespace(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"read-{len(requests)}",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        )
+
+    def forbidden_replay() -> list[dict[str, Any]]:
+        raise AssertionError("resume reconstructed the turn")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        identity=TurnIdentity(workspace_id="w", user_id="u", task_id="task"),
+    )
+    monkeypatch.setattr("kernel.config.settings.stage_nudge_cap", 3)
+    paused = await run_turn(mode_id="default", query="do it", hooks=hooks, max_tool_iterations=10)
+    assert paused.operator_exit == "paused"
+    assert paused.continuation is not None
+    assert paused.continuation.reason == "cap"
+    assert len(requests) == 2
+
+    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    saved = resume_after_pause(
+        TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
+        "keep going",
+    )
+    resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
+    # The model ran and saw the note; the stall cap did not re-fire.
+    assert resumed.operator_exit == ""
+    assert resumed.response_text == "finished"
+    assert requests[2][-1] == {"role": "user", "content": "keep going"}
+    assert len(requests) == 3

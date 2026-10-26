@@ -4,6 +4,16 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Resuming a capped turn no longer re-pauses before any model call. The
+  pause snapshot leaves the stuck-in-stage counter one below the cap;
+  `resume_after_pause` now resets the stage counters alongside the
+  granted iteration allowance, so the operator's reply reaches the model
+  instead of yielding a second harness-authored exhaustion diagnostic on a
+  turn that did no work (the 2026-10-25 turns 970/971 incident). A raw
+  continuation restored without the resume path still re-pauses cleanly.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
@@ -19,8 +29,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 ### Fixed
 
 - The stuck-in-stage guard counts only iterations in the current turn, not
-  earlier conversation turns in the same workflow mode. New turns and operator
-  resumes get a fresh stage budget; within-turn nudges and caps still apply.
+  earlier conversation turns in the same workflow mode. New turns get a fresh
+  stage budget; within-turn nudges and caps still apply.
 - Git subdirectory pack installs use the pack key for package-name policy
   checks, including URLs with multiple fragment parameters.
 - In-process memory server initialization uses the default backup retention
