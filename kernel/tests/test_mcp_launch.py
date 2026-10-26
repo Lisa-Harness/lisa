@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from kernel.mcp_binary import MCPBinaryDownload
@@ -822,7 +823,8 @@ def test_build_result_detects_input_required_payload() -> None:
 
     assert result.input_required is True
     assert result.input_request == {"prompt": "Which account?", "schema": {"type": "string"}}
-    assert result.output_text == "Which account?"
+    assert result.output_text.startswith("Which account?")
+    assert "input_required" in result.output_text
     assert result.is_error is False
 
 
@@ -853,3 +855,100 @@ def test_build_result_plain_result_has_no_input_state() -> None:
 
     assert result.input_required is False
     assert result.input_request is None
+
+
+class _FakeInputRequiredResult:
+    """The protocol's ``InputRequiredResult`` shape (not a CallToolResult).
+
+    It carries no ``content`` at all — the absence of an answer is the point —
+    and identifies itself through ``result_type``.
+    """
+
+    result_type = "input_required"
+
+    def __init__(self) -> None:
+        self.input_requests = {"confirm": {"method": "elicitation", "prompt": "Which account?"}}
+        self.request_state = "opaque-state-abc"
+
+
+def test_build_result_detects_protocol_input_required_result() -> None:
+    """The real ``InputRequiredResult`` is recognized by ``result_type``.
+
+    Regression: the first pass detected only ``meta["input_required"]``, a
+    convention the protocol's result type does not use. The shape servers
+    actually send was neither recognized as a pause nor kept connected.
+    """
+    from kernel.tools.mcp_client import MCPToolPool
+
+    result = MCPToolPool._build_result("banking.transfer", _FakeInputRequiredResult())
+
+    assert result.input_required is True
+    assert result.is_error is False
+    assert result.input_request is not None
+    assert result.input_request["request_state"] == "opaque-state-abc"
+    assert "confirm" in result.input_request["input_requests"]
+    # The model must be able to see that the tool paused rather than answered.
+    assert "input_required" in result.output_text
+    assert "opaque-state-abc" in result.output_text
+
+
+def test_build_result_input_required_keeps_server_text_when_present() -> None:
+    """A legacy marker with its own text leads with that text, then the notice."""
+    from kernel.tools.mcp_client import MCPToolPool
+
+    result = MCPToolPool._build_result(
+        "banking.transfer",
+        _FakeSdkResult(
+            content=[_FakeContentBlock("Which account?")],
+            meta={"input_required": True},
+        ),
+    )
+
+    assert result.output_text.startswith("Which account?")
+    assert "input_required" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_input_required_call_keeps_the_session_connected() -> None:
+    """An input-required answer must not be treated as a transport failure.
+
+    Regression for the disconnect: ``call_tool`` was invoked without
+    ``allow_input_required``, so the SDK raised a ``RuntimeError`` that the
+    lenient-retry guard could not match (it looks for a strict-model
+    ``CallToolResult`` validation failure). Control fell through to the
+    generic error path, which dropped the server session — disconnecting a
+    healthy server for asking a legitimate question.
+    """
+    from kernel.tools.mcp_client import MCPToolPool
+
+    class _Session:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def call_tool(self, name: str, arguments: Any, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return _FakeInputRequiredResult()
+
+    pool = MCPToolPool([])
+    session = _Session()
+    disconnected: list[str] = []
+
+    async def _record_disconnect(server_id: str) -> None:
+        disconnected.append(server_id)
+
+    pool._disconnect_server = _record_disconnect  # type: ignore[method-assign]
+
+    result = await pool._call_tool_with_lenient_retry(
+        session,
+        "transfer",
+        {"amount": 1},
+        config=None,
+        server_id="banking",
+        tool_id="banking.transfer",
+    )
+
+    # The pause is requested, not raised.
+    assert session.calls == [{"allow_input_required": True}]
+    assert result.input_required is True
+    assert result.is_error is False
+    assert disconnected == []

@@ -33,6 +33,7 @@ Design — MCP at the edges, Protocols in the middle:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -147,6 +148,35 @@ def _find_runtime_error(exc: BaseException) -> RuntimeError | None:
         if isinstance(node, BaseExceptionGroup):
             queue.extend(node.exceptions)
     return None
+
+
+def _model_to_payload(value: Any) -> Any:
+    """Render one pydantic result model as plain JSON-able data.
+
+    Input-request payloads are typed pydantic models from ``mcp_types``. The
+    pause is carried to the model and the thread, both of which need plain
+    data; this dumps by alias (the wire spelling) and excludes unset fields so
+    the rendered request stays readable.
+
+    Args:
+        value: A pydantic model, mapping, or scalar from an input request.
+
+    Returns:
+        Plain Python data, or ``str(value)`` for shapes that cannot be dumped.
+    """
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(by_alias=True, mode="json", exclude_none=True)
+        except Exception:  # pylint: disable=broad-except
+            return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(key): _model_to_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_model_to_payload(item) for item in value]
+    return str(value)
 
 
 def _safe_exc_desc(exc: BaseException | None) -> str:
@@ -366,12 +396,16 @@ class SyntheticToolSpec:
 class MCPToolResult:
     """Result of one MCP tool call.
 
-    ``input_required`` is True when the server paused the call mid-flight
-    for user input (the MCP input-required / multi-round-tool-result shape:
-    the result's ``meta`` carries an input request instead of a final
-    answer). ``input_request`` carries the structured request payload when
-    present, so callers can surface a pause instead of treating the
-    partial text as the tool's answer.
+    ``input_required`` is True when the server paused the call mid-flight for
+    user input — the protocol's ``InputRequiredResult``, which carries
+    ``input_requests`` and an opaque ``request_state`` instead of an answer. A
+    server using the legacy ``_meta.input_required`` marker sets it too.
+    ``input_request`` carries the structured request (``input_requests`` /
+    ``request_state``) when present, and ``output_text`` carries a rendered
+    notice so the model sees the pause rather than an empty answer.
+
+    A paused call is NOT an error: the session stays connected so the caller
+    can retry with the answers.
     """
 
     tool_id: str
@@ -2285,9 +2319,20 @@ class MCPToolPool:
         servers do not hit modern-protocol validation. A genuine
         connection/transport error disconnects the server immediately — no
         restart from the data path.
+
+        An input-required result is requested rather than raised:
+        ``allow_input_required=True`` makes the SDK return the pause so the
+        caller can surface it. Without the flag the SDK raises a
+        ``RuntimeError`` that this method cannot tell apart from a transport
+        failure, and the server is disconnected for asking a legitimate
+        question.
         """
         try:
-            result = await session.call_tool(bare_name, arguments=mapped)
+            result = await session.call_tool(
+                bare_name,
+                arguments=mapped,
+                allow_input_required=True,
+            )
         except Exception as exc:  # pylint: disable=broad-except
             if (
                 config is not None
@@ -2522,33 +2567,76 @@ class MCPToolPool:
     def _build_result(tool_id: str, result: Any) -> MCPToolResult:
         """Convert an MCP session call result into an MCPToolResult.
 
-        An input-required result (the server paused mid-call for user
-        input) is detected from the result's ``meta`` and surfaced via
-        ``input_required`` / ``input_request`` instead of being flattened
-        into ``output_text`` — the partial text is still carried, but the
-        pause state is no longer swallowed.
+        An input-required result (the server paused the call mid-flight for
+        user input) is a distinct result type, not a ``CallToolResult``: it
+        carries ``input_requests`` and an opaque ``request_state`` to echo on
+        the retry. It is surfaced through ``input_required`` /
+        ``input_request`` instead of being flattened into ``output_text``, so
+        callers can pause rather than treat the absence of an answer as one.
+
+        Two shapes are recognized: the protocol's ``InputRequiredResult``
+        (discriminated by ``result_type``), and a legacy
+        ``_meta.input_required`` marker some servers put on a normal result.
         """
         text_parts: list[str] = []
-        for content_block in result.content or []:
+        for content_block in getattr(result, "content", None) or []:
             text = getattr(content_block, "text", None)
             if isinstance(text, str):
                 text_parts.append(text)
-        meta = getattr(result, "meta", None) or {}
-        input_request = meta.get("input_required") if isinstance(meta, dict) else None
+
+        input_request: dict[str, Any] | None = None
         input_required = False
-        if isinstance(input_request, dict):
+
+        # Protocol shape: the result IS the input request.
+        if str(getattr(result, "result_type", "")) == "input_required":
             input_required = True
-        elif isinstance(input_request, bool):
-            # A bare boolean flag with no payload still signals the pause.
-            input_required = input_request
-            input_request = None
+            requests = getattr(result, "input_requests", None)
+            payload: dict[str, Any] = {}
+            if isinstance(requests, dict) and requests:
+                payload["input_requests"] = {
+                    str(key): _model_to_payload(value) for key, value in requests.items()
+                }
+            request_state = getattr(result, "request_state", None)
+            if isinstance(request_state, str) and request_state:
+                payload["request_state"] = request_state
+            input_request = payload
+
+        # Legacy shape: a normal result flagged through ``_meta``.
+        if not input_required:
+            meta = getattr(result, "meta", None) or {}
+            marker = meta.get("input_required") if isinstance(meta, dict) else None
+            if isinstance(marker, dict):
+                input_required = True
+                input_request = marker
+            elif isinstance(marker, bool):
+                input_required = marker
+                input_request = None
+
+        output_text = "\n".join(text_parts) if text_parts else "Done"
+        if input_required:
+            # The pause must reach the model, not just the kernel: both
+            # dispatch paths render this field, so a structural notice here is
+            # what turns "the server asked a question" into something the model
+            # can act on. The server's own text (if any) leads.
+            notice = {
+                "status": "input_required",
+                "detail": (
+                    "The tool paused before answering and needs input. Retry the "
+                    "same call with the answers when you have them, or tell the "
+                    "operator what you need."
+                ),
+                "request": input_request or {},
+            }
+            rendered = json.dumps(notice, indent=2, sort_keys=True)
+            output_text = f"{output_text}\n{rendered}" if text_parts else rendered
+
         return MCPToolResult(
             tool_id=tool_id,
-            output_text="\n".join(text_parts) if text_parts else "Done",
+            output_text=output_text,
             is_error=bool(getattr(result, "is_error", False)),
             raw=result,
             input_required=input_required,
-            input_request=input_request if isinstance(input_request, dict) else None,
+            input_request=input_request,
         )
 
     async def aclose(self) -> None:

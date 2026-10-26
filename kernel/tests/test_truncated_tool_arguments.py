@@ -54,7 +54,9 @@ async def test_truncated_arguments_never_dispatch(
         async def list_tools(self, *args: Any, **kwargs: Any) -> list[Any]:
             return []
 
-        async def call_tool(self, tool_id: str, _args: Any) -> Any:  # pragma: no cover
+        async def call_tool(
+            self, tool_id: str, _args: Any, **_kwargs: Any
+        ) -> Any:  # pragma: no cover
             dispatched.append(tool_id)
             raise AssertionError("pool dispatch must not run for a truncated call")
 

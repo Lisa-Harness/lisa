@@ -40,7 +40,9 @@ class _FakeSession:
     def __init__(self, text: str = "hello world") -> None:
         self._text = text
 
-    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
+    async def call_tool(
+        self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+    ) -> _FakeResult:
         return _FakeResult(self._text)
 
 

@@ -178,7 +178,9 @@ class _FakeSession:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
+    async def call_tool(
+        self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+    ) -> _FakeResult:
         self.calls.append((tool_id, dict(arguments)))
         return _FakeResult()
 

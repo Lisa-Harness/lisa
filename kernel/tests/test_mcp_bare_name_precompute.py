@@ -56,7 +56,9 @@ class _FakeSession:
     async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> _FakeResult:
         return _FakeResult(tools=self._tools)
 
-    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
+    async def call_tool(
+        self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+    ) -> _FakeResult:
         return _FakeResult(text=f"server:{tool_id}")
 
 

@@ -248,7 +248,9 @@ async def test_mcp_alias_tool_redirects_to_server_tool(monkeypatch: pytest.Monke
         is_error = False
 
     class _FakeSession:
-        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:  # type: ignore[no-untyped-def]
+        async def call_tool(
+            self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> _FakeResult:  # type: ignore[no-untyped-def]
             assert tool_id == "real_search"
             assert arguments.get("user_id") == "default"
             return _FakeResult()
@@ -334,7 +336,9 @@ async def test_call_tool_scoped_routes_to_named_server(monkeypatch: pytest.Monke
         def __init__(self, owner: str) -> None:
             self.owner = owner
 
-        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:  # type: ignore[no-untyped-def]
+        async def call_tool(
+            self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> _FakeResult:  # type: ignore[no-untyped-def]
             seen.append(self.owner)
             return _FakeResult()
 
@@ -420,7 +424,9 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
         is_error = False
 
     class _FakeSession:
-        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:  # type: ignore[no-untyped-def]
+        async def call_tool(
+            self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> _FakeResult:  # type: ignore[no-untyped-def]
             return _FakeResult()
 
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> Any:
@@ -493,7 +499,9 @@ async def test_mcp_alias_tool_target_server_id_routes_scoped(
         def __init__(self, owner: str) -> None:
             self.owner = owner
 
-        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:  # type: ignore[no-untyped-def]
+        async def call_tool(
+            self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> _FakeResult:  # type: ignore[no-untyped-def]
             routed.append(self.owner)
             return _FakeResult()
 
@@ -589,7 +597,9 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
                 ]
             )
 
-        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
+        async def call_tool(
+            self, tool_id: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> _FakeResult:
             return _FakeResult(text=f"server:{tool_id}")
 
     config = MCPClientConfig(
