@@ -58,15 +58,24 @@ permissive action mode and running away there.
 Landed:
 
 - `probe` mode in the bash pack, delegate-only, with its catalog
-  regression test. The read-loop nudge (now authored Markdown:
-  `prompts/sub_turn/read_loop_nudge.md`) points stuck turns at a bounded
-  `probe` delegate instead of an open-ended shell child; the delegate
-  instruction (`delegate.md`) names probe as the bounded diagnostic
-  target.
+  regression test. The read-loop nudge is now authored Markdown
+  (`prompts/sub_turn/read_loop_nudge.md`) and describes the bounded
+  delegate *shape* — tightly scoped query, small `max_tool_iterations`,
+  prefer read-only targets — without naming any pack's mode: the
+  framework recommends contracts, not installed-content vocabulary.
+  Likewise the delegate instruction (`delegate.md`) describes when to
+  pass a small iteration cap and prefer read-only targets. The
+  recommendation of `probe` as the shell-workload complement belongs to
+  the bash pack's own content (its mode descriptions), not to core.
 - `lisa-pack-okf` installed in the runtime environment, resolving
   `okf_emit_concept` for the modes that reference it.
 - Host `.env` retuned from the corpus: nudge threshold 9, stage cap 30,
   child caps 40 — see the inline evidence comments there.
+
+Layering rule this phase established: **framework-owned prose (kernel
+fixtures, core pack prompts, operation instructions) never names a
+mode owned by another pack.** Modes advertise themselves; the framework
+describes shapes and lets the installed catalog speak.
 
 ### Phase 2 — mode surgery
 
@@ -83,15 +92,16 @@ Landed:
   the parent's stream instead of going silent (the StreamIdleTimeout
   turn-loss path).
 - Per-mode child budget defaults: the delegate operation's
-  `timeout_seconds` is the child wall budget; probe-class children want
-  far smaller budgets than coding children. Mode frontmatter gains a
+  `timeout_seconds` is the child wall budget; diagnostic-class children
+  want far smaller budgets than coding children. Mode frontmatter gains a
   declarable child-budget shape.
 
 ## Regression gates
 
 - **Runaway delegate**: a packstest scenario that drives a stuck coding
-  turn to the read-loop nudge and asserts the delegate target is
-  `probe` with a bounded `max_tool_iterations` — never `shell`.
+  turn to the read-loop nudge and asserts the recommended delegate
+  shape is bounded (small `max_tool_iterations`) and read-only-first —
+  and that framework-owned prose names no other pack's mode.
 - **Probe contract**: the bash pack catalog test pins `routable: false`,
   `bash_run`-only tool surface, posture pre-warm, and the read-only
   contract prose.
