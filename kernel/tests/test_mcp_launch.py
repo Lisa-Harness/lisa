@@ -12,7 +12,9 @@ Covers:
 
 from __future__ import annotations
 
+import contextlib
 import os
+from collections.abc import AsyncIterator
 
 import pytest
 from kernel.mcp_binary import MCPBinaryDownload
@@ -684,3 +686,97 @@ def test_filter_tools_allow_and_deny_combined() -> None:
     )
     assert len(result) == 2
     assert {t.name for t in result} == {"a", "c"}
+
+
+# ── protocol_version pin (F1: stateless-migration compat) ────────────────────
+
+
+def test_compile_mcp_config_threads_protocol_version() -> None:
+    """The manifest's ``protocol_version`` pin rides through to the config."""
+    spec = MCPServerSpec(
+        server_id="modern-remote",
+        runtime_kind=RuntimeKind.HTTP,
+        url="http://127.0.0.1:9000/mcp",
+        protocol_version="2026-07-28",
+    )
+
+    config = compile_mcp_config(spec)
+
+    assert config is not None
+    assert config.protocol_version == "2026-07-28"
+
+
+def test_compile_mcp_config_protocol_version_defaults_none() -> None:
+    """Without a pin, the config keeps the normal negotiation chain."""
+    spec = MCPServerSpec(
+        server_id="legacy-remote",
+        runtime_kind=RuntimeKind.HTTP,
+        url="http://127.0.0.1:9000/mcp",
+    )
+
+    config = compile_mcp_config(spec)
+
+    assert config is not None
+    assert config.protocol_version is None
+
+
+@pytest.mark.asyncio
+async def test_connect_http_adopts_declared_protocol_version_without_negotiation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned config connects by adopting directly, never negotiating.
+
+    The declarative pin exists so a server migrating to the modern stateless
+    protocol connects without the failing ``negotiate_auto`` →
+    ``initialize()`` round-trip: driving ``_connect_http`` with a fake
+    transport must produce exactly one ``session.adopt()`` call carrying
+    the declared version, and ``negotiate_auto`` must never be called.
+    """
+    from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+
+    config = MCPClientConfig(
+        server_id="modern-remote",
+        command="",
+        args=[],
+        url="https://mcp.example.internal/mcp",
+        runtime_kind="http",
+        protocol_version="2026-07-28",
+    )
+    pool = MCPToolPool([config])
+
+    adopted: list[object] = []
+    negotiate_calls: list[object] = []
+
+    class _FakeSession:
+        def adopt(self, discover_result: object) -> None:
+            adopted.append(discover_result)
+
+    @contextlib.asynccontextmanager
+    async def fake_streamable_client(
+        url: str, **kwargs: object
+    ) -> AsyncIterator[tuple[object, object]]:
+        yield (object(), object())
+
+    @contextlib.asynccontextmanager
+    async def fake_client_session(read: object, write: object) -> AsyncIterator[_FakeSession]:
+        yield _FakeSession()
+
+    async def fake_negotiate_auto(session: object) -> None:
+        negotiate_calls.append(session)
+
+    # _connect_http imports these names from the mcp.client package inside
+    # the function body, so patch them at their source modules.
+    import mcp.client._probe as mcp_probe
+    import mcp.client.session as mcp_session
+    import mcp.client.streamable_http as mcp_streamable
+
+    monkeypatch.setattr(mcp_probe, "negotiate_auto", fake_negotiate_auto)
+    monkeypatch.setattr(mcp_session, "ClientSession", fake_client_session)
+    monkeypatch.setattr(mcp_streamable, "streamable_http_client", fake_streamable_client)
+
+    await pool._connect_http(config)
+
+    assert len(adopted) == 1
+    discover_result = adopted[0]
+    assert discover_result.supported_versions == ["2026-07-28"]
+    assert negotiate_calls == [], "negotiate_auto must never run for a pinned config"

@@ -93,6 +93,25 @@ selector. The runtime downloads only selected implementations, verifies the
 asset against the release's `checksums.txt`, and caches it under
 `<data_dir>/cache/mcp-binaries/`.
 
+#### HTTP protocol-version compatibility
+
+Remote `runtime_kind: http` servers migrate to the modern stateless MCP
+protocol (version `2026-07-28`) at their own pace. The pool's connect-time
+strategy, in order:
+
+| Server state | Connect behavior |
+| --- | --- |
+| Speaks `server/discover` | `negotiate_auto` probes it first; the advertised version is adopted. |
+| Legacy only (no `server/discover`) | `negotiate_auto` falls back to the `initialize()` handshake. |
+| Modern version, handshake rejects it | The reactive fallback parses the version out of the rejection and adopts it directly. |
+| `protocol_version:` pinned in the manifest | Negotiation is skipped entirely; the declared version is adopted directly. |
+
+The `protocol_version:` manifest field (HTTP servers only) is the
+declarative escape hatch for the third row: a server that advertises a
+modern version its own handshake rejects connects without the failing
+round-trip. Stdio and in-process servers are unaffected — they negotiate
+through their own transport and never see this path.
+
 ### Approvals, Policy & Recovery
 
 | Module | Responsibility |

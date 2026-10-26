@@ -57,6 +57,70 @@ servers:
     assert specs[0].headers["Authorization"] == "Bearer tok"
 
 
+def test_load_manifest_parses_protocol_version_pin(tmp_path: Path) -> None:
+    """``protocol_version:`` pins the HTTP server's protocol version.
+
+    A server migrating to the modern stateless protocol (e.g. ``2026-07-28``)
+    can declare its version so the pool adopts it directly at connect time
+    instead of negotiating (whose ``initialize()`` fallback rejects the
+    modern version the server itself advertises).
+    """
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: modern-remote
+    runtime_kind: http
+    url: "https://mcp.example.internal/mcp"
+    protocol_version: "2026-07-28"
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_mcp_server_manifest(manifest)
+
+    assert specs[0].protocol_version == "2026-07-28"
+
+
+def test_load_manifest_rejects_protocol_version_on_non_http(tmp_path: Path) -> None:
+    """``protocol_version`` is only meaningful for HTTP servers."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: stdio-server
+    runtime_kind: npx
+    npx_package: "@example/mcp"
+    protocol_version: "2026-07-28"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MCPServerManifestError, match=r"protocol_version.*runtime_kind=http"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_rejects_empty_protocol_version(tmp_path: Path) -> None:
+    """A set-but-empty ``protocol_version`` is a config error, not a pin."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: modern-remote
+    runtime_kind: http
+    url: "https://mcp.example.internal/mcp"
+    protocol_version: ""
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MCPServerManifestError, match="non-empty string"):
+        load_mcp_server_manifest(manifest)
+
+
 def test_load_manifest_parses_servers(tmp_path: Path) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(

@@ -245,6 +245,7 @@ def compile_mcp_config(
         url=spec.url,
         headers=dict(spec.headers),
         auth=spec.auth,
+        protocol_version=spec.protocol_version,
         warm=spec.warm,
         required=spec.required,
         aliases=spec.aliases,

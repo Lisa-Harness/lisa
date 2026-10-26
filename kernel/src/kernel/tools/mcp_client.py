@@ -243,6 +243,15 @@ class MCPClientConfig:
     headers: dict[str, str] = field(default_factory=dict)
     auth: Any = None
     runtime_kind: str | None = None
+    protocol_version: str | None = None
+    """Declarative MCP protocol version pin for HTTP servers (e.g.
+    ``"2026-07-28"``). When set, the pool skips protocol negotiation at
+    connect time and adopts this version directly via ``session.adopt()``,
+    so a server whose handshake rejects the version it advertises connects
+    without the failing round-trip. ``None`` (default) keeps the normal
+    ``negotiate_auto`` probe → ``initialize()`` fallback → reactive adopt
+    chain unchanged. Set from ``MCPServerSpec.protocol_version`` by the
+    compiler; only meaningful for HTTP configs."""
     """Optional :class:`~kernel.mcp_launch.policy.AuthSpec` for network HTTP
     servers. When set, the pool resolves auth at connect time (static bearer
     re-read per connect; oauth2-pkce via the SDK auth provider). None keeps
@@ -1072,6 +1081,41 @@ class MCPToolPool:
         self._sessions[config.server_id] = session
         self._last_errors.pop(config.server_id, None)
 
+    def _adopt_declared_protocol_version(
+        self,
+        config: MCPClientConfig,
+        session: Any,
+    ) -> None:
+        """Adopt the manifest-declared protocol version without negotiating.
+
+        The manifest's ``protocol_version:`` pin (see
+        :attr:`MCPServerSpec.protocol_version`) declares that this server
+        speaks a modern stateless protocol version (e.g. ``2026-07-28``).
+        Negotiation would fail for such servers — ``negotiate_auto`` probes
+        ``server/discover`` and falls back to ``initialize()``, which
+        rejects the modern version the server itself advertises — so the
+        declared version is adopted directly via ``session.adopt()`` with
+        a synthesized ``DiscoverResult``, skipping the failing
+        round-trips entirely.
+        """
+        version = config.protocol_version
+        assert version is not None
+        logger.info(
+            "MCP server %s: adopting manifest-declared protocol version %s without negotiation.",
+            config.server_id,
+            version,
+        )
+        import mcp_types as _mcp_types
+
+        discover_result = _mcp_types.DiscoverResult(
+            supported_versions=[version],
+            capabilities=_mcp_types.ServerCapabilities(),
+            result_type="complete",
+            ttl_ms=0,
+            cache_scope="public",
+        )
+        session.adopt(discover_result)
+
     def _adopt_modern_protocol_version(
         self,
         config: MCPClientConfig,
@@ -1152,23 +1196,30 @@ class MCPToolPool:
                 streamable_http_client(config.url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
-            try:
-                await negotiate_auto(session)
-            except RuntimeError as exc:
-                # negotiate_auto fell back to initialize(), which raised
-                # because the server responded with a modern protocol
-                # version (e.g. "2026-07-28") that the handshake path
-                # rejects. Extract the version and adopt it directly.
-                self._adopt_modern_protocol_version(config, session, exc)
-            except BaseExceptionGroup as exc:
-                # anyio TaskGroup failures arrive wrapped in an
-                # ExceptionGroup; the negotiate ``RuntimeError`` may be a
-                # leaf inside it. Find it and run the same adopt path so the
-                # modern-version fallback fires regardless of wrapping.
-                runtime_err = _find_runtime_error(exc)
-                if runtime_err is None:
-                    raise
-                self._adopt_modern_protocol_version(config, session, runtime_err)
+            if config.protocol_version is not None:
+                # Declarative pin: skip negotiation entirely and adopt the
+                # operator-declared version directly, avoiding the failing
+                # handshake round-trip for servers that speak a modern
+                # stateless protocol version.
+                self._adopt_declared_protocol_version(config, session)
+            else:
+                try:
+                    await negotiate_auto(session)
+                except RuntimeError as exc:
+                    # negotiate_auto fell back to initialize(), which raised
+                    # because the server responded with a modern protocol
+                    # version (e.g. "2026-07-28") that the handshake path
+                    # rejects. Extract the version and adopt it directly.
+                    self._adopt_modern_protocol_version(config, session, exc)
+                except BaseExceptionGroup as exc:
+                    # anyio TaskGroup failures arrive wrapped in an
+                    # ExceptionGroup; the negotiate ``RuntimeError`` may be a
+                    # leaf inside it. Find it and run the same adopt path so the
+                    # modern-version fallback fires regardless of wrapping.
+                    runtime_err = _find_runtime_error(exc)
+                    if runtime_err is None:
+                        raise
+                    self._adopt_modern_protocol_version(config, session, runtime_err)
         except BaseExceptionGroup as exc:
             # The streamable_http_client anyio TaskGroup can wrap even
             # context-entry failures (e.g. the negotiate RuntimeError

@@ -364,6 +364,19 @@ class MCPServerSpec:
     authenticated (or explicitly ``none`` with an allowlisted host) or
     compilation is rejected."""
 
+    protocol_version: str | None = None
+    """Declarative MCP protocol version pin for runtime_kind=HTTP servers
+    that speak a modern stateless protocol version (e.g. ``2026-07-28``).
+
+    When set, the pool skips protocol negotiation at connect time and
+    adopts this version directly, so a server whose handshake rejects the
+    version it itself advertises (the reactive fallback in
+    :mod:`kernel.tools.mcp_client` parses it out of the error) connects
+    without the failing round-trip. ``None`` (default) keeps the normal
+    ``negotiate_auto`` probe → ``initialize()`` fallback → reactive adopt
+    chain unchanged. Only meaningful for HTTP servers; the manifest
+    loader rejects it on other runtime kinds."""
+
     warm: bool = False
     """When True, this server is a candidate for the host-owned long-lived
     pool: it is spawned eagerly at runtime init and kept alive across turns

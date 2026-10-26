@@ -204,18 +204,8 @@ def _parse_server_entry(
     headers: dict[str, str] = {}
     auth = AuthSpec()
     if runtime_kind is RuntimeKind.HTTP:
-        url = _expand_env_value(entry.get("url") or "", env).strip()
-        if not url:
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': 'url' is required for runtime_kind=http"
-            )
-        headers_raw = entry.get("headers") or {}
-        if not isinstance(headers_raw, dict):
-            raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': 'headers' must be a mapping"
-            )
-        headers = {str(k): _expand_env_value(v, env) for k, v in headers_raw.items()}
-        auth = _parse_auth(entry.get("auth"), server_id, index, path, env)
+        url, headers, auth = _parse_http_transport(entry, server_id, index, path, env)
+    protocol_version = _parse_protocol_version(entry, server_id, index, runtime_kind)
 
     aliases = _parse_aliases(entry.get("aliases"), server_id, index, path)
     default_available_tools = _parse_default_available_tools(
@@ -264,12 +254,69 @@ def _parse_server_entry(
         url=url,
         headers=headers,
         auth=auth,
+        protocol_version=protocol_version,
         warm=bool(entry.get("warm", False)),
         required=bool(entry.get("required", False)),
         disabled=False,
         aliases=aliases,
         default_available_tools=default_available_tools,
     )
+
+
+def _parse_http_transport(
+    entry: dict[str, Any],
+    server_id: str,
+    index: int,
+    path: Path,
+    env: Mapping[str, str] | None,
+) -> tuple[str, dict[str, str], AuthSpec]:
+    """Parse ``url`` / ``headers`` / ``auth`` for an HTTP server entry.
+
+    ``${VAR}`` references in the url and header values expand against the
+    caller-resolved ``env`` mapping, mirroring every other path-like field.
+    """
+    url = _expand_env_value(entry.get("url") or "", env).strip()
+    if not url:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'url' is required for runtime_kind=http"
+        )
+    headers_raw = entry.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise MCPServerManifestError(f"servers[{index}] '{server_id}': 'headers' must be a mapping")
+    headers = {str(k): _expand_env_value(v, env) for k, v in headers_raw.items()}
+    auth = _parse_auth(entry.get("auth"), server_id, index, path, env)
+    return url, headers, auth
+
+
+def _parse_protocol_version(
+    entry: dict[str, Any],
+    server_id: str,
+    index: int,
+    runtime_kind: RuntimeKind,
+) -> str | None:
+    """Parse the optional ``protocol_version`` pin for HTTP servers.
+
+    The pin declares that a streamable-HTTP server speaks a modern stateless
+    protocol version (e.g. ``2026-07-28``) whose ``initialize()`` handshake
+    rejects the very version it advertises; the pool adopts the declared
+    version directly at connect time instead of negotiating. A set-but-empty
+    value, or a value on a non-HTTP server, is a config error — the pin has
+    no meaning on any other transport.
+    """
+    raw = entry.get("protocol_version")
+    if raw is None:
+        return None
+    if runtime_kind is not RuntimeKind.HTTP:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'protocol_version' requires runtime_kind=http"
+        )
+    version = str(raw).strip()
+    if not version:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'protocol_version' must be a "
+            "non-empty string when set"
+        )
+    return version
 
 
 def _parse_binary_download(
