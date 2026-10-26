@@ -80,10 +80,11 @@ All notable changes to the Lisa Harness will be documented in this file.
   and a cached binary whose size and `mtime_ns` still match its sidecar is
   trusted without re-hashing.
 - `docs/TESTING.md` documents test-selection tiers (unit / package / full)
-  with a changed-file to testpaths table; `scripts/check_tests.py` computes
-  the package tier from the worktree's Git state. Kernel tests share one
-  `lisa-catalog` subprocess for the whole session, cutting the offline suite
-  from ~3m11s to ~1m35s locally.
+  with a changed-file to testpaths table, so verification can select the
+  affected package's suites — including both halves of a package's split
+  test layout — and escalate to the full suite before push. Kernel tests
+  share one `lisa-catalog` subprocess for the whole session, cutting the
+  offline suite from ~3m11s to ~1m35s locally.
 
 ### Fixed
 
