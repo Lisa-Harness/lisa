@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,12 +43,23 @@ __all__ = [
 ]
 
 
-def compile_env(policy: EnvPolicy) -> dict[str, str]:
-    """Build the subprocess environment from an EnvPolicy."""
+def compile_env(
+    policy: EnvPolicy,
+    *,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the subprocess environment from an EnvPolicy.
+
+    ``base_env`` is the parent environment inherited when the policy sets
+    ``inherit_parent``; ``None`` falls back to the ambient process
+    environment (the standalone-caller default). The host passes its
+    resolved MCP environment so compilation never depends on
+    process-global state.
+    """
     if not policy.inherit_parent:
         env: dict[str, str] = {}
     else:
-        env = dict(os.environ)
+        env = dict(os.environ if base_env is None else base_env)
     for key in policy.denied_keys:
         env.pop(key, None)
     if policy.allowed_keys is not None:
@@ -165,7 +177,11 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]] | None:
     return compiled
 
 
-def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
+def compile_mcp_config(
+    spec: MCPServerSpec,
+    *,
+    base_env: Mapping[str, str] | None = None,
+) -> MCPClientConfig | None:
     """Compile one approved MCPServerSpec into a concrete MCPClientConfig.
 
     This is the only function that produces MCPClientConfig entries for
@@ -213,7 +229,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig | None:
     cli_args.extend(spec.cli_args)
 
     all_args = [*base_args, *cli_args]
-    env = compile_env(spec.env_policy)
+    env = compile_env(spec.env_policy, base_env=base_env)
     cwd = compile_cwd(spec.cwd_policy, workspace_root=spec.workspace_root)
 
     return MCPClientConfig(
@@ -284,6 +300,7 @@ def compile_registry(
     *,
     data_dir: str,
     workspace_root: str | None = None,
+    base_env: Mapping[str, str] | None = None,
 ) -> list[MCPClientConfig]:
     """Compile all approved server specs from a registry into MCPClientConfig entries.
 
@@ -299,7 +316,7 @@ def compile_registry(
     for spec in registry.all_specs():
         # Inject host-provided args (slots dataclass — use replace, not __dict__)
         resolved_spec = replace(spec, data_dir=data_dir, workspace_root=workspace_root)
-        config = compile_mcp_config(resolved_spec)
+        config = compile_mcp_config(resolved_spec, base_env=base_env)
         if config is not None:
             configs.append(config)
     return configs

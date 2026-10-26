@@ -318,6 +318,25 @@ def test_compile_env_forced_overrides_win() -> None:
         del os.environ["TEST_MCP_OVERRIDE"]
 
 
+def test_compile_env_inherits_explicit_base_env() -> None:
+    """``base_env=`` replaces the ambient snapshot for inherit_parent policies.
+
+    The host passes its resolved MCP environment explicitly; keys present
+    only in ``base_env`` are inherited and keys present only in the ambient
+    environment are not.
+    """
+    os.environ["TEST_MCP_AMBIENT_ONLY"] = "ambient"
+    try:
+        env = compile_env(
+            EnvPolicy(inherit_parent=True),
+            base_env={"TEST_MCP_BASE_ONLY": "resolved"},
+        )
+        assert env["TEST_MCP_BASE_ONLY"] == "resolved"
+        assert "TEST_MCP_AMBIENT_ONLY" not in env
+    finally:
+        del os.environ["TEST_MCP_AMBIENT_ONLY"]
+
+
 # ── compile_cwd ──────────────────────────────────────────────────────────────
 
 

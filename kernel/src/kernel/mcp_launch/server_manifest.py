@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -73,31 +74,42 @@ class MCPServerManifestError(ValueError):
     """Raised when an mcp_servers manifest is structurally invalid."""
 
 
-def _expand_env_value(raw: Any) -> str:
-    """Expand ${VAR} references against the parent environment at load time.
+def _expand_env_value(raw: Any, env: Mapping[str, str] | None = None) -> str:
+    """Expand ${VAR} references in ``raw`` against ``env``.
 
-    A value like ``"${MEM0_API_KEY}"`` becomes the value of ``MEM0_API_KEY``
-    (or empty string when unset). Embedded refs like
+    ``env`` is the expansion mapping the caller resolved; ``None`` falls
+    back to the ambient process environment (the standalone-caller
+    default). A value like ``"${MEM0_API_KEY}"`` becomes the value of
+    ``MEM0_API_KEY`` (or empty string when unset). Embedded refs like
     ``"Bearer ${MEM0_API_KEY}"`` are expanded in place. Literal values pass
     through unchanged.
     """
     if not isinstance(raw, str):
         return str(raw)
 
+    source = os.environ if env is None else env
+
     def _replace(match: re.Match[str]) -> str:
-        return os.getenv(match.group(1), "")
+        return source.get(match.group(1), "")
 
     return _ENV_REF_RE.sub(_replace, raw)
 
 
 def load_mcp_server_manifest(
     path: Path,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> list[MCPServerSpec]:
     """Load MCP server specs from YAML.
 
     Returns an empty list when the file does not exist, so hosts can call
     this unconditionally and treat a missing manifest as "no external
     servers".
+
+    ``env`` is the mapping ``${VAR}`` references expand against at parse
+    time; ``None`` falls back to the ambient process environment
+    (standalone callers). The host passes its resolved MCP environment so
+    parsing never depends on process-global state.
 
     Raises :class:`MCPServerManifestError` on structural problems (not a
     mapping, server entries missing required fields, bad runtime kind, …).
@@ -118,10 +130,12 @@ def load_mcp_server_manifest(
             f"{path}: top-level 'memory' is no longer supported; declare a server "
             "with capability: memory"
         )
-    return _parse_server_entries(raw.get("servers") or [], path)
+    return _parse_server_entries(raw.get("servers") or [], path, env)
 
 
-def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:
+def _parse_server_entries(
+    raw_servers: Any, path: Path, env: Mapping[str, str] | None
+) -> list[MCPServerSpec]:
     if not isinstance(raw_servers, list):
         raise MCPServerManifestError("'servers' must be a list of server entries")
     specs: list[MCPServerSpec] = []
@@ -130,11 +144,13 @@ def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:
             raise MCPServerManifestError(f"servers[{index}] in {path} must be a mapping")
         if entry.get("disabled"):
             continue
-        specs.append(_parse_server_entry(entry, index, path))
+        specs.append(_parse_server_entry(entry, index, path, env))
     return specs
 
 
-def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPServerSpec:
+def _parse_server_entry(
+    entry: dict[str, Any], index: int, path: Path, env: Mapping[str, str] | None
+) -> MCPServerSpec:
     server_id = entry.get("server_id")
     if not isinstance(server_id, str) or not server_id.strip():
         raise MCPServerManifestError(f"servers[{index}] in {path}: 'server_id' is required")
@@ -154,7 +170,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     env_raw = entry.get("env") or {}
     if not isinstance(env_raw, dict):
         raise MCPServerManifestError(f"servers[{index}] '{server_id}': 'env' must be a mapping")
-    forced = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
+    forced = {str(k): _expand_env_value(v, env) for k, v in env_raw.items()}
 
     tool_policy = _parse_tool_policy(entry.get("tool_policy"), server_id, index, path)
     proxy_policy = _parse_proxy_policy(entry.get("proxy_policy"), server_id, index, path)
@@ -175,20 +191,20 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     cli_args_raw = entry.get("cli_args") or []
     if not isinstance(cli_args_raw, list):
         raise MCPServerManifestError(f"servers[{index}] '{server_id}': 'cli_args' must be a list")
-    # Expand ${VAR} references against the parent environment, mirroring
-    # every other path-like field (venv_dir, command_path, url, …). The
-    # lisa-thread server's ``--thread-dir ${LISA_THREAD_DIR}`` /
+    # Expand ${VAR} references against the caller-resolved environment,
+    # mirroring every other path-like field (venv_dir, command_path, url, …).
+    # The lisa-thread server's ``--thread-dir ${LISA_THREAD_DIR}`` /
     # ``--user-slug ${LISA_USER_SLUG}`` rely on this; storing the literal
     # ``${...}`` string (the pre-2026-08-25 ``str(a)`` passthrough) sent
     # the subprocess a literal ``${LISA_USER_SLUG}`` path that resolved
     # to a nonexistent store, so ``thread_read_range`` returned ``[]``.
-    cli_args = [_expand_env_value(a) for a in cli_args_raw]
+    cli_args = [_expand_env_value(a, env) for a in cli_args_raw]
 
     url: str | None = None
     headers: dict[str, str] = {}
     auth = AuthSpec()
     if runtime_kind is RuntimeKind.HTTP:
-        url = _expand_env_value(entry.get("url") or "").strip()
+        url = _expand_env_value(entry.get("url") or "", env).strip()
         if not url:
             raise MCPServerManifestError(
                 f"servers[{index}] '{server_id}': 'url' is required for runtime_kind=http"
@@ -198,8 +214,8 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
             raise MCPServerManifestError(
                 f"servers[{index}] '{server_id}': 'headers' must be a mapping"
             )
-        headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
-        auth = _parse_auth(entry.get("auth"), server_id, index, path)
+        headers = {str(k): _expand_env_value(v, env) for k, v in headers_raw.items()}
+        auth = _parse_auth(entry.get("auth"), server_id, index, path, env)
 
     aliases = _parse_aliases(entry.get("aliases"), server_id, index, path)
     default_available_tools = _parse_default_available_tools(
@@ -223,16 +239,16 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         module=entry.get("module"),
         package=entry.get("package"),
         entry_point=entry.get("entry_point"),
-        venv_dir=_expand_env_value(entry.get("venv_dir")) if entry.get("venv_dir") else None,
-        command_path=_expand_env_value(entry.get("command_path"))
+        venv_dir=_expand_env_value(entry.get("venv_dir"), env) if entry.get("venv_dir") else None,
+        command_path=_expand_env_value(entry.get("command_path"), env)
         if entry.get("command_path")
         else None,
         binary_download=binary_download,
-        script_path=_expand_env_value(entry.get("script_path"))
+        script_path=_expand_env_value(entry.get("script_path"), env)
         if entry.get("script_path")
         else None,
         npx_package=entry.get("npx_package"),
-        uv_directory=_expand_env_value(entry.get("uv_directory"))
+        uv_directory=_expand_env_value(entry.get("uv_directory"), env)
         if entry.get("uv_directory")
         else None,
         cli_args=cli_args,
@@ -303,9 +319,11 @@ def _parse_binary_download(
         ) from exc
 
 
-def _parse_bearer_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+def _parse_bearer_auth(
+    raw: dict[str, Any], server_id: str, index: int, env: Mapping[str, str] | None
+) -> AuthSpec:
     """Build a bearer-token AuthSpec, requiring an expanded ``token`` value."""
-    token = _expand_env_value(raw.get("token") or "")
+    token = _expand_env_value(raw.get("token") or "", env)
     if not token:
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': auth type 'bearer' requires 'token'"
@@ -313,14 +331,16 @@ def _parse_bearer_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthS
     return AuthSpec(kind=AuthKind.BEARER, token=token)
 
 
-def _parse_header_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+def _parse_header_auth(
+    raw: dict[str, Any], server_id: str, index: int, env: Mapping[str, str] | None
+) -> AuthSpec:
     """Build a named-header AuthSpec, requiring ``header_name`` and ``token``."""
     header_name = str(raw.get("header_name") or "").strip()
     if not header_name:
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': auth type 'header' requires 'header_name'"
         )
-    token = _expand_env_value(raw.get("token") or "")
+    token = _expand_env_value(raw.get("token") or "", env)
     if not token:
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': auth type 'header' requires 'token'"
@@ -328,9 +348,11 @@ def _parse_header_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthS
     return AuthSpec(kind=AuthKind.HEADER, header_name=header_name, token=token)
 
 
-def _parse_oauth2_pkce_auth(raw: dict[str, Any], server_id: str, index: int) -> AuthSpec:
+def _parse_oauth2_pkce_auth(
+    raw: dict[str, Any], server_id: str, index: int, env: Mapping[str, str] | None
+) -> AuthSpec:
     """Build an OAuth2 PKCE AuthSpec, requiring an expanded ``client_id``."""
-    client_id = _expand_env_value(raw.get("client_id") or "")
+    client_id = _expand_env_value(raw.get("client_id") or "", env)
     if not client_id:
         raise MCPServerManifestError(
             f"servers[{index}] '{server_id}': auth type 'oauth2-pkce' requires 'client_id'"
@@ -342,7 +364,7 @@ def _parse_oauth2_pkce_auth(raw: dict[str, Any], server_id: str, index: int) -> 
         )
     auth_server = raw.get("auth_server")
     if auth_server is not None:
-        auth_server = _expand_env_value(auth_server) or None
+        auth_server = _expand_env_value(auth_server, env) or None
     return AuthSpec(
         kind=AuthKind.OAUTH2_PKCE,
         client_id=client_id,
@@ -351,7 +373,13 @@ def _parse_oauth2_pkce_auth(raw: dict[str, Any], server_id: str, index: int) -> 
     )
 
 
-def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
+def _parse_auth(
+    raw: Any,
+    server_id: str,
+    index: int,
+    path: Path,
+    env: Mapping[str, str] | None,
+) -> AuthSpec:
     """Parse the ``auth:`` block for a network MCP server entry.
 
     Returns the default :class:`AuthSpec` (kind=``none``) when the block is
@@ -375,11 +403,11 @@ def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
         ) from exc
 
     if kind is AuthKind.BEARER:
-        return _parse_bearer_auth(raw, server_id, index)
+        return _parse_bearer_auth(raw, server_id, index, env)
     if kind is AuthKind.HEADER:
-        return _parse_header_auth(raw, server_id, index)
+        return _parse_header_auth(raw, server_id, index, env)
     if kind is AuthKind.OAUTH2_PKCE:
-        return _parse_oauth2_pkce_auth(raw, server_id, index)
+        return _parse_oauth2_pkce_auth(raw, server_id, index, env)
     return AuthSpec(kind=AuthKind.NONE)
 
 

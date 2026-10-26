@@ -27,6 +27,36 @@ def test_load_manifest_missing_file_returns_empty(tmp_path: Path) -> None:
     assert load_mcp_server_manifest(tmp_path / "nope.yaml") == []
 
 
+def test_load_manifest_expands_against_explicit_env(tmp_path: Path) -> None:
+    """``env=`` expands ${VAR} without touching the ambient environment.
+
+    The host passes its resolved MCP environment explicitly; a variable
+    present only in that mapping expands, and a variable present only in
+    the ambient environment does not.
+    """
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: explicit-env
+    runtime_kind: http
+    url: "https://${EXPLICIT_HOST}/mcp"
+    headers:
+      Authorization: "Bearer ${EXPLICIT_TOKEN}"
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_mcp_server_manifest(
+        manifest,
+        env={"EXPLICIT_HOST": "example.internal", "EXPLICIT_TOKEN": "tok"},
+    )
+
+    assert specs[0].url == "https://example.internal/mcp"
+    assert specs[0].headers["Authorization"] == "Bearer tok"
+
+
 def test_load_manifest_parses_servers(tmp_path: Path) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(

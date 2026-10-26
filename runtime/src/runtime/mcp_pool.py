@@ -26,8 +26,6 @@ import dataclasses
 import logging
 import os
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -272,51 +270,50 @@ def discover_framework(
     # Parse every manifest layer once here; both consumers (ambient
     # tool-id resolution in setup_framework, server registration in
     # compile_mcp_configs) reuse these specs instead of re-reading files.
-    # The parse runs inside the exported-MCP-environment scope because
-    # ``load_mcp_server_manifest`` expands ``${FRAMEWORK_ROOT}`` /
-    # ``${LISA_USER_SLUG}`` / ``${LISA_THREAD_DIR}`` at parse time; parsing
-    # against the ambient shell would let a stale or empty parent value
-    # win (the 2026-08-25 empty-read incident shape).
-    with _exported_mcp_environment(runtime, str(FRAMEWORK_ROOT)):
-        host_specs = load_mcp_server_manifest(manifest_path)
-        user_specs: list[MCPServerSpec] = []
-        if user_manifest_path is not None and user_manifest_path.exists():
-            try:
-                user_specs = load_mcp_server_manifest(user_manifest_path)
-            except MCPServerManifestError:
-                logger.warning(
-                    "Skipping invalid user MCP manifest at %s",
-                    user_manifest_path,
-                    exc_info=True,
-                )
-        elif user_manifest_path is not None:
-            logger.debug(
-                "User MCP manifest path %s does not exist; skipping user servers.",
+    # ``${FRAMEWORK_ROOT}`` / ``${LISA_USER_SLUG}`` / ``${LISA_THREAD_DIR}``
+    # expand against the explicitly resolved MCP environment, never the
+    # ambient shell — a stale or empty parent value must not win (the
+    # 2026-08-25 empty-read incident shape).
+    resolved_env = _resolved_mcp_env(runtime, str(FRAMEWORK_ROOT))
+    host_specs = load_mcp_server_manifest(manifest_path, env=resolved_env)
+    user_specs: list[MCPServerSpec] = []
+    if user_manifest_path is not None and user_manifest_path.exists():
+        try:
+            user_specs = load_mcp_server_manifest(user_manifest_path, env=resolved_env)
+        except MCPServerManifestError:
+            logger.warning(
+                "Skipping invalid user MCP manifest at %s",
                 user_manifest_path,
+                exc_info=True,
             )
-        pack_specs: list[_PackManifestSpecs] = []
-        used_pack_slugs: set[str] = set()
-        for root in roots:
-            pack_manifest_path = root / "mcp_servers.yaml"
-            if not pack_manifest_path.exists():
-                continue
-            try:
-                pack_entry_specs = load_mcp_server_manifest(pack_manifest_path)
-            except MCPServerManifestError:
-                logger.warning(
-                    "Skipping invalid pack MCP manifest at %s",
-                    pack_manifest_path,
-                    exc_info=True,
-                )
-                continue
-            pack_specs.append(
-                _PackManifestSpecs(
-                    root=root,
-                    slug=unique_pack_slug_for_root(root, used_pack_slugs),
-                    manifest_path=pack_manifest_path,
-                    specs=pack_entry_specs,
-                )
+    elif user_manifest_path is not None:
+        logger.debug(
+            "User MCP manifest path %s does not exist; skipping user servers.",
+            user_manifest_path,
+        )
+    pack_specs: list[_PackManifestSpecs] = []
+    used_pack_slugs: set[str] = set()
+    for root in roots:
+        pack_manifest_path = root / "mcp_servers.yaml"
+        if not pack_manifest_path.exists():
+            continue
+        try:
+            pack_entry_specs = load_mcp_server_manifest(pack_manifest_path, env=resolved_env)
+        except MCPServerManifestError:
+            logger.warning(
+                "Skipping invalid pack MCP manifest at %s",
+                pack_manifest_path,
+                exc_info=True,
             )
+            continue
+        pack_specs.append(
+            _PackManifestSpecs(
+                root=root,
+                slug=unique_pack_slug_for_root(root, used_pack_slugs),
+                manifest_path=pack_manifest_path,
+                specs=pack_entry_specs,
+            )
+        )
     return _FrameworkDiscovery(
         roots=roots,
         disabled_packs=disabled_packs,
@@ -658,17 +655,17 @@ def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str
     and return ``[]``). The host is the authoritative source for these
     values once it has resolved them from CLI flags and config.
 
-    Returns the exported values as a mapping rather than writing them to
-    ``os.environ``. The caller scopes them to the manifest-load and
-    compile window (see :func:`_exported_mcp_environment`) so the
-    process environment is unchanged afterwards.
+    Returns the resolved mapping rather than writing it to
+    ``os.environ``; consumers pass it explicitly to the manifest loaders
+    and compilers (see :func:`_resolved_mcp_env`), so the process
+    environment is never mutated.
 
-    A ``None`` value means the variable must be ABSENT inside the scope
-    — the host resolved no value for it, so a stale parent-shell value
-    must not be inherited by the child. ``LISA_THREAD_REDACTION_PATTERNS``
-    is the one such case: with no configured patterns the server falls
-    back to the framework defaults, and a stale shell value would
-    silently replace them.
+    A ``None`` value means the variable must be ABSENT from the resolved
+    environment — the host resolved no value for it, so a stale
+    parent-shell value must not be inherited by the child.
+    ``LISA_THREAD_REDACTION_PATTERNS`` is the one such case: with no
+    configured patterns the server falls back to the framework defaults,
+    and a stale shell value would silently replace them.
     """
     config = runtime.config
     exported: dict[str, str | None] = {
@@ -698,49 +695,31 @@ def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str
     return exported
 
 
-@contextmanager
-def _exported_mcp_environment(runtime: HostRuntime, workspace_root: str) -> Iterator[None]:
-    """Scope the MCP manifest-expansion environment to the compile window.
+def _resolved_mcp_env(runtime: HostRuntime, workspace_root: str) -> dict[str, str]:
+    """Build the resolved MCP environment for manifest expansion and child envs.
 
-    The exported values are needed in two places, and only inside this
-    window:
+    The manifest loaders expand ``${FRAMEWORK_ROOT}`` /
+    ``${LISA_THREAD_DIR}`` / ``${LISA_USER_SLUG}`` against this mapping at
+    parse time, and the compilers snapshot it into each spawned server's
+    environment. Both consumers receive it explicitly, so the ambient
+    ``os.environ`` is never mutated and never consulted for these values.
 
-    1. Manifest load — ``load_mcp_server_manifest`` expands
-       ``${FRAMEWORK_ROOT}`` / ``${LISA_THREAD_DIR}`` /
-       ``${LISA_USER_SLUG}`` into ``cli_args`` and ``venv_dir``.
-    2. Compile — ``compile_env`` snapshots ``os.environ`` into the
-       spawned server's environment, and the stdio transport replaces the
-       child's environment with that snapshot.
-
-    Writing them to the ambient environment and leaving them there made
-    the host process permanently carry the values it resolved at startup
-    (Lisa-Harness/lisa#3). Any later ``HostConfig.from_env()`` in the
-    same process then resolved ``thread_dir``, ``user_slug``,
-    ``timezone`` and thread-redaction from the stale startup values
-    instead of its own inputs — an order-dependent leak across the
-    test suite and across any long-lived host that rebuilds a runtime.
-
-    This context manager writes the values for the duration of the
-    window and restores the previous state on exit: a var that was
-    absent before is removed again, and a var that was present is
-    restored to its prior value. The export therefore stays invisible
-    to everything outside the window.
+    The base is the ambient environment (the child inherits the parent
+    shell like any subprocess) with the host's resolved overrides
+    applied: unconditional assignment, never ``setdefault`` — a parent
+    shell may export these as empty strings (e.g. ``LISA_USER_SLUG=""``),
+    and ``setdefault`` treats a present-but-empty value as already set,
+    silently dropping the host's resolved value (the 2026-08-25
+    empty-read incident). A ``None`` override pops the key so a stale
+    parent value cannot leak into the child.
     """
-    exported = _mcp_environment(runtime, workspace_root)
-    previous: dict[str, str | None] = {name: os.environ.get(name) for name in exported}
-    for name, value in exported.items():
+    resolved = dict(os.environ)
+    for name, value in _mcp_environment(runtime, workspace_root).items():
         if value is None:
-            os.environ.pop(name, None)
+            resolved.pop(name, None)
         else:
-            os.environ[name] = value
-    try:
-        yield
-    finally:
-        for name, prior in previous.items():
-            if prior is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = prior
+            resolved[name] = value
+    return resolved
 
 
 def _resolve_session_capability_preferences(
@@ -1115,41 +1094,43 @@ def compile_mcp_configs(
 
     registry = MCPServerRegistry()
 
-    # The exported values are needed for manifest expansion and for the
-    # compiled child environment; both happen inside this scope, and the
-    # ambient environment is restored on exit.
-    with _exported_mcp_environment(runtime, workspace_root):
-        # Framework-owned (first-party) + user-owned servers. Capability
-        # candidates are collected per layer and resolved to one owner
-        # per capability after every layer has declared.
-        capability_candidates: list[CapabilityCandidate] = []
-        _register_host_and_user_servers(
-            registry,
-            host_manifest_path=host_manifest_path,
-            host_specs=discovery.host_specs,
-            user_manifest_path=user_manifest_path,
-            user_specs=discovery.user_specs,
-            capability_candidates=capability_candidates,
-        )
+    # The resolved MCP environment is passed explicitly to the compiler;
+    # the ambient environment is never mutated (see
+    # :func:`_resolved_mcp_env`).
+    resolved_env = _resolved_mcp_env(runtime, workspace_root)
+    # Framework-owned (first-party) + user-owned servers. Capability
+    # candidates are collected per layer and resolved to one owner
+    # per capability after every layer has declared.
+    capability_candidates: list[CapabilityCandidate] = []
+    _register_host_and_user_servers(
+        registry,
+        host_manifest_path=host_manifest_path,
+        host_specs=discovery.host_specs,
+        user_manifest_path=user_manifest_path,
+        user_specs=discovery.user_specs,
+        capability_candidates=capability_candidates,
+    )
 
-        excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
-        if user_manifest_path is not None and user_manifest_path.exists():
-            excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
-        excluded_pack_servers |= session_exclude_servers
+    excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+    if user_manifest_path is not None and user_manifest_path.exists():
+        excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
+    excluded_pack_servers |= session_exclude_servers
 
-        _register_pack_servers(
-            registry, discovery.pack_specs, excluded_pack_servers, capability_candidates
-        )
+    _register_pack_servers(
+        registry, discovery.pack_specs, excluded_pack_servers, capability_candidates
+    )
 
-        # One owner per claimed capability; the winner registers under the
-        # bare capability id (model-facing tool ids are implementation-
-        # independent). Contested or misconfigured capabilities fail
-        # startup loudly.
-        _resolve_capability_owners(registry, capability_candidates, selected_capability_providers)
+    # One owner per claimed capability; the winner registers under the
+    # bare capability id (model-facing tool ids are implementation-
+    # independent). Contested or misconfigured capabilities fail
+    # startup loudly.
+    _resolve_capability_owners(registry, capability_candidates, selected_capability_providers)
 
-        compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
-        compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
-        compiled = _rewrite_in_process_configs(runtime, compiled)
+    compiled = compile_registry(
+        registry, data_dir=data_dir, workspace_root=workspace_root, base_env=resolved_env
+    )
+    compiled = _with_default_mcp_log_paths(compiled, registry, data_dir)
+    compiled = _rewrite_in_process_configs(runtime, compiled)
 
     warm = [c for c in compiled if c.warm]
     cold = [c for c in compiled if not c.warm]
@@ -1196,41 +1177,39 @@ def compile_proxy_configs(  # noqa: C901
 
     def load(path: Path, *, source: str) -> list[Any]:
         try:
-            return load_proxy_server_manifest(path)
+            return load_proxy_server_manifest(path, env=resolved_env)
         except ProxyServerManifestError:
             logger.warning("Skipping invalid %s proxy manifest at %s", source, path, exc_info=True)
             return []
 
-    with _exported_mcp_environment(runtime, workspace_root):
-        # FRAMEWORK_ROOT is needed for ${FRAMEWORK_ROOT} expansion in the
-        # proxy manifests and for the compiled proxy environment; scope it
-        # to the load/compile window so the ambient environment is left
-        # unchanged.
-        for spec in load(discovery.host_manifest_path, source="host"):
+    # The resolved MCP environment is passed explicitly to the proxy
+    # manifest loader and compiler; the ambient environment is never
+    # mutated (see :func:`_resolved_mcp_env`).
+    resolved_env = _resolved_mcp_env(runtime, workspace_root)
+    for spec in load(discovery.host_manifest_path, source="host"):
+        add(spec, proxy_id=spec.proxy_id)
+    if discovery.user_manifest_path is not None and discovery.user_manifest_path.exists():
+        for spec in load(discovery.user_manifest_path, source="user"):
             add(spec, proxy_id=spec.proxy_id)
-        if discovery.user_manifest_path is not None and discovery.user_manifest_path.exists():
-            for spec in load(discovery.user_manifest_path, source="user"):
-                add(spec, proxy_id=spec.proxy_id)
 
-        used_pack_slugs: set[str] = set()
-        for root in discovery.roots:
-            manifest_path = root / "mcp_servers.yaml"
-            if not manifest_path.exists():
-                continue
-            pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
-            for spec in load(manifest_path, source="pack"):
-                add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
+    used_pack_slugs: set[str] = set()
+    for root in discovery.roots:
+        manifest_path = root / "mcp_servers.yaml"
+        if not manifest_path.exists():
+            continue
+        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
+        for spec in load(manifest_path, source="pack"):
+            add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
 
-        providers = sorted(
-            {provider for spec in registry.all_specs() for provider in spec.providers}
-        )
-        provider_base_urls = direct_provider_base_urls(runtime, providers)
+    providers = sorted({provider for spec in registry.all_specs() for provider in spec.providers})
+    provider_base_urls = direct_provider_base_urls(runtime, providers)
 
-        return compile_proxy_registry(
-            registry,
-            workspace_root=workspace_root,
-            provider_base_urls=provider_base_urls,
-        )
+    return compile_proxy_registry(
+        registry,
+        workspace_root=workspace_root,
+        provider_base_urls=provider_base_urls,
+        base_env=resolved_env,
+    )
 
 
 # ── Pack slug + policy helpers ───────────────────────────────────────

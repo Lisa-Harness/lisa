@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -100,6 +101,7 @@ def compile_proxy_config(
     spec: ProxyServerSpec,
     *,
     provider_base_urls: dict[str, str] | None = None,
+    base_env: Mapping[str, str] | None = None,
 ) -> ProxyClientConfig | None:
     """Compile a resolved proxy spec into a local process config.
 
@@ -110,6 +112,10 @@ def compile_proxy_config(
     the providers' *direct* endpoints, never proxy routes, so a proxy cannot
     be configured to forward to itself. Two overlays writing the same env
     key with different resolved values is a declaration conflict and raises.
+
+    ``base_env`` is the parent environment inherited when the spec's env
+    policy sets ``inherit_parent``; ``None`` falls back to the ambient
+    process environment (the standalone-caller default).
 
     Returns ``None`` when the proxy cannot spawn because its optional binary
     is not installed (a BINARY spec whose ``command_path`` is empty after
@@ -125,7 +131,7 @@ def compile_proxy_config(
         )
         return None
     command, base_args = resolved_command
-    env = compile_env(spec.env_policy)
+    env = compile_env(spec.env_policy, base_env=base_env)
     if spec.port_env:
         env[spec.port_env] = str(spec.port)
     merged_args = [*base_args, *spec.cli_args]
@@ -192,6 +198,7 @@ def compile_proxy_registry(
     *,
     workspace_root: str | None = None,
     provider_base_urls: dict[str, str] | None = None,
+    base_env: Mapping[str, str] | None = None,
 ) -> list[ProxyClientConfig]:
     """Compile every approved proxy after host runtime paths are resolved.
 
@@ -207,6 +214,7 @@ def compile_proxy_registry(
         config = compile_proxy_config(
             replace(spec, workspace_root=workspace_root),
             provider_base_urls=provider_base_urls,
+            base_env=base_env,
         )
         if config is not None:
             configs.append(config)

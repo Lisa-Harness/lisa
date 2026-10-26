@@ -244,3 +244,38 @@ async def test_compile_mcp_configs_restores_preexisting_env_values(
 
     assert after == before
     assert after["LISA_TIMEZONE"] == "America/New_York"
+
+
+@pytest.mark.asyncio
+async def test_compile_mcp_configs_never_mutates_os_environ_during_compile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The ambient environment is untouched even *while* compiling.
+
+    The pre-F3 implementation mutated ``os.environ`` inside a scoped
+    window and restored it on exit, so an observer running during the
+    compile saw the host's resolved values in the ambient environment.
+    The explicit-env contract is stronger: the resolved MCP environment
+    exists only as a value passed to the loaders and compilers, so the
+    ambient environment never carries it at all.
+    """
+    runtime = _make_runtime(tmp_path, user_slug="testing")
+    _stub_discovery(monkeypatch)
+
+    observed: list[dict[str, str]] = []
+    real_compile = mcp_pool.compile_registry
+
+    def observing_compile(*args: object, **kwargs: object) -> object:
+        observed.append(dict(os.environ))
+        return real_compile(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(mcp_pool, "compile_registry", observing_compile)
+
+    mcp_pool.compile_mcp_configs(runtime)
+
+    assert observed, "compile_registry must be called during compile_mcp_configs"
+    for snapshot in observed:
+        assert "LISA_USER_SLUG" not in snapshot
+        assert "LISA_THREAD_DIR" not in snapshot
+        assert "LISA_THREAD_REDACTION_PATTERNS" not in snapshot

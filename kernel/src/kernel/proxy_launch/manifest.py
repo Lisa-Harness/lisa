@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,20 @@ class ProxyServerManifestError(ValueError):
     """Raised when a proxy declaration is invalid."""
 
 
-def load_proxy_server_manifest(path: Path) -> list[ProxyServerSpec]:
+def load_proxy_server_manifest(
+    path: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> list[ProxyServerSpec]:
     """Load ``proxies:`` from a shared pack MCP manifest.
 
     Missing manifests and manifests without a proxy section are intentionally
     empty so existing MCP-only packs need no migration.
+
+    ``env`` is the mapping ``${VAR}`` references expand against at parse
+    time; ``None`` falls back to the ambient process environment
+    (standalone callers). The host passes its resolved MCP environment so
+    parsing never depends on process-global state.
     """
     if not path.is_file():
         return []
@@ -50,7 +60,7 @@ def load_proxy_server_manifest(path: Path) -> list[ProxyServerSpec]:
             raise ProxyServerManifestError(f"proxies[{index}] in {path} must be a mapping")
         if bool(entry.get("disabled", False)):
             continue
-        spec = _parse_proxy_entry(entry, index, path)
+        spec = _parse_proxy_entry(entry, index, path, env)
         if spec.proxy_id in seen_ids:
             raise ProxyServerManifestError(
                 f"proxies[{index}] in {path}: duplicate proxy_id {spec.proxy_id!r}"
@@ -61,7 +71,7 @@ def load_proxy_server_manifest(path: Path) -> list[ProxyServerSpec]:
 
 
 def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
-    entry: dict[str, Any], index: int, path: Path
+    entry: dict[str, Any], index: int, path: Path, env: Mapping[str, str] | None
 ) -> ProxyServerSpec:
     proxy_id = str(entry.get("proxy_id") or "").strip()
     if not proxy_id:
@@ -120,12 +130,17 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
     if not isinstance(cli_args_raw, list):
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'cli_args' must be a list")
     provider_options = _parse_provider_overrides(
-        entry.get("provider_overrides"), providers, index, proxy_id, path
+        entry.get("provider_overrides"),
+        providers,
+        index=index,
+        proxy_id=proxy_id,
+        path=path,
+        expand_env=env,
     )
     env_raw = entry.get("env") or {}
     if not isinstance(env_raw, dict):
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'env' must be a mapping")
-    forced = {str(key): _expand_env_value(value) for key, value in env_raw.items()}
+    forced = {str(key): _expand_env_value(value, env) for key, value in env_raw.items()}
     readiness = entry.get("readiness") or {}
     if not isinstance(readiness, dict):
         raise ProxyServerManifestError(
@@ -156,18 +171,18 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
         module=entry.get("module"),
         package=entry.get("package"),
         entry_point=entry.get("entry_point"),
-        venv_dir=(_expand_env_value(entry.get("venv_dir")) if entry.get("venv_dir") else None),
+        venv_dir=(_expand_env_value(entry.get("venv_dir"), env) if entry.get("venv_dir") else None),
         command_path=(
-            _expand_env_value(entry.get("command_path")) if entry.get("command_path") else None
+            _expand_env_value(entry.get("command_path"), env) if entry.get("command_path") else None
         ),
         script_path=(
-            _expand_env_value(entry.get("script_path")) if entry.get("script_path") else None
+            _expand_env_value(entry.get("script_path"), env) if entry.get("script_path") else None
         ),
         npx_package=entry.get("npx_package"),
         uv_directory=(
-            _expand_env_value(entry.get("uv_directory")) if entry.get("uv_directory") else None
+            _expand_env_value(entry.get("uv_directory"), env) if entry.get("uv_directory") else None
         ),
-        cli_args=[_expand_env_value(item) for item in cli_args_raw],
+        cli_args=[_expand_env_value(item, env) for item in cli_args_raw],
         provider_options=provider_options,
         env_policy=EnvPolicy(inherit_parent=True, forced_overrides=forced),
         cwd_policy=cwd_policy,
@@ -182,9 +197,11 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
 def _parse_provider_overrides(
     raw_overrides: Any,
     providers: tuple[str, ...],
+    *,
     index: int,
     proxy_id: str,
     path: Path,
+    expand_env: Mapping[str, str] | None,
 ) -> dict[str, ProviderProxyOptions]:
     """Parse the optional per-provider launch overlay mapping.
 
@@ -217,8 +234,10 @@ def _parse_provider_overrides(
             raise ProxyServerManifestError(
                 f"proxies[{index}] '{proxy_id}': provider_overrides.{provider} must be a mapping"
             )
-        cli_args = _parse_override_cli_args(raw_body.get("cli_args"), index, proxy_id, provider)
-        env = _parse_override_env(raw_body.get("env"), index, proxy_id, provider)
+        cli_args = _parse_override_cli_args(
+            raw_body.get("cli_args"), index, proxy_id, provider, expand_env
+        )
+        env = _parse_override_env(raw_body.get("env"), index, proxy_id, provider, expand_env)
         if not cli_args and not env:
             raise ProxyServerManifestError(
                 f"proxies[{index}] '{proxy_id}': provider_overrides.{provider} is empty"
@@ -232,6 +251,7 @@ def _parse_override_cli_args(
     index: int,
     proxy_id: str,
     provider: str,
+    expand_env: Mapping[str, str] | None,
 ) -> tuple[str, ...]:
     if raw_cli_args is None:
         return ()
@@ -241,7 +261,7 @@ def _parse_override_cli_args(
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}': provider_overrides.{provider}.cli_args must be a list"
         )
-    return tuple(_expand_env_value(item) for item in raw_cli_args if str(item).strip())
+    return tuple(_expand_env_value(item, expand_env) for item in raw_cli_args if str(item).strip())
 
 
 def _parse_override_env(
@@ -249,6 +269,7 @@ def _parse_override_env(
     index: int,
     proxy_id: str,
     provider: str,
+    expand_env: Mapping[str, str] | None,
 ) -> dict[str, str | ProviderValueSource]:
     if raw_env is None:
         return {}
@@ -279,5 +300,5 @@ def _parse_override_env(
                     f"provider_overrides.{provider}.env.{key} (valid: {valid})"
                 ) from exc
             continue
-        env[key] = _expand_env_value(raw_value)
+        env[key] = _expand_env_value(raw_value, expand_env)
     return env

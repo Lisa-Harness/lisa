@@ -2008,9 +2008,9 @@ def test_shared_discovery_parses_each_manifest_once(
     real_load = mcp_pool.load_mcp_server_manifest
     load_calls: list[Path] = []
 
-    def counting_load(path: Path) -> list[Any]:
+    def counting_load(path: Path, **kwargs: Any) -> list[Any]:
         load_calls.append(path)
-        return real_load(path)
+        return real_load(path, **kwargs)
 
     monkeypatch.setattr(mcp_pool, "load_mcp_server_manifest", counting_load)
 
