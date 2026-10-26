@@ -16,7 +16,12 @@ _SCHEMA_VERSION = 2
 _SHA256_LENGTH = 64
 
 
-def _manifest(*, extra: str = "", body: str = "# Primary Session\n\nAct precisely.\n") -> str:
+def _manifest(
+    *,
+    extra: str = "",
+    body: str = "# Primary Session\n\nAct precisely.\n",
+    context_extra: str = "",
+) -> str:
     return f"""---
 schema_version: 2
 name: test-session
@@ -52,7 +57,7 @@ context:
     - rule_id: fallback
       lane_id: history
       fallback: true
-{extra}---
+{context_extra}{extra}---
 {body}"""
 
 
@@ -99,6 +104,20 @@ def test_compile_session_plan_preserves_owner_pack_configuration() -> None:
             "checks": [{"id": "unit", "argv": ["uv", "run", "pytest", "-q"]}],
         }
     }
+
+
+def test_compile_session_plan_accepts_authored_workspace_root() -> None:
+    text = _manifest(context_extra="  workspace_root: /ws\n")
+
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+    assert plan.manifest.context.workspace_root == "/ws"
+
+
+def test_compile_session_plan_defaults_workspace_root_to_none() -> None:
+    plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
+
+    assert plan.manifest.context.workspace_root is None
 
 
 def test_compile_session_plan_rejects_legacy_and_unknown_front_matter() -> None:

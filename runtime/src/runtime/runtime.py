@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -822,20 +823,50 @@ class HostRuntime:
         return self._copilot_customizations_text
 
     def _resolve_copilot_workspace_root(self) -> Path:
-        """Resolve the workspace root for Copilot customization discovery.
+        """Resolve the workspace root for customization discovery.
 
-        Uses the coding pack's configured ``workspace_root`` if available;
-        otherwise falls back to the current working directory.
+        Resolution order, naming no specific pack:
+
+        1. The session plan's authored ``context.workspace_root``.
+        2. Any pack in ``resources.packs.configuration`` that declares a
+           ``workspace_root`` key, taken in sorted pack-name order so the
+           result is deterministic when several packs declare one.
+        3. The process working directory.
+
+        Relative paths resolve against the process working directory, which
+        is the behavior the pack-configuration lookup has always had.
+        """
+        raw = self._authored_workspace_root() or self._pack_declared_workspace_root()
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return Path.cwd()
+
+    def _authored_workspace_root(self) -> str | None:
+        """Return the session plan's authored ``context.workspace_root``, if any."""
+        try:
+            return self.session_plan.manifest.context.workspace_root
+        except Exception:
+            return None
+
+    def _pack_declared_workspace_root(self) -> str | None:
+        """Return a ``workspace_root`` declared by any configured pack.
+
+        Scans every pack's configuration block instead of naming one pack, so
+        the runtime carries no dependency on a specific distribution. Sorted
+        by pack name for determinism.
         """
         try:
             pack_config = self.session_plan.manifest.resources.packs.configuration
-            coding_config = pack_config.get("lisa-pack-coding", {})
-            raw = coding_config.get("workspace_root")
-            if raw:
-                return Path(raw).expanduser().resolve()
         except Exception:
-            pass
-        return Path.cwd()
+            return None
+        for pack_name in sorted(pack_config):
+            block = pack_config[pack_name]
+            if not isinstance(block, Mapping):
+                continue
+            raw = block.get("workspace_root")
+            if isinstance(raw, str) and raw:
+                return raw
+        return None
 
     def _resolve_models_path(self) -> Path | None:
         """Resolve the model-manifest path override from the session plan.

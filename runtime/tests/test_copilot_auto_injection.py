@@ -7,6 +7,7 @@ are injected for CLI/web hosts.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from runtime.context_assembly import assemble_system_prompt
@@ -161,3 +162,126 @@ class TestHostRuntimeCopilotCache:
 
         text = runtime.copilot_customizations_text
         assert text == ""
+
+
+# ── Workspace-root resolution ──────────────────────────────────────────────
+
+
+def _runtime_with_plan(
+    tmp_path: Path,
+    *,
+    context_workspace_root: str | None = None,
+    pack_configuration: dict[str, Any] | None = None,
+) -> Any:
+    """Build a real ``HostRuntime`` whose session plan carries the given config.
+
+    Compiles an actual session manifest so the authored ``context.workspace_root``
+    field is exercised through the kernel schema rather than faked.
+    """
+    from kernel.session_plan import compile_session_plan
+    from runtime.config import HostConfig
+    from runtime.runtime import HostRuntime
+
+    context_block = ""
+    if context_workspace_root is not None:
+        context_block = f"context:\n  workspace_root: {context_workspace_root}\n"
+
+    packs_block = ""
+    if pack_configuration:
+        packs_block = "resources:\n  packs:\n    configuration:\n"
+        for pack_name, block in pack_configuration.items():
+            packs_block += f"      {pack_name}:\n"
+            for key, value in block.items():
+                packs_block += f"        {key}: {value}\n"
+
+    text = (
+        "---\n"
+        "schema_version: 2\n"
+        "name: test-session\n"
+        "surface:\n"
+        "  type: personal_dm\n"
+        "  id: host-console\n"
+        "  memory_scope: testing\n"
+        "routing:\n"
+        "  start_mode: default\n"
+        f"{context_block}"
+        f"{packs_block}"
+        "---\n"
+        "# Primary Session\n\nAct precisely.\n"
+    )
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+    return HostRuntime(HostConfig(data_dir=tmp_path), session_plan=plan)
+
+
+class TestWorkspaceRootResolution:
+    def test_runtime_source_names_no_specific_pack(self) -> None:
+        """The runtime must not hardcode a pack distribution name."""
+        from runtime import runtime as runtime_module
+
+        source = Path(runtime_module.__file__).read_text(encoding="utf-8")
+        assert "lisa-pack-coding" not in source
+
+    def test_falls_back_to_cwd_when_pack_configuration_absent(self, tmp_path: Path) -> None:
+        """No pack configuration at all resolves to the working directory."""
+        runtime = _runtime_with_plan(tmp_path)
+
+        assert runtime._resolve_copilot_workspace_root() == Path.cwd()
+
+    def test_authored_workspace_root_wins_over_pack_scan(self, tmp_path: Path) -> None:
+        runtime = _runtime_with_plan(
+            tmp_path,
+            context_workspace_root="/authored/ws",
+            pack_configuration={"lisa-pack-other": {"workspace_root": "/pack/ws"}},
+        )
+
+        assert runtime._resolve_copilot_workspace_root() == Path("/authored/ws")
+
+    def test_pack_scan_finds_workspace_root_from_any_pack(self, tmp_path: Path) -> None:
+        """A pack that is not the coding pack can declare the workspace root."""
+        runtime = _runtime_with_plan(
+            tmp_path,
+            pack_configuration={"lisa-pack-workspace": {"workspace_root": "/pack/ws"}},
+        )
+
+        assert runtime._resolve_copilot_workspace_root() == Path("/pack/ws")
+
+    def test_pack_scan_is_deterministic_across_declarations(self, tmp_path: Path) -> None:
+        """Several declaring packs resolve to the first in sorted pack-name order."""
+        runtime = _runtime_with_plan(
+            tmp_path,
+            pack_configuration={
+                "lisa-pack-zeta": {"workspace_root": "/zeta"},
+                "lisa-pack-alpha": {"workspace_root": "/alpha"},
+            },
+        )
+
+        assert runtime._resolve_copilot_workspace_root() == Path("/alpha")
+
+    def test_pack_scan_accepts_mapping_blocks(self) -> None:
+        """A read-only mapping block is scanned like a plain dict.
+
+        ``test_pack_configuration`` shows pack configuration reaching the
+        runtime as ``MappingProxyType``; a ``dict``-only check would silently
+        skip it and fall through to ``Path.cwd()``.
+        """
+        from types import MappingProxyType, SimpleNamespace
+
+        from runtime.runtime import HostRuntime
+
+        stub = SimpleNamespace(
+            session_plan=SimpleNamespace(
+                manifest=SimpleNamespace(
+                    resources=SimpleNamespace(
+                        packs=SimpleNamespace(
+                            configuration={
+                                "lisa-pack-workspace": MappingProxyType(
+                                    {"workspace_root": "/pack/ws"}
+                                )
+                            }
+                        )
+                    )
+                )
+            )
+        )
+
+        assert HostRuntime._pack_declared_workspace_root(stub) == "/pack/ws"

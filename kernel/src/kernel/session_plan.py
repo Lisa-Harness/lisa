@@ -577,6 +577,14 @@ class ContextPlan(_StrictSessionModel):
     history: ContextHistoryPlan = Field(default_factory=ContextHistoryPlan)
     memory: MemoryContextPlan = Field(default_factory=MemoryContextPlan)
     models: ModelManifestRef | None = None
+    workspace_root: str | None = Field(default=None, min_length=1)
+    """Authored workspace root for repository-facing content discovery.
+
+    Absolute, or relative to the process working directory. The compiler
+    validates non-emptiness only; the host resolves it. When absent, the host
+    falls back to a pack-declared ``workspace_root`` and then to the process
+    working directory.
+    """
     conflict_policy: Literal["prefer_authority", "surface_conflict", "drop_lower_authority"] = (
         "prefer_authority"
     )
