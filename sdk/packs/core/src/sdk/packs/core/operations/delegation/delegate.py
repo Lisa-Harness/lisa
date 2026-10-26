@@ -22,6 +22,7 @@ constants, the structured ``Parameters`` model, and substitution glue.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from kernel.delegation import DelegationResult, DelegationSpec
 from kernel.ipsar_fsm import get_workflow_catalog
@@ -72,6 +73,17 @@ class Parameters(BaseModel):
         description=(
             "Optional model alias override for the child turn. Empty "
             "means use the target mode's resolved model."
+        ),
+    )
+    task_goal: Literal["implementation", "diagnostic"] = Field(
+        default="implementation",
+        description=(
+            "What this child task is FOR. 'implementation' (default) promises "
+            "a committed change, so a checked-commit target mode must verify "
+            "one. 'diagnostic' means investigation only, which lets a "
+            "checked-commit mode complete without a worktree producer — but "
+            "only when the child made no writes. Declare 'diagnostic' for a "
+            "scoped probe/analysis child; an undeclared goal fails closed."
         ),
     )
 
@@ -191,6 +203,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         stage_id=params.stage_id,
         max_tool_iterations=params.max_tool_iterations,
         model_alias=params.model_alias,
+        # Declared intent travels with the child so a checked-commit target
+        # mode can distinguish investigation from a promised commit.
+        task_goal=params.task_goal,
         # Thread the operation's own wall-clock ceiling so the child
         # force-completes gracefully before the registry's hard cancel.
         timeout_seconds=int(getattr(ctx, "operation_timeout_seconds", 0) or 0),

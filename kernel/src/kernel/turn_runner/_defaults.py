@@ -9,6 +9,7 @@ must be deferred to call time.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -212,7 +213,15 @@ async def _default_delegate_fn(
         child_result = await _engine_pkg.run_turn(
             mode_id=spec.target_mode_id,
             query=spec.query,
-            hooks=hooks,
+            # The child declares its OWN goal: intent varies per task, so it
+            # rides the spec rather than being inherited from the parent's
+            # hooks (which would make a diagnostic probe inside an
+            # implementation turn inherit the promise of a commit, and a
+            # diagnostic parent silently bless every implementation child).
+            hooks=dataclasses.replace(
+                hooks,
+                identity=dataclasses.replace(hooks.identity, task_goal=spec.task_goal),
+            ),
             max_tool_iterations=child_max_iters,
             turn_budget=child_budget,
             execution_policy=execution_policy,

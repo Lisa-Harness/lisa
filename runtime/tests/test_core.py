@@ -812,3 +812,44 @@ class TestHandleMessage:
         apply_result = await handle_message(runtime, "/models apply")
         assert "Applied models proposal." in apply_result.text
         assert runtime.paths.models_path.exists()
+
+
+# ── Operator task-goal declaration ────────────────────────────────────
+
+
+def test_task_goal_marker_is_detected_and_stripped() -> None:
+    """``[task_goal: diagnostic]`` declares intent and then leaves the request.
+
+    The marker is an operator directive: it must set the task goal for this
+    turn and then be removed, so it is neither replayed to the model as part
+    of the request nor persisted in the thread entry's query.
+    """
+    from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker
+
+    raw = "why do the tests fail? [task_goal: diagnostic]"
+
+    assert _resolve_task_goal(raw) == "diagnostic"
+    assert _strip_task_goal_marker(raw) == "why do the tests fail?"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[Task_Goal: Diagnostic] fix the flaky test",
+        "fix the flaky test [task_goal:  diagnostic ]",
+        "fix the flaky test [task_goal:diagnostic]",
+    ],
+)
+def test_task_goal_marker_stripping_is_case_and_space_insensitive(raw: str) -> None:
+    """Operators type the declaration by hand, so the match is forgiving."""
+    from runtime.handle_message import _strip_task_goal_marker
+
+    assert _strip_task_goal_marker(raw) == "fix the flaky test"
+
+
+def test_task_goal_defaults_to_implementation_without_a_marker() -> None:
+    """An undeclared task fails closed as an implementation task."""
+    from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker
+
+    assert _resolve_task_goal("implement the feature") == "implementation"
+    assert _strip_task_goal_marker("implement the feature") == "implement the feature"

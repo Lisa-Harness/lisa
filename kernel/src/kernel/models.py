@@ -1897,6 +1897,17 @@ class DelegationSpec(BaseModel):
             "work. 0 preserves the legacy deadline-blind behavior."
         ),
     )
+    task_goal: Literal["implementation", "diagnostic"] = Field(
+        default="implementation",
+        description=(
+            "What this child task is FOR, declared by the operation caller. "
+            "'implementation' (the default) promises a committed change, so a "
+            "checked-commit target mode must verify one. 'diagnostic' means "
+            "investigation only, which lets a checked-commit mode complete "
+            "without a worktree producer — but only when the child made no "
+            "writes. An undeclared goal fails closed."
+        ),
+    )
 
 
 class DelegationResult(BaseModel):

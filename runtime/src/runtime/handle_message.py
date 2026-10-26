@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -846,10 +847,31 @@ def _resumable_task_id(thread_path: Any, message: str) -> str:
 #: no path to this value, so the exception can never be self-granted.
 _DIAGNOSTIC_TASK_MARKER = "[task_goal: diagnostic]"
 
+#: Matches any ``[task_goal: <value>]`` declaration, for message stripping.
+_TASK_GOAL_MARKER_RE = re.compile(r"\[\s*task_goal\s*:[^\]]*\]", re.IGNORECASE)
+
 
 def _operator_declared_diagnostic(message: str) -> bool:
     """Return True when the operator declared this task diagnostic at creation."""
     return _DIAGNOSTIC_TASK_MARKER in message.lower()
+
+
+def _strip_task_goal_marker(message: str) -> str:
+    """Remove the operator's ``[task_goal: …]`` declaration from the message.
+
+    The marker is an operator directive, not content. Leaving it in would
+    replay it to the model every turn, persist it in the thread entry's
+    ``query``, and make it look like part of the request in a later resume.
+
+    Args:
+        message: The raw operator message.
+
+    Returns:
+        The message with any ``[task_goal: <value>]`` declaration removed and
+        surrounding whitespace collapsed.
+    """
+    stripped = _TASK_GOAL_MARKER_RE.sub(" ", message)
+    return " ".join(stripped.split())
 
 
 def _resolve_task_goal(message: str) -> str:
@@ -860,6 +882,9 @@ def _resolve_task_goal(message: str) -> str:
     completion, and an operator who then waves it through by hand produces an
     unaudited exception. This is an OPERATOR declaration, never a model one,
     so the exception can never be self-granted.
+
+    A delegate child declares its own goal through ``DelegationSpec``, so this
+    operator surface is the parent-turn path only.
     """
     return "diagnostic" if _operator_declared_diagnostic(message) else "implementation"
 
@@ -1292,6 +1317,32 @@ async def _resolve_live_workflow_state_for_turn(runtime: HostRuntime) -> Any | N
     )
 
 
+def _consume_task_goal_declaration(message: str, query: str) -> tuple[str, str, str]:
+    """Resolve this turn's declared goal and strip the declaration.
+
+    The operator's ``[task_goal: …]`` marker is a directive, not content: it
+    selects the goal for this turn and is then removed, so it is never
+    replayed to the model as part of the request nor persisted in the thread
+    entry's ``query``.
+
+    Args:
+        message: The raw operator message for this turn.
+        query: The routed query text (may be empty).
+
+    Returns:
+        ``(task_goal, message, query)`` with the declaration removed from both
+        the message and the query.
+    """
+    task_goal = _resolve_task_goal(message)
+    if task_goal == "implementation" and not _TASK_GOAL_MARKER_RE.search(message):
+        return task_goal, message, query
+    return (
+        task_goal,
+        _strip_task_goal_marker(message),
+        _strip_task_goal_marker(query) if query else query,
+    )
+
+
 async def _execute_mode_turn(
     runtime: HostRuntime,
     message: str,
@@ -1317,6 +1368,7 @@ async def _execute_mode_turn(
     """
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
+    task_goal, message, query = _consume_task_goal_declaration(message, query)
     execution_policy = resolve_execution_policy(
         default_policy=runtime.config.execution_policy,
         session_request=runtime.session_plan.manifest.execution,
@@ -1369,7 +1421,6 @@ async def _execute_mode_turn(
 
     turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
     task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
-    task_goal = _resolve_task_goal(message)
 
     # Resolve the live approval state for recorded blockers before the
     # turn starts. The digest builders are synchronous; this is the async

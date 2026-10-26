@@ -969,3 +969,44 @@ async def test_append_completion_block_is_idempotent() -> None:
     # A genuinely different trailing sentence still appends.
     different = "Status report."
     assert _append_completion_block(different, msg) == f"Status report.\n\n{msg}"
+
+
+@pytest.mark.asyncio
+async def test_delegate_child_declares_its_own_task_goal() -> None:
+    """A child's declared goal must not be inherited from the parent.
+
+    ``TurnIdentity.task_goal`` is documented as declared by the delegate-spec
+    author or the operator, but the spec had no such field and the child was
+    handed the parent's hooks unchanged — so a diagnostic child inside an
+    implementation turn inherited the promise of a commit (and blocked), while
+    a diagnostic parent silently blessed every implementation child (a
+    false-pass). Intent varies per task, so it rides the spec.
+    """
+    from kernel.models import DelegationSpec
+    from kernel.turn_runner import _default_delegate_fn
+
+    seen: list[str] = []
+
+    async def _fake_run_turn(**kwargs: Any) -> Any:
+        seen.append(kwargs["hooks"].identity.task_goal)
+        return SimpleNamespace(response_text="done", tool_call_count=1, effect_receipts=[])
+
+    parent_identity = TurnIdentity(task_id="parent", task_goal="implementation")
+    hooks = TurnHooks(identity=parent_identity)
+
+    with patch("kernel.turn_runner.run_turn", _fake_run_turn):
+        await _default_delegate_fn(
+            DelegationSpec(
+                target_mode_id="diagnose",
+                query="why did it fail?",
+                task_goal="diagnostic",
+            ),
+            hooks=hooks,
+            turn_budget=None,
+            execution_policy=None,
+            depth=1,
+        )
+
+    assert seen == ["diagnostic"]
+    # The parent's identity is untouched.
+    assert hooks.identity.task_goal == "implementation"
