@@ -1227,12 +1227,21 @@ def _update_completion_context(
 def _emit_turn_completed_event(
     mode_id: str,
     result: TurnResult,
+    *,
+    turn_index: int,
+    task_id: str,
 ) -> None:
     """Emit the kernel turn's completion event for one finished turn.
 
-    The event carries mode/handoff/blocked metadata; the effect-receipt
-    ledger lives in the thread entry (the canonical, turn-addressable
-    source) and is not duplicated in the event payload.
+    Emitted only after the thread entry has been appended, so observing this
+    event is evidence that the turn is durable: a consumer can address the
+    entry by ``turn_index`` and find it. Emitting before the append let a
+    consumer treat completion as proof of persistence when the entry did not
+    exist yet.
+
+    ``turn_index`` and ``task_id`` are the locators that make the claim
+    checkable. The effect-receipt ledger still lives only in the thread entry
+    (the canonical, turn-addressable source) and is not duplicated here.
     """
     emit_structured_event(
         logger,
@@ -1243,6 +1252,8 @@ def _emit_turn_completed_event(
             mode_id=mode_id,
             result=result,
             coerce_int=coerce_non_negative_int,
+            turn_index=turn_index,
+            task_id=task_id,
         ),
     )
 
@@ -1538,8 +1549,9 @@ async def _execute_mode_turn(
     )
     _set_turn_context(runtime, run_context)
 
-    # Audit: emit the kernel turn's completion event.
-    _emit_turn_completed_event(mode.mode_id, result)
+    # Audit: emit the kernel turn's completion event. This runs after the
+    # thread entry is appended (below) so the event is evidence of durability
+    # rather than a claim made before persistence.
 
     # Persist the thread entry.
     provenance: dict[str, Any] = _build_thread_provenance(
@@ -1585,6 +1597,15 @@ async def _execute_mode_turn(
         if isinstance(run_context.get("memory_ids"), list)
         else None,
         transcript=result.transcript,
+    )
+
+    # Audit: emit the kernel turn's completion event, now that the entry the
+    # event points at exists.
+    _emit_turn_completed_event(
+        mode.mode_id,
+        result,
+        turn_index=turn_index,
+        task_id=task_id,
     )
 
     # ── Centralized loop decision classification ────────────────────

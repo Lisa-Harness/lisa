@@ -221,6 +221,8 @@ def test_build_turn_completed_payload_from_result_attrs() -> None:
 
     assert payload == {
         "mode_id": "research",
+        "turn_index": 0,
+        "task_id": "",
         "handoff": "code",
         "tool_call_count": 4,
         "iteration_count": 5,
@@ -239,6 +241,8 @@ def test_build_turn_completed_payload_missing_attrs_default() -> None:
 
     assert payload == {
         "mode_id": "m",
+        "turn_index": 0,
+        "task_id": "",
         "handoff": "",
         "tool_call_count": 0,
         "iteration_count": 0,

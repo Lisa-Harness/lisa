@@ -168,6 +168,8 @@ def build_turn_completed_payload(
     mode_id: str,
     result: Any,
     coerce_int: Any,
+    turn_index: int = 0,
+    task_id: str = "",
 ) -> dict[str, Any]:
     """Assemble the ``turn.completed`` audit payload for a kernel turn.
 
@@ -179,9 +181,16 @@ def build_turn_completed_payload(
     Hallucination signals (a mode with a completion contract whose ledger
     is empty) are queryable from the thread entry's ``effect_receipts``
     field without reconstructing individual dispatch entries.
+
+    ``turn_index`` and ``task_id`` are that link. Without them the payload
+    named no entry, so a consumer could not resolve the receipts the
+    docstring above points at. The caller emits this event only after the
+    entry is appended, so a present ``turn_index`` addresses a durable entry.
     """
     return {
         "mode_id": mode_id,
+        "turn_index": coerce_int(turn_index),
+        "task_id": task_id or "",
         "handoff": str(getattr(result, "handoff_to", None) or ""),
         "tool_call_count": coerce_int(getattr(result, "tool_call_count", 0)),
         "iteration_count": coerce_int(getattr(result, "iteration_count", 0)),
