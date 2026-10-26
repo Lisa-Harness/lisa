@@ -397,3 +397,49 @@ async def test_bedrock_tool_call_args_are_coerced_to_an_object() -> None:
     converse_messages = client.captured_kwargs["messages"]
     tu = converse_messages[1]["content"][0]["toolUse"]
     assert tu["input"] == {}
+
+
+# ── Proxy-routability seam ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("openai", "openai"),
+        ("ollama", "openai"),
+        ("openrouter", "openai"),
+        ("anthropic", "anthropic"),
+        ("OpenAI", "openai"),
+        ("  anthropic  ", "anthropic"),
+    ],
+)
+def test_proxy_protocol_for_reports_the_openai_and_anthropic_wire(
+    provider: str, expected: str
+) -> None:
+    """The two gateways that accept a loopback base URL declare their wire shape."""
+    assert SdkProviderGatewayProvider().proxy_protocol_for(provider) == expected
+
+
+@pytest.mark.parametrize("provider", ["google", "aws", "azure_openai", "", "unknown-provider"])
+def test_proxy_protocol_for_reports_none_for_credential_bound_gateways(
+    provider: str,
+) -> None:
+    """A credential-bound gateway is never proxy-routable.
+
+    Google builds a native REST client, Bedrock holds a boto3 client, and Azure
+    binds an SDK client to its endpoint — none reads a proxy route, so a pack's
+    ``providers: [all]`` wildcard must not expand for them.
+    """
+    assert SdkProviderGatewayProvider().proxy_protocol_for(provider) is None
+
+
+def test_proxy_protocol_for_agrees_with_gateway_support() -> None:
+    """Every proxy-routable provider must also have a gateway class.
+
+    The two answers are the same knowledge; a provider that reports a wire
+    protocol but has no gateway would expand a proxy nobody uses.
+    """
+    provider = SdkProviderGatewayProvider()
+    for name in ("openai", "ollama", "openrouter", "anthropic"):
+        assert provider.proxy_protocol_for(name) is not None
+        assert provider.gateway_for(name) is not None

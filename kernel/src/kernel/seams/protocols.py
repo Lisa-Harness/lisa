@@ -432,6 +432,23 @@ class ProviderGatewayProvider(Protocol):
 
     def gateway_for(self, provider: str) -> Any | None: ...
 
+    def proxy_protocol_for(self, provider: str) -> str | None:
+        """Return the provider proxy wire protocol serving ``provider``.
+
+        Which provider ids exist and which local proxy wire shape each one
+        speaks is gateway knowledge, not host configuration: only the
+        implementation that builds the client knows whether it reads a proxy
+        route at all. Providers whose gateway builds a client from
+        credentials (a native REST client, a cloud SDK) return ``None`` — no
+        proxy can serve them, so a pack's ``providers: [all]`` wildcard must
+        not try.
+
+        Returns:
+            ``"openai"`` or ``"anthropic"`` when a proxy can serve this
+            provider, ``None`` otherwise (including unknown provider ids).
+        """
+        ...
+
 
 @runtime_checkable
 class EventBus(Protocol):

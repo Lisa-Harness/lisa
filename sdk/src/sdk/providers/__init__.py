@@ -64,6 +64,35 @@ class SdkProviderGatewayProvider:
             return OpenAICompatibleGateway
         return None
 
+    def proxy_protocol_for(self, provider: str) -> str | None:
+        """Return the local-proxy wire protocol serving ``provider``, or None.
+
+        Only the OpenAI-wire and Anthropic gateways accept a loopback proxy
+        base URL; they are the two this SDK's host factories resolve through
+        ``runtime.resources.proxy_route_for``. Google (native REST), Bedrock
+        (boto3), and Azure (endpoint-bound SDK client) build their clients
+        from credentials and never consult a proxy route, so they are not
+        proxy-routable.
+
+        This is the sole authority for that split: the host asks the seam
+        rather than keeping its own provider list, so a third-party pack that
+        registers a new gateway (or a new wire shape) declares its own answer
+        instead of editing a host table.
+
+        Args:
+            provider: Provider gateway id (any case).
+
+        Returns:
+            ``"openai"`` or ``"anthropic"`` for a proxy-routable provider,
+            ``None`` otherwise (including unknown ids).
+        """
+        normalized = (provider or "").strip().lower()
+        if normalized in {"openai", "ollama", "openrouter"}:
+            return "openai"
+        if normalized == "anthropic":
+            return "anthropic"
+        return None
+
 
 def get_provider_gateway_provider_factory() -> Any:
     """Return the ``ProviderGatewayProvider`` for ``lisa.extensions.provider_gateways``.

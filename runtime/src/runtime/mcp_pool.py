@@ -26,6 +26,7 @@ import dataclasses
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -1224,8 +1225,25 @@ def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRunti
     (providers named in the session model manifest). Each expansion produces
     a sibling spec ``<proxy_id>.<provider>`` — one process, one upstream —
     with its own sequential port (base port + N), validated to the TCP max.
-    A provider whose port would overflow the valid range is skipped so the
-    rest of the expansion still compiles.
+
+    Which providers a proxy *can* serve is gateway knowledge, so it is asked
+    of the ``ProviderGatewayProvider`` seam rather than answered from a host
+    table: a gateway that builds its client from credentials (Google's native
+    REST path, Bedrock's boto3 client, the Azure endpoint) reports no proxy
+    protocol, and its providers are skipped. A wildcard is a pack's request,
+    not an author error, so every skip is logged and none aborts startup.
+
+    Three further skips keep the expansion honest: providers speaking a
+    different wire protocol than the proxy declares (an ``openai`` proxy has
+    nothing to do with an ``anthropic`` model), sibling ids an author declared
+    explicitly (the explicit spec wins over the generated one), and ports that
+    would overflow the TCP range.
+
+    An empty surviving set removes the wildcard entirely; the host logs why.
+
+    Args:
+        registry: The session's proxy registry (mutated in place).
+        runtime: The host runtime supplying the manifest and the gateway seam.
     """
     manifest = getattr(runtime.session, "manifest", None)
     manifest_providers = (
@@ -1233,6 +1251,7 @@ def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRunti
         if manifest is not None
         else ()
     )
+    proxy_protocol_for = _proxy_protocol_resolver(runtime)
     for spec in registry.all_specs():
         if spec.providers != (ALL_PROVIDERS,):
             continue
@@ -1243,18 +1262,33 @@ def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRunti
             )
             registry.replace_spec(spec.proxy_id, [])
             continue
+        declared_ids = {other.proxy_id for other in registry.all_specs()}
         wildcard_overlay = spec.provider_options.get(ALL_PROVIDERS)
         expanded: list[ProxyServerSpec] = []
-        skipped: list[str] = []
-        for offset, provider in enumerate(manifest_providers):
-            port = spec.port + offset
+        unroutable: list[str] = []
+        other_protocol: list[str] = []
+        overflows: list[str] = []
+        collisions: list[str] = []
+        for provider in manifest_providers:
+            wire = proxy_protocol_for(provider)
+            if wire is None:
+                unroutable.append(provider)
+                continue
+            if wire != spec.protocol.value:
+                other_protocol.append(provider)
+                continue
+            sibling_id = f"{spec.proxy_id}.{provider}"
+            if sibling_id in declared_ids:
+                collisions.append(provider)
+                continue
+            port = spec.port + len(expanded)
             if port > _MAX_TCP_PORT:
-                skipped.append(provider)
+                overflows.append(provider)
                 continue
             expanded.append(
                 dataclasses.replace(
                     spec,
-                    proxy_id=f"{spec.proxy_id}.{provider}",
+                    proxy_id=sibling_id,
                     providers=(provider,),
                     port=port,
                     provider_options=(
@@ -1264,14 +1298,124 @@ def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRunti
                     ),
                 )
             )
-        if skipped:
-            logger.warning(
-                "Proxy %r: skipping 'all'-expanded providers whose port overflows "
-                "the valid range: %s",
-                spec.proxy_id,
-                ", ".join(sorted(skipped)),
-            )
+        _log_wildcard_skips(
+            proxy_id=spec.proxy_id,
+            unroutable=unroutable,
+            other_protocol=other_protocol,
+            overflows=overflows,
+            collisions=collisions,
+            protocol=spec.protocol.value,
+        )
         registry.replace_spec(spec.proxy_id, expanded)
+
+
+def _log_wildcard_skips(
+    *,
+    proxy_id: str,
+    unroutable: list[str],
+    other_protocol: list[str],
+    overflows: list[str],
+    collisions: list[str],
+    protocol: str,
+) -> None:
+    """Report each reason a wildcard provider did not become a proxy process."""
+    if unroutable:
+        logger.info(
+            "Proxy %r: 'all' skips providers no proxy can serve: %s",
+            proxy_id,
+            ", ".join(sorted(unroutable)),
+        )
+    if other_protocol:
+        logger.info(
+            "Proxy %r: 'all' skips providers speaking a protocol other than %r: %s",
+            proxy_id,
+            protocol,
+            ", ".join(sorted(other_protocol)),
+        )
+    if collisions:
+        logger.warning(
+            "Proxy %r: 'all' skips providers an explicit proxy already serves: %s",
+            proxy_id,
+            ", ".join(sorted(collisions)),
+        )
+    if overflows:
+        logger.warning(
+            "Proxy %r: skipping 'all'-expanded providers whose port overflows the valid range: %s",
+            proxy_id,
+            ", ".join(sorted(overflows)),
+        )
+
+
+def _proxy_protocol_resolver(runtime: HostRuntime) -> Callable[[str], str | None]:
+    """Return a ``provider -> proxy wire protocol`` resolver for this host.
+
+    Provider identity and wire shape are gateway knowledge, so the answer
+    comes from the ``ProviderGatewayProvider`` seam; the host keeps no
+    provider table of its own. A discovered provider that predates
+    ``proxy_protocol_for`` reports nothing, which reads as "no proxy can
+    serve it" — the same fail-closed posture as an unknown provider, so an
+    old third-party gateway cannot have a proxy forced onto it.
+
+    Args:
+        runtime: The host runtime to resolve the active gateway seam against.
+
+    Returns:
+        A callable mapping a provider id to ``"openai"``/``"anthropic"``,
+        or ``None`` when no proxy can serve that provider.
+    """
+    provider = _active_provider_gateway_provider(runtime)
+    protocol_for = getattr(provider, "proxy_protocol_for", None)
+    if not callable(protocol_for):
+        return lambda _provider: None
+
+    def _resolver(name: str) -> str | None:
+        try:
+            return protocol_for(name)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "provider gateway seam failed to report a proxy protocol for %r; "
+                "treating it as not proxy-routable",
+                name,
+                exc_info=True,
+            )
+            return None
+
+    return _resolver
+
+
+def _active_provider_gateway_provider(runtime: HostRuntime) -> Any:
+    """Return the host's active ``ProviderGatewayProvider``, or ``None``.
+
+    Discovered from the ``lisa.extensions.provider_gateways`` entry-point
+    group — the same group ``TurnHooks`` assembly consults — because proxy
+    compilation runs at startup, before any turn has wired a seam. Resolved
+    once per compile, not once per provider.
+
+    Args:
+        runtime: The host runtime (unused today; kept so the signature can
+            consult host state if a future host pins its provider).
+
+    Returns:
+        The discovered provider, or ``None`` when no gateway pack is active.
+    """
+    del runtime  # discovery is host-independent; see the docstring
+    from kernel.provider_gateway_discovery import discover_provider_gateway_factories
+
+    for entry in discover_provider_gateway_factories():
+        loaded = entry.provider
+        try:
+            if callable(loaded) and not hasattr(loaded, "gateway_for"):
+                loaded = loaded()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "provider gateway entry %r failed to construct; skipping",
+                entry.pack_name,
+                exc_info=True,
+            )
+            continue
+        if loaded is not None:
+            return loaded
+    return None
 
 
 # ── Pack slug + policy helpers ───────────────────────────────────────
