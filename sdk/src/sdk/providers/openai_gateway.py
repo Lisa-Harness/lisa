@@ -28,6 +28,7 @@ from kernel.provider_contracts import (
     ProviderStreamEvent,
     StreamedChunk,
     embedding_gateway_error_from_exception,
+    extract_proxy_telemetry,
     extract_request_id,
     is_pydantic_model_class,
     provider_gateway_error_from_exception,
@@ -1137,7 +1138,28 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
         cache_creation_tokens=cache_write_tokens,
+        provider_cost_usd=_provider_cost(raw_usage),
     )
+
+
+def _provider_cost(raw_usage: Any) -> float:
+    """Read the provider's own reported charge for one call, when present.
+
+    OpenRouter returns ``usage.cost`` (USD) on the usage object — including
+    on the final streaming chunk — and it is the authoritative post-hoc
+    charge, not a list-price estimate. The OpenAI SDK parses unknown usage
+    fields into ``model_extra`` (``extra="allow"``), so ``getattr`` finds
+    ``cost`` on the SDK model; plain dicts and providers that omit the field
+    fall through to 0.0, which callers read as "not reported".
+    """
+
+    value = (
+        raw_usage.get("cost") if isinstance(raw_usage, dict) else getattr(raw_usage, "cost", None)
+    )
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _detail_tokens(details: Any, field: str) -> int:
@@ -1207,6 +1229,7 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
         cache_creation_tokens=cache_write_tokens,
+        provider_cost_usd=_provider_cost(raw_usage),
     )
 
 
@@ -1643,10 +1666,14 @@ class AzureOpenAIGateway:
         *,
         complete_client_factory: Callable[[], AsyncOpenAI],
         event_emitter: ProviderEventEmitter | None = None,
+        proxy_telemetry: Any = None,
     ) -> None:
         """Construct the Azure gateway with one SDK-owned v1 client factory."""
         self._complete_client_factory = complete_client_factory
         self._event_emitter = event_emitter
+        #: The serving proxy's declared per-response counters, when Azure calls
+        #: are routed through a proxy. ``None`` = read no headers.
+        self._proxy_telemetry = proxy_telemetry
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         await self._emit(
@@ -1689,6 +1716,8 @@ class AzureOpenAIGateway:
                 )
                 tool_calls = extract_openai_tool_calls(response)
                 usage = extract_openai_completion_usage(response)
+                if usage is not None:
+                    usage.proxy_telemetry = _proxy_telemetry_reader(self._proxy_telemetry)(response)
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {
@@ -1770,9 +1799,14 @@ class OpenAICompatibleGateway:
         client_factory: Callable[[], AsyncOpenAI],
         *,
         event_emitter: ProviderEventEmitter | None = None,
+        proxy_telemetry: Any = None,
     ) -> None:
         self._client_factory = client_factory
         self._event_emitter = event_emitter
+        #: The serving proxy's declared per-response counters (see
+        #: ``ProxyTelemetrySpec``). ``None`` when no proxy is in the path or
+        #: the proxy declares none, in which case no headers are read.
+        self._proxy_telemetry = proxy_telemetry
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         client = self._client_factory()
@@ -1830,6 +1864,10 @@ class OpenAICompatibleGateway:
         # response cut mid-tool-call was indistinguishable from a natural
         # narration-only completion without these fields.
         finish_reason, truncated = extract_openai_finish_reason(response)
+        usage = extract_openai_completion_usage(response)
+        if usage is not None:
+            # Lift the serving proxy's declared counters off this response.
+            usage.proxy_telemetry = _proxy_telemetry_reader(self._proxy_telemetry)(response)
         return CompletionResult(
             content=normalize_structured_content(
                 extract_openai_content(response), request.response_format
@@ -1839,7 +1877,7 @@ class OpenAICompatibleGateway:
             display_name=request.model_def.display_name,
             request_id=request_id,
             tool_calls=restore_chat_tool_names(extract_openai_tool_calls(response), name_map),
-            usage=extract_openai_completion_usage(response),
+            usage=usage,
             reasoning_content=extract_openai_reasoning(response),
             finish_reason=finish_reason,
             truncated=truncated,
@@ -1956,7 +1994,9 @@ class OpenAICompatibleGateway:
                         entry["function"]["name"] = name_map[wire_name]
                     tool_call_deltas.append(entry)
                 finish_reason = getattr(choice, "finish_reason", None)
-            usage = extract_openai_completion_usage(event)
+            usage = _attach_proxy_telemetry(
+                extract_openai_completion_usage(event), stream, self._proxy_telemetry
+            )
             yield StreamedChunk(
                 content=delta_content,
                 reasoning_content=delta_reasoning,
@@ -1980,3 +2020,38 @@ class OpenAICompatibleGateway:
         maybe_awaitable = self._event_emitter(event)
         if inspect.isawaitable(maybe_awaitable):
             await maybe_awaitable
+
+
+def _proxy_telemetry_reader(
+    telemetry: Any,
+) -> Callable[[Any], dict[str, int]]:
+    """Build a reader that lifts a proxy's declared counters off a response.
+
+    Returns ``{}`` when no proxy telemetry is declared or the response
+    carries no readable headers, so an unwired proxy costs nothing. The
+    OpenAI SDK attaches the live ``httpx`` response to the parsed object as
+    ``_response``; a raw ``httpx.Response`` (streaming) exposes ``.headers``
+    directly — both shapes are accepted.
+    """
+
+    def _read(response: Any) -> dict[str, int]:
+        if telemetry is None:
+            return {}
+        headers = getattr(getattr(response, "_response", None), "headers", None)
+        if headers is None:
+            headers = getattr(response, "headers", None)
+        return extract_proxy_telemetry(headers, telemetry)
+
+    return _read
+
+
+def _attach_proxy_telemetry(usage: Any, response: Any, telemetry: Any) -> Any:
+    """Attach a proxy's declared counters to ``usage``, returning it unchanged.
+
+    A single expression at the call site keeps the streaming loop's branch
+    count flat while still making the read conditional on a declaration.
+    """
+
+    if usage is not None and telemetry is not None:
+        usage.proxy_telemetry = _proxy_telemetry_reader(telemetry)(response)
+    return usage

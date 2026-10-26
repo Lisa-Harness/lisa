@@ -23,6 +23,7 @@ from kernel.proxy_launch.policy import (
     ProxyProtocol,
     ProxyServerSpec,
     ProxyStatusSpec,
+    ProxyTelemetrySpec,
 )
 from kernel.proxy_launch.pool import ProxyConnectionError, ProxyPool, _select_stats_fields
 
@@ -1064,3 +1065,176 @@ async def test_proxy_pool_concurrent_respawns_single_flight() -> None:
     assert any(r is True for r in (first, second))
     assert pool.route_alive("ollama") is True
     await pool.aclose()
+
+
+# ── Per-response telemetry declarations ───────────────────────────────
+
+
+def test_load_proxy_manifest_parses_telemetry_headers(tmp_path: Path) -> None:
+    """A proxy can declare response-header counters for its per-call savings.
+
+    This is the generic seam: the harness learns nothing about any particular
+    proxy's vocabulary — the pack says which header reports which field, and
+    the gateway lifts exactly those.
+    """
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      telemetry:
+        counter_unit: tokens
+        savings_field: tokens_saved
+        headers:
+          x-headroom-tokens-before: tokens_before
+          x-headroom-tokens-saved: tokens_saved
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_proxy_server_manifest(manifest)
+
+    status = specs[0].status_spec
+    assert status is not None and status.telemetry is not None
+    assert status.telemetry.headers == (
+        ("x-headroom-tokens-before", "tokens_before"),
+        ("x-headroom-tokens-saved", "tokens_saved"),
+    )
+    assert status.telemetry.savings_field == "tokens_saved"
+    assert status.telemetry.counter_unit == "tokens"
+    # The stats endpoint still defaults, so a pack can declare either alone.
+    assert status.url_path == "/stats"
+
+
+def test_load_proxy_manifest_status_without_telemetry_is_none(tmp_path: Path) -> None:
+    """Liveness-only proxies keep working with no per-call telemetry."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: plain
+    runtime_kind: binary
+    command_path: /opt/plain
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      url_path: /stats
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_proxy_server_manifest(manifest)
+
+    status = specs[0].status_spec
+    assert status is not None
+    assert status.telemetry is None
+
+
+def test_load_proxy_manifest_rejects_unknown_savings_field(tmp_path: Path) -> None:
+    """``savings_field`` must name a declared header.
+
+    A footer that promises a savings figure the proxy never sends is worse
+    than showing none, so this is a declaration error rather than a silent
+    no-op.
+    """
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: broken
+    runtime_kind: binary
+    command_path: /opt/broken
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      telemetry:
+        savings_field: tokens_saved
+        headers:
+          x-acme-before: tokens_before
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProxyServerManifestError, match="savings_field"):
+        load_proxy_server_manifest(manifest)
+
+
+def test_load_proxy_manifest_rejects_duplicate_telemetry_field(tmp_path: Path) -> None:
+    """Two headers cannot report under the same field name."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: broken
+    runtime_kind: binary
+    command_path: /opt/broken
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      telemetry:
+        headers:
+          x-acme-a: tokens_saved
+          x-acme-b: tokens_saved
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProxyServerManifestError, match="more than once"):
+        load_proxy_server_manifest(manifest)
+
+
+def test_compile_proxy_config_carries_telemetry() -> None:
+    """The compiled config carries the telemetry declaration to the pool."""
+    telemetry = ProxyTelemetrySpec(
+        headers=(("x-acme-saved", "tokens_saved"),), savings_field="tokens_saved"
+    )
+    spec = ProxyServerSpec(
+        proxy_id="acme",
+        runtime_kind=RuntimeKind.BINARY,
+        protocol=ProxyProtocol.OPENAI,
+        providers=("ollama",),
+        port=18787,
+        command_path="/opt/acme",
+        status_spec=ProxyStatusSpec(telemetry=telemetry),
+    )
+
+    config = compile_proxy_config(spec)
+
+    assert config is not None
+    assert config.telemetry is telemetry
+
+
+def test_proxy_route_carries_telemetry() -> None:
+    """The route a gateway receives exposes the proxy's telemetry declaration."""
+    telemetry = ProxyTelemetrySpec(headers=(("x-acme-saved", "tokens_saved"),))
+    config = ProxyClientConfig(
+        proxy_id="acme",
+        command="/opt/acme",
+        args=[],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=18787,
+        base_url="http://127.0.0.1:18787/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=1.0,
+        adopt_existing=False,
+        warm=True,
+        required=False,
+        telemetry=telemetry,
+    )
+    pool = ProxyPool([config])
+
+    pool._register_routes(config)  # pylint: disable=protected-access
+
+    assert pool.routes["ollama"].telemetry is telemetry

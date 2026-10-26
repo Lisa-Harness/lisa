@@ -163,10 +163,14 @@ class HostGatewayProvider:
                     aws_session_token=_env("LISA_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN") or None,
                 )
             if provider == "openrouter":
-                return gateway_cls(client_factory=_openrouter_client_factory(runtime))
+                return gateway_cls(
+                    client_factory=_openrouter_client_factory(runtime),
+                    proxy_telemetry=_proxy_telemetry_for(runtime, "openrouter"),
+                )
             if provider in {"openai", "ollama"}:
                 return gateway_cls(
-                    client_factory=_openai_compatible_client_factory(runtime, provider)
+                    client_factory=_openai_compatible_client_factory(runtime, provider),
+                    proxy_telemetry=_proxy_telemetry_for(runtime, provider),
                 )
         except Exception as exc:  # pylint: disable=broad-except
             # Construction must never break the turn loop's discovery: a
@@ -371,6 +375,26 @@ def _ready_proxy_base_url(
         _invalidate_client_for_lost_route(runtime, provider, previous_route)
         return None
     return str(route.base_url)
+
+
+def _proxy_telemetry_for(runtime: HostRuntime, provider: str) -> Any:
+    """Return the serving proxy's declared per-response counters for ``provider``.
+
+    The gateway reads these declarations off each response so a proxy's
+    savings travel with the call. ``None`` when the provider goes direct or
+    the proxy declares no telemetry — the gateway then reads no headers at
+    all, so a missing declaration costs nothing.
+
+    Resolution goes through the same liveness-gated route lookup the client
+    factories use, so a dead proxy degrades to "no telemetry" rather than
+    reporting counters from a route that is no longer serving.
+    """
+
+    try:
+        route = runtime.resources.proxy_route_for(provider, "openai")
+    except Exception:  # pylint: disable=broad-except
+        return None
+    return getattr(route, "telemetry", None) if route is not None else None
 
 
 def _proxy_base_url(runtime: HostRuntime, provider: str, direct_base_url: str) -> str:

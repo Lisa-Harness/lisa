@@ -2625,6 +2625,12 @@ class TokenUsageEvent(BusEvent):
     #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
+    #: The provider's own reported charge for this call (OpenRouter
+    #: ``usage.cost``), when it published one. ``cost_usd`` above is the
+    #: host-computed canonical estimate; this field exists so a host or pack
+    #: can reconcile its arithmetic against the provider's real meter
+    #: without losing either number. 0.0 = the provider reported nothing.
+    provider_cost_usd: float = 0.0
     duration_ms: float = 0.0
     time_cost_usd: float = 0.0
     latency_ms: int = 0

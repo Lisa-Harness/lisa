@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from kernel.models import BlockDiagnostic, OperationResult, ToolExecutionContext, ToolResult
@@ -43,6 +43,15 @@ class CompletionUsageSummary:
     cache_creation_tokens: int = 0
     duration_ms: float = 0.0
     latency_ms: int = 0
+    #: The provider's own reported charge for this call (OpenRouter
+    #: ``usage.cost``). Authoritative when non-zero — it already reflects the
+    #: provider's real cache read/write rates — and 0.0 when unreported, in
+    #: which case callers price the call from manifest rates instead.
+    provider_cost_usd: float = 0.0
+    #: Counters a routing proxy declared on this call's response headers
+    #: (see ``ProxyTelemetrySpec``). Empty when no proxy is in the path or it
+    #: declared none.
+    proxy_telemetry: dict[str, int] = field(default_factory=dict)
 
     #: Legacy tuple layout — ``(prompt, completion, total, cached, reasoning,
     #: duration_ms, latency_ms)``. Iterating/unpacking preserves the original
@@ -266,6 +275,29 @@ def _coerce_non_negative_float(value: Any) -> float:
         return 0.0
 
 
+def _coerce_telemetry(value: Any) -> dict[str, int]:
+    """Normalize proxy-supplied counters to a ``{str: non-negative int}`` map.
+
+    Proxy telemetry arrives as JSON from a gateway, so a malformed payload
+    from a third-party proxy must degrade to "no counters" rather than
+    raising inside usage extraction. Non-numeric or negative values are
+    dropped individually so one bad counter does not discard the rest.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    clean: dict[str, int] = {}
+    for key, raw in value.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            clean[name] = max(0, int(raw))
+        except (TypeError, ValueError):
+            continue
+    return clean
+
+
 def _extract_completion_usage(
     completion: Any,
 ) -> CompletionUsageSummary:
@@ -292,6 +324,7 @@ def _extract_completion_usage(
     cache_creation_tokens = _coerce_non_negative_int(
         getattr(completion, "cache_creation_tokens", 0)
     )
+    provider_cost = _coerce_non_negative_float(getattr(completion, "provider_cost_usd", 0.0))
     duration_ms = _coerce_non_negative_float(getattr(completion, "duration_ms", 0.0))
     latency_ms = _coerce_non_negative_int(getattr(completion, "latency_ms", 0))
 
@@ -302,6 +335,8 @@ def _extract_completion_usage(
     usage_cached = 0
     usage_reasoning = 0
     usage_cache_creation = 0
+    usage_provider_cost = 0.0
+    usage_proxy_telemetry: dict[str, int] = {}
     if isinstance(usage, dict):
         usage_prompt = _coerce_non_negative_int(
             usage.get("prompt_tokens") or usage.get("input_tokens")
@@ -315,6 +350,8 @@ def _extract_completion_usage(
         usage_cache_creation = _coerce_non_negative_int(
             usage.get("cache_creation_tokens") or usage.get("cache_creation_input_tokens")
         )
+        usage_provider_cost = _coerce_non_negative_float(usage.get("provider_cost_usd"))
+        usage_proxy_telemetry = _coerce_telemetry(usage.get("proxy_telemetry"))
     elif usage is not None:
         usage_prompt = _coerce_non_negative_int(
             getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
@@ -329,6 +366,8 @@ def _extract_completion_usage(
             getattr(usage, "cache_creation_tokens", None)
             or getattr(usage, "cache_creation_input_tokens", None)
         )
+        usage_provider_cost = _coerce_non_negative_float(getattr(usage, "provider_cost_usd", None))
+        usage_proxy_telemetry = _coerce_telemetry(getattr(usage, "proxy_telemetry", None))
         if duration_ms <= 0.0:
             # Gateways can measure duration on the nested ``usage`` object
             # (``CompletionUsage.duration_ms``). Flat attrs take precedence;
@@ -353,4 +392,6 @@ def _extract_completion_usage(
         cache_creation_tokens=cache_creation_tokens or usage_cache_creation,
         duration_ms=duration_ms,
         latency_ms=latency_ms,
+        provider_cost_usd=provider_cost or usage_provider_cost,
+        proxy_telemetry=usage_proxy_telemetry,
     )

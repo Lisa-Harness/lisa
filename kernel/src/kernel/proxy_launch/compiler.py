@@ -14,6 +14,7 @@ from kernel.proxy_launch.policy import (
     ProviderValueSource,
     ProxyServerRegistry,
     ProxyServerSpec,
+    ProxyTelemetrySpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ class ProxyClientConfig:
     required: bool
     status_url_path: str | None = None
     status_fields: tuple[str, ...] = ()
+    #: Response-header counters this proxy stamps per call (compression
+    #: savings and friends). ``None`` = the proxy declares no per-response
+    #: telemetry, so gateways record none.
+    telemetry: ProxyTelemetrySpec | None = None
 
 
 def _compile_command(  # noqa: C901, PLR0911, PLR0912
@@ -167,6 +172,7 @@ def compile_proxy_config(
         readiness_timeout_seconds=spec.readiness_timeout_seconds,
         status_url_path=status.url_path if status is not None else None,
         status_fields=status.fields if status is not None else (),
+        telemetry=status.telemetry if status is not None else None,
         adopt_existing=spec.adopt_existing,
         warm=spec.warm,
         required=spec.required,

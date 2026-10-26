@@ -17,6 +17,7 @@ from kernel.proxy_launch.policy import (
     ProxyProtocol,
     ProxyServerSpec,
     ProxyStatusSpec,
+    ProxyTelemetrySpec,
 )
 
 __all__ = ["ProxyServerManifestError", "load_proxy_server_manifest"]
@@ -351,4 +352,78 @@ def _parse_status_block(
             f"proxies[{index}] '{proxy_id}': status.fields must be a list of strings"
         )
     fields = tuple(item.strip() for item in fields_raw)
-    return ProxyStatusSpec(url_path=url_path, fields=fields)
+    telemetry = _parse_telemetry_block(raw_status.get("telemetry"), index, proxy_id, path, fields)
+    return ProxyStatusSpec(url_path=url_path, fields=fields, telemetry=telemetry)
+
+
+def _parse_telemetry_block(
+    raw_telemetry: Any,
+    index: int,
+    proxy_id: str,
+    path: Path,
+    status_fields: tuple[str, ...],
+) -> ProxyTelemetrySpec | None:
+    """Parse the optional ``status.telemetry`` header-counter block.
+
+    Declared shape::
+
+        status:
+          telemetry:
+            counter_unit: tokens
+            savings_field: tokens_saved
+            headers:
+              x-acme-tokens-before: tokens_before
+              x-acme-tokens-saved: tokens_saved
+
+    ``headers`` maps a response header name to the field name it reports
+    under. Values must be non-empty strings; a duplicate field name is a
+    declaration error because two headers would race to set the same key.
+    ``savings_field``, when set, must name a declared field — a footer that
+    promises a savings figure the proxy never sends is worse than none.
+    """
+    if raw_telemetry is None:
+        return None
+    if not isinstance(raw_telemetry, dict):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}' in {path}: status.telemetry must be a mapping"
+        )
+    raw_headers = raw_telemetry.get("headers")
+    if raw_headers is None:
+        # A telemetry block with no headers declares nothing to lift; keep the
+        # savings field declaration inert rather than failing startup over it.
+        return None
+    if not isinstance(raw_headers, dict) or not raw_headers:
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': status.telemetry.headers must be a "
+            "non-empty mapping of response-header name to field name"
+        )
+    headers: list[tuple[str, str]] = []
+    seen_fields: set[str] = set()
+    for raw_header, raw_field in raw_headers.items():
+        header = str(raw_header or "").strip()
+        field_name = str(raw_field or "").strip()
+        if not header or not field_name:
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': status.telemetry.headers entries "
+                "must map a non-empty header name to a non-empty field name"
+            )
+        if field_name in seen_fields:
+            raise ProxyServerManifestError(
+                f"proxies[{index}] '{proxy_id}': status.telemetry.headers declares "
+                f"field '{field_name}' more than once"
+            )
+        seen_fields.add(field_name)
+        headers.append((header, field_name))
+
+    savings_field = str(raw_telemetry.get("savings_field") or "").strip()
+    if savings_field and savings_field not in seen_fields:
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': status.telemetry.savings_field "
+            f"'{savings_field}' is not one of the declared headers' field names"
+        )
+    counter_unit = str(raw_telemetry.get("counter_unit") or "tokens").strip() or "tokens"
+    return ProxyTelemetrySpec(
+        headers=tuple(headers),
+        savings_field=savings_field,
+        counter_unit=counter_unit,
+    )

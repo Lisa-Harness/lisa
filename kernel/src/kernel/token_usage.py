@@ -48,6 +48,7 @@ __all__ = [
     "coerce_non_negative_float",
     "coerce_non_negative_int",
     "ensure_usage_entry",
+    "estimate_call_cost_usd",
     "publish_token_usage",
 ]
 
@@ -251,6 +252,7 @@ def build_token_usage_event(
     latency_ms: int = 0,
     cost_usd: float = 0.0,
     time_cost_usd: float = 0.0,
+    provider_cost_usd: float = 0.0,
     request_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
@@ -291,6 +293,7 @@ def build_token_usage_event(
         latency_ms=int(latency_ms or 0),
         cost_usd=float(cost_usd or 0.0),
         time_cost_usd=float(time_cost_usd or 0.0),
+        provider_cost_usd=float(provider_cost_usd or 0.0),
         request_id=str(request_id or ""),
         mode_id=str(mode_id or ""),
         stage_id=str(stage_id or ""),
@@ -299,4 +302,60 @@ def build_token_usage_event(
         user_slug=str(user_slug or "default"),
         surface_id=str(surface_id or ""),
         extra=dict(extra) if extra else {},
+    )
+
+
+def estimate_call_cost_usd(
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    prompt_price: float = 0.0,
+    completion_price: float = 0.0,
+    cache_read_price: float = 0.0,
+    cache_write_price: float = 0.0,
+) -> float:
+    """Price one completion from per-token USD rates (0.0 when unpriced).
+
+    This is the *canonical* cost model every host shares: the same math the
+    CLI footer used to re-derive locally, but with the prompt-cache split
+    applied to both sides of the cache rather than just reads.
+
+    The prompt side is a three-way split, because a cache hit is billed at
+    the provider's discounted read rate while a cache *population* is billed
+    at a premium write rate — pricing writes at the ordinary prompt rate
+    silently understates turns that warm a cache. ``cached_tokens`` and
+    ``cache_creation_tokens`` are the provider-reported sub-counters, and
+    ``prompt_tokens`` already includes both (OpenRouter/OpenAI report the
+    total prompt size), so the uncached remainder is what is left after
+    removing them.
+
+    Rates of 0.0 mean "provider does not price this", in which case the
+    corresponding tokens fall back to ``prompt_price`` (the pre-split
+    behaviour) so an incomplete manifest never produces a *free* call.
+    Returns 0.0 overall when the provider publishes no prices at all.
+    """
+
+    prompt = max(0, int(prompt_tokens or 0))
+    completion = max(0, int(completion_tokens or 0))
+    cached = min(max(0, int(cached_tokens or 0)), prompt)
+    # Cache writes are a subset of the prompt too. A provider that reports a
+    # write count larger than the remaining prompt (Anthropic reports
+    # creation and read counts for the same prefix across calls) must not
+    # push the split negative; clamp to what is left after reads.
+    writes = min(max(0, int(cache_creation_tokens or 0)), prompt - cached)
+    uncached = prompt - cached - writes
+
+    prompt_rate = float(prompt_price or 0.0)
+    read_rate = float(cache_read_price or 0.0) or prompt_rate
+    write_rate = float(cache_write_price or 0.0) or prompt_rate
+    completion_rate = float(completion_price or 0.0)
+
+    return max(
+        0.0,
+        uncached * prompt_rate
+        + cached * read_rate
+        + writes * write_rate
+        + completion * completion_rate,
     )

@@ -89,6 +89,11 @@ class _TurnState:
     total_cache_creation_tokens: int = 0
     total_duration_ms: float = 0.0
     total_latency_ms: int = 0
+    #: Sum of every per-call counter a routing proxy declared on its response
+    #: headers (e.g. compression ``tokens_saved``), keyed by the pack's own
+    #: field names. Empty when no proxy is in the path. The harness sums
+    #: without interpreting, so a pack can add a counter with a manifest edit.
+    total_proxy_telemetry: dict[str, int] = field(default_factory=dict)
     total_tool_calls: int = 0
     per_model_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
     per_mode_usage: dict[str, dict[str, Any]] = field(default_factory=dict)

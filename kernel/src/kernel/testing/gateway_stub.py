@@ -47,6 +47,8 @@ def _usage_from_result(result: Any) -> CompletionUsage | None:
         reasoning_tokens=int(getattr(source, "reasoning_tokens", 0)),
         cache_creation_tokens=int(getattr(source, "cache_creation_tokens", 0)),
         duration_ms=float(getattr(source, "duration_ms", 0.0)),
+        provider_cost_usd=float(getattr(source, "provider_cost_usd", 0.0)),
+        proxy_telemetry=dict(getattr(source, "proxy_telemetry", {}) or {}),
     )
 
 

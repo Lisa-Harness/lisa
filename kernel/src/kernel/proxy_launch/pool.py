@@ -12,6 +12,7 @@ from typing import Any, Literal
 import httpx
 
 from kernel.proxy_launch.compiler import ProxyClientConfig
+from kernel.proxy_launch.policy import ProxyTelemetrySpec
 
 __all__ = ["ProxyConnectionError", "ProxyHealth", "ProxyPool", "ProxyRoute"]
 
@@ -29,6 +30,10 @@ class ProxyRoute:
     proxy_id: str
     protocol: str
     base_url: str
+    #: Per-response header counters this proxy declares. The gateway reads
+    #: them off each response so savings travel with the call instead of
+    #: requiring a separate poll. ``None`` = no per-call telemetry.
+    telemetry: ProxyTelemetrySpec | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +291,7 @@ class ProxyPool:
             proxy_id=config.proxy_id,
             protocol=config.protocol,
             base_url=config.base_url,
+            telemetry=config.telemetry,
         )
         for provider in config.providers:
             previous = self._routes.get(provider)

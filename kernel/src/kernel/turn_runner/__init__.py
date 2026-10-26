@@ -141,6 +141,7 @@ from kernel.system_segments import (
     SystemPromptSegments,
 )
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
+from kernel.token_usage import estimate_call_cost_usd as _estimate_call_cost_usd_fn
 from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
@@ -3647,6 +3648,43 @@ async def _model_completion_for_iteration(
     )
 
 
+def _resolve_call_cost(
+    *,
+    effective_model_def: Any,
+    usage: Any,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+    cache_creation_tokens: int,
+) -> tuple[float, float]:
+    """Return ``(canonical_cost_usd, provider_cost_usd)`` for one model call.
+
+    ``canonical_cost_usd`` is the harness's own arithmetic, computed from the
+    per-token rates the resolved model definition carries out of the
+    manifest. Every host shares this number, so the CLI footer, ``/tokens``,
+    and any pack reconciling spend all agree rather than each re-deriving
+    pricing from a different copy of the manifest.
+
+    ``provider_cost_usd`` is the provider's own reported charge
+    (``usage.cost`` from OpenRouter), passed through untouched so a host or
+    pack can compare the two. Both are 0.0 when the corresponding source is
+    absent — an unpriced local model reports no cost rather than a fake one.
+    """
+
+    provider_cost = float(getattr(usage, "provider_cost_usd", 0.0) or 0.0)
+    canonical = _estimate_call_cost_usd_fn(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        prompt_price=float(getattr(effective_model_def, "prompt_price", 0.0) or 0.0),
+        completion_price=float(getattr(effective_model_def, "completion_price", 0.0) or 0.0),
+        cache_read_price=float(getattr(effective_model_def, "cache_read_price", 0.0) or 0.0),
+        cache_write_price=float(getattr(effective_model_def, "cache_write_price", 0.0) or 0.0),
+    )
+    return canonical, provider_cost
+
+
 async def _record_iteration_completion(
     *,
     state: Any,
@@ -3676,6 +3714,14 @@ async def _record_iteration_completion(
     cache_creation_tokens = usage.cache_creation_tokens
     duration_ms = usage.duration_ms
     latency_ms = usage.latency_ms
+    cost_usd, provider_cost_usd = _resolve_call_cost(
+        effective_model_def=effective_model_def,
+        usage=usage,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+    )
     state.total_prompt_tokens += prompt_tokens
     state.total_completion_tokens += completion_tokens
     state.total_tokens += completion_total_tokens
@@ -3684,6 +3730,13 @@ async def _record_iteration_completion(
     state.total_cache_creation_tokens += cache_creation_tokens
     state.total_duration_ms += duration_ms
     state.total_latency_ms += latency_ms
+    proxy_telemetry = dict(usage.proxy_telemetry or {})
+    if proxy_telemetry:
+        # Sum the proxy's per-call counters across the turn so a footer can
+        # report the turn's total compression saving. Keys the harness does
+        # not recognise are still carried — a pack owns its own vocabulary.
+        for key, value in proxy_telemetry.items():
+            state.total_proxy_telemetry[key] = state.total_proxy_telemetry.get(key, 0) + value
     record_model_usage(
         effective_model_def,
         p=prompt_tokens,
@@ -3713,6 +3766,13 @@ async def _record_iteration_completion(
             cache_creation_tokens=cache_creation_tokens,
             duration_ms=duration_ms,
             latency_ms=latency_ms,
+            cost_usd=cost_usd,
+            provider_cost_usd=provider_cost_usd,
+            # Proxy counters ride the durable record's free-form ``extra``
+            # block rather than widening the event schema: the key set is
+            # pack-owned, so a pack can add a counter without a kernel change
+            # and a pack reading the log finds exactly what its proxy sent.
+            extra={"proxy_telemetry": proxy_telemetry} if proxy_telemetry else None,
             request_id=str(getattr(completion, "request_id", "") or ""),
             mode_id=mode_id,
             stage_id=str(getattr(state, "current_stage_id", "") or ""),
@@ -3735,6 +3795,22 @@ async def _record_iteration_completion(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "_state.total_tokens": completion_total_tokens,
+            # Cache sub-counters ride the stage payload so transports can
+            # report the billed basis rather than the context walk. Without
+            # them a transport can only see the walk, which reads up to 30x
+            # the billable figure on a cache-heavy agentic turn.
+            "cached_tokens": cached_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            # Canonical cost (harness arithmetic) plus the provider's own
+            # reported charge when it published one, so a footer can show
+            # the authoritative figure and a pack can reconcile the two.
+            "cost_usd": cost_usd,
+            "provider_cost_usd": provider_cost_usd,
+            # Per-call counters the serving proxy declared on its response
+            # headers (compression savings and friends). Empty when no proxy
+            # is in the path, so a transport can treat presence as "a proxy
+            # did something on this call".
+            "proxy_telemetry": proxy_telemetry,
             "duration_ms": duration_ms,
         },
     )
@@ -5853,6 +5929,14 @@ async def _force_final_content_completion(
             content_source = ""
             final_usage = _extract_completion_usage(final_completion)
             final_reasoning_tokens = final_usage.reasoning_tokens
+            final_cost, final_provider_cost = _resolve_call_cost(
+                effective_model_def=effective_model_def,
+                usage=final_usage,
+                prompt_tokens=final_usage.prompt_tokens,
+                completion_tokens=final_usage.completion_tokens,
+                cached_tokens=final_usage.cached_tokens,
+                cache_creation_tokens=final_usage.cache_creation_tokens,
+            )
             state.total_prompt_tokens += final_usage.prompt_tokens
             state.total_completion_tokens += final_usage.completion_tokens
             state.total_tokens += final_usage.total_tokens
@@ -5883,6 +5967,8 @@ async def _force_final_content_completion(
                     cache_creation_tokens=final_usage.cache_creation_tokens,
                     duration_ms=final_usage.duration_ms,
                     latency_ms=final_usage.latency_ms,
+                    cost_usd=final_cost,
+                    provider_cost_usd=final_provider_cost,
                     request_id=str(getattr(final_completion, "request_id", "") or ""),
                     mode_id=mode_id,
                     call_site="forced_final",
@@ -6579,6 +6665,14 @@ async def _emit_terminal_stage_summary(
                     if final_content.strip():
                         content = final_content.strip()
                         terminal_usage = _extract_completion_usage(final_completion)
+                        terminal_cost, terminal_provider_cost = _resolve_call_cost(
+                            effective_model_def=effective_model_def,
+                            usage=terminal_usage,
+                            prompt_tokens=terminal_usage.prompt_tokens,
+                            completion_tokens=terminal_usage.completion_tokens,
+                            cached_tokens=terminal_usage.cached_tokens,
+                            cache_creation_tokens=terminal_usage.cache_creation_tokens,
+                        )
                         state.total_prompt_tokens += terminal_usage.prompt_tokens
                         state.total_completion_tokens += terminal_usage.completion_tokens
                         state.total_tokens += terminal_usage.total_tokens
@@ -6609,6 +6703,8 @@ async def _emit_terminal_stage_summary(
                                 cache_creation_tokens=terminal_usage.cache_creation_tokens,
                                 duration_ms=terminal_usage.duration_ms,
                                 latency_ms=terminal_usage.latency_ms,
+                                cost_usd=terminal_cost,
+                                provider_cost_usd=terminal_provider_cost,
                                 request_id=str(getattr(final_completion, "request_id", "") or ""),
                                 mode_id=mode_id,
                                 call_site="terminal_stage",

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -132,6 +133,13 @@ class CompletionUsage:
     Some providers (notably Ollama when billing local GPU time) charge by
     duration rather than token count; hosts that need time-based cost
     math read this field. Defaults to 0 when the gateway did not measure.
+
+    ``provider_cost_usd`` is the *authoritative* charge the provider itself
+    reported for this call (OpenRouter returns ``usage.cost`` in the final
+    streaming chunk). It is not an estimate: it already accounts for the
+    provider's real prompt-cache read/write rates, so it should be preferred
+    over manifest-price arithmetic whenever present. 0.0 means the provider
+    did not report a cost — the caller falls back to computing one.
     """
 
     prompt_tokens: int = 0
@@ -141,6 +149,14 @@ class CompletionUsage:
     reasoning_tokens: int = 0
     cache_creation_tokens: int = 0
     duration_ms: float = 0.0
+    provider_cost_usd: float = 0.0
+    #: Counters a routing proxy declared on its response headers for this
+    #: call (see ``ProxyTelemetrySpec``), keyed by the field names the pack
+    #: chose. An empty dict means either no proxy was in the path or the
+    #: proxy stamped nothing. Values are recorded verbatim — the harness
+    #: never assumes a vocabulary, so a pack can add a counter without a
+    #: code change.
+    proxy_telemetry: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -198,6 +214,11 @@ class CompletionResult:
     def total_tokens(self) -> int:
         """Flat total-token counter."""
         return self.usage.total_tokens if self.usage else 0
+
+    @property
+    def proxy_telemetry(self) -> dict[str, int]:
+        """Flat view of the serving proxy's declared per-call counters."""
+        return self.usage.proxy_telemetry if self.usage else {}
 
 
 @dataclass(slots=True)
@@ -325,6 +346,51 @@ def extract_request_id(value: Any) -> str:
         if isinstance(candidate, str) and candidate:
             return candidate
     return ""
+
+
+def extract_proxy_telemetry(
+    headers: Any,
+    telemetry: Any,
+) -> dict[str, int]:
+    """Lift one proxy's declared counters out of a response's headers.
+
+    ``headers`` may be a ``Mapping`` or any object exposing ``.get``
+    (``httpx.Headers`` is case-insensitive already; plain dicts are not, so
+    this falls back to a case-insensitive scan). ``telemetry`` is the
+    pack-declared :class:`~kernel.proxy_launch.policy.ProxyTelemetrySpec` for
+    the proxy that served the call, or ``None`` when no proxy telemetry is
+    declared.
+
+    Values are parsed as non-negative ints. A header that is absent, empty,
+    or non-numeric contributes nothing rather than a fabricated zero: a proxy
+    that skipped compression on this call simply omits the header, and the
+    caller must be able to tell "no saving" from "not reported".
+    """
+
+    declarations = getattr(telemetry, "headers", ()) or ()
+    if not declarations or headers is None:
+        return {}
+    # Normalize once so lookups are case-insensitive for plain dicts, whose
+    # keys keep whatever casing the proxy wrote.
+    lowered: dict[str, Any] = {}
+    with suppress(TypeError, ValueError):
+        for key, value in dict(headers).items():
+            lowered[str(key).lower()] = value
+    lifted: dict[str, int] = {}
+    for header_name, field_name in declarations:
+        raw = headers.get(header_name)
+        if raw is None:
+            raw = lowered.get(str(header_name).lower())
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            lifted[field_name] = max(0, int(text))
+        except ValueError:
+            continue
+    return lifted
 
 
 def provider_gateway_error_from_exception(

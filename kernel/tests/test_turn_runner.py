@@ -3442,8 +3442,61 @@ async def test_run_turn_emits_model_call_stage_events() -> None:
     # model_call_complete should be the last event and carry token counts.
     last_label, last_data = events[-1]
     assert last_label == "model_call_complete"
-    assert "iteration" in last_data
-    assert "tool_calls" in last_data
+    assert "prompt_tokens" in last_data
+    assert "cached_tokens" in last_data
+    assert "cache_creation_tokens" in last_data
+    assert "cost_usd" in last_data
+    assert "provider_cost_usd" in last_data
+
+
+@pytest.mark.asyncio
+async def test_model_call_complete_payload_carries_cache_counters_and_cost() -> None:
+    """The stage payload ships the cache split and both cost figures.
+
+    Transports cannot price a turn from ``total_tokens`` alone: on a
+    cache-heavy agentic turn the walk reads up to 30x the billed tokens, and
+    pricing every prompt at the uncached rate overstates provider spend. The
+    kernel therefore ships the sub-counters plus its own canonical cost and
+    the provider's reported charge when there is one.
+    """
+
+    class _CostedCompletion(_StubCompletion):
+        prompt_tokens = 1000
+        total_tokens = 1100
+        cached_tokens = 800
+        cache_creation_tokens = 0
+        provider_cost_usd = 0.0
+
+        @property
+        def usage(self) -> Any:
+            return SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=100,
+                total_tokens=1100,
+                cached_tokens=800,
+                reasoning_tokens=0,
+                cache_creation_tokens=0,
+                provider_cost_usd=0.0042,
+            )
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    async def complete(**kwargs: Any) -> _CostedCompletion:
+        return _CostedCompletion(content="Done.", completion_tokens=100)
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.lifecycle.on_stage = on_stage
+
+    await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    _label, data = next(e for e in events if e[0] == "model_call_complete")
+    assert data["cached_tokens"] == 800
+    assert data["cache_creation_tokens"] == 0
+    assert data["provider_cost_usd"] == pytest.approx(0.0042)
+    assert data["cost_usd"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -7734,3 +7787,62 @@ async def test_suppressed_child_turn_injects_no_routing_hint() -> None:
     assert any("Routing Hint" in prompt for prompt in parent_prompts), (
         "control arm: parent turn must still inject the hint"
     )
+
+
+@pytest.mark.asyncio
+async def test_model_call_complete_payload_carries_proxy_telemetry() -> None:
+    """A serving proxy's declared counters ride the stage payload.
+
+    The kernel sums them onto the turn state without interpreting them, so a
+    transport can report compression savings that only existed for the
+    duration of one call.
+    """
+
+    class _ProxiedCompletion(_StubCompletion):
+        @property
+        def usage(self) -> Any:
+            return SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=10,
+                total_tokens=110,
+                cached_tokens=0,
+                reasoning_tokens=0,
+                cache_creation_tokens=0,
+                proxy_telemetry={"tokens_saved": 5000, "pack_specific": 3},
+            )
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    async def complete(**kwargs: Any) -> _ProxiedCompletion:
+        return _ProxiedCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.lifecycle.on_stage = on_stage
+
+    await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    _label, data = next(e for e in events if e[0] == "model_call_complete")
+    assert data["proxy_telemetry"] == {"tokens_saved": 5000, "pack_specific": 3}
+
+
+@pytest.mark.asyncio
+async def test_model_call_complete_proxy_telemetry_empty_without_proxy() -> None:
+    """No proxy in the path leaves the key present but empty."""
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.lifecycle.on_stage = on_stage
+
+    await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    _label, data = next(e for e in events if e[0] == "model_call_complete")
+    assert data["proxy_telemetry"] == {}

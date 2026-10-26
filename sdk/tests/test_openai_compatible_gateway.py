@@ -501,3 +501,134 @@ class TestStructuredOutputFenceTolerance:
         gateway = OpenAICompatibleGateway(client_factory=lambda: client)
         result = await gateway.complete(self._structured_request())
         assert result.content == "plain prose, no JSON here"
+
+
+# ── Provider-reported cost (OpenRouter ``usage.cost``) ────────────────
+
+
+def test_extract_usage_reads_openrouter_reported_cost() -> None:
+    """OpenRouter's authoritative per-call charge is surfaced, not dropped.
+
+    ``usage.cost`` is what OpenRouter actually billed, post-cache-discount.
+    Nothing in the harness can reconstruct it more accurately from list
+    prices, so it must survive extraction to be usable by a host.
+    """
+    from sdk.providers.openai_gateway import extract_openai_completion_usage
+
+    response = SimpleNamespace(
+        usage={
+            "prompt_tokens": 1000,
+            "completion_tokens": 100,
+            "total_tokens": 1100,
+            "cost": 0.0029,
+        }
+    )
+    usage = extract_openai_completion_usage(response)
+    assert usage is not None
+    assert usage.provider_cost_usd == pytest.approx(0.0029)
+
+
+def test_extract_usage_reads_cost_from_sdk_model_extra() -> None:
+    """The OpenAI SDK stashes unknown usage fields on ``model_extra``.
+
+    ``usage.cost`` is not in the SDK's declared schema, so it lands in
+    ``model_extra`` and is reachable as a plain attribute. Verifying against a
+    real ``CompletionUsage`` keeps the gateway honest if the SDK changes how
+    it carries extra fields.
+    """
+    from openai.types import CompletionUsage as SDKCompletionUsage
+    from sdk.providers.openai_gateway import extract_openai_completion_usage
+
+    raw = SDKCompletionUsage.model_validate(
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+            "cost": 0.00042,
+        }
+    )
+    usage = extract_openai_completion_usage(SimpleNamespace(usage=raw))
+    assert usage is not None
+    assert usage.provider_cost_usd == pytest.approx(0.00042)
+
+
+def test_extract_usage_reports_zero_when_provider_omits_cost() -> None:
+    """Providers that publish no cost leave the field at 0.0 (not reported)."""
+    from sdk.providers.openai_gateway import extract_openai_completion_usage
+
+    response = SimpleNamespace(
+        usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+    )
+    usage = extract_openai_completion_usage(response)
+    assert usage is not None
+    assert usage.provider_cost_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_gateway_lifts_proxy_telemetry_from_response_headers() -> None:
+    """The gateway reads only the headers the serving proxy declared.
+
+    A proxy that compresses a request knows what it saved, but can only say so
+    on the response. The gateway resolves those declarations from the route
+    and surfaces them per call, so no proxy vocabulary is hard-coded here.
+    """
+    import httpx
+    from kernel.proxy_launch.policy import ProxyTelemetrySpec
+
+    request = httpx.Request("POST", "http://127.0.0.1:8787/v1/chat/completions")
+    http_response = httpx.Response(
+        200,
+        headers={"x-acme-tokens-before": "140000", "x-acme-tokens-saved": "40000"},
+        request=request,
+    )
+    usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110)
+    message = SimpleNamespace(content="hi", tool_calls=None)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        id="chat-1",
+        usage=usage,
+        _response=http_response,
+    )
+    captured: dict[str, Any] = {}
+    client = _StubClient(response, captured)
+    gateway = OpenAICompatibleGateway(
+        client_factory=lambda: client,
+        proxy_telemetry=ProxyTelemetrySpec(
+            headers=(
+                ("x-acme-tokens-before", "tokens_before"),
+                ("x-acme-tokens-saved", "tokens_saved"),
+            ),
+            savings_field="tokens_saved",
+        ),
+    )
+
+    result = await gateway.complete(_request([{"role": "user", "content": "hi"}]))
+
+    assert result.usage is not None
+    assert result.usage.proxy_telemetry == {
+        "tokens_before": 140000,
+        "tokens_saved": 40000,
+    }
+    # The flat view operations read stays consistent with the usage object.
+    assert result.proxy_telemetry == {"tokens_before": 140000, "tokens_saved": 40000}
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_no_telemetry_without_a_declaration() -> None:
+    """A direct call (no proxy declaration) does no header reading."""
+    usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110)
+    message = SimpleNamespace(content="hi", tool_calls=None)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        id="chat-1",
+        usage=usage,
+        _response=SimpleNamespace(headers={"x-acme-tokens-saved": "999"}),
+    )
+    captured: dict[str, Any] = {}
+    client = _StubClient(response, captured)
+    gateway = OpenAICompatibleGateway(client_factory=lambda: client)
+
+    result = await gateway.complete(_request([{"role": "user", "content": "hi"}]))
+
+    assert result.usage is not None
+    assert result.usage.proxy_telemetry == {}

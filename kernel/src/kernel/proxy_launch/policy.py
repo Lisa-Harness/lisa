@@ -15,6 +15,7 @@ __all__ = [
     "ProxyServerRegistry",
     "ProxyServerSpec",
     "ProxyStatusSpec",
+    "ProxyTelemetrySpec",
 ]
 
 
@@ -43,6 +44,41 @@ class ProxyProtocol(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ProxyTelemetrySpec:
+    """Pack-declared per-response telemetry a proxy stamps on headers.
+
+    A proxy that rewrites a request (compression, cache steering, routing)
+    knows what it saved, and the only place it can tell the caller is the
+    response. ``headers`` names the response headers carrying those counters,
+    so the provider gateway can surface them per call without the harness
+    knowing any particular proxy's vocabulary.
+
+    Each entry is ``(header_name, field_name)``: ``header_name`` is matched
+    case-insensitively against the response headers and the parsed integer is
+    reported under ``field_name``. ``field_name`` is deliberately free-form —
+    the harness records every declared counter verbatim and renders the ones
+    it recognises, so a new proxy metric needs a manifest edit, not a code
+    change.
+
+    ``savings_field`` designates which of those counters is *this turn's*
+    token savings, the number a footer should show. When unset, no savings
+    figure is surfaced (counters are still recorded).
+
+    ``counter_unit`` names the unit those integers are denominated in
+    (``tokens`` by default) so a host never assumes.
+    """
+
+    headers: tuple[tuple[str, str], ...] = ()
+    """``(response header name, field name)`` pairs to lift per call."""
+
+    savings_field: str = ""
+    """Field name of the per-turn savings counter. Empty = none surface."""
+
+    counter_unit: str = "tokens"
+    """Unit the lifted counters are denominated in."""
+
+
+@dataclass(frozen=True, slots=True)
 class ProxyStatusSpec:
     """Pack-declared live-stats endpoint for one proxy.
 
@@ -50,11 +86,17 @@ class ProxyStatusSpec:
     JSON body supplies the ``fields`` paths (dotted, e.g.
     ``savings.total_tokens``). Hosts render these beside liveness; an
     absent ``status`` block means liveness-only visibility.
+
+    ``telemetry`` is the per-response counterpart: counters that only exist
+    for the duration of one call and cannot be polled after the fact.
     """
 
     url_path: str = "/stats"
     fields: tuple[str, ...] = ()
     """Dotted JSON paths to surface. Empty = no telemetry values exposed."""
+
+    telemetry: ProxyTelemetrySpec | None = None
+    """Per-response header counters, when the proxy stamps any."""
 
 
 @dataclass(frozen=True, slots=True)
