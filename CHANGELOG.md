@@ -85,6 +85,18 @@ All notable changes to the Lisa Harness will be documented in this file.
   test layout — and escalate to the full suite before push. Kernel tests
   share one `lisa-catalog` subprocess for the whole session, cutting the
   offline suite from ~3m11s to ~1m35s locally.
+- **Provider endpoints are gateway knowledge, not a host table.** The host no
+  longer tabulates each provider's API base URL. The
+  `ProviderGatewayProvider` seam answers with `direct_base_url_for`, next to
+  the existing `proxy_protocol_for`, so a third-party gateway pack declares
+  where its provider lives without editing the host. The runtime keeps only
+  the precedence — session manifest, then a typed `HostConfig` override, then
+  the seam default. Overrides are one mapping (`LISA_PROVIDER_BASE_URLS`, or
+  the legacy `LISA_OLLAMA_HOST` / `LISA_OPENAI_BASE_URL` /
+  `LISA_OPENROUTER_BASE_URL` / `LISA_ANTHROPIC_BASE_URL`) captured once at
+  config construction instead of deferred `getenv` calls inside client
+  factories. `LISA_OPENAI_BASE_URL` is new: OpenAI previously had no
+  override at all.
 
 ### Fixed
 
@@ -112,8 +124,30 @@ All notable changes to the Lisa Harness will be documented in this file.
   The call requested the pause the SDK would otherwise raise, and the
   previously disconnected server now stays connected.
 
+- A model whose manifest declares an OpenAI-compatible `base_url` (xAI,
+  vLLM, a self-hosted gateway) now reaches that endpoint on the *direct*
+  client path too. The OpenAI client factory had hardwired the public
+  constant, so manifest precedence was unreachable there even though the
+  resolver returned the right answer: the proxy upstream and the direct call
+  disagreed, and the direct call went to `api.openai.com`.
+- Endpoint defaults can no longer drift between the resolver and the client
+  factories. Two of the four defaults were re-typed as literals in the
+  gateway module, so editing the "single source of truth" changed the proxy
+  upstream but not the direct client.
+
 ### Upgrade notes
 
+- **A model's manifest `base_url` now governs the direct client call as well
+  as the proxy upstream.** Sessions that declared an OpenAI-compatible
+  endpoint and silently reached `api.openai.com` directly will now call the
+  declared host. Verify credentials there if the endpoint requires them.
+- **Provider endpoints are configured through one mapping.**
+  `HostConfig.provider_base_urls` (from `LISA_PROVIDER_BASE_URLS`, or the
+  legacy per-provider variables) replaces reading endpoint variables inside
+  the client factories. A host that set those variables after constructing
+  `HostConfig` must now set them before, or pass the mapping explicitly.
+  `LISA_OPENAI_BASE_URL` is newly honoured. Provider defaults are no longer
+  importable host constants — read them from the gateway seam.
 - **`MCPBinaryDownload` field order changed** to
   `(repository, binary_name, version=None)`, and `version` is now optional.
   Construct it with keywords; positional construction from an external pack

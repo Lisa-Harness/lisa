@@ -44,6 +44,14 @@ one process per provider on sequential ports (`port + N`). A provider whose
 expansion exceeds the TCP max is skipped with a warning; an empty manifest
 expands to zero proxies. `all` must be the only entry.
 
+Both the wire protocol a proxy claims to speak and the upstream a
+`direct_base_url` value resolves to are answered by the
+`ProviderGatewayProvider` seam, never by a host table: `proxy_protocol_for`
+and `direct_base_url_for`. Provider identity therefore belongs to the gateway
+that builds the client, so a third-party gateway pack is routable and
+addressable without editing the host. The host supplies only precedence and
+overrides — see [provider endpoints](../docs/CONFIGURATION.md#provider-endpoints).
+
 ## Provider proxy visibility
 
 `/proxy` reports compiled proxy readiness, startup errors, declared telemetry,

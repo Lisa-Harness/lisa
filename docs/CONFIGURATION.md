@@ -125,6 +125,27 @@ Use the selected host/provider's reference for all required settings.
 Optional gateways such as Bedrock require their extra dependencies.
 Never assume a credential alone activates a model or pack.
 
+### Provider endpoints
+
+Where a provider's API lives by default is gateway knowledge, not host
+configuration: the `ProviderGatewayProvider` seam answers it
+(`direct_base_url_for`), so a third-party gateway pack serves a provider the
+host has never heard of. The host only supplies overrides, resolving each
+provider in this order:
+
+1. The session model manifest's per-model `base_url` / `base_url_env` — the
+   provider's models must agree on one endpoint.
+2. `HostConfig.provider_base_urls`, populated from `LISA_PROVIDER_BASE_URLS`
+   (`provider=url` pairs, comma- or newline-separated) and the legacy
+   single-provider variables `LISA_OLLAMA_HOST`, `LISA_OPENAI_BASE_URL`,
+   `LISA_OPENROUTER_BASE_URL`, and `LISA_ANTHROPIC_BASE_URL`. The pairs form
+   wins, and unlike the legacy variables it can name any provider id.
+3. The gateway's built-in default.
+
+A provider with no manifest endpoint, no override, and no gateway default —
+Azure and Bedrock, whose endpoints are account- or region-specific — raises
+rather than silently calling the wrong host.
+
 ## Pack installation and activation
 
 - Bundled distributions are installed with the runtime, but optional packs
