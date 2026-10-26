@@ -36,11 +36,11 @@ class ProxyClientConfig:
     base_url: str
     readiness_path: str | None
     readiness_timeout_seconds: float
+    adopt_existing: bool
+    warm: bool
+    required: bool
     status_url_path: str | None = None
     status_fields: tuple[str, ...] = ()
-    adopt_existing: bool = False
-    warm: bool = False
-    required: bool = False
 
 
 def _compile_command(  # noqa: C901, PLR0911, PLR0912

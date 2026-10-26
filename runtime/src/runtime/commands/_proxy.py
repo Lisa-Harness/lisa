@@ -45,8 +45,8 @@ async def render_proxy_summary(runtime: HostRuntime) -> str:
     lines = ["## Provider Proxies", ""]
     if health:
         lines += [
-            "| Proxy | Status | Protocol | Providers | Endpoint | Stats |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| Proxy | Status | Protocol | Providers | Endpoint | Stats | Last error |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
         for entry in health:
             stats_cell = _render_stats_cell(entry.stats) if entry.status == "warm" else "—"
@@ -56,7 +56,8 @@ async def render_proxy_summary(runtime: HostRuntime) -> str:
                 f"| {entry.status} | {entry.protocol} "
                 f"| {escape_markdown_cell(providers)} "
                 f"| {escape_markdown_cell(entry.base_url)} "
-                f"| {escape_markdown_cell(stats_cell)} |"
+                f"| {escape_markdown_cell(entry.stats_error or stats_cell)} "
+                f"| {escape_markdown_cell(entry.last_error or '—')} |"
             )
     else:
         lines.append("No proxy processes were compiled for this session.")
@@ -71,6 +72,9 @@ async def render_proxy_summary(runtime: HostRuntime) -> str:
                 f"| {escape_markdown_cell(route.proxy_id)} @ "
                 f"{escape_markdown_cell(route.base_url)} |"
             )
+        declared_providers = {provider for entry in health for provider in entry.providers}
+        for provider in sorted(declared_providers - routes.keys()):
+            lines.append(f"| {escape_markdown_cell(provider)} | direct (proxy bypassed) |")
     else:
         lines.append(
             "_No provider is routed through a proxy — every provider client "
@@ -83,10 +87,7 @@ def _render_stats_cell(stats: dict[str, object]) -> str:
     """Render the fetched stats fields as a compact ``k=v`` list."""
     if not stats:
         return "—"
-    parts = [
-        f"{key}={_format_stat_value(value)}"
-        for key, value in stats.items()
-    ]
+    parts = [f"{key}={_format_stat_value(value)}" for key, value in stats.items()]
     return ", ".join(parts)
 
 

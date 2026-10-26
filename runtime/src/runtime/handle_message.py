@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -432,7 +433,9 @@ async def _dispatch_approval_command(
     return response_text, continuation_result
 
 
-_PREFIX_ASYNC_COMMANDS: tuple[tuple[str, Any], ...] = (
+_PREFIX_ASYNC_COMMANDS: tuple[
+    tuple[str, Callable[[HostRuntime, str, str], str | Awaitable[str]]], ...
+] = (
     # (prefix, handler) pairs the dispatcher calls with
     # (runtime, stripped, message). First matching prefix wins. Handlers
     # may be sync or async — awaitables are awaited.
@@ -1291,7 +1294,7 @@ async def _execute_mode_turn(
             "model_id": resolved_model.model_id,
             "provider": resolved_model.provider,
             "turn_index": turn_index,
-            "proxy_route": proxy_route_view(runtime, resolved_model.provider, "openai"),
+            "proxy_route": proxy_route_view(runtime, resolved_model.provider),
         },
     )
 

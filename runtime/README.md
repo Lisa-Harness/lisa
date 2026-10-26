@@ -8,6 +8,39 @@ on it to create a concrete running host.
 See [host integration](../docs/HOST_INTEGRATION.md), [configuration](../docs/CONFIGURATION.md),
 and the [documentation index](../docs/README.md) for maintained task guides.
 
+## Provider proxy visibility
+
+`/proxy` reports compiled proxy readiness, startup errors, declared telemetry,
+and provider routing. Stats failures are reported separately from process
+health; missing telemetry is not a zero-savings measurement.
+
+Packs opt in through their existing `mcp_servers.yaml` proxy entry:
+
+```yaml
+status:
+  url_path: /stats
+  fields:
+    - requests.total
+    - savings.total_tokens
+```
+
+The runtime fetches this loopback JSON endpoint on demand with a one-second
+timeout. Fields are dotted paths; object paths expose only immediate scalar
+members. Empty fields expose no values. Packs without a status block still
+get readiness and routing visibility. Optional binaries skipped at compilation
+remain startup-log diagnostics, not pool entries.
+
+Every `model_call` stage carries `proxy_route`: `via: proxy` with `proxy_id`
+and `base_url`, or `via: direct`, optionally with `bypassed_proxy_id` for a
+compiled but unrouted proxy. Transports render this without importing packs.
+This reports the configured gateway route, not per-request receipt evidence.
+`IntrospectSnapshot.proxy_pool_health` carries the same proxy view into the
+self-model.
+
+Ambient signal snapshots are separate: `/intake` refreshes their cache.
+Periodic collection requires a host-owned scheduler invoking `lisa intake`;
+the runtime does not install timers.
+
 ## Design Philosophy
 
 The host owns **runtime integration, process boundaries, and environment-specific wiring** — nothing more. Domain logic lives in the kernel or SDK; rendering lives in the transport.

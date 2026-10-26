@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from runtime.config import HostConfig
 from runtime.gateway_provider import HostGatewayProvider, _ollama_client_instance
 from runtime.provider_endpoints import proxy_route_view
 from runtime.runtime import HostRuntime
+from runtime.turn_hooks_builder import _transport_forwarder
 
 
 class _CapturingBedrockGateway:
@@ -120,3 +122,47 @@ def test_proxy_route_view_requires_protocol_match(
     # Wrong protocol: the anthropic-wire route does not serve openai clients.
     assert proxy_route_view(runtime, "anthropic", "openai") == {"via": "direct"}
     assert proxy_route_view(runtime, "anthropic", "anthropic")["via"] == "proxy"
+    assert proxy_route_view(runtime, "anthropic")["via"] == "proxy"
+
+
+@pytest.mark.asyncio
+async def test_model_stage_forwarder_stamps_route_on_each_iteration(tmp_path: Any) -> None:
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_routes["ollama"] = ProxyRoute(
+        proxy_id="compression", protocol="openai", base_url="http://127.0.0.1:18787/v1"
+    )
+    runtime.resources._proxy_routes["anthropic"] = ProxyRoute(
+        proxy_id="anthropic-compression",
+        protocol="anthropic",
+        base_url="http://127.0.0.1:18790",
+    )
+    received: list[dict[str, Any]] = []
+
+    class Transport:
+        async def on_stage(self, label: str, data: dict[str, Any]) -> None:
+            received.append(data)
+
+    on_stage, _ = _transport_forwarder(Transport(), runtime)
+    original = {"provider": "ollama", "iteration": 1}
+    await on_stage("model_call", original)
+    await on_stage("model_call", {"provider": "ollama", "iteration": 2})
+    await on_stage("model_call", {"provider": "anthropic", "iteration": 3})
+    assert "proxy_route" not in original
+    assert [event["proxy_route"]["proxy_id"] for event in received] == [
+        "compression",
+        "compression",
+        "anthropic-compression",
+    ]
+
+
+def test_proxy_route_view_reports_compiled_but_bypassed_proxy(tmp_path: Any) -> None:
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_pool = SimpleNamespace(
+        health=lambda: [
+            SimpleNamespace(proxy_id="compression", protocol="openai", providers=("ollama",))
+        ]
+    )
+    assert proxy_route_view(runtime, "ollama") == {
+        "via": "direct",
+        "bypassed_proxy_id": "compression",
+    }

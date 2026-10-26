@@ -98,11 +98,12 @@ async def test_render_proxy_summary_renders_health_and_routes(
     assert "savings_pct_1h=8.70" in warm_row
     failed_row = next(line for line in lines if line.startswith("| down.down |"))
     assert "| failed |" in failed_row
-    assert failed_row.rstrip().endswith("| — |")
+    assert failed_row.rstrip().endswith("| — | — |")
     assert "## Provider Routing" in text
     route_row = next(line for line in lines if line.startswith("| ollama |"))
     assert "headroom.headroom" in route_row
     assert "http://127.0.0.1:18787/v1" in route_row
+    assert "| openai | direct (proxy bypassed) |" in text
 
 
 @pytest.mark.asyncio
@@ -158,3 +159,17 @@ async def test_handle_proxy_command_returns_wrapped_response(
     result = await _proxy.handle_proxy_command(_fake_runtime(pool), "/proxy", "/proxy")
 
     assert result == "wrapped"
+
+
+@pytest.mark.asyncio
+async def test_proxy_summary_distinguishes_telemetry_error_from_no_savings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_proxy, "gather_proxy_pool_health", _stub_gather)
+    pool = SimpleNamespace(
+        preloaded_health=[
+            _proxy_health("compression", "warm", stats_error="Invalid telemetry JSON")
+        ]
+    )
+    text = await _proxy.render_proxy_summary(_fake_runtime(pool))
+    assert "Invalid telemetry JSON" in text

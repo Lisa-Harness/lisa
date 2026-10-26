@@ -125,7 +125,9 @@ def direct_provider_base_urls(
     }
 
 
-def proxy_route_view(runtime: HostRuntime, provider: str, protocol: str) -> dict[str, str]:
+def proxy_route_view(
+    runtime: HostRuntime, provider: str, protocol: str | None = None
+) -> dict[str, str]:
     """Return a transport-facing routing view for one provider's model calls.
 
     ``{"via": "proxy", "proxy_id": ..., "base_url": ...}`` when the provider
@@ -135,7 +137,13 @@ def proxy_route_view(runtime: HostRuntime, provider: str, protocol: str) -> dict
     which read the same pool route at client construction.
     """
     provider_id = provider.strip().lower()
+    protocol = protocol or ("anthropic" if provider_id == "anthropic" else "openai")
     route = runtime.resources.proxy_route_for(provider_id, protocol)
     if route is None:
+        pool = runtime.resources.proxy_pool
+        if pool is not None:
+            for view in pool.health():
+                if provider_id in view.providers and view.protocol == protocol:
+                    return {"via": "direct", "bypassed_proxy_id": view.proxy_id}
         return {"via": "direct"}
     return {"via": "proxy", "proxy_id": route.proxy_id, "base_url": route.base_url}

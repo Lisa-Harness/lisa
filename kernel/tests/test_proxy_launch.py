@@ -6,6 +6,7 @@ import socket
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 from kernel.mcp_launch.policy import RuntimeKind
 from kernel.proxy_launch.compiler import ProxyClientConfig, compile_proxy_config
@@ -20,7 +21,7 @@ from kernel.proxy_launch.policy import (
     ProxyServerSpec,
     ProxyStatusSpec,
 )
-from kernel.proxy_launch.pool import ProxyConnectionError, ProxyPool
+from kernel.proxy_launch.pool import ProxyConnectionError, ProxyPool, _select_stats_fields
 
 _READY_SERVER = """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -425,10 +426,13 @@ proxies:
     assert status.fields == ()
 
 
-def test_load_proxy_manifest_rejects_relative_status_url_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("url_path", ["stats", "//outside.example/stats"])
+def test_load_proxy_manifest_rejects_relative_status_url_path(
+    tmp_path: Path, url_path: str
+) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(
-        """
+        f"""
 proxies:
   - proxy_id: headroom
     runtime_kind: binary
@@ -437,7 +441,7 @@ proxies:
     providers: [ollama]
     port: 18787
     status:
-      url_path: stats
+      url_path: {url_path}
 """,
         encoding="utf-8",
     )
@@ -446,10 +450,13 @@ proxies:
         load_proxy_server_manifest(manifest)
 
 
-def test_load_proxy_manifest_rejects_non_list_status_fields(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "fields", ["savings_pct_1h", "null", "[1]", "['']", "[savings..tokens]", "[.tokens]"]
+)
+def test_load_proxy_manifest_rejects_non_list_status_fields(tmp_path: Path, fields: str) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(
-        """
+        f"""
 proxies:
   - proxy_id: headroom
     runtime_kind: binary
@@ -459,13 +466,17 @@ proxies:
     port: 18787
     status:
       url_path: /stats
-      fields: savings_pct_1h
+      fields: {fields}
 """,
         encoding="utf-8",
     )
 
     with pytest.raises(ProxyServerManifestError, match=r"status\.fields must be a list"):
         load_proxy_server_manifest(manifest)
+
+
+def test_proxy_stats_exposes_nothing_without_an_allowlist() -> None:
+    assert _select_stats_fields({"recent_request": {"prompt": "private"}}, ()) == {}
 
 
 def test_compile_proxy_config_carries_status_spec() -> None:
@@ -649,26 +660,72 @@ async def test_proxy_pool_fetch_stats_skips_missing_paths() -> None:
 
 @pytest.mark.asyncio
 async def test_proxy_pool_fetch_stats_none_without_declaration() -> None:
+    port = _unused_port()
     config = ProxyClientConfig(
         proxy_id="bare",
         command=sys.executable,
-        args=["-c", _READY_SERVER, str(_unused_port())],
+        args=["-c", _READY_SERVER, str(port)],
         env={},
         cwd=None,
         protocol="openai",
         providers=("ollama",),
-        port=_unused_port(),
-        base_url="http://127.0.0.1:3/v1",
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
         readiness_path="/readyz",
-        readiness_timeout_seconds=0.1,
+        readiness_timeout_seconds=3,
         adopt_existing=False,
         warm=True,
-        required=False,
+        required=True,
     )
     pool = ProxyPool([config])
-    await pool.start()  # may fail to start (non-required, no-op)
-    assert await pool.fetch_stats("bare") is None
-    await pool.aclose()
+    try:
+        await pool.start()
+        assert pool.health()[0].status == "warm"
+        assert await pool.fetch_stats("bare") is None
+    finally:
+        await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_stats_errors_are_explicit_and_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="stats-error",
+        command=sys.executable,
+        args=["-c", _STATS_SERVER, str(port)],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=3,
+        adopt_existing=False,
+        warm=True,
+        required=True,
+        status_url_path="/stats",
+        status_fields=("savings.total_tokens",),
+    )
+    pool = ProxyPool([config])
+    original = ProxyPool._get_json
+
+    async def fail_stats(port: int, path: str) -> dict[str, object]:
+        raise httpx.ConnectError("telemetry connection lost")
+
+    try:
+        await pool.start()
+        monkeypatch.setattr(ProxyPool, "_get_json", staticmethod(fail_stats))
+        assert await pool.fetch_stats(config.proxy_id) is None
+        assert "telemetry connection lost" in pool.stats_error(config.proxy_id)
+        assert pool.health()[0].status == "warm"
+        monkeypatch.setattr(ProxyPool, "_get_json", staticmethod(original))
+        assert await pool.fetch_stats(config.proxy_id) == {"savings.total_tokens": 1234}
+        assert pool.stats_error(config.proxy_id) == ""
+    finally:
+        await pool.aclose()
 
 
 def test_compile_proxy_registry_skips_missing_binary() -> None:

@@ -96,6 +96,11 @@ async def gather_introspection(
         failed_mcp_servers=failed_mcp_servers,
         recent_error_count=recent_error_count,
     )
+    failed_proxies = sum(entry.status == "failed" for entry in proxy_health)
+    if failed_proxies:
+        operational_health_reasons.append(f"proxy failures: {failed_proxies}")
+        if operational_health != "critical":
+            operational_health = "degraded"
 
     return IntrospectSnapshot(
         captured_at=captured_at,
@@ -212,28 +217,22 @@ def gather_mcp_pool_health(mcp_pool: MCPToolPool | None) -> dict[str, McpServerH
 
 
 async def gather_proxy_pool_health(proxy_pool: ProxyPool | None) -> list[ProxyHealthStatus]:
-    """Build a liveness view of every provider proxy the host compiled.
+    """Build a readiness and telemetry view of compiled provider proxies.
 
     Reads the pool's sync :meth:`ProxyPool.health` view, then best-effort
     fetches each warm proxy's pack-declared stats so the snapshot carries
     live counters (tokens saved, hit rate, ...) when the pack declares
-    them. Never raises; a pool that is None (no proxies configured)
-    yields an empty list.
+    them. A pool that is None (no proxies configured) yields an empty list.
+    HTTP/JSON failures appear in each entry's ``stats_error``.
     """
     if proxy_pool is None:
         return []
     views: list[ProxyHealthStatus] = []
-    try:
-        pool_views = proxy_pool.health()
-    except (AttributeError, RuntimeError):
-        return views
+    pool_views = proxy_pool.health()
     for view in pool_views:
         stats: dict[str, Any] = {}
         if view.status == "warm" and view.status_url_path:
-            try:
-                fetched = await proxy_pool.fetch_stats(view.proxy_id)
-            except Exception:  # pylint: disable=broad-except
-                fetched = None
+            fetched = await proxy_pool.fetch_stats(view.proxy_id)
             if fetched is not None:
                 stats = fetched
         views.append(
@@ -247,6 +246,8 @@ async def gather_proxy_pool_health(proxy_pool: ProxyPool | None) -> list[ProxyHe
                 required=view.required,
                 declared_stats_path=view.status_url_path or "",
                 stats={k: v for k, v in stats.items() if isinstance(v, (str, int, float, bool))},
+                last_error=view.last_error,
+                stats_error=proxy_pool.stats_error(view.proxy_id),
             )
         )
     return views

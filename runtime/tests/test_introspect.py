@@ -232,6 +232,9 @@ async def test_gather_introspection_collects_proxy_pool_health() -> None:
     from kernel.proxy_launch.pool import ProxyHealth as PoolProxyHealth
 
     class _StubProxyPool:
+        def stats_error(self, proxy_id: str) -> str:
+            return ""
+
         def health(self):
             return [
                 PoolProxyHealth(
@@ -278,6 +281,8 @@ async def test_gather_introspection_collects_proxy_pool_health() -> None:
     assert failed.stats == {}
     # A failed proxy does not attempt a stats fetch (fetch_stats asserts).
     assert failed.proxy_id == "down.down"
+    assert snapshot.operational_health == "degraded"
+    assert "proxy failures: 1" in snapshot.operational_health_reasons
 
 
 def contextlib_suppress():

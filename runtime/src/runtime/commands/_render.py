@@ -818,15 +818,17 @@ _BUILTIN_HELP_RENDERERS = {
     "proxy": _proxy_command_help_text,
 }
 
-_HOST_SHORTCUT_TOPICS = frozenset({
-    "help",
-    "settings",
-    "tokens",
-    "debug",
-    "last",
-    "consolidate",
-    "slice",
-    "intake",
-    "quit",
-    "policy",
-})
+_HOST_SHORTCUT_TOPICS = frozenset(
+    {
+        "help",
+        "settings",
+        "tokens",
+        "debug",
+        "last",
+        "consolidate",
+        "slice",
+        "intake",
+        "quit",
+        "policy",
+    }
+)

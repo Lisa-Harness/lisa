@@ -9,6 +9,7 @@ from kernel.models import (
     IntrospectSnapshot,
     McpServerHealth,
     OperationExecutionContext,
+    ProxyHealthStatus,
 )
 from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.introspect.operations.self_model.self_model import build_self_model_vibe
@@ -86,6 +87,9 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
             mcp_pool_health={
                 "test_server": McpServerHealth(server_id="test_server", status="warm", warm=True),
             },
+            proxy_pool_health=[
+                ProxyHealthStatus(proxy_id="compression", status="warm", providers=["ollama"])
+            ],
             token_usage_24h=None,
             recent_log_errors=[],
             logfile_tail_lines=0,
@@ -109,6 +113,7 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
     assert artifact_json["python_threads"] == 3
     assert artifact_json["process_rss_mb"] == pytest.approx(42.5)
     assert "test_server" in artifact_json["mcp_pool_health"]
+    assert artifact_json["proxy_pool_health"][0]["proxy_id"] == "compression"
     assert artifact_json["operational_health"] == "healthy"
 
 

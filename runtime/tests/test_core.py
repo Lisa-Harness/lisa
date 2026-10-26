@@ -478,9 +478,7 @@ class TestHandleMessage:
         assert "/proxy — per-proxy summary" in result.text
 
     @pytest.mark.asyncio
-    async def test_proxy_command_dispatches_and_renders_empty(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_proxy_command_dispatches_and_renders_empty(self, tmp_path: Path) -> None:
         """/proxy renders the no-proxies notice when none are configured."""
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)

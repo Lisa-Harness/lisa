@@ -546,7 +546,7 @@ class ProxyHealthStatus(BaseModel):
     """
 
     proxy_id: str
-    status: str = "unknown"
+    status: Literal["warm", "failed", "skipped", "unknown"] = "unknown"
     """``warm`` | ``failed`` | ``skipped`` | ``unknown``."""
     protocol: str = "openai"
     providers: list[str] = Field(default_factory=list)
@@ -558,6 +558,8 @@ class ProxyHealthStatus(BaseModel):
     """``status.url_path`` from the manifest; empty = liveness-only proxy."""
     stats: dict[str, Any] = Field(default_factory=dict)
     """Selected fields from the declared stats endpoint (scalar values)."""
+    last_error: str = ""
+    stats_error: str = ""
 
 
 class McpServerHealth(BaseModel):
@@ -641,6 +643,7 @@ class LisaSelfModelArtifact(BaseModel):
     python_threads: int = 0
     process_rss_mb: float = 0.0
     mcp_pool_health: dict[str, McpServerHealth] = Field(default_factory=dict)
+    proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
     operational_health: str = "unknown"  # healthy|degraded|critical|unknown

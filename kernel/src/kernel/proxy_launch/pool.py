@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 from kernel.proxy_launch.compiler import ProxyClientConfig
 
-__all__ = ["ProxyConnectionError", "ProxyPool", "ProxyRoute"]
+__all__ = ["ProxyConnectionError", "ProxyHealth", "ProxyPool", "ProxyRoute"]
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +31,10 @@ class ProxyRoute:
 
 @dataclass(frozen=True, slots=True)
 class ProxyHealth:
-    """One proxy's liveness and routing view, for host introspection.
-
-    ``stats`` holds the pack-declared live counters (``status_url_path``)
-    fetched best-effort at gather time; ``None`` when the proxy declares
-    no stats endpoint or the fetch failed.
-    """
+    """One proxy's startup-readiness and routing view for introspection."""
 
     proxy_id: str
-    status: str  # warm | failed | skipped
+    status: Literal["warm", "failed", "skipped"]
     protocol: str
     providers: tuple[str, ...]
     base_url: str
@@ -67,6 +62,8 @@ class ProxyPool:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._routes: dict[str, ProxyRoute] = {}
         self._failed: set[str] = set()
+        self._last_errors: dict[str, str] = {}
+        self._stats_errors: dict[str, str] = {}
         self._started = False
 
     @property
@@ -79,19 +76,24 @@ class ProxyPool:
         """Return non-required proxy ids that failed to start."""
         return frozenset(self._failed)
 
+    def stats_error(self, proxy_id: str) -> str:
+        """Return the most recent telemetry error, distinct from proxy health."""
+        return self._stats_errors.get(proxy_id, "")
+
     def health(self) -> list[ProxyHealth]:
-        """Return a liveness view of every proxy this pool was asked to start.
+        """Return startup readiness for every compiled proxy.
 
         Includes skipped proxies (optional binaries absent at compile time
         never reach the pool; this covers compile-present failures only).
         The view is synchronous — no stats fetching — so callers can use
-        it from render paths that must not await.
+        it from render paths that must not await. This does not continuously
+        probe adopted endpoints or monitor later process exits.
         """
         ready_ids = {route.proxy_id for route in self._routes.values()}
         views: list[ProxyHealth] = []
         for config in self._configs:
             if config.proxy_id in ready_ids:
-                status = "warm"
+                status: Literal["warm", "failed", "skipped"] = "warm"
             elif config.proxy_id in self._failed:
                 status = "failed"
             else:
@@ -108,6 +110,7 @@ class ProxyPool:
                     status_url_path=config.status_url_path,
                     status_fields=config.status_fields,
                     stats=None,
+                    last_error=self._last_errors.get(config.proxy_id, ""),
                 )
             )
         return views
@@ -120,16 +123,20 @@ class ProxyPool:
         one entry keyed by the path; a path naming an object contributes
         its scalar members keyed ``<path>.<member>``. Paths that miss or
         name lists are skipped. Returns ``None`` when the proxy declares
-        no stats endpoint, is not warm, or the fetch fails. Never raises.
+        no stats endpoint, is not warm, or an HTTP/JSON fetch fails.
+        Fetch failures are logged and exposed through :meth:`stats_error`.
         """
         config = self._warm_config(proxy_id)
         if config is None or not config.status_url_path:
             return None
-        payload = await self._get_json(config.port, config.status_url_path)
-        if payload is None:
+        try:
+            payload = await self._get_json(config.port, config.status_url_path)
+        except (httpx.HTTPError, ValueError) as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            self._stats_errors[proxy_id] = detail
+            logger.warning("Proxy %r telemetry unavailable: %s", proxy_id, detail)
             return None
-        if not config.status_fields:
-            return payload
+        self._stats_errors.pop(proxy_id, None)
         return _select_stats_fields(payload, config.status_fields)
 
     def _warm_config(self, proxy_id: str) -> ProxyClientConfig | None:
@@ -140,21 +147,16 @@ class ProxyPool:
         return next((c for c in self._configs if c.proxy_id == proxy_id), None)
 
     @staticmethod
-    async def _get_json(port: int, path: str) -> dict[str, Any] | None:
-        """GET one loopback JSON document, or ``None`` on any failure."""
+    async def _get_json(port: int, path: str) -> dict[str, Any]:
+        """GET one loopback JSON object, failing explicitly on invalid telemetry."""
         url = f"http://127.0.0.1:{port}{path}"
-        try:
-            async with httpx.AsyncClient(timeout=1.0) as client:
-                response = await client.get(url)
-        except httpx.HTTPError:
-            return None
-        if not response.is_success:
-            return None
-        try:
-            payload = response.json()
-        except ValueError:
-            return None
-        return payload if isinstance(payload, dict) else None
+        async with httpx.AsyncClient(timeout=1.0, trust_env=False) as client:
+            response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Proxy telemetry must be a JSON object")
+        return payload
 
     def route_for(self, provider: str, protocol: str) -> ProxyRoute | None:
         """Return a ready route only when its wire protocol matches."""
@@ -181,6 +183,7 @@ class ProxyPool:
                     ) from result
                 logger.warning("Proxy %r failed to start: %s", config.proxy_id, result)
                 self._failed.add(config.proxy_id)
+                self._last_errors[config.proxy_id] = str(result)
                 continue
             self._register_routes(config)
         self._started = True
@@ -302,6 +305,8 @@ def _select_stats_fields(
     non-object paths are skipped.
     """
     selected: dict[str, Any] = {}
+    if not fields:
+        return selected
     for field in fields:
         exists, value = _resolve_path(payload, field)
         if not exists:

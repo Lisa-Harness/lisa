@@ -42,7 +42,7 @@ class ProxyStatusSpec:
 
     url_path: str = "/stats"
     fields: tuple[str, ...] = ()
-    """Names of JSON keys to surface. Empty = the whole object renders."""
+    """Dotted JSON paths to surface. Empty = no telemetry values exposed."""
 
 
 @dataclass(frozen=True, slots=True)

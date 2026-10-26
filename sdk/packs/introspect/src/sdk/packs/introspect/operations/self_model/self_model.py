@@ -103,6 +103,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         artifact.python_threads = snapshot.python_threads
         artifact.process_rss_mb = snapshot.process_rss_mb
         artifact.mcp_pool_health = snapshot.mcp_pool_health
+        artifact.proxy_pool_health = snapshot.proxy_pool_health
         artifact.token_usage_24h = snapshot.token_usage_24h
         artifact.recent_log_errors = snapshot.recent_log_errors
         artifact.operational_health = snapshot.operational_health

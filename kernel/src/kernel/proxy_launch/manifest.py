@@ -326,19 +326,23 @@ def _parse_status_block(
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}' in {path}: 'status' must be a mapping"
         )
-    url_path = str(raw_status.get("url_path", "/stats") or "").strip()
-    if not url_path:
+    url_path = raw_status.get("url_path", "/stats")
+    if not isinstance(url_path, str) or not url_path.strip():
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}': status.url_path must not be empty"
         )
-    if not url_path.startswith("/"):
+    url_path = url_path.strip()
+    if not url_path.startswith("/") or url_path.startswith("//"):
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}': status.url_path must start with '/'"
         )
-    fields_raw = raw_status.get("fields") or []
-    if not isinstance(fields_raw, list) or not all(isinstance(item, str) for item in fields_raw):
+    fields_raw = raw_status.get("fields", [])
+    if not isinstance(fields_raw, list) or not all(
+        isinstance(item, str) and all(part.strip() for part in item.split("."))
+        for item in fields_raw
+    ):
         raise ProxyServerManifestError(
             f"proxies[{index}] '{proxy_id}': status.fields must be a list of strings"
         )
-    fields = tuple(item.strip() for item in fields_raw if item.strip())
+    fields = tuple(item.strip() for item in fields_raw)
     return ProxyStatusSpec(url_path=url_path, fields=fields)

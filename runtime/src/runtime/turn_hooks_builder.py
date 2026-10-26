@@ -68,6 +68,7 @@ from runtime.context_assembly import (
 )
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
+from runtime.provider_endpoints import proxy_route_view
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
 from runtime.thread import (
     build_open_task_messages,
@@ -1427,7 +1428,7 @@ def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindi
     )
 
 
-def _transport_forwarder(transport: Any) -> Any:
+def _transport_forwarder(transport: Any, runtime: HostRuntime | None = None) -> Any:
     """Build guarded transport forwarders (stage + delta events).
 
     Module-level so ``build_turn_hooks`` stays under the mccabe ceiling:
@@ -1445,6 +1446,11 @@ def _transport_forwarder(transport: Any) -> Any:
             logger.debug("transport %s failed", method, exc_info=True)
 
     async def on_stage(label: str, data: Any) -> None:
+        if label == "model_call" and runtime is not None and isinstance(data, dict):
+            data = {
+                **data,
+                "proxy_route": proxy_route_view(runtime, str(data.get("provider") or "")),
+            }
         await forward("on_stage", label, data)
 
     async def on_delta(text: str, reasoning: str) -> None:
@@ -1673,7 +1679,7 @@ def build_turn_hooks(
     # the transport (on_stage / on_text_chunk) as they happen. The module
     # level _transport_forwarder guards each call — a transport error never
     # breaks the turn, mirroring the kernel's ``_emit_stage`` posture.
-    _on_stage_event, _on_delta_event = _transport_forwarder(transport)
+    _on_stage_event, _on_delta_event = _transport_forwarder(transport, runtime)
 
     # ── Pack-provided slice providers ───────────────────────────────
     # _discover_pack_slice_providers (module-level) resolves the
