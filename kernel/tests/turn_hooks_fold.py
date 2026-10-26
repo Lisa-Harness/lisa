@@ -77,6 +77,7 @@ _MAP = _FoldMap(
         "memory_recall_min_query_chars": "recall",
         "mcp_tool_servers": "tools",
         "mcp_tool_pool": "tools",
+        "post_dispatch_result": "tools",
     },
     group_cls={
         "models": ModelHooks,

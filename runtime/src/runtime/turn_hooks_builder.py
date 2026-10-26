@@ -984,6 +984,7 @@ def _assemble_turn_hooks(
         tools=ToolHooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
+            post_dispatch_result=runtime.decorate_pack_tool_result,
         ),
         operations=OperationHooks(
             execute_operation=wired.execute_operation,

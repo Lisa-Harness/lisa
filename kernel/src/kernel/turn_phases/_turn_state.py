@@ -477,6 +477,18 @@ class _TurnState:
     """Per-turn cache of read-tool signatures → abbreviations. Prevents
     re-reads from re-accumulating full tool output in the message
     history."""
+    dispatch_scope_token: str = ""
+    """Opaque per-turn (and per-child) token for host-side dispatch state.
+
+    The kernel generates one value per turn — a fresh token for each fork or
+    delegate child, distinct from the parent's — and hands it to
+    ``ToolHooks.post_dispatch_result``. A host keys per-turn bookkeeping
+    (for example "already injected this guidance") on it instead of guessing
+    from message contents. Empty when no decoration hook is wired.
+
+    The kernel assigns it and never interprets it: it carries no meaning
+    beyond identity.
+    """
     lifecycle_briefed: bool = False
     last_lifecycle_guidance: tuple[str, ...] = ()
     auto_approved_actions: int = 0

@@ -17,6 +17,28 @@ All notable changes to the Lisa Harness will be documented in this file.
   unresolvable base, an unowned path, a cross-cutting path, or a kernel change
   escalates to the full suite rather than guessing. `--base`, `--paths`,
   `--dry-run`, and `--cwd` override the defaults.
+- **`ToolHooks.post_dispatch_result`.** An optional hook receiving a pack
+  tool's id, arguments, rendered output, and an opaque per-turn/per-child
+  token. The kernel stringifies the result first and passes the string in, so
+  a host can decorate what the model sees without mutating a tool's own
+  `output_text` (which slices parse as JSON). The hook runs on both the
+  in-process and read-cache-hit paths, is advisory — a raising hook is logged
+  and the undecorated output wins — and touches no kernel vocabulary beyond
+  the call itself.
+
+### Changed
+
+- **`applyTo` now filters instruction injection instead of labelling it.**
+  Scoped instruction bodies no longer enter the system prompt on every turn.
+  The system prompt keeps always-on files, instructions that declare no
+  `applyTo`, and skill bodies; instructions that declare one are deferred and
+  appended to the first in-process pack-tool result carrying a matching path,
+  at most once per turn and per fork/delegate child. On this repository that
+  moves 13 instruction files (19,188 bytes) out of the per-turn system prompt,
+  leaving 1,165 bytes unconditional, and a turn that reads a `**/*.py` file
+  receives only the four matching bodies. Skills are still injected
+  unconditionally — they carry no `applyTo`, and on-demand body loading is a
+  separate mechanism, not part of this change.
 
 ### Documentation
 

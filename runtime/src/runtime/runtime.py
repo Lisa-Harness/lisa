@@ -49,6 +49,113 @@ from runtime.thread import latest_turn_owner_mode
 
 logger = logging.getLogger(__name__)
 
+#: Upper bound on per-dispatch-token dedupe sets retained for scoped
+#: instruction injection. One token exists per turn and per fork/delegate
+#: child, and only the newest are still running, so a small bound is ample.
+_MAX_TRACKED_TURNS = 8
+
+#: Tool argument keys whose value names a path directly (``str``), and keys
+#: whose value is a list of records each carrying a ``path`` (the coding pack's
+#: batched ``coding_edit_files``). Every coding-pack file tool names its
+#: argument ``path``; ``file_path`` covers the customization reader. Directory
+#: values (``find_files``, ``list_directory``, ``search_code``) match no
+#: ``applyTo`` glob, so they contribute nothing.
+_PATH_ARGUMENT_KEYS = ("path", "file_path")
+_PATH_RECORD_LIST_KEYS = ("edits", "files")
+
+
+def _tool_call_paths(arguments: Any) -> tuple[str, ...]:
+    """Return the distinct paths a tool call refers to, in argument order.
+
+    Covers the single-path tools (``path`` / ``file_path``) and the batched
+    shape whose paths live inside a list of records. Non-string, empty, and
+    unparseable values contribute nothing — a call that names no identifiable
+    file gets no scoped guidance.
+    """
+    if not isinstance(arguments, dict):
+        return ()
+    paths: list[str] = []
+    for key in _PATH_ARGUMENT_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    for key in _PATH_RECORD_LIST_KEYS:
+        records = arguments.get(key)
+        if not isinstance(records, (list, tuple)):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            value = record.get("path")
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+    # dict.fromkeys keeps first-seen order while removing repeats.
+    return tuple(dict.fromkeys(paths))
+
+
+def _workspace_relative_posix_path(file_path: str) -> str:
+    """Normalize a tool-argument path for the ``applyTo`` matcher.
+
+    Returns a POSIX-style path with no leading ``./``, or ``""`` when the value
+    names no path (empty, ``"."``) or escapes the workspace root via ``..``.
+    A leading slash is stripped rather than rejected: reading an absolute path
+    workspace-relative can only miss a directory-anchored glob, never attach a
+    body for an unrelated file.
+    """
+    normalized = file_path.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    if not normalized:
+        return ""
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # Escapes the workspace root; nothing scoped can match.
+            return ""
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _scoped_instruction_block(instruction: Any) -> str:
+    """Render one ``applyTo``-scoped instruction as a labelled Markdown block.
+
+    The ``applies to`` label is kept so the model can see why the guidance
+    arrived with a particular tool result.
+    """
+    apply_label = ", ".join(instruction.apply_to)
+    return (
+        f"## Instruction: {instruction.name} (applies to: {apply_label})"
+        f"\n\n{instruction.body.strip()}"
+    )
+
+
+def _unconditional_customization_blocks(bundle: Any) -> list[str]:
+    """Render the customization blocks that belong in every system prompt.
+
+    Always-on files and skills apply unconditionally. Instructions apply
+    unconditionally only when they declare no ``applyTo``; scoped ones are
+    deferred to the dispatch that first touches a matching path.
+    """
+    parts = [
+        f"## Project Instructions\n\n{f.body.strip()}"
+        for f in bundle.always_on
+        if f.body.strip()
+    ]
+    parts.extend(
+        _scoped_instruction_block(inst)
+        for inst in bundle.instructions
+        if inst.body.strip() and not inst.apply_to
+    )
+    parts.extend(
+        f"## Skill: {skill.name}\n\n{skill.body.strip()}"
+        for skill in bundle.skills
+        if skill.body.strip()
+    )
+    return parts
+
 
 def _make_in_process_resolver():
     """Build an ``InProcessResolver`` backed by ``mcp_server.registry``.
@@ -759,6 +866,12 @@ class HostRuntime:
         # None means "not yet discovered"; "" means "discovered, nothing
         # found or discovery failed gracefully."
         self._copilot_customizations_text: str | None = None
+        self._copilot_bundle: Any = None
+        # Per-turn dedupe of scoped instruction bodies already appended to a
+        # tool result, keyed by the kernel's dispatch token (one per turn and
+        # per fork/delegate child) then by instruction path. Bounded by the
+        # number of scoped instructions, so it cannot grow without limit.
+        self._scoped_instructions_injected: dict[str, set[str]] = {}
 
         # Per-turn tally of policy auto-approvals; reset by handle_message
         # before consulting a turn's pending approval. ``runtime.approval``
@@ -774,12 +887,17 @@ class HostRuntime:
 
     @property
     def copilot_customizations_text(self) -> str:
-        """Lazily-discovered Copilot customizations for system-prompt injection.
+        """Unconditional customization guidance for the system prompt.
 
-        Discovers always-on files (``copilot-instructions.md``, ``AGENTS.md``,
-        ``CLAUDE.md``), ``applyTo``-scoped instructions, and skills from the
-        coding workspace. Agents and prompts are excluded — they are
-        invocation-based and handled by host commands.
+        Carries always-on files (``copilot-instructions.md``, ``AGENTS.md``,
+        ``CLAUDE.md``), instructions that declare no ``applyTo``, and skills.
+        Those apply to everything, so they belong in every request.
+
+        Instructions that *do* declare ``applyTo`` are deliberately absent.
+        They are appended to a tool result the first time the model touches a
+        matching path — see :meth:`scoped_instruction_text_for_path` — because
+        the system prompt is assembled before any file is known and an
+        unscoped body would be paid for on every turn that never touches it.
 
         Returns the formatted Markdown block, or ``""`` if discovery fails or
         no customizations are found (graceful degradation). Cached after
@@ -789,30 +907,10 @@ class HostRuntime:
             return self._copilot_customizations_text
 
         try:
-            from sdk.content import discover_copilot_customizations
-
-            workspace_root = self._resolve_copilot_workspace_root()
-            bundle = discover_copilot_customizations(workspace_root)
-
-            parts: list[str] = []
-
-            for f in bundle.always_on:
-                if f.body.strip():
-                    parts.append(f"## Project Instructions\n\n{f.body.strip()}")
-
-            for inst in bundle.instructions:
-                if inst.body.strip():
-                    apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
-                    parts.append(
-                        f"## Instruction: {inst.name} (applies to: {apply_label})"
-                        f"\n\n{inst.body.strip()}"
-                    )
-
-            for skill in bundle.skills:
-                if skill.body.strip():
-                    parts.append(f"## Skill: {skill.name}\n\n{skill.body.strip()}")
-
-            self._copilot_customizations_text = "\n\n".join(parts)
+            bundle = self._copilot_customization_bundle()
+            self._copilot_customizations_text = "\n\n".join(
+                _unconditional_customization_blocks(bundle)
+            )
         except Exception:
             logger.warning(
                 "Failed to discover Copilot customizations; continuing without them.",
@@ -821,6 +919,139 @@ class HostRuntime:
             self._copilot_customizations_text = ""
 
         return self._copilot_customizations_text
+
+    def _copilot_customization_bundle(self) -> Any:
+        """Discover and cache the workspace customization bundle."""
+        if self._copilot_bundle is None:
+            from sdk.content import discover_copilot_customizations
+
+            self._copilot_bundle = discover_copilot_customizations(
+                self._resolve_copilot_workspace_root()
+            )
+        return self._copilot_bundle
+
+    def scoped_instruction_text_for_path(self, file_path: str) -> str:
+        """Return the scoped instruction bodies whose ``applyTo`` matches ``file_path``.
+
+        ``file_path`` is workspace-relative and POSIX-style, the same shape the
+        SDK matcher expects. It is normalized first: backslashes and a leading
+        ``./`` are removed, and an empty or traversal-escaping value matches
+        nothing — injecting guidance for an unmatched path would resurrect
+        exactly the eager injection this defers.
+
+        An absolute path is read as workspace-relative (the leading slash is
+        stripped) rather than rejected. That can only *miss* a
+        directory-anchored glob, never attach a wrong body, which is the safe
+        direction; coding tools document relative paths anyway.
+        """
+        return "\n\n".join(
+            _scoped_instruction_block(inst)
+            for inst in self._matching_scoped_instructions(file_path)
+        )
+
+    def _matching_scoped_instructions(self, file_path: str) -> tuple[Any, ...]:
+        """Return the ``applyTo``-scoped instructions matching a workspace path."""
+        return self._matching_scoped_instructions_for_paths((file_path,))
+
+    def _matching_scoped_instructions_for_paths(
+        self, file_paths: tuple[str, ...]
+    ) -> tuple[Any, ...]:
+        """Return the scoped instructions matching any of the given paths.
+
+        Each path is normalized first; a path that escapes the workspace
+        contributes nothing. Results are deduped by instruction path and keep
+        discovery order, so a batched edit of five Python files yields one copy
+        of the Python guidance.
+        """
+        relatives = [
+            relative
+            for relative in (_workspace_relative_posix_path(p) for p in file_paths)
+            if relative
+        ]
+        if not relatives:
+            return ()
+        try:
+            from sdk.content import matches_apply_to
+        except Exception:  # pragma: no cover - the matcher ships with the SDK
+            return ()
+        matched: list[Any] = []
+        seen: set[str] = set()
+        for instruction in self._scoped_instructions():
+            if instruction.path in seen:
+                continue
+            globs = list(instruction.apply_to)
+            if any(matches_apply_to(globs, relative) for relative in relatives):
+                matched.append(instruction)
+                seen.add(instruction.path)
+        return tuple(matched)
+
+    def _scoped_instructions(self) -> tuple[Any, ...]:
+        """Return the ``applyTo``-scoped instructions in the discovered bundle."""
+        try:
+            return tuple(
+                inst
+                for inst in self._copilot_customization_bundle().instructions
+                if inst.apply_to
+            )
+        except Exception:
+            logger.debug("Copilot customization discovery failed", exc_info=True)
+            return ()
+
+    def decorate_pack_tool_result(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+        rendered: str,
+        turn_token: str,
+    ) -> str:
+        """Append matching scoped instructions to a pack tool's rendered output.
+
+        Wired as ``ToolHooks.post_dispatch_result``. Paths come from the tool's
+        own arguments — the kernel does not know which argument holds one, and
+        tools that touch no identifiable file (commit, run_check, a
+        workspace-wide listing) carry none, so they pass through untouched.
+
+        Each instruction body is appended at most once per dispatch token,
+        which the kernel issues per turn *and* per fork or delegate child. The
+        key is the instruction's path, so two instructions that happen to share
+        a body are still injected separately.
+        """
+        paths = _tool_call_paths(arguments)
+        if not paths:
+            return rendered
+        try:
+            matched = self._matching_scoped_instructions_for_paths(paths)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Scoped instruction lookup failed for %s", paths, exc_info=True)
+            return rendered
+        if not matched:
+            return rendered
+
+        seen = self._scoped_instruction_seen(turn_token)
+        fresh = [inst for inst in matched if inst.path not in seen]
+        if not fresh:
+            return rendered
+        seen.update(inst.path for inst in fresh)
+        blocks = "\n\n".join(_scoped_instruction_block(inst) for inst in fresh)
+        return f"{rendered}\n\n{blocks}"
+
+    def _scoped_instruction_seen(self, turn_token: str) -> set[str]:
+        """Return this dispatch token's already-injected path set.
+
+        Bounded to the most recent tokens. A token is created per turn and per
+        fork/delegate child, so a long-lived process would otherwise retain one
+        entry per turn forever; no reader is interested in a token older than
+        the turns still running.
+        """
+        seen = self._scoped_instructions_injected.get(turn_token)
+        if seen is None:
+            seen = self._scoped_instructions_injected[turn_token] = set()
+            while len(self._scoped_instructions_injected) > _MAX_TRACKED_TURNS:
+                oldest = next(iter(self._scoped_instructions_injected))
+                if oldest == turn_token:
+                    break
+                del self._scoped_instructions_injected[oldest]
+        return seen
 
     def _resolve_copilot_workspace_root(self) -> Path:
         """Resolve the workspace root for customization discovery.

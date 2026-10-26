@@ -346,6 +346,32 @@ class ToolHooks:
     #: built from ``mcp_tool_servers``.
     mcp_tool_pool: MCPToolPool | None = None
 
+    #: Optional decorator for the rendered output of an in-process pack tool.
+    #:
+    #: ``post_dispatch_result(tool_id, arguments, rendered, turn_token)``
+    #: returns the output the model should see. The kernel stringifies the
+    #: tool's result first and passes that string in, so a host can append
+    #: context without re-implementing rendering and without mutating a
+    #: tool's own ``output_text`` — callers such as the memory-consolidation
+    #: slice parse that field as JSON. Returning the argument unchanged is a
+    #: no-op.
+    #:
+    #: ``turn_token`` is an opaque kernel-assigned string identifying this
+    #: turn *and this child*: parent turns and each fork/delegate child get
+    #: distinct values within one host message. A host that must inject
+    #: something at most once keys its bookkeeping on it. A resumed turn
+    #: keeps the token it started with.
+    #:
+    #: Decorating the *rendered* string keeps this seam free of customization
+    #: vocabulary: the kernel invokes a hook and knows nothing about globs,
+    #: instructions, or files. A hook that raises is logged and ignored —
+    #: decoration is advisory and must never fail a tool call.
+    #:
+    #: Applies to in-process pack tools only (the ``implementation_module``
+    #: branch). MCP-server tools render into ``output_text`` and operations
+    #: return typed results; neither is decorated.
+    post_dispatch_result: Callable[[str, dict[str, Any], str, str], str] | None = None
+
 
 # ── TurnHooks — the composed container ──────────────────────────────────
 @dataclass

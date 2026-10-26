@@ -1,7 +1,10 @@
-"""Tests for Copilot customization auto-injection into the system prompt.
+"""Tests for Copilot customization injection.
 
-Verifies that always-on files, applyTo-scoped instructions, and skills
-are injected for CLI/web hosts.
+Unconditional guidance (always-on files, instructions with no ``applyTo``, and
+skills) goes into the system prompt. Instructions that declare ``applyTo`` are
+held back and appended to the first pack-tool result that touches a matching
+path, so the guidance tracks the files the model actually works on instead of
+being paid for on every turn.
 """
 
 from __future__ import annotations
@@ -84,8 +87,6 @@ class TestAssembleSystemPromptWithCopilotCustomizations:
         )
 
         assert "applies to: **/*.py" in result
-
-
 class TestHostRuntimeCopilotCache:
     def test_copilot_customizations_text_defaults_to_none(self, tmp_path: Path) -> None:
         from runtime.config import HostConfig
@@ -211,6 +212,303 @@ def _runtime_with_plan(
     )
     plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
     return HostRuntime(HostConfig(data_dir=tmp_path), session_plan=plan)
+
+
+# ── Scoped versus unconditional injection ──────────────────────────────────
+
+
+def _workspace_with_customizations(root: Path) -> None:
+    """Write one of each customization kind into a throwaway workspace."""
+    (root / ".git").mkdir()
+    (root / ".github").mkdir()
+    (root / ".github" / "copilot-instructions.md").write_text(
+        "ALWAYS ON RULE\n", encoding="utf-8"
+    )
+    instructions = root / ".github" / "instructions"
+    instructions.mkdir(parents=True)
+    (instructions / "python.instructions.md").write_text(
+        "---\nname: Python\napplyTo: \"**/*.py\"\n---\nSCOPED PYTHON BODY\n",
+        encoding="utf-8",
+    )
+    (instructions / "docs.instructions.md").write_text(
+        "---\nname: Docs\napplyTo: \"docs/**\"\n---\nSCOPED DOCS BODY\n",
+        encoding="utf-8",
+    )
+    (instructions / "global.instructions.md").write_text(
+        "---\nname: Global\n---\nUNSCOPED BODY\n",
+        encoding="utf-8",
+    )
+    skills = root / ".github" / "skills" / "helper"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text(
+        "---\nname: helper\ndescription: A helper.\n---\nSKILL BODY\n",
+        encoding="utf-8",
+    )
+
+
+def _runtime_for_workspace(tmp_path: Path, workspace: Path) -> Any:
+    from runtime.config import HostConfig
+    from runtime.runtime import HostRuntime
+
+    runtime = HostRuntime(HostConfig(data_dir=tmp_path))
+    runtime._resolve_copilot_workspace_root = lambda: workspace  # type: ignore[method-assign]
+    return runtime
+
+
+class TestScopedInstructionDeferral:
+    """``applyTo`` selects what enters context; it is not only a label."""
+
+    def test_scoped_bodies_are_absent_from_the_system_prompt(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        text = runtime.copilot_customizations_text
+
+        assert "SCOPED PYTHON BODY" not in text
+        assert "SCOPED DOCS BODY" not in text
+        # Unconditional guidance stays: always-on file, unscoped instruction,
+        # and the skill body.
+        assert "ALWAYS ON RULE" in text
+        assert "UNSCOPED BODY" in text
+        assert "SKILL BODY" in text
+
+    def test_matching_path_returns_only_the_matching_body(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        python_text = runtime.scoped_instruction_text_for_path("src/app.py")
+
+        assert "SCOPED PYTHON BODY" in python_text
+        assert "SCOPED DOCS BODY" not in python_text
+        assert "applies to: **/*.py" in python_text
+
+    def test_non_matching_suffix_returns_nothing(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert runtime.scoped_instruction_text_for_path("README.md") == ""
+
+    def test_directory_scoped_glob_matches_a_file_under_it(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert "SCOPED DOCS BODY" in runtime.scoped_instruction_text_for_path("docs/guide.md")
+
+    @pytest.mark.parametrize("path", ["", "   ", ".", "../outside.py", "src/../../x.py"])
+    def test_unusable_paths_match_nothing(self, tmp_path: Path, path: str) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert runtime.scoped_instruction_text_for_path(path) == ""
+
+    def test_backslash_and_dot_prefix_paths_normalize(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert "SCOPED PYTHON BODY" in runtime.scoped_instruction_text_for_path(".\\src\\app.py")
+
+    def test_absolute_path_is_read_as_workspace_relative(self, tmp_path: Path) -> None:
+        """A leading slash is stripped, not treated as traversal.
+
+        ``applyTo`` globs are workspace-relative and the coding tools document
+        relative paths, so an absolute path is out of contract. Reading it
+        workspace-relative can only *miss* a directory-scoped glob (a false
+        negative, never a wrong body), which is the safe direction.
+        """
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        runtime = _runtime_for_workspace(tmp_path, workspace)
+
+        assert "SCOPED PYTHON BODY" in runtime.scoped_instruction_text_for_path("/src/app.py")
+        # ``**/`` globs still match; a directory-anchored one does not, because
+        # the stripped form starts with ``abs/`` rather than ``docs/``.
+        assert runtime.scoped_instruction_text_for_path("/abs/docs/guide.md") == ""
+        assert runtime.scoped_instruction_text_for_path("/docs/guide.md").count(
+            "SCOPED DOCS BODY"
+        ) == 1
+
+
+class TestPackToolDecoration:
+    """The dispatch hook appends matching bodies, once per dispatch token."""
+
+    def _runtime(self, tmp_path: Path) -> Any:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        _workspace_with_customizations(workspace)
+        return _runtime_for_workspace(tmp_path, workspace)
+
+    def test_matching_path_appends_guidance(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        out = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "read ok", "turn-a"
+        )
+
+        assert out.startswith("read ok")
+        assert "SCOPED PYTHON BODY" in out
+
+    def test_non_matching_path_passes_through(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        assert (
+            runtime.decorate_pack_tool_result(
+                "coding_read_file", {"path": "README.md"}, "read ok", "turn-a"
+            )
+            == "read ok"
+        )
+
+    def test_batched_edit_paths_are_read_from_the_record_list(self, tmp_path: Path) -> None:
+        """``coding_edit_files`` nests its paths inside ``edits[]``."""
+        runtime = self._runtime(tmp_path)
+
+        out = runtime.decorate_pack_tool_result(
+            "coding_edit_files",
+            {"artifact_id": "a", "edits": [{"kind": "create", "path": "src/new.py"}]},
+            "applied",
+            "turn-a",
+        )
+
+        assert out.startswith("applied")
+        assert "SCOPED PYTHON BODY" in out
+
+    def test_batched_edit_yields_each_instruction_once(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        out = runtime.decorate_pack_tool_result(
+            "coding_edit_files",
+            {
+                "artifact_id": "a",
+                "edits": [
+                    {"kind": "create", "path": "src/a.py"},
+                    {"kind": "create", "path": "src/b.py"},
+                ],
+            },
+            "applied",
+            "turn-a",
+        )
+
+        assert out.count("SCOPED PYTHON BODY") == 1
+
+    def test_tool_without_a_path_argument_passes_through(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        assert (
+            runtime.decorate_pack_tool_result("coding_commit", {"message": "x"}, "ok", "turn-a")
+            == "ok"
+        )
+
+    def test_same_body_is_injected_once_per_token(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        first = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "one", "turn-a"
+        )
+        second = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/other.py"}, "two", "turn-a"
+        )
+
+        assert "SCOPED PYTHON BODY" in first
+        assert second == "two", "the same body must not be appended twice in one turn"
+
+    def test_a_new_token_gets_the_body_again(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+
+        runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "one", "turn-a"
+        )
+        out = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "two", "turn-b"
+        )
+
+        assert "SCOPED PYTHON BODY" in out
+
+    def test_a_child_token_is_not_suppressed_by_the_parent(self, tmp_path: Path) -> None:
+        """A fork/delegate child must receive guidance the parent already saw."""
+        runtime = self._runtime(tmp_path)
+
+        runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "parent", "parent-token"
+        )
+        child = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "child", "child-token"
+        )
+
+        assert "SCOPED PYTHON BODY" in child
+
+    def test_parent_state_survives_an_interleaved_child(self, tmp_path: Path) -> None:
+        """A child token created mid-turn must not drop the parent's history."""
+        runtime = self._runtime(tmp_path)
+
+        runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "p1", "parent-token"
+        )
+        runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "c1", "child-token"
+        )
+        again = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "p2", "parent-token"
+        )
+
+        assert again == "p2"
+
+    def test_two_matching_bodies_are_both_appended(self, tmp_path: Path) -> None:
+        runtime = self._runtime(tmp_path)
+        (tmp_path / "ws" / ".github" / "instructions" / "all-python.instructions.md").write_text(
+            '---\nname: All Python\napplyTo: "**/*.py"\n---\nSECOND PYTHON BODY\n',
+            encoding="utf-8",
+        )
+        runtime._copilot_bundle = None
+        runtime._copilot_customizations_text = None
+
+        out = runtime.decorate_pack_tool_result(
+            "coding_read_file", {"path": "src/app.py"}, "read ok", "turn-a"
+        )
+
+        assert "SCOPED PYTHON BODY" in out
+        assert "SECOND PYTHON BODY" in out
+
+    def test_dedupe_sets_are_bounded(self, tmp_path: Path) -> None:
+        """A long-lived host must not retain one entry per turn forever."""
+        from runtime.runtime import _MAX_TRACKED_TURNS
+
+        runtime = self._runtime(tmp_path)
+        for index in range(_MAX_TRACKED_TURNS * 3):
+            runtime.decorate_pack_tool_result(
+                "coding_read_file", {"path": "src/app.py"}, "x", f"turn-{index}"
+            )
+
+        assert len(runtime._scoped_instructions_injected) <= _MAX_TRACKED_TURNS
+
+    def test_discovery_failure_does_not_break_a_tool_result(self, tmp_path: Path) -> None:
+        from runtime.config import HostConfig
+        from runtime.runtime import HostRuntime
+
+        runtime = HostRuntime(HostConfig(data_dir=tmp_path))
+
+        def _boom() -> str:
+            raise RuntimeError("no workspace")
+
+        runtime._copilot_customization_bundle = _boom  # type: ignore[method-assign]
+
+        assert (
+            runtime.decorate_pack_tool_result(
+                "coding_read_file", {"path": "src/app.py"}, "read ok", "turn-a"
+            )
+            == "read ok"
+        )
 
 
 class TestWorkspaceRootResolution:

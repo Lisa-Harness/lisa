@@ -8461,6 +8461,12 @@ def _prepare_turn_infrastructure(
     )
 
     state = continuation.restore_state() if continuation is not None else _TurnState()
+    if state.dispatch_scope_token == "":
+        # One opaque token per turn, and a distinct one per fork/delegate
+        # child, so a host can key per-turn dispatch bookkeeping without
+        # inspecting message contents. A resumed turn keeps the token it
+        # started with (the continuation restores the state).
+        state.dispatch_scope_token = uuid4().hex
     if continuation is None:
         state.auto_approval_limit = _kernel_settings.max_auto_approved_actions
     if continuation is not None:

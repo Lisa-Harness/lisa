@@ -17,6 +17,30 @@ This repository now uses a compact, intent-driven customization taxonomy under [
 
 The always-on project contract lives in [.github/copilot-instructions.md](../.github/copilot-instructions.md). It is the root rule file for repository-wide guidance.
 
+## How instruction bodies reach the model
+
+`applyTo` is a filter, not a label. Scoping decides *when* a body costs context:
+
+- **Always-on files** (`copilot-instructions.md`, `AGENTS.md`, `CLAUDE.md`),
+  instructions that declare **no** `applyTo`, and **skill** bodies are
+  unconditional. They are assembled into the system prompt on every turn, and
+  skills are not scoped in this pass.
+- **Instructions that declare `applyTo`** are held out of the system prompt.
+  The runtime appends a matching body to the first pack-tool result that
+  mentions a matching path, at most once per turn and per fork/delegate child.
+  Guidance therefore arrives with the file it governs rather than on every turn
+  that never touches it.
+
+Two consequences worth knowing when authoring:
+
+- A scoped instruction the model never reads a matching file for is never
+  injected. That is the deferred behavior, not a bug — if a rule must always
+  apply, leave `applyTo` off.
+- Only paths the tool actually carries can match. A tool with no single file
+  path (commit, run-check, a full-workspace listing) is never decorated. Write
+  path-scoped rules for guidance a *file* should carry, and unscoped rules for
+  process that applies to any turn.
+
 ## Agents
 
 This repository uses [agents](../.github/agents), not prompts. GitHub Copilot

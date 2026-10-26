@@ -360,6 +360,7 @@ async def _dispatch_pack_tool(
     state: _TurnState,
     pool: MCPToolPool,
     logger: logging.Logger,
+    hooks: TurnHooks,
 ) -> tuple[str, ToolResult | None, Any | None]:
     """Execute an in-process pack-contributed tool with optional read caching."""
     cache_template = getattr(tool_def, "abbreviation_template", "") or ""
@@ -381,14 +382,27 @@ async def _dispatch_pack_tool(
             tool_name,
             cache_key[:120],
         )
-        return cached, None, None
+        return (
+            _decorate_pack_tool_output(
+                hooks, tool_name, tool_arguments, cached, state=state, logger=logger
+            ),
+            None,
+            None,
+        )
 
     if tool_def.implementation_module is not None:
         tool_ctx = _to_tool_context(tool_name, ctx)
         tool_ctx.parameters = tool_arguments
         tool_ctx.stream_output = bool(getattr(tool_def, "stream_output", False))
         tool_result = await execute_tool(tool_name, tool_ctx)
-        tool_output = _stringify_pack_tool_result(tool_result)
+        tool_output = _decorate_pack_tool_output(
+            hooks,
+            tool_name,
+            tool_arguments,
+            _stringify_pack_tool_result(tool_result),
+            state=state,
+            logger=logger,
+        )
 
         if cacheable and isinstance(tool_result, ToolResult):
             try:
@@ -405,6 +419,34 @@ async def _dispatch_pack_tool(
 
     mcp_result = await pool.call_tool(tool_name, tool_arguments)
     return mcp_result.output_text or "Done", None, mcp_result
+
+
+def _decorate_pack_tool_output(
+    hooks: TurnHooks,
+    tool_name: str,
+    tool_arguments: dict[str, Any],
+    rendered: str,
+    *,
+    state: _TurnState,
+    logger: logging.Logger,
+) -> str:
+    """Apply ``hooks.tools.post_dispatch_result`` to a rendered pack-tool output.
+
+    Decoration is advisory: a raising or malformed hook must not fail the tool
+    call the model is waiting on, so failures are logged at debug level and the
+    undecorated string wins.
+    """
+    decorate = hooks.tools.post_dispatch_result
+    if decorate is None:
+        return rendered
+    try:
+        decorated = decorate(
+            tool_name, tool_arguments, rendered, state.dispatch_scope_token
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("post_dispatch_result hook failed for %s: %s", tool_name, exc)
+        return rendered
+    return decorated if isinstance(decorated, str) else rendered
 
 
 def _resolve_dispatch_metadata(
@@ -783,6 +825,7 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
                 state=state,
                 pool=pool,
                 logger=logger,
+                hooks=hooks,
             )
         else:
             mcp_res = await pool.call_tool(tool_name, tool_arguments)
