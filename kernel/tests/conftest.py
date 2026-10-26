@@ -323,8 +323,8 @@ def _augment_catalog_with_synthetic_modes() -> None:
         )
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _augmented_ambient_catalog(_mcp_catalog_setup):  # noqa: F811 — deliberate fixture dependency on the module-scope import
+@pytest.fixture(scope="session", autouse=True)
+def _augmented_ambient_catalog(_mcp_catalog_setup):  # noqa: F811 — deliberate fixture dependency on the session-scope import
     """Augment the ambient test catalog with the synthetic target modes.
 
     Depends on ``_mcp_catalog_setup`` so the ambient catalog is loaded

@@ -6153,8 +6153,7 @@ async def _resolve_empty_turn_content(
     elif getattr(state, "capability_limit_hit", False):
         pending_yield = YieldAction(
             question=(
-                "I've reached a resource budget for this turn. "
-                "How would you like me to proceed?"
+                "I've reached a resource budget for this turn. How would you like me to proceed?"
             ),
             context="capability invocation limit reached",
         )

@@ -119,7 +119,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
     )
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
     """Wire the catalog MCP and operation callbacks so the kernel can load catalogs.
 
@@ -127,10 +127,15 @@ def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
     ``validate_workflow_catalog`` calls ``_validate_mode_operation_bindings`` which
     needs the operation callbacks registered before it can validate mode bindings.
 
-    The catalog is eagerly loaded here during module setup (sync context) so async
-    tests don't need to call ``asyncio.run()`` from inside a running event loop.
+    The catalog is eagerly loaded here during session setup (sync context, so async
+    tests don't need to call ``asyncio.run()`` from inside a running event loop).
+
+    Session-scoped with a session-stable log path: ``LISA_MCP_LOG_PATH`` is part
+    of the shared-session dedup key, so a per-module path made every kernel test
+    module spawn its own ``lisa-catalog`` subprocess (~1.1s each across ~85
+    modules). One subprocess serves the whole kernel suite now.
     """
-    log_dir = tmp_path_factory.mktemp("lisa-catalog")
+    log_dir = tmp_path_factory.mktemp("lisa-catalog", numbered=False)
     config = _make_catalog_mcp_config(log_path=log_dir / "lisa-catalog.jsonl")
     register_operation_mcp(config)
     register_operation_callbacks(get_operation_catalog, execute_operation)

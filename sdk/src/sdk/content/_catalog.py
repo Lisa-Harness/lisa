@@ -1339,13 +1339,42 @@ def _dir_is_importable_package(package_dir: Path) -> bool:
     return _is_package_dir(package_dir)
 
 
+def _spec_covers_path(spec: Any, path: Path) -> bool:
+    """Return True when a ``find_spec`` result actually locates ``path``.
+
+    ``find_spec`` probes are leaf-name or dotted-name lookups against the
+    current ``sys.path``; a hit does not prove the spec came from the
+    directory being walked. Without this check, an unrelated same-named
+    package elsewhere on ``sys.path`` (e.g. the installed ``sdk.packs``
+    while walking a tmp ``packs`` dir) hijacks the package-base walk.
+    """
+
+    if spec is None or spec.submodule_search_locations is None:
+        return False
+    resolved = path.resolve()
+    for location in spec.submodule_search_locations:
+        try:
+            if Path(location).resolve() == resolved:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _reached_package_top(package_dir: Path) -> bool:
     """Return True when ``package_dir`` is a top-level package boundary.
 
-    The walk stops here because the parent is not part of a regular package
-    chain (no ``__init__.py``) and either ``package_dir`` itself resolves as a
-    top-level importable package (no dots in its spec name) or its parent is a
-    sys.path boundary such as ``src/`` or ``site-packages/``.
+    The walk stops here when the parent is not part of a regular package
+    chain (no parent ``__init__.py``) and ``package_dir`` resolves as a
+    top-level importable package whose spec's search locations actually
+    cover this directory, or the parent is a sys.path boundary such as
+    ``src/`` or ``site-packages/``.
+
+    A bare ``find_spec`` hit is not proof of a package top: an unrelated
+    same-named package elsewhere on ``sys.path`` (the repo's installed
+    ``packs`` while walking a tmp ``packs`` dir, with colocated test
+    source roots on the path) must not anchor a directory the spec does
+    not cover.
     """
     import importlib.util
 
@@ -1356,7 +1385,7 @@ def _reached_package_top(package_dir: Path) -> bool:
         spec = importlib.util.find_spec(package_dir.name)
     except ModuleNotFoundError:
         spec = None
-    if spec is not None and "." not in spec.name:
+    if spec is not None and "." not in spec.name and _spec_covers_path(spec, package_dir):
         return True
     return _is_sys_path_boundary(parent)
 
@@ -1368,41 +1397,54 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
     ``sdk/packs/introspect/operations/self_model/self_model.py`` resolves to
     ``sdk.packs.introspect.operations.self_model``.
 
-    The package base is discovered by walking up from ``root``'s parent while
-    each directory is importable as a package (regular or PEP 420 namespace),
-    building the dotted name as we go so non-top-level packages (e.g.
-    ``sdk.packs.core``) are found by ``find_spec`` with the full dotted path.
+    The package base is discovered by walking up from ``root``'s parent to
+    the filesystem root, collecting each level's name and recording the
+    topmost level that is importable as a package (regular or PEP 420
+    namespace). That topmost importable level is the dotted-name anchor:
+    the inferred path is the anchor's chain down to ``root``, so nested
+    namespace layouts (``sdk/packs/memory/src/sdk/packs/memory``) anchor at
+    the ``sdk`` level that the import system actually resolves, while
+    layouts with no importable level (the filesystem-root regression)
+    fall back to the root-relative parts alone.
+
+    Anchor selection is topmost-first rather than first-above-root because a
+    lower level can be locally package-shaped (``__init__.py`` under a
+    namespace-merged ancestor) while its dotted name only becomes
+    importable through that higher ancestor — e.g. the bundled packs' leaf
+    ``memory`` dir anchors as ``sdk.packs.memory``, not ``memory``.
     """
 
     relative = py_path.relative_to(root).with_suffix("")
     parts = list(relative.parts)
-    # Discover the package base by walking up from root's parent while each
-    # directory is importable as a package (regular or PEP 420 namespace).
-    # We walk all the way up collecting names, then find the top-level anchor
-    # (the topmost dir whose leaf name resolves via find_spec), and build the
-    # dotted path from the anchor down to root's parent.
     package_dir = root.parent
-    dir_names: list[str] = []
+    # ``levels[0]`` is ``root``'s parent; each later entry is one step up.
+    levels: list[str] = []
+    # Index (into ``levels``) of the topmost importable level seen so far.
+    # The dotted path uses the chain from that level down: a lower
+    # ``__init__``-carrying dir (a pack leaf) can be locally package-shaped
+    # while its dotted name only becomes importable through a higher
+    # namespace-merged ancestor (``sdk.packs.memory``), so the topmost
+    # importable level — not the innermost — is the anchor.
     anchor_idx = -1
     while True:
         # Guard: Path('/').parent == Path('/'), so without an explicit
         # root check the walk spins forever at the filesystem root, calling
         # ``find_spec('')`` once per loop iteration (2026-09-03 hang: the
         # catalog server spun at 50k+ calls/second scanning an empty module
-        # name). Stop as soon as the walk reaches an anchor, a sys.path
-        # boundary, or the filesystem root.
+        # name). Stop as soon as the walk reaches the filesystem root.
         if package_dir == package_dir.parent:
             break
-        leaf = package_dir.name
         if _dir_is_importable_package(package_dir):
-            anchor_idx = len(dir_names)
-        dir_names.insert(0, leaf)
-        # Stop at the top: parent is a sys.path boundary (src/, site-packages)
-        if _reached_package_top(package_dir):
+            anchor_idx = len(levels)
+        levels.append(package_dir.name)
+        if anchor_idx >= 0 and _reached_package_top(package_dir):
             break
         package_dir = package_dir.parent
-    # Build dotted path from the anchor (top-level importable package) down
-    pkg_parts = dir_names[: anchor_idx + 1] if anchor_idx >= 0 else []
+    # Build dotted path from the anchor (top-level importable package) down:
+    # levels[anchor_idx] is the anchor (highest importable level in the walk);
+    # the chain from it down to ``root``'s parent is the reversed prefix of
+    # ``levels`` ending at the anchor.
+    pkg_parts = levels[anchor_idx::-1] if anchor_idx >= 0 else []
     # Include the operations directory name itself
     if root.name:
         pkg_parts.append(root.name)

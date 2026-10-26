@@ -796,9 +796,7 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
             state,
             tool_name,
             tool_arguments,
-            tool_def=(
-                operation_catalog.get(tool_name) or tool_catalog.get(tool_name)
-            ),
+            tool_def=(operation_catalog.get(tool_name) or tool_catalog.get(tool_name)),
         )
         ledger.record(tool_name)
 

@@ -5,6 +5,41 @@ Run commands from the framework workspace root after
 defines pytest paths, markers, Ruff, mypy, and coverage settings;
 [CI](../.github/workflows/ci.yml) is authoritative for required jobs.
 
+## Test-selection tiers
+
+Select tests by what changed; escalate only when the targeted tier is green.
+The tiers are evidence levels, not alternatives — each one subsumes the
+previous scope of knowledge, and the full suite remains the pre-push gate.
+
+| Tier | Command | When |
+| --- | --- | --- |
+| Unit | `uv run pytest <test module(s)> -m "not live" -q` | After each edit; the test module(s) mirroring the changed source file |
+| Package | `uv run pytest <owning package testpaths> -m "not live" -q` | Before commit; every package whose testpaths the change can reach |
+| Full | `uv run pytest -m "not live" -q` | Before push/PR; the required CI scope |
+
+Map a changed file to its owning package's testpaths (all of them — a
+package's tests are split between its top-level `tests/` and colocated
+`src/**/tests/`, and selecting only one half misses the other):
+
+| Changed source | Owning package testpaths |
+| --- | --- |
+| `kernel/src/**` | `kernel/tests kernel/src/kernel/context/tests` |
+| `sdk/src/**` | `sdk/tests sdk/src/sdk/context/tests sdk/src/sdk/guard/tests sdk/src/sdk/memory/tests sdk/src/sdk/storage/tests` |
+| `sdk/packs/<name>/src/**` | `sdk/packs/<name>/tests` |
+| `mcp_server/src/**` | `mcp_server/tests mcp_server/src/mcp_server/fetch/tests mcp_server/src/mcp_server/memory/tests mcp_server/src/mcp_server/thread/tests` |
+| `runtime/src/**` | `runtime/tests runtime/src/runtime/model_discovery/tests` |
+| `packstest/src/**` | `packstest/tests` |
+| `e2etest/src/**` | `e2etest/tests` |
+| `scripts/check_docs.py` | `packstest/tests/test_check_docs.py` |
+
+Cross-package closure: `kernel` is imported by every other package, so a
+kernel change that alters a contract the SDK, runtime, MCP servers, or packs
+consume must also run those packages' testpaths — the import direction
+(kernel ← sdk ← runtime/packs/mcp_server) is the dependency direction. A
+change confined to one package's internal implementation runs that
+package's tier only. When in doubt, run the full suite; it is the gate CI
+enforces.
+
 ## Fast development loop
 
 Start with the smallest reproducing test, then the affected package:
@@ -30,6 +65,11 @@ Always specify `-m "not live"` for the offline suite. The root pytest
 configuration defines markers but does not itself deselect live tests.
 Not every integration test is necessarily offline or service-free just
 because it is not marked `live`; check its fixtures.
+
+The full offline suite shares one `lisa-catalog` subprocess for the whole
+session (the kernel and runtime catalog fixtures are session-scoped with a
+stable log path, so a per-module path does not spawn a new subprocess per
+test module).
 
 ## CI gates
 

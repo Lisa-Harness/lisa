@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from sdk.content._catalog import _infer_module_path, _is_package_dir
 
 
@@ -25,6 +26,36 @@ class TestIsPackageDir:
     def test_plain_directory_without_init(self, tmp_path: Path) -> None:
         (tmp_path / "not_a_pkg").mkdir()
         assert _is_package_dir(tmp_path / "not_a_pkg") is False
+
+
+class TestReachedPackageTop:
+    def test_unrelated_same_named_package_does_not_anchor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A same-named package elsewhere on ``sys.path`` must not anchor the walk.
+
+        Regression for the order-dependent suite failure: targeted runs that
+        collect colocated ``src/**/tests`` put the package source dir (e.g.
+        ``sdk/src/sdk``) itself on ``sys.path``, so a bare
+        ``find_spec('packs')`` resolved to the real repo package while the
+        walk visited an unrelated tmp ``packs`` directory. A spec that does
+        not cover the walked directory is not evidence of a package top.
+        """
+
+        from sdk.content._catalog import _reached_package_top
+
+        # Put a directory on sys.path that contains a *different* ``packs``
+        # package with an __init__.py (mirrors the colocated-test pollution).
+        other_root = tmp_path / "other-src"
+        (other_root / "packs").mkdir(parents=True)
+        (other_root / "packs" / "__init__.py").write_text("")
+        monkeypatch.syspath_prepend(str(other_root))
+
+        walked_root = tmp_path / "site-packages"
+        walked_packs = walked_root / "sdk" / "packs"
+        walked_packs.mkdir(parents=True)
+
+        assert _reached_package_top(walked_packs) is False
 
 
 class TestInferModulePath:

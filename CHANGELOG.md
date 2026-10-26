@@ -13,6 +13,28 @@ All notable changes to the Lisa Harness will be documented in this file.
   instead of yielding a second harness-authored exhaustion diagnostic on a
   turn that did no work (the 2026-10-25 turns 970/971 incident). A raw
   continuation restored without the resume path still re-pauses cleanly.
+- Operation module-path inference no longer depends on test-run
+  collection order. The package-base walk in
+  `sdk.content._catalog` trusted a bare `find_spec` leaf-name hit as a
+  package top; an unrelated same-named package elsewhere on `sys.path`
+  (the repo's own `packs`/`sdk` once colocated test roots are collected)
+  hijacked the walk, so `test_catalog_module_path` failed in targeted
+  runs and passed full runs only by order luck. The walk now anchors at
+  the topmost importable level whose spec search locations actually
+  cover the walked directory.
+- Kernel tests share one `lisa-catalog` subprocess for the whole session.
+  The module-scoped catalog fixture minted a fresh `LISA_MCP_LOG_PATH`
+  per test module, and the log path is part of the shared stdio session
+  dedup key, so every kernel test module spawned its own subprocess
+  (~1.1s each). The offline suite drops from ~3m11s to ~1m35s locally.
+
+### Changed
+
+- `docs/TESTING.md` documents test-selection tiers (unit / package /
+  full) with a changed-file to testpaths table, so verification can
+  select the affected package's suites — including both halves of a
+  package's split test layout — and escalate to the full suite before
+  push. Copilot instructions point at the table instead of restating it.
 
 ## [0.2.0] - 2026-10-24
 
