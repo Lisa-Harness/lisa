@@ -53,6 +53,10 @@ class _GatewayClassProvider(Protocol):
 
     def gateway_for(self, provider: str) -> type | None: ...
 
+    def proxy_protocol_for(self, provider: str) -> str | None:
+        """Return the local-proxy wire protocol serving ``provider``, or None."""
+        ...
+
 
 class HostGatewayProvider:
     """Resolve a provider name to a constructed, credential-bound gateway.
@@ -196,9 +200,38 @@ def _azure_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     return client
 
 
+def _prune_dead_proxy_client(
+    runtime: HostRuntime,
+    provider: str,
+    protocol: str,
+) -> None:
+    """Drop a cached client whose proxy route died since it was built.
+
+    Runs *before* each factory's cache short-circuit: a cached
+    ``AsyncOpenAI``/``httpx`` client is bound to the base URL it was built
+    with, so returning it without re-checking the route leaves the host
+    dialing a dead loopback port for the rest of the process lifetime (the
+    2026-10-26 headroom death). ``proxy_route_for`` performs the liveness
+    check and drops the stale route; this compares that with the view the
+    client was resolved against.
+
+    Args:
+        runtime: The host runtime owning the proxy pool and client cache.
+        provider: Provider gateway id.
+        protocol: Wire protocol the client speaks.
+    """
+    previous_route = runtime.resources.proxy_routes.get(provider)
+    if previous_route is None:
+        return
+    if runtime.resources.proxy_route_for(provider, protocol) is not None:
+        return
+    _invalidate_client_for_lost_route(runtime, provider, previous_route)
+
+
 def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     """Return the cached public OpenAI client."""
 
+    _prune_dead_proxy_client(runtime, "openai", "openai")
     existing_client = runtime.providers.openai_client
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
@@ -216,6 +249,7 @@ def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
 def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     """Return the cached Ollama OpenAI-compatible client."""
 
+    _prune_dead_proxy_client(runtime, "ollama", "openai")
     existing_client = runtime.providers.ollama_client
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
@@ -235,12 +269,13 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
 def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
     """Return the cached raw Anthropic HTTP client."""
 
+    _prune_dead_proxy_client(runtime, "anthropic", "anthropic")
     existing_client = runtime.providers.anthropic_http_client
     if isinstance(existing_client, httpx.AsyncClient):
         return existing_client
     direct_base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
-    route = runtime.resources.proxy_route_for("anthropic", "anthropic")
-    base_url = route.base_url if route is not None else direct_base_url
+    route_url = _ready_proxy_base_url(runtime, "anthropic", "anthropic")
+    base_url = route_url or direct_base_url
     client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
     runtime.providers.anthropic_http_client = client
     return client
@@ -252,25 +287,100 @@ def _normalize_ollama_host_to_base_url(host: str) -> str:
     return normalize_ollama_host_to_base_url(host)
 
 
+#: Provider id → the ``ProviderRegistry`` slot holding its cached client.
+#: Every factory below resolves its route through ``_ready_proxy_base_url``,
+#: which invalidates the matching slot when a route disappears mid-session.
+_CLIENT_SLOT_BY_PROVIDER: dict[str, str] = {
+    "openai": "openai_client",
+    "ollama": "ollama_client",
+    "anthropic": "anthropic_http_client",
+    "openrouter": "openrouter_client",
+}
+
+
+def _invalidate_client_for_lost_route(
+    runtime: HostRuntime,
+    provider: str,
+    previous_route: Any,
+) -> None:
+    """Drop a provider's cached client when its proxy route just disappeared.
+
+    A cached ``AsyncOpenAI``/``httpx`` client is bound to the base URL it was
+    constructed with, so once the owning proxy process exits the client keeps
+    dialing a dead loopback port for the rest of the process lifetime — the
+    2026-10-26 headroom death, where the next model call hung until the
+    stream idle watchdog fired. Clearing the slot makes the next factory call
+    re-resolve against the direct endpoint.
+
+    Only a route that was present on the previous read and is gone now
+    triggers the reset: a provider that never had a proxy keeps its cache
+    (there is nothing stale to invalidate), and repeating the reset on every
+    call would discard a healthy direct client.
+
+    Args:
+        runtime: The host runtime holding the provider client cache.
+        provider: Provider gateway id whose route was resolved.
+        previous_route: The route read before resolution (``None`` when the
+            provider never had one).
+    """
+    if previous_route is None:
+        return
+    slot = _CLIENT_SLOT_BY_PROVIDER.get(provider.strip().lower())
+    if slot is None:
+        return
+    if getattr(runtime.providers, slot, None) is None:
+        return
+    setattr(runtime.providers, slot, None)
+    logger.warning(
+        "provider %r lost its proxy route mid-session; dropping the cached "
+        "client so the next call re-resolves against the direct endpoint",
+        provider,
+    )
+
+
+def _ready_proxy_base_url(
+    runtime: HostRuntime,
+    provider: str,
+    protocol: str,
+) -> str | None:
+    """Return the ready proxy base URL for a provider, or ``None``.
+
+    Single route-resolution seam for every provider client factory: it is the
+    one place that compares the pre-resolution route with the resolved one, so
+    a route loss invalidates the cached client for *every* proxied provider
+    (OpenAI, Ollama, OpenRouter, Anthropic) instead of the two the first pass
+    covered.
+
+    Args:
+        runtime: The host runtime owning the proxy pool and client cache.
+        provider: Provider gateway id.
+        protocol: Wire protocol the client speaks (``"openai"`` or
+            ``"anthropic"``).
+
+    Returns:
+        The proxy's base URL when a ready same-protocol route exists,
+        ``None`` when the provider must go direct.
+    """
+    previous_route = runtime.resources.proxy_routes.get(provider)
+    route = runtime.resources.proxy_route_for(provider, protocol)
+    if route is None:
+        _invalidate_client_for_lost_route(runtime, provider, previous_route)
+        return None
+    return str(route.base_url)
+
+
 def _proxy_base_url(runtime: HostRuntime, provider: str, direct_base_url: str) -> str:
     """Return a ready OpenAI-wire proxy route or the provider's direct URL.
 
     A dead proxy invalidates the provider's cached client (when the route
     just dropped): the next factory call rebuilds the client against the
-    fallback base URL, so the turn proceeds direct instead of hanging on
-    the dead loopback port (the 2026-10-26 headroom death).
+    fallback base URL, so the turn proceeds direct instead of hanging on the
+    dead loopback port (the 2026-10-26 headroom death).
     """
-    previous_route = runtime.resources.proxy_routes.get(provider)
-    route = runtime.resources.proxy_route_for(provider, "openai")
-    if route is None:
-        if previous_route is not None and provider == "ollama":
-            # The cached client is bound to the dead proxy's base URL;
-            # reset so this call and later ones re-resolve directly.
-            runtime.providers.ollama_client = None
-        elif previous_route is not None and provider == "openai":
-            runtime.providers.openai_client = None
+    route_url = _ready_proxy_base_url(runtime, provider, "openai")
+    if route_url is None:
         return direct_base_url
-    return f"{route.base_url.rstrip('/')}/"
+    return f"{route_url.rstrip('/')}/"
 
 
 def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
@@ -284,6 +394,7 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
     """
 
     def _build() -> Any:
+        _prune_dead_proxy_client(runtime, "openrouter", "openai")
         existing = getattr(getattr(runtime, "providers", None), "openrouter_client", None)
         if existing is not None:
             return existing

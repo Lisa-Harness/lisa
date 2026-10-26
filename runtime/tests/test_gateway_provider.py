@@ -229,3 +229,95 @@ async def test_dead_proxy_route_falls_back_direct_and_respawns(
     # Async path: respawn finds no surviving config (pool compiled empty
     # — the pack was removed), so the route stays gone.
     assert await runtime.resources.ensure_proxy_route("ollama", "openai") is None
+
+
+#: Provider id → (protocol, client slot attribute) for the four proxied
+#: families. Every gateway factory must degrade to its direct endpoint when
+#: the owning proxy process exits mid-session.
+_PROXIED_PROVIDERS = [
+    ("openai", "openai", "openai_client"),
+    ("ollama", "openai", "ollama_client"),
+    ("openrouter", "openai", "openrouter_client"),
+    ("anthropic", "anthropic", "anthropic_http_client"),
+]
+
+
+def _factory_for(provider: str) -> Any:
+    """Return ``runtime -> client`` for one proxied provider.
+
+    Three gateways expose a client factory directly; OpenRouter's factory
+    returns a zero-arg builder, so it is wrapped to present the same shape.
+    """
+    from runtime import gateway_provider as gp
+
+    if provider == "openai":
+        return gp._openai_client_instance
+    if provider == "ollama":
+        return gp._ollama_client_instance
+    if provider == "anthropic":
+        return gp._anthropic_http_client_instance
+    return lambda runtime: gp._openrouter_client_factory(runtime)()
+
+
+@pytest.mark.parametrize(("provider", "protocol", "slot"), _PROXIED_PROVIDERS)
+def test_cached_client_is_dropped_when_its_proxy_dies_mid_session(
+    provider: str,
+    protocol: str,
+    slot: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """A client cached while the proxy was warm must not outlive the proxy.
+
+    Regression for the 2026-10-26 headroom death, generalized: the first pass
+    only reset the OpenAI and Ollama slots, so the Anthropic and OpenRouter
+    factories kept returning a client bound to a dead loopback port for the
+    rest of the process — the exact hang the fix exists to prevent. The
+    factories also short-circuited on the cache before consulting the route,
+    so even the two covered providers only degraded when the cache was
+    already empty.
+    """
+    from kernel.proxy_launch.pool import ProxyPool
+
+    monkeypatch.setenv("LISA_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LISA_OPENROUTER_API_KEY", "test-key")
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    pool = ProxyPool([])
+    runtime.resources._proxy_pool = pool
+    pool._routes[provider] = ProxyRoute(
+        proxy_id=f"{provider}-px",
+        protocol=protocol,
+        base_url="http://127.0.0.1:18787/v1",
+    )
+    runtime.resources._proxy_routes = pool.routes
+
+    # Build (and cache) the client while the proxy is warm.
+    factory = _factory_for(provider)
+    warm_client = factory(runtime)
+    assert "127.0.0.1:18787" in str(warm_client.base_url)
+    assert getattr(runtime.providers, slot) is warm_client
+
+    # The owning process exits mid-session.
+    class _DeadProcess:
+        returncode = 137
+
+    pool._processes[f"{provider}-px"] = _DeadProcess()  # type: ignore[assignment]
+
+    # The next factory call must not hand back the dead-proxy client.
+    rebuilt = factory(runtime)
+    assert rebuilt is not warm_client
+    assert "127.0.0.1:18787" not in str(rebuilt.base_url)
+    assert getattr(runtime.providers, slot) is rebuilt
+
+
+def test_healthy_direct_client_is_not_rebuilt_on_every_call(tmp_path: Any) -> None:
+    """A provider that never had a proxy keeps its cached client."""
+    from runtime import gateway_provider as gp
+
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_pool = None
+    runtime.providers.openai_client = "sentinel"
+
+    gp._prune_dead_proxy_client(runtime, "openai", "openai")
+
+    assert runtime.providers.openai_client == "sentinel"

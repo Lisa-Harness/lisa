@@ -252,7 +252,7 @@ async def test_anthropic_http_client_uses_proxy_route(monkeypatch: pytest.Monkey
     monkeypatch.delenv("LISA_ANTHROPIC_BASE_URL", raising=False)
     route = SimpleNamespace(base_url="http://127.0.0.1:19999/anthropic")
     runtime = _runtime()
-    runtime.resources = SimpleNamespace(proxy_route_for=lambda p, proto: route)
+    runtime.resources = SimpleNamespace(proxy_route_for=lambda p, proto: route, proxy_routes={})
 
     client = _anthropic_http_client_instance(runtime)
     try:
