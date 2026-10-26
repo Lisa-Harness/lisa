@@ -36,6 +36,12 @@ from pathlib import Path
 from typing import Any
 
 from kernel.session_plan import SessionPlan
+from sdk.content import (
+    render_scoped_instruction,
+    render_unconditional_blocks,
+    scoped_instructions_for_paths,
+    tool_call_paths,
+)
 
 from runtime.config import HostConfig
 from runtime.execution_policy import resolve_execution_policy
@@ -53,149 +59,6 @@ logger = logging.getLogger(__name__)
 #: instruction injection. One token exists per turn and per fork/delegate
 #: child, and only the newest are still running, so a small bound is ample.
 _MAX_TRACKED_TURNS = 8
-
-#: Tool argument keys whose value names a path directly (``str``), and keys
-#: whose value is a list of records each carrying a ``path`` (the coding pack's
-#: batched ``coding_edit_files``). Every coding-pack file tool names its
-#: argument ``path``; ``file_path`` covers the customization reader. Directory
-#: values (``find_files``, ``list_directory``, ``search_code``) match no
-#: ``applyTo`` glob, so they contribute nothing.
-_PATH_ARGUMENT_KEYS = ("path", "file_path")
-_PATH_RECORD_LIST_KEYS = ("edits", "files")
-
-
-def _tool_call_paths(arguments: Any) -> tuple[str, ...]:
-    """Return the distinct paths a tool call refers to, in argument order.
-
-    Covers the single-path tools (``path`` / ``file_path``) and the batched
-    shape whose paths live inside a list of records. Non-string, empty, and
-    unparseable values contribute nothing — a call that names no identifiable
-    file gets no scoped guidance.
-    """
-    if not isinstance(arguments, dict):
-        return ()
-    paths: list[str] = []
-    for key in _PATH_ARGUMENT_KEYS:
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            paths.append(value.strip())
-    for key in _PATH_RECORD_LIST_KEYS:
-        records = arguments.get(key)
-        if not isinstance(records, (list, tuple)):
-            continue
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            value = record.get("path")
-            if isinstance(value, str) and value.strip():
-                paths.append(value.strip())
-    # dict.fromkeys keeps first-seen order while removing repeats.
-    return tuple(dict.fromkeys(paths))
-
-
-def _workspace_relative_posix_path(file_path: str) -> str:
-    """Normalize a tool-argument path for the ``applyTo`` matcher.
-
-    Returns a POSIX-style path with no leading ``./``, or ``""`` when the value
-    names no path (empty, ``"."``) or escapes the workspace root via ``..``.
-    A leading slash is stripped rather than rejected: reading an absolute path
-    workspace-relative can only miss a directory-anchored glob, never attach a
-    body for an unrelated file.
-    """
-    normalized = file_path.replace("\\", "/").strip()
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = normalized.lstrip("/")
-    if not normalized:
-        return ""
-    parts: list[str] = []
-    for part in normalized.split("/"):
-        if part in ("", "."):
-            continue
-        if part == "..":
-            # Escapes the workspace root; nothing scoped can match.
-            return ""
-        parts.append(part)
-    return "/".join(parts)
-
-
-def _scoped_instruction_block(instruction: Any) -> str:
-    """Render one ``applyTo``-scoped instruction as a labelled Markdown block.
-
-    The ``applies to`` label is kept so the model can see why the guidance
-    arrived with a particular tool result.
-    """
-    apply_label = ", ".join(instruction.apply_to)
-    return (
-        f"## Instruction: {instruction.name} (applies to: {apply_label})"
-        f"\n\n{instruction.body.strip()}"
-    )
-
-
-def _unconditional_customization_blocks(bundle: Any) -> list[str]:
-    """Render the customization blocks that belong in every system prompt.
-
-    Carries always-on files, instructions that declare no ``applyTo``, and the
-    skill *index*. Instructions that declare one are deferred to the dispatch
-    that first touches a matching path, and skill *bodies* are loaded on demand
-    (see :func:`_skill_index_block`).
-    """
-    parts = [
-        f"## Project Instructions\n\n{f.body.strip()}"
-        for f in bundle.always_on
-        if f.body.strip()
-    ]
-    parts.extend(
-        _scoped_instruction_block(inst)
-        for inst in bundle.instructions
-        if inst.body.strip() and not inst.apply_to
-    )
-    index = _skill_index_block(bundle.skills)
-    if index:
-        parts.append(index)
-    return parts
-
-
-def _skill_index_block(skills: Any) -> str:
-    """Render the skill index: name, description, and path — never the body.
-
-    Mirrors Copilot's progressive loading. The index is the discovery surface
-    (~100 tokens per skill), the body loads when a turn decides it needs the
-    procedure, and a skill's own reference files load only if the body names
-    them. Injecting bodies eagerly costs the full corpus on every request no
-    matter what the turn does.
-
-    Skill bodies have no ``applyTo``, so unlike instructions they cannot be
-    matched to a path; the model must choose. Each entry therefore names the
-    file to read, and the read goes through the ordinary file-read tool in
-    source scope — no dedicated loader is required.
-
-    ``disable_model_invocation`` is honored as an opt-out of model-driven
-    loading: such a skill is neither listed nor injected. Copilot keeps it
-    reachable as a slash command; Lisa exposes no skill-slash surface, so the
-    alternative would be listing guidance the model is forbidden to load.
-    """
-    usable = [
-        skill
-        for skill in skills
-        if skill.body.strip() and not skill.disable_model_invocation
-    ]
-    if not usable:
-        return ""
-    lines = [
-        "## Skills",
-        "",
-        "Each skill below is a procedure you can load on demand. Read the named",
-        "file when your task matches its description; do not guess at its",
-        "contents. Skills you do not load cost nothing.",
-        "",
-    ]
-    for skill in usable:
-        description = " ".join(skill.description.split())
-        lines.append(f"- **{skill.name}** — {description}")
-        lines.append(f"  Load with the file-read tool: `{skill.path}`")
-    return "\n".join(lines)
-
 
 def _make_in_process_resolver():
     """Build an ``InProcessResolver`` backed by ``mcp_server.registry``.
@@ -952,7 +815,7 @@ class HostRuntime:
         try:
             bundle = self._copilot_customization_bundle()
             self._copilot_customizations_text = "\n\n".join(
-                _unconditional_customization_blocks(bundle)
+                render_unconditional_blocks(bundle)
             )
         except Exception:
             logger.warning(
@@ -977,67 +840,26 @@ class HostRuntime:
         """Return the scoped instruction bodies whose ``applyTo`` matches ``file_path``.
 
         ``file_path`` is workspace-relative and POSIX-style, the same shape the
-        SDK matcher expects. It is normalized first: backslashes and a leading
-        ``./`` are removed, and an empty or traversal-escaping value matches
-        nothing — injecting guidance for an unmatched path would resurrect
-        exactly the eager injection this defers.
-
-        An absolute path is read as workspace-relative (the leading slash is
-        stripped) rather than rejected. That can only *miss* a
-        directory-anchored glob, never attach a wrong body, which is the safe
-        direction; coding tools document relative paths anyway.
+        SDK matcher expects; the SDK normalizes it. Selecting and rendering the
+        matches is the SDK's ``_copilot_rendering`` module, not host logic.
         """
         return "\n\n".join(
-            _scoped_instruction_block(inst)
-            for inst in self._matching_scoped_instructions(file_path)
+            render_scoped_instruction(inst)
+            for inst in self._matching_scoped_instructions((file_path,))
         )
 
-    def _matching_scoped_instructions(self, file_path: str) -> tuple[Any, ...]:
-        """Return the ``applyTo``-scoped instructions matching a workspace path."""
-        return self._matching_scoped_instructions_for_paths((file_path,))
-
-    def _matching_scoped_instructions_for_paths(
+    def _matching_scoped_instructions(
         self, file_paths: tuple[str, ...]
     ) -> tuple[Any, ...]:
-        """Return the scoped instructions matching any of the given paths.
-
-        Each path is normalized first; a path that escapes the workspace
-        contributes nothing. Results are deduped by instruction path and keep
-        discovery order, so a batched edit of five Python files yields one copy
-        of the Python guidance.
-        """
-        relatives = [
-            relative
-            for relative in (_workspace_relative_posix_path(p) for p in file_paths)
-            if relative
-        ]
-        if not relatives:
-            return ()
+        """Return the scoped instructions matching any of ``file_paths``."""
         try:
-            from sdk.content import matches_apply_to
-        except Exception:  # pragma: no cover - the matcher ships with the SDK
-            return ()
-        matched: list[Any] = []
-        seen: set[str] = set()
-        for instruction in self._scoped_instructions():
-            if instruction.path in seen:
-                continue
-            globs = list(instruction.apply_to)
-            if any(matches_apply_to(globs, relative) for relative in relatives):
-                matched.append(instruction)
-                seen.add(instruction.path)
-        return tuple(matched)
-
-    def _scoped_instructions(self) -> tuple[Any, ...]:
-        """Return the ``applyTo``-scoped instructions in the discovered bundle."""
-        try:
-            return tuple(
-                inst
-                for inst in self._copilot_customization_bundle().instructions
-                if inst.apply_to
+            return scoped_instructions_for_paths(
+                self._copilot_customization_bundle().instructions, file_paths
             )
         except Exception:
-            logger.debug("Copilot customization discovery failed", exc_info=True)
+            logger.debug(
+                "Scoped instruction lookup failed for %s", file_paths, exc_info=True
+            )
             return ()
 
     def decorate_pack_tool_result(
@@ -1059,14 +881,10 @@ class HostRuntime:
         key is the instruction's path, so two instructions that happen to share
         a body are still injected separately.
         """
-        paths = _tool_call_paths(arguments)
+        paths = tool_call_paths(arguments)
         if not paths:
             return rendered
-        try:
-            matched = self._matching_scoped_instructions_for_paths(paths)
-        except Exception:  # pylint: disable=broad-except
-            logger.debug("Scoped instruction lookup failed for %s", paths, exc_info=True)
-            return rendered
+        matched = self._matching_scoped_instructions(paths)
         if not matched:
             return rendered
 
@@ -1075,7 +893,7 @@ class HostRuntime:
         if not fresh:
             return rendered
         seen.update(inst.path for inst in fresh)
-        blocks = "\n\n".join(_scoped_instruction_block(inst) for inst in fresh)
+        blocks = "\n\n".join(render_scoped_instruction(inst) for inst in fresh)
         return f"{rendered}\n\n{blocks}"
 
     def _scoped_instruction_seen(self, turn_token: str) -> set[str]:

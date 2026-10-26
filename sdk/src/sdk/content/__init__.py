@@ -63,6 +63,15 @@ from sdk.content._copilot_customizations import (
     parse_skill_file,
 )
 from sdk.content._copilot_discovery import discover_copilot_customizations
+from sdk.content._copilot_rendering import (
+    matches_any_scoped_instruction,
+    render_scoped_instruction,
+    render_skill_index,
+    render_unconditional_blocks,
+    scoped_instructions_for_paths,
+    tool_call_paths,
+    workspace_relative_posix_path,
+)
 from sdk.content._diagnostics import build_catalog_diagnostics_json
 from sdk.content._fetcher import (
     ContentFetcher,
@@ -102,18 +111,25 @@ __all__ = [
     "invalidate_catalog_cache",
     "is_safe_relative_path",
     "matches_any_instruction",
+    "matches_any_scoped_instruction",
     "matches_apply_to",
     "parse_agent_file",
     "parse_always_on_file",
     "parse_instruction_file",
     "parse_prompt_file",
     "parse_skill_file",
+    "render_scoped_instruction",
+    "render_skill_index",
+    "render_unconditional_blocks",
     "require_authored_text",
     "resolve_content_roots",
     "resolve_mode_roots",
     "resolve_operation_roots",
     "resolve_tool_roots",
     "roots_fingerprint",
+    "scoped_instructions_for_paths",
+    "tool_call_paths",
     "validate_required_content",
     "validate_url",
+    "workspace_relative_posix_path",
 ]

@@ -49,6 +49,14 @@ All notable changes to the Lisa Harness will be documented in this file.
   guidance the model may not load would be the worse outcome. `context: fork`
   remains parsed-but-unused; running a fork skill as a subturn is a separate
   change.
+- **Copilot customization rendering and scoped matching moved to the SDK.** The
+  block rendering, skill index, path normalization, and `applyTo` selection now
+  live in `sdk/content/_copilot_rendering.py` rather than the host runtime.
+  Customization content shaping is domain logic, and the SDK contract already
+  owns customization parsing; keeping it in the runtime also made the helpers
+  unreachable from the kernel test suite. `HostRuntime` keeps only what is
+  genuinely host-scoped: workspace-root resolution, discovery, caching, and
+  per-dispatch-token dedupe. No behavior change.
 
 ### Documentation
 
