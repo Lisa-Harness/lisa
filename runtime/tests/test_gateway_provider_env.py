@@ -35,9 +35,7 @@ class _FakeRuntime:
         )
         vars(self.providers).update(provider_slots)
         self.config = config or SimpleNamespace(prompt_cache_enabled=True)
-        self.resources = SimpleNamespace(
-            proxy_route_for=lambda p, proto: None, proxy_routes={}
-        )
+        self.resources = SimpleNamespace(proxy_route_for=lambda p, proto: None, proxy_routes={})
 
 
 def _runtime(*, config: Any = None, **provider_slots: Any) -> _FakeRuntime:
@@ -277,9 +275,7 @@ def test_proxy_base_url_no_route_returns_direct() -> None:
 def test_proxy_base_url_route_appends_slash() -> None:
     route = SimpleNamespace(base_url="http://127.0.0.1:18000/v1/")
     runtime = _runtime()
-    runtime.resources = SimpleNamespace(
-        proxy_route_for=lambda p, proto: route, proxy_routes={}
-    )
+    runtime.resources = SimpleNamespace(proxy_route_for=lambda p, proto: route, proxy_routes={})
 
     assert (
         _proxy_base_url(runtime, "openai", "https://direct.example/")

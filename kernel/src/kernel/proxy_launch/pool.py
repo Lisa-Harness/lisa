@@ -404,7 +404,8 @@ class ProxyPool:
         # Enforce restart budget: count restarts within the window.
         now = time.monotonic()
         timestamps = [
-            t for t in self._restart_timestamps.get(proxy_id, [])
+            t
+            for t in self._restart_timestamps.get(proxy_id, [])
             if now - t < self._RESTART_WINDOW_S
         ]
         if len(timestamps) >= self._MAX_RESTARTS:
