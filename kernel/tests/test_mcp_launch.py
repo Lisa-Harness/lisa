@@ -780,3 +780,76 @@ async def test_connect_http_adopts_declared_protocol_version_without_negotiation
     discover_result = adopted[0]
     assert discover_result.supported_versions == ["2026-07-28"]
     assert negotiate_calls == [], "negotiate_auto must never run for a pinned config"
+
+
+# ── input-required result detection (F2: MRTR adapter seam) ──────────────────
+
+
+class _FakeContentBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _FakeSdkResult:
+    def __init__(
+        self,
+        content: list[_FakeContentBlock],
+        is_error: bool = False,
+        meta: dict[str, object] | None = None,
+    ) -> None:
+        self.content = content
+        self.is_error = is_error
+        self.meta = meta
+
+
+def test_build_result_detects_input_required_payload() -> None:
+    """A ``meta.input_required`` dict surfaces as the structured pause state.
+
+    An MCP server pausing mid-call for user input (the input-required /
+    multi-round-tool-result shape) must not flatten into ``output_text``:
+    the pause state rides on ``MCPToolResult`` so the runtime adapter can
+    thread it into ``ToolResult.extra``.
+    """
+    from kernel.tools.mcp_client import MCPToolPool
+
+    result = MCPToolPool._build_result(
+        "banking.transfer",
+        _FakeSdkResult(
+            content=[_FakeContentBlock("Which account?")],
+            meta={"input_required": {"prompt": "Which account?", "schema": {"type": "string"}}},
+        ),
+    )
+
+    assert result.input_required is True
+    assert result.input_request == {"prompt": "Which account?", "schema": {"type": "string"}}
+    assert result.output_text == "Which account?"
+    assert result.is_error is False
+
+
+def test_build_result_detects_bare_input_required_flag() -> None:
+    """A bare boolean meta flag signals the pause with no payload."""
+    from kernel.tools.mcp_client import MCPToolPool
+
+    result = MCPToolPool._build_result(
+        "banking.transfer",
+        _FakeSdkResult(
+            content=[_FakeContentBlock("Which account?")],
+            meta={"input_required": True},
+        ),
+    )
+
+    assert result.input_required is True
+    assert result.input_request is None
+
+
+def test_build_result_plain_result_has_no_input_state() -> None:
+    """A result without input-required meta carries no pause state."""
+    from kernel.tools.mcp_client import MCPToolPool
+
+    result = MCPToolPool._build_result(
+        "banking.transfer",
+        _FakeSdkResult(content=[_FakeContentBlock("Transfer complete.")]),
+    )
+
+    assert result.input_required is False
+    assert result.input_request is None

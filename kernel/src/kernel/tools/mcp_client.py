@@ -364,12 +364,22 @@ class SyntheticToolSpec:
 
 @dataclass(slots=True)
 class MCPToolResult:
-    """Result of one MCP tool call."""
+    """Result of one MCP tool call.
+
+    ``input_required`` is True when the server paused the call mid-flight
+    for user input (the MCP input-required / multi-round-tool-result shape:
+    the result's ``meta`` carries an input request instead of a final
+    answer). ``input_request`` carries the structured request payload when
+    present, so callers can surface a pause instead of treating the
+    partial text as the tool's answer.
+    """
 
     tool_id: str
     output_text: str = ""
     is_error: bool = False
     raw: Any = None
+    input_required: bool = False
+    input_request: dict[str, Any] | None = None
 
 
 class MCPConnectionError(RuntimeError):
@@ -2510,17 +2520,35 @@ class MCPToolPool:
 
     @staticmethod
     def _build_result(tool_id: str, result: Any) -> MCPToolResult:
-        """Convert an MCP session call result into an MCPToolResult."""
+        """Convert an MCP session call result into an MCPToolResult.
+
+        An input-required result (the server paused mid-call for user
+        input) is detected from the result's ``meta`` and surfaced via
+        ``input_required`` / ``input_request`` instead of being flattened
+        into ``output_text`` — the partial text is still carried, but the
+        pause state is no longer swallowed.
+        """
         text_parts: list[str] = []
         for content_block in result.content or []:
             text = getattr(content_block, "text", None)
             if isinstance(text, str):
                 text_parts.append(text)
+        meta = getattr(result, "meta", None) or {}
+        input_request = meta.get("input_required") if isinstance(meta, dict) else None
+        input_required = False
+        if isinstance(input_request, dict):
+            input_required = True
+        elif isinstance(input_request, bool):
+            # A bare boolean flag with no payload still signals the pause.
+            input_required = input_request
+            input_request = None
         return MCPToolResult(
             tool_id=tool_id,
             output_text="\n".join(text_parts) if text_parts else "Done",
             is_error=bool(getattr(result, "is_error", False)),
             raw=result,
+            input_required=input_required,
+            input_request=input_request if isinstance(input_request, dict) else None,
         )
 
     async def aclose(self) -> None:

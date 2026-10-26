@@ -165,3 +165,70 @@ async def test_composite_tolerates_raising_host_builder() -> None:
     composite = CompositeExtensionItemBuilder([pack_builder, _BrokenBuilder()])
     items = composite.build_extension_context_items(runtime_context=None, state=None)
     assert [item.item_id for item in items] == ["pack:only"]
+
+
+# ── _execute_mcp_tool input-required seam ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_execute_mcp_tool_surfaces_input_required(tmp_path: Path) -> None:
+    """An input-required MCP result surfaces as a structured pause.
+
+    An MCP server that pauses mid-call for user input (the input-required /
+    multi-round-tool-result shape) must not flatten into ``output_text``:
+    the adapter threads the state into ``ToolResult.extra`` so downstream
+    consumers can distinguish "the tool needs input" from "the tool
+    answered".
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+    from runtime.turn_hooks_builder import _execute_mcp_tool
+
+    runtime = _make_runtime(tmp_path)
+
+    class _FakePool:
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text="Which account?",
+                input_required=True,
+                input_request={"prompt": "Which account?", "schema": {"type": "string"}},
+            )
+
+    # ``mcp_tool_pool`` is a read-only property over the private
+    # ``_mcp_tool_pool`` attribute; inject the fake pool through the
+    # attribute the property reads.
+    runtime.resources._mcp_tool_pool = _FakePool()
+
+    result = await _execute_mcp_tool(runtime, "banking.transfer", {"amount": 5})
+
+    assert result.tool_id == "banking.transfer"
+    assert result.output_text == "Which account?"
+    assert result.error == ""
+    assert result.extra["input_required"] is True
+    assert result.extra["input_request"] == {
+        "prompt": "Which account?",
+        "schema": {"type": "string"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_mcp_tool_plain_result_has_no_input_required_extra(
+    tmp_path: Path,
+) -> None:
+    """A normal result carries no input-required state in ``extra``."""
+    from kernel.tools.mcp_client import MCPToolResult
+    from runtime.turn_hooks_builder import _execute_mcp_tool
+
+    runtime = _make_runtime(tmp_path)
+
+    class _FakePool:
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="Transfer complete.")
+
+    runtime.resources._mcp_tool_pool = _FakePool()
+
+    result = await _execute_mcp_tool(runtime, "banking.transfer", {"amount": 5})
+
+    assert result.output_text == "Transfer complete."
+    assert result.error == ""
+    assert "input_required" not in result.extra

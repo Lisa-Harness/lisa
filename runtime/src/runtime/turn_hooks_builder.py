@@ -614,9 +614,30 @@ async def _execute_mcp_tool(runtime: HostRuntime, tool_id: str, tool_ctx: Any) -
                 )
             output_text = getattr(result, "output_text", "")
             is_error = bool(getattr(result, "is_error", False))
+            # Input-required seam: an MCP server that pauses mid-call for
+            # user input (the input-required / multi-round-tool-result
+            # shape) must surface as a structured pause, not flatten into
+            # ``output_text``. The state rides in ``extra`` so downstream
+            # consumers (turn runner, pack slices) can distinguish "the
+            # tool needs input" from "the tool answered".
+            input_required = bool(getattr(result, "input_required", False))
+            extra: dict[str, Any] = {}
+            if input_required:
+                extra["input_required"] = True
+                input_request = getattr(result, "input_request", None)
+                if isinstance(input_request, dict):
+                    extra["input_request"] = input_request
             if is_error:
-                return ToolResult(tool_id=tool_id, error=output_text or "tool error")
-            return ToolResult(tool_id=tool_id, output_text=output_text or "")
+                return ToolResult(
+                    tool_id=tool_id,
+                    error=output_text or "tool error",
+                    extra=extra,
+                )
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=output_text or "",
+                extra=extra,
+            )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("tool dispatch %s failed: %s", tool_id, exc)
             return ToolResult(tool_id=tool_id, error=str(exc))
