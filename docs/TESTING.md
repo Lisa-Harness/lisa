@@ -31,6 +31,7 @@ package's tests are split between its top-level `tests/` and colocated
 | `packstest/src/**` | `packstest/tests` |
 | `e2etest/src/**` | `e2etest/tests` |
 | `scripts/check_docs.py` | `packstest/tests/test_check_docs.py` |
+| `scripts/check_tests.py` | `packstest/tests/test_check_tests.py` |
 
 Cross-package closure: `kernel` is imported by every other package, so a
 kernel change that alters a contract the SDK, runtime, MCP servers, or packs
@@ -39,6 +40,41 @@ consume must also run those packages' testpaths — the import direction
 change confined to one package's internal implementation runs that
 package's tier only. When in doubt, run the full suite; it is the gate CI
 enforces.
+
+### Automated selection
+
+[`scripts/check_tests.py`](../scripts/check_tests.py) performs the package tier
+automatically. It reads the change set from Git rather than from a declaration,
+so the selection cannot be narrowed by whoever is asking:
+
+```sh
+uv run python scripts/check_tests.py            # select from Git state
+uv run python scripts/check_tests.py --dry-run  # print the pytest command
+uv run python scripts/check_tests.py --base origin/main
+uv run python scripts/check_tests.py --paths a.py b.py
+```
+
+The changed set is the union of the working tree (`git status --porcelain -z`,
+including untracked and deleted files and both sides of a rename) and the
+committed delta against a base (`git diff --name-only <base>...HEAD`). Reading
+the tree alone would miss work that was already committed, which is the normal
+state when the gate runs.
+
+The base is `--base` when given — an explicit ref that does not resolve is an
+error rather than a silent fallback — otherwise the merge-base of `HEAD` with
+`origin/main`, then `main`, taking the most recent of those. A stale candidate
+yields a merge-base older than the branch point, which would widen the delta to
+include other people's commits; merge-bases of one `HEAD` are totally ordered by
+ancestry, so the maximal one is the branch point.
+
+The selector escalates to the full suite rather than guessing when it cannot
+show that a subset covers the change: no base resolved, no changed paths
+detected, a path outside every known package, a cross-cutting path
+(`pyproject.toml`, `uv.lock`, `conftest.py`, `typings/`, `.github/`,
+`vulture_allowlist.py`, or any `scripts/` file other than the two the packstest
+suite loads), or a kernel change. Documentation-only paths select nothing and
+exit 0, mirroring the CI path filter. The exit code is pytest's, so a failed,
+errored, or uncollected run fails the gate.
 
 ## Fast development loop
 

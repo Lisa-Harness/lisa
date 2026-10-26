@@ -4,6 +4,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Automated test selection for the commit gate.**
+  `scripts/check_tests.py` runs the package tier from Git state instead of a
+  declared path list. The changed set is the union of the working tree and the
+  committed delta against a base, so work that was committed before the gate
+  runs is still counted; a tree-only read could be narrowed to nothing by
+  committing first and leaving a documentation-only edit behind. The base
+  resolves to the most recent merge-base across `origin/main` and `main`, so a
+  stale candidate cannot widen the delta to include other people's commits. An
+  unresolvable base, an unowned path, a cross-cutting path, or a kernel change
+  escalates to the full suite rather than guessing. `--base`, `--paths`,
+  `--dry-run`, and `--cwd` override the defaults.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added
