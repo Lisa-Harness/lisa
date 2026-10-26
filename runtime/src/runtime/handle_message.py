@@ -864,6 +864,93 @@ def _resolve_task_goal(message: str) -> str:
     return "diagnostic" if _operator_declared_diagnostic(message) else "implementation"
 
 
+def _proxy_protocol_for_provider(runtime: HostRuntime, provider: str) -> str | None:
+    """Return the proxy wire protocol serving ``provider``, or ``None``.
+
+    Asks the provider-gateway seam rather than holding a host-side provider
+    list: the gateway implementation is the only component that knows whether
+    it reads a proxy route at all. A provider with no proxy protocol cannot be
+    served by a proxy, so route resolution for it is a no-op.
+    """
+    from runtime.mcp_pool import _proxy_protocol_resolver
+
+    return _proxy_protocol_resolver(runtime)(provider)
+
+
+async def _respawn_dead_proxy_for_provider(runtime: HostRuntime, provider: str) -> None:
+    """Give a dead proxy serving ``provider`` one bounded restart attempt.
+
+    The sync route accessor the gateway factories use cannot await, so it can
+    only drop a dead route and let the call go direct. The turn boundary is
+    the place that can await, which makes it the production caller of
+    :meth:`RuntimeResources.ensure_proxy_route` — and therefore of the pool's
+    supervised restart budget, single-flight guard, and permanent-failure
+    ceiling.
+
+    Best-effort by design: a proxy that cannot be restarted, has exhausted its
+    budget, or serves no provider here leaves the turn on the direct endpoint.
+    Proxy routing is an optimization, never a correctness requirement.
+
+    Args:
+        runtime: The host runtime owning the proxy pool.
+        provider: Provider gateway id resolved for this turn.
+    """
+    protocol = _proxy_protocol_for_provider(runtime, provider)
+    if protocol is None:
+        return
+    if runtime.resources.proxy_pool is None:
+        return
+    try:
+        await runtime.resources.ensure_proxy_route(provider, protocol)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "proxy restart attempt for provider %r failed; continuing on the direct endpoint",
+            provider,
+            exc_info=True,
+        )
+
+
+async def _emit_model_call_stage(
+    runtime: HostRuntime,
+    transport: TransportCallbacks,
+    mode: Any,
+    resolved_model: Any,
+    turn_index: int,
+) -> None:
+    """Announce the turn's model call, restoring its proxy route first.
+
+    ``turn_index`` rides the payload so transports can label their output with
+    the same turn number the model briefing and the thread entry carry — one
+    source of truth across the model's self-address, persistence, and
+    operator-facing rendering. ``proxy_route`` rides it so a transport can show
+    whether this provider's requests flow through a proxy pack or go direct;
+    that view is informational only, because the authoritative routing
+    decision happens in the gateway client factories.
+
+    A proxy that died between turns is restored before the gateway client is
+    built for this turn, which is the only async seam that can await the
+    bounded restart (see :func:`_respawn_dead_proxy_for_provider`).
+
+    Args:
+        runtime: The host runtime.
+        transport: The turn's transport callbacks.
+        mode: The mode config owning this turn.
+        resolved_model: The model resolved for this turn.
+        turn_index: This turn's global index.
+    """
+    await _respawn_dead_proxy_for_provider(runtime, resolved_model.provider)
+    await transport.on_stage(
+        "model_call",
+        {
+            "mode_id": mode.mode_id,
+            "model_id": resolved_model.model_id,
+            "provider": resolved_model.provider,
+            "turn_index": turn_index,
+            "proxy_route": proxy_route_view(runtime, resolved_model.provider),
+        },
+    )
+
+
 def _is_task_resume_request(message: str) -> bool:
     """Recognize explicit task continuation without treating it as approval."""
     lowered = " ".join(message.strip().lower().rstrip(".!?").split()).replace("'", "")
@@ -1306,23 +1393,7 @@ async def _execute_mode_turn(
     _set_turn_context(runtime, run_context)
 
     # Emit stage callback.
-    # ``turn_index`` rides the payload so transports can label their output
-    # with the same turn number the model briefing and the thread entry carry
-    # — one source of truth across the model's self-address, persistence, and
-    # operator-facing rendering. ``proxy_route`` rides the payload so the
-    # status bar can show whether this provider's requests flow through a
-    # proxy pack (e.g. headroom) or direct — informational only; the
-    # authoritative routing decision happens in the gateway client factories.
-    await transport.on_stage(
-        "model_call",
-        {
-            "mode_id": mode.mode_id,
-            "model_id": resolved_model.model_id,
-            "provider": resolved_model.provider,
-            "turn_index": turn_index,
-            "proxy_route": proxy_route_view(runtime, resolved_model.provider),
-        },
-    )
+    await _emit_model_call_stage(runtime, transport, mode, resolved_model, turn_index)
 
     # Build turn hooks and execute. Host-supplied item builders (the editor
     # context bridge) are composed in alongside the installed-pack builder.

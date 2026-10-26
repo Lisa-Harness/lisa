@@ -321,3 +321,80 @@ def test_healthy_direct_client_is_not_rebuilt_on_every_call(tmp_path: Any) -> No
     gp._prune_dead_proxy_client(runtime, "openai", "openai")
 
     assert runtime.providers.openai_client == "sentinel"
+
+
+# ── Production caller for the supervised respawn ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_turn_boundary_respawns_a_dead_proxy_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """The turn boundary is the only place that can await a restart.
+
+    The sync route accessor the gateway factories use can only drop a dead
+    route and go direct, so without an async caller the pool's supervised
+    restart budget, single-flight guard, and permanent-failure ceiling would
+    never run on a live host.
+    """
+    from kernel.proxy_launch.pool import ProxyPool
+    from runtime.handle_message import _respawn_dead_proxy_for_provider
+
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    pool = ProxyPool([])
+    runtime.resources._proxy_pool = pool
+    respawns: list[str] = []
+
+    async def _fake_respawn(provider: str, *, timeout_s: float = 30.0) -> bool:
+        respawns.append(provider)
+        return True
+
+    monkeypatch.setattr(pool, "respawn", _fake_respawn)
+
+    await _respawn_dead_proxy_for_provider(runtime, "ollama")
+
+    assert respawns == ["ollama"]
+
+
+@pytest.mark.asyncio
+async def test_turn_boundary_never_respawns_a_non_proxied_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A credential-bound gateway has no proxy to restart."""
+    from kernel.proxy_launch.pool import ProxyPool
+    from runtime.handle_message import _respawn_dead_proxy_for_provider
+
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    pool = ProxyPool([])
+    runtime.resources._proxy_pool = pool
+    respawns: list[str] = []
+
+    async def _fake_respawn(provider: str, *, timeout_s: float = 30.0) -> bool:
+        respawns.append(provider)
+        return True
+
+    monkeypatch.setattr(pool, "respawn", _fake_respawn)
+
+    await _respawn_dead_proxy_for_provider(runtime, "aws")
+
+    assert respawns == []
+
+
+@pytest.mark.asyncio
+async def test_turn_boundary_survives_a_failing_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A proxy that cannot restart must never fail the turn."""
+    from kernel.proxy_launch.pool import ProxyPool
+    from runtime.handle_message import _respawn_dead_proxy_for_provider
+
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    pool = ProxyPool([])
+    runtime.resources._proxy_pool = pool
+
+    async def _exploding_respawn(provider: str, *, timeout_s: float = 30.0) -> bool:
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(pool, "respawn", _exploding_respawn)
+
+    await _respawn_dead_proxy_for_provider(runtime, "ollama")  # must not raise
