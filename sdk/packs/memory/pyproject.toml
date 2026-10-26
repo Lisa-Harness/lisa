@@ -8,7 +8,7 @@ only-include = ["src/sdk/packs/memory"]
 
 [project]
 name = "lisa-pack-memory"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lisa memory pack - memory-backed default and remember workflows"
 requires-python = ">=3.11"
 
