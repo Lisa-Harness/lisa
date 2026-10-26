@@ -369,6 +369,34 @@ class TestCommittedDelta:
         )
         assert check_tests.resolve_base(cwd=repo) is None
 
+    def test_stale_candidate_does_not_widen_the_delta(self, tmp_path: Path) -> None:
+        """A stale ``origin/main`` must not report other commits as this branch's.
+
+        The branch point is the newest merge-base across candidates. Taking the
+        first candidate's merge-base instead would reach back past the branch
+        point and pull unrelated commits into the delta, escalating on paths
+        this branch never touched.
+        """
+        repo = tmp_path / "repo"
+        git = _init_repo(repo)
+        stale = _head(repo, git)
+        # ``main`` advances past the stale point with someone else's commit.
+        _commit(repo, git, "kernel/pyproject.toml", "[project]\n", "unrelated")
+        branch_point = _head(repo, git)
+        # This branch's own work, branched from the advanced ``main``.
+        subprocess.run([*git, "checkout", "-q", "-b", "feature"], check=True)
+        _commit(repo, git, "sdk/src/sdk/config.py", "x = 1\n", "branch work")
+        # ``origin/main`` is left behind at the stale commit.
+        subprocess.run(
+            [*git, "update-ref", "refs/remotes/origin/main", stale], check=True
+        )
+
+        base = check_tests.resolve_base(cwd=repo)
+        assert base == branch_point
+        paths = check_tests.committed_paths(cwd=repo, base=base)
+        assert "sdk/src/sdk/config.py" in paths
+        assert "kernel/pyproject.toml" not in paths
+
 
 class TestCommand:
     """The emitted command is a real, offline pytest invocation."""

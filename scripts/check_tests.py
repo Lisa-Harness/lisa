@@ -21,7 +21,10 @@ computed from Git state rather than declared by whoever is asking:
   drift.
 - **An unresolvable base forces the full suite.** If no base commit can be
   determined, the committed delta is unknown and the selection cannot be
-  shown to cover the branch. That escalates rather than guessing.
+  shown to cover the branch. That escalates rather than guessing. A stale
+  candidate ref is not unresolvable: each candidate is reduced to its
+  merge-base with ``HEAD`` and the most recent wins, so an unfetched
+  ``origin/main`` cannot widen the delta to include other people's commits.
 - **Cross-cutting paths force the full suite.** A test path selector cannot
   reason about a shared configuration file, a toolchain pin, or the test
   harness itself; those escalate rather than guess. Anything outside a
@@ -153,9 +156,11 @@ _ESCALATE_PACKAGES = frozenset({"kernel"})
 #: one space, then the path.
 _PORCELAIN_PATH_OFFSET = 3
 
-#: Base refs tried in order when the caller does not name one. The branch's
-#: committed work is measured against the merge-base with the first that
-#: resolves.
+#: Base refs tried when the caller does not name one. Each is reduced to its
+#: merge-base with ``HEAD``, and the most recent of those is the branch point.
+#: A stale candidate (an ``origin/main`` that has not been fetched, or a local
+#: ``main`` that has not been fast-forwarded) yields a merge-base older than the
+#: branch point, which would widen the delta to include other people's commits.
 _DEFAULT_BASE_CANDIDATES: tuple[str, ...] = ("origin/main", "main")
 
 
@@ -202,12 +207,32 @@ def _working_tree_paths(*, cwd: Path = _REPO_ROOT) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def _most_recent(shas: list[str], *, cwd: Path) -> str:
+    """Return the commit among ``shas`` that every other one is an ancestor of.
+
+    Merge-bases of the same ``HEAD`` against several candidates are totally
+    ordered by ancestry: a stale candidate's merge-base is an ancestor of the
+    true branch point. The maximal element is therefore the branch point.
+    """
+
+    for candidate in shas:
+        if all(
+            other == candidate
+            or _git("merge-base", "--is-ancestor", other, candidate, cwd=cwd).returncode == 0
+            for other in shas
+        ):
+            return candidate
+    # Unrelated histories: no candidate is an ancestor of the others.
+    return shas[0]
+
+
 def resolve_base(*, cwd: Path = _REPO_ROOT, explicit: str | None = None) -> str | None:
     """Return the commit the branch's committed work is measured against.
 
     An explicit ref must resolve, or the caller asked for something that does
-    not exist and a silent fallback would hide the mistake. Without one, the
-    merge-base with the first resolvable default candidate is used. ``None``
+    not exist and a silent fallback would hide the mistake. Without one, every
+    default candidate is reduced to its merge-base with ``HEAD`` and the most
+    recent of those wins, so a stale candidate cannot widen the delta. ``None``
     means no base could be determined, which the caller must treat as an
     escalation rather than as "no committed work".
     """
@@ -218,11 +243,16 @@ def resolve_base(*, cwd: Path = _REPO_ROOT, explicit: str | None = None) -> str 
             raise RuntimeError(f"base ref {explicit!r} does not resolve to a commit")
         return result.stdout.strip()
 
+    merge_bases: list[str] = []
     for candidate in _DEFAULT_BASE_CANDIDATES:
         merged = _git("merge-base", "HEAD", candidate, cwd=cwd)
         if merged.returncode == 0 and merged.stdout.strip():
-            return merged.stdout.strip()
-    return None
+            sha = merged.stdout.strip()
+            if sha not in merge_bases:
+                merge_bases.append(sha)
+    if not merge_bases:
+        return None
+    return _most_recent(merge_bases, cwd=cwd)
 
 
 def committed_paths(*, cwd: Path = _REPO_ROOT, base: str) -> list[str]:
