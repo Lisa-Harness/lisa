@@ -4,37 +4,129 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
+## [0.3.0] - 2026-10-26
 
-- Resuming a capped turn no longer re-pauses before any model call. The
-  pause snapshot leaves the stuck-in-stage counter one below the cap;
-  `resume_after_pause` now resets the stage counters alongside the
-  granted iteration allowance, so the operator's reply reaches the model
-  instead of yielding a second harness-authored exhaustion diagnostic on a
-  turn that did no work (the 2026-10-25 turns 970/971 incident). A raw
-  continuation restored without the resume path still re-pauses cleanly.
-- Operation module-path inference no longer depends on test-run
-  collection order. The package-base walk in
-  `sdk.content._catalog` trusted a bare `find_spec` leaf-name hit as a
-  package top; an unrelated same-named package elsewhere on `sys.path`
-  (the repo's own `packs`/`sdk` once colocated test roots are collected)
-  hijacked the walk, so `test_catalog_module_path` failed in targeted
-  runs and passed full runs only by order luck. The walk now anchors at
-  the topmost importable level whose spec search locations actually
-  cover the walked directory.
-- Kernel tests share one `lisa-catalog` subprocess for the whole session.
-  The module-scoped catalog fixture minted a fresh `LISA_MCP_LOG_PATH`
-  per test module, and the log path is part of the shared stdio session
-  dedup key, so every kernel test module spawned its own subprocess
-  (~1.1s each). The offline suite drops from ~3m11s to ~1m35s locally.
+### Added
+
+- **Provider-proxy telemetry and routing.** Packs can declare a `status:`
+  block on a proxy entry (`url_path`, dotted `fields`); `/proxy` reports
+  per-proxy readiness, protocol, served providers, startup error, and the
+  declared live counters, plus the provider→proxy routing map. Every
+  `model_call` stage carries `proxy_route` (`via: proxy|direct`), and
+  `IntrospectSnapshot.proxy_pool_health` / `LisaSelfModelArtifact` carry the
+  same view into the self-model. A stats fetch failure is reported separately
+  from process health — missing telemetry is not a zero-savings measurement.
+- **`providers: [all]` wildcard.** A pack can declare that its proxy serves
+  every provider the session can call; the runtime expands the sentinel
+  against the session model manifest into one sibling process per provider
+  (`<proxy_id>.<provider>`, sequential ports, one upstream each). Which
+  providers a proxy can serve comes from the provider-gateway seam
+  (`ProviderGatewayProvider.proxy_protocol_for`), so a third-party gateway
+  pack declares its own answer instead of editing the host. Providers a proxy
+  cannot serve (Google's native REST client, Bedrock's boto3 client, Azure's
+  endpoint-bound client) are skipped and logged, as are providers speaking a
+  different wire protocol, ports past the TCP range, and sibling ids declared
+  explicitly.
+- **Per-server `protocol_version:` pin** for `runtime_kind: http` servers that
+  speak a modern stateless MCP version whose own handshake rejects it. The pin
+  skips negotiation and adopts the declared version directly; the value is
+  validated at parse time against the versions the installed client supports.
+- **Pack-derived binary releases.** `binary_download.version` is now optional:
+  a pack that omits it downloads the release tagged `v<pack version>`, so the
+  tag the pack was installed from is the single version selector.
+- **MCP input-required pauses** surface through the tool seam. An
+  `InputRequiredResult` keeps the server session connected, sets
+  `input_required` / `input_request`, and renders a notice into `output_text`
+  so the model sees that the tool paused rather than answered.
+- **`task_goal` declaration for delegate children.** `DelegationSpec` and the
+  core pack's `delegate` parameters accept `implementation` (default) or
+  `diagnostic`, so a child declares its own intent instead of inheriting the
+  parent's.
+- Go Connector SDK server contract ([docs/GO_CONNECTOR_SDK.md](docs/GO_CONNECTOR_SDK.md))
+  and mode taxonomy ([docs/MODE_TAXONOMY.md](docs/MODE_TAXONOMY.md)).
 
 ### Changed
 
-- `docs/TESTING.md` documents test-selection tiers (unit / package /
-  full) with a changed-file to testpaths table, so verification can
-  select the affected package's suites — including both halves of a
-  package's split test layout — and escalate to the full suite before
-  push. Copilot instructions point at the table instead of restating it.
+- **Proxy failures degrade to the direct endpoint.** A proxy process that
+  exits mid-session drops its route; the affected provider's cached client is
+  invalidated and the next call re-resolves against the provider's direct
+  endpoint. The turn boundary attempts one bounded restart, supervised by the
+  same OTP-style budget as MCP warm servers (3 restarts / 60s, then
+  permanently failed, single-flight). A dead proxy now costs the compression
+  savings, never a hung model call.
+- **`delegate` and `fork` operation timeouts raised** from 300s to 900s and
+  120s to 600s respectively, so a child is not cancelled mid-flight before its
+  own armed budget can force a graceful partial result.
+- **A turn whose provider stream stalls now finalizes gracefully.** A
+  `StreamIdleTimeout` previously escaped `run_turn`; the host rendered "Turn
+  failed" and discarded the turn's receipts and thread entry. The loop now
+  finalizes with the partial work preserved and an honest diagnostic naming
+  the stall. Read-loop tracking counts any tool whose resolved effect is
+  `read`, so pack read tools feed the nudge's repeat basis.
+- **Checked-commit turns fail closed.** A turn that never invoked its worktree
+  producer is accepted without a verified commit only when its task declares
+  `task_goal: diagnostic` *and* made no writes; an undeclared task is an
+  implementation task. The blocker names the declaration that would allow the
+  soft-accept. An accepted diagnostic turn is stamped
+  `completion_contract="diagnostic_soft_accept"` for audit. Operators declare
+  intent with `[task_goal: diagnostic]` in the message, which is consumed and
+  stripped before the request reaches the model or the thread.
+- **MCP manifests are parsed once per startup** and threaded to both ambient
+  tool-id resolution and server registration, instead of each layer re-reading
+  every manifest. `${VAR}` expansion and child-environment compilation take an
+  explicit environment mapping, replacing the process-global `os.environ`
+  export window: the ambient environment is never mutated.
+- **MCP binary handling is faster.** Configured downloads run concurrently,
+  and a cached binary whose size and `mtime_ns` still match its sidecar is
+  trusted without re-hashing.
+- `docs/TESTING.md` documents test-selection tiers (unit / package / full)
+  with a changed-file to testpaths table; `scripts/check_tests.py` computes
+  the package tier from the worktree's Git state. Kernel tests share one
+  `lisa-catalog` subprocess for the whole session, cutting the offline suite
+  from ~3m11s to ~1m35s locally.
+
+### Fixed
+
+- Cold MCP servers are selected by their published tool prefix, not their
+  server id. Once ambient ids became capability-prefixed
+  (`storage.write_file`), matching on `lisa-storage.` matched nothing, so
+  every mode silently lost all ambient MCP-native tools — including
+  `write_file`, which made storage truthfully report itself read-only.
+- Resuming a capped turn no longer re-pauses before any model call. The pause
+  snapshot leaves the stuck-in-stage counter one below the cap;
+  `resume_after_pause` now resets the stage counters alongside the granted
+  iteration allowance, so the operator's reply reaches the model instead of
+  yielding a second harness-authored exhaustion diagnostic on a turn that did
+  no work (the 2026-10-25 turns 970/971 incident). A raw continuation restored
+  without the resume path still re-pauses cleanly.
+- A crashed proxy reports `failed`, not `skipped`, and a successful restart
+  clears its resolved error, so `/proxy` and `operational_health` no longer
+  hide an outage behind a stale readiness row.
+- Operation module-path inference no longer depends on test-run collection
+  order. The package-base walk in `sdk.content._catalog` anchored on a bare
+  `find_spec` leaf-name hit; an unrelated same-named package elsewhere on
+  `sys.path` hijacked the walk. It now anchors at the topmost importable level
+  whose spec search locations actually cover the walked directory.
+- An input-required MCP result is no longer treated as a transport failure.
+  The call requested the pause the SDK would otherwise raise, and the
+  previously disconnected server now stays connected.
+
+### Upgrade notes
+
+- **`MCPBinaryDownload` field order changed** to
+  `(repository, binary_name, version=None)`, and `version` is now optional.
+  Construct it with keywords; positional construction from an external pack
+  raises. Pack manifests should omit `version` to follow their own release.
+- **Checked-commit turns now block by default.** A checked-commit task that
+  runs diagnostics instead of committing must declare `task_goal: diagnostic`
+  (or `[task_goal: diagnostic]` in the operator message). Undeclared tasks
+  are treated as implementation tasks and must verify a commit.
+- **`delegate` and `fork` child timeouts are longer** (300→900s, 120→600s).
+  A host that relied on the old ceilings to bound its own turn budget should
+  re-check its per-turn wall budget.
+- Upgrade the framework distributions and bundled packs together to 0.3.0,
+  then restart the host. Alternate memory providers must still declare the
+  `memory` capability and its required tools in their MCP manifest.
 
 ## [0.2.0] - 2026-10-24
 
