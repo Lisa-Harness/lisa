@@ -87,6 +87,8 @@ class TestAssembleSystemPromptWithCopilotCustomizations:
         )
 
         assert "applies to: **/*.py" in result
+
+
 class TestHostRuntimeCopilotCache:
     def test_copilot_customizations_text_defaults_to_none(self, tmp_path: Path) -> None:
         from runtime.config import HostConfig
@@ -221,17 +223,15 @@ def _workspace_with_customizations(root: Path) -> None:
     """Write one of each customization kind into a throwaway workspace."""
     (root / ".git").mkdir()
     (root / ".github").mkdir()
-    (root / ".github" / "copilot-instructions.md").write_text(
-        "ALWAYS ON RULE\n", encoding="utf-8"
-    )
+    (root / ".github" / "copilot-instructions.md").write_text("ALWAYS ON RULE\n", encoding="utf-8")
     instructions = root / ".github" / "instructions"
     instructions.mkdir(parents=True)
     (instructions / "python.instructions.md").write_text(
-        "---\nname: Python\napplyTo: \"**/*.py\"\n---\nSCOPED PYTHON BODY\n",
+        '---\nname: Python\napplyTo: "**/*.py"\n---\nSCOPED PYTHON BODY\n',
         encoding="utf-8",
     )
     (instructions / "docs.instructions.md").write_text(
-        "---\nname: Docs\napplyTo: \"docs/**\"\n---\nSCOPED DOCS BODY\n",
+        '---\nname: Docs\napplyTo: "docs/**"\n---\nSCOPED DOCS BODY\n',
         encoding="utf-8",
     )
     (instructions / "global.instructions.md").write_text(
@@ -338,9 +338,10 @@ class TestScopedInstructionDeferral:
         # ``**/`` globs still match; a directory-anchored one does not, because
         # the stripped form starts with ``abs/`` rather than ``docs/``.
         assert runtime.scoped_instruction_text_for_path("/abs/docs/guide.md") == ""
-        assert runtime.scoped_instruction_text_for_path("/docs/guide.md").count(
-            "SCOPED DOCS BODY"
-        ) == 1
+        assert (
+            runtime.scoped_instruction_text_for_path("/docs/guide.md").count("SCOPED DOCS BODY")
+            == 1
+        )
 
 
 class TestSkillIndex:

@@ -120,9 +120,7 @@ def scoped_instructions_for_paths(
     the Python guidance.
     """
     relatives = [
-        relative
-        for relative in (workspace_relative_posix_path(p) for p in file_paths)
-        if relative
+        relative for relative in (workspace_relative_posix_path(p) for p in file_paths) if relative
     ]
     if not relatives:
         return ()
@@ -179,9 +177,7 @@ def render_skill_index(skills: Iterable[SkillFile]) -> str:
     otherwise be listing guidance the model is forbidden to load.
     """
     usable = [
-        skill
-        for skill in skills
-        if skill.body.strip() and not skill.disable_model_invocation
+        skill for skill in skills if skill.body.strip() and not skill.disable_model_invocation
     ]
     if not usable:
         return ""

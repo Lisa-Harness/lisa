@@ -440,9 +440,7 @@ def _decorate_pack_tool_output(
     if decorate is None:
         return rendered
     try:
-        decorated = decorate(
-            tool_name, tool_arguments, rendered, state.dispatch_scope_token
-        )
+        decorated = decorate(tool_name, tool_arguments, rendered, state.dispatch_scope_token)
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("post_dispatch_result hook failed for %s: %s", tool_name, exc)
         return rendered

@@ -149,9 +149,7 @@ async def test_pack_tool_result_is_decorated_before_the_model_sees_it(
     definition = _definition(execute)
     monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", {"test_tool": definition})
 
-    def decorate(
-        tool_id: str, arguments: dict[str, Any], rendered: str, _token: str
-    ) -> str:
+    def decorate(tool_id: str, arguments: dict[str, Any], rendered: str, _token: str) -> str:
         return f"{rendered}\n\n## Instruction: Python\n\nFollow PEP 8."
 
     state = _TurnState(dispatch_scope_token="turn-token")
@@ -187,9 +185,7 @@ async def test_pack_tool_decorator_runs_for_every_call_not_once(
 
     calls: list[str] = []
 
-    def decorate(
-        _tool_id: str, _arguments: dict[str, Any], rendered: str, token: str
-    ) -> str:
+    def decorate(_tool_id: str, _arguments: dict[str, Any], rendered: str, token: str) -> str:
         calls.append(token)
         return rendered
 
@@ -221,9 +217,7 @@ async def test_read_cache_hit_is_decorated_too(monkeypatch: pytest.MonkeyPatch) 
 
     decorated: list[str] = []
 
-    def decorate(
-        _tool_id: str, _arguments: dict[str, Any], rendered: str, _token: str
-    ) -> str:
+    def decorate(_tool_id: str, _arguments: dict[str, Any], rendered: str, _token: str) -> str:
         decorated.append(rendered)
         return f"{rendered}\n\nEXTRA"
 
@@ -300,9 +294,7 @@ async def test_each_turn_and_each_child_gets_a_distinct_token() -> None:
     registry._TOOL_CATALOG = {"test_tool": definition}  # type: ignore[assignment]
     try:
 
-        def decorate(
-            _tool_id: str, _arguments: dict[str, Any], rendered: str, token: str
-        ) -> str:
+        def decorate(_tool_id: str, _arguments: dict[str, Any], rendered: str, token: str) -> str:
             tokens.append(token)
             return rendered
 

@@ -238,9 +238,7 @@ class TestSelection:
 
     def test_unresolved_base_escalates_even_with_doc_only_paths(self) -> None:
         """A doc-only leftover must not mask an unknown committed delta."""
-        testpaths, reason = check_tests.select_testpaths(
-            ["docs/TESTING.md"], base_unresolved=True
-        )
+        testpaths, reason = check_tests.select_testpaths(["docs/TESTING.md"], base_unresolved=True)
         assert testpaths == check_tests._all_testpaths()
         assert "no base ref resolved" in reason
 
@@ -364,9 +362,7 @@ class TestCommittedDelta:
         """No origin/main and no main means the base is unknown, not empty."""
         repo = tmp_path / "repo"
         _init_repo(repo)
-        subprocess.run(
-            ["git", "-C", str(repo), "branch", "-m", "trunk"], check=True
-        )
+        subprocess.run(["git", "-C", str(repo), "branch", "-m", "trunk"], check=True)
         assert check_tests.resolve_base(cwd=repo) is None
 
     def test_stale_candidate_does_not_widen_the_delta(self, tmp_path: Path) -> None:
@@ -387,9 +383,7 @@ class TestCommittedDelta:
         subprocess.run([*git, "checkout", "-q", "-b", "feature"], check=True)
         _commit(repo, git, "sdk/src/sdk/config.py", "x = 1\n", "branch work")
         # ``origin/main`` is left behind at the stale commit.
-        subprocess.run(
-            [*git, "update-ref", "refs/remotes/origin/main", stale], check=True
-        )
+        subprocess.run([*git, "update-ref", "refs/remotes/origin/main", stale], check=True)
 
         base = check_tests.resolve_base(cwd=repo)
         assert base == branch_point

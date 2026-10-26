@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 #: child, and only the newest are still running, so a small bound is ample.
 _MAX_TRACKED_TURNS = 8
 
+
 def _make_in_process_resolver():
     """Build an ``InProcessResolver`` backed by ``mcp_server.registry``.
 
@@ -814,9 +815,7 @@ class HostRuntime:
 
         try:
             bundle = self._copilot_customization_bundle()
-            self._copilot_customizations_text = "\n\n".join(
-                render_unconditional_blocks(bundle)
-            )
+            self._copilot_customizations_text = "\n\n".join(render_unconditional_blocks(bundle))
         except Exception:
             logger.warning(
                 "Failed to discover Copilot customizations; continuing without them.",
@@ -848,18 +847,14 @@ class HostRuntime:
             for inst in self._matching_scoped_instructions((file_path,))
         )
 
-    def _matching_scoped_instructions(
-        self, file_paths: tuple[str, ...]
-    ) -> tuple[Any, ...]:
+    def _matching_scoped_instructions(self, file_paths: tuple[str, ...]) -> tuple[Any, ...]:
         """Return the scoped instructions matching any of ``file_paths``."""
         try:
             return scoped_instructions_for_paths(
                 self._copilot_customization_bundle().instructions, file_paths
             )
         except Exception:
-            logger.debug(
-                "Scoped instruction lookup failed for %s", file_paths, exc_info=True
-            )
+            logger.debug("Scoped instruction lookup failed for %s", file_paths, exc_info=True)
             return ()
 
     def decorate_pack_tool_result(

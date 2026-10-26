@@ -335,9 +335,7 @@ def owning_packages(paths: list[str]) -> tuple[set[str], list[str]]:
     return packages, escalate
 
 
-def select_testpaths(
-    paths: list[str], *, base_unresolved: bool = False
-) -> tuple[list[str], str]:
+def select_testpaths(paths: list[str], *, base_unresolved: bool = False) -> tuple[list[str], str]:
     """Return the testpaths to run and the reason for the selection."""
 
     if base_unresolved:

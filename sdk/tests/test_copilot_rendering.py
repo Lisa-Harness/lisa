@@ -166,9 +166,7 @@ def test_unscoped_instructions_never_match_a_path() -> None:
 def test_multiple_paths_dedupe_by_instruction_path() -> None:
     instructions = (_instruction("Python", apply_to=("**/*.py",)),)
 
-    matched = scoped_instructions_for_paths(
-        instructions, ("src/a.py", "src/b.py")
-    )
+    matched = scoped_instructions_for_paths(instructions, ("src/a.py", "src/b.py"))
 
     assert len(matched) == 1
 

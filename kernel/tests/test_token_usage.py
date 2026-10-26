@@ -368,9 +368,7 @@ def test_extract_proxy_telemetry_accepts_httpx_headers() -> None:
     from kernel.provider_contracts import extract_proxy_telemetry
 
     request = httpx.Request("POST", "http://127.0.0.1:8787/v1/chat/completions")
-    response = httpx.Response(
-        200, headers={"x-acme-saved": "2500"}, request=request
-    )
+    response = httpx.Response(200, headers={"x-acme-saved": "2500"}, request=request)
     spec = _telemetry_spec(headers=(("x-acme-saved", "tokens_saved"),))
     assert extract_proxy_telemetry(response.headers, spec) == {"tokens_saved": 2500}
 

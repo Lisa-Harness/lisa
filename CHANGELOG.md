@@ -4,75 +4,6 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **Automated test selection for the commit gate.**
-  `scripts/check_tests.py` runs the package tier from Git state instead of a
-  declared path list. The changed set is the union of the working tree and the
-  committed delta against a base, so work that was committed before the gate
-  runs is still counted; a tree-only read could be narrowed to nothing by
-  committing first and leaving a documentation-only edit behind. The base
-  resolves to the most recent merge-base across `origin/main` and `main`, so a
-  stale candidate cannot widen the delta to include other people's commits. An
-  unresolvable base, an unowned path, a cross-cutting path, or a kernel change
-  escalates to the full suite rather than guessing. `--base`, `--paths`,
-  `--dry-run`, and `--cwd` override the defaults.
-- **`ToolHooks.post_dispatch_result`.** An optional hook receiving a pack
-  tool's id, arguments, rendered output, and an opaque per-turn/per-child
-  token. The kernel stringifies the result first and passes the string in, so
-  a host can decorate what the model sees without mutating a tool's own
-  `output_text` (which slices parse as JSON). The hook runs on both the
-  in-process and read-cache-hit paths, is advisory — a raising hook is logged
-  and the undecorated output wins — and touches no kernel vocabulary beyond
-  the call itself.
-
-### Changed
-
-- **`applyTo` now filters instruction injection instead of labelling it.**
-  Scoped instruction bodies no longer enter the system prompt on every turn.
-  The system prompt keeps always-on files, instructions that declare no
-  `applyTo`, and skill bodies; instructions that declare one are deferred and
-  appended to the first in-process pack-tool result carrying a matching path,
-  at most once per turn and per fork/delegate child. On this repository that
-  moves 13 instruction files (19,188 bytes) out of the per-turn system prompt,
-  leaving 1,165 bytes unconditional, and a turn that reads a `**/*.py` file
-  receives only the four matching bodies.
-- **Skill bodies load on demand instead of every turn.** The system prompt now
-  carries a skill index — name, description, and the `SKILL.md` path — and the
-  model reads a body when its task matches, matching Copilot's progressive
-  loading. On a 30-skill corpus that is 18.7 KB of index instead of 224.8 KB of
-  bodies (92% less). Loading is an ordinary source-scope file read of the named
-  path, so no loader tool or pack change was needed. `disable-model-invocation:
-  true` is now honored: the flag was parsed by the SDK and read nowhere, so a
-  skill that opted out of model loading was injected anyway. Such a skill is
-  now neither listed nor injected — Lisa has no skill-slash surface, so listing
-  guidance the model may not load would be the worse outcome. `context: fork`
-  remains parsed-but-unused; running a fork skill as a subturn is a separate
-  change.
-- **Copilot customization rendering and scoped matching moved to the SDK.** The
-  block rendering, skill index, path normalization, and `applyTo` selection now
-  live in `sdk/content/_copilot_rendering.py` rather than the host runtime.
-  Customization content shaping is domain logic, and the SDK contract already
-  owns customization parsing; keeping it in the runtime also made the helpers
-  unreachable from the kernel test suite. `HostRuntime` keeps only what is
-  genuinely host-scoped: workspace-root resolution, discovery, caching, and
-  per-dispatch-token dedupe. No behavior change.
-
-### Documentation
-
-- Documented three assurance and scope boundaries that the code already
-  implements but the guides did not state. [Coding workflow](docs/CODING_WORKFLOW.md)
-  now names an empty required-check set as an assurance limit — such a task may
-  finish on a real changed commit and a clean worktree while certifying nothing
-  about correctness — and says a caller needing checks must declare a non-empty
-  set in policy. [Router design](docs/ROUTER_DESIGN.md) states that a fork or
-  delegate child gets fresh model history because `prior_messages` is skipped,
-  and that shared hooks and reassembled context make a child a fresh
-  conversation rather than an isolation boundary. [Logging](docs/LOGGING.md)
-  separates event-bus decision telemetry from OpenTelemetry tool/operation
-  spans, and records that span emission is implemented while host export
-  hierarchy remains unproven.
-
 ## [0.3.0] - 2026-10-26
 
 ### Added
@@ -113,6 +44,56 @@ All notable changes to the Lisa Harness will be documented in this file.
   parent's.
 - Go Connector SDK server contract ([docs/GO_CONNECTOR_SDK.md](docs/GO_CONNECTOR_SDK.md))
   and mode taxonomy ([docs/MODE_TAXONOMY.md](docs/MODE_TAXONOMY.md)).
+
+- **Canonical per-call cost and pack-declared proxy telemetry.**
+  `estimate_call_cost_usd` is now the single pricing model: the prompt side
+  splits three ways (uncached / cache-read / cache-write), because pricing a
+  cache population at the ordinary prompt rate understates any turn that warms
+  one, and an unpriced rate falls back to the prompt rate so an incomplete
+  manifest never yields a free call. The turn runner computes it at all three
+  call sites and ships it on `model_call_complete`, so transports stop
+  re-deriving pricing from their own copy of the manifest. The provider's own
+  reported charge (`CompletionUsage.provider_cost_usd`, OpenRouter
+  `usage.cost`) is carried through unchanged and persisted as
+  `TokenUsageEvent.provider_cost_usd` — authoritative where present, and a
+  reconciliation signal rather than a replacement. The context *walk* was
+  never the billable basis: on a cache-heavy turn it reads up to 30x what the
+  provider bills, and pricing every prompt token at the uncached rate
+  overstated OpenRouter turns by up to 1075%.
+- **`ProxyTelemetrySpec` for proxy savings.** A pack declares, in its `status`
+  block, which response headers carry which counters, the unit, and which
+  counter is the turn's saving. A proxy that rewrites a request can only
+  report what it saved on the response, and the harness must not hard-code any
+  proxy's vocabulary, so the pack owns the field names. The gateway lifts the
+  declared headers per call and the turn records them under
+  `TokenUsageEvent.extra.proxy_telemetry`; extending the vocabulary is a
+  manifest edit, not a code change. Counters the proxy did not send are
+  omitted rather than written as zero, so "no saving on this call" stays
+  distinguishable from "saved nothing", and a `savings_field` naming no
+  declared header is rejected at load.
+- **`context.workspace_root` in the session plan.** `ContextPlan` accepts a
+  typed optional `workspace_root`, which `_StrictSessionModel` previously
+  rejected outright (`extra="forbid"`). The compiler validates non-emptiness
+  only; the host resolves the path, matching how `context.models.path` works.
+- **Automated test selection for the commit gate.**
+  `scripts/check_tests.py` runs the package tier from Git state instead of a
+  declared path list. The changed set is the union of the working tree and the
+  committed delta against a base, so work that was committed before the gate
+  runs is still counted; a tree-only read could be narrowed to nothing by
+  committing first and leaving a documentation-only edit behind. The base
+  resolves to the most recent merge-base across `origin/main` and `main`, so a
+  stale candidate cannot widen the delta to include other people's commits. An
+  unresolvable base, an unowned path, a cross-cutting path, or a kernel change
+  escalates to the full suite rather than guessing. `--base`, `--paths`,
+  `--dry-run`, and `--cwd` override the defaults.
+- **`ToolHooks.post_dispatch_result`.** An optional hook receiving a pack
+  tool's id, arguments, rendered output, and an opaque per-turn/per-child
+  token. The kernel stringifies the result first and passes the string in, so
+  a host can decorate what the model sees without mutating a tool's own
+  `output_text` (which slices parse as JSON). The hook runs on both the
+  in-process and read-cache-hit paths, is advisory — a raising hook is logged
+  and the undecorated output wins — and touches no kernel vocabulary beyond
+  the call itself.
 
 ### Changed
 
@@ -167,6 +148,36 @@ All notable changes to the Lisa Harness will be documented in this file.
   factories. `LISA_OPENAI_BASE_URL` is new: OpenAI previously had no
   override at all.
 
+- **`applyTo` now filters instruction injection instead of labelling it.**
+  Scoped instruction bodies no longer enter the system prompt on every turn.
+  The system prompt keeps always-on files, instructions that declare no
+  `applyTo`, and skill bodies; instructions that declare one are deferred and
+  appended to the first in-process pack-tool result carrying a matching path,
+  at most once per turn and per fork/delegate child. On this repository that
+  moves 13 instruction files (19,188 bytes) out of the per-turn system prompt,
+  leaving 1,165 bytes unconditional, and a turn that reads a `**/*.py` file
+  receives only the four matching bodies.
+- **Skill bodies load on demand instead of every turn.** The system prompt now
+  carries a skill index — name, description, and the `SKILL.md` path — and the
+  model reads a body when its task matches, matching Copilot's progressive
+  loading. On a 30-skill corpus that is 18.7 KB of index instead of 224.8 KB of
+  bodies (92% less). Loading is an ordinary source-scope file read of the named
+  path, so no loader tool or pack change was needed. `disable-model-invocation:
+  true` is now honored: the flag was parsed by the SDK and read nowhere, so a
+  skill that opted out of model loading was injected anyway. Such a skill is
+  now neither listed nor injected — Lisa has no skill-slash surface, so listing
+  guidance the model may not load would be the worse outcome. `context: fork`
+  remains parsed-but-unused; running a fork skill as a subturn is a separate
+  change.
+- **Copilot customization rendering and scoped matching moved to the SDK.** The
+  block rendering, skill index, path normalization, and `applyTo` selection now
+  live in `sdk/content/_copilot_rendering.py` rather than the host runtime.
+  Customization content shaping is domain logic, and the SDK contract already
+  owns customization parsing; keeping it in the runtime also made the helpers
+  unreachable from the kernel test suite. `HostRuntime` keeps only what is
+  genuinely host-scoped: workspace-root resolution, discovery, caching, and
+  per-dispatch-token dedupe. No behavior change.
+
 ### Fixed
 
 - Cold MCP servers are selected by their published tool prefix, not their
@@ -192,7 +203,6 @@ All notable changes to the Lisa Harness will be documented in this file.
 - An input-required MCP result is no longer treated as a transport failure.
   The call requested the pause the SDK would otherwise raise, and the
   previously disconnected server now stays connected.
-
 - A model whose manifest declares an OpenAI-compatible `base_url` (xAI,
   vLLM, a self-hosted gateway) now reaches that endpoint on the *direct*
   client path too. The OpenAI client factory had hardwired the public
@@ -203,6 +213,40 @@ All notable changes to the Lisa Harness will be documented in this file.
   factories. Two of the four defaults were re-typed as literals in the
   gateway module, so editing the "single source of truth" changed the proxy
   upstream but not the direct client.
+- Effectful tool dispatch is withheld when the recovery record failed.
+  `_begin_recovery_record` is best-effort, so a persistence error left
+  `recovery_item_id` empty and the call dispatched anyway — effectful work
+  could start with no durable record of it. A dispatch is now refused when a
+  recovery service is configured, no work-item id came back, and the retry
+  policy is not `safe`. The policy is resolved before `begin` is attempted, so
+  it still describes the call's effect when `begin` fails; read-only (`safe`)
+  calls still dispatch, since losing their record cannot leave an unrecorded
+  mutation behind. The refusal returns a tool result naming the reason and the
+  store, and the loop stays alive so the model can finalize rather than being
+  mistaken for an empty completion.
+- `turn.completed` is emitted after the thread entry is appended, and its
+  payload carries `turn_index` and `task_id`. The event previously preceded
+  the append and carried no locator, so a consumer could not tell whether the
+  turn was durable and could not reach the entry that owns the effect-receipt
+  ledger — while the payload docstring claimed the link existed.
+
+### Documentation
+
+- Documented three assurance and scope boundaries that the code already
+  implements but the guides did not state. [Coding workflow](docs/CODING_WORKFLOW.md)
+  now names an empty required-check set as an assurance limit — such a task may
+  finish on a real changed commit and a clean worktree while certifying nothing
+  about correctness — and says a caller needing checks must declare a non-empty
+  set in policy. [Router design](docs/ROUTER_DESIGN.md) states that a fork or
+  delegate child gets fresh model history because `prior_messages` is skipped,
+  and that shared hooks and reassembled context make a child a fresh
+  conversation rather than an isolation boundary. [Logging](docs/LOGGING.md)
+  separates event-bus decision telemetry from OpenTelemetry tool/operation
+  spans, and records that span emission is implemented while host export
+  hierarchy remains unproven.
+- Documented the automated test-selection gate in `docs/TESTING.md`, and
+  recorded the release-relevant schema and semantics changes above in the
+  upgrade notes.
 
 ### Upgrade notes
 
@@ -228,6 +272,29 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **`delegate` and `fork` child timeouts are longer** (300→900s, 120→600s).
   A host that relied on the old ceilings to bound its own turn budget should
   re-check its per-turn wall budget.
+- **Cost is now reported from the canonical model, not the context walk.**
+  `model_call_complete` carries `cost_usd` computed by
+  `estimate_call_cost_usd`, plus the cache sub-counters. A transport that
+  priced turns itself from manifest rates should read the stamped figure
+  instead; doing both double-counts cache-heavy turns. `provider_cost_usd` is
+  present only when the provider reports it.
+- **Scoped instructions are no longer in the system prompt.** Instruction
+  files that declare `applyTo` are injected on the first matching pack-tool
+  result instead, at most once per turn and per child. Prompt caches keyed on
+  the system prefix will see a shorter prefix, and instructions for paths the
+  turn never reads are never delivered. A turn that reads no matching path
+  receives none of them.
+- **Skill bodies load on demand.** The system prompt carries an index (name,
+  description, `SKILL.md` path) instead of every body. A skill with
+  `disable-model-invocation: true` is now neither listed nor injected.
+- **`TurnHooks.post_dispatch_result` is new and optional.** A host that
+  implements it receives a pack tool's id, arguments, rendered output, and an
+  opaque per-turn/per-child token; a raising hook is logged and the
+  undecorated output wins.
+- **`turn.completed` now carries `turn_index` and `task_id`** and is emitted
+  after the thread entry is appended. A consumer that treated its arrival as
+  proof of nothing in particular can now rely on the entry being durable when
+  the event is observed.
 - Upgrade the framework distributions and bundled packs together to 0.3.0,
   then restart the host. Alternate memory providers must still declare the
   `memory` capability and its required tools in their MCP manifest.
