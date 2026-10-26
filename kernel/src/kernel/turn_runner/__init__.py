@@ -4600,8 +4600,14 @@ async def _begin_recovery_record(
     Resolves the tool's effect (read/execute/write) for the retry policy,
     stamps the active ``WorkflowPosition``'s current step id for durable
     position correlation, and calls ``recovery_service.begin``. Best-effort:
-    a failure is logged and swallowed (the dispatch proceeds). Returns
+    a failure is logged and swallowed. Returns
     ``(recovery_item_id, recovery_retry_policy)``.
+
+    An empty ``recovery_item_id`` means no durable record exists. The caller
+    must not dispatch effectful work in that case: the retry policy is
+    resolved before ``begin`` is attempted, so it is still accurate when the
+    begin fails, and it is what tells the caller whether the call had side
+    effects. Read-only (``safe``) work may proceed without a record.
     """
     assert hooks.services.recovery_service is not None  # guarded by the caller
     recovery_item_id = ""
@@ -9057,6 +9063,40 @@ async def _prepare_tool_call_dispatch(
         emit_stage=emit_stage,
         log=log,
     )
+    # ── Withhold effectful dispatch when the recovery record failed ──────
+    # ``_begin_recovery_record`` is best-effort: a persistence error is
+    # logged and swallowed, leaving ``recovery_item_id`` empty. Effectful
+    # work must not start with no durable record of it, so a non-``safe``
+    # retry policy with no work-item id is refused here. The retry policy is
+    # resolved before ``begin`` is attempted, so it still describes the
+    # call's effect when the begin fails. Read-only (``safe``) work proceeds:
+    # losing its record cannot leave an unrecorded mutation behind.
+    if (
+        hooks.services.recovery_service is not None
+        and not recovery_item_id
+        and recovery_retry_policy != "safe"
+    ):
+        log.warning(
+            "withholding effectful dispatch of %s: no recovery record was persisted",
+            tool_name,
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": (
+                    f"Tool '{tool_name}' was not run: the harness could not persist "
+                    "a recovery record for it, so an effectful call cannot be "
+                    "safely started. Nothing was executed. Retry the call, or "
+                    "report the recovery-store failure if it persists."
+                ),
+            }
+        )
+        # A withheld call still produced a tool-result message; keep the outer
+        # loop alive so the model can observe the refusal and finalize instead
+        # of being mistaken for a natural empty completion.
+        return _PreparedToolCall("continue", True)
     return _PreparedToolCall(
         "dispatch",
         True,

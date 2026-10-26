@@ -695,6 +695,127 @@ async def test_effectful_mcp_tool_recovery_record_stays_execute() -> None:
     assert record.retry_policy == "confirm"
 
 
+# ── Recovery begin failure withholds effectful dispatch ─────────────────────
+
+
+class _FailingBeginService:
+    """Recovery service whose ``begin`` raises, simulating a persistence error."""
+
+    def __init__(self) -> None:
+        self.begun: list[Any] = []
+        self.settled: list[Any] = []
+
+    async def begin(self, record: Any) -> Any:
+        self.begun.append(record)
+        raise RuntimeError("recovery store unavailable")
+
+    async def settle(self, work_item_id: str, _identity: Any, **_kwargs: Any) -> None:
+        self.settled.append(work_item_id)
+
+    async def mark_running_indeterminate(self, _identity: Any) -> int:
+        return 0
+
+
+class _CountingPool:
+    """Pool that records every ``call_tool`` so the test can prove non-dispatch."""
+
+    def __init__(self, read_only_hint: bool) -> None:
+        self.calls: list[str] = []
+        self._spec = SimpleNamespace(read_only_hint=read_only_hint)
+
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+        return []
+
+    async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
+        self.calls.append(tool_id)
+        return SimpleNamespace(tool_id=tool_id, output_text="MCP result", is_error=False)
+
+    def tool_spec(self, _tool_id: str) -> Any:
+        return self._spec
+
+    async def __aenter__(self) -> _CountingPool:
+        return self
+
+    async def __aexit__(self, *_a: object) -> None:
+        pass
+
+    async def start(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_failed_recovery_begin_withholds_effectful_dispatch() -> None:
+    """An effectful tool must not run when its recovery record could not be written.
+
+    ``_begin_recovery_record`` is best-effort: it logs and swallows a
+    persistence failure, returning an empty work-item id. Dispatch then
+    proceeded anyway, so effectful work could start with no durable recovery
+    record — the F2 finding in
+    ``reviews/2026-10-25-lisa-code-market-gap-swot.md``.
+
+    Acceptance: withhold effectful dispatch after a failed begin. This test
+    proves the tool never reached the pool and that the model was told why.
+    """
+    recovery = _FailingBeginService()
+    pool = _CountingPool(read_only_hint=False)
+    captured: list[str] = []
+    state = {"count": 0}
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        state["count"] += 1
+        if state["count"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_make_tool_call("c1", "lisa-storage.write_file", {"path": "a.md"})],
+            )
+        _capture_tool_role_messages(kwargs.get("messages", []), captured)
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_hooks(complete, mcp_tool_pool=pool, recovery_service=recovery)
+    await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert len(recovery.begun) == 1, "the begin was attempted"
+    assert recovery.begun[0].retry_policy == "confirm", "the tool is effectful"
+    assert pool.calls == [], (
+        "an effectful tool must not dispatch when its recovery record could not be "
+        f"persisted; observed pool calls: {pool.calls}"
+    )
+    assert any("recovery" in text.lower() for text in captured), (
+        f"the model must be told the call was withheld; tool results: {captured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_recovery_begin_still_allows_read_only_dispatch() -> None:
+    """A read-only tool may still run when its recovery record could not be written.
+
+    The withholding rule is scoped to effectful work. A ``safe`` retry policy
+    means the call has no side effects, so losing the record does not risk
+    unrecorded mutation. This keeps the fix from disabling read-only tools on a
+    degraded recovery store.
+    """
+    recovery = _FailingBeginService()
+    pool = _CountingPool(read_only_hint=True)
+
+    hooks = _build_hooks(
+        _single_mcp_tool_completion(),
+        mcp_tool_pool=pool,
+        recovery_service=recovery,
+    )
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert len(recovery.begun) == 1
+    assert recovery.begun[0].retry_policy == "safe", "the tool is read-only"
+    assert pool.calls == ["lisa-storage.read_file"], (
+        "a read-only tool must still dispatch when its recovery record failed; "
+        f"observed pool calls: {pool.calls}"
+    )
+    assert result.response_text == "Done."
+
+
 # ── Thought signature preservation (Gemini) ───────────────────────────
 
 
