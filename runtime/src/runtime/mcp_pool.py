@@ -1228,9 +1228,11 @@ def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRunti
     rest of the expansion still compiles.
     """
     manifest = getattr(runtime.session, "manifest", None)
-    manifest_providers = tuple(
-        sorted({str(model.provider).strip().lower() for model in (manifest.models or ())})
-    ) if manifest is not None else ()
+    manifest_providers = (
+        tuple(sorted({str(model.provider).strip().lower() for model in (manifest.models or ())}))
+        if manifest is not None
+        else ()
+    )
     for spec in registry.all_specs():
         if spec.providers != (ALL_PROVIDERS,):
             continue
