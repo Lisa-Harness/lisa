@@ -15,6 +15,7 @@ from kernel.proxy_launch.manifest import (
     load_proxy_server_manifest,
 )
 from kernel.proxy_launch.policy import (
+    ALL_PROVIDERS,
     ProviderProxyOptions,
     ProviderValueSource,
     ProxyProtocol,
@@ -424,6 +425,53 @@ proxies:
     assert status is not None
     assert status.url_path == "/stats"
     assert status.fields == ()
+
+
+def test_load_proxy_manifest_accepts_all_providers_sentinel(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [all]
+    port: 18787
+    provider_overrides:
+      all:
+        env:
+          OPENAI_TARGET_API_URL:
+            value_from: direct_base_url
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_proxy_server_manifest(manifest)
+
+    assert specs[0].providers == ("all",)
+    assert specs[0].provider_options[ALL_PROVIDERS].env["OPENAI_TARGET_API_URL"] is (
+        ProviderValueSource.DIRECT_BASE_URL
+    )
+
+
+def test_load_proxy_manifest_rejects_all_mixed_with_named_providers(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [all, ollama]
+    port: 18787
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProxyServerManifestError, match=r"must be the only"):
+        load_proxy_server_manifest(manifest)
 
 
 @pytest.mark.parametrize("url_path", ["stats", "//outside.example/stats"])

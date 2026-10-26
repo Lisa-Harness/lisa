@@ -11,6 +11,7 @@ import yaml
 from kernel.mcp_launch.policy import EnvPolicy, RuntimeKind
 from kernel.mcp_launch.server_manifest import _expand_env_value, _parse_cwd_policy
 from kernel.proxy_launch.policy import (
+    ALL_PROVIDERS,
     ProviderProxyOptions,
     ProviderValueSource,
     ProxyProtocol,
@@ -99,6 +100,11 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
     providers = tuple(item.strip().lower() for item in providers_raw if item.strip())
     if not providers:
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'providers' is required")
+    if ALL_PROVIDERS in providers and len(providers) > 1:
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': '{ALL_PROVIDERS}' must be the only "
+            "providers entry — it already covers every manifest provider"
+        )
     port_value = entry.get("port")
     if port_value is None:
         raise ProxyServerManifestError(f"proxies[{index}] '{proxy_id}': 'port' must be an integer")

@@ -38,7 +38,7 @@ from kernel.mcp_launch.server_manifest import (
 )
 from kernel.proxy_launch.compiler import ProxyClientConfig, compile_proxy_registry
 from kernel.proxy_launch.manifest import ProxyServerManifestError, load_proxy_server_manifest
-from kernel.proxy_launch.policy import ProxyServerRegistry
+from kernel.proxy_launch.policy import ALL_PROVIDERS, ProxyServerRegistry, ProxyServerSpec
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
 from sdk.layout import CACHE_DIR, LOGS_DIR, MCP_LOGS_SUBDIR
@@ -65,6 +65,8 @@ from runtime.content_roots import (
 )
 from runtime.provider_endpoints import direct_provider_base_urls
 from runtime.runtime import HostRuntime
+
+_MAX_TCP_PORT = 65_535
 
 logger = logging.getLogger(__name__)
 
@@ -1201,6 +1203,8 @@ def compile_proxy_configs(  # noqa: C901
         for spec in load(manifest_path, source="pack"):
             add(spec, proxy_id=f"{pack_slug}.{spec.proxy_id}")
 
+    _expand_wildcard_providers(registry, runtime)
+
     providers = sorted({provider for spec in registry.all_specs() for provider in spec.providers})
     provider_base_urls = direct_provider_base_urls(runtime, providers)
 
@@ -1210,6 +1214,62 @@ def compile_proxy_configs(  # noqa: C901
         provider_base_urls=provider_base_urls,
         base_env=resolved_env,
     )
+
+
+def _expand_wildcard_providers(registry: ProxyServerRegistry, runtime: HostRuntime) -> None:
+    """Expand ``providers: [all]`` specs to the session's manifest providers.
+
+    The kernel keeps packs host-agnostic: a pack declares the wildcard and the
+    runtime expands it against the providers the host can actually call
+    (providers named in the session model manifest). Each expansion produces
+    a sibling spec ``<proxy_id>.<provider>`` — one process, one upstream —
+    with its own sequential port (base port + N), validated to the TCP max.
+    A provider whose port would overflow the valid range is skipped so the
+    rest of the expansion still compiles.
+    """
+    manifest = getattr(runtime.session, "manifest", None)
+    manifest_providers = tuple(
+        sorted({str(model.provider).strip().lower() for model in (manifest.models or ())})
+    ) if manifest is not None else ()
+    for spec in registry.all_specs():
+        if spec.providers != (ALL_PROVIDERS,):
+            continue
+        if not manifest_providers:
+            logger.info(
+                "Proxy %r: 'providers: all' expands to nothing — no manifest providers",
+                spec.proxy_id,
+            )
+            registry.replace_spec(spec.proxy_id, [])
+            continue
+        wildcard_overlay = spec.provider_options.get(ALL_PROVIDERS)
+        expanded: list[ProxyServerSpec] = []
+        skipped: list[str] = []
+        for offset, provider in enumerate(manifest_providers):
+            port = spec.port + offset
+            if port > _MAX_TCP_PORT:
+                skipped.append(provider)
+                continue
+            expanded.append(
+                dataclasses.replace(
+                    spec,
+                    proxy_id=f"{spec.proxy_id}.{provider}",
+                    providers=(provider,),
+                    port=port,
+                    provider_options=(
+                        {**spec.provider_options, provider: wildcard_overlay}
+                        if wildcard_overlay is not None
+                        else spec.provider_options
+                    ),
+                )
+            )
+        if skipped:
+            logger.warning(
+                "Proxy %r: skipping 'all'-expanded providers whose port overflows "
+                "the valid range: %s",
+                spec.proxy_id,
+                ", ".join(sorted(skipped)),
+            )
+        registry.replace_spec(spec.proxy_id, expanded)
 
 
 # ── Pack slug + policy helpers ───────────────────────────────────────

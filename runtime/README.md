@@ -8,6 +8,42 @@ on it to create a concrete running host.
 See [host integration](../docs/HOST_INTEGRATION.md), [configuration](../docs/CONFIGURATION.md),
 and the [documentation index](../docs/README.md) for maintained task guides.
 
+## Proxy provider coverage (one proxy entry per provider)
+
+A pack names the provider gateway ids its proxy serves:
+
+```yaml
+proxies:
+  - proxy_id: my-compressor
+    protocol: openai
+    providers: [ollama, openrouter]   # explicit list
+    port: 9000
+    provider_overrides:
+      ollama:     { env: { UPSTREAM: { value_from: direct_base_url } } }
+      openrouter: { env: { UPSTREAM: { value_from: direct_base_url } } }
+```
+
+Because most proxies have a *single upstream per process*, a providers list
+compiles to **one process per provider**, each with its own `direct_base_url`.
+To declare "proxy every provider the session can call" without hardcoding
+ids, use the sentinel:
+
+```yaml
+proxies:
+  - proxy_id: my-compressor
+    protocol: openai
+    providers: [all]                  # expanded by the host
+    port: 9000                        # base port; expansion allocates sequentially
+    provider_overrides:
+      all: { env: { UPSTREAM: { value_from: direct_base_url } } }
+```
+
+The runtime expands `providers: [all]` against the session model manifest
+into sibling specs — `my-compressor.ollama`, `my-compressor.openrouter`, … —
+one process per provider on sequential ports (`port + N`). A provider whose
+expansion exceeds the TCP max is skipped with a warning; an empty manifest
+expands to zero proxies. `all` must be the only entry.
+
 ## Provider proxy visibility
 
 `/proxy` reports compiled proxy readiness, startup errors, declared telemetry,

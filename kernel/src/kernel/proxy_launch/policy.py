@@ -8,6 +8,7 @@ from enum import StrEnum
 from kernel.mcp_launch.policy import CwdPolicy, EnvPolicy, RuntimeKind
 
 __all__ = [
+    "ALL_PROVIDERS",
     "ProviderProxyOptions",
     "ProviderValueSource",
     "ProxyProtocol",
@@ -21,6 +22,17 @@ class ProviderValueSource(StrEnum):
     """Host-resolved reference a provider overlay may inject."""
 
     DIRECT_BASE_URL = "direct_base_url"
+
+
+ALL_PROVIDERS = "all"
+"""Sentinel ``providers`` value: expand to the host's manifest providers.
+
+A pack declaring ``providers: [all]`` asks the host to route *every* provider
+the session can actually call through this proxy. The runtime expands the
+sentinel against the session model manifest at compile time, so the pack
+never names provider ids — it stays fully decoupled from host configuration.
+Expansion is host-side; the kernel never fabricates provider ids itself.
+"""
 
 
 class ProxyProtocol(StrEnum):
@@ -116,3 +128,14 @@ class ProxyServerRegistry:
 
     def all_specs(self) -> list[ProxyServerSpec]:
         return list(self._specs.values())
+
+    def replace_spec(self, proxy_id: str, specs: list[ProxyServerSpec]) -> None:
+        """Replace one registered spec with zero or more sibling specs.
+
+        Used by the runtime's ``providers: [all]`` expansion: the wildcard
+        spec is removed and per-provider siblings (``<proxy_id>.<provider>``)
+        take its place. Re-registering the same ``proxy_id`` here is an
+        error — the runtime must not silently duplicate a proxy process.
+        """
+        self._specs.pop(proxy_id, None)
+        self._specs.update({spec.proxy_id: spec for spec in specs})
