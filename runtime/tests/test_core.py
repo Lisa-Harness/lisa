@@ -468,6 +468,27 @@ class TestHandleMessage:
         assert "/mcp <server_id>" in result.text
 
     @pytest.mark.asyncio
+    async def test_help_proxy_subcommand(self, tmp_path: Path) -> None:
+        """/help proxy returns the proxy introspection guidance."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/help proxy")
+        assert isinstance(result, HostCommandResult)
+        assert "## /proxy" in result.text
+        assert "/proxy — per-proxy summary" in result.text
+
+    @pytest.mark.asyncio
+    async def test_proxy_command_dispatches_and_renders_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """/proxy renders the no-proxies notice when none are configured."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/proxy")
+        assert isinstance(result, HostCommandResult)
+        assert "No provider proxies are configured." in result.text
+
+    @pytest.mark.asyncio
     async def test_help_unknown_subcommand(self, tmp_path: Path) -> None:
         """/help <unknown> falls back to a pointer rather than the overview."""
         config = HostConfig.from_env(data_dir=str(tmp_path))

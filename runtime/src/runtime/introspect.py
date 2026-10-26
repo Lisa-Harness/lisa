@@ -37,10 +37,12 @@ from kernel.models import (
     McpConnectionStatus,
     McpServerHealth,
     OperationalHealth,
+    ProxyHealthStatus,
     TokenUsageSummary,
 )
 
 if TYPE_CHECKING:
+    from kernel.proxy_launch.pool import ProxyPool
     from kernel.tools.mcp_client import MCPToolPool
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ _CRITICAL_FAILED_MCP_SERVERS = 2
 async def gather_introspection(
     *,
     mcp_pool: MCPToolPool | None = None,
+    proxy_pool: ProxyPool | None = None,
     log_path: Path | None = None,
     token_usage_path: Path | None = None,
     process_start_time: datetime | None = None,
@@ -82,6 +85,7 @@ async def gather_introspection(
     python_modules = len(sys.modules)
     rss_mb, cpu_percent = _gather_process_info()
     mcp_health = gather_mcp_pool_health(mcp_pool)
+    proxy_health = await gather_proxy_pool_health(proxy_pool)
     token_summary = _summarize_token_usage(token_usage_path)
     log_errors, log_tail_lines = _tail_log_errors(log_path)
     failed_mcp_servers = sum(1 for health in mcp_health.values() if health.status == "failed")
@@ -102,6 +106,7 @@ async def gather_introspection(
         process_rss_mb=rss_mb,
         process_cpu_percent=cpu_percent,
         mcp_pool_health=mcp_health,
+        proxy_pool_health=proxy_health,
         token_usage_24h=token_summary,
         recent_log_errors=log_errors,
         logfile_tail_lines=log_tail_lines,
@@ -204,6 +209,47 @@ def gather_mcp_pool_health(mcp_pool: MCPToolPool | None) -> dict[str, McpServerH
             last_error=last_errors.get(server_id, ""),
         )
     return health
+
+
+async def gather_proxy_pool_health(proxy_pool: ProxyPool | None) -> list[ProxyHealthStatus]:
+    """Build a liveness view of every provider proxy the host compiled.
+
+    Reads the pool's sync :meth:`ProxyPool.health` view, then best-effort
+    fetches each warm proxy's pack-declared stats so the snapshot carries
+    live counters (tokens saved, hit rate, ...) when the pack declares
+    them. Never raises; a pool that is None (no proxies configured)
+    yields an empty list.
+    """
+    if proxy_pool is None:
+        return []
+    views: list[ProxyHealthStatus] = []
+    try:
+        pool_views = proxy_pool.health()
+    except (AttributeError, RuntimeError):
+        return views
+    for view in pool_views:
+        stats: dict[str, Any] = {}
+        if view.status == "warm" and view.status_url_path:
+            try:
+                fetched = await proxy_pool.fetch_stats(view.proxy_id)
+            except Exception:  # pylint: disable=broad-except
+                fetched = None
+            if fetched is not None:
+                stats = fetched
+        views.append(
+            ProxyHealthStatus(
+                proxy_id=view.proxy_id,
+                status=view.status,
+                protocol=view.protocol,
+                providers=list(view.providers),
+                base_url=view.base_url,
+                warm=view.warm,
+                required=view.required,
+                declared_stats_path=view.status_url_path or "",
+                stats={k: v for k, v in stats.items() if isinstance(v, (str, int, float, bool))},
+            )
+        )
+    return views
 
 
 def _safe_call(pool: MCPToolPool, attr: str, default_factory: Any) -> Any:

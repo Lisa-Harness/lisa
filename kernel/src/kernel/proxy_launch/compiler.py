@@ -36,9 +36,11 @@ class ProxyClientConfig:
     base_url: str
     readiness_path: str | None
     readiness_timeout_seconds: float
-    adopt_existing: bool
-    warm: bool
-    required: bool
+    status_url_path: str | None = None
+    status_fields: tuple[str, ...] = ()
+    adopt_existing: bool = False
+    warm: bool = False
+    required: bool = False
 
 
 def _compile_command(  # noqa: C901, PLR0911, PLR0912
@@ -150,6 +152,7 @@ def compile_proxy_config(
                 )
             env[key] = resolved
     base_url = f"http://127.0.0.1:{spec.port}{spec.base_path}"
+    status = spec.status_spec
     return ProxyClientConfig(
         proxy_id=spec.proxy_id,
         command=command,
@@ -162,6 +165,8 @@ def compile_proxy_config(
         base_url=base_url,
         readiness_path=spec.readiness_path,
         readiness_timeout_seconds=spec.readiness_timeout_seconds,
+        status_url_path=status.url_path if status is not None else None,
+        status_fields=status.fields if status is not None else (),
         adopt_existing=spec.adopt_existing,
         warm=spec.warm,
         required=spec.required,

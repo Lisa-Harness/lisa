@@ -13,6 +13,7 @@ __all__ = [
     "ProxyProtocol",
     "ProxyServerRegistry",
     "ProxyServerSpec",
+    "ProxyStatusSpec",
 ]
 
 
@@ -27,6 +28,21 @@ class ProxyProtocol(StrEnum):
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyStatusSpec:
+    """Pack-declared live-stats endpoint for one proxy.
+
+    ``url_path`` is GET-fetched from the proxy's loopback endpoint; a 2xx
+    JSON body supplies the ``fields`` paths (dotted, e.g.
+    ``savings.total_tokens``). Hosts render these beside liveness; an
+    absent ``status`` block means liveness-only visibility.
+    """
+
+    url_path: str = "/stats"
+    fields: tuple[str, ...] = ()
+    """Names of JSON keys to surface. Empty = the whole object renders."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +94,7 @@ class ProxyServerSpec:
 
     readiness_path: str | None = "/readyz"
     readiness_timeout_seconds: float = 10.0
+    status_spec: ProxyStatusSpec | None = None
     adopt_existing: bool = False
     warm: bool = True
     required: bool = False

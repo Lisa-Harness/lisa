@@ -123,3 +123,19 @@ def direct_provider_base_urls(
         for provider in providers
         if provider.strip()
     }
+
+
+def proxy_route_view(runtime: HostRuntime, provider: str, protocol: str) -> dict[str, str]:
+    """Return a transport-facing routing view for one provider's model calls.
+
+    ``{"via": "proxy", "proxy_id": ..., "base_url": ...}`` when the provider
+    routes through a ready same-protocol proxy, ``{"via": "direct"}``
+    otherwise. The stage payload this feeds is informational only — the
+    authoritative routing decision stays in the gateway client factories,
+    which read the same pool route at client construction.
+    """
+    provider_id = provider.strip().lower()
+    route = runtime.resources.proxy_route_for(provider_id, protocol)
+    if route is None:
+        return {"via": "direct"}
+    return {"via": "proxy", "proxy_id": route.proxy_id, "base_url": route.base_url}

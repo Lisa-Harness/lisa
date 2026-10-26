@@ -40,6 +40,7 @@ Public surface
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -76,6 +77,7 @@ from runtime.commands import (
     handle_models_command,
     handle_pack_command,
     handle_policy_command,
+    handle_proxy_command,
     handle_simple_command,
     mode_support_gap,
     preferred_model_id_for_route,
@@ -88,6 +90,7 @@ from runtime.commands import (
 )
 from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
+from runtime.provider_endpoints import proxy_route_view
 from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_continuation import (
@@ -429,6 +432,19 @@ async def _dispatch_approval_command(
     return response_text, continuation_result
 
 
+_PREFIX_ASYNC_COMMANDS: tuple[tuple[str, Any], ...] = (
+    # (prefix, handler) pairs the dispatcher calls with
+    # (runtime, stripped, message). First matching prefix wins. Handlers
+    # may be sync or async — awaitables are awaited.
+    ("/pack", handle_pack_command),
+    ("/models", handle_models_command),
+    ("/mcp", handle_mcp_command),
+    ("/proxy", handle_proxy_command),
+    ("/last", handle_last_command),
+    ("/debug", handle_debug_command),
+)
+
+
 async def _dispatch_async_command(
     runtime: HostRuntime,
     stripped: str,
@@ -438,8 +454,8 @@ async def _dispatch_async_command(
     """Match the built-in commands with async handlers.
 
     Covers /help, /policy, /consolidate (alias /slice), /intake, /pack,
-    /models, /mcp, /last, and /debug. Returns the response text, or
-    ``None`` when the message matches none of these commands.
+    /models, /mcp, /proxy, /last, and /debug. Returns the response text,
+    or ``None`` when the message matches none of these commands.
     """
     response: str | None = None
     if lowered.startswith("/help") or lowered == "help":
@@ -452,16 +468,12 @@ async def _dispatch_async_command(
         response = await run_explicit_slice_command(runtime, message=message)
     elif lowered in {"/intake", "intake"}:
         response = await handle_intake_command(runtime, message=message)
-    elif lowered.startswith("/pack"):
-        response = await handle_pack_command(runtime, stripped, message)
-    elif lowered.startswith("/models"):
-        response = await handle_models_command(runtime, stripped, message)
-    elif lowered.startswith("/mcp"):
-        response = await handle_mcp_command(runtime, stripped, message)
-    elif lowered.startswith("/last"):
-        response = handle_last_command(runtime, stripped, message)
-    elif lowered.startswith("/debug"):
-        response = handle_debug_command(runtime, stripped, message)
+    else:
+        for prefix, handler in _PREFIX_ASYNC_COMMANDS:
+            if lowered.startswith(prefix):
+                result = handler(runtime, stripped, message)
+                response = await result if inspect.isawaitable(result) else result
+                break
     return response
 
 
@@ -1268,7 +1280,10 @@ async def _execute_mode_turn(
     # ``turn_index`` rides the payload so transports can label their output
     # with the same turn number the model briefing and the thread entry carry
     # — one source of truth across the model's self-address, persistence, and
-    # operator-facing rendering.
+    # operator-facing rendering. ``proxy_route`` rides the payload so the
+    # status bar can show whether this provider's requests flow through a
+    # proxy pack (e.g. headroom) or direct — informational only; the
+    # authoritative routing decision happens in the gateway client factories.
     await transport.on_stage(
         "model_call",
         {
@@ -1276,6 +1291,7 @@ async def _execute_mode_turn(
             "model_id": resolved_model.model_id,
             "provider": resolved_model.provider,
             "turn_index": turn_index,
+            "proxy_route": proxy_route_view(runtime, resolved_model.provider, "openai"),
         },
     )
 

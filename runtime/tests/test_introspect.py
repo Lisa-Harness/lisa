@@ -219,6 +219,67 @@ async def test_gather_introspection_psutil_optional() -> None:
     assert snapshot.process_cpu_percent == 0.0
 
 
+@pytest.mark.asyncio
+async def test_gather_introspection_proxy_pool_health_empty_without_pool() -> None:
+    """No proxy pool configured -> the snapshot's proxy health list is empty."""
+    snapshot = await gather_introspection()
+    assert snapshot.proxy_pool_health == []
+
+
+@pytest.mark.asyncio
+async def test_gather_introspection_collects_proxy_pool_health() -> None:
+    """Proxy health views (with declared stats) land in the snapshot."""
+    from kernel.proxy_launch.pool import ProxyHealth as PoolProxyHealth
+
+    class _StubProxyPool:
+        def health(self):
+            return [
+                PoolProxyHealth(
+                    proxy_id="headroom.headroom",
+                    status="warm",
+                    protocol="openai",
+                    providers=("ollama",),
+                    base_url="http://127.0.0.1:18787/v1",
+                    warm=True,
+                    required=False,
+                    status_url_path="/stats",
+                    status_fields=("tokens_saved",),
+                    stats=None,
+                ),
+                PoolProxyHealth(
+                    proxy_id="down.down",
+                    status="failed",
+                    protocol="openai",
+                    providers=("openai",),
+                    base_url="http://127.0.0.1:18788/v1",
+                    warm=True,
+                    required=False,
+                    status_url_path=None,
+                    status_fields=(),
+                    stats=None,
+                ),
+            ]
+
+        async def fetch_stats(self, proxy_id: str):
+            assert proxy_id == "headroom.headroom"
+            return {"tokens_saved": 2645547, "nested": {"dropped": True}}
+
+    snapshot = await gather_introspection(proxy_pool=_StubProxyPool())
+
+    assert len(snapshot.proxy_pool_health) == 2
+    warm = snapshot.proxy_pool_health[0]
+    assert warm.proxy_id == "headroom.headroom"
+    assert warm.status == "warm"
+    assert warm.providers == ["ollama"]
+    assert warm.declared_stats_path == "/stats"
+    assert warm.stats == {"tokens_saved": 2645547}
+    failed = snapshot.proxy_pool_health[1]
+    assert failed.status == "failed"
+    assert failed.stats == {}
+    # A failed proxy does not attempt a stats fetch (fetch_stats asserts).
+    assert failed.proxy_id == "down.down"
+
+
 def contextlib_suppress():
     """Local import of contextlib.suppress to avoid top-level import."""
     import contextlib

@@ -265,6 +265,16 @@ class RuntimeResources:
         return self._mcp_tool_pool
 
     @property
+    def proxy_pool(self) -> Any:
+        """The live provider-proxy pool (``None`` before start / after close)."""
+        return self._proxy_pool
+
+    @property
+    def proxy_routes(self) -> dict[str, Any]:
+        """Ready provider routes keyed by provider id (copy)."""
+        return dict(self._proxy_routes)
+
+    @property
     def mcp_warm_configs(self) -> list[Any]:
         return self._mcp_warm_configs
 

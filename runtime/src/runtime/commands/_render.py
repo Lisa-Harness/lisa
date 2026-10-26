@@ -532,6 +532,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "- /operations — list internal operation IDs for allowlist authoring.",
             "- /tools — list internal (pack-discovered) tools with limits and timeouts.",
             "- /mcp [server_id] — MCP server health summary, or per-server tool detail.",
+            "- /proxy — provider proxy health and routing summary.",
             "- /settings — effective profile/timezone/debug/log-level runtime settings.",
             "- /policy [mode ask|trust|plan | bare on|off | rule add|remove|list] — "
             "show or change the approval "
@@ -610,30 +611,17 @@ def _builtin_command_help(topic: str, runtime: HostRuntime) -> str | None:
     ``None`` means ``topic`` is not a built-in; the caller then checks
     pack-registered commands.
     """
-    if topic == "pack":
-        return _pack_command_help_text()
     if topic == "models":
         # Lazy import: _models imports _simple which imports _render — a
         # module-level import here would create a cycle.
         from runtime.commands._models import _models_help_text
 
         return _models_help_text(runtime)
-    if topic == "mcp":
-        return _mcp_command_help_text()
+    if topic in {"pack", "mcp", "proxy"}:
+        return _BUILTIN_HELP_RENDERERS[topic]()
     if topic in {"modes", "operations", "tools"}:
         return _inventory_command_help_text(topic)
-    if topic in {
-        "help",
-        "settings",
-        "tokens",
-        "debug",
-        "last",
-        "consolidate",
-        "slice",
-        "intake",
-        "quit",
-        "policy",
-    }:
+    if topic in _HOST_SHORTCUT_TOPICS:
         return _host_shortcut_help_text(topic)
     return None
 
@@ -701,6 +689,26 @@ def _mcp_command_help_text() -> str:
             "The summary reads the already-warmed pool index; the detail path lazily "
             "connects cold servers. Configure servers via the MCP manifest "
             "(`lisa mcp` on the CLI exposes the same data through `--with-mcp`).",
+        ]
+    )
+
+
+def _proxy_command_help_text() -> str:
+    """Help text for ``/help proxy``."""
+    return "\n".join(
+        [
+            "## /proxy",
+            "Provider proxy health and routing readout from the live proxy pool.",
+            "",
+            "Usage:",
+            "- /proxy — per-proxy summary (status, protocol, providers, endpoint, "
+            "pack-declared live stats) plus the provider routing map (which providers "
+            "route through a proxy and which go direct).",
+            "",
+            "Proxies are declared by packs or the user in the MCP manifest's "
+            "`proxies:` block. A proxy that declares a `status:` block exposes live "
+            "counters (e.g. tokens saved); liveness-only proxies show `warm`/`failed` "
+            "without stats.",
         ]
     )
 
@@ -800,3 +808,25 @@ def _host_shortcut_help_text(topic: str) -> str:
         ),
     }
     return blurbs.get(topic, f"## /{topic}\n\nRun /{topic} for details.")
+
+
+# Resolved after the renderer definitions above (module-level tables
+# evaluate at import, so function names must already be bound).
+_BUILTIN_HELP_RENDERERS = {
+    "pack": _pack_command_help_text,
+    "mcp": _mcp_command_help_text,
+    "proxy": _proxy_command_help_text,
+}
+
+_HOST_SHORTCUT_TOPICS = frozenset({
+    "help",
+    "settings",
+    "tokens",
+    "debug",
+    "last",
+    "consolidate",
+    "slice",
+    "intake",
+    "quit",
+    "policy",
+})

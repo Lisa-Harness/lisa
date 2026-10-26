@@ -535,6 +535,31 @@ class SelfKnowledgeEntry(BaseModel):
 McpConnectionStatus = Literal["warm", "cold", "failed", "unknown"]
 
 
+class ProxyHealthStatus(BaseModel):
+    """Health snapshot for one provider proxy in the host's proxy pool.
+
+    Mirrors :class:`McpServerHealth` for provider-facing proxies: a
+    liveness/routing view the host renders beside MCP server health.
+    ``stats`` carries the pack-declared live counters (the proxy entry's
+    ``status:`` block) fetched best-effort; empty when the proxy declares
+    none or the fetch failed.
+    """
+
+    proxy_id: str
+    status: str = "unknown"
+    """``warm`` | ``failed`` | ``skipped`` | ``unknown``."""
+    protocol: str = "openai"
+    providers: list[str] = Field(default_factory=list)
+    """Provider gateway ids whose requests route through this proxy."""
+    base_url: str = ""
+    warm: bool = False
+    required: bool = False
+    declared_stats_path: str = ""
+    """``status.url_path`` from the manifest; empty = liveness-only proxy."""
+    stats: dict[str, Any] = Field(default_factory=dict)
+    """Selected fields from the declared stats endpoint (scalar values)."""
+
+
 class McpServerHealth(BaseModel):
     """Health snapshot for one MCP server in the host's tool pool."""
 
@@ -634,6 +659,7 @@ class IntrospectSnapshot(BaseModel):
     process_rss_mb: float = 0.0
     process_cpu_percent: float = 0.0
     mcp_pool_health: dict[str, McpServerHealth] = Field(default_factory=dict)
+    proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
     logfile_tail_lines: int = 0

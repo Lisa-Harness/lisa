@@ -127,6 +127,10 @@ from runtime.commands._policy import (
     set_policy_bare,
     set_policy_mode,
 )
+from runtime.commands._proxy import (
+    handle_proxy_command,
+    render_proxy_summary,
+)
 from runtime.commands._render import (
     build_capability_snapshot,
     format_help,
@@ -213,6 +217,7 @@ __all__ = [
     "handle_models_command",
     "handle_pack_command",
     "handle_policy_command",
+    "handle_proxy_command",
     "handle_simple_command",
     "installed_pack_roots_by_name",
     "mode_support_gap",
@@ -236,6 +241,7 @@ __all__ = [
     "render_pack_list",
     "render_policy_document",
     "render_policy_rules",
+    "render_proxy_summary",
     "render_runtime_settings",
     "render_tools_list",
     "resolve_last_turn",

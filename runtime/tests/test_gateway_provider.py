@@ -8,6 +8,7 @@ import pytest
 from kernel.proxy_launch.pool import ProxyRoute
 from runtime.config import HostConfig
 from runtime.gateway_provider import HostGatewayProvider, _ollama_client_instance
+from runtime.provider_endpoints import proxy_route_view
 from runtime.runtime import HostRuntime
 
 
@@ -75,3 +76,47 @@ async def test_ollama_client_uses_ready_openai_proxy_route(
         assert str(client.base_url) == "http://127.0.0.1:18787/v1/"
     finally:
         await client.close()
+
+
+def test_proxy_route_view_reports_proxy_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_routes["ollama"] = ProxyRoute(
+        proxy_id="headroom.headroom",
+        protocol="openai",
+        base_url="http://127.0.0.1:18787/v1",
+    )
+
+    view = proxy_route_view(runtime, "ollama", "openai")
+
+    assert view == {
+        "via": "proxy",
+        "proxy_id": "headroom.headroom",
+        "base_url": "http://127.0.0.1:18787/v1",
+    }
+
+
+def test_proxy_route_view_reports_direct_when_no_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+
+    view = proxy_route_view(runtime, "ollama", "openai")
+
+    assert view == {"via": "direct"}
+
+
+def test_proxy_route_view_requires_protocol_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    runtime.resources._proxy_routes["anthropic"] = ProxyRoute(
+        proxy_id="headroom",
+        protocol="anthropic",
+        base_url="http://127.0.0.1:18790",
+    )
+
+    # Wrong protocol: the anthropic-wire route does not serve openai clients.
+    assert proxy_route_view(runtime, "anthropic", "openai") == {"via": "direct"}
+    assert proxy_route_view(runtime, "anthropic", "anthropic")["via"] == "proxy"

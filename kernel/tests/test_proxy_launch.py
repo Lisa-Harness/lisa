@@ -18,6 +18,7 @@ from kernel.proxy_launch.policy import (
     ProviderValueSource,
     ProxyProtocol,
     ProxyServerSpec,
+    ProxyStatusSpec,
 )
 from kernel.proxy_launch.pool import ProxyConnectionError, ProxyPool
 
@@ -33,6 +34,36 @@ class Handler(BaseHTTPRequestHandler):
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
+
+  def log_message(self, format, *args):
+    return
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+"""
+
+_STATS_SERVER = """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import sys
+
+class Handler(BaseHTTPRequestHandler):
+  def do_GET(self):
+    if self.path == '/readyz':
+      self.send_response(200)
+      self.end_headers()
+      return
+    body = json.dumps({
+      'savings': {'total_tokens': 1234},
+      'cost': {'total_saved_usd': 7.5, 'nested': [1]},
+      'requests': {'total': 42, 'failed_by_provider': {'x': 1}},
+      'tokens': 999999,
+      'list_field': [1, 2, 3],
+    }).encode()
+    self.send_response(200)
+    self.send_header('Content-Type', 'application/json')
+    self.send_header('Content-Length', str(len(body)))
+    self.end_headers()
+    self.wfile.write(body)
 
   def log_message(self, format, *args):
     return
@@ -341,6 +372,303 @@ def test_compile_proxy_config_requires_provider_base_url_for_source() -> None:
 
     with pytest.raises(ValueError, match="no direct base URL available"):
         compile_proxy_config(spec)
+
+
+def test_load_proxy_manifest_parses_status_block(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      url_path: /stats
+      fields: [tokens_saved_1h, savings_pct_1h, lifetime]
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_proxy_server_manifest(manifest)
+
+    assert len(specs) == 1
+    status = specs[0].status_spec
+    assert status is not None
+    assert status.url_path == "/stats"
+    assert status.fields == ("tokens_saved_1h", "savings_pct_1h", "lifetime")
+
+
+def test_load_proxy_manifest_status_block_defaults_url_path(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status: {}
+""",
+        encoding="utf-8",
+    )
+
+    specs = load_proxy_server_manifest(manifest)
+
+    status = specs[0].status_spec
+    assert status is not None
+    assert status.url_path == "/stats"
+    assert status.fields == ()
+
+
+def test_load_proxy_manifest_rejects_relative_status_url_path(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      url_path: stats
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProxyServerManifestError, match=r"status\.url_path must start with '/'"):
+        load_proxy_server_manifest(manifest)
+
+
+def test_load_proxy_manifest_rejects_non_list_status_fields(tmp_path: Path) -> None:
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+proxies:
+  - proxy_id: headroom
+    runtime_kind: binary
+    command_path: /opt/headroom
+    protocol: openai
+    providers: [ollama]
+    port: 18787
+    status:
+      url_path: /stats
+      fields: savings_pct_1h
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProxyServerManifestError, match=r"status\.fields must be a list"):
+        load_proxy_server_manifest(manifest)
+
+
+def test_compile_proxy_config_carries_status_spec() -> None:
+    spec = ProxyServerSpec(
+        proxy_id="headroom",
+        runtime_kind=RuntimeKind.BINARY,
+        command_path="/opt/headroom",
+        protocol=ProxyProtocol.OPENAI,
+        providers=("ollama",),
+        port=18787,
+        status_spec=ProxyStatusSpec(
+            url_path="/stats",
+            fields=("tokens_saved_1h", "savings_pct_1h"),
+        ),
+    )
+
+    config = compile_proxy_config(spec)
+
+    assert config.status_url_path == "/stats"
+    assert config.status_fields == ("tokens_saved_1h", "savings_pct_1h")
+
+
+def test_compile_proxy_config_without_status_spec_defaults_none() -> None:
+    spec = ProxyServerSpec(
+        proxy_id="plain",
+        runtime_kind=RuntimeKind.BINARY,
+        command_path="/opt/headroom",
+        protocol=ProxyProtocol.OPENAI,
+        providers=("ollama",),
+        port=18787,
+    )
+
+    config = compile_proxy_config(spec)
+
+    assert config.status_url_path is None
+    assert config.status_fields == ()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_health_view_reports_warm_failed_and_cold() -> None:
+    """health() maps ready/failed/unattempted proxies to a sync liveness view."""
+    config = ProxyClientConfig(
+        proxy_id="never-started",
+        command=sys.executable,
+        args=["-c", "pass"],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=_unused_port(),
+        base_url="http://127.0.0.1:1/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=0.1,
+        status_url_path="/stats",
+        status_fields=("tokens_saved_1h",),
+        adopt_existing=False,
+        warm=True,
+        required=False,
+    )
+    pool = ProxyPool([config])
+    try:
+        await pool.start()  # not required: start failure recorded, not raised
+
+        assert pool.failed_proxy_ids == {"never-started"}
+        views = pool.health()
+        assert len(views) == 1
+        view = views[0]
+        assert view.proxy_id == "never-started"
+        assert view.status == "failed"
+        assert view.status_url_path == "/stats"
+        assert view.status_fields == ("tokens_saved_1h",)
+        assert view.stats is None
+
+        # A proxy that never got a start attempt (pool fresh, config warm)
+        # reads as skipped before start() runs.
+        fresh = ProxyPool(
+            [
+                ProxyClientConfig(
+                    proxy_id="fresh",
+                    command=sys.executable,
+                    args=["-c", "pass"],
+                    env={},
+                    cwd=None,
+                    protocol="openai",
+                    providers=("ollama",),
+                    port=_unused_port(),
+                    base_url="http://127.0.0.1:2/v1",
+                    readiness_path="/readyz",
+                    readiness_timeout_seconds=1,
+                    adopt_existing=False,
+                    warm=True,
+                    required=False,
+                )
+            ]
+        )
+        fresh_views = {v.proxy_id: v for v in fresh.health()}
+        assert fresh_views["fresh"].status == "skipped"
+        await fresh.aclose()
+    finally:
+        await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_fetch_stats_returns_declared_fields() -> None:
+    """fetch_stats() GETs the declared path and selects declared fields.
+
+    Fields are dotted paths: a scalar path contributes one entry, an object
+    path contributes its scalar members as ``<path>.<member>``.
+    """
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="stats-proxy",
+        command=sys.executable,
+        args=["-c", _STATS_SERVER, str(port)],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=3,
+        status_url_path="/stats",
+        status_fields=("savings.total_tokens", "cost.total_saved_usd", "requests"),
+        adopt_existing=False,
+        warm=True,
+        required=True,
+    )
+    pool = ProxyPool([config])
+    try:
+        await pool.start()
+
+        stats = await pool.fetch_stats("stats-proxy")
+        assert stats is not None
+        assert stats["savings.total_tokens"] == 1234
+        assert stats["cost.total_saved_usd"] == 7.5
+        # An object path flattens to its scalar members only.
+        assert stats["requests.total"] == 42
+        assert "requests.failed_by_provider" not in stats
+        # Undeclared keys are dropped.
+        assert "tokens" not in stats
+        assert "list_field" not in stats
+    finally:
+        await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_fetch_stats_skips_missing_paths() -> None:
+    """A declared path that misses or names a non-object is skipped, not fatal."""
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="sparse-proxy",
+        command=sys.executable,
+        args=["-c", _STATS_SERVER, str(port)],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=3,
+        status_url_path="/stats",
+        status_fields=("missing.path", "savings.total_tokens", "list_field"),
+        adopt_existing=False,
+        warm=True,
+        required=True,
+    )
+    pool = ProxyPool([config])
+    try:
+        await pool.start()
+
+        stats = await pool.fetch_stats("sparse-proxy")
+        assert stats is not None
+        assert stats["savings.total_tokens"] == 1234
+        assert "missing.path" not in stats
+        assert "list_field" not in stats
+    finally:
+        await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_fetch_stats_none_without_declaration() -> None:
+    config = ProxyClientConfig(
+        proxy_id="bare",
+        command=sys.executable,
+        args=["-c", _READY_SERVER, str(_unused_port())],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=_unused_port(),
+        base_url="http://127.0.0.1:3/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=0.1,
+        adopt_existing=False,
+        warm=True,
+        required=False,
+    )
+    pool = ProxyPool([config])
+    await pool.start()  # may fail to start (non-required, no-op)
+    assert await pool.fetch_stats("bare") is None
+    await pool.aclose()
 
 
 def test_compile_proxy_registry_skips_missing_binary() -> None:

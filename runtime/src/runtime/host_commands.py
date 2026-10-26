@@ -153,6 +153,7 @@ def register_builtin_host_commands() -> None:
             "/debug",
             "/last",
             "/mcp",
+            "/proxy",
         )
     )
     register_host_command_exacts(

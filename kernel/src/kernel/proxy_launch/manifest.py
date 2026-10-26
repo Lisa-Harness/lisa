@@ -15,6 +15,7 @@ from kernel.proxy_launch.policy import (
     ProviderValueSource,
     ProxyProtocol,
     ProxyServerSpec,
+    ProxyStatusSpec,
 )
 
 __all__ = ["ProxyServerManifestError", "load_proxy_server_manifest"]
@@ -159,6 +160,8 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
             f"proxies[{index}] '{proxy_id}': readiness.timeout_seconds must be positive"
         )
 
+    status_spec = _parse_status_block(entry.get("status"), index, proxy_id, path)
+
     cwd_policy = _parse_cwd_policy(entry.get("cwd"), proxy_id, index, path)
     return ProxyServerSpec(
         proxy_id=proxy_id,
@@ -188,6 +191,7 @@ def _parse_proxy_entry(  # noqa: C901, PLR0912, PLR0915
         cwd_policy=cwd_policy,
         readiness_path=readiness_path,
         readiness_timeout_seconds=readiness_timeout_seconds,
+        status_spec=status_spec,
         adopt_existing=bool(entry.get("adopt_existing", False)),
         warm=bool(entry.get("warm", True)),
         required=bool(entry.get("required", False)),
@@ -302,3 +306,39 @@ def _parse_override_env(
             continue
         env[key] = _expand_env_value(raw_value, expand_env)
     return env
+
+
+def _parse_status_block(
+    raw_status: Any,
+    index: int,
+    proxy_id: str,
+    path: Path,
+) -> ProxyStatusSpec | None:
+    """Parse the optional ``status:`` telemetry block on one proxy entry.
+
+    ``status.url_path`` must be a non-empty path starting with ``/``;
+    ``status.fields`` must be a list of non-empty strings. An absent or
+    ``None`` block is a valid liveness-only proxy (no error).
+    """
+    if raw_status is None:
+        return None
+    if not isinstance(raw_status, dict):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}' in {path}: 'status' must be a mapping"
+        )
+    url_path = str(raw_status.get("url_path", "/stats") or "").strip()
+    if not url_path:
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': status.url_path must not be empty"
+        )
+    if not url_path.startswith("/"):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': status.url_path must start with '/'"
+        )
+    fields_raw = raw_status.get("fields") or []
+    if not isinstance(fields_raw, list) or not all(isinstance(item, str) for item in fields_raw):
+        raise ProxyServerManifestError(
+            f"proxies[{index}] '{proxy_id}': status.fields must be a list of strings"
+        )
+    fields = tuple(item.strip() for item in fields_raw if item.strip())
+    return ProxyStatusSpec(url_path=url_path, fields=fields)

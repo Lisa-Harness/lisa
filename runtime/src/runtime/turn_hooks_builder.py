@@ -1166,6 +1166,7 @@ def _build_slice_callables(
         """Gather a live introspection snapshot for the self-model operation."""
         return await gather_introspection(
             mcp_pool=runtime.resources.mcp_tool_pool,
+            proxy_pool=runtime.resources.proxy_pool,
             log_path=runtime.paths.host_log_path,
             token_usage_path=runtime.paths.token_usage_path,
         )
