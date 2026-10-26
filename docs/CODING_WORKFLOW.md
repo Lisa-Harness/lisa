@@ -27,8 +27,18 @@ Each patch increments the artifact revision and clears prior check records.
 Checks therefore cannot authorize a later patch. Pull-request publication also
 requires the recorded `head_sha`, `commit_sha`, and `pushed_sha` to agree.
 Existing artifacts without a creation-task ID or check-tree fingerprint cannot
-certify a new task. A task with no configured required checks may finish with a
-real changed commit and a clean owned worktree.
+certify a new task.
+
+A task with no configured required checks may finish with a real changed commit
+and a clean owned worktree, and that finish certifies nothing about whether the
+change is correct. Completion verification confirms that the required set
+passed; with an empty set there is no correctness signal to confirm. An empty
+set is the ordinary state, not a misconfiguration: `WorkProduct.required_check_ids`
+defaults to empty and no completion path asserts otherwise. A caller that
+requires checks to have run must declare a non-empty set in the pack's
+[session policy](#session-policy), because the verifier does not infer or require
+one. Only the end-to-end `checks_current` oracle rejects an empty set, and it
+guards the scenario suite rather than production completion.
 
 ## Session Policy
 

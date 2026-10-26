@@ -18,6 +18,21 @@ All notable changes to the Lisa Harness will be documented in this file.
   escalates to the full suite rather than guessing. `--base`, `--paths`,
   `--dry-run`, and `--cwd` override the defaults.
 
+### Documentation
+
+- Documented three assurance and scope boundaries that the code already
+  implements but the guides did not state. [Coding workflow](docs/CODING_WORKFLOW.md)
+  now names an empty required-check set as an assurance limit — such a task may
+  finish on a real changed commit and a clean worktree while certifying nothing
+  about correctness — and says a caller needing checks must declare a non-empty
+  set in policy. [Router design](docs/ROUTER_DESIGN.md) states that a fork or
+  delegate child gets fresh model history because `prior_messages` is skipped,
+  and that shared hooks and reassembled context make a child a fresh
+  conversation rather than an isolation boundary. [Logging](docs/LOGGING.md)
+  separates event-bus decision telemetry from OpenTelemetry tool/operation
+  spans, and records that span emission is implemented while host export
+  hierarchy remains unproven.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

@@ -131,6 +131,20 @@ is sequential even if the query does not contain the word "then".
 Independent work can still fork. Never remove this distinction to make
 more queries fan out.
 
+### What a child inherits
+
+A fork or delegate child starts with fresh model history: the turn runner skips
+`prior_messages` when a child turn kind is set, so the parent conversation is
+not replayed into the child's request.
+
+Fresh history is not isolation. A child runs through the same host-owned turn
+hooks and reassembles its own context, so it shares the parent's hook instances
+and ambient state — memory recall, context digests, capability manifests, and
+the system prompt all come from the shared host. Treat a child as a fresh
+conversation, not a sandbox and not a security boundary. Parent message history
+is deliberately not inherited; changing that would change what the model sees
+and requires a benchmark first.
+
 ## Durable workflow chains
 
 Multi-step work uses a typed `WorkflowPosition` and a thread-derived

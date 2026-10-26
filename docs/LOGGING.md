@@ -79,6 +79,29 @@ Provider/usage records and exact request snapshots serve different purposes:
 do not infer what the model saw solely from a routing event or final answer.
 See [context lifecycle](CONTEXT_LIFECYCLE.md) and [token accounting](TOKEN_BUDGET.md).
 
+## Decision telemetry versus spans
+
+The event bus and OpenTelemetry are separate channels, and neither substitutes
+for the other.
+
+- **Event bus** carries decision telemetry published by the turn loop: mode,
+  iteration, lifecycle action and reason, calls, and receipt counts, as
+  structured events on the logger. This is what answers "why did the turn do
+  that?"
+- **OpenTelemetry spans** cover dispatch timing and nesting through
+  [telemetry helpers](../kernel/src/kernel/telemetry.py). Every tool dispatch
+  runs under a `tool.execute` span from
+  [tools/registry.py](../kernel/src/kernel/tools/registry.py) and every operation
+  dispatch under an `operation.execute` span from
+  [operations/registry.py](../kernel/src/kernel/operations/registry.py), both
+  built with `get_tracer` from the global tracer provider.
+
+Span emission is implemented. Span export hierarchy is not established: nothing
+in this repository shows whether a host's configured exporter receives these
+spans as a coherent parent/child tree. Proving it means capturing a host export
+and comparing it against the spans already emitted here — it does not mean
+adding instrumentation, and a second telemetry stack is not the answer.
+
 ## Safe diagnostics
 
 Prefer identifiers, counts, hashes, status codes, and bounded reasons.
