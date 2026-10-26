@@ -302,6 +302,12 @@ def _parse_protocol_version(
     version directly at connect time instead of negotiating. A set-but-empty
     value, or a value on a non-HTTP server, is a config error — the pin has
     no meaning on any other transport.
+
+    The value is validated against the versions the client actually supports.
+    Without this, a typo (``2026-7-28``, or a handshake-era version) is
+    accepted at parse time and fails much later inside ``session.adopt()``,
+    where the error names a mutually-unsupported set rather than the manifest
+    line that is wrong.
     """
     raw = entry.get("protocol_version")
     if raw is None:
@@ -316,7 +322,28 @@ def _parse_protocol_version(
             f"servers[{index}] '{server_id}': 'protocol_version' must be a "
             "non-empty string when set"
         )
+    supported = _adoptable_protocol_versions()
+    if supported and version not in supported:
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'protocol_version' {version!r} is not a "
+            f"version this client can adopt (valid: {', '.join(supported)})"
+        )
     return version
+
+
+def _adoptable_protocol_versions() -> tuple[str, ...]:
+    """Return the modern protocol versions the MCP client can adopt directly.
+
+    Read from the installed SDK so the manifest's accepted set cannot drift
+    from what ``session.adopt()`` accepts. An SDK without the constant yields
+    an empty tuple, which callers treat as "cannot validate" rather than
+    "nothing is valid" — a stricter check must never reject every manifest.
+    """
+    try:
+        from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+    except ImportError:  # pragma: no cover — older SDK, no modern protocol
+        return ()
+    return tuple(str(version) for version in MODERN_PROTOCOL_VERSIONS)
 
 
 def _parse_binary_download(

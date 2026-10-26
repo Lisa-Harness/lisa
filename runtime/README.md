@@ -77,6 +77,21 @@ Ambient signal snapshots are separate: `/intake` refreshes their cache.
 Periodic collection requires a host-owned scheduler invoking `lisa intake`;
 the runtime does not install timers.
 
+## MCP input-required pauses
+
+A modern MCP server can pause a tool call mid-flight and ask for input instead
+of answering (`InputRequiredResult`, carrying `input_requests` and an opaque
+`request_state`). The pool requests that result rather than letting the SDK
+raise, and keeps the server session connected — a pause is a question, not a
+transport failure.
+
+`MCPToolResult.input_required` / `input_request` carry the structure, and
+`output_text` renders a notice with the request, so the model sees that the
+tool paused and can tell the operator what it needs or retry with the answers.
+Hosts that want automatic multi-round-trip resolution can read
+`input_request["request_state"]` and re-issue the call with
+`input_responses`; the runtime does not drive that loop itself.
+
 ## Design Philosophy
 
 The host owns **runtime integration, process boundaries, and environment-specific wiring** — nothing more. Domain logic lives in the kernel or SDK; rendering lives in the transport.
@@ -162,6 +177,14 @@ selector. The runtime downloads only selected implementations, verifies the
 asset against the release's `checksums.txt`, and caches it under
 `<data_dir>/cache/mcp-binaries/`.
 
+A cached binary is trusted without re-hashing when its recorded size and
+`mtime_ns` still match the sidecar; a legacy digest-only sidecar or a stat
+change falls back to the full SHA-256. The fast path therefore assumes the
+cache directory is under the same trust boundary as the host process — anyone
+who can rewrite a cached binary and its mtime can also run the host. Deploy
+the data directory with that in mind (see
+[storage and data handling](../docs/STORAGE.md)).
+
 #### HTTP protocol-version compatibility
 
 Remote `runtime_kind: http` servers migrate to the modern stateless MCP
@@ -178,8 +201,10 @@ strategy, in order:
 The `protocol_version:` manifest field (HTTP servers only) is the
 declarative escape hatch for the third row: a server that advertises a
 modern version its own handshake rejects connects without the failing
-round-trip. Stdio and in-process servers are unaffected — they negotiate
-through their own transport and never see this path.
+round-trip. The value is validated at parse time against the versions the
+installed client can adopt, so a typo fails where it can be fixed rather than
+inside the connect path. Stdio and in-process servers are unaffected — they
+negotiate through their own transport and never see this path.
 
 ### Approvals, Policy & Recovery
 

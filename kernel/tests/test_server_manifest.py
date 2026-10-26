@@ -994,3 +994,51 @@ servers:
     )
     with pytest.raises(MCPServerManifestError, match="'tool_map' must be a mapping"):
         load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_rejects_unadoptable_protocol_version(tmp_path: Path) -> None:
+    """A pin the client cannot adopt is a config error, caught at parse time.
+
+    Otherwise a typo (``2026-7-28``) or a handshake-era version parses cleanly
+    and fails much later inside ``session.adopt()``, where the error names a
+    mutually-unsupported set instead of the manifest line that is wrong.
+    """
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: remote
+    runtime_kind: http
+    url: https://example.test/mcp
+    protocol_version: "2026-7-28"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MCPServerManifestError, match=r"protocol_version.*not a version"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_accepts_every_adoptable_protocol_version(tmp_path: Path) -> None:
+    """The accepted set comes from the SDK, so it cannot drift from adopt()."""
+    from kernel.mcp_launch.server_manifest import _adoptable_protocol_versions
+
+    versions = _adoptable_protocol_versions()
+    assert versions, "the installed SDK must expose its modern versions"
+
+    for version in versions:
+        manifest = tmp_path / f"mcp_servers_{version}.yaml"
+        manifest.write_text(
+            f"""
+servers:
+  - server_id: remote
+    runtime_kind: http
+    url: https://example.test/mcp
+    protocol_version: "{version}"
+""",
+            encoding="utf-8",
+        )
+
+        specs = load_mcp_server_manifest(manifest)
+
+        assert specs[0].protocol_version == version

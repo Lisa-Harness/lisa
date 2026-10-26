@@ -31,6 +31,8 @@ The [project README](../README.md) explains the project and its current status.
 - [Operation authoring](../sdk/AUTHORING.md): Python versus declarative operations.
 - [Mode and workflow routing](ROUTER_DESIGN.md): handoffs, forks, delegation,
   routing hints, and completion contracts.
+- [Mode taxonomy](MODE_TAXONOMY.md): target-state mode design, pack layering,
+  and the migration phases behind it.
 - [Model router](../sdk/src/sdk/router/README.md): per-iteration CEL rules
   and provider-independent model selection.
 - [Context routing](CONTEXT_ROUTING_GUIDE.md): evidence selectors, lanes,
