@@ -449,6 +449,28 @@ class ProviderGatewayProvider(Protocol):
         """
         ...
 
+    def direct_base_url_for(self, provider: str) -> str | None:
+        """Return the provider's built-in default API endpoint.
+
+        Where a provider's API lives is gateway knowledge for the same reason
+        its wire protocol is: the implementation that builds the client is the
+        only thing that knows the endpoint, and a third-party gateway pack
+        serves a provider this host has never heard of. The host keeps no
+        provider→endpoint table.
+
+        This is the *default* only. A host-chosen override
+        (``HostConfig.provider_base_urls``) and a session model manifest's
+        per-model ``base_url`` both take precedence; the host applies them and
+        calls this to fill the gap.
+
+        Returns:
+            An absolute base URL with no trailing slash, or ``None`` when the
+            provider declares no host-agnostic default (Azure and Bedrock
+            endpoints are account- and region-specific, so those come from
+            configuration instead).
+        """
+        ...
+
 
 @runtime_checkable
 class EventBus(Protocol):

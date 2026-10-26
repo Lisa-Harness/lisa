@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -172,3 +173,68 @@ def test_runtime_without_manifest_uses_defaults(tmp_path: Path) -> None:
     runtime = HostRuntime(config)
 
     assert direct_provider_base_url(runtime, "ollama") == "http://localhost:11434/v1/"
+
+
+def test_defaults_come_from_the_gateway_seam_not_a_host_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The host keeps no provider→endpoint table.
+
+    A gateway pack that declares an endpoint for a provider the SDK never
+    shipped is resolved immediately, and one that declares none is reported
+    as unknown — the host does not fall back to a built-in of its own.
+    """
+    import kernel.provider_gateway_discovery as discovery
+
+    runtime = _make_runtime(tmp_path)
+
+    class _SeamfulEntry:
+        pack_name = "third-party-gateways"
+
+        def gateway_for(self, provider: str) -> None:
+            return None
+
+        def direct_base_url_for(self, provider: str) -> str | None:
+            return "https://custom.internal/v1/" if provider == "customwire" else None
+
+    fake_entry = SimpleNamespace(provider=_SeamfulEntry(), pack_name="third-party-gateways")
+    monkeypatch.setattr(discovery, "discover_provider_gateway_factories", lambda: [fake_entry])
+
+    assert direct_provider_base_url(runtime, "customwire") == "https://custom.internal/v1/"
+    with pytest.raises(ValueError, match="No direct base URL"):
+        direct_provider_base_url(runtime, "openai")
+
+
+def test_host_config_override_wins_over_the_gateway_default(tmp_path: Path) -> None:
+    """A configured override is a host setting and outranks the seam default."""
+    config = HostConfig.from_env(
+        data_dir=str(tmp_path), provider_base_urls={"openai": "https://proxy.internal/v1"}
+    )
+    runtime = HostRuntime(config)
+
+    assert direct_provider_base_url(runtime, "openai") == "https://proxy.internal/v1"
+
+
+def test_manifest_endpoint_outranks_a_host_override(tmp_path: Path) -> None:
+    """The manifest is per-session truth, so it wins over host configuration."""
+    _write_manifest(
+        tmp_path,
+        "\n".join(
+            [
+                "version: 1",
+                "mode_models: {default: grok}",
+                "models:",
+                "  - model_id: grok",
+                "    provider: openai",
+                "    base_url: https://api.x.ai/v1",
+            ]
+        )
+        + "\n",
+    )
+    config = HostConfig.from_env(
+        data_dir=str(tmp_path), provider_base_urls={"openai": "https://proxy.internal/v1"}
+    )
+    runtime = HostRuntime(config)
+    runtime.session.manifest = load_model_manifest(tmp_path / "config" / "models.yaml")
+
+    assert direct_provider_base_url(runtime, "openai") == "https://api.x.ai/v1"

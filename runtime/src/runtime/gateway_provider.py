@@ -26,11 +26,7 @@ import httpx
 from openai import AsyncOpenAI
 from sdk.providers.openai_gateway import create_azure_openai_client
 
-from runtime.provider_endpoints import (
-    OPENAI_DEFAULT_BASE_URL,
-    OPENROUTER_DEFAULT_BASE_URL,
-    normalize_ollama_host_to_base_url,
-)
+from runtime.provider_endpoints import direct_provider_base_url
 from runtime.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -55,6 +51,10 @@ class _GatewayClassProvider(Protocol):
 
     def proxy_protocol_for(self, provider: str) -> str | None:
         """Return the local-proxy wire protocol serving ``provider``, or None."""
+        ...
+
+    def direct_base_url_for(self, provider: str) -> str | None:
+        """Return the provider's built-in default API endpoint, or None."""
         ...
 
 
@@ -97,6 +97,19 @@ class HostGatewayProvider:
                 return None
             self._instances[normalized] = instance
         return self._instances[normalized]
+
+    def proxy_protocol_for(self, provider: str) -> str | None:
+        """Delegate to the discovered provider: proxy routing is gateway knowledge."""
+
+        return self._discovered.proxy_protocol_for(provider)
+
+    def direct_base_url_for(self, provider: str) -> str | None:
+        """Delegate to the discovered provider: default endpoints are gateway knowledge."""
+
+        resolve = getattr(self._discovered, "direct_base_url_for", None)
+        if not callable(resolve):
+            return None
+        return resolve(provider)
 
     # ── Construction ────────────────────────────────────────────────
     def _build(self, provider: str) -> Any | None:  # noqa: PLR0911
@@ -240,7 +253,7 @@ def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
         raise ValueError("OpenAI is not configured. Set LISA_OPENAI_API_KEY (or OPENAI_API_KEY).")
     client = AsyncOpenAI(
         api_key=api_key,
-        base_url=_proxy_base_url(runtime, "openai", OPENAI_DEFAULT_BASE_URL),
+        base_url=_proxy_base_url(runtime, "openai", direct_provider_base_url(runtime, "openai")),
     )
     runtime.providers.openai_client = client
     return client
@@ -253,10 +266,7 @@ def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     existing_client = runtime.providers.ollama_client
     if isinstance(existing_client, AsyncOpenAI):
         return existing_client
-    configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
-    direct_base_url = (
-        normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
-    )
+    direct_base_url = direct_provider_base_url(runtime, "ollama")
     base_url = _proxy_base_url(runtime, "ollama", direct_base_url)
     client = AsyncOpenAI(
         api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
@@ -273,18 +283,12 @@ def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
     existing_client = runtime.providers.anthropic_http_client
     if isinstance(existing_client, httpx.AsyncClient):
         return existing_client
-    direct_base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    direct_base_url = direct_provider_base_url(runtime, "anthropic")
     route_url = _ready_proxy_base_url(runtime, "anthropic", "anthropic")
     base_url = route_url or direct_base_url
     client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
     runtime.providers.anthropic_http_client = client
     return client
-
-
-def _normalize_ollama_host_to_base_url(host: str) -> str:
-    """Back-compat re-export; the implementation moved to provider_endpoints."""
-
-    return normalize_ollama_host_to_base_url(host)
 
 
 #: Provider id → the ``ProviderRegistry`` slot holding its cached client.
@@ -404,9 +408,7 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
                 f"OpenRouter is not configured. Set {LISA_OPENROUTER_API_KEY_ENV} "
                 "(or OPENROUTER_API_KEY)."
             )
-        direct_base_url = (
-            _env(LISA_OPENROUTER_BASE_URL_ENV, "OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE_URL
-        )
+        direct_base_url = direct_provider_base_url(runtime, "openrouter")
         base_url = _proxy_base_url(runtime, "openrouter", direct_base_url)
         default_headers: dict[str, str] = {}
         referer = _env(LISA_OPENROUTER_REFERER_ENV, "OPENROUTER_REFERER")

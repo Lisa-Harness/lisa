@@ -93,6 +93,33 @@ class SdkProviderGatewayProvider:
             return "anthropic"
         return None
 
+    def direct_base_url_for(self, provider: str) -> str | None:
+        """Return the provider's built-in default API endpoint, or None.
+
+        The SDK builds every one of these clients, so it is the only layer
+        that knows where each provider's API lives — the host must not
+        tabulate endpoints. Azure and Bedrock return ``None``: their endpoints
+        are account- and region-specific and arrive through configuration.
+
+        Args:
+            provider: Provider gateway id (any case).
+
+        Returns:
+            An absolute base URL with no trailing slash, or ``None``.
+        """
+        normalized = (provider or "").strip().lower()
+        if normalized == "openai":
+            return "https://api.openai.com/v1/"
+        if normalized == "ollama":
+            # Ollama serves an OpenAI-compatible API under /v1; the default
+            # listens on the standard local port.
+            return "http://localhost:11434/v1/"
+        if normalized == "openrouter":
+            return "https://openrouter.ai/api/v1"
+        if normalized == "anthropic":
+            return "https://api.anthropic.com"
+        return None
+
 
 def get_provider_gateway_provider_factory() -> Any:
     """Return the ``ProviderGatewayProvider`` for ``lisa.extensions.provider_gateways``.

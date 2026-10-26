@@ -1144,6 +1144,9 @@ def test_compile_proxy_configs_resolves_provider_overlay_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # Provider endpoints are captured when HostConfig is built, so the
+    # environment must be in place first — as it is for any real host.
+    monkeypatch.setenv("LISA_OLLAMA_HOST", "127.0.0.1:11434")
     runtime = _make_runtime(tmp_path)
     pack_root = tmp_path / "pack-a"
     pack_root.mkdir()
@@ -1171,7 +1174,6 @@ def test_compile_proxy_configs_resolves_provider_overlay_env(
     )
 
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *args, **kwargs: [pack_root])
-    monkeypatch.setenv("LISA_OLLAMA_HOST", "127.0.0.1:11434")
 
     configs = mcp_pool.compile_proxy_configs(runtime)
 

@@ -12,6 +12,7 @@ import contextlib
 import logging
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +49,7 @@ LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_OPERATIONA
 LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV = "LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO"
 LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES_ENV = "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES"
 LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
+LISA_PROVIDER_BASE_URLS_ENV = "LISA_PROVIDER_BASE_URLS"
 
 # ── Default values ────────────────────────────────────────────────────
 
@@ -246,6 +248,49 @@ def _slice_explicit_budget_env() -> int:
     return _DEFAULT_SLICE_EXPLICIT_BUDGET_MS
 
 
+def _provider_base_url_overrides() -> dict[str, str]:
+    """Resolve ``<provider>=<base_url>`` overrides from the environment.
+
+    ``from_env`` cannot see pack-contributed provider ids — the gateway seam
+    that enumerates them is discovered later — so overrides are captured as
+    one typed mapping instead of a per-provider variable that only the
+    providers known to this module could ever honour. Accepts comma- or
+    newline-separated ``provider=url`` pairs and their aliases, with the
+    ``LISA_PROVIDER_BASE_URLS`` entry winning over a provider's legacy
+    single-provider variable (``LISA_OLLAMA_HOST`` and friends), which
+    remains supported so existing deployments keep working.
+    """
+
+    overrides: dict[str, str] = {}
+    for name in ("LISA_OLLAMA_HOST", "OLLAMA_HOST"):
+        ollama_host = _resolve_env(name)
+        if ollama_host:
+            from runtime.provider_endpoints import normalize_ollama_host_to_base_url
+
+            normalized = normalize_ollama_host_to_base_url(ollama_host)
+            if normalized:
+                overrides["ollama"] = normalized
+            break
+    for provider, names in (
+        ("openai", ("LISA_OPENAI_BASE_URL", "OPENAI_BASE_URL")),
+        ("openrouter", ("LISA_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")),
+        ("anthropic", ("LISA_ANTHROPIC_BASE_URL",)),
+    ):
+        for name in names:
+            value = _resolve_env(name)
+            if value:
+                overrides[provider] = value
+                break
+    raw = _resolve_env(LISA_PROVIDER_BASE_URLS_ENV)
+    for chunk in raw.replace("\n", ",").split(","):
+        provider, separator, base_url = chunk.partition("=")
+        provider = provider.strip().lower()
+        base_url = base_url.strip()
+        if separator and provider and base_url:
+            overrides[provider] = base_url
+    return overrides
+
+
 def _log_level_override(explicit_log_level: str) -> str:
     """Resolve log level: explicit CLI arg wins, then env, else empty."""
 
@@ -440,6 +485,19 @@ class HostConfig:
     # Override via ``LISA_PROMPT_CACHE_ENABLED`` (0/false/no/off).
     prompt_cache_enabled: bool = True
 
+    # ── Provider endpoints ────────────────────────────────────────────
+    # Host-chosen direct base URL per provider id, e.g.
+    # ``{"openai": "https://api.x.ai/v1"}``. This is *only* the override:
+    # the default endpoint for a provider is gateway knowledge and comes
+    # from the ``ProviderGatewayProvider`` seam
+    # (``direct_base_url_for``), so a third-party gateway pack declares
+    # where its provider lives instead of the host tabulating it.
+    # Values are absolute base URLs with no trailing slash. Populated from
+    # ``LISA_PROVIDER_BASE_URLS`` (``provider=url`` pairs) plus the legacy
+    # single-provider variables; ``from_env`` cannot enumerate
+    # pack-contributed providers, so an unlisted provider is simply absent.
+    provider_base_urls: Mapping[str, str] = field(default_factory=dict)
+
     # ── Surface identity defaults ─────────────────────────────────────
     # Default scope values stamped onto every OperationExecutionContext
     # and TurnHooks when the host does not supply a more specific value.
@@ -539,6 +597,7 @@ class HostConfig:
         streaming: str = "hybrid",
         surface_type: str = "",
         surface_id: str = "",
+        provider_base_urls: Mapping[str, str] | None = None,
     ) -> HostConfig:
         """Build a ``HostConfig`` from CLI args + env vars.
 
@@ -606,7 +665,11 @@ class HostConfig:
 
         context_budget = _context_budget_overrides()
         prompt_cache_enabled = _resolve_env_bool(LISA_PROMPT_CACHE_ENABLED_ENV, True)
-
+        resolved_provider_base_urls = dict(_provider_base_url_overrides())
+        if provider_base_urls:
+            resolved_provider_base_urls.update(
+                {k.strip().lower(): v.strip() for k, v in provider_base_urls.items()}
+            )
         # ── User / session ─────────────────────────────────────────────
         # Session source compilation is intentionally deferred to HostRuntime
         # so every host has exactly one strict SessionPlan startup path.
@@ -648,6 +711,7 @@ class HostConfig:
             thread_redaction_enabled=thread_redaction_enabled,
             thread_redaction_patterns=thread_redaction_patterns,
             prompt_cache_enabled=prompt_cache_enabled,
+            provider_base_urls=resolved_provider_base_urls,
             execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,
             surface_id=resolved_surface_id,

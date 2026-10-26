@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from openai import AsyncOpenAI
+from runtime.config import HostConfig
 from runtime.gateway_provider import (
     HostGatewayProvider,
     _anthropic_http_client_instance,
@@ -34,7 +35,10 @@ class _FakeRuntime:
             ollama_client=None,
         )
         vars(self.providers).update(provider_slots)
-        self.config = config or SimpleNamespace(prompt_cache_enabled=True)
+        # Provider endpoints are a host setting captured at config
+        # construction, so mirror that: resolve the real config from the
+        # current environment unless a test passes its own.
+        self.config = config or HostConfig.from_env()
         self.resources = SimpleNamespace(proxy_route_for=lambda p, proto: None, proxy_routes={})
 
 
@@ -463,3 +467,68 @@ def test_ollama_gateway_factory_selected() -> None:
 
     assert isinstance(gateway, _CapturingGateway)
     assert callable(gateway.kwargs["client_factory"])
+
+
+# ── Direct endpoints come from the seam / host config ────────────────
+
+
+@pytest.mark.asyncio
+async def test_openai_client_honors_manifest_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the factory hardwired the constant, ignoring the manifest.
+
+    A model declaring an OpenAI-compatible endpoint (xAI, vLLM, a gateway)
+    must reach *that* endpoint direct; previously precedence rule #1 was
+    unreachable on the client path even though the resolver returned it.
+    """
+    monkeypatch.setenv("LISA_OPENAI_API_KEY", "sk-test")
+    manifest = SimpleNamespace(
+        models=[SimpleNamespace(provider="openai", base_url="https://api.x.ai/v1")]
+    )
+    runtime = _runtime()
+    runtime.session = SimpleNamespace(manifest=manifest)
+
+    client = _openai_client_instance(runtime)
+    try:
+        assert str(client.base_url) == "https://api.x.ai/v1/"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_openai_client_honors_configured_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host-chosen endpoint is a setting, not a module literal."""
+    monkeypatch.setenv("LISA_OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LISA_PROVIDER_BASE_URLS", "openai=https://gw.internal/v1")
+    runtime = _runtime()
+
+    client = _openai_client_instance(runtime)
+    try:
+        assert str(client.base_url) == "https://gw.internal/v1/"
+    finally:
+        await client.close()
+
+
+def test_config_captures_provider_base_url_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Overrides are typed config, captured once — not deferred ``getenv`` calls."""
+    monkeypatch.delenv("LISA_OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.setenv("LISA_ANTHROPIC_BASE_URL", "https://anthropic.internal")
+    monkeypatch.setenv(
+        "LISA_PROVIDER_BASE_URLS", "openai=https://a.internal, custom = https://b.internal"
+    )
+
+    config = HostConfig.from_env()
+
+    assert config.provider_base_urls["anthropic"] == "https://anthropic.internal"
+    assert config.provider_base_urls["openai"] == "https://a.internal"
+    assert config.provider_base_urls["custom"] == "https://b.internal"
+
+
+def test_config_normalizes_legacy_ollama_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The legacy host form keeps its OpenAI-compatible shape."""
+    monkeypatch.setenv("LISA_OLLAMA_HOST", "127.0.0.1:11434")
+    monkeypatch.delenv("LISA_PROVIDER_BASE_URLS", raising=False)
+
+    config = HostConfig.from_env()
+
+    assert config.provider_base_urls["ollama"] == "http://127.0.0.1:11434/v1/"

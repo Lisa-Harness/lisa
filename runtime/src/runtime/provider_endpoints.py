@@ -1,11 +1,16 @@
 """Host-owned direct provider endpoint resolution.
 
-Single source of truth for each provider's *direct* base URL — the endpoint a
-provider gateway uses when no proxy route is active, and the endpoint a
-provider-facing proxy must forward to. Proxy child processes are configured
-exclusively through this module: it never consults
-``runtime.resources.proxy_route_for`` so a proxy can never be wired to forward
-to itself (or to another host-managed proxy) in a routing loop.
+Resolves the *direct* (non-proxy) base URL a provider gateway uses when no
+proxy route is active, and the endpoint a provider-facing proxy forwards to.
+Proxy child processes are configured exclusively through this module: it never
+consults ``runtime.resources.proxy_route_for`` so a proxy can never be wired to
+forward to itself (or to another host-managed proxy) in a routing loop.
+
+The host keeps no provider→endpoint table. Where a provider's API lives is
+gateway knowledge — the same reason its wire protocol is (see
+``ProviderGatewayProvider.proxy_protocol_for``) — so the built-in default comes
+from the seam's ``direct_base_url_for``. This module owns only the *precedence*
+and the loop-prevention rule.
 
 Precedence for one provider:
 
@@ -13,24 +18,21 @@ Precedence for one provider:
    when every model for that provider resolves to one distinct value. Mixed
    per-model endpoints mean one process cannot serve the provider and raise
    a ``ValueError`` (declare one proxy process per endpoint instead).
-2. The provider's environment configuration (``LISA_OLLAMA_HOST`` etc.).
-3. The provider's built-in default.
+2. The host's configured override (``HostConfig.provider_base_urls``), which
+   covers the legacy single-provider variables (``LISA_OLLAMA_HOST`` etc.).
+3. The gateway seam's built-in default for that provider.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from runtime.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
-
-OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1/"
-OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1/"
-OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
 def normalize_ollama_host_to_base_url(host: str) -> str:
@@ -52,6 +54,57 @@ def _env(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def _configured_base_url(runtime: HostRuntime, provider: str) -> str | None:
+    """Return the host's configured base-URL override for ``provider``, if any."""
+
+    config = getattr(runtime, "config", None)
+    overrides = getattr(config, "provider_base_urls", None)
+    if isinstance(overrides, Mapping):
+        configured = str(overrides.get(provider, "") or "").strip()
+        if configured:
+            return configured
+    return None
+
+
+def _gateway_default_base_url(runtime: HostRuntime, provider: str) -> str | None:
+    """Return the gateway seam's built-in endpoint for ``provider``, if any.
+
+    Discovery is deferred to call time and failures are swallowed: an absent
+    or older gateway provider yields ``None`` so the caller can raise its
+    documented "no endpoint" error instead of crashing startup.
+    """
+    from kernel.provider_gateway_discovery import discover_provider_gateway_factories
+
+    for entry in discover_provider_gateway_factories():
+        loaded = entry.provider
+        try:
+            if callable(loaded) and not hasattr(loaded, "gateway_for"):
+                loaded = loaded()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "provider gateway entry %r failed to construct; skipping",
+                entry.pack_name,
+                exc_info=True,
+            )
+            continue
+        resolve = getattr(loaded, "direct_base_url_for", None)
+        if not callable(resolve):
+            continue
+        try:
+            resolved = resolve(provider)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "provider gateway seam failed to report a default endpoint for %r",
+                provider,
+                exc_info=True,
+            )
+            return None
+        if resolved:
+            return str(resolved)
+        return None
+    return None
 
 
 def _manifest_base_url(manifest: Any, provider: str) -> str | None:
@@ -93,23 +146,21 @@ def direct_provider_base_url(runtime: HostRuntime, provider: str) -> str:
     """Return the direct (non-proxy) base URL for one provider."""
 
     normalized = provider.strip().lower()
-    manifest = getattr(runtime.session, "manifest", None)
+    manifest = getattr(getattr(runtime, "session", None), "manifest", None)
     if manifest is not None:
         from_manifest = _manifest_base_url(manifest, normalized)
         if from_manifest is not None:
             return from_manifest
-    if normalized == "ollama":
-        configured = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
-        return normalize_ollama_host_to_base_url(configured) or OLLAMA_DEFAULT_BASE_URL
-    if normalized == "openai":
-        return OPENAI_DEFAULT_BASE_URL
-    if normalized == "openrouter":
-        return (
-            _env("LISA_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE_URL
-        )
-    if normalized == "anthropic":
-        return _env("LISA_ANTHROPIC_BASE_URL") or ANTHROPIC_DEFAULT_BASE_URL
-    raise ValueError(f"No direct base URL is known for provider '{provider}'")
+    configured = _configured_base_url(runtime, normalized)
+    if configured is not None:
+        return configured
+    default = _gateway_default_base_url(runtime, normalized)
+    if default is not None:
+        return default
+    raise ValueError(
+        f"No direct base URL is known for provider '{provider}': no manifest "
+        "endpoint, no configured override, and its gateway declares no default"
+    )
 
 
 def direct_provider_base_urls(
