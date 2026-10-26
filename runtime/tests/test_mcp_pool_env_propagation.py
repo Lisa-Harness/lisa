@@ -279,3 +279,58 @@ async def test_compile_mcp_configs_never_mutates_os_environ_during_compile(
         assert "LISA_USER_SLUG" not in snapshot
         assert "LISA_THREAD_DIR" not in snapshot
         assert "LISA_THREAD_REDACTION_PATTERNS" not in snapshot
+
+
+# ── Concurrency ────────────────────────────────────────────────────────────
+#
+# The tests above prove the ambient environment is never *mutated*, which is
+# necessary but not the property F3 was filed for. F3's risk was two runtimes
+# in one process racing on shared ambient state: a scoped export/restore pair
+# could interleave, so one runtime's restore could clobber the other's export
+# or leave the host's values visible to a third party mid-flight. Passing a
+# resolved mapping cannot race — these tests lock that in rather than leaving
+# it true by construction today.
+
+
+@pytest.mark.asyncio
+async def test_concurrent_compiles_never_expose_host_values_ambiently(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No concurrent compile sees a host-resolved value in ``os.environ``.
+
+    F3's stated risk was concurrency, not just mutation: with a scoped
+    export/restore window around the compile, one runtime's export is visible
+    to anything else running at the same time — another runtime's compile, or
+    a ``HostConfig.from_env()`` in the same process. Two overlapping compiles
+    therefore must each resolve their own values from a passed mapping, never
+    from ambient state.
+
+    This is the test that fails under the pre-F3 design (verified by
+    reintroducing the scoped export window around ``compile_mcp_configs``).
+    """
+    import asyncio
+
+    first = _make_runtime(tmp_path / "one", user_slug="alpha")
+    second = _make_runtime(tmp_path / "two", user_slug="beta")
+    _stub_discovery(monkeypatch)
+
+    leaked: list[dict[str, str]] = []
+    real_compile = mcp_pool.compile_registry
+
+    def observing_compile(*args: object, **kwargs: object) -> object:
+        snapshot = dict(os.environ)
+        if any(name in snapshot for name in ("LISA_USER_SLUG", "LISA_THREAD_DIR")):
+            leaked.append(snapshot)
+        return real_compile(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(mcp_pool, "compile_registry", observing_compile)
+    for name in ("LISA_USER_SLUG", "LISA_THREAD_DIR", "FRAMEWORK_ROOT", "LISA_TIMEZONE"):
+        monkeypatch.delenv(name, raising=False)
+
+    await asyncio.gather(
+        asyncio.to_thread(mcp_pool.compile_mcp_configs, first),
+        asyncio.to_thread(mcp_pool.compile_mcp_configs, second),
+    )
+
+    assert not leaked, "a concurrent compile observed host values in os.environ"

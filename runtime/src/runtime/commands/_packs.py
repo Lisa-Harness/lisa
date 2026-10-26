@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -188,8 +189,20 @@ def _clear_selected_provider_for_package(
     return cleared
 
 
-def _pack_contributes_memory_capability(package_name: str) -> bool:
-    """Return True if the pack contributes a memory capability."""
+def _pack_contributes_memory_capability(
+    package_name: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True if the pack contributes a memory capability.
+
+    ``env`` is the mapping ``${VAR}`` references expand against when the
+    manifest is parsed. The install path passes the host's resolved MCP
+    environment, matching every other manifest load in the host, so pack
+    capability detection does not read process-global state. ``None`` keeps
+    the kernel loader's standalone-caller default (the ambient environment)
+    for callers that have no host runtime.
+    """
     normalized = normalize_pack_name(package_name)
     if not normalized:
         return False
@@ -206,7 +219,7 @@ def _pack_contributes_memory_capability(package_name: str) -> bool:
         if not manifest_path.is_file():
             continue
         try:
-            specs = load_mcp_server_manifest(manifest_path)
+            specs = load_mcp_server_manifest(manifest_path, env=env)
         except MCPServerManifestError:
             continue
         if any(spec.capability == "memory" for spec in specs):
@@ -218,6 +231,8 @@ def _pack_contributes_memory_capability(package_name: str) -> bool:
 def _auto_select_capability_provider_on_install(
     lock: dict[str, Any],
     package_name: str,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Auto-select a newly-installed pack as the memory capability provider if eligible."""
     selected = lock.get("selected_capability_providers")
@@ -230,7 +245,7 @@ def _auto_select_capability_provider_on_install(
         return
     if package_name in always_on_pack_names():
         return
-    if not _pack_contributes_memory_capability(package_name):
+    if not _pack_contributes_memory_capability(package_name, env=env):
         return
 
     selected[capability_id] = package_name
@@ -776,7 +791,11 @@ def run_pack_install_sync(
         entry_payload["editable"] = True
     filtered.append(entry_payload)
     lock["packs"] = filtered
-    _auto_select_capability_provider_on_install(lock, package_name)
+    from runtime.mcp_pool import _resolved_mcp_env
+
+    _auto_select_capability_provider_on_install(
+        lock, package_name, env=_resolved_mcp_env(runtime, str(_FRAMEWORK_ROOT))
+    )
     _write_installed_packs_lock(runtime, lock)
 
     if request_restart:
