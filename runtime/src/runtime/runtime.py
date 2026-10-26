@@ -296,11 +296,46 @@ class RuntimeResources:
         self._proxy_configs = configs
 
     def proxy_route_for(self, provider: str, protocol: str) -> Any | None:
-        """Return the ready compatible proxy route for a provider gateway."""
+        """Return the ready compatible proxy route for a provider gateway.
+
+        Liveness-gated: when the route's owning proxy process exited
+        mid-session, the stale route is dropped and ``None`` is returned so
+        the provider gateway falls back to the direct endpoint. A dead
+        proxy must degrade to "no compression savings", never hang or fail
+        a model call (the 2026-10-26 headroom death: the cached Ollama
+        client kept pointing at the dead loopback port for the rest of the
+        process because nothing re-checked route liveness). A bounded
+        in-loop respawn is attempted opportunistically by
+        :meth:`ensure_proxy_route` (the async path); this sync accessor is
+        safe to call from the gateway client factories.
+        """
         route = self._proxy_routes.get(provider.strip().lower())
         if route is None or route.protocol != protocol:
             return None
+        pool = self._proxy_pool
+        if pool is not None and not pool.route_alive(provider):
+            pool.drop_route(provider)
+            self._proxy_routes = pool.routes
+            return None
         return route
+
+    async def ensure_proxy_route(self, provider: str, protocol: str) -> Any | None:
+        """Return a live compatible proxy route, respawning a dead proxy once.
+
+        The async counterpart of :meth:`proxy_route_for`, for callers that
+        can await (REPL transport loops between turns). A dead host-owned
+        proxy gets one bounded restart attempt; ``None`` when the proxy
+        stays down so the caller falls back to the direct endpoint.
+        """
+        route = self.proxy_route_for(provider, protocol)
+        if route is not None:
+            return route
+        pool = self._proxy_pool
+        if pool is None:
+            return None
+        if await pool.respawn(provider):
+            self._proxy_routes = pool.routes
+        return self._proxy_routes.get(provider.strip().lower())
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 

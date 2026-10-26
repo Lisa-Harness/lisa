@@ -166,3 +166,66 @@ def test_proxy_route_view_reports_compiled_but_bypassed_proxy(tmp_path: Any) -> 
         "via": "direct",
         "bypassed_proxy_id": "compression",
     }
+
+
+@pytest.mark.asyncio
+async def test_dead_proxy_route_falls_back_direct_and_respawns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A proxy that died mid-session degrades the route to direct.
+
+    Reproduction of the 2026-10-26 headroom death: the proxy process
+    exited while the host was running; the cached Ollama client kept
+    targeting the dead loopback port because nothing re-checked route
+    liveness, and the next model call hung on the dead socket until the
+    stream idle watchdog fired. ``proxy_route_for`` now verifies the
+    owning process is alive, drops the stale route when it is not, and
+    the client factory resets its cache so the model call proceeds
+    against the direct endpoint. ``ensure_proxy_route`` respawns the
+    proxy once (bounded) and the route comes back warm.
+    """
+    from kernel.proxy_launch.pool import ProxyPool
+    from runtime.gateway_provider import _proxy_base_url
+
+    monkeypatch.setenv("LISA_OLLAMA_HOST", "http://direct-ollama:11434")
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+
+    pool = ProxyPool([])
+    runtime.resources._proxy_pool = pool
+    route = ProxyRoute(
+        proxy_id="headroom",
+        protocol="openai",
+        base_url="http://127.0.0.1:18787/v1",
+    )
+    # Mirror the real shape: resources._proxy_routes is synced FROM
+    # pool.routes (set at build time), so both hold the route. An adopted
+    # route has no process handle — the pool presumes it alive.
+    pool._routes["ollama"] = route
+    runtime.resources._proxy_routes = pool.routes
+
+    # A route with no owning process entry (adopted-shaped) reads alive.
+    assert (
+        _proxy_base_url(runtime, "ollama", "http://direct-ollama:11434/v1/")
+        == "http://127.0.0.1:18787/v1/"
+    )
+
+    # The pool now knows the route maps to an exited process: the
+    # host-owned death shape.
+    class _DeadProcess:
+        returncode = 137  # killed, the headroom death shape
+
+    pool._processes["headroom"] = _DeadProcess()  # type: ignore[assignment]
+    # Sync resolution: the stale route is dropped, direct is returned,
+    # and the cached ollama client (if any) is invalidated so the next
+    # factory call re-resolves its base URL.
+    runtime.providers.ollama_client = object()
+    assert (
+        _proxy_base_url(runtime, "ollama", "http://direct-ollama:11434/v1/")
+        == "http://direct-ollama:11434/v1/"
+    )
+    assert runtime.providers.ollama_client is None
+    assert runtime.resources.proxy_route_for("ollama", "openai") is None
+
+    # Async path: respawn finds no surviving config (pool compiled empty
+    # — the pack was removed), so the route stays gone.
+    assert await runtime.resources.ensure_proxy_route("ollama", "openai") is None

@@ -918,3 +918,59 @@ async def test_proxy_pool_raises_for_required_proxy_that_exits() -> None:
         match="Required proxy 'failing-proxy' failed to start",
     ):
         await ProxyPool([config]).start()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_detects_dead_process_and_respawns() -> None:
+    """route_alive/respawn cover the mid-session proxy death.
+
+    Reproduction of the 2026-10-26 headroom death: the proxy exited
+    mid-session; nothing ever re-checked route liveness, so the host's
+    cached provider client kept targeting the dead loopback port and
+    every model call hung until the stream idle watchdog fired. The pool
+    now exposes a sync liveness check, drops the dead route on request,
+    and can respawn the proxy once with the same readiness bounds as
+    startup.
+    """
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="dying",
+        command=sys.executable,
+        args=["-c", _READY_SERVER, str(port)],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=5,
+        adopt_existing=False,
+        warm=True,
+        required=False,
+    )
+    pool = ProxyPool([config])
+    try:
+        await pool.start()
+        assert pool.route_alive("ollama") is True
+
+        # Simulate the mid-session death: kill and reap the child.
+        process = pool._processes["dying"]
+        process.kill()
+        await process.wait()
+
+        assert pool.route_alive("ollama") is False
+
+        pool.drop_route("ollama")
+        assert pool.route_alive("ollama") is False
+        assert pool.routes.get("ollama") is None
+
+        # Respawn comes back warm on the same port.
+        assert await pool.respawn("ollama") is True
+        assert pool.route_alive("ollama") is True
+        assert pool.routes["ollama"].proxy_id == "dying"
+
+        # One bounded attempt: a provider with no config never respawns.
+        assert await pool.respawn("unknown-provider") is False
+    finally:
+        await pool.aclose()

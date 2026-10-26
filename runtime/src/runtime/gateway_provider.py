@@ -253,9 +253,22 @@ def _normalize_ollama_host_to_base_url(host: str) -> str:
 
 
 def _proxy_base_url(runtime: HostRuntime, provider: str, direct_base_url: str) -> str:
-    """Return a ready OpenAI-wire proxy route or the provider's direct URL."""
+    """Return a ready OpenAI-wire proxy route or the provider's direct URL.
+
+    A dead proxy invalidates the provider's cached client (when the route
+    just dropped): the next factory call rebuilds the client against the
+    fallback base URL, so the turn proceeds direct instead of hanging on
+    the dead loopback port (the 2026-10-26 headroom death).
+    """
+    previous_route = runtime.resources.proxy_routes.get(provider)
     route = runtime.resources.proxy_route_for(provider, "openai")
     if route is None:
+        if previous_route is not None and provider == "ollama":
+            # The cached client is bound to the dead proxy's base URL;
+            # reset so this call and later ones re-resolve directly.
+            runtime.providers.ollama_client = None
+        elif previous_route is not None and provider == "openai":
+            runtime.providers.openai_client = None
         return direct_base_url
     return f"{route.base_url.rstrip('/')}/"
 

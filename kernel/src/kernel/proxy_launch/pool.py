@@ -283,6 +283,84 @@ class ProxyPool:
             return_exceptions=True,
         )
 
+    def route_alive(self, provider: str) -> bool:
+        """Return whether the route for ``provider`` is still served.
+
+        Sync and cheap: a host-owned route is alive when its owning process
+        has not exited (``returncode`` ``None``); an adopted route has no
+        process handle (an external monitor owns its liveness), so it is
+        presumed alive. A process that died mid-session (the 2026-10-26
+        headroom death: the proxy crashed during its own compression
+        timeout while a request was in flight) leaves the stale route in
+        place; callers that skip this check resolve provider clients
+        against a dead loopback port and hang or error on every call.
+
+        Returns ``False`` when the provider has no warm route at all.
+        """
+        route = self._routes.get(provider.strip().lower())
+        if route is None:
+            return False
+        process = self._processes.get(route.proxy_id)
+        if process is None:
+            # Adopted (not host-owned) or already reaped: presume alive.
+            return True
+        return process.returncode is None
+
+    def drop_route(self, provider: str) -> None:
+        """Discard the route for ``provider`` so resolution falls back direct.
+
+        The exited process handle stays in ``_processes`` until ``aclose``
+        (a terminated child is inert — ``_terminate`` early-returns on a
+        non-``None`` ``returncode``), so dropping only the route cannot
+        orphan anything.
+        """
+        route = self._routes.pop(provider.strip().lower(), None)
+        if route is not None:
+            logger.warning(
+                "Proxy %r route for provider %r dropped (process dead); "
+                "provider calls fall back to the direct endpoint",
+                route.proxy_id,
+                provider,
+            )
+            self._last_errors[route.proxy_id] = "process exited mid-session"
+
+    async def respawn(self, provider: str, *, timeout_s: float = 30.0) -> bool:
+        """Attempt to restart the proxy serving ``provider`` and re-register its route.
+
+        Bounded by ``timeout_s`` (the same readiness wait as startup). Returns
+        ``True`` when the route is warm again. One attempt: a proxy that
+        cannot come back stays failed — repeated mid-turn retries would stack
+        on the model-call path.
+        """
+        provider = provider.strip().lower()
+        stale_route = self._routes.get(provider)
+        if stale_route is not None and self.route_alive(provider):
+            return True
+        config = None
+        if stale_route is not None:
+            config = next(
+                (c for c in self._configs if c.proxy_id == stale_route.proxy_id),
+                None,
+            )
+        else:
+            config = next((c for c in self._configs if provider in c.providers), None)
+        if config is None:
+            return False
+        try:
+            await asyncio.wait_for(self._start_one(config), timeout=timeout_s)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Proxy %r respawn failed: %s", config.proxy_id, exc)
+            self._last_errors[config.proxy_id] = str(exc)
+            return False
+        # Re-register every provider the restarted config serves (routes
+        # were dropped when the process died; a stale adopted entry could
+        # mask the fresh registration).
+        for served in config.providers:
+            self._routes.pop(served, None)
+        self._register_routes(config)
+        logger.info("Proxy %r respawned; routes re-registered", config.proxy_id)
+        return True
+
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
