@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -974,3 +976,80 @@ async def test_proxy_pool_detects_dead_process_and_respawns() -> None:
         assert await pool.respawn("unknown-provider") is False
     finally:
         await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_restart_budget_marks_permanently_failed() -> None:
+    """Respawns past the restart budget stop spawning (OTP MaxRestarts).
+
+    The MCPToolPool guard, mirrored: at most 3 restarts inside 60s, then
+    the proxy is permanently failed and respawn returns False without
+    spawning — a proxy that starts-but-crashes (the headroom shape)
+    cannot loop the pool into an infinite spawn storm.
+    """
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="stormy",
+        command=sys.executable,
+        args=["-c", _READY_SERVER, str(port), "3600"],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=5,
+        adopt_existing=False,
+        warm=True,
+        required=False,
+    )
+    pool = ProxyPool([config])
+    # Pre-arm the budget: 3 restarts already recorded inside the window.
+    now = time.monotonic()
+    pool._restart_timestamps["stormy"] = [now, now, now]
+
+    # A route is NOT needed — respawn resolves the proxy id from configs.
+    assert await pool.respawn("ollama") is False
+    assert "stormy" in pool.permanently_failed_proxy_ids
+    assert pool._processes == {}
+    # The permanently-failed gate fires before any budget recount.
+    assert await pool.respawn("ollama") is False
+    assert await pool.aclose() is None
+
+
+@pytest.mark.asyncio
+async def test_proxy_pool_concurrent_respawns_single_flight() -> None:
+    """Two concurrent respawns produce ONE spawn, not two."""
+    port = _unused_port()
+    config = ProxyClientConfig(
+        proxy_id="single",
+        command=sys.executable,
+        args=["-c", _READY_SERVER, str(port)],
+        env={},
+        cwd=None,
+        protocol="openai",
+        providers=("ollama",),
+        port=port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        readiness_path="/readyz",
+        readiness_timeout_seconds=5,
+        adopt_existing=False,
+        warm=True,
+        required=False,
+    )
+    pool = ProxyPool([config])
+
+    first, second = await asyncio.gather(pool.respawn("ollama"), pool.respawn("ollama"))
+    # Exactly one subprocess exists regardless of interleaving, and the
+    # budget recorded at most one restart. One caller spawned; the
+    # concurrent caller skipped (single-flight) and reported the route's
+    # state at that instant — possibly still False because the spawn's
+    # readiness wait had not returned yet (the caller then falls back
+    # direct for this one model call; the next call re-checks route
+    # liveness). Doubling the spawn is what the guard forbids.
+    assert len(pool._processes) == 1
+    assert pool.restart_counts.get("single", 1) == 1
+    assert any(r is True for r in (first, second))
+    assert pool.route_alive("ollama") is True
+    await pool.aclose()

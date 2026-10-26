@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -65,6 +67,11 @@ class ProxyPool:
         self._last_errors: dict[str, str] = {}
         self._stats_errors: dict[str, str] = {}
         self._started = False
+        # Supervised-restart state (mirrors MCPToolPool's warm-server
+        # budget; see the constants on respawn).
+        self._restarting: set[str] = set()
+        self._restart_timestamps: dict[str, list[float]] = {}
+        self._permanently_failed: set[str] = set()
 
     @property
     def routes(self) -> dict[str, ProxyRoute]:
@@ -75,6 +82,16 @@ class ProxyPool:
     def failed_proxy_ids(self) -> frozenset[str]:
         """Return non-required proxy ids that failed to start."""
         return frozenset(self._failed)
+
+    @property
+    def permanently_failed_proxy_ids(self) -> frozenset[str]:
+        """Return proxy ids that exhausted the supervised restart budget."""
+        return frozenset(self._permanently_failed)
+
+    @property
+    def restart_counts(self) -> dict[str, int]:
+        """Return restart attempts per proxy within the current window."""
+        return {k: len(v) for k, v in self._restart_timestamps.items() if v}
 
     def stats_error(self, proxy_id: str) -> str:
         """Return the most recent telemetry error, distinct from proxy health."""
@@ -324,41 +341,105 @@ class ProxyPool:
             )
             self._last_errors[route.proxy_id] = "process exited mid-session"
 
-    async def respawn(self, provider: str, *, timeout_s: float = 30.0) -> bool:
-        """Attempt to restart the proxy serving ``provider`` and re-register its route.
+    # ── Supervised lifecycle: restart budget (mirrors MCPToolPool) ────
+    # At most _MAX_RESTARTS restarts within _RESTART_WINDOW_S seconds per
+    # proxy; beyond that the proxy is permanently failed and respawn
+    # declines without spawning. Prevents restart storms when a proxy
+    # starts (readiness succeeds) but crashes on the first request — the
+    # 2026-10-26 headroom death: compression-timeout crash, then a
+    # respawn at 15:59 that died again 6 minutes later.
+    _MAX_RESTARTS = 3
+    _RESTART_WINDOW_S = 60.0
 
-        Bounded by ``timeout_s`` (the same readiness wait as startup). Returns
-        ``True`` when the route is warm again. One attempt: a proxy that
-        cannot come back stays failed — repeated mid-turn retries would stack
-        on the model-call path.
+    async def respawn(self, provider: str, *, timeout_s: float = 30.0) -> bool:
+        """Restart the proxy serving ``provider`` after a mid-session crash (supervised).
+
+        Returns ``True`` when the route is warm again, ``False`` when the
+        proxy stays down, is permanently failed, or has no compiled config.
+
+        Supervised like :meth:`MCPToolPool.restart_warm`:
+        restart budget (at most ``_MAX_RESTARTS`` within
+        ``_RESTART_WINDOW_S``; exhausted => permanently failed, no more
+        spawns), and a single-flight guard so concurrent callers skip the
+        restart instead of spawning duplicate subprocesses.
         """
         provider = provider.strip().lower()
-        stale_route = self._routes.get(provider)
-        if stale_route is not None and self.route_alive(provider):
-            return True
-        config = None
-        if stale_route is not None:
-            config = next(
-                (c for c in self._configs if c.proxy_id == stale_route.proxy_id),
-                None,
+        proxy_id = self._proxy_id_for_provider(provider)
+        if proxy_id is None:
+            return False
+
+        # Permanently failed — budget exhausted. No more spawns.
+        if proxy_id in self._permanently_failed:
+            logger.warning(
+                "Proxy %r is permanently failed (restart budget exhausted); not respawning",
+                proxy_id,
             )
-        else:
-            config = next((c for c in self._configs if provider in c.providers), None)
+            return False
+
+        # Single-flight: one bounded respawn per proxy at a time.
+        if proxy_id in self._restarting:
+            logger.debug("Proxy %r already being respawned; skip", proxy_id)
+            return self.route_alive(provider)
+        async with self._respawn_lock(proxy_id):
+            return await self._respawn_locked(proxy_id, timeout_s=timeout_s)
+
+    def _proxy_id_for_provider(self, provider: str) -> str | None:
+        """Resolve the compiled proxy id owning ``provider``, if any."""
+        route = self._routes.get(provider)
+        if route is not None:
+            return route.proxy_id
+        config = next((c for c in self._configs if provider in c.providers), None)
+        return config.proxy_id if config else None
+
+    @asynccontextmanager
+    async def _respawn_lock(self, proxy_id: str) -> Any:
+        """Single-flight window for one proxy's respawn."""
+        self._restarting.add(proxy_id)
+        try:
+            yield
+        finally:
+            self._restarting.discard(proxy_id)
+
+    async def _respawn_locked(self, proxy_id: str, *, timeout_s: float) -> bool:
+        # Enforce restart budget: count restarts within the window.
+        now = time.monotonic()
+        timestamps = [
+            t for t in self._restart_timestamps.get(proxy_id, [])
+            if now - t < self._RESTART_WINDOW_S
+        ]
+        if len(timestamps) >= self._MAX_RESTARTS:
+            logger.error(
+                "Proxy %r exceeded restart budget (%d restarts in %.0fs); "
+                "marking permanently failed. No more spawns will be attempted.",
+                proxy_id,
+                len(timestamps),
+                self._RESTART_WINDOW_S,
+            )
+            self._permanently_failed.add(proxy_id)
+            return False
+        timestamps.append(now)
+        self._restart_timestamps[proxy_id] = timestamps
+
+        config = next((c for c in self._configs if c.proxy_id == proxy_id), None)
         if config is None:
             return False
+        old_process = self._processes.get(proxy_id)
+        if old_process is not None:
+            await self._terminate(old_process)
+            self._processes.pop(proxy_id, None)
         try:
             await asyncio.wait_for(self._start_one(config), timeout=timeout_s)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Proxy %r respawn failed: %s", config.proxy_id, exc)
-            self._last_errors[config.proxy_id] = str(exc)
+            logger.warning("Proxy %r respawn failed: %s", proxy_id, exc)
+            self._last_errors[proxy_id] = str(exc)
             return False
-        # Re-register every provider the restarted config serves (routes
-        # were dropped when the process died; a stale adopted entry could
+        # Re-register every provider the restarted config serves
+        # (dead routes were dropped or stale adopted entries could
         # mask the fresh registration).
         for served in config.providers:
             self._routes.pop(served, None)
         self._register_routes(config)
-        logger.info("Proxy %r respawned; routes re-registered", config.proxy_id)
+        logger.info("Proxy %r respawned; routes re-registered", proxy_id)
         return True
 
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
