@@ -967,10 +967,21 @@ async def test_proxy_pool_detects_dead_process_and_respawns() -> None:
         assert pool.route_alive("ollama") is False
         assert pool.routes.get("ollama") is None
 
-        # Respawn comes back warm on the same port.
+        # A proxy that started and then lost its routes is FAILED, not
+        # "skipped": reporting a mid-session crash as "never started" would
+        # hide a real outage from the operator and the self-model.
+        health = {view.proxy_id: view for view in pool.health()}
+        assert health["dying"].status == "failed"
+        assert "exited mid-session" in health["dying"].last_error
+
+        # Respawn comes back warm on the same port, and the resolved failure
+        # is cleared so the reported status and last_error agree.
         assert await pool.respawn("ollama") is True
         assert pool.route_alive("ollama") is True
         assert pool.routes["ollama"].proxy_id == "dying"
+        health = {view.proxy_id: view for view in pool.health()}
+        assert health["dying"].status == "warm"
+        assert health["dying"].last_error == ""
 
         # One bounded attempt: a provider with no config never respawns.
         assert await pool.respawn("unknown-provider") is False

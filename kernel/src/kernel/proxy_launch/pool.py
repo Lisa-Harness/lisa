@@ -98,20 +98,29 @@ class ProxyPool:
         return self._stats_errors.get(proxy_id, "")
 
     def health(self) -> list[ProxyHealth]:
-        """Return startup readiness for every compiled proxy.
+        """Return readiness for every compiled proxy.
 
         Includes skipped proxies (optional binaries absent at compile time
         never reach the pool; this covers compile-present failures only).
-        The view is synchronous — no stats fetching — so callers can use
-        it from render paths that must not await. This does not continuously
-        probe adopted endpoints or monitor later process exits.
+        The view is synchronous — no stats fetching — so callers can use it
+        from render paths that must not await.
+
+        A proxy that started and then lost its routes mid-session (its process
+        exited, and ``drop_route`` discarded the routes so provider calls fall
+        back direct) reports ``failed``, not ``skipped``. ``skipped`` means
+        the proxy was never warm; reporting a crash as "never started" would
+        hide a real outage from the operator, the self-model, and
+        ``operational_health``.
         """
         ready_ids = {route.proxy_id for route in self._routes.values()}
         views: list[ProxyHealth] = []
         for config in self._configs:
             if config.proxy_id in ready_ids:
                 status: Literal["warm", "failed", "skipped"] = "warm"
-            elif config.proxy_id in self._failed:
+            elif config.proxy_id in self._failed or config.proxy_id in self._last_errors:
+                # ``_last_errors`` is written on a startup failure, a dropped
+                # route (mid-session death), and a failed respawn — every one
+                # of which means this proxy is not serving.
                 status = "failed"
             else:
                 status = "skipped"
@@ -440,6 +449,11 @@ class ProxyPool:
         for served in config.providers:
             self._routes.pop(served, None)
         self._register_routes(config)
+        # The proxy is serving again, so its previous failure is resolved:
+        # a stale "process exited mid-session" next to a warm status would
+        # tell the operator (and the self-model) the opposite of the truth.
+        self._last_errors.pop(proxy_id, None)
+        self._failed.discard(proxy_id)
         logger.info("Proxy %r respawned; routes re-registered", proxy_id)
         return True
 
