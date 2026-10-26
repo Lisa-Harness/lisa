@@ -552,6 +552,88 @@ def _isolate_surface(monkeypatch: pytest.MonkeyPatch, routing: dict[str, list[st
 
 
 @pytest.mark.asyncio
+async def test_build_tool_surface_connects_capability_cold_servers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ambient capability-prefixed allowlist entries gate cold servers by capability.
+
+    Regression for the 2026-10-25 storage regression: ambient MCP tool ids
+    became capability-prefixed (``storage.write_file``), but the cold-server
+    gate matched allowlist entries against ``server_id.`` (``lisa-storage.``).
+    No entry matched, so the cold storage/thread servers were never
+    connected and every mode silently lost its MCP-native write tools —
+    the model then truthfully reported storage as read-only.
+
+    The gate must treat a config's published prefix as ``capability or
+    server_id`` — the same prefix the pool publishes tools under.
+    """
+    from kernel.turn_phases._tool_schemas import build_tool_surface
+
+    class _RecordingPool:
+        def __init__(self) -> None:
+            self.seen_allowed_server_ids: set[str] | None = None
+            self.configs = [
+                SimpleNamespace(server_id="lisa-storage", capability="storage"),
+                SimpleNamespace(server_id="lisa-thread", capability="thread"),
+                SimpleNamespace(server_id="lisa-guard", capability=None),
+            ]
+
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            self.seen_allowed_server_ids = allowed_server_ids
+            return []
+
+    mode_config = _make_mode_config(
+        mode_id="capmode",
+        mode_kind="chat",
+        allowed_tool_ids=["storage.write_file", "storage.append_file", "thread.thread_read_range"],
+        tools_authoritative=True,
+    )
+    _isolate_surface(monkeypatch, {})
+
+    pool = _RecordingPool()
+    await build_tool_surface(mode_config, pool=pool, yield_policy=YieldPolicy())  # type: ignore[arg-type]
+
+    assert pool.seen_allowed_server_ids is not None
+    assert "lisa-storage" in pool.seen_allowed_server_ids
+    assert "lisa-thread" in pool.seen_allowed_server_ids
+    assert "lisa-guard" not in pool.seen_allowed_server_ids
+
+
+@pytest.mark.asyncio
+async def test_build_tool_surface_gates_plain_servers_by_server_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-capability servers keep the legacy ``server_id.`` prefix gate."""
+    from kernel.turn_phases._tool_schemas import build_tool_surface
+
+    class _RecordingPool:
+        def __init__(self) -> None:
+            self.seen_allowed_server_ids: set[str] | None = None
+            self.configs = [
+                SimpleNamespace(server_id="some-server", capability=None),
+                SimpleNamespace(server_id="other-server", capability=None),
+            ]
+
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            self.seen_allowed_server_ids = allowed_server_ids
+            return []
+
+    mode_config = _make_mode_config(
+        mode_id="plainmode",
+        mode_kind="chat",
+        allowed_tool_ids=["some-server.tool_a"],
+        tools_authoritative=True,
+    )
+    _isolate_surface(monkeypatch, {})
+
+    pool = _RecordingPool()
+    await build_tool_surface(mode_config, pool=pool, yield_policy=YieldPolicy())  # type: ignore[arg-type]
+
+    assert pool.seen_allowed_server_ids is not None
+    assert pool.seen_allowed_server_ids == {"some-server"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode_kind",
     ["workflow", "chat", "action"],

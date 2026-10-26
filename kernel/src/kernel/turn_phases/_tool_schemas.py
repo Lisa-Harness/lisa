@@ -335,16 +335,26 @@ async def build_tool_surface(
     mode_id = str(getattr(mode_config, "mode_id", "") or "") if mode_config else ""
 
     # ── Cold-server selection + MCP tool listing ────────────────────────
-    # When the mode has an allowlist, only connect servers whose namespaced
-    # prefix appears in it. Authoritative-with-empty-allowlist means no tools
+    # When the mode has an allowlist, only connect servers whose *published*
+    # prefix appears in it. For capability servers the published prefix is
+    # the capability (``storage.write_file``), not the server id
+    # (``lisa-storage.write_file``) — matching on server id stopped
+    # connecting the storage/thread servers for every mode once ambient ids
+    # became capability-prefixed, silently dropping all MCP-native tools
+    # from the model-facing surface (the 2026-10-25 regression: modes
+    # "lost" write_file/append_file and truthfully reported storage as
+    # read-only). Authoritative-with-empty-allowlist means no tools
     # — no cold servers needed.
+    def _published_prefix(config: Any) -> str:
+        return str(getattr(config, "capability", None) or config.server_id)
+
     allowed_server_ids: set[str] | None = None
     if mode_config and mode_config.allowed_tool_ids:
         allowed_set = set(mode_config.allowed_tool_ids)
         allowed_server_ids = {
             c.server_id
             for c in getattr(pool, "configs", [])
-            if any(t.startswith(c.server_id + ".") for t in allowed_set)
+            if any(t.startswith(_published_prefix(c) + ".") for t in allowed_set)
         }
     elif mode_config and mode_config.tools_authoritative and not mode_config.allowed_tool_ids:
         allowed_server_ids = set()
