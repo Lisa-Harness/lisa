@@ -623,7 +623,9 @@ class TestWorkspaceRootResolution:
             pack_configuration={"lisa-pack-other": {"workspace_root": "/pack/ws"}},
         )
 
-        assert runtime._resolve_copilot_workspace_root() == Path("/authored/ws")
+        # Mirror the resolver: a leading "/" re-anchors onto the current drive
+        # on Windows, so a bare Path("/authored/ws") is not portable.
+        assert runtime._resolve_copilot_workspace_root() == Path("/authored/ws").resolve()
 
     def test_pack_scan_finds_workspace_root_from_any_pack(self, tmp_path: Path) -> None:
         """A pack that is not the coding pack can declare the workspace root."""
@@ -632,7 +634,7 @@ class TestWorkspaceRootResolution:
             pack_configuration={"lisa-pack-workspace": {"workspace_root": "/pack/ws"}},
         )
 
-        assert runtime._resolve_copilot_workspace_root() == Path("/pack/ws")
+        assert runtime._resolve_copilot_workspace_root() == Path("/pack/ws").resolve()
 
     def test_pack_scan_is_deterministic_across_declarations(self, tmp_path: Path) -> None:
         """Several declaring packs resolve to the first in sorted pack-name order."""
@@ -644,7 +646,7 @@ class TestWorkspaceRootResolution:
             },
         )
 
-        assert runtime._resolve_copilot_workspace_root() == Path("/alpha")
+        assert runtime._resolve_copilot_workspace_root() == Path("/alpha").resolve()
 
     def test_pack_scan_accepts_mapping_blocks(self) -> None:
         """A read-only mapping block is scanned like a plain dict.

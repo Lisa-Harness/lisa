@@ -59,7 +59,11 @@ def _init_repo(repo: Path) -> list[str]:
 
     repo.mkdir()
     git = ["git", "-C", str(repo)]
-    subprocess.run([*git, "init", "-q"], check=True)
+    # Pin the initial branch: ``init.defaultBranch`` is unset on CI runners, so
+    # a bare ``git init`` creates ``master`` there and ``main`` on a developer
+    # box. Tests naming ``main`` as a base candidate would then resolve against
+    # a branch that does not exist, and silently take a different base.
+    subprocess.run([*git, "init", "-q", "--initial-branch=main"], check=True)
     subprocess.run([*git, "config", "user.email", "t@example.com"], check=True)
     subprocess.run([*git, "config", "user.name", "T"], check=True)
     # A throwaway fixture must not inherit the developer's ambient
