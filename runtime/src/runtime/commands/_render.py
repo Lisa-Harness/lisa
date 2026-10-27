@@ -567,6 +567,9 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "policy (the decision dial and rules behind approval prompts).",
             "- /tokens — session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self — local diagnostics.",
+            "- /forensics [last | turn | start-end] — recorded evidence for your own "
+            "past turn(s): the thread entry, the lifecycle decisions that drove it, "
+            "every dispatch, and the cost, joined by turn index.",
             "- /workflow [status|conclude [reason]] — show the active multi-step "
             "workflow and its step progress, or conclude it durably so it stops "
             "steering routing.",

@@ -116,6 +116,11 @@ real turn; a reader must not treat a missing index as turn 0 or it will
 attribute background work to the first turn. Use
 [`resolve_turn_index`](../kernel/src/kernel/models.py) to normalize raw values.
 
+To read a specific turn's evidence — the thread entry, its decisions, its
+dispatches, and its cost, joined — use `/forensics [last | turn | start-end]`
+for the operator view, or the `turn_forensics` operation for the model view.
+Both render through one formatter. See [turn forensics](FORENSICS.md).
+
 ## Decision telemetry versus spans
 
 The event bus and OpenTelemetry are separate channels, and neither substitutes

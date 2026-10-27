@@ -19,6 +19,9 @@ The [project README](../README.md) explains the project and its current status.
 - [Storage and data handling](STORAGE.md): persistence, backups, privacy,
   and the direct-I/O policy.
 - [Logging](LOGGING.md): observability configuration and contributor standards.
+- [Turn forensics](FORENSICS.md): how to read the evidence for a past turn —
+  the four sources, the `turn_index` join, the three failure shapes, and what
+  the reader deliberately will not do.
 
 ## Understand and extend the framework
 

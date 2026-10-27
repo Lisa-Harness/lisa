@@ -51,6 +51,10 @@ import logging
 import os
 from collections.abc import Callable
 
+from runtime.commands._forensics import (
+    handle_forensics_command,
+    render_forensics,
+)
 from runtime.commands._lists import (
     escape_markdown_cell,
     render_modes_list,
@@ -211,6 +215,7 @@ __all__ = [
     "format_token_stats",
     "format_unsupported_mode",
     "handle_debug_command",
+    "handle_forensics_command",
     "handle_help_command",
     "handle_intake_command",
     "handle_last_command",
@@ -235,6 +240,7 @@ __all__ = [
     "render_capability_help",
     "render_command_help",
     "render_debug_turn",
+    "render_forensics",
     "render_last_turn",
     "render_mcp_server_detail",
     "render_mcp_summary",

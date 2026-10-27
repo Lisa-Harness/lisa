@@ -72,6 +72,7 @@ from runtime.commands import (
     format_token_stats,
     format_unsupported_mode,
     handle_debug_command,
+    handle_forensics_command,
     handle_help_command,
     handle_intake_command,
     handle_last_command,
@@ -448,6 +449,7 @@ _PREFIX_ASYNC_COMMANDS: tuple[
     ("/last", handle_last_command),
     ("/workflow", handle_workflow_command),
     ("/debug", handle_debug_command),
+    ("/forensics", handle_forensics_command),
 )
 
 
