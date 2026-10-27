@@ -355,6 +355,60 @@ async def test_self_transition_to_default_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rejected_handoff_reports_failure_in_stage_telemetry() -> None:
+    """A rejected handoff must not emit a success event.
+
+    ``_execute_mid_turn_handoff`` signals rejection only by returning
+    ``handoff_to=None``, and the interception path emitted
+    ``tool_dispatch_complete`` unconditionally with ``ok: True``,
+    ``transition: "handoff"`` and the refused target under ``handoff_to``.
+    A reader of the stage stream (metrics, a transport timeline, or the model
+    itself on a later turn) therefore saw a refused handoff recorded as one
+    that landed — the same defect class as echoing an unverified claim as
+    evidence. The sibling unknown-target rejection already distinguishes
+    itself (``ok: False``, ``transition: "unknown"``); a gate rejection must
+    do the same, and must not report the target as an achieved ``handoff_to``.
+    """
+
+    call_count = 0
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "default")],
+            )
+        return _StubCompletion(content="Recovered.")
+
+    hooks = _build_hooks(two_step)
+    hooks.lifecycle.on_stage = on_stage
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.handoff_to is None
+    transition_events = [
+        data
+        for label, data in events
+        if label == "tool_dispatch_complete" and data.get("tool_kind") == "transition"
+    ]
+    assert len(transition_events) == 1, f"expected one transition event; got {transition_events!r}"
+    event = transition_events[0]
+    assert event["ok"] is False, f"rejected handoff reported as ok: {event!r}"
+    assert event["transition"] == "rejected", f"rejected handoff mislabelled: {event!r}"
+    assert event["handoff_to"] is None, (
+        f"a refused handoff must not report an achieved target: {event!r}"
+    )
+    assert event["rejected_target"] == "default", (
+        f"the refused target must still be named for the operator: {event!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_self_transition_to_non_default_mode_rejected() -> None:
     """A routable mode cannot hand off to itself.
 

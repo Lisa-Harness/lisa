@@ -234,6 +234,20 @@ All notable changes to the Lisa Harness will be documented in this file.
   accepting a declaration it does not understand. The block message now names
   the syntax to type rather than mentioning an operator override that has no
   CLI flag behind it.
+- **A rejected mode handoff no longer reports success.** `_intercept_mode_handoff`
+  emitted `tool_dispatch_complete` unconditionally after calling
+  `_execute_mid_turn_handoff`, which signals a rejected handoff (target outside
+  the mode's routing targets, or an unknown target mode) only by returning
+  `handoff_to=None`. A refused handoff therefore recorded as
+  `ok: True` / `transition: "handoff"` with the refused target under
+  `handoff_to`, while the sibling unknown-target branch correctly recorded
+  `ok: False` / `transition: "unknown"`. Two rejections, opposite telemetry: a
+  reader of the stage stream could not tell a refused handoff from an applied
+  one. The already-computed `handoff_to is not None` is now the discriminator;
+  a rejection reports `ok: False` with `transition: "rejected"`, leaves
+  `handoff_to` null, and names the target in `rejected_target`, so no consumer
+  mistakes a refused target for an achieved handoff. Dispatch behavior is
+  unchanged.
 - **Effect receipts record the mode that dispatched them.** A turn can span
   several modes — it enters in one, hands off mid-turn, and may hand off
   again — but the thread entry records only the *entry* mode. Completion was

@@ -7036,6 +7036,15 @@ async def _intercept_mode_handoff(
     # clobber it with the helper's None either.
     if _helper_handoff_to is not None:
         handoff_to = _helper_handoff_to
+    # ``_helper_handoff_to`` is also the applied/rejected discriminator for the
+    # stage event below. The helper signals a rejected handoff (target not in
+    # the mode's routing targets, or an unknown target mode) only by returning
+    # ``handoff_to=None``, so emitting ``ok: True`` unconditionally reported a
+    # refused handoff as one that landed and named the refused target under
+    # ``handoff_to``. Anything reading the stage stream then could not tell a
+    # rejection from an applied switch. The sibling unknown-target branch
+    # already separates itself (``ok: False``, ``transition: "unknown"``).
+    _handoff_applied = _helper_handoff_to is not None
     await emit_stage(
         "tool_dispatch_complete",
         {
@@ -7044,9 +7053,12 @@ async def _intercept_mode_handoff(
             "state.iteration": state.iteration,
             "tool_calls_so_far": state.total_tool_calls,
             "max_tool_calls": max_tool_iterations,
-            "ok": True,
-            "transition": "handoff",
-            "handoff_to": target_stage,
+            "ok": _handoff_applied,
+            "transition": "handoff" if _handoff_applied else "rejected",
+            # Only an applied handoff may claim ``handoff_to``; a refused target
+            # is named separately so no reader mistakes it for an achieved one.
+            "handoff_to": target_stage if _handoff_applied else None,
+            "rejected_target": None if _handoff_applied else target_stage,
             "max_handoffs": max_handoffs_per_turn,
             "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
         },
