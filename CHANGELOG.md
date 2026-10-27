@@ -117,6 +117,17 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Effect receipts record the mode that dispatched them.** A turn can span
+  several modes — it enters in one, hands off mid-turn, and may hand off
+  again — but the thread entry records only the *entry* mode. Completion was
+  therefore scoped by the entry mode, so work done by a later mode in the same
+  turn did not count. In the operator's history 184 of 203 handoff-bearing
+  turns carried receipts and 115 of those carried write receipts; all were
+  attributed to the entry mode regardless of which mode actually ran them.
+  `EffectReceipt` now carries `mode_id`, stamped from
+  `state.active_mode_id` at dispatch, and completion matches per receipt
+  rather than per entry. Receipts persisted before the field existed fall back
+  to the entry mode, so existing threads keep deriving as they did.
 - **Workflow step completion no longer miscounts or hides finished work.** Two
   defects in `derive_workflow_view`'s matching, both from giving every step its
   own forward search window:

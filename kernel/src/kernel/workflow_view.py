@@ -243,21 +243,52 @@ def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
     return ids
 
 
+def _receipt_mode_ids(entry: dict[str, Any]) -> set[str]:
+    """Return the modes that produced the entry's write receipts.
+
+    A receipt carries the mode that was active when it was dispatched. That
+    matters because one thread entry can span several modes: a turn may enter
+    in one mode, hand off mid-turn, and hand off again, and the entry records
+    only the *entry* mode. Receipts persisted before ``EffectReceipt.mode_id``
+    existed carry an empty id, so the entry's own ``mode_id`` is used as the
+    fallback for them.
+    """
+    receipts = entry.get("effect_receipts")
+    if not receipts or not isinstance(receipts, list):
+        return set()
+    modes: set[str] = set()
+    for r in receipts:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("effect", "")) not in ("write", "external_write"):
+            continue
+        mode = str(r.get("mode_id") or "")
+        modes.add(mode or str(entry.get("mode_id") or ""))
+    return modes
+
+
 def _entry_satisfies_step(entry: dict[str, Any], step: WorkflowStep) -> bool:
     """Return True when ``entry`` is the completion evidence for ``step``.
 
-    - **Write step** (``step.write_capability`` set): a write receipt for
-      exactly that capability (raw or bare form). No dense-content
-      fallback — the receipt is the honest signal.
+    - **Write step** (``step.write_capability`` set): one of the entry's
+      write receipts must match the capability (raw or bare form) *and* have
+      been dispatched in the step's mode. No dense-content fallback — the
+      receipt is the honest signal.
     - **Read step** (``step.write_capability`` is None): a non-empty
-      ``handoff_to`` or ``transitioned_to``. The reads and prose are
-      already in the lossless thread; the handoff is the completion
-      signal.
+      ``handoff_to`` or ``transitioned_to`` in an entry whose mode is the
+      step's mode. The reads and prose are already in the lossless thread;
+      the handoff is the completion signal.
+
+    Mode scoping prevents one mode's work from completing another's step.
+    It is evaluated per receipt where possible, not per entry, because an
+    entry that spans several modes carries all of their receipts.
     """
+    if step.write_capability is not None:
+        if step.mode_id not in _receipt_mode_ids(entry):
+            return False
+        return step.write_capability in _receipt_capability_ids(entry)
     if entry.get("mode_id") != step.mode_id:
         return False
-    if step.write_capability is not None:
-        return step.write_capability in _receipt_capability_ids(entry)
     handoff = str(entry.get("handoff_to") or "")
     transitioned = str(entry.get("transitioned_to") or "")
     return bool(handoff or transitioned)

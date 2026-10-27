@@ -565,3 +565,87 @@ class TestWriteReceiptContract:
         ]
         view = derive_workflow_view(entries)
         assert view is None
+
+
+# ── Regression: a turn can span several modes ─────────────────────────
+
+
+class TestReceiptModeAttribution:
+    """Completion is scoped by the mode that *dispatched* each receipt.
+
+    A single thread entry can span several modes: a turn enters in one mode,
+    hands off mid-turn, and hands off again. The entry records only the entry
+    mode, so scoping a receipt by the entry's ``mode_id`` mislabels work done
+    by a later mode in the same turn. In the operator's own history, 184 of
+    203 handoff-bearing turns carried receipts and 115 of those carried write
+    receipts — all attributable to the entry mode under the old rule.
+    """
+
+    _PLAN = """\
+## Plan
+
+1. **coding_review** — Review the change
+   _reads_
+2. **coding_execute** — Commit it
+   _writes: coding_commit_
+"""
+
+    def test_receipt_from_a_later_mode_in_the_same_turn_completes_the_step(self):
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="coding_review",
+                response_text="Reviewed.",
+                handoff_to="thinker",
+                turn=1,
+            ),
+            _entry(
+                mode_id="thinker",
+                response_text="Did the whole chain in one turn.",
+                effect_receipts=[
+                    {
+                        "capability_id": "coding_commit",
+                        "effect": "write",
+                        "mode_id": "coding_execute",
+                    }
+                ],
+                turn=2,
+            ),
+        ]
+        # Both steps satisfied -> the workflow is complete.
+        assert derive_workflow_view(entries) is None
+
+    def test_receipt_from_a_different_mode_does_not_complete_the_step(self):
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="thinker",
+                response_text="Committed from the wrong mode.",
+                effect_receipts=[
+                    {"capability_id": "coding_commit", "effect": "write", "mode_id": "thinker"}
+                ],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "coding_execute_1" not in view.completed_steps
+
+    def test_legacy_receipt_without_mode_falls_back_to_entry_mode(self):
+        """Receipts persisted before the field existed still attribute."""
+        plan = """\
+## Plan
+
+1. **coding_execute** — Commit it
+   _writes: coding_commit_
+"""
+        entries = [
+            _entry(mode_id="planner", response_text=plan, turn=0),
+            _entry(
+                mode_id="coding_execute",
+                response_text="Committed.",
+                effect_receipts=[{"capability_id": "coding_commit", "effect": "write"}],
+                turn=1,
+            ),
+        ]
+        assert derive_workflow_view(entries) is None

@@ -1149,6 +1149,7 @@ def _serialize_effect_receipts(result: TurnResult) -> list[dict[str, str]]:
             "capability_id": str(getattr(r, "capability_id", "")),
             "effect": str(getattr(r, "effect", "")),
             "artifact_id": str(getattr(r, "artifact_id", "") or ""),
+            "mode_id": str(getattr(r, "mode_id", "") or ""),
         }
         for r in (result.effect_receipts or [])
     ]

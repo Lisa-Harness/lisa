@@ -180,7 +180,10 @@ The thread is the durable source of truth; there is no separate mutable
 workflow-position store.
 
 Completion is matched by **consuming thread entries**, and each entry may
-complete at most one step. Two rules follow from that:
+complete at most one step. Receipts are scoped by the mode that *dispatched*
+them (`EffectReceipt.mode_id`), not by the entry's `mode_id`: one turn can span
+several modes by handing off mid-turn, and the entry records only the mode it
+started in. Two rules follow from that:
 
 - A single receipt cannot satisfy two steps that share a `mode_id` (two
   `coding` steps and one commit previously ticked both boxes and could collapse

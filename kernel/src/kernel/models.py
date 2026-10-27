@@ -1968,6 +1968,18 @@ class EffectReceipt(BaseModel):
             "Empty when the capability does not produce a addressable artifact."
         ),
     )
+    mode_id: str = Field(
+        default="",
+        description=(
+            "The mode that was active when this capability was dispatched. "
+            "Required because a single turn can span several modes: entry, a "
+            "mid-turn handoff, and another handoff all land in one thread "
+            "entry, and the entry records only the *entry* mode. Without this "
+            "field a receipt's mode had to be guessed from the entry, which "
+            "mislabelled 115 of 184 receipt-bearing handoff turns. Empty on "
+            "receipts persisted before the field existed."
+        ),
+    )
 
 
 class BlockDiagnostic(BaseModel):

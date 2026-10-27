@@ -563,6 +563,7 @@ def _handle_write_receipt(
                 effect=cast(EffectKind, dispatched_effect),
                 capability_id=tool_name,
                 artifact_id=dispatched_artifact_id,
+                mode_id=state.active_mode_id,
             )
         )
     return dispatched_succeeded
@@ -595,6 +596,7 @@ def _handle_read_receipt(
                     effect=cast(EffectKind, dispatched_effect),
                     capability_id=tool_name,
                     artifact_id=dispatched_artifact_id,
+                    mode_id=state.active_mode_id,
                 )
             )
         else:
@@ -603,6 +605,7 @@ def _handle_read_receipt(
                     effect="write",
                     capability_id=tool_name,
                     artifact_id="",
+                    mode_id=state.active_mode_id,
                 )
             )
     return mcp_succeeded
