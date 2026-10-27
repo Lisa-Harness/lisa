@@ -138,6 +138,20 @@ All notable changes to the Lisa Harness will be documented in this file.
   authoritative to anything reading the history later, including the model on a
   subsequent turn. The echo is now `Rationale (model-supplied): <text>`.
 
+- **Handoff rationale attribution names the real author.** `39bc8703` labelled
+  the echoed `transition_stage` rationale "model-supplied" unconditionally. The
+  kernel writes rationales too — the forced-action enforcer and the plan-driven
+  handoff both synthesize a call, and the dispatcher reads `rationale` back out
+  of `tool_arguments` exactly as it does for a model call — so the kernel's own
+  sentence ("Kernel-forced transition handoff: 2 non-compliant dispatch(es)
+  reached the cap …") was echoed as the model's. That is the same
+  misattribution the label exists to prevent, and worse than the unmarked form
+  because it asserts a wrong author rather than none. The label now follows the
+  call id: kernel-synthesized calls are minted with a kernel prefix
+  (`forced_*`, `planned_handoff_*`), so `_rationale_label` is the single
+  authority for who composed the text. Covered by a helper-level test and an
+  end-to-end forced-handoff test; both verified to fail against the
+  unconditional label.
 - **A stall yield now shows the operator how to escape it.** A recovery stall
   blocks the turn and yields; only a slash command clears it. Those commands
   were built and placed in `data["remediation"]` but never in
