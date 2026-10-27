@@ -776,46 +776,132 @@ async def _run_self_model_slice_impl(
     vibe = result.output_text.strip()
     if not vibe:
         return 0, "", ""
-    if runtime.session.state_snapshot is None:
-        runtime.session.state_snapshot = {}
-    # Emit the self-model vibe as a ContextItem record into the
-    # single context_items — no arbitrary named bucket. The
-    # mapper picks it up via context_candidates_from_items like every
-    # other pack-contributed context item.
+    _emit_context_item(
+        runtime,
+        item_id=f"state:self_model:{runtime.config.user_slug}",
+        namespace="self_model",
+        title=f"Self-model (health={health})",
+        body=vibe,
+        evidence_type="runtime_self_model",
+        tags=["self_model", health],
+        metadata={"provenance": "system_observed", "operational_health": health},
+    )
+    return 1, "self_model", f"self_model health={health}"
+
+
+def _emit_context_item(
+    runtime: HostRuntime,
+    *,
+    item_id: str,
+    namespace: str,
+    title: str,
+    body: str,
+    evidence_type: str,
+    tags: list[str],
+    metadata: dict[str, Any],
+    salience: float = 0.8,
+) -> None:
+    """Publish one extension context item into the session's evidence lane.
+
+    The single ``context_items`` list is the only lane: the session-owned
+    context mapper picks entries up via ``context_candidates_from_items`` like
+    any other pack-contributed record, and there is no arbitrary named bucket
+    to keep in sync. Replacing an item with the same ``item_id`` means only the
+    freshest observation of a given kind survives.
+    """
     from datetime import UTC, datetime
 
     from kernel.models import ContextItem
 
+    if runtime.session.state_snapshot is None:
+        runtime.session.state_snapshot = {}
     evidence = ContextItem(
-        item_id=f"state:self_model:{runtime.config.user_slug}",
-        namespace="self_model",
-        source="self_model",
+        item_id=item_id,
+        namespace=namespace,
+        source=namespace,
         source_type="extension",
-        evidence_type="runtime_self_model",
-        title=f"Self-model (health={health})",
-        body=vibe,
+        evidence_type=evidence_type,
+        title=title,
+        body=body,
         collected_at=datetime.now(UTC).isoformat(),
-        salience_score=0.8,
+        salience_score=salience,
         confidence=0.9,
         pack="lisa-pack-introspect",
-        tags=["self_model", health],
-        metadata={"provenance": "system_observed", "operational_health": health},
+        tags=tags,
+        metadata=metadata,
     )
     catalog = runtime.session.state_snapshot.setdefault("context_items", [])
     if not isinstance(catalog, list):
         catalog = []
         runtime.session.state_snapshot["context_items"] = catalog
-    # Replace any prior self-model evidence so only the freshest survives.
     catalog[:] = [
-        e
-        for e in catalog
+        entry
+        for entry in catalog
         if not (
-            (isinstance(e, dict) and e.get("item_id") == evidence.item_id)
-            or getattr(e, "item_id", None) == evidence.item_id
+            (isinstance(entry, dict) and entry.get("item_id") == item_id)
+            or getattr(entry, "item_id", None) == item_id
         )
     ]
     catalog.append(evidence.model_dump(mode="json"))
-    return 1, "self_model", f"self_model health={health}"
+
+
+def _run_behavioral_signals_slice_impl(
+    runtime: HostRuntime,
+) -> tuple[int, str, str]:
+    """Scan recent turns for behavioural patterns worth surfacing.
+
+    Returns ``(work_items, last_item, note)``. Silence is the common case: a
+    nominal window emits no ``ContextItem`` and therefore costs no prompt
+    tokens, matching the self-model's ambient-silence contract.
+
+    Independently gated from ``operational_health`` on purpose. Health answers
+    "is the host degraded?" (memory, tasks, MCP, log errors); a streak of
+    blocked turns on a perfectly healthy process is still the thing an
+    operator most wants surfaced, and gating it behind health would hide
+    exactly that case.
+
+    Budget: the scan is bounded by turns, records, and bytes. Measured on a
+    live store (~128 KiB per thread entry), a 12-turn window plus a 256 KiB
+    ledger read costs ~34 ms, which fits the slice budget. Widening the window
+    is what ``/forensics`` and ``turn_forensics`` are for.
+    """
+    from sdk.forensics import compute_behavioral_signals, render_signals
+    from sdk.thread import ThreadStore
+
+    from runtime.thread import get_thread_redaction_policy
+
+    try:
+        store = ThreadStore(runtime.paths.thread_path, redaction=get_thread_redaction_policy())
+        signals = compute_behavioral_signals(
+            store,
+            decisions_path=runtime.paths.decisions_path,
+            token_usage_path=runtime.paths.token_usage_path,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # A slice must never break the turn; a failed scan is simply no signal.
+        logger.debug("behavioural-signals slice failed: %s", exc, exc_info=True)
+        return 0, "", ""
+
+    body = render_signals(signals)
+    if not body:
+        return 0, "", ""
+
+    _emit_context_item(
+        runtime,
+        item_id=f"state:behavioural_signals:{runtime.config.user_slug}",
+        namespace="behavioural_signals",
+        title=f"Observed patterns ({signals.window_turns} turns)",
+        body=body,
+        evidence_type="runtime_behavioural_signals",
+        tags=["behavioural_signals"],
+        metadata={
+            "provenance": "system_observed",
+            "window_turns": signals.window_turns,
+            "counters": signals.counters,
+        },
+        salience=0.75,
+    )
+    return 1, "behavioural_signals", f"behavioural_signals count={len(signals.signals)}"
 
 
 def _assemble_dynamic_user_context(
@@ -1253,10 +1339,15 @@ def _build_slice_callables(
     async def _pre_turn_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
 
+    async def _run_behavioral_signals_slice() -> tuple[int, str, str]:
+        """Scan recent turns for behavioural patterns (see its impl)."""
+        return _run_behavioral_signals_slice_impl(runtime)
+
     async def _post_turn_slice(policy: Any) -> Any:
         outcome = await file_state_provider.slice(ctx=None, policy=policy)
         runtime.session.last_slice_finished_at = __import__("time").monotonic()
-        return _compose_self_model_outcome(outcome, await _run_self_model_slice())
+        outcome = _compose_context_items_outcome(outcome, await _run_self_model_slice())
+        return _compose_context_items_outcome(outcome, await _run_behavioral_signals_slice())
 
     async def _explicit_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
@@ -1264,14 +1355,15 @@ def _build_slice_callables(
     return _introspect_fn, _run_self_model_slice, _pre_turn_slice, _post_turn_slice, _explicit_slice
 
 
-def _compose_self_model_outcome(outcome: Any, self_model: tuple[int, str, str]) -> Any:
-    """Fold a self-model slice result into a base slice outcome.
+def _compose_context_items_outcome(outcome: Any, contributor: tuple[int, str, str]) -> Any:
+    """Fold one context-lane contributor's slice result into a slice outcome.
 
-    The self-model contributes work items, its last-item name, and a note
-    onto the base (file-compaction) outcome; a zero-work self-model pass
-    returns the base outcome unchanged.
+    A contributor (the deterministic self-model, the behavioural-signal scan)
+    reports ``(work_items, last_item, note)``. Zero work -- the common case,
+    since both are silent when nothing is wrong -- returns the base outcome
+    unchanged, which is what keeps an ordinary turn free of prompt tokens.
     """
-    sm_items, sm_last, sm_note = self_model
+    sm_items, sm_last, sm_note = contributor
     if sm_items > 0:
         outcome = SliceOutcome(
             work_items_completed=outcome.work_items_completed + sm_items,

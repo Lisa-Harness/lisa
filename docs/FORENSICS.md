@@ -122,6 +122,42 @@ from a tool parameter. A caller cannot name another user's evidence.
   `turn_index` was stamped carry no index and appear as unattributed. That is
   accurate: they cannot be attributed retroactively.
 
+## Ambient behavioural signals
+
+`/forensics` and `turn_forensics` answer questions you ask. The post-turn slice
+also answers a question nobody asks explicitly: *is this pattern repeating?*
+After each turn, `compute_behavioral_signals` scans a short window and, **only
+when something crosses its threshold**, injects a context item:
+
+| Signal | Fires when |
+| --- | --- |
+| Blocked streak | N consecutive turns ended blocked (`blocked_streak`, default 3) |
+| Dispatch failure rate | ≥25% of ≥10 windowed dispatches failed |
+| Concentrated failures | One turn recorded ≥3 failed dispatches |
+| Missing receipts | A turn dispatched work but recorded no effect receipts |
+| Mode dwell | N consecutive turns in one mode (default 8) |
+| Cost spike | A turn used ≥3× the window median tokens |
+
+**Gated independently of `operational_health`.** Health answers "is the host
+degraded?" — memory, asyncio tasks, MCP pool, log errors. A streak of blocked
+turns on a perfectly healthy process is still the thing an operator most wants
+surfaced, so reusing the health gate would hide exactly the case this exists
+for.
+
+**Silent by default.** An ordinary window emits nothing and costs no prompt
+tokens, matching the self-model's ambient-silence contract. Thresholds live in
+[`SignalThresholds`](../sdk/src/sdk/forensics/signals.py); the defaults are
+deliberately conservative, because a signal that fires on ordinary turns makes
+the whole channel ignorable.
+
+**Bounded for the slice budget.** The window is 12 turns and the telemetry read
+is capped at 256 KiB per file. Measured on a live store — where a thread entry
+averages ~128 KiB because it carries a full transcript — the scan costs
+~21–34 ms. That is why the window is small: `load_recent` JSON-decodes every
+entry, and a 40-turn window cost ~50 ms, which would consume the budget on its
+own. A wider behavioural view belongs in `/forensics`, which is on-demand and
+not budget-bound.
+
 ## Verifying a claim
 
 Every line in a bundle names its turn. Before acting on a conclusion —

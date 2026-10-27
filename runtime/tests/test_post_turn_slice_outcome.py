@@ -1,13 +1,16 @@
 """Tests for the post-turn slice outcome composition in ``_build_slice_callables``.
 
-The 2026-10-03 regression: the refactor that extracted
-``_compose_self_model_outcome`` to module level left ``await`` on its call
-site in ``_post_turn_slice``. ``_compose_self_model_outcome`` is a plain
-synchronous function returning a ``SliceOutcome`` — the ``await`` raised
-``TypeError: object SliceOutcome can't be used in 'await' expression`` on
-every post-turn slice, so the kernel's ``_fire_slice`` swallowed the failure
-and discarded both the self-model outcome and the chained memory
-consolidation results every turn.
+The 2026-10-03 regression: the refactor that extracted the outcome composer
+to module level left ``await`` on its call site in ``_post_turn_slice``. The
+composer is a plain synchronous function returning a ``SliceOutcome`` -- the
+``await`` raised ``TypeError: object SliceOutcome can't be used in 'await'
+expression`` on every post-turn slice, so the kernel's ``_fire_slice``
+swallowed the failure and discarded the self-model outcome and the chained
+memory consolidation results every turn.
+
+The composer is now shared by every context-lane contributor (the
+deterministic self-model and the behavioural-signal scan), so the same
+synchronous contract guards both.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from typing import Any
 import pytest
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy
 from runtime.state_provider import FileBackedStateProvider
-from runtime.turn_hooks_builder import _build_slice_callables, _compose_self_model_outcome
+from runtime.turn_hooks_builder import _build_slice_callables, _compose_context_items_outcome
 
 
 def _make_runtime(tmp_path: Path) -> Any:
@@ -41,7 +44,7 @@ def _policy() -> SlicePolicy:
 async def test_post_turn_slice_returns_outcome(tmp_path: Path) -> None:
     """The post-turn slice callable must return a SliceOutcome, not raise.
 
-    Before the fix, ``await`` on the synchronous ``_compose_self_model_outcome``
+    Before the fix, ``await`` on the synchronous ``_compose_context_items_outcome``
     raised ``TypeError`` before the outcome could be returned.
     """
     runtime = _make_runtime(tmp_path)
@@ -65,16 +68,16 @@ async def test_post_turn_slice_returns_outcome(tmp_path: Path) -> None:
     assert outcome.work_items_completed == 0
 
 
-def test_compose_self_model_outcome_is_synchronous() -> None:
-    """``_compose_self_model_outcome`` is a plain sync function.
+def test_compose_context_items_outcome_is_synchronous() -> None:
+    """``_compose_context_items_outcome`` is a plain sync function.
 
     Guards against reintroducing ``await`` at the call site: awaiting its
     return value raises ``TypeError`` because it is not awaitable.
     """
-    assert not inspect.iscoroutinefunction(_compose_self_model_outcome)
+    assert not inspect.iscoroutinefunction(_compose_context_items_outcome)
 
     base = SliceOutcome(work_items_completed=2, elapsed_ms=10.0, last_item="base", notes=("n",))
-    composed = _compose_self_model_outcome(base, (3, "self_model", "health=degraded"))
+    composed = _compose_context_items_outcome(base, (3, "self_model", "health=degraded"))
 
     assert composed.work_items_completed == 5
     assert composed.last_item == "self_model"
@@ -86,6 +89,6 @@ def test_compose_self_model_outcome_is_synchronous() -> None:
         import asyncio
 
         async def _await_it() -> Any:
-            return await _compose_self_model_outcome(base, (0, "", ""))
+            return await _compose_context_items_outcome(base, (0, "", ""))
 
         asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_await_it())

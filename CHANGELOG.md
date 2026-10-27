@@ -6,6 +6,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Ambient behavioural signals — Lisa notices repeating failure instead of
+  waiting to be asked.** The post-turn slice now runs
+  `compute_behavioral_signals` over a short window of recent turns and injects
+  a context item *only when a pattern crosses its threshold*: a blocked streak,
+  a dispatch failure rate, concentrated failures in one turn, a turn that
+  dispatched work but recorded no effect receipts, mode dwell, or a cost spike
+  against the window median. Three properties matter. It is **gated
+  independently of `operational_health`** — health answers "is the host
+  degraded?", and a streak of blocked turns on a healthy process is precisely
+  the case that gate would hide. It is **silent by default**, so an ordinary
+  turn still costs zero prompt tokens. And it is **bounded for the slice
+  budget**: 12 turns and 256 KiB per telemetry file, measured at 21–34 ms on a
+  live store where a thread entry averages ~128 KiB. A 40-turn window cost
+  ~50 ms on its own, which is why the ambient scan stays narrow and the wide
+  view lives in `/forensics`.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_signals.py`,
+  `runtime/tests/test_behavioural_signals_slice.py`
+
 - **`turn_forensics` — the model can examine its own recorded turns.**
   `sdk/packs/introspect` gains an ambient, read-effect operation that reads the
   evidence for one or more past turns: the thread entry, the lifecycle
