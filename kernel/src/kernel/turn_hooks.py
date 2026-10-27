@@ -216,7 +216,7 @@ class LifecycleHooks:
     #: Async callable returning an ``IntrospectSnapshot`` from the host's
     #: live runtime (process memory, asyncio tasks, MCP pool health, token
     #: usage, log tail). Injected into ``OperationExecutionContext.host`` so
-    #: self-model / reflect_self can read live state. Default: ``None``.
+    #: the self-model and forensic readers can read live state. Default: ``None``.
     introspect: Callable[[], Awaitable[IntrospectSnapshot]] | None = None
 
 

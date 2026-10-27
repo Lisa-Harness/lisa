@@ -39,7 +39,7 @@ from sdk.forensics._logrec import (
 )
 from sdk.forensics._models import BundleSources, ForensicBundle, TurnEvidence
 from sdk.layout import DATA_DIR, LOGS_DIR
-from sdk.thread import ThreadRedactionPolicy, ThreadStore
+from sdk.thread import ThreadRedactionPolicy, ThreadStore, resolve_redaction_policy
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ class ForensicReader:
         thread_dir: Path | str | None = None,
         user_slug: str = "",
         redaction: ThreadRedactionPolicy | None = None,
+        resolve_redaction_from_env: bool = True,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         max_turns: int = DEFAULT_MAX_TURNS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -95,7 +96,17 @@ class ForensicReader:
         self._data_dir = Path(data_dir)
         self._thread_dir = Path(thread_dir) if thread_dir else self._data_dir / DATA_DIR / "threads"
         self._user_slug = user_slug
-        self._redaction = redaction
+        # An explicit policy always wins. Otherwise resolve the shared
+        # environment contract, so a host that configured redaction does not
+        # silently lose it simply because the pack constructed the reader.
+        # ``resolve_redaction_from_env=False`` opts a caller out (tests that
+        # need raw thread text for assertions).
+        if redaction is not None:
+            self._redaction = redaction
+        elif resolve_redaction_from_env:
+            self._redaction = resolve_redaction_policy()
+        else:
+            self._redaction = None
         self._window_seconds = window_seconds
         self._max_turns = max(1, max_turns)
         self._max_bytes = max_bytes

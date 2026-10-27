@@ -683,25 +683,6 @@ class IntrospectSnapshot(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Reflective self-assessment (LLM-generated from inventory + introspection)
-# ---------------------------------------------------------------------------
-
-ReflectionHealth = Literal["healthy", "degraded", "struggling", "unknown"]
-
-
-class LisaReflectionArtifact(BaseModel):
-    """LLM-generated holistic assessment of Lisa's current operational state."""
-
-    generated_at: str
-    overall_health: ReflectionHealth = "unknown"
-    health_reasoning: str = ""
-    attention_items: list[str] = Field(default_factory=list)
-    behavioral_patterns: list[str] = Field(default_factory=list)
-    confidence: float = 0.0
-    self_model_snapshot_generated_at: str = ""
-
-
-# ---------------------------------------------------------------------------
 # Dev-state outbox (pushed from the host surface)
 # ---------------------------------------------------------------------------
 

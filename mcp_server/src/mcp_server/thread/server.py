@@ -37,7 +37,6 @@ contract treats them as reads, not writes.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -51,11 +50,11 @@ from mcp_types import ToolAnnotations
 from sdk.layout import DATA_DIR
 from sdk.thread import (
     DEFAULT_READOUT_BYTES,
-    DEFAULT_REDACTION_PATTERNS,
     PageCache,
     ThreadReader,
     ThreadRedactionPolicy,
     ThreadStore,
+    resolve_redaction_policy,
 )
 
 __all__ = ["ThreadDeps", "init_thread", "main", "mcp", "set_deps_for_test"]
@@ -73,39 +72,17 @@ def _resolve_redaction_policy(
 ) -> ThreadRedactionPolicy | None:
     """Resolve the redaction policy from the environment contract.
 
-    The store's own redaction only covers ``build_recent_excerpt`` /
-    ``build_manifest`` / ``search`` — ``load_range`` / ``load_recent``
-    return RAW entries by design (the lossless read contract). The server
-    therefore holds the policy on ``ThreadDeps`` and applies it itself
-    when projecting entries for the model. Inheritance: unset patterns →
-    framework defaults; non-empty ``LISA_THREAD_REDACTION_PATTERNS`` →
-    those patterns only (hard cutover, no merge — same contract as the
-    host config); ``none`` or ``LISA_THREAD_REDACTION_ENABLED=0`` → no
-    redaction (``None``).
-
-    ``enabled_value`` / ``patterns_value`` carry the values the host
-    resolved and passed through the compiled config, so an in-process
-    server does not read the ambient environment. When ``enabled_value``
-    is ``None`` the values are read from the environment instead — the
-    subprocess path, where the child's own environment carries them.
+    Delegates to :func:`sdk.thread.resolve_redaction_policy` so this server and
+    the forensic reader cannot disagree about whether a deployment redacts.
+    The store's own redaction covers ``build_recent_excerpt`` /
+    ``build_manifest`` / ``search`` only — ``load_range`` / ``load_recent``
+    return RAW entries by design — so any surface that projects entries into a
+    prompt applies the policy itself.
     """
-    if enabled_value is None:
-        enabled = os.getenv(_REDACTION_ENABLED_ENV, "").strip().lower()
-        raw = os.getenv(_REDACTION_PATTERNS_ENV, "").strip()
-    else:
-        enabled = enabled_value.strip().lower()
-        raw = (patterns_value or "").strip()
-    if enabled in {"0", "false", "no", "off"}:
-        return None
-    if raw.lower() == "none":
-        return None
-    if raw:
-        patterns = tuple(p for p in raw.splitlines() if p.strip())
-    else:
-        patterns = DEFAULT_REDACTION_PATTERNS
-    if not patterns:
-        return None
-    return ThreadRedactionPolicy.from_patterns(patterns)
+    return resolve_redaction_policy(
+        enabled_value=enabled_value,
+        patterns_value=patterns_value,
+    )
 
 
 def _build_thread_store(

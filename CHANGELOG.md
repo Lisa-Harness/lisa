@@ -6,6 +6,32 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **`turn_forensics` — the model can examine its own recorded turns.**
+  `sdk/packs/introspect` gains an ambient, read-effect operation that reads the
+  evidence for one or more past turns: the thread entry, the lifecycle
+  decisions that drove it, every dispatch that ran, and what it cost, joined on
+  `turn_index`. It is a runtime operation (`turn_forensics.yml` + `.py`) whose
+  handler is thin — `sdk.forensics` does the reading and
+  `sdk.forensics.render_bundle` does the formatting — so the model's view and
+  the operator's `/forensics` view cannot diverge. Parameters are deliberately
+  narrow: `turns` (`last` / `N` / `N-M`), `focus` (emphasis only — every focus
+  returns the full evidence, so asking a narrow question cannot hide the
+  finding), `max_records` (clamped), and `include_raw` (off by default; it
+  bypasses read-time redaction for that call and says so in the bundle).
+  Scope comes from the execution context, never from a parameter, so a caller
+  cannot name another user's evidence.
+- **`reflect_self` removed.** It was unreachable — no mode bound it, it had no
+  `mode_allowlist` and no `default_available`, so the registry never advertised
+  it — while reading as though self-reflection existed. Removed along with its
+  response model, test module, vulture exemption, and the now-unused
+  `LisaReflectionArtifact` / `ReflectionHealth` kernel contracts.
+- **One redaction contract.** `sdk.thread.resolve_redaction_policy` now owns the
+  `LISA_THREAD_REDACTION_*` contract; the `lisa-thread` server and the forensic
+  reader both delegate to it instead of each carrying a copy. Two readers
+  disagreeing about whether a deployment redacts is a privacy bug, not a
+  cosmetic one.
+- **Tests:** `sdk/packs/introspect/tests/`
+
 - **`sdk.forensics` — one forensic reader for the host and the pack layer.**
   The rotation-aware JSONL reader, timestamp parsing, and window filtering added
   with the introspection fix lived in `runtime.introspect`, but the introspect

@@ -77,6 +77,7 @@ testpaths = [
     "sdk/packs/core/tests",
     "sdk/packs/memory/tests",
     "sdk/packs/recovery/tests",
+    "sdk/packs/introspect/tests",
     "mcp_server/tests",
     "mcp_server/src/mcp_server/fetch/tests",
     "mcp_server/src/mcp_server/memory/tests",

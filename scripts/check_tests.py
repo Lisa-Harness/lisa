@@ -77,6 +77,7 @@ PACKAGE_TESTPATHS: dict[str, tuple[str, ...]] = {
         "sdk/packs/core/tests",
         "sdk/packs/memory/tests",
         "sdk/packs/recovery/tests",
+        "sdk/packs/introspect/tests",
     ),
     "mcp_server": (
         "mcp_server/tests",

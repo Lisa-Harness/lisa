@@ -29,7 +29,11 @@ from sdk.thread._readout import (
 )
 from sdk.thread._results import load_result_object, project_tool_messages, result_object_path
 from sdk.thread._taskview import DEFAULT_TASK_VIEW_BYTES, build_task_view
-from sdk.thread.redaction import DEFAULT_REDACTION_PATTERNS, ThreadRedactionPolicy
+from sdk.thread.redaction import (
+    DEFAULT_REDACTION_PATTERNS,
+    ThreadRedactionPolicy,
+    resolve_redaction_policy,
+)
 
 __all__ = [
     "DEFAULT_READOUT_BYTES",
@@ -44,5 +48,6 @@ __all__ = [
     "build_task_view",
     "load_result_object",
     "project_tool_messages",
+    "resolve_redaction_policy",
     "result_object_path",
 ]

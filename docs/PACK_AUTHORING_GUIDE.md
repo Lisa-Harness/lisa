@@ -191,6 +191,21 @@ Receipts and approvals depend on them. Model-requested file I/O uses the
 storage seam and sandbox-relative paths; never write a model-supplied
 absolute path directly. See [storage](STORAGE.md).
 
+An operation is defined by exactly one metadata file, and the two kinds are
+loaded differently:
+
+| Kind | Metadata | Implementation | Use for |
+| --- | --- | --- | --- |
+| Runtime | `<name>.yml` | `<name>.py` (`execute(ctx)`) | Deterministic work: reads, joins, writes, catalog walks |
+| Declarative ("prompt") | `<name>.operation.md` | Markdown body *is* the prompt | One structured model completion |
+
+Both kinds load into one catalog, and Markdown is scanned **first** — so a stray
+`.operation.md` beside a runtime `.py` silently replaces the runtime operation
+with a prompt operation that has no implementation. The symptom is a catalog
+entry whose `execution_kind` is `prompt` and whose `parameters_schema` is
+`None`, which means the model never sees your `Parameters` model. If a new
+operation is not advertised to the model, check that first.
+
 Operation/tool visibility has two independent flags:
 
 - `exportable: true` permits references from another pack's modes.

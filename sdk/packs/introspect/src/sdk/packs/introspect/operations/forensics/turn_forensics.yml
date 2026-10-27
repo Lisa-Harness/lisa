@@ -1,0 +1,12 @@
+type: Lisa Operation
+title: Turn Forensics
+description: Read recorded evidence about your own past turns — the thread entry, the lifecycle decisions that drove it, every dispatch that ran, and what it cost — joined by turn index. Use to explain why a turn behaved a certain way, or to check your own recent behavior against the record rather than from memory.
+tags: [introspection, forensics, diagnostics, evidence]
+status: stable
+generated: { by: human:adam, at: 2026-10-27T00:00:00Z }
+operation_id: turn_forensics
+exportable: true
+default_available: true
+effect: read
+timeout_seconds: 30
+max_calls_per_turn: 1

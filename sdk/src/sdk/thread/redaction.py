@@ -23,7 +23,11 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-__all__ = ["DEFAULT_REDACTION_PATTERNS", "ThreadRedactionPolicy"]
+__all__ = [
+    "DEFAULT_REDACTION_PATTERNS",
+    "ThreadRedactionPolicy",
+    "resolve_redaction_policy",
+]
 
 #: The strikethrough marker substituted for matched substrings. Uses the
 #: Unicode strikethrough character so the redaction is visually obvious
@@ -115,3 +119,57 @@ class ThreadRedactionPolicy:
 
 
 # ── Late import kept at module end for circular-import safety ─────────
+
+
+#: Environment contract shared by every reader that projects thread text into
+#: a prompt (the ``lisa-thread`` server and the forensic reader). Keeping the
+#: names and precedence here means the two cannot disagree about whether a
+#: given deployment redacts.
+REDACTION_ENABLED_ENV = "LISA_THREAD_REDACTION_ENABLED"
+REDACTION_PATTERNS_ENV = "LISA_THREAD_REDACTION_PATTERNS"
+
+
+def resolve_redaction_policy(
+    *,
+    enabled_value: str | None = None,
+    patterns_value: str | None = None,
+) -> ThreadRedactionPolicy | None:
+    """Resolve the redaction policy from the environment contract.
+
+    ``ThreadStore``'s own redaction covers only ``build_recent_excerpt`` /
+    ``build_manifest`` / ``search``; ``load_range`` / ``load_recent`` /
+    ``iter_range`` return RAW entries by design (the lossless read contract).
+    Any surface that projects entries into a prompt — the ``lisa-thread``
+    server, the forensic reader — therefore has to apply the policy itself,
+    and both resolve it through this function so they cannot drift.
+
+    Precedence: ``LISA_THREAD_REDACTION_ENABLED=0`` or
+    ``LISA_THREAD_REDACTION_PATTERNS=none`` disables redaction entirely. An
+    unset pattern list means the framework defaults; a non-empty list means
+    those patterns only (hard cutover, no merge — same contract as the host
+    config).
+
+    ``enabled_value`` / ``patterns_value`` carry values the host already
+    resolved (so an in-process consumer does not read the ambient
+    environment). ``None`` means "read the environment", which is the path a
+    subprocess takes.
+    """
+    import os
+
+    if enabled_value is None:
+        enabled = os.getenv(REDACTION_ENABLED_ENV, "").strip().lower()
+        raw = os.getenv(REDACTION_PATTERNS_ENV, "").strip()
+    else:
+        enabled = enabled_value.strip().lower()
+        raw = (patterns_value or "").strip()
+    if enabled in {"0", "false", "no", "off"}:
+        return None
+    if raw.lower() == "none":
+        return None
+    if raw:
+        patterns = tuple(p for p in raw.splitlines() if p.strip())
+    else:
+        patterns = DEFAULT_REDACTION_PATTERNS
+    if not patterns:
+        return None
+    return ThreadRedactionPolicy.from_patterns(patterns)
