@@ -20,7 +20,7 @@ table is either shipped behavior or a proposal, labelled as such.
 | Staged-workflow FSM removed end to end | Shipped (`89c4655a`) |
 | Receipts scoped by dispatching mode | Shipped (`08507538`) |
 | Diagnostic marker matches what the documentation promises | Shipped (Phase A) |
-| **Task-gate contract resolution by active mode** | **Proposed — Phase B** |
+| ~~Task-gate contract resolution by active mode~~ | **Withdrawn — premise was wrong; see Phase B** |
 | Planner retired as a mode | Proposed — Phase C |
 | Yields revisited | Proposed — Phase D |
 
@@ -44,7 +44,7 @@ rare, deliberate layer on top. Everything else measured to zero.
 
 ## Phase A — the diagnostic marker (shipped)
 
-The highest-value item found while verifying phases A–D, and a correctness bug
+The highest-value item found while verifying the plan, and a correctness bug
 rather than a cleanup.
 
 `docs/CODING_WORKFLOW.md` told the operator:
@@ -75,30 +75,40 @@ and a value other than `diagnostic` fails closed with a log line. The block
 message names the syntax to type. The regression tests were verified to fail
 against the previous implementation.
 
-## Phase B — resolve the task contract by the mode that is active
+## Phase B — withdrawn: the contract already follows the handoff
 
-Second correctness item, same family as the receipt-mode bug just fixed.
+This phase was proposed on a misreading of the evidence, and is recorded here
+so the same conclusion is not re-derived later.
 
-A thread entry records the mode the turn *started* in. The completion contract
-is resolved from `mode_config` — also the entry mode. When a turn hands off
-mid-turn, the contract should follow the mode that ended up doing the work.
+The claim was that the completion contract resolved against the *entry* mode
+while `action_tool_ids` followed handoffs, so a turn entering in `default` and
+handing into `coding_execute` would be gated by the wrong mode. The supporting
+number was that 25 of 102 `task_completion` blocks carry `mode_id: default`.
 
-Measured: of the 102 `task_completion` blocks, **25 are attributed to
-`default`** — a mode that declares no task contract at all. Those are turns
-that entered in `default` and handed off into `coding_execute` (or `executor`),
-where the contract belonged to the target mode. 14 of the 38 no-write blocks
-handed off mid-turn, 12 of them to `coding_execute`.
+Both parts were wrong:
 
-The receipt fix in `08507538` established the principle for evidence; this
-extends it to the contract. `state.active_mode_id` already tracks the live
-mode through every handoff, so the change is small: resolve the completion
-contract against the active mode's config rather than the entry mode's.
+- **The contract already follows the handoff.** `mode_id` and `mode_config` are
+  rebound at the handoff site (`mode_config = target_mode_config`,
+  `kernel/turn_runner/__init__.py`), alongside the `action_tool_ids` refresh.
+  The contract application and the evidence resolver both receive the rebound
+  values.
+- **`mode_id` on a thread entry is the entry mode by design.** It labels the
+  turn, not the mode that finished it, so a `default`-labelled block is not
+  evidence of misresolution. Reading the block text settles it: `"This task has
+  no owned worktree with a current checked commit."` is the *verifier's* answer
+  for `executor` — the target mode's contract ran correctly.
 
-**Open question for review:** whether a turn that spans an
-`implementation`-contracted mode and a `diagnostic` one should be gated at all,
-or gated on the write receipts only. I lean toward gating on receipts — which
-is what the contract already does at its core — and treating the mode's
-declaration as the default for a single-mode turn.
+A regression test for the proposed behavior passed without the change, which is
+what exposed the error: a test that cannot fail is not evidence.
+
+**What the 25 `default` blocks actually show** is that those turns entered in
+`default`, handed into a checked-commit mode, did not produce a worktree, and
+were correctly blocked. That is the contract working, not failing.
+
+The lesson for Phases C and D: entry-mode attribution on a thread entry is weak
+evidence about which mode did the work. `EffectReceipt.mode_id` (shipped in
+`08507538`) is the field that answers that question, and any further analysis
+should read it rather than the entry label.
 
 ## Phase C — retire the planner as a mode
 
