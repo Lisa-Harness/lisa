@@ -81,6 +81,7 @@ from runtime.commands import (
     handle_policy_command,
     handle_proxy_command,
     handle_simple_command,
+    handle_workflow_command,
     mode_support_gap,
     preferred_model_id_for_route,
     render_modes_list,
@@ -445,6 +446,7 @@ _PREFIX_ASYNC_COMMANDS: tuple[
     ("/mcp", handle_mcp_command),
     ("/proxy", handle_proxy_command),
     ("/last", handle_last_command),
+    ("/workflow", handle_workflow_command),
     ("/debug", handle_debug_command),
 )
 

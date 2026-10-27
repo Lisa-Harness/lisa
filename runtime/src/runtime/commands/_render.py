@@ -20,6 +20,7 @@ from kernel.host_command_discovery import discover_pack_host_commands
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import get_operation_catalog
 from kernel.tools.registry import get_tool_catalog
+from kernel.workflow_view import WorkflowView, render_workflow_progress
 
 from runtime.commands._log import _last_capability_manifest
 from runtime.commands._routing import mode_support_gap
@@ -236,6 +237,33 @@ def render_last_turn(runtime: HostRuntime, arg: str) -> str:
     machine-readable consumers.
     """
     return resolve_last_turn(runtime, arg)[1]
+
+
+def render_workflow_status(view: WorkflowView) -> str:
+    """Render the active workflow for ``/workflow status``.
+
+    Reuses the same progress block the model receives in its turn briefing
+    (so the operator sees exactly what steers routing) and appends the action
+    that retires it. A completed-but-unretired view cannot reach here —
+    ``derive_workflow_view`` returns ``None`` once every step is complete.
+    """
+    progress = render_workflow_progress(view)
+    if not progress:
+        return "## Workflow\n\nThe workflow has no steps to report."
+    completed = len(view.completed_steps)
+    total = len(view.declared_steps)
+    lines = [
+        "## Workflow",
+        "",
+        progress,
+        "",
+        f"**{completed} of {total} step(s) complete.**",
+        "",
+        "Conclude this workflow with `/workflow conclude [reason]` — the plan "
+        "stops being injected into turn briefings and stops steering routing. "
+        "The conclusion is recorded in the thread.",
+    ]
+    return "\n".join(lines)
 
 
 def render_runtime_settings(runtime: HostRuntime) -> str:
@@ -539,6 +567,9 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "policy (the decision dial and rules behind approval prompts).",
             "- /tokens — session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self — local diagnostics.",
+            "- /workflow [status|conclude [reason]] — show the active multi-step "
+            "workflow and its step progress, or conclude it durably so it stops "
+            "steering routing.",
             "- /last [N] — reprint a previous response verbatim (default: the last "
             "model turn; no model call).",
             "- /consolidate (or /slice) — explicit memory-consolidation slice.",

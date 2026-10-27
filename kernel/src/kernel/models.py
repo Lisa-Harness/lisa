@@ -1195,30 +1195,7 @@ class MemoryRecallAnswer(BaseModel):
 # any code change. FSM invariants are enforced at startup by validate_workflow_catalog().
 WorkflowModeId = str
 WorkflowConnectorId = str
-ModeKind = Literal["workflow", "chat", "action"]
-
-
-class WorkflowStageConfig(BaseModel):
-    """Defines one stage in a mode-specific workflow finite state machine.
-
-    Loaded at startup via the ``lisa-content`` MCP server from YAML front-matter
-    blocks in discovered mode-root `{mode}/{stage_id}.md` files.  The instruction_body
-    field holds the body text below the front-matter delimiter so that runtime
-    prompt injection never needs a disk read.
-    """
-
-    stage_id: str
-    # Relative path under the loaded mode root kept for reference / debugging.
-    # The body text is pre-loaded into instruction_body at startup.
-    instruction_markdown_path: str = ""
-    # Parsed body text below the front-matter --- delimiter.
-    instruction_body: str = ""
-    description: str = ""
-    default_model: str | None = None
-    required_connectors: list[WorkflowConnectorId] = Field(default_factory=list)
-    allowed_next_stages: list[str] = Field(default_factory=list)
-    allow_user_questions: bool = True
-    terminal: bool = False
+ModeKind = Literal["chat", "action"]
 
 
 class DefaultIntentBridge(BaseModel):
@@ -1338,18 +1315,16 @@ class WorkflowModeConfig(BaseModel):
     at the root of each discovered mode folder. Adding a new mode
     requires only a new folder — no code changes.
 
-    Modes are markdown-first user-facing entry points. Workflow modes own an
-    FSM stage graph; chat modes run through the normal conversational turn
-    flow; action modes are zero-stage one-shot entry points. Internal reusable
+    Modes are markdown-first user-facing entry points. Chat modes run the normal
+    conversational turn flow; action modes are one-shot entry points. Modes no
+    longer carry an FSM stage graph: the staged-workflow concept was removed. Internal reusable
     behavior is bound via operation identifiers declared in the mode front
     matter.
     """
 
     mode_id: WorkflowModeId
-    start_stage_id: str
-    stages: dict[str, WorkflowStageConfig] = Field(default_factory=dict)
-    mode_kind: ModeKind = "workflow"
-    artifact_type: str = "workflow_summary"
+    mode_kind: ModeKind = "chat"
+    artifact_type: str = ""
     description: str = ""
     instruction_body: str = ""
     # Absolute path to the mode's _mode.md source file populated during catalog load.
@@ -1675,13 +1650,11 @@ class ForkTarget(BaseModel):
     """One fork worker spec for a parallel fan-out transition.
 
     A fork transition fans out to N heterogeneous modes concurrently. Each
-    target carries its own mode_id (determines system prompt + tool surface),
-    an optional stage_id (defaults to the mode's start_stage_id), and a scoped
-    query for that worker.
+    target carries its own mode_id (determines system prompt + tool surface)
+    and a scoped query for that worker.
     """
 
     mode_id: str
-    stage_id: str = ""
     query: str = ""
 
 
@@ -1861,13 +1834,6 @@ class DelegationSpec(BaseModel):
             "child turn's user query — the parent's full query is not "
             "re-injected."
         )
-    )
-    stage_id: str = Field(
-        default="",
-        description=(
-            "Optional stage_id for the target mode. Defaults to the mode's "
-            "start_stage_id when empty."
-        ),
     )
     max_tool_iterations: int = Field(
         default=0,

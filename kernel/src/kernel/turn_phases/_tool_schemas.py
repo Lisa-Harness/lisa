@@ -387,13 +387,8 @@ async def build_tool_surface(
     tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
 
     # ── Lifecycle tools (transition_stage / yield) ──────────────────────
-    has_stage_edges = (
-        any(bool(s.allowed_next_stages) for s in mode_config.stages.values())
-        if mode_config
-        else False
-    )
     routing_targets = get_routing_targets(mode_id) if mode_config else []
-    allow_transition_stage = has_stage_edges or bool(routing_targets)
+    allow_transition_stage = bool(routing_targets)
     if allow_transition_stage:
         tool_schemas.extend(get_transition_tool_schema(routing_targets))
     if yield_policy.allowed or yield_policy.fallback_mode:

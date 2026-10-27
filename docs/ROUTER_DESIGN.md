@@ -28,10 +28,8 @@ flowchart TD
     Control -->|no| Mode["Resolve explicit mode command or current/start mode"]
     Mode --> Loop["Model + tool loop"]
     Loop --> Target{"transition_stage target"}
-    Target --> Stage["Workflow stage"]
     Target --> Handoff["Routable mode"]
     Target --> Fork["fork: independent children"]
-    Stage --> Loop
     Handoff --> Loop
     Fork --> Loop
 ```
@@ -41,19 +39,29 @@ for aliases, priority adjustments, hints, and authored intent vocabulary.
 
 ## One transition primitive
 
-The intercepted `transition_stage` tool distinguishes:
+The intercepted `transition_stage` tool now has one intra-turn meaning — a
+routable mode handoff — plus the fan-out form:
 
-1. A workflow stage in the active mode: validate the edge and update stage
-   instructions/state.
-2. A routable mode: change the active mode, instructions, allowed capabilities,
+1. A routable mode: change the active mode, instructions, allowed capabilities,
    and model resolution while preserving conversation evidence.
-3. A `fork:` target: execute independent child turns and aggregate structured
+2. A `fork:` target: execute independent child turns and aggregate structured
    outcomes before continuing the parent.
 
+The intra-mode **workflow stage** target was removed. `WorkflowStageConfig`,
+`start_stage_id`, `allowed_next_stages`, `terminal`, the per-mode stage
+loader/validator, `is_terminal_stage`, and the stage-instruction injection
+into the system prompt are all gone, along with `WorkflowPosition.stage_id`.
+The mechanism never carried real work: no installed pack shipped stage files,
+19 of 20 modes declaring `start_stage_id` declared `none`, and the thread
+records 13 `transitioned_to` events across 1,043 turns — all of them
+mode-level re-entries, never a stage advance.
+
+`transitioned_to` and `RecoveryRecord.stage_id` survive as *read-only legacy
+fields* so persisted thread and recovery records from before the removal still
+load; nothing writes them. A handoff reports `handoff_to`.
+
 The routing FSM synthesizes a full mesh among routable modes, not just
-edges back to `default`. Workflow-stage edges remain the authored workflow's
-own contract. A handoff reports `handoff_to`; a stage change reports
-`transitioned_to`. These fields are not interchangeable.
+edges back to `default`.
 
 ## Capability hints and enforcement
 
@@ -106,7 +114,7 @@ routing_intent_keywords:
 | `task_completion` / `task_artifact_tool_id` | Checked-commit task gate and its exposed artifact producer |
 
 See [pack authoring](PACK_AUTHORING_GUIDE.md) for full validation, defaults,
-capability visibility, and mode/stage examples. A mode with a nontrivial
+capability visibility, and mode examples. A mode with a nontrivial
 tool surface but no `satisfies_intents` can repeatedly request unnecessary
 handoffs; broad keywords can route a mention rather than an actual request.
 
@@ -150,9 +158,19 @@ and requires a benchmark first.
 Multi-step work uses a typed `WorkflowPosition` and a thread-derived
 `WorkflowView`, not the retired `WorkflowInstance` file-store contract.
 
-- **Planned:** the planner operation supplies explicit declared steps.
-- **Ad hoc:** the kernel compiles steps from routing targets for a multi-step
-  request that does not use planner escalation.
+A workflow originates from a **`## Plan` block** written into the thread by the
+`planner` mode's `plan_workflow` operation. That is the only origin: ad-hoc
+step compilation (the kernel deriving steps from routing intents) has been
+removed. It was unreachable in every real install — it required a
+host-supplied `workflow_position_updater`, which the shipped host does not
+wire, *and* the absence of `planner` from the catalog, which cannot happen
+because `planner` ships in the always-on `lisa-pack-core`. Keeping a second,
+dormant origin in the code implied a behaviour that did not exist.
+
+Only a plan block that **opens** the turn counts. The turn runner prepends the
+rendered plan, so a `## Plan` heading anywhere later in a response is a
+quotation, an example, or a discussion of a plan — not the active one. (This
+also excludes fenced examples, which by construction follow prose.)
 
 The position combines declared/completed steps with the current mode/stage.
 At turn start the host derives an immutable view from the thread: plans,
@@ -161,10 +179,38 @@ A yield or continuation can recover remaining work rather than restart it.
 The thread is the durable source of truth; there is no separate mutable
 workflow-position store.
 
+Completion is matched by **consuming thread entries**, and each entry may
+complete at most one step. Two rules follow from that:
+
+- A single receipt cannot satisfy two steps that share a `mode_id` (two
+  `coding` steps and one commit previously ticked both boxes and could collapse
+  a whole plan to "done").
+- A step's evidence counts even when an earlier step never finished. Completion
+  reports what happened, not what the declared order predicted. A step is still
+  scoped by mode, so one mode's work cannot complete another's step.
+
 Step budgets prevent a chain from spending the whole turn on one target.
 When a step stalls, recovery and lifecycle policy determine whether it can
 advance, pause, or require the operator. Consult current dispatch/recovery
 evidence rather than silently marking the step complete.
+
+### Ending a workflow
+
+A plan ends in one of three ways:
+
+| Ending | How |
+| --- | --- |
+| **Complete** | Every declared step gains its completion evidence; the view then derives to `None`. |
+| **Concluded** | `/workflow conclude [reason]` appends a thread entry carrying `provenance.workflow_conclusion`. |
+| **Superseded** | A new `## Plan` becomes the latest plan; derivation only reads the newest. |
+
+Concluding exists because the first and third are not always available: work
+can become moot. Before it, an abandoned plan stayed active indefinitely, and
+because the derived view is injected into every turn's briefing and steers
+handoffs toward the declared steps, it kept costing context and misdirecting
+routing. The marker is a thread entry rather than in-process state, so the
+decision survives restarts and the reason stays auditable. A conclusion only
+retires plans that precede it — an older conclusion cannot kill a newer plan.
 
 ## Completion and failure contracts
 

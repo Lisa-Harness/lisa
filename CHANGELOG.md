@@ -4,6 +4,52 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`/workflow` — inspect and conclude the active multi-step workflow.** A
+  plan written by the `planner` mode (`## Plan`) is injected into every later
+  turn's briefing and steers handoffs toward its declared steps. It previously
+  had only two endings: finish every step, or supersede it with a new plan. An
+  abandoned plan therefore stayed active forever — costing context on every
+  turn and misdirecting routing. `/workflow` (or `/workflow status`) renders the
+  steps and the current one; `/workflow conclude [reason]` appends a thread
+  entry carrying `provenance.workflow_conclusion`, and
+  `derive_workflow_view` stops deriving at that marker. Because the marker is
+  thread data rather than in-process state, the decision survives restarts and
+  the operator's reason stays auditable. A conclusion only retires plans that
+  precede it, so an older conclusion cannot kill a newer plan. `/plan` was not
+  usable as the verb: it is the planner mode's own `command_pattern`, and host
+  commands dispatch first.
+- **Tests:** `runtime/tests/test_workflow_command.py`
+
+- **`storage.edit_file` — an exact-edit primitive for the file sandbox.**
+  Changing one line previously meant `read_file` → rewrite → `write_file`,
+  which requires the caller to reproduce every byte it did not intend to
+  touch. For an artifact whose value *is* its evidence — a tracker entry, a
+  ledger row — reconstructing the document from memory is precisely the
+  wrong operation, so the honest move was to not make the edit at all. The
+  new tool replaces one exact substring in place:
+
+  - the match is byte-exact (indentation and line endings included), and a
+    zero-match failure names a CRLF/LF mismatch explicitly instead of
+    reporting a bare "not found";
+  - an ambiguous match is refused with the candidate line numbers rather
+    than resolved by guessing, unless `replace_all` is set;
+  - `expected_sha256` binds the edit to a revision, and `stat_file` now
+    reports `sha256` (empty for directories) so the guard has a source of
+    truth;
+  - the new bytes are staged beside the target and swapped in with
+    `os.replace`, preserving the file mode, so an interrupted edit leaves
+    the original intact rather than truncated.
+
+  Published as `storage.edit_file`, ambient-available by default like
+  `write_file` and `append_file`. It is part of the canonical `storage`
+  capability contract, so an out-of-tree implementation (e.g. the Go
+  Connector SDK port) must add it before it can be selected — see the
+  [connector contract](docs/GO_CONNECTOR_SDK.md).
+- **Tests:** `sdk/src/sdk/storage/tests/test_backend.py`,
+  `mcp_server/tests/test_storage_server.py`
+
 ### Changed
 
 - **`lisa-pack-search` retired; its two capabilities moved to their real
@@ -20,6 +66,48 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Removed
 
+- **The staged-workflow FSM deleted.** Modes could declare `mode_kind:
+  workflow` and ship one `{stage_id}.md` file per stage, forming an
+  intra-mode finite state machine with `start_stage_id`,
+  `allowed_next_stages`, and `terminal` edges. It never carried real work:
+  no installed pack (repo, `lisa-pack-*`, `lisa-packs`, `lisa-packs-wip`,
+  `packs-wip`) shipped stage files; 19 of 20 modes declaring
+  `start_stage_id` declared `none`; and across 1,043 real turns the thread
+  recorded 13 `transitioned_to` events, all mode-level re-entries rather than
+  stage advances. Deleted end to end:
+  - **Contracts:** `WorkflowStageConfig`, `WorkflowModeConfig.start_stage_id`
+    / `.stages`, `WorkflowPosition.stage_id`, `ForkTarget.stage_id`,
+    `DelegationSpec.stage_id`, and the `workflow` member of `ModeKind`
+    (now `chat | action`).
+  - **Loader/validation:** the per-mode stage scan and parser, the
+    stage-graph invariants, `synthesize_stage_graph` (which fabricated a
+    one-stage graph for every stageless mode), `load_stage_instruction_markdown`,
+    and `is_terminal_stage`.
+  - **Turn loop:** the intra-mode stage branch of `transition_stage`, the
+    stage-instruction injection into the system prompt, and the
+    terminal-stage closing-summary pass. `transition_stage` now resolves a
+    mode handoff (or `fork:`) only.
+  - **Catalog + SDK:** stage serialization/deserialization on both the
+    kernel MCP catalog and `sdk.content` (they were independent
+    implementations of the same contract), plus stage emission from
+    `build_mode_catalog_json`.
+
+  `ModeKind` rejecting `workflow` is deliberate: a stale pack that still
+  declares it now fails at load with a message naming the removal instead of
+  silently loading a shape the kernel no longer honors.
+  `WorkflowPosition.origin="adhoc"`, `transitioned_to`, and
+  `RecoveryRecord.stage_id` remain as read-only legacy fields so persisted
+  threads and recovery records still load; nothing writes them.
+- **Ad-hoc workflow compilation deleted.** The kernel could derive a step
+  chain from routing intents when a multi-step request did not use the
+  planner. It could not run: it required a host-supplied
+  `workflow_position_updater` (the shipped host wires `None` — it derives the
+  view from the thread) *and* the absence of `planner` from the catalog
+  (`planner` ships in the always-on `lisa-pack-core`). A workflow now
+  originates only from a `## Plan` block. Removed with it:
+  `compile_steps_from_routing_targets` and its private ordering helpers, the
+  dead branch in `_advance_handoff_workflow_position`, and
+  `_receipts_for_mode` (never called).
 - **`web_research` operation deleted.** It had zero executions across 1,023
   logged turns; research work ran through the `web_search` *tool* directly,
   and its only other appearances were a documentation example and repeated
@@ -29,11 +117,46 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Workflow step completion no longer miscounts or hides finished work.** Two
+  defects in `derive_workflow_view`'s matching, both from giving every step its
+  own forward search window:
+  - One receipt could complete several steps that shared a `mode_id`. Two
+    `coding` steps with one `coding_commit` ticked both boxes, and a 3-step plan
+    collapsed to "complete" after a single write. Each thread entry now
+    completes at most one step.
+  - A step's evidence was invisible if it landed before an earlier step
+    finished, because that step's window started at `plan_entry_index + idx`.
+    A step whose commit had already landed stayed marked open indefinitely. Each
+    step now scans from the plan onward; the per-mode check still prevents a
+    step from claiming another mode's work.
+- **A `## Plan` block must open the response to count as a workflow.** The
+  parser searched anywhere in the text, so a document containing a plan
+  example — including a fenced one — became a live workflow that steered
+  routing. `_render_plan_markdown` prepends the block, so the header is now
+  anchored at the start of the response.
+- **The executor now receives the plan on the turn that created it.** The
+  handoff context read the plan only from `hooks.workflow.workflow_position()`.
+  On the creating turn the plan is staged on `state.turn_plan_position` and
+  nothing is persisted yet, so the plan shown to the user was withheld from the
+  mode asked to execute it (the 2026-08-09 plan-amnesia incident). The turn-local
+  plan is now preferred, with the view as fallback.
 - **`discussion_briefing` pre-turn timeout raised 15s → 45s.** The 15s
   budget expired twice on 2026-10-26, and `thinker` treats a pre-turn
   failure as a skip — so the turn silently ran without the briefing it was
   configured to receive. 45s comfortably covers a provider round trip plus
   one synthesis call.
+
+### Documentation
+
+- **`docs/CODING_WORKFLOW.md` now documents the checked-commit `task_goal`
+  contract.** The gate's own block message told operators to "declare
+  `task_goal: diagnostic` on the task, or pass the operator diagnostic
+  override at task creation" — and no documentation named the actual
+  surface, which is the inline `[task_goal: diagnostic]` message marker
+  (`runtime/src/runtime/handle_message.py`). Adds the fail-closed default,
+  the marker syntax, the `delegate` operation's per-child parameter, and
+  the write-receipt mutation guard that keeps a declaration from laundering
+  a mutating task.
 
 ## [0.3.0] - 2026-10-26
 

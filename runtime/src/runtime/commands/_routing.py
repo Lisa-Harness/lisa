@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 
-from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.model_manifest import ModelManifest
 from kernel.models import WorkflowModeConfig
 from kernel.operations.registry import (
@@ -85,20 +84,14 @@ def set_runtime_route_preview(
     preferred_model_id: str,
 ) -> None:
     """Set the runtime's current mode/stage/model route preview."""
-    catalog = get_workflow_catalog()
-    mode = catalog.get(mode_id)
-    stage_id = "-"
-    if mode is not None and mode.mode_kind == "workflow":
-        stage_id = str(mode.start_stage_id).strip() or "-"
     model_id, provider = predict_model(runtime, preferred_model_id)
     runtime.session.current_mode_id = mode_id
-    runtime.session.current_stage_id = stage_id or "-"
+    runtime.session.current_stage_id = "-"
     runtime.session.next_model_id = model_id
     runtime.session.next_model_provider = provider
     logger.debug(
-        "route preview set: mode=%s stage=%s model=%s provider=%s",
+        "route preview set: mode=%s model=%s provider=%s",
         mode_id,
-        stage_id or "-",
         model_id,
         provider,
     )

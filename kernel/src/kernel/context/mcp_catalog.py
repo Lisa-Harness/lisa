@@ -24,7 +24,6 @@ from kernel.models import (
     OperationDefinition,
     ToolDefinition,
     WorkflowModeConfig,
-    WorkflowStageConfig,
 )
 from kernel.operations.declarative import (
     _DEFAULT_MAX_TOKENS,
@@ -128,26 +127,6 @@ class MCPModeCatalog:
         self._call("invalidate_catalog", {})
 
 
-def _require_start_stage_id(data: dict[str, Any]) -> str:
-    """Return the start_stage_id, raising for workflow modes with an empty value.
-
-    Chat/action modes may use ``"none"`` or an empty string (no stages);
-    workflow modes require a non-empty start_stage_id that names a stage
-    present in the stages dict. A malformed catalog response with an empty
-    start_stage_id for a workflow mode is a hard failure, not a silent
-    default to ``""``.
-    """
-    start_stage_id = str(data.get("start_stage_id", "") or "")
-    mode_kind = str(data.get("mode_kind", "workflow") or "workflow")
-    if mode_kind == "workflow" and not start_stage_id:
-        mode_id = data.get("mode_id", "?")
-        raise CatalogResponseError(
-            f"Mode '{mode_id}' from lisa-catalog is a workflow mode with no "
-            "start_stage_id — workflow modes require a start stage."
-        )
-    return start_stage_id
-
-
 def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
     """Deserialize one mode dict from JSON into a ``WorkflowModeConfig``.
 
@@ -157,20 +136,14 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
     stage pointer regardless of kind.
     """
 
-    stages = {
-        stage_id: _deserialize_stage(stage_dict)
-        for stage_id, stage_dict in (data.get("stages") or {}).items()
-    }
     intent_bridges = [
         DefaultIntentBridge(**bridge) for bridge in (data.get("default_intent_bridges") or [])
     ]
 
-    mode = WorkflowModeConfig(
+    return WorkflowModeConfig(
         mode_id=data["mode_id"],
-        start_stage_id=_require_start_stage_id(data),
-        stages=stages,
-        mode_kind=data.get("mode_kind", "workflow"),
-        artifact_type=data.get("artifact_type", "workflow_summary"),
+        mode_kind=data.get("mode_kind", "chat"),
+        artifact_type=data.get("artifact_type", ""),
         description=data.get("description", ""),
         instruction_body=data.get("instruction_body", ""),
         mode_markdown_path=data.get("mode_markdown_path", ""),
@@ -203,26 +176,6 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
         context_item_packs=[str(p) for p in (data.get("context_item_packs") or [])],
-    )
-
-    from kernel.ipsar_fsm import synthesize_stage_graph
-
-    return synthesize_stage_graph(mode)
-
-
-def _deserialize_stage(data: dict[str, Any]) -> WorkflowStageConfig:
-    """Deserialize one stage dict from JSON into a ``WorkflowStageConfig``."""
-
-    return WorkflowStageConfig(
-        stage_id=data["stage_id"],
-        instruction_markdown_path=data.get("instruction_markdown_path", ""),
-        instruction_body=data.get("instruction_body", ""),
-        description=data.get("description", ""),
-        default_model=data.get("default_model"),
-        required_connectors=data.get("required_connectors", []),
-        allowed_next_stages=data.get("allowed_next_stages", []),
-        allow_user_questions=data.get("allow_user_questions", True),
-        terminal=data.get("terminal", False),
     )
 
 

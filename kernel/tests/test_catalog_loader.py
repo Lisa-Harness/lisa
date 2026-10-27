@@ -40,26 +40,23 @@ def _write_mode(
     root: Path,
     mode_id: str = "demo",
     *,
-    mode_kind: str = "workflow",
+    mode_kind: str = "chat",
     command_pattern: str = "/demo",
     description: str = "demo mode",
-    start_stage_id: str = "start",
     extra_front_matter: dict[str, Any] | None = None,
-    stage_files: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
-    """Materialise one minimal valid workflow mode under ``root``.
+    """Materialise one minimal valid chat mode under ``root``.
 
     Returns the mode directory. The ``_mode.md`` carries the required
-    front-matter fields plus any ``extra_front_matter`` app-owned keys. One
-    terminal stage file is written by default so the loader's stage scan has
-    something to consume for workflow modes.
+    front-matter fields plus any ``extra_front_matter`` app-owned keys.
+    Workflow stage files are no longer a supported authoring surface —
+    the staged-FSM contract was retired with ``WorkflowStageConfig``.
     """
     mode_dir = root / mode_id
     mode_dir.mkdir(parents=True, exist_ok=True)
 
     front: dict[str, Any] = {
         "mode_id": mode_id,
-        "start_stage_id": start_stage_id,
         "mode_kind": mode_kind,
         "command_pattern": command_pattern,
         "description": description,
@@ -69,36 +66,7 @@ def _write_mode(
 
     _write_front_matter_file(mode_dir / "_mode.md", front, body=f"# {mode_id}")
 
-    stages = (
-        stage_files
-        if stage_files is not None
-        else {
-            start_stage_id: _stage_front_matter(start_stage_id, terminal=True),
-        }
-    )
-    for stage_id, stage_front in stages.items():
-        _write_front_matter_file(mode_dir / f"{stage_id}.md", stage_front, body=f"# {stage_id}")
-
     return mode_dir
-
-
-def _stage_front_matter(
-    stage_id: str,
-    *,
-    terminal: bool = True,
-    allowed_next: list[str] | None = None,
-    allow_user_questions: bool = False,
-    required_connectors: list[str] | None = None,
-    description: str = "stage",
-) -> dict[str, Any]:
-    return {
-        "stage_id": stage_id,
-        "terminal": terminal,
-        "allowed_next_stages": allowed_next if allowed_next is not None else [],
-        "allow_user_questions": allow_user_questions,
-        "required_connectors": required_connectors if required_connectors is not None else [],
-        "description": description,
-    }
 
 
 def _write_front_matter_file(path: Path, front_matter: dict[str, Any], body: str = "") -> None:

@@ -261,7 +261,7 @@ def _augment_catalog_with_synthetic_modes() -> None:
     loaded without the augmentation.
     """
     from kernel.ipsar_fsm import get_workflow_catalog
-    from kernel.models import OperationDefinition, WorkflowModeConfig, WorkflowStageConfig
+    from kernel.models import OperationDefinition, WorkflowModeConfig
     from kernel.operations import registry as operation_registry
 
     operation_registry.get_operation_catalog().setdefault(
@@ -287,28 +287,13 @@ def _augment_catalog_with_synthetic_modes() -> None:
         # fire on its cue words.
         tags = list(spec["tags"])
         kw_pool = list(spec["keywords"])
-        stages: dict[str, WorkflowStageConfig] = {}
         mode_kind = str(spec.get("mode_kind", "chat"))
-        start_stage_id = "none"
-        if mode_id == "ponder":
-            mode_kind = "workflow"
-            start_stage_id = "inquire"
-            stages = {
-                "inquire": WorkflowStageConfig(
-                    stage_id="inquire",
-                    instruction_body="Inquire about the user's question.",
-                    allowed_next_stages=["reason"],
-                ),
-                "reason": WorkflowStageConfig(
-                    stage_id="reason",
-                    instruction_body="Reason about the gathered evidence.",
-                    terminal=True,
-                ),
-            }
+        if mode_kind == "workflow":
+            # The kind no longer exists; ponder (the only staged fixture)
+            # survives as chat for the tests that reference it.
+            mode_kind = "chat"
         catalog[mode_id] = WorkflowModeConfig(
             mode_id=mode_id,
-            start_stage_id=start_stage_id,
-            stages=stages,
             mode_kind=mode_kind,
             routable=True,
             entry_operation_ids=entry_ops,

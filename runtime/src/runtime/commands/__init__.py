@@ -156,6 +156,7 @@ from runtime.commands._simple import (
     handle_help_command,
     handle_last_command,
     handle_simple_command,
+    handle_workflow_command,
 )
 from runtime.commands._slice import (
     handle_intake_command,
@@ -219,6 +220,7 @@ __all__ = [
     "handle_policy_command",
     "handle_proxy_command",
     "handle_simple_command",
+    "handle_workflow_command",
     "installed_pack_roots_by_name",
     "mode_support_gap",
     "model_alias_for_mode",

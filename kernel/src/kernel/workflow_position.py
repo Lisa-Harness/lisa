@@ -25,20 +25,17 @@ model and pure helpers are here.
 
 Design constraints (mirroring the codebase conventions):
 
-- Tag-blind and prose-blind: the step compiler reuses the existing routing
-  helpers (``_first_target_for_earliest_intent``, ``_query_is_sequential``,
-  ``_detect_query_intents``) so it never duplicates intent vocabulary or
-  connector lists. It reads opaque pack-authored intent tags and routing
-  target ids — it names no intent in code.
+- Tag-blind and prose-blind: this module names no intent. Steps arrive fully
+  formed from the planner operation, which owns the catalog vocabulary.
 - Frozen and immutable: every advance helper returns a new position,
   mirroring ``RecoveryRecord`` immutability.
-- Ad-hoc and specified workflows share the shape: ``compile_steps_from_routing_targets``
-  produces steps for an ad-hoc position at turn 1; ``PlanWorkflowOutput.steps``
-  produces steps for a specified position. Both resume/recover
-  identically because they share the same ``WorkflowPosition`` model.
-- Catalog-aware stage moves live in ``kernel/ipsar_fsm.py``
-  (``create_position`` / ``apply_stage_transition`` / ``enter_mode``); this
-  module stays catalog-free so it is importable before the catalog is wired.
+- One origin: a workflow comes from ``PlanWorkflowOutput.steps`` (the
+  ``plan_workflow`` operation). The ad-hoc compiler that derived steps from
+  routing intents was removed — it could not run in any real install, because
+  it required a host-supplied updater (never wired) and the absence of
+  ``planner`` from the catalog (always installed).
+- Catalog-free by design, so it is importable before the catalog is wired.
+  Catalog-aware work lives in ``kernel/ipsar_fsm.py``.
 """
 
 from __future__ import annotations
@@ -49,14 +46,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kernel.routing_vocabulary import get_consumer_intents, get_producer_intents
-
 __all__ = [
     "WorkflowPosition",
     "WorkflowPositionOrigin",
     "WorkflowStep",
     "advance_step",
-    "compile_steps_from_routing_targets",
     "is_complete",
     "note_turn",
     "remaining_steps",
@@ -67,14 +61,15 @@ __all__ = [
 WorkflowPositionOrigin = Literal["adhoc", "session_plan", "plan_workflow_op", "thread_derived"]
 """How a position was spawned.
 
-``adhoc``: the kernel built the position at turn 1 from the routing hint
-when no explicit plan was supplied (the common case for natural-language
-multi-step requests).
+``adhoc``: retained for compatibility with positions persisted before ad-hoc
+compilation was removed. Nothing produces it now — a workflow originates from
+a ``## Plan`` block (``plan_workflow_op``). It stays in the literal because
+reading an older position must not fail validation.
 
 ``session_plan``: the session manifest declared an explicit workflow.
 
 ``plan_workflow_op``: the ``plan_workflow`` operation returned a step list
-(the model-supplied plan path).
+(the model-supplied plan path). The only live origin.
 
 ``thread_derived``: the ``WorkflowView`` was derived from the thread tail
 by ``kernel.workflow_view.derive_workflow_view`` — the thread-as-store
@@ -289,279 +284,6 @@ def _step_id_for(mode_id: str, index: int) -> str:
     """
     slug = "".join(c if c.isalnum() else "_" for c in mode_id.lower())
     return f"{slug}_{index}"
-
-
-def _ordered_intent_groups(
-    detected: set[str],
-    producers: frozenset[str] | set[str],
-    consumers: frozenset[str] | set[str],
-) -> list[set[str]]:
-    """Return detected intents as ordered groups: producers, other, consumers.
-
-    Producers first (evidence gathering), then any non-role intents, then
-    consumers (artifact creation). This is the sequential chain order the
-    post-handoff hint recomputation follows; mirroring it here keeps the
-    instance and the router in lockstep.
-    """
-    producer_intents = detected & producers
-    consumer_intents = detected & consumers
-    other_intents = detected - producers - consumers
-
-    ordered_intent_groups: list[set[str]] = []
-    if producer_intents:
-        ordered_intent_groups.append(producer_intents)
-    if other_intents:
-        ordered_intent_groups.append(other_intents)
-    if consumer_intents:
-        ordered_intent_groups.append(consumer_intents)
-    return ordered_intent_groups
-
-
-def _append_step_for_target(
-    *,
-    steps: list[WorkflowStep],
-    seen_targets: set[str],
-    target_id: str,
-    catalog: dict[str, Any],
-    spawned_from: WorkflowPositionOrigin,
-) -> None:
-    """Append one non-terminal step for ``target_id`` to the chain in place."""
-    mode_cfg = catalog.get(target_id)
-    satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or [])
-    steps.append(
-        WorkflowStep(
-            step_id=_step_id_for(target_id, len(steps)),
-            mode_id=target_id,
-            satisfies_intents=satisfies,
-            depends_on=tuple(s.step_id for s in steps),
-            is_terminal=False,
-            spawned_from=spawned_from,
-        )
-    )
-    seen_targets.add(target_id)
-
-
-def _sequential_group_steps(
-    *,
-    query: str,
-    routing_targets: list[str],
-    catalog: dict[str, Any],
-    group: set[str],
-    seen_targets: set[str],
-    steps: list[WorkflowStep],
-    spawned_from: WorkflowPositionOrigin,
-) -> None:
-    """Emit one step per intent in a sequential group, ordered by the user's phrasing.
-
-    Picking the earliest-keyword target for each intent. A group like
-    {coding, write} (two consumer intents) must produce two steps (coding
-    then markdown), not one — otherwise the second consumer is dropped and
-    never reached (the glm-5.2 self-assessment bug). Intents within a group
-    are ordered by their earliest keyword position in the query so the chain
-    follows the user's phrasing.
-    """
-    from kernel.turn_phases._routing_hint import _first_target_for_earliest_intent
-
-    intent_order = _intents_by_earliest_keyword(
-        query=query,
-        routing_targets=routing_targets,
-        catalog=catalog,
-        gap_intents=group,
-    )
-    for intent in intent_order:
-        target = _first_target_for_earliest_intent(
-            query=query,
-            routing_targets=routing_targets,
-            catalog=catalog,
-            gap_intents={intent},
-        )
-        if not target or target in seen_targets:
-            continue
-        _append_step_for_target(
-            steps=steps,
-            seen_targets=seen_targets,
-            target_id=target,
-            catalog=catalog,
-            spawned_from=spawned_from,
-        )
-
-
-def _forked_group_steps(
-    *,
-    routing_targets: list[str],
-    catalog: dict[str, Any],
-    group: set[str],
-    seen_targets: set[str],
-    steps: list[WorkflowStep],
-    spawned_from: WorkflowPositionOrigin,
-) -> None:
-    """Flatten one non-sequential fork group into one step per child target.
-
-    The position does not model parallelism yet; each fork child is
-    tracked as its own step.
-    """
-    targets = _targets_covering_intents(
-        routing_targets=routing_targets,
-        catalog=catalog,
-        gap_intents=group,
-    )
-    for target_id in targets:
-        if not target_id or target_id in seen_targets:
-            continue
-        _append_step_for_target(
-            steps=steps,
-            seen_targets=seen_targets,
-            target_id=target_id,
-            catalog=catalog,
-            spawned_from=spawned_from,
-        )
-
-
-def compile_steps_from_routing_targets(
-    *,
-    query: str,
-    routing_targets: list[str],
-    catalog: dict[str, Any],
-    spawned_from: WorkflowPositionOrigin = "adhoc",
-) -> tuple[WorkflowStep, ...]:
-    """Derive a producer-then-consumer step chain from the routing catalog.
-
-    This is the ad-hoc path's step-derivation (and the plan-failure
-    fallback): when no explicit ``PlanWorkflowOutput.steps`` is supplied,
-    the position's steps are built deterministically from the routing targets
-    that cover the query's detected intents. The ordering reuses the existing
-    routing helpers so there is one truth for producer→consumer sequencing:
-
-    1. Detect the query's intents (``_detect_query_intents``).
-    2. For a sequential query, walk producer intents first then consumer
-       intents, picking the earliest-keyword target for each remaining gap
-       (``_first_target_for_earliest_intent``). This matches the
-       post-handoff hint chain order so the position and the router agree.
-    3. For a non-sequential multi-intent query that forks, flatten the fork
-       into one step per fork child (the position does not model
-       parallelism yet; child positions are future work).
-    4. Mark the last step terminal.
-
-    Tag-blind: the compiler reads opaque intent tags and never names them.
-    The producer/consumer role sets come from
-    :func:`kernel.routing_vocabulary.get_producer_intents` /
-    :func:`kernel.routing_vocabulary.get_consumer_intents`, injected by
-    the host at boot. When no session vocabulary is wired, the historical
-    defaults apply (mirroring the routing hint path).
-    """
-    # Local import to avoid a kernel-boot-time cycle: _routing_hint imports
-    # from this module's neighbors but not from here, so the deferred
-    # import keeps workflow_position importable before the catalog is wired.
-    from kernel.turn_phases._routing_hint import (
-        _detect_query_intents,
-        _query_is_sequential,
-    )
-
-    if not routing_targets:
-        return ()
-    detected = _detect_query_intents(query=query, routing_targets=routing_targets)
-    if not detected:
-        return ()
-
-    ordered_intent_groups = _ordered_intent_groups(
-        detected,
-        get_producer_intents(),
-        get_consumer_intents(),
-    )
-
-    sequential = _query_is_sequential(query)
-    seen_targets: set[str] = set()
-    steps: list[WorkflowStep] = []
-
-    for group in ordered_intent_groups:
-        if sequential:
-            _sequential_group_steps(
-                query=query,
-                routing_targets=routing_targets,
-                catalog=catalog,
-                group=group,
-                seen_targets=seen_targets,
-                steps=steps,
-                spawned_from=spawned_from,
-            )
-        else:
-            _forked_group_steps(
-                routing_targets=routing_targets,
-                catalog=catalog,
-                group=group,
-                seen_targets=seen_targets,
-                steps=steps,
-                spawned_from=spawned_from,
-            )
-
-    if not steps:
-        return ()
-    # Mark the last step terminal so the turn loop knows the chain ends.
-    last = steps[-1]
-    steps[-1] = last.model_copy(update={"is_terminal": True})
-    return tuple(steps)
-
-
-def _targets_covering_intents(
-    *,
-    routing_targets: list[str],
-    catalog: dict[str, Any],
-    gap_intents: set[str],
-) -> list[str]:
-    """Return routing targets whose intent tags overlap ``gap_intents``.
-
-    Used by the non-sequential branch of ``compile_steps_from_routing_targets``
-    to flatten a fork's children into one step each. A target is included
-    when any of its ``routing_intent_tags`` is in the gap. Order follows the
-    ``routing_targets`` list (catalog priority order) so the step chain is
-    stable across recompiles.
-    """
-    out: list[str] = []
-    for target_id in routing_targets:
-        mode_cfg = catalog.get(target_id)
-        if mode_cfg is None:
-            continue
-        tags = set(getattr(mode_cfg, "routing_intent_tags", []) or [])
-        if tags & gap_intents:
-            out.append(target_id)
-    return out
-
-
-def _intents_by_earliest_keyword(
-    *,
-    query: str,
-    routing_targets: list[str],
-    catalog: dict[str, Any],
-    gap_intents: set[str],
-) -> list[str]:
-    """Order intents by the earliest position of any of their keywords.
-
-    For a sequential chain, intents within a group (e.g. two consumer
-    intents ``{coding, write}``) must be emitted as separate steps in the
-    order the user phrased them. Each intent is mapped to the earliest
-    position of any keyword attributed to it across all routing targets'
-    ``routing_intent_keywords``. Intents with no matching keyword sort last
-    (stable order by first-seen), so a detected-but-keywordless intent is
-    still emitted (it was detected via a fast-path pattern).
-    """
-    query_lower = query.lower()
-    positions: list[tuple[int, str]] = []
-    for intent in gap_intents:
-        best = -1
-        for target_id in routing_targets:
-            mode_cfg = catalog.get(target_id)
-            if mode_cfg is None:
-                continue
-            keywords = (getattr(mode_cfg, "routing_intent_keywords", {}) or {}).get(intent, [])
-            for keyword in keywords:
-                pos = query_lower.find(keyword)
-                if pos != -1 and (best == -1 or pos < best):
-                    best = pos
-        positions.append((best, intent))
-    # Sort by position; -1 (no keyword found) sorts after all real positions.
-    # Use a stable sort so ties keep first-seen order.
-    positions.sort(key=lambda item: (1 if item[0] == -1 else 0, item[0]))
-    return [intent for _, intent in positions]
 
 
 def render_workflow_progress(position: WorkflowPosition) -> str:

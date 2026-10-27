@@ -83,7 +83,6 @@ def get_content_root() -> Path:
 ```markdown
 ---
 mode_id: hello
-start_stage_id: hello
 mode_kind: action
 require_query: false
 command_pattern: '^(?:/)?hello(?:[\s,:;]+(?P<query>.+))?$'
@@ -97,9 +96,12 @@ Run the greeting operation and report its result.
 ```
 
 Use single-quoted YAML strings for regexes containing backslashes.
-`mode_kind` is `chat`, `action`, or `workflow`. A staged workflow additionally
-needs its authored stages and transition edges; changing `mode_kind` alone
-does not create those files.
+`mode_kind` is `chat` or `action`. The `workflow` kind and its authored stage
+files (`{stage_id}.md` with `start_stage_id` / `allowed_next_stages`) were
+retired — a staged FSM never ran in practice (no installed pack shipped stage
+files, and `transitioned_to` was near-zero across two months of turns).
+Multi-step work is declared with a `## Plan` block instead; see
+[router design](ROUTER_DESIGN.md#durable-workflow-chains).
 
 ### Operation
 

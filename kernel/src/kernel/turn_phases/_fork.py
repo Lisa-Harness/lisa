@@ -92,9 +92,8 @@ async def _run_fork_child_turn(
     """
     _flog = logger_override or logging.getLogger(__name__)
     _flog.debug(
-        "fork child starting: mode=%s stage=%s",
+        "fork child starting: mode=%s",
         target.mode_id,
-        target.stage_id,
     )
     try:
         # Lazy import to avoid a circular dependency: ``kernel.turn_runner``
@@ -136,12 +135,6 @@ async def _run_fork_child_turn(
             # resolved from the mode's declared completion effects inside
             # ``_run_turn_inner`` via ``mode_completion_effects``.
             sub_turn_kind="fork",
-            # Pin the child to the target's stage so a forked workflow
-            # stage runs its own stage instruction rather than the mode's
-            # default (or the parent session's current stage). Previously
-            # ``ForkTarget.stage_id`` was parsed and telemetry-only but
-            # never applied to the child turn.
-            stage_id_override=target.stage_id or None,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         # ── Shared child-turn classification ───────────────────────────
@@ -306,7 +299,6 @@ async def _run_fork_child(
             {
                 "child_index": idx,
                 "mode_id": target.mode_id,
-                "stage_id": target.stage_id,
                 "query_preview": (target.query or "")[:80],
             },
         )
@@ -326,7 +318,6 @@ async def _run_fork_child(
             {
                 "child_index": idx,
                 "mode_id": target.mode_id,
-                "stage_id": target.stage_id,
                 "status": status,
                 "duration_ms": elapsed_ms,
             },
@@ -390,7 +381,7 @@ async def _execute_fork_fanout(
             "fork_start",
             {
                 "children": n,
-                "targets": [{"mode_id": t.mode_id, "stage_id": t.stage_id} for t in fork_targets],
+                "targets": [{"mode_id": t.mode_id} for t in fork_targets],
             },
         )
 

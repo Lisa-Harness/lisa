@@ -237,12 +237,9 @@ async def _default_delegate_fn(
             # Thread the recursion depth so the child's own delegate
             # children are depth+1 (bounded by delegate_max_depth).
             delegate_depth=depth,
-            # Apply the delegate target's stage and model-alias overrides
-            # so a delegate child runs the requested stage and model rather
-            # than the target mode's defaults. Previously both
-            # ``DelegationSpec.stage_id`` and ``DelegationSpec.model_alias``
-            # were parsed but never applied to the child turn.
-            stage_id_override=spec.stage_id or None,
+            # Apply the delegate target's model-alias override so a delegate
+            # child runs the requested model rather than the target mode's
+            # default. (Stage overrides retired with the stage FSM.)
             preferred_model_id=spec.model_alias or None,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -561,14 +558,11 @@ def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
 
 
 def _current_recovery_stage_id(*, hooks: TurnHooks) -> str:
-    """Return the position's current stage id when available, else empty."""
+    """Return the position's current stage id when available, else empty.
 
-    if hooks.workflow.workflow_position is None:
-        return ""
-    try:
-        position = hooks.workflow.workflow_position()
-    except Exception:  # pylint: disable=broad-except
-        return ""
-    if position is None:
-        return ""
-    return str(getattr(position, "stage_id", "") or "")
+    ``RecoveryRecord.stage_id`` is retained as a persisted audit field so
+    records written before the stage FSM was retired still load. Nothing
+    writes a stage id any more: the position no longer carries one, so this
+    returns the empty string and the record records "no stage".
+    """
+    return ""

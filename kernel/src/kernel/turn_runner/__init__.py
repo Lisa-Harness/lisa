@@ -86,7 +86,6 @@ from kernel.ipsar_fsm import (
     get_routing_targets,
     get_workflow_catalog,
     is_routable_mode,
-    is_terminal_stage,
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
@@ -1608,30 +1607,7 @@ async def _pre_turn_slice_and_instructions(
         hooks.lifecycle.last_slice_finished_at = time.monotonic()
 
     mode_instruction = get_mode_system_intro(mode_id)
-    stage_instruction: str | None = None
-    if mode_config is not None:
-        # Resolve the stage for the instruction body. An explicit child
-        # ``stage_id_override`` (from a fork/delegate target) wins over the
-        # live position's stage so a child can be pinned to a
-        # specific stage. Without an override, read the position's current
-        # stage — only when the position is parked in this turn's mode
-        # (a stale or child-scoped hook must not inject another mode's
-        # stage).
-        _stage_for_instruction = stage_id_override or ""
-        if not _stage_for_instruction and hooks.workflow.workflow_position is not None:
-            _position_for_instruction = hooks.workflow.workflow_position()
-            if (
-                _position_for_instruction is not None
-                and getattr(_position_for_instruction, "mode_id", "") == mode_id
-            ):
-                _stage_for_instruction = str(
-                    getattr(_position_for_instruction, "stage_id", "") or ""
-                )
-        if _stage_for_instruction in mode_config.stages:
-            _stage_body = mode_config.stages[_stage_for_instruction].instruction_body
-            if _stage_body.strip():
-                stage_instruction = _stage_body
-    return slice_outcomes, mode_instruction, stage_instruction, mode_instruction
+    return slice_outcomes, mode_instruction, None, mode_instruction
 
 
 # ── Pre-turn memory recall helper ───────────────────────────────────────────
@@ -5436,33 +5412,10 @@ def _advance_handoff_workflow_position(
     if hooks.workflow.workflow_position is None:
         return
     try:
-        from kernel.workflow_position import (
-            WorkflowPosition,
-            advance_step,
-            compile_steps_from_routing_targets,
-        )
+        from kernel.workflow_position import advance_step
 
         position = hooks.workflow.workflow_position()
-        from kernel.turn_phases._routing_hint import is_plan_escalation_hint
-
         updater = hooks.workflow.workflow_position_updater
-        if (
-            position is None
-            and updater is not None
-            and not is_plan_escalation_hint(routing_hint)
-            and "planner" not in get_workflow_catalog()
-        ):
-            steps = compile_steps_from_routing_targets(
-                query=query,
-                routing_targets=get_routing_targets(departing_mode_id),
-                catalog=get_workflow_catalog(),
-            )
-            if len(steps) > 1:
-                position = WorkflowPosition(
-                    declared_steps=steps,
-                    mode_id=departing_mode_id,
-                    spawned_from="adhoc",
-                )
         if position is not None and position.current_step_id:
             current_step = position.step_by_id(position.current_step_id)
             if current_step is not None and current_step.mode_id == departing_mode_id:
@@ -6609,122 +6562,6 @@ def _enforce_forced_action_on_dispatch(
     return tool_name, tool_arguments
 
 
-async def _emit_terminal_stage_summary(
-    *,
-    state: Any,
-    hooks: TurnHooks,
-    mode_id: str,
-    mode_config: Any,
-    mode_instruction: str,
-    transitioned_to: str | None,
-    sys_segments: SystemPromptSegments,
-    messages: list[dict[str, Any]],
-    effective_model_def: Any,
-    assemble_system: Callable[[str, str | None], str],
-    complete: Callable[..., Awaitable[Any]],
-    record_model_usage: Callable[..., None],
-    log: logging.Logger,
-    deadline_s: float | None = None,
-) -> tuple[str, bool]:
-    """Force a closing-summary completion when the turn ended on a terminal stage.
-
-    If the turn ended parked on a terminal stage, force one final no-tools
-    completion using the terminal stage's instruction so the model produces a
-    closing summary (the closing directive rides the system prompt — Phase 7:
-    one control channel — no synthesized ``user`` message). Returns
-    ``(content, workflow_terminated)``; content is unchanged when no terminal
-    summary ran. Failures are logged and swallowed.
-    """
-    content = ""
-    workflow_terminated = False
-    if transitioned_to is not None:
-        terminal_position = (
-            hooks.workflow.workflow_position() if hooks.workflow.workflow_position else None
-        )
-        if terminal_position is not None and is_terminal_stage(terminal_position):
-            terminal_stage_config = mode_config.stages.get(terminal_position.stage_id)
-            if terminal_stage_config and terminal_stage_config.instruction_body:
-                # The closing directive rides the system prompt (Phase 7:
-                # one control channel) — no synthesized ``user`` message.
-                terminal_prompt = (
-                    assemble_system(
-                        mode_instruction,
-                        terminal_stage_config.instruction_body,
-                    )
-                    + "\n\nProvide a closing summary for this workflow."
-                )
-                if terminal_prompt.strip():
-                    sys_segments.replace_base(terminal_prompt)
-                messages[0] = {"role": "system", "content": terminal_prompt}
-                try:
-                    final_completion = await _bound_by_wall_deadline(
-                        complete(
-                            messages=messages,
-                            model_def=effective_model_def,
-                            max_tokens=_turn_completion_max_tokens(effective_model_def),
-                            temperature=0.4,
-                            tools=None,
-                        ),
-                        deadline_s,
-                    )
-                    final_content = getattr(final_completion, "content", "") or ""
-                    if final_content.strip():
-                        content = final_content.strip()
-                        terminal_usage = _extract_completion_usage(final_completion)
-                        terminal_cost, terminal_provider_cost = _resolve_call_cost(
-                            effective_model_def=effective_model_def,
-                            usage=terminal_usage,
-                            prompt_tokens=terminal_usage.prompt_tokens,
-                            completion_tokens=terminal_usage.completion_tokens,
-                            cached_tokens=terminal_usage.cached_tokens,
-                            cache_creation_tokens=terminal_usage.cache_creation_tokens,
-                        )
-                        state.total_prompt_tokens += terminal_usage.prompt_tokens
-                        state.total_completion_tokens += terminal_usage.completion_tokens
-                        state.total_tokens += terminal_usage.total_tokens
-                        state.total_cached_tokens += terminal_usage.cached_tokens
-                        state.total_cache_creation_tokens += terminal_usage.cache_creation_tokens
-                        state.total_duration_ms += terminal_usage.duration_ms
-                        record_model_usage(
-                            effective_model_def,
-                            p=terminal_usage.prompt_tokens,
-                            c=terminal_usage.completion_tokens,
-                            t=terminal_usage.total_tokens,
-                            ct=terminal_usage.cached_tokens,
-                            rt=terminal_usage.reasoning_tokens,
-                            cc=terminal_usage.cache_creation_tokens,
-                            d=terminal_usage.duration_ms,
-                            lat=terminal_usage.latency_ms,
-                        )
-                        _publish_token_usage_fn(
-                            hooks.context_seams.event_bus,
-                            _build_token_usage_event_fn(
-                                provider=str(getattr(effective_model_def, "provider", "") or ""),
-                                model_id=str(getattr(effective_model_def, "model_id", "") or ""),
-                                prompt_tokens=terminal_usage.prompt_tokens,
-                                completion_tokens=terminal_usage.completion_tokens,
-                                total_tokens=terminal_usage.total_tokens,
-                                cached_tokens=terminal_usage.cached_tokens,
-                                reasoning_tokens=terminal_usage.reasoning_tokens,
-                                cache_creation_tokens=terminal_usage.cache_creation_tokens,
-                                duration_ms=terminal_usage.duration_ms,
-                                latency_ms=terminal_usage.latency_ms,
-                                cost_usd=terminal_cost,
-                                provider_cost_usd=terminal_provider_cost,
-                                request_id=str(getattr(final_completion, "request_id", "") or ""),
-                                mode_id=mode_id,
-                                call_site="terminal_stage",
-                                conversation_id=hooks.identity.conversation_id,
-                                user_slug=hooks.identity.user_slug,
-                                surface_id=str(hooks.identity.surface_id or ""),
-                            ),
-                        )
-                except Exception as exc:  # pylint: disable=broad-except
-                    log.warning("terminal-stage summary failed: %s", exc)
-            workflow_terminated = True
-    return content, workflow_terminated
-
-
 def _apply_lifecycle_action(
     *,
     state: Any,
@@ -7274,7 +7111,6 @@ async def _run_fork_transition(
     targets = [
         ForkTarget(
             mode_id=target_id,
-            stage_id=catalog[target_id].start_stage_id,
             query=str(
                 queries[index] if isinstance(queries, list) and index < len(queries) else query
             ),
@@ -7284,69 +7120,6 @@ async def _run_fork_transition(
     fork_result = await ctx.host.fork(ForkSpec(targets=targets))
     state.fork_results = list(fork_result.children)
     return f"Forked {len(state.fork_results)} child turns."
-
-
-async def _complete_workflow_stage_transition(
-    *,
-    target_stage: str,
-    rationale: str,
-    hooks: TurnHooks,
-    state: Any,
-    messages: list[dict[str, Any]],
-    tool_name: str,
-    tool_call_id: str,
-    tool_calls: list[dict[str, Any]],
-    tool_call: dict[str, Any],
-    emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
-    tool_dispatch_started: float,
-    log: logging.Logger,
-) -> str:
-    if hooks.workflow.workflow_position is not None:
-        try:
-            position = hooks.workflow.workflow_position()
-            updater = hooks.workflow.workflow_position_updater
-            if position is not None and updater is not None:
-                updater(
-                    position.model_copy(
-                        update={
-                            "stage_id": target_stage,
-                            "turn_count": position.turn_count + 1,
-                        }
-                    )
-                )
-        except Exception as exc:  # pylint: disable=broad-except
-            log.warning("workflow stage transition persistence failed: %s", exc)
-    tool_output = f"Transitioned to stage: {target_stage}." + (
-        f" Rationale: {rationale}" if rationale else ""
-    )
-    await emit_stage(
-        "tool_dispatch_complete",
-        {
-            "tool": tool_name,
-            "tool_kind": "transition",
-            "state.iteration": state.iteration,
-            "tool_calls_so_far": state.total_tool_calls,
-            "ok": True,
-            "transition": "workflow_stage",
-            "transitioned_to": target_stage,
-            "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
-        },
-    )
-    messages.append(
-        {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": tool_name,
-            "content": tool_output,
-        }
-    )
-    if tool_call != tool_calls[-1]:
-        log.warning(
-            "Model batched %d trailing tool call(s) after stage transition. "
-            "Breaking the dispatch loop to cleanly boot the new stage.",
-            len(tool_calls) - tool_calls.index(tool_call) - 1,
-        )
-    return tool_output
 
 
 async def _intercept_transition_stage(
@@ -7505,31 +7278,10 @@ async def _intercept_transition_stage(
     # the same WorkflowPosition. Stage ids shadow mode ids
     # within their own mode (ponder's ``exit`` wins over a
     # hypothetical ``exit`` mode).
-    if mode_config is not None and target_stage in mode_config.stages:
-        # Intra-mode stage transition. The transition target
-        # is recorded on the TurnResult (``transitioned_to``)
-        # and persisted to the active workflow position for the
-        # next turn.
-        transitioned_to = target_stage
-        await _complete_workflow_stage_transition(
-            target_stage=target_stage,
-            rationale=rationale,
-            hooks=hooks,
-            state=state,
-            messages=messages,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            tool_calls=tool_calls,
-            tool_call=tool_call,
-            emit_stage=emit_stage,
-            tool_dispatch_started=tool_dispatch_started,
-            log=log,
-        )
-        return _ret("break")
-
-    # ── Case B: mode handoff (routing FSM) ────────────────
-    # The handoff execution, its loop guard, and the entry/plan failure
-    # surfaces live in ``_intercept_mode_handoff``.
+    # Intra-mode workflow stages are retired: ``mode_config.stages`` no
+    # longer exists, and ``transition_stage`` resolves a mode handoff only.
+    # A stage-id target matches nothing and falls through to the routable-mode
+    # guard, which rejects it as an unknown mode.
     if is_routable_mode(target_stage):
         _mh = await _intercept_mode_handoff(
             state=state,
@@ -9854,24 +9606,10 @@ async def _finalize_turn_result(
             deadline_s=deadline_s,
         )
 
-    terminal_content, workflow_terminated = await _emit_terminal_stage_summary(
-        state=state,
-        hooks=hooks,
-        mode_id=mode_id,
-        mode_config=mode_config,
-        mode_instruction=mode_instruction,
-        transitioned_to=transitioned_to,
-        sys_segments=sys_segments,
-        messages=messages,
-        effective_model_def=effective_model_def,
-        assemble_system=assemble_system,
-        complete=complete,
-        record_model_usage=record_model_usage,
-        log=log,
-        deadline_s=deadline_s,
-    )
-    if terminal_content:
-        content = terminal_content
+    # Terminal-stage closing summaries are gone with the stage FSM: a mode
+    # handoff no longer parks the turn on a terminal stage, so there is no
+    # stage instruction to close with.
+    workflow_terminated = False
 
     # The verifier is worth bounding but not worth failing the turn for: a
     # spent wall budget skips it (evidence stays None — the completion

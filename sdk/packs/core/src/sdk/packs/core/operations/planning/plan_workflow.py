@@ -11,10 +11,11 @@ and return a structured plan (a list of steps, each naming a target mode).
 
 The plan is surfaced to the user as a markdown block before the first step
 executes (auto-proceed — no forced pause). The turn runner persists the plan
-as a ``WorkflowInstance`` with ``spawned_from="plan_workflow_op"`` so it
-survives across turns and is resumable with ``/resume``. When the model
-returns no ``steps`` (weak model, old shape), the turn runner falls back
-to the deterministic ``compile_steps_from_routing_targets`` path.
+by writing it into the thread, where ``kernel.workflow_view`` derives it on
+every later turn; it is resumable with ``/resume`` and retirable with
+``/workflow conclude``. When the model returns no ``steps`` (weak model, old
+shape), the single ``target_stage_id`` handoff is used with no declared
+workflow — there is no compiled fallback.
 
 The sequential-connector vocabulary is shared with the kernel's routing-hint
 generator via :mod:`kernel.routing_vocabulary`. The host boot path injects
@@ -143,8 +144,7 @@ class PlanWorkflowOutput(BaseModel):
     ``mode_id`` and ``rationale`` is a one-line summary. Existing consumers
     that read only ``target_stage_id`` keep working. When the model returns
     no ``steps`` (weak model, single-target case), ``target_stage_id``
-    carries the single target as before and the turn runner falls back to
-    the deterministic ``compile_steps_from_routing_targets`` path.
+    carries the single target as before and no workflow is declared.
 
     When no installed mode covers the request, return empty ``steps`` AND
     empty ``target_stage_id``; the ``rationale`` MUST then name the missing

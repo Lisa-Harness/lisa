@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from kernel.workflow_position import WorkflowStep
 
 __all__ = [
+    "WORKFLOW_CONCLUSION_KEY",
     "WorkflowView",
     "derive_workflow_view",
     "has_workflow_plan",
@@ -40,10 +41,20 @@ __all__ = [
     "render_workflow_progress",
 ]
 
+#: Thread-entry ``provenance`` key recording that a workflow was concluded by
+#: the operator. The value carries the operator's reason (or an empty string
+#: when none was given); the presence of the key is what retires the plan.
+WORKFLOW_CONCLUSION_KEY = "workflow_conclusion"
+
 
 # ── Plan block parser ────────────────────────────────────────────────
 
-_PLAN_HEADER_RE = re.compile(r"^##\s+Plan\s*$", re.MULTILINE)
+# Anchored at the start of the response: ``_render_plan_markdown`` prepends
+# the block, so a plan that does not open the turn is a quotation, an
+# example, or a discussion of a plan — not the active one. ``\A`` is used
+# instead of ``^`` so no leading whitespace can satisfy it, since ``match``
+# on a ``re.MULTILINE`` ``^`` pattern would re-anchor at every line.
+_PLAN_HEADER_RE = re.compile(r"\A##[ \t]+Plan[ \t]*$", re.MULTILINE)
 # Matches:  1. **search** — Search for the latest rust async runtime news
 # Captures: mode_id="search", description="Search for the latest..."
 _PLAN_STEP_RE = re.compile(r"^\s*(?:\d+\.|[-*])\s+\*{0,2}([a-zA-Z0-9_-]+)\*{0,2}\s*[—–-]\s*(.+)$")
@@ -106,12 +117,21 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | N
     line, ``None`` for read steps (``_reads_`` or no deliverable line), or
     ``None`` when no ``## Plan`` header is found.
 
+    Only a plan that *starts* the response counts. ``_render_plan_markdown``
+    emits the block at the top of the turn's text (the turn runner prepends
+    it), so an unanchored match would treat any response that merely
+    *mentions* a plan — a document containing a ``## Plan`` example, a
+    quoted template, a review of a plan — as an active workflow. The same
+    rule keeps fenced examples from counting: prose cannot precede the
+    header, so a fenced block (which must follow prose to be introduced) is
+    excluded along with every other quoted case.
+
     The parser is best-effort: it handles the standard format produced by
     ``_render_plan_markdown`` and common prose variants. Steps with
     unparseable mode_ids are skipped (not silently accepted with empty
     mode_id — the FSM theme: if preconditions are not met, stop).
     """
-    match = _PLAN_HEADER_RE.search(text)
+    match = _PLAN_HEADER_RE.match(text)
     if not match:
         return None
 
@@ -201,18 +221,6 @@ def _step_id_for(mode_id: str, index: int) -> str:
     return f"{slug}_{index}"
 
 
-def _has_write_receipt(entry: dict[str, Any]) -> bool:
-    """Check if a thread entry has at least one write/external_write receipt."""
-    receipts = entry.get("effect_receipts")
-    if not receipts or not isinstance(receipts, list):
-        return False
-    return any(
-        str(r.get("effect", "")) in ("write", "external_write")
-        for r in receipts
-        if isinstance(r, dict)
-    )
-
-
 def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
     """Return the set of capability ids (raw + bare form) from write receipts."""
     receipts = entry.get("effect_receipts")
@@ -235,43 +243,38 @@ def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
     return ids
 
 
-def _step_satisfied(
-    entries: list[dict[str, Any]],
-    step: WorkflowStep,
-    after_index: int,
-) -> dict[str, Any] | None:
-    """Return the thread entry that satisfies ``step``, or ``None``.
+def _entry_satisfies_step(entry: dict[str, Any], step: WorkflowStep) -> bool:
+    """Return True when ``entry`` is the completion evidence for ``step``.
 
-    - **Write step** (``step.write_capability`` set): the first later
-      entry with ``mode_id == step.mode_id`` whose write receipts include
-      ``step.write_capability`` (raw or bare form). No dense-content
+    - **Write step** (``step.write_capability`` set): a write receipt for
+      exactly that capability (raw or bare form). No dense-content
       fallback — the receipt is the honest signal.
-    - **Read step** (``step.write_capability`` is None): the first later
-      entry with ``mode_id == step.mode_id`` and a non-empty
+    - **Read step** (``step.write_capability`` is None): a non-empty
       ``handoff_to`` or ``transitioned_to``. The reads and prose are
       already in the lossless thread; the handoff is the completion
       signal.
     """
-    target = step.write_capability
-    for entry in entries[after_index + 1 :]:
-        if entry.get("mode_id") != step.mode_id:
-            continue
-        if target is not None:
-            if target in _receipt_capability_ids(entry):
-                return entry
-        else:
-            handoff = str(entry.get("handoff_to") or "")
-            transitioned = str(entry.get("transitioned_to") or "")
-            if handoff or transitioned:
-                return entry
-    return None
+    if entry.get("mode_id") != step.mode_id:
+        return False
+    if step.write_capability is not None:
+        return step.write_capability in _receipt_capability_ids(entry)
+    handoff = str(entry.get("handoff_to") or "")
+    transitioned = str(entry.get("transitioned_to") or "")
+    return bool(handoff or transitioned)
 
 
-def _receipts_for_mode(entries: list[dict[str, Any]], mode_id: str, after_index: int) -> bool:
-    """Check if any entry after ``after_index`` has a write receipt while
-    running in ``mode_id``."""
-    for entry in entries[after_index + 1 :]:
-        if entry.get("mode_id") == mode_id and _has_write_receipt(entry):
+def _workflow_concluded_after(thread_entries: list[dict[str, Any]], plan_entry_index: int) -> bool:
+    """Return True when an entry after the plan records a workflow conclusion.
+
+    The conclusion is stamped by the host's ``/workflow conclude`` command as
+    ``provenance["workflow_conclusion"]`` on a thread entry. Because the
+    thread is append-only and the view is derived, that single entry is
+    enough to retire the workflow durably — no mutable position store, and
+    the reason stays readable for audit.
+    """
+    for entry in thread_entries[plan_entry_index + 1 :]:
+        provenance = entry.get("provenance")
+        if isinstance(provenance, dict) and WORKFLOW_CONCLUSION_KEY in provenance:
             return True
     return False
 
@@ -320,40 +323,50 @@ def _match_step_completions(
     thread_entries: list[dict[str, Any]],
     plan_entry_index: int,
 ) -> tuple[list[str], dict[str, str], list[WorkflowStep]]:
-    """Determine step completion via the deliverable contract.
+    """Determine step completion by consuming thread entries monotonically.
 
-    - Write step (write_capability set): complete iff a later thread entry
-      has a receipt whose capability_id matches write_capability (raw or
-      bare form). No dense-content fallback — the receipt is the honest
-      signal. The matching entry's global turn index is recorded on the
-      step as ``completing_turn`` so the completion is turn-addressed and
-      verifiable via ``thread_read_range``.
-    - Read step (write_capability None): complete on the first handoff_to or
-      transitioned_to in a later entry with matching mode_id. The reads
-      and prose are already in the lossless thread; the handoff is the
-      completion signal.
+    Steps are matched in declared order, and each thread entry can complete at
+    most one step (``used`` tracks claimed entries). That makes
+    double-counting unrepresentable: a per-step search window let one receipt
+    satisfy several steps that share a ``mode_id`` (two ``coding`` steps, one
+    commit → both ticked).
 
-    Returns ``(completed_ids, step_results, updated_steps)`` where the
-    updated steps carry ``completing_turn``.
+    Every step scans from the plan onwards, so a step can be satisfied by work
+    that ran *before* an earlier step finished. A strict forward cursor would
+    be wrong here: if step 1 never completes, the cursor stops on it and step
+    2's receipt — already in the thread — is never seen, leaving genuinely
+    finished work marked open forever. Completion reports what happened, not
+    what the declared order predicted, and the per-mode handoff/receipt test
+    still prevents a step from claiming another mode's work.
+
+    Returns ``(completed_ids, step_results, updated_steps)`` with
+    ``completing_turn`` stamped on completed steps.
     """
     completed: list[str] = []
     step_results: dict[str, str] = {}
     updated_steps = list(steps)
 
+    used: set[int] = set()
     for idx, step in enumerate(updated_steps):
-        completing_entry = _step_satisfied(thread_entries, step, plan_entry_index + idx)
-        if completing_entry is None:
-            continue
-        completed.append(step.step_id)
-        preview = str(completing_entry.get("response_text") or "").strip()[:300]
-        if preview:
-            step_results[step.step_id] = preview
-        # Record the completing turn index on the step so the
-        # completion is turn-addressed. The entry's ``turn`` field is
-        # the global 0-based turn index stamped at append time.
-        completing_turn = completing_entry.get("turn")
-        if isinstance(completing_turn, int):
-            updated_steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
+        for entry_index in range(plan_entry_index + 1, len(thread_entries)):
+            if entry_index in used:
+                continue
+            entry = thread_entries[entry_index]
+            if not _entry_satisfies_step(entry, step):
+                continue
+            used.add(entry_index)
+            completed.append(step.step_id)
+            preview = str(entry.get("response_text") or "").strip()[:300]
+            if preview:
+                step_results[step.step_id] = preview
+            # Record the completing turn index so the completion is
+            # turn-addressed and verifiable via ``thread_read_range``. The
+            # entry's ``turn`` field is the global 0-based turn index
+            # stamped at append time.
+            completing_turn = entry.get("turn")
+            if isinstance(completing_turn, int):
+                updated_steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
+            break
 
     return completed, step_results, updated_steps
 
@@ -407,6 +420,14 @@ def derive_workflow_view(
         # No plan block found — no active workflow.
         return None
     plan_entry_index, plan_text, parsed_steps = latest_plan
+
+    # A conclusion recorded after the plan retires it. The marker is a
+    # provenance key on a later thread entry, so it needs no mutable store:
+    # the thread stays the single source of truth, and the reason survives
+    # for audit. Only entries *after* the plan count — an earlier conclusion
+    # belongs to a previous workflow and must not silently kill this one.
+    if _workflow_concluded_after(thread_entries, plan_entry_index):
+        return None
 
     # Build WorkflowStep objects from the parsed plan.
     steps = _build_view_steps(parsed_steps)

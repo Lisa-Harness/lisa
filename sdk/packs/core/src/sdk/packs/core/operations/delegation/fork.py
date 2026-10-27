@@ -51,13 +51,6 @@ class TargetParam(BaseModel):
             "Available Modes listed in the operation instruction."
         ),
     )
-    stage_id: str = Field(
-        default="",
-        description=(
-            "Optional stage_id for the target mode. Defaults to the "
-            "mode's start_stage_id when empty."
-        ),
-    )
     query: str = Field(
         default="",
         description=(
@@ -202,11 +195,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                     "error_message": f"unknown target mode: {tp.mode_id}",
                 },
             )
-        resolved_stage = tp.stage_id or target_config.start_stage_id
         fork_targets.append(
             ForkTarget(
                 mode_id=tp.mode_id,
-                stage_id=resolved_stage,
                 query=tp.query or ctx.query,
             )
         )

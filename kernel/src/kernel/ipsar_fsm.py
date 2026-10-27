@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,12 +47,10 @@ from kernel.models import (
     OperationResult,
     ToolExecutionContext,
     WorkflowModeConfig,
-    WorkflowStageConfig,
     WorkflowTransitionRequest,
     YieldPolicy,
 )
 from kernel.tools.mcp_client import MCPClientConfig
-from kernel.workflow_position import WorkflowPosition
 
 logger = logging.getLogger(__name__)
 
@@ -373,119 +370,6 @@ def _apply_mode_overrides(
 # ---------------------------------------------------------------------------
 # Disk-scanning catalog loader
 # ---------------------------------------------------------------------------
-
-
-def _parse_mode_stage(
-    stage_path: Path,
-    stage_front_matter: dict[str, Any],
-    stage_body: str,
-) -> WorkflowStageConfig:
-    """Build one WorkflowStageConfig from a parsed stage file.
-
-    Args:
-        stage_path: Path of the stage file (for error messages).
-        stage_front_matter: Parsed front-matter dict from the stage file.
-        stage_body: Body markdown text from the stage file.
-
-    Returns:
-        The stage config built from validated front-matter fields.
-
-    Raises:
-        WorkflowValidationError: If a required field is missing or invalid.
-    """
-    stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
-    terminal = _require_bool_field(stage_front_matter, "terminal", stage_path)
-    allowed_next_stages = _require_list_field(
-        stage_front_matter,
-        "allowed_next_stages",
-        stage_path,
-    )
-    allow_user_questions = _require_bool_field(
-        stage_front_matter,
-        "allow_user_questions",
-        stage_path,
-    )
-    required_connectors = _require_list_field(
-        stage_front_matter,
-        "required_connectors",
-        stage_path,
-    )
-    stage_description = _require_str_field(stage_front_matter, "description", stage_path)
-    stage_default_model = str(stage_front_matter.get("default_model", "") or "") or None
-
-    return WorkflowStageConfig(
-        stage_id=stage_id,
-        instruction_markdown_path=str(stage_path),
-        instruction_body=stage_body,
-        description=stage_description,
-        default_model=stage_default_model,
-        required_connectors=required_connectors,
-        allowed_next_stages=allowed_next_stages,
-        allow_user_questions=allow_user_questions,
-        terminal=terminal,
-    )
-
-
-def _load_mode_stages(
-    mode_id: str,
-    mode_kind: ModeKind,
-    mode_dir: Path,
-) -> dict[str, WorkflowStageConfig]:
-    """Load all authored workflow stage files for one mode directory.
-
-    Stage files whose name starts with ``_`` are skipped (reserved for
-    mode-level config files like ``_mode.md``). Non-workflow modes may carry
-    additional authored markdown assets without a ``stage_id`` — those are
-    skipped for chat/action modes and rejected for workflow modes.
-
-    Args:
-        mode_id: Owning mode id (for error messages).
-        mode_kind: The mode's kind — only workflow modes define FSM stages.
-        mode_dir: Mode directory containing ``{stage_id}.md`` files.
-
-    Returns:
-        Mapping of stage_id -> WorkflowStageConfig for all authored stages.
-
-    Raises:
-        WorkflowValidationError: If stage front-matter is missing required
-            fields or a chat/action mode declares a stage file.
-    """
-    stages: dict[str, WorkflowStageConfig] = {}
-    for stage_path in sorted(mode_dir.glob("*.md")):
-        # Skip reserved files (e.g. _mode.md).
-        if stage_path.name.startswith("_"):
-            continue
-
-        stage_front_matter, stage_body = parse_front_matter(stage_path.read_text(encoding="utf-8"))
-
-        # Non-workflow modes may carry additional authored markdown assets
-        # (for example workshop planner/synthesis prompt blocks) that are
-        # not workflow stage definitions.
-        if "stage_id" not in stage_front_matter:
-            if mode_kind in {"chat", "action"}:
-                continue
-            raise WorkflowValidationError(
-                f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
-            )
-        if mode_kind in {"chat", "action"}:
-            # Stage files are workflow-mode authoring. A chat/action mode
-            # with a stage file is a contradiction (the stage graph would
-            # be ignored pre-synthesis and is rejected here rather than
-            # silently half-loaded). Want stages? Declare
-            # ``mode_kind: workflow``.
-            raise WorkflowValidationError(
-                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares a "
-                f"stage file '{stage_path}' — only workflow modes define FSM "
-                "stages."
-            )
-
-        stage_config = _parse_mode_stage(
-            stage_path=stage_path,
-            stage_front_matter=stage_front_matter,
-            stage_body=stage_body,
-        )
-        stages[stage_config.stage_id] = stage_config
-    return stages
 
 
 @dataclass(slots=True)
@@ -1044,12 +928,6 @@ def _load_mode_from_dir(
     mode_front_matter = _apply_mode_overrides(mode_dir, mode_front_matter)
 
     mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
-    # ``start_stage_id`` is authored by workflow modes (it must name a
-    # stage in the graph). Stageless modes (chat/action) omit it — the
-    # loader synthesizes a one-stage graph after construction (see
-    # ``synthesize_stage_graph``), so every catalog mode has a stage
-    # pointer regardless of kind.
-    start_stage_id = str(mode_front_matter.get("start_stage_id", "") or "")
     mode_kind = cast(
         ModeKind,
         _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
@@ -1061,8 +939,6 @@ def _load_mode_from_dir(
     command_pattern = str(raw_pattern)
     require_query = bool(mode_front_matter.get("require_query", False))
     mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
-    stages = _load_mode_stages(mode_id, mode_kind, mode_dir)
-
     operation_bindings = _parse_mode_operation_bindings(
         mode_front_matter, mode_kind, mode_config_path
     )
@@ -1083,12 +959,10 @@ def _load_mode_from_dir(
         if key not in _KERNEL_OWNED_FRONT_MATTER_KEYS
     }
 
-    mode_config = WorkflowModeConfig(
+    return WorkflowModeConfig(
         mode_id=mode_id,
-        start_stage_id=start_stage_id,
-        stages=stages,
         mode_kind=mode_kind,
-        artifact_type=str(mode_front_matter.get("artifact_type", "workflow_summary")),
+        artifact_type=str(mode_front_matter.get("artifact_type", "")),
         description=mode_description,
         instruction_body=mode_body.strip(),
         mode_markdown_path=str(mode_config_path),
@@ -1126,12 +1000,6 @@ def _load_mode_from_dir(
         task_artifact_tool_id=str(mode_front_matter.get("task_artifact_tool_id", "") or ""),
         extra_front_matter=extra_front_matter,
     )
-    # Synthesize a one-stage graph for stageless (chat/action) modes so
-    # every catalog mode carries a stage pointer. Runs post-construction,
-    # pre-validation: validation treats the synthesized graph as a fixed
-    # point (chat/action stage checks are skipped by kind).
-    synthesize_stage_graph(mode_config)
-    return mode_config
 
 
 def load_catalog_from_disk(
@@ -1344,153 +1212,6 @@ def _optional_int_field(
 # ---------------------------------------------------------------------------
 # Catalog validation
 # ---------------------------------------------------------------------------
-def _validate_stage_invariants(
-    mode: WorkflowModeConfig,
-    stage_id: str,
-    stage: WorkflowStageConfig,
-    connector_ids: frozenset[str],
-) -> None:
-    """Validate FSM invariants for one authored workflow stage.
-
-    Checks (per stage): terminal stages have no transitions; non-terminal
-    stages without transitions must allow user questions; transition targets
-    exist; self-loops require ``allow_user_questions=true``; referenced
-    connectors are installed.
-
-    Args:
-        mode: Owning mode config (for error messages and stage lookups).
-        stage_id: The stage being validated.
-        stage: The stage config being validated.
-        connector_ids: Installed connector ids from the extension registry.
-
-    Raises:
-        WorkflowValidationError: On any invariant violation.
-    """
-    if stage.terminal and stage.allowed_next_stages:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' stage '{stage_id}' is terminal but has transitions."
-        )
-
-    if not stage.terminal and not stage.allowed_next_stages and not stage.allow_user_questions:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' stage '{stage_id}' cannot progress and cannot ask questions."
-        )
-
-    for next_stage in stage.allowed_next_stages:
-        if next_stage not in mode.stages:
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' targets unknown stage '{next_stage}'."
-            )
-        if next_stage == stage_id and not stage.allow_user_questions:
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' self-loop "
-                "requires allow_user_questions=true."
-            )
-
-    for connector_id in stage.required_connectors:
-        if connector_id not in connector_ids:
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' references "
-                f"unknown connector '{connector_id}'. "
-                f"Known connectors: {sorted(connector_ids)}."
-            )
-
-
-def _validate_mode_stage_bodies(mode: WorkflowModeConfig) -> None:
-    """Require non-empty instruction bodies for workflow modes and stages.
-
-    Workflow modes carry authored instructions at both levels — an empty
-    body would silently run the model modeless/stageless. Enforced here
-    (load time) so the turn loop can read both levels leniently: a mode
-    that reached runtime is known to have bodies.
-
-    Raises:
-        WorkflowValidationError: If the mode or any stage has an empty
-            instruction body.
-    """
-    if not (mode.instruction_body or "").strip():
-        raise WorkflowValidationError(
-            f"Workflow mode '{mode.mode_id}' has an empty instruction_body in its "
-            "_mode.md — workflow modes require authored instructions."
-        )
-    for stage_id, stage in mode.stages.items():
-        if not (stage.instruction_body or "").strip():
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' stage '{stage_id}' has an empty "
-                "instruction_body — workflow stages require authored instructions."
-            )
-
-
-def _validate_start_stage(mode: WorkflowModeConfig) -> None:
-    """Validate that the mode's start_stage_id points into its stage graph.
-
-    Raises:
-        WorkflowValidationError: If the mode has no stages or the start
-            stage is unknown.
-    """
-    if mode.start_stage_id not in mode.stages:
-        if not mode.stages:
-            raise WorkflowValidationError(
-                f"Workflow mode '{mode.mode_id}' must define at least one stage."
-            )
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' has unknown start stage '{mode.start_stage_id}'."
-        )
-
-
-def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
-    """Validate one workflow mode for deterministic exits and legal transitions.
-
-    Checks performed (in order):
-    1. start_stage_id exists in stages dict.
-    2. At least one terminal stage exists.
-    3. Terminal stages have no outgoing transitions.
-    4. Non-terminal stages with no transitions must allow user questions.
-    5. All transition targets exist in the stages dict.
-    6. Self-loop transitions require allow_user_questions=true.
-    7. All connector IDs in required_connectors are in the installed connector registry.
-    8. DFS reachability: every reachable stage has a path to a terminal stage.
-
-    Args:
-        mode: The WorkflowModeConfig to validate.
-
-    Raises:
-        WorkflowValidationError: On any invariant violation.
-    """
-    if mode.mode_kind not in {"workflow", "chat", "action"}:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' has invalid mode_kind '{mode.mode_kind}'."
-        )
-
-    _validate_mode_operation_bindings(mode)
-    _validate_fork_allowed(mode)
-
-    if mode.mode_kind in {"chat", "action"}:
-        # Chat/action modes carry a synthesized one-stage graph (see
-        # ``synthesize_stage_graph``) — there are no authored FSM invariants
-        # to check. Authored stage files on a chat/action mode are rejected
-        # at load time (the disk loader and the SDK catalog builder), before
-        # synthesis, so by validation time a stage graph on a non-workflow
-        # mode is always the synthesized fixed point.
-        return
-
-    _validate_start_stage(mode)
-    _validate_mode_stage_bodies(mode)
-
-    terminal_stages = [stage for stage in mode.stages.values() if stage.terminal]
-    if not terminal_stages:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' must define at least one terminal stage."
-        )
-
-    connector_ids = _known_connector_ids()
-
-    for stage_id, stage in mode.stages.items():
-        _validate_stage_invariants(mode, stage_id, stage, connector_ids)
-
-    _assert_all_paths_reach_terminal(mode)
-
-
 def _validate_fork_allowed(mode: WorkflowModeConfig) -> None:
     """Validate ``fork_allowed`` consistency for one mode.
 
@@ -1567,6 +1288,22 @@ def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
             )
 
 
+def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
+    """Validate one mode's structural invariants.
+
+    Only ``chat`` and ``action`` remain. The retired ``workflow`` kind is
+    rejected at load so a stale pack cannot silently carry a shape the kernel
+    no longer honors (see CHANGELOG — workflow stages retired).
+    """
+    if mode.mode_kind not in {"chat", "action"}:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' has invalid mode_kind '{mode.mode_kind}'. "
+            "The 'workflow' kind (staged FSM) was removed."
+        )
+    _validate_fork_allowed(mode)
+    _validate_mode_operation_bindings(mode)
+
+
 def validate_workflow_catalog(catalog: dict[str, WorkflowModeConfig]) -> None:
     """Validate all workflow modes in the catalog.
 
@@ -1581,139 +1318,6 @@ def validate_workflow_catalog(catalog: dict[str, WorkflowModeConfig]) -> None:
     """
     for mode in catalog.values():
         validate_workflow_mode(mode)
-
-
-def _assert_all_paths_reach_terminal(mode: WorkflowModeConfig) -> None:
-    """Assert every reachable branch from start has a route to a terminal stage."""
-    adjacency = {
-        stage_id: list(stage.allowed_next_stages) for stage_id, stage in mode.stages.items()
-    }
-    can_reach_terminal: dict[str, bool] = {}
-
-    def compute_reachability(stage_id: str, visiting: set[str]) -> bool:
-        if stage_id in can_reach_terminal:
-            return can_reach_terminal[stage_id]
-        if stage_id in visiting:
-            can_reach_terminal[stage_id] = False
-            return False
-
-        visiting.add(stage_id)
-        stage = mode.stages[stage_id]
-        if stage.terminal:
-            visiting.remove(stage_id)
-            can_reach_terminal[stage_id] = True
-            return True
-
-        reachable = False
-        for next_stage in adjacency[stage_id]:
-            if compute_reachability(next_stage, visiting):
-                reachable = True
-
-        visiting.remove(stage_id)
-        if stage.allow_user_questions and reachable:
-            can_reach_terminal[stage_id] = True
-        else:
-            can_reach_terminal[stage_id] = reachable
-        return can_reach_terminal[stage_id]
-
-    reachable_from_start = _collect_reachable_stages(mode)
-    for stage_id in reachable_from_start:
-        if not compute_reachability(stage_id, set()):
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' has no terminal path from stage '{stage_id}'."
-            )
-
-
-def _collect_reachable_stages(mode: WorkflowModeConfig) -> set[str]:
-    """Collect all stages reachable from the start stage."""
-    visited: set[str] = set()
-    queue: deque[str] = deque([mode.start_stage_id])
-    while queue:
-        stage_id = queue.popleft()
-        if stage_id in visited:
-            continue
-        visited.add(stage_id)
-        for next_stage in mode.stages[stage_id].allowed_next_stages:
-            queue.append(next_stage)
-    return visited
-
-
-def synthesize_stage_graph(mode: WorkflowModeConfig) -> WorkflowModeConfig:
-    """Give a stageless (chat/action) mode a synthesized one-stage graph.
-
-    Every catalog mode carries a stage graph after catalog load — the turn
-    loop never branches on "does this mode have stages":
-
-    - ``chat`` / ``action`` modes with no authored stage files get one
-      non-terminal stage named after the mode (``stage_id == mode_id``),
-      with an empty ``instruction_body`` (the mode-level body from
-      ``_mode.md`` stays at mode level — the synthesized stage is a
-      pointer target, not a content carrier).
-    - Modes with an authored graph (workflow modes) are returned unchanged.
-
-    Idempotent: a mode that already has stages (including a previously
-    synthesized graph) is a fixed point. ``start_stage_id`` is set to the
-    synthesized stage, overriding the historical ``"none"`` placeholder.
-    """
-    if mode.stages:
-        return mode
-    stage_id = mode.mode_id
-    mode.stages = {
-        stage_id: WorkflowStageConfig(
-            stage_id=stage_id,
-            description=mode.description,
-            allow_user_questions=True,
-            terminal=False,
-        )
-    }
-    mode.start_stage_id = stage_id
-    return mode
-
-
-def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
-    """Return the instruction prose for a stage.
-
-    The body text is loaded by the ``lisa-content`` MCP server into
-    ``stage.instruction_body`` at catalog load time, so this function performs
-    no I/O. If ``instruction_body`` is empty (e.g. test-constructed configs
-    with no body), returns an empty string — no disk fallback.
-
-    Args:
-        stage: The WorkflowStageConfig for the current session stage.
-
-    Returns:
-        Instruction markdown string to inject into the AI prompt.
-    """
-    return stage.instruction_body
-
-
-def is_terminal_stage(position: WorkflowPosition) -> bool:
-    """Return True when the position currently points at a terminal stage.
-
-    An empty ``stage_id`` (no intra-mode stage pointer active — e.g. an
-    action/chat mode derived from a thread entry with no
-    ``transitioned_to``) is not a terminal stage; returning ``False``
-    avoids a ``KeyError`` on ``mode.stages[""]`` (the 2026-08-10
-    ``KeyError: ''`` crash after a forced self-handoff left the derived
-    view with ``stage_id=""``).
-    """
-    if not position.stage_id:
-        return False
-    mode = get_workflow_catalog()[position.mode_id]
-    stage = mode.stages.get(position.stage_id)
-    if stage is None:
-        return False
-    return stage.terminal
-
-
-# ---------------------------------------------------------------------------
-# Unified FSM routing synthesis
-#
-# The routing FSM is a meta-FSM that sits above the per-mode workflow FSM.
-# Every routable mode gets synthesized allowed_next_stages — the modes it can
-# hand off to. The model calls transition_stage with a mode_id target to
-# switch modes mid-turn. See docs/ROUTING_RFC_HANDOFF.md.
-# ---------------------------------------------------------------------------
 
 
 def get_routable_mode_ids(catalog: dict[str, WorkflowModeConfig] | None = None) -> list[str]:

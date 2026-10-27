@@ -162,14 +162,13 @@ def _plan_steps_to_workflow_steps(
     Each plan step has ``mode_id``, ``description``, and ``rationale``. The
     ``WorkflowStep`` carries ``mode_id`` and ``step_id`` (the
     description/rationale are for the user-visible plan block, not the
-    instance). To keep the planned path shape-identical to the ad-hoc
-    compiler's output (``compile_steps_from_routing_targets``), the
-    converter enriches each step with ``satisfies_intents`` and
-    ``depends_on`` looked up from the workflow catalog. This makes every
+    instance). The converter enriches each step with ``satisfies_intents``
+    and ``depends_on`` looked up from the workflow catalog, so every
     downstream consumer (``chain_satisfied`` hydration, resume hints,
-    progress rendering) origin-blind — no branch needs to special-case
-    ``spawned_from == "plan_workflow_op"`` to compensate for missing
-    fields. The last step is marked terminal. Step ids are deterministic
+    progress rendering) reads the same fields regardless of origin — no
+    branch needs to special-case ``spawned_from == "plan_workflow_op"`` to
+    compensate for missing fields. The last step is marked terminal. Step
+    ids are deterministic
     via ``_step_id_for`` so a recompiled plan preserves ``completed_steps``
     by id intersection.
     """

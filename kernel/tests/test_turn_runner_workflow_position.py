@@ -314,53 +314,27 @@ def _make_stub(text: str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
-    """A turn-1 multi-step ad-hoc chain persists a ``WorkflowPosition``.
+async def test_handoff_does_not_compile_adhoc_steps() -> None:
+    """A handoff never synthesizes an ad-hoc step chain.
 
-    The fix for the 2026-08-01 yield-then-continue skip: when the routing
-    hint detects a multi-step chain at turn 1 (search → coding → markdown)
-    and no instance is already active, the turn runner compiles the chain
-    into an ad-hoc ``WorkflowPosition`` (``spawned_from="adhoc"``) and
-    persists it via ``workflow_position_updater``. Without this, the
-    ephemeral ``chain_satisfied`` set resets on the next turn and a
-    yield → "continue" resume skips the middle step.
+    Ad-hoc compilation was removed: it required a host-supplied
+    ``workflow_position_updater`` (the shipped host wires none — it derives
+    the view from the thread) *and* the absence of ``planner`` from the
+    catalog (``planner`` ships in the always-on ``lisa-pack-core``). Both
+    gates together made the branch unreachable in every real install.
 
-    2026-08-06 zombie-instance fix: persistence is deferred to the first
-    successful ``transition_stage`` handoff. The stub model issues one
-    ``transition_stage(search)`` call so the deferred persist fires; a
-    stub that returns no tool calls would leave no instance (the
-    transactional contract — a turn that fails before any handoff must
-    not leave a zombie).
+    A workflow originates only from a ``## Plan`` block, which the thread can
+    carry across turns. This pins that a multi-step query handed off through
+    several modes leaves the updater's position untouched — the kernel does
+    not invent declared steps behind the operator's back.
     """
     active_instance: list[WorkflowPosition | None] = [None]
     saved_instances: list[WorkflowPosition] = []
-    _handoff_issued = {"flag": False}
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
-        # First iteration: issue the transition_stage call the routing
-        # hint asked for so the deferred ad-hoc persist fires. After that,
-        # return a plain completion to end the turn.
-        if not _handoff_issued["flag"]:
-            _handoff_issued["flag"] = True
-            return _StubCompletion(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "call_handoff",
-                        "type": "function",
-                        "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "search"}',
-                        },
-                    }
-                ],
-            )
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    # Mirror the host wiring: ``workflow_position`` returns the live active
-    # ref (None at turn 1); the updater persists the advanced instance and
-    # swaps the active ref in place.
     hooks.workflow.workflow_position = lambda: active_instance[0]
 
     def _wi_updater(instance: WorkflowPosition) -> None:
@@ -381,26 +355,10 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
             hooks=hooks,
         )
 
-    assert saved_instances, "an ad-hoc WorkflowPosition must be created on the first handoff"
-    # Phase 6c: a bare turn-1 position is created at turn start (no steps);
-    # the compiled chain attaches to it at the first successful handoff.
-    # The chain assertions target the attach commit — the FIRST saved
-    # position carrying declared steps (later saves are the forced-action
-    # enforcer driving the remaining handoffs: search → coding → markdown).
-    chained = [p for p in saved_instances if p.declared_steps]
-    assert chained, "the deferred attach must commit the compiled steps at the first handoff"
-    instance = chained[0]
-    assert instance.spawned_from == "adhoc"
-    mode_ids = [s.mode_id for s in instance.declared_steps]
-    assert mode_ids == ["search", "coding", "markdown"]
-    # The first step (search) is complete after the deferred attach; the
-    # pointer has advanced to the next step (coding).
-    assert "search_0" in instance.completed_steps or any(
-        s.mode_id == "search" and s.step_id in instance.completed_steps
-        for s in instance.declared_steps
+    assert not [p for p in saved_instances if p.declared_steps], (
+        "the kernel must not compile an ad-hoc step chain; workflows originate "
+        "from a ## Plan block carried by the thread"
     )
-    # enter_mode parked the stage pointer in the handoff target.
-    assert instance.mode_id == "search"
 
 
 @pytest.mark.asyncio

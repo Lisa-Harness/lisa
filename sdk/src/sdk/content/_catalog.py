@@ -337,10 +337,6 @@ def _load_one_mode(
         return None
     front_matter, body, mode_id = parsed
 
-    stages = _load_mode_stages(mode_dir, front_matter, strict=strict)
-    if stages is None:
-        return None
-
     # Resolve mode-relative file references (workshop planner/synthesis prompts).
     workshop_planner_prompt_file = _resolve_mode_relative_file(
         mode_dir,
@@ -368,12 +364,8 @@ def _load_one_mode(
     return {
         "mode_id": mode_id,
         "mode_provider_id": mode_provider_id,
-        "start_stage_id": str(front_matter.get("start_stage_id", "") or ""),
-        "stages": stages,
-        "mode_kind": str(front_matter.get("mode_kind", "workflow") or "workflow"),
-        "artifact_type": str(
-            front_matter.get("artifact_type", "workflow_summary") or "workflow_summary"
-        ),
+        "mode_kind": str(front_matter.get("mode_kind", "chat") or "chat"),
+        "artifact_type": str(front_matter.get("artifact_type", "")),
         "description": str(front_matter.get("description", "") or ""),
         "instruction_body": body.strip(),
         "mode_markdown_path": str(mode_dir / _MODE_CONFIG_FILENAME),
@@ -469,54 +461,6 @@ def _parse_mode_front_matter(
             )
         return None
     return front_matter, body, mode_id
-
-
-def _load_mode_stages(
-    mode_dir: Path,
-    front_matter: dict[str, Any],
-    *,
-    strict: bool,
-) -> dict[str, dict[str, Any]] | None:
-    """Load one mode folder's stage files, keyed by stage id.
-
-    Returns None when the mode must be skipped because a stageless
-    mode_kind declares authored stage files.
-    """
-    stages: dict[str, dict[str, Any]] = {}
-    for stage_path in sorted(mode_dir.glob("*.md")):
-        if stage_path.name.startswith("_"):
-            continue
-        stage_dict = _load_one_stage(
-            stage_path,
-            mode_kind=front_matter.get("mode_kind", "workflow"),
-            strict=strict,
-        )
-        if stage_dict is not None:
-            stages[stage_dict["stage_id"]] = stage_dict
-
-    # Stage files are workflow-mode authoring. A chat/action mode with an
-    # authored stage file is a contradiction — the kernel synthesizes a
-    # one-stage graph for stageless modes at load, and an authored graph on
-    # a non-workflow mode would bypass every workflow invariant. Reject it
-    # here (the kernel's disk loader does the same); want stages? Declare
-    # ``mode_kind: workflow``.
-    mode_kind = str(front_matter.get("mode_kind", "workflow") or "workflow")
-    if stages and mode_kind in {"chat", "action"}:
-        mode_id = str(front_matter.get("mode_id", ""))
-        if strict:
-            raise CatalogCollisionError(
-                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares "
-                f"stage files {sorted(stages)} — only workflow modes define "
-                "FSM stages."
-            )
-        logger.warning(
-            "Skipping mode '%s': mode_kind '%s' cannot declare stage files %s",
-            mode_id,
-            mode_kind,
-            sorted(stages),
-        )
-        return None
-    return stages
 
 
 def _parse_workshop_panels(
@@ -938,47 +882,6 @@ def _validate_overlay_shortcuts(
         # Clean up empty candidate lists after orphan removal.
         if not candidates_by_id[mode_id]:
             del candidates_by_id[mode_id]
-
-
-def _load_one_stage(
-    stage_path: Path, *, mode_kind: str, strict: bool = False
-) -> dict[str, Any] | None:
-    """Load one stage markdown file into a JSON-serializable dict.
-
-    Returns None if the file has no ``stage_id`` in its front-matter (it's an
-    auxiliary asset, not a stage definition). For ``chat``/``action`` modes,
-    missing ``stage_id`` is silently skipped; for workflow modes, we skip
-    but log it. When *strict* is ``True``, malformed front-matter raises.
-    """
-
-    stage_text = stage_path.read_text(encoding="utf-8")
-    try:
-        front_matter, body = parse_front_matter(stage_text)
-    except FrontMatterError as exc:
-        if strict:
-            raise CatalogCollisionError(
-                f"Stage file '{stage_path}' has malformed front-matter: {exc}"
-            ) from exc
-        logger.warning("Skipping stage file '%s': %s", stage_path, exc)
-        return None
-
-    if "stage_id" not in front_matter:
-        if mode_kind in {"chat", "action"}:
-            return None
-        logger.warning("Front-matter in '%s' is missing 'stage_id'", stage_path)
-        return None
-
-    return {
-        "stage_id": str(front_matter["stage_id"]),
-        "instruction_markdown_path": str(stage_path),
-        "instruction_body": body,
-        "description": str(front_matter.get("description", "") or ""),
-        "default_model": (str(front_matter.get("default_model", "") or "") or None),
-        "required_connectors": [str(c) for c in (front_matter.get("required_connectors") or [])],
-        "allowed_next_stages": [str(s) for s in (front_matter.get("allowed_next_stages") or [])],
-        "allow_user_questions": bool(front_matter.get("allow_user_questions", True)),
-        "terminal": bool(front_matter.get("terminal", False)),
-    }
 
 
 def _resolve_mode_relative_file(mode_dir: Path, authored_path: str) -> str:

@@ -122,3 +122,20 @@ def handle_last_command(
     arg = stripped[5:].strip()
     response_text = render_last_turn(runtime, arg)
     return handle_simple_command(runtime, message, "last", response_text)
+
+
+def handle_workflow_command(
+    runtime: HostRuntime,
+    stripped: str,
+    message: str,
+) -> str:
+    """Handle ``/workflow [status|conclude [reason]]``.
+
+    Delegates to :mod:`runtime.commands._workflow`. Imported lazily so the
+    ``_workflow`` -> ``_render`` dependency does not become a cycle at module
+    import time (``_simple`` is imported by the ``runtime.commands`` package
+    initializer that ``_workflow`` also imports from).
+    """
+    from runtime.commands._workflow import handle_workflow_command as _handle
+
+    return _handle(runtime, stripped, message)

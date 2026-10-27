@@ -53,13 +53,6 @@ class Parameters(BaseModel):
             "child turn's user query — not the parent's full query."
         ),
     )
-    stage_id: str = Field(
-        default="",
-        description=(
-            "Optional stage_id for the target mode. Defaults to the "
-            "mode's start_stage_id when empty."
-        ),
-    )
     max_tool_iterations: int = Field(
         default=0,
         description=(
@@ -200,7 +193,6 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     spec = DelegationSpec(
         target_mode_id=params.target_mode_id,
         query=params.query,
-        stage_id=params.stage_id,
         max_tool_iterations=params.max_tool_iterations,
         model_alias=params.model_alias,
         # Declared intent travels with the child so a checked-commit target
