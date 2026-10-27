@@ -5840,7 +5840,11 @@ async def _execute_mid_turn_handoff(
                 log=log,
             )
             tool_output = f"Handed off to mode: {target_stage}." + (
-                f" Rationale: {rationale}" if rationale else ""
+                # ``rationale`` is the model's own prose echoed back, not
+                # kernel-authored text. Label it so a later reader of the
+                # transcript (operator, context assembly, or the model
+                # itself) cannot mistake it for kernel evidence.
+                f" Rationale (model-supplied): {rationale}" if rationale else ""
             )
             if entry_output:
                 tool_output += f"\n\nEntry operation results:\n{entry_output}"

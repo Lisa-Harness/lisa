@@ -423,7 +423,12 @@ async def test_handoff_to_default_from_another_mode_allowed() -> None:
 
 @pytest.mark.asyncio
 async def test_handoff_includes_rationale_in_tool_output() -> None:
-    """When the model provides a rationale, it's included in the tool output."""
+    """When the model provides a rationale, it's included in the tool output.
+
+    The text is labelled as model-supplied: the kernel is echoing prose the
+    model wrote, and an unmarked rationale reads as kernel-authored evidence in
+    the transcript.
+    """
     call_count = 0
     captured_tool_outputs: list[str] = []
 
@@ -451,6 +456,54 @@ async def test_handoff_includes_rationale_in_tool_output() -> None:
 
     assert result.handoff_to == "markdown"
     assert any("user wants to write a doc" in out for out in captured_tool_outputs)
+    assert any(
+        "Rationale (model-supplied): user wants to write a doc" in out
+        for out in captured_tool_outputs
+    )
+
+
+@pytest.mark.asyncio
+async def test_handoff_rationale_is_labelled_model_supplied() -> None:
+    """The echoed rationale is attributed to the model, not the kernel.
+
+    The success message is kernel-authored prose except for ``rationale``,
+    which comes verbatim from the model's tool call. Echoing it unmarked makes
+    model-authored text indistinguishable from kernel evidence in the
+    transcript, which anything reading the history later (operator, context
+    assembly, or the model itself) will mis-attribute.
+    """
+
+    call_count = 0
+    captured_tool_outputs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    _transition_call(
+                        "call_1",
+                        "markdown",
+                        rationale="routing because the user asked",
+                    ),
+                ],
+            )
+        for msg in kwargs.get("messages", []):
+            if msg.get("role") == "tool":
+                captured_tool_outputs.append(str(msg.get("content", "")))
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_hooks(two_step)
+    await run_turn(mode_id="default", query="write a doc", hooks=hooks)
+
+    handoff_outputs = [out for out in captured_tool_outputs if "Handed off to mode" in out]
+    assert handoff_outputs, captured_tool_outputs
+    output = handoff_outputs[0]
+    assert "Rationale (model-supplied): routing because the user asked" in output
+    # The bare form must not survive alongside the labelled one.
+    assert "Rationale: routing because the user asked" not in output
 
 
 @pytest.mark.asyncio

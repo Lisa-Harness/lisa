@@ -130,6 +130,14 @@ All notable changes to the Lisa Harness will be documented in this file.
   needed the exemption — it re-enters the mode that owns the pending approval
   directly and does not traverse this function.
 
+- **The handoff success message attributes its rationale to the model.** A
+  successful mode handoff returns kernel-authored prose plus the model's own
+  `rationale`, which was echoed unmarked as `Rationale: <text>`. The transcript
+  then could not distinguish a sentence the model wrote from kernel evidence —
+  the same confabulation surface that makes a model-authored claim look
+  authoritative to anything reading the history later, including the model on a
+  subsequent turn. The echo is now `Rationale (model-supplied): <text>`.
+
 - **A stall yield now shows the operator how to escape it.** A recovery stall
   blocks the turn and yields; only a slash command clears it. Those commands
   were built and placed in `data["remediation"]` but never in
