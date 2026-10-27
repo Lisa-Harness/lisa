@@ -3452,12 +3452,17 @@ async def _model_completion_for_iteration(
             _synth_step = _synth_pos.step_by_id(_synth_pos.current_step_id)
             if _synth_step and _synth_step.step_query:
                 _synth_delegated_goal = _synth_step.step_query
+        # The rationale must describe what actually happened. The kernel
+        # synthesizes a real ``transition_stage`` call here, so claiming the
+        # model "is not asked to call transition_stage" contradicted the very
+        # call being dispatched and read as if no transition was occurring
+        # (observed 2026-10-27T18:12Z). Name the synthesizer and its source.
         _synth_args: dict[str, Any] = {
             "target_stage_id": _planned_handoff_target,
             "rationale": (
-                "Kernel-driven handoff from the plan "
-                "result; the model is not asked to call "
-                "transition_stage."
+                "Kernel-synthesized handoff to the next step of the active "
+                "plan; the planner returned this target, so the kernel "
+                "emits the transition_stage call itself."
             ),
         }
         if _synth_delegated_goal:
@@ -6469,6 +6474,7 @@ def _enforce_forced_action_on_dispatch(
     tool_call: dict[str, Any],
     tool_name: str,
     tool_arguments: Any,
+    batch_has_expected: bool,
     log: logging.Logger,
 ) -> tuple[str, Any]:
     """Override a non-compliant dispatch with the forced-action tool call.
@@ -6487,7 +6493,9 @@ def _enforce_forced_action_on_dispatch(
     Each non-expected dispatch increments ``non_compliant_dispatches``; at
     the (trust-aware) cap the kernel synthesizes the expected call itself by
     overriding the current tool call's name/arguments and letting the caller
-    dispatch it. Mutates the current ``tool_call`` dict IN PLACE — it is the
+    dispatch it. A batch that already contains the expected tool is
+    compliant as a whole: the model did call it, so no sibling in that batch
+    counts as a refusal. Mutates the current ``tool_call`` dict IN PLACE — it is the
     same object referenced by the assistant message already appended to
     ``messages``, so overriding ``function.name`` / ``function.arguments``
     here keeps the assistant message and the tool result message consistent
@@ -6499,6 +6507,15 @@ def _enforce_forced_action_on_dispatch(
     """
     _forced = state.forced_action
     if _forced is None or tool_name == _forced.expected_tool:
+        return tool_name, tool_arguments
+    # The model issued the expected tool somewhere in this same batch, so the
+    # decision was executed. Judging a sibling call first made the outcome
+    # depend on batch order: a parallel `bash_run` + `transition_stage` block
+    # counted the bash call as a refusal, reached the cap, and synthesized a
+    # "the model did not call transition_stage" handoff over a call the model
+    # had in fact made (observed 2026-10-27T18:12Z). Do not increment here and
+    # do not synthesize; the real call in the batch is dispatched on its own.
+    if batch_has_expected:
         return tool_name, tool_arguments
     _forced.non_compliant_dispatches += 1
 
@@ -6533,9 +6550,9 @@ def _enforce_forced_action_on_dispatch(
         tool_arguments = {
             "target_stage_id": _forced.targets[0],
             "rationale": (
-                "Kernel-forced transition handoff: the model "
-                "did not call transition_stage after the "
-                "routing hint named a target."
+                "Kernel-forced transition handoff: "
+                f"{_forced.non_compliant_dispatches} non-compliant "
+                f"dispatch(es) reached the cap with target '{_forced.targets[0]}' pending."
             ),
         }
     # Normalize the override to the provider's tool_call
@@ -8727,9 +8744,41 @@ class _PreparedToolCall:
     recovery_retry_policy: str = ""
 
 
+def _batch_contains_expected_tool(
+    state: Any,
+    tool_calls: list[dict[str, Any]],
+    current_call_id: str,
+) -> bool:
+    """Return True when another call in this batch is the expected tool.
+
+    The forced-action enforcer decides whether the model refused to execute a
+    deterministic routing decision. A refusal is a property of the *batch*, not
+    of one call: a model that emits ``bash_run`` and ``transition_stage`` in
+    one parallel block did execute the decision. Judging calls one at a time in
+    order let the non-expected sibling increment the counter and reach the cap
+    before the compliant call was ever seen, so the kernel synthesized a
+    handoff asserting the model never called ``transition_stage`` over a batch
+    that contained it (observed 2026-10-27T18:12Z).
+
+    Excludes the call being inspected (``current_call_id``) so the caller's own
+    name comparison stays the single source of truth for that case.
+    """
+    forced = state.forced_action
+    if forced is None:
+        return False
+    for candidate in tool_calls:
+        if str(candidate.get("id") or "") == current_call_id:
+            continue
+        name, _arguments = openai_tool_call_to_mcp(candidate)
+        if name == forced.expected_tool:
+            return True
+    return False
+
+
 async def _prepare_tool_call_dispatch(
     *,
     tool_call: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     mode_id: str,
     query: str,
@@ -8777,6 +8826,7 @@ async def _prepare_tool_call_dispatch(
         tool_call=tool_call,
         tool_name=tool_name,
         tool_arguments=tool_arguments,
+        batch_has_expected=_batch_contains_expected_tool(state, tool_calls, tool_call_id),
         log=log,
     )
     from kernel.capability import resolve_capability_for_turn_limit
@@ -9176,6 +9226,7 @@ async def _dispatch_turn_tool_calls(
         else:
             prepared = await _prepare_tool_call_dispatch(
                 tool_call=tool_call,
+                tool_calls=tool_calls,
                 synthesized_forced=synthesized_forced,
                 mode_id=loop_state.mode_id,
                 query=query,

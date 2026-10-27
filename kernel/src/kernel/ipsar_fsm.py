@@ -1566,48 +1566,6 @@ def get_required_mode_intro(mode_id: str) -> str:
     return instruction_body
 
 
-def get_required_stage_instruction(
-    mode_id: str,
-    stage_id: str,
-) -> str:
-    """Return the stage instruction body, raising if it is missing or empty.
-
-    Workflow stages require authored ``instruction_body`` text; an empty
-    stage body would silently omit the stage instruction from the system
-    prompt, leaving the FSM dead at runtime. Use this for workflow modes
-    where stage injection is mandatory.
-
-    Args:
-        mode_id: The route mode string.
-        stage_id: The current stage id within the mode.
-
-    Returns:
-        The authored stage instruction body.
-
-    Raises:
-        MissingModeInstructionError: If the stage is unknown or its
-            ``instruction_body`` is empty.
-    """
-    mode = get_workflow_catalog().get(mode_id)
-    if not mode:
-        raise MissingModeInstructionError(
-            f"Stage '{stage_id}' lookup failed: mode '{mode_id}' is not in the workflow catalog."
-        )
-    stage = mode.stages.get(stage_id)
-    if stage is None:
-        raise MissingModeInstructionError(
-            f"Stage '{stage_id}' is not defined in mode '{mode_id}' — cannot "
-            "assemble required stage instruction."
-        )
-    instruction_body = (stage.instruction_body or "").strip()
-    if not instruction_body:
-        raise MissingModeInstructionError(
-            f"Stage '{stage_id}' in mode '{mode_id}' has an empty "
-            "instruction_body — workflow stages require authored instructions."
-        )
-    return instruction_body
-
-
 def _build_tool_execution_context(
     target_id: str,
     ctx: OperationExecutionContext,

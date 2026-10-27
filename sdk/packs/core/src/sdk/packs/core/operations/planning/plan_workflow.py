@@ -387,12 +387,20 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     user sees the plan at the top of the response, followed by the first
     step's output.
 
-    Each step emits a deliverable line after the description:
-      - ``_writes: {capability_id}_`` for write steps (the receipt that
-        completes the step)
-      - ``_reads_`` for read/gather steps (complete on handoff)
-    The WorkflowView parses these to bind step completion to the
-    deliverable contract.
+    Only a write step emits a deliverable line after its description:
+    ``_writes: {capability_id}_`` — the receipt that completes the step.
+    Read/gather steps emit nothing: the WorkflowView parses an absent
+    deliverable line as ``write_capability is None``, which is exactly
+    what a read step means (complete on handoff). The bare ``_reads_``
+    template token was redundant to that contract and leaked into
+    operator-facing plan text, so it is no longer rendered.
+
+    The step rationale is rendered as an italic line because it is a
+    schema-declared, user-facing field, not an internal note: the
+    WorkflowView parses it back as the step's ``plan_text`` and the
+    handoff context builder surfaces it to the executing mode as
+    ``## Plan You Are Executing``. Dropping it would regress the
+    2026-08-09 plan-amnesia fix.
 
     Returns an empty string when ``parsed.steps`` is empty (the no-match
     case or the weak-model single-target fallback) so the caller can skip
@@ -403,10 +411,9 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     lines: list[str] = ["## Plan", ""]
     for idx, step in enumerate(parsed.steps, start=1):
         lines.append(f"{idx}. **{step.mode_id}** — {step.description}")
-        deliverable_line = (
-            f"   _writes: {step.write_capability}_" if step.write_capability else "   _reads_"
-        )
-        lines.append(deliverable_line)
+        # Unset fields are omitted, never rendered as a placeholder token.
+        if step.write_capability:
+            lines.append(f"   _writes: {step.write_capability}_")
         if step.rationale:
             lines.append(f"   _{step.rationale}_")
     lines.append("")

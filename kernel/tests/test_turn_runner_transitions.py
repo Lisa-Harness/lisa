@@ -13,10 +13,14 @@ internal helper functions directly.
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
+import kernel.turn_runner
 import pytest
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
@@ -947,3 +951,159 @@ async def test_handoff_runs_target_mode_pre_turn_operations(
     assert dispatched == [("probe_prewarm", "probe")], (
         f"mid-turn handoff must run the target mode's pre-turn ops; got {dispatched}"
     )
+
+
+# ── Forced-action enforcer: batch-aware compliance ───────────────────────────
+
+
+class _ForcedState:
+    """Minimal turn-state stub for the forced-action enforcer."""
+
+    def __init__(self, forced_action: Any, iteration: int = 0) -> None:
+        self.forced_action = forced_action
+        self.iteration = iteration
+        self.effective_model = SimpleNamespace(
+            structured_reliability=0.0, cost_tier="standard", reasoning_model=False
+        )
+
+
+def _forced_single(target: str = "planner") -> Any:
+    from kernel.turn_phases._turn_state import ForcedAction
+
+    return ForcedAction(targets=[target])
+
+
+def test_enforcer_treats_a_batch_with_the_expected_tool_as_compliant() -> None:
+    """A batch containing ``transition_stage`` is not a refusal.
+
+    Regression for the 2026-10-27T18:12Z turn: the model emitted ``bash_run``
+    and ``transition_stage(target_stage_id="planner")`` in one parallel block.
+    The enforcer inspected the ``bash_run`` call first, counted it as
+    non-compliant, hit the cap, and synthesized a handoff whose rationale read
+    "the model did not call transition_stage" \u2014 over a batch that had it. The
+    outcome must depend on the batch's content, not on call order.
+    """
+    from kernel.turn_runner import (
+        _batch_contains_expected_tool,
+        _enforce_forced_action_on_dispatch,
+    )
+
+    state = _ForcedState(_forced_single("planner"))
+    bash_call = _make_tool_call("call_bash", "bash_run", {"commands": ["true"]})
+    transition = _transition_call("call_transition", "planner")
+    batch = [bash_call, transition]
+
+    assert _batch_contains_expected_tool(state, batch, "call_bash") is True
+
+    name, arguments = _enforce_forced_action_on_dispatch(
+        state=state,
+        mode_id="default",
+        query="q",
+        tool_call=bash_call,
+        tool_name="bash_run",
+        tool_arguments={"commands": ["true"]},
+        batch_has_expected=_batch_contains_expected_tool(state, batch, "call_bash"),
+        log=logging.getLogger("test"),
+    )
+
+    # Untouched: the model's real bash call still runs, and no synthetic
+    # transition replaced it.
+    assert name == "bash_run"
+    assert arguments == {"commands": ["true"]}
+    assert state.forced_action is not None
+    assert state.forced_action.non_compliant_dispatches == 0
+
+
+def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
+    """The guard is NOT weakened: a batch with no transition still gets forced.
+
+    The routing-hint backstop exists because a model can burn iterations on
+    read-only tools forever. Batch-awareness must not disable it, only stop it
+    from misfiring on a batch that already complied. The enforcer fires on the
+    dispatch that reaches ``forced_action_non_compliant_cap`` (default 2) and
+    then clears ``state.forced_action``.
+    """
+    from kernel.turn_runner import (
+        _batch_contains_expected_tool,
+        _enforce_forced_action_on_dispatch,
+    )
+
+    state = _ForcedState(_forced_single("planner"))
+    forced_on_call = ""
+    forced_arguments: Any = {}
+    for i in range(4):
+        call_id = f"call_{i}"
+        call = _make_tool_call(call_id, "bash_run", {"commands": ["true"]})
+        batch = [call]
+        batch_has_expected = _batch_contains_expected_tool(state, batch, call_id)
+        assert batch_has_expected is False
+        name, arguments = _enforce_forced_action_on_dispatch(
+            state=state,
+            mode_id="default",
+            query="q",
+            tool_call=call,
+            tool_name="bash_run",
+            tool_arguments={"commands": ["true"]},
+            batch_has_expected=batch_has_expected,
+            log=logging.getLogger("test"),
+        )
+        if name == "transition_stage":
+            forced_on_call = call_id
+            forced_arguments = arguments
+            break
+
+    assert forced_on_call == "call_1", "cap=2 means the 2nd non-compliant dispatch forces"
+    assert forced_arguments["target_stage_id"] == "planner"
+
+
+def test_forced_transition_rationale_reports_the_cap_not_a_refusal() -> None:
+    """The synthesized rationale must not assert the model skipped the call.
+
+    Observed 2026-10-27T18:12Z: the rationale read "the model did not call
+    transition_stage after the routing hint named a target". That sentence is
+    false whenever the model *did* call it and a sibling call in the batch was
+    judged first. The enforcer fires on a non-compliant dispatch count, which
+    is what the rationale should report.
+    """
+    from kernel.turn_runner import _enforce_forced_action_on_dispatch
+
+    state = _ForcedState(_forced_single("planner"))
+    arguments: Any = {}
+    for i in range(4):
+        call = _make_tool_call(f"c{i}", "bash_run", {"commands": ["true"]})
+        name, produced = _enforce_forced_action_on_dispatch(
+            state=state,
+            mode_id="default",
+            query="q",
+            tool_call=call,
+            tool_name="bash_run",
+            tool_arguments={"commands": ["true"]},
+            batch_has_expected=False,
+            log=logging.getLogger("test"),
+        )
+        if name == "transition_stage":
+            arguments = produced
+            break
+
+    assert arguments, "the enforcer must have fired within the cap"
+    rationale = arguments["rationale"]
+    assert "did not call transition_stage" not in rationale
+    assert "non-compliant" in rationale
+    assert "planner" in rationale.replace(arguments["target_stage_id"], "planner")
+
+
+def test_planned_handoff_rationale_does_not_deny_the_dispatched_call() -> None:
+    """The plan-driven synthesis must not say no transition is being asked for.
+
+    Observed 2026-10-27T18:12Z: the synthesized call's rationale read "the
+    model is not asked to call transition_stage" \u2014 attached to a real
+    ``transition_stage`` call the kernel was dispatching. Calling it was the
+    only way to act as the target mode, so the note contradicted the
+    mechanism.
+    """
+    from kernel.turn_runner import _TRANSITION_TOOL_NAME
+
+    assert _TRANSITION_TOOL_NAME == "transition_stage"
+    source = inspect.getsource(kernel.turn_runner)
+    assert "the model is not asked to call " not in source
+    assert "Kernel-synthesized handoff" in source
