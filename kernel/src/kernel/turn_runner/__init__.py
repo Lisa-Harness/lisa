@@ -1513,6 +1513,7 @@ async def execute_approved_invocation(
             "session_plan_digest": hooks.identity.session_plan_digest,
             "code_change_artifact_store": hooks.services.code_change_artifact_store,
             "data_dir": hooks.services.data_dir,
+            "turn_index": hooks.identity.turn_index,
             "model_router": hooks.context_seams.model_router,
         }
         if invocation.target_kind == "tool":
@@ -1705,6 +1706,7 @@ async def _pre_turn_memory_recall(
                 task_id=hooks.identity.task_id,
                 session_plan_digest=hooks.identity.session_plan_digest,
                 data_dir=hooks.services.data_dir,
+                turn_index=hooks.identity.turn_index,
                 delegate_fn=delegate_fn,
                 fork_fn=fork_fn,
                 model_router=hooks.context_seams.model_router,
@@ -2679,6 +2681,7 @@ async def _resolve_iteration_lifecycle(
                 "turn.decision",
                 {
                     "mode_id": mode_id,
+                    "turn_index": hooks.identity.turn_index,
                     "iteration": state.iteration,
                     "turns_in_stage": _turns_in_stage,
                     "action_type": _action_type,
@@ -3797,6 +3800,7 @@ async def _record_iteration_completion(
             request_id=str(getattr(completion, "request_id", "") or ""),
             mode_id=mode_id,
             stage_id=str(getattr(state, "current_stage_id", "") or ""),
+            turn_index=hooks.identity.turn_index,
             call_site="turn_loop",
             conversation_id=hooks.identity.conversation_id,
             user_slug=hooks.identity.user_slug,
@@ -5999,6 +6003,7 @@ async def _force_final_content_completion(
                     provider_cost_usd=final_provider_cost,
                     request_id=str(getattr(final_completion, "request_id", "") or ""),
                     mode_id=mode_id,
+                    turn_index=hooks.identity.turn_index,
                     call_site="forced_final",
                     conversation_id=hooks.identity.conversation_id,
                     user_slug=hooks.identity.user_slug,
@@ -7590,6 +7595,7 @@ def _wire_build_entry_ctx(
             task_id=hooks.identity.task_id,
             session_plan_digest=hooks.identity.session_plan_digest,
             data_dir=hooks.services.data_dir,
+            turn_index=hooks.identity.turn_index,
             delegate_fn=delegate_fn,
             fork_fn=fork_fn,
             model_router=hooks.context_seams.model_router,

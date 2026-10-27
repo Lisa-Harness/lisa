@@ -1,9 +1,9 @@
 """HostServices — the host's durable service handles.
 
-Owns the four host-persisted services every turn and command can reach
+Owns the five host-persisted services every turn and command can reach
 without recomputing: the policy-deciding approval service, the recovery
-store, the code-change artifact store, and the token-usage telemetry
-appender.
+store, the code-change artifact store, and the token-usage and
+decision-telemetry appenders.
 
 Extracted from ``runtime.runtime`` so service construction and identity live
 in one visible place instead of being assembled inline in the runtime
@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from kernel.decision_telemetry import DecisionTelemetryHandler
 from kernel.token_usage import TokenUsageTelemetryHandler
 from sdk.layout import LOGS_DIR, STATE_DIR
 
@@ -40,6 +41,7 @@ class HostServices:
     recovery_service: FileRecoveryService
     code_change_artifact_store: FileCodeChangeArtifactStore
     token_usage_handler: TokenUsageTelemetryHandler
+    decision_telemetry_handler: DecisionTelemetryHandler
 
     @classmethod
     def build(cls, data_dir: Path) -> HostServices:
@@ -55,6 +57,9 @@ class HostServices:
             ),
             token_usage_handler=TokenUsageTelemetryHandler(
                 data_dir / LOGS_DIR / "token-usage.jsonl"
+            ),
+            decision_telemetry_handler=DecisionTelemetryHandler(
+                data_dir / LOGS_DIR / "decisions.jsonl"
             ),
         )
 

@@ -130,6 +130,12 @@ class ToolExecutionContext(BaseModel):
     # a relative path against the process CWD. There is deliberately NO
     # fallback — the host always injects a resolved, absolute data dir.
     data_dir: str = Field(default="", exclude=True)
+    # Global thread turn index of the turn this dispatch belongs to. Carried
+    # on the context so the telemetry publisher can stamp it without the
+    # registry reaching back into turn state. ``None`` means the dispatch is
+    # not attributable to a turn (off-turn slice work, bare/test hosts) —
+    # distinct from ``0``, which is the thread's first real turn.
+    turn_index: int | None = Field(default=None, exclude=True)
 
 
 class ToolResult(BaseModel):
@@ -286,6 +292,10 @@ class OperationExecutionContext(BaseModel):
     # gracefully just before the registry's hard ``asyncio.wait_for`` cancel
     # would discard all child work. 0 means no timeout authored.
     operation_timeout_seconds: int = Field(default=0, exclude=True)
+    # Global thread turn index this operation dispatch belongs to. See
+    # ``ToolExecutionContext.turn_index`` — same contract, and propagated
+    # through ``_to_tool_context`` so nested tool calls keep the attribution.
+    turn_index: int | None = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -2418,6 +2428,27 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def resolve_turn_index(raw: Any) -> int | None:
+    """Normalize a raw turn key to an attributable index, or ``None``.
+
+    ``None`` is meaningful and distinct from ``0``: telemetry stamped with
+    ``None`` came from work outside any thread turn (off-turn slice work, or a
+    bare/test host), while ``0`` names the thread's first turn. Collapsing the
+    two would make a forensic reader attribute background work to turn 0.
+
+    Anything unusable (non-numeric, negative) also degrades to ``None``: an
+    unattributed record is honest, whereas a wrong index silently corrupts the
+    join.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
 class BusEvent(BaseModel):
     """Base envelope for all events on the internal bus.
 
@@ -2583,6 +2614,10 @@ class TokenUsageEvent(BusEvent):
     mode_id: str = "default"
     stage_id: str = ""
     operation_id: str = ""
+    #: Global thread turn index this model call belongs to, so per-turn cost is
+    #: attributable. ``None`` = not attributable to a turn (off-turn slice
+    #: work); ``0`` is the thread's first real turn.
+    turn_index: int | None = None
     call_site: str = ""
     provider: str = ""
     model_id: str = ""
@@ -2626,6 +2661,9 @@ class ToolExecutionTelemetry(BusEvent):
     status: Literal["success", "error", "timeout"]
     duration_ms: int
     error_message: str | None = None
+    #: Global thread turn index this dispatch belongs to, so the dispatch
+    #: ledger joins to the thread and the cost log. ``None`` = off-turn work.
+    turn_index: int | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

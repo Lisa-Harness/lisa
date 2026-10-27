@@ -35,6 +35,7 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     ToolExecutionTelemetry,
+    resolve_turn_index,
 )
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
@@ -795,6 +796,7 @@ def _emit_operation_telemetry(
             status=status,
             duration_ms=duration_ms,
             error_message=err_msg,
+            turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         )
         try:
             task = asyncio.create_task(

@@ -11,6 +11,8 @@ Hosts own presentation; first-party MCP adapters use their shared CLI setup.
 - `LISA_LOG_DEBUG` is a comma-separated list of logger names forced to DEBUG.
 - Runtime events normally live in `<data-dir>/logs/runtime.jsonl`;
   token usage lives in `<data-dir>/logs/token-usage.jsonl`.
+- Turn decisions and dispatches live in `<data-dir>/logs/decisions.jsonl`
+  (see [decision telemetry](#decision-telemetry)).
 - First-party servers accept `--log-level` and `--data-dir`; their parser
   uses `LOG_LEVEL` when no log-level argument is supplied.
 
@@ -79,15 +81,51 @@ Provider/usage records and exact request snapshots serve different purposes:
 do not infer what the model saw solely from a routing event or final answer.
 See [context lifecycle](CONTEXT_LIFECYCLE.md) and [token accounting](TOKEN_BUDGET.md).
 
+## Decision telemetry
+
+Two event-bus topics carry the forensic record of a turn, and both are
+persisted by [`DecisionTelemetryHandler`](../kernel/src/kernel/decision_telemetry.py)
+to `<data-dir>/logs/decisions.jsonl` — one JSON line per record, tagged with
+its `topic`:
+
+| Topic | Publisher | Per | Carries |
+| --- | --- | --- | --- |
+| `turn.decision` | [`_resolve_lifecycle`](../kernel/src/kernel/turn_runner/__init__.py) | iteration | `mode_id`, `turn_index`, `iteration`, `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`, `read_receipts` |
+| `tool.telemetry` | [tools](../kernel/src/kernel/tools/registry.py) / [operations](../kernel/src/kernel/operations/registry.py) registry | dispatch | `target_id`, `target_type`, `status`, `duration_ms`, `error_message`, `turn_index` |
+
+Why a separate file rather than `runtime.jsonl`:
+
+- The root file handler installs `RateLimitFilter`, which suppresses repeated
+  identical records keyed on `(name, level, message)`. A mode that resolves the
+  same lifecycle action on consecutive iterations would have those decisions
+  dropped. The appender writes directly instead of going through stdlib
+  logging.
+- `decisions.jsonl` rotates independently, so verbose runtime logging cannot
+  evict the decision ledger and the ledger cannot consume the log's rotation
+  budget.
+
+`turn_index` is the join key. It is computed once at turn start
+(`runtime.thread.next_turn_index`), stamped on the thread entry, and carried on
+`TurnIdentity` into every operation/tool context, so a decision row, a dispatch
+row, a token row, and a thread entry for the same turn address each other.
+Without it, per-turn cost is attributable only to a *mode*, not a turn.
+
+`turn_index` is `null` for work that belongs to no thread turn — off-turn slice
+work, or a host with no thread. That is distinct from `0`, the thread's first
+real turn; a reader must not treat a missing index as turn 0 or it will
+attribute background work to the first turn. Use
+[`resolve_turn_index`](../kernel/src/kernel/models.py) to normalize raw values.
+
 ## Decision telemetry versus spans
 
 The event bus and OpenTelemetry are separate channels, and neither substitutes
 for the other.
 
 - **Event bus** carries decision telemetry published by the turn loop: mode,
-  iteration, lifecycle action and reason, calls, and receipt counts, as
-  structured events on the logger. This is what answers "why did the turn do
-  that?"
+  iteration, lifecycle action and reason, calls, and receipt counts. The
+  durable subscriber persists it to `decisions.jsonl` (above). This is what
+  answers "why did the turn do that?" — the logger lines are a separate,
+  rate-limited diagnostic stream.
 - **OpenTelemetry spans** cover dispatch timing and nesting through
   [telemetry helpers](../kernel/src/kernel/telemetry.py). Every tool dispatch
   runs under a `tool.execute` span from

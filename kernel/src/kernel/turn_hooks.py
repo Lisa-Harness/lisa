@@ -298,6 +298,14 @@ class TurnIdentity:
     memory_scope: str = "personal"
     session_plan_digest: str = ""
     task_id: str = ""
+    #: Global thread turn index this turn will occupy, computed at turn start
+    #: (``runtime.thread.next_turn_index``) and stamped on the thread entry.
+    #: Threaded into every dispatch/token/decision payload so forensic readers
+    #: can join the thread, the dispatch ledger, and the cost log by one key.
+    #: ``None`` means the work is not attributable to a thread turn (off-turn
+    #: slice work, or a bare/test host with no thread) — distinct from ``0``,
+    #: which is the thread's first real turn.
+    turn_index: int | None = None
     #: What this task is FOR, declared at task creation by the delegate-spec
     #: author or the operator. ``implementation`` (the default) means the task
     #: promises a committed change, so a checked-commit mode must verify one.

@@ -24,8 +24,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kernel.capability_binding import CapabilityRef
+from kernel.decision_telemetry import TOOL_TELEMETRY_TOPIC, TURN_DECISION_TOPIC
 from kernel.model_router_discovery import discover_model_router_factories
-from kernel.models import OperationExecutionContext, OperationResult, ToolResult
+from kernel.models import (
+    OperationExecutionContext,
+    OperationResult,
+    ToolResult,
+    resolve_turn_index,
+)
 from kernel.operations.registry import execute_operation
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
 from kernel.sandbox_floor import (
@@ -652,18 +658,21 @@ def _wire_runtime_context_seams(
     discover_router: Callable[[], Any],
     discover_gateways: Callable[[], Any],
 ) -> ContextSeams:
-    """Assemble ``ContextSeams`` and subscribe the token-usage telemetry handler.
+    """Assemble ``ContextSeams`` and subscribe the durable telemetry handlers.
 
     The kernel publishes one ``TokenUsageEvent`` per model call on the
     ``lisa.token_usage`` bus topic (per-iteration calls, forced-final, and
     terminal-stage completions). The runtime's durable
     ``TokenUsageTelemetryHandler`` appends every event to
     ``token-usage.jsonl``; introspection (/tokens lifetime view and the
-    24h summary) reads the resulting file. A fresh ``InProcessEventBus``
-    is created per hook build, so the handler must be re-subscribed every
-    turn. Idempotent: duplicate events dedupe on the handler's
-    idempotency-key set (best-effort). A subscription failure is logged
-    and swallowed — telemetry must never break hook construction.
+    24h summary) reads the resulting file. It also publishes one
+    ``turn.decision`` payload per iteration and one ``tool.telemetry``
+    payload per dispatch; ``DecisionTelemetryHandler`` appends those to
+    ``decisions.jsonl`` so the lifecycle reasoning and the dispatch ledger
+    are durable evidence rather than dropped events. A fresh
+    ``InProcessEventBus`` is created per hook build, so every handler must be
+    re-subscribed every turn. A subscription failure is logged and swallowed —
+    telemetry must never break hook construction.
     """
     seams = ContextSeams(
         content_registry=cast("Any", content_registry() or None),
@@ -672,17 +681,62 @@ def _wire_runtime_context_seams(
         extension_item_builder=item_builder,
     )
     bus = getattr(seams, "event_bus", None)
-    handler = runtime.services.token_usage_handler
-    if bus is not None and handler is not None and hasattr(bus, "subscribe"):
-        try:
-            bus.subscribe(TOKEN_USAGE_TOPIC, handler.publish)
-        except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "token-usage telemetry subscribe failed; usage will not be persisted to %s",
-                runtime.paths.token_usage_path,
-                exc_info=True,
-            )
+    if bus is not None and hasattr(bus, "subscribe"):
+        _subscribe_telemetry(
+            bus=bus,
+            topic=TOKEN_USAGE_TOPIC,
+            handler=getattr(runtime.services, "token_usage_handler", None),
+            method_name="publish",
+            destination=runtime.paths.token_usage_path,
+            label="token-usage",
+        )
+        decision_handler = getattr(runtime.services, "decision_telemetry_handler", None)
+        _subscribe_telemetry(
+            bus=bus,
+            topic=TURN_DECISION_TOPIC,
+            handler=decision_handler,
+            method_name="publish_turn_decision",
+            destination=runtime.paths.decisions_path,
+            label="turn.decision",
+        )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=TOOL_TELEMETRY_TOPIC,
+            handler=decision_handler,
+            method_name="publish_tool_telemetry",
+            destination=runtime.paths.decisions_path,
+            label="tool.telemetry",
+        )
     return seams
+
+
+def _subscribe_telemetry(
+    *,
+    bus: Any,
+    topic: str,
+    handler: Any,
+    method_name: str,
+    destination: Path,
+    label: str,
+) -> None:
+    """Subscribe one durable telemetry handler method, best-effort.
+
+    A missing handler or method means the host did not wire that sink; that is
+    a configuration choice, not an error. A raising ``subscribe`` is logged and
+    swallowed so telemetry can never break hook construction.
+    """
+    method = getattr(handler, method_name, None) if handler is not None else None
+    if method is None:
+        return
+    try:
+        bus.subscribe(topic, method)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "%s telemetry subscribe failed; records will not be persisted to %s",
+            label,
+            destination,
+            exc_info=True,
+        )
 
 
 async def _run_self_model_slice_impl(
@@ -949,8 +1003,25 @@ class _WiredHooks:
         self.wire_context_seams = wire_context_seams
 
 
+def _coerce_turn_index(raw: Any) -> int | None:
+    """Coerce a turn-context value into an attributable turn index.
+
+    ``turn_index`` arrives from ``run_context``, which hosts populate with the
+    global thread ordinal computed at turn start. ``None`` means the work is
+    not attributable to a thread turn (off-turn slice work, or a host with no
+    thread) and stays ``None`` rather than collapsing to ``0`` — which is the
+    thread's first real turn. Anything unusable degrades to ``None``.
+    """
+    return resolve_turn_index(raw)
+
+
 def _assemble_turn_hooks(
-    *, runtime: HostRuntime, wired: _WiredHooks, task_id: str = "", task_goal: str = ""
+    *,
+    runtime: HostRuntime,
+    wired: _WiredHooks,
+    task_id: str = "",
+    task_goal: str = "",
+    turn_index: int | None = None,
 ) -> TurnHooks:
     """Compose the final ``TurnHooks`` dataclass from the wired callables.
 
@@ -969,6 +1040,7 @@ def _assemble_turn_hooks(
         memory_scope=runtime.config.memory_scope,
         session_plan_digest=runtime.session_plan.plan_digest,
         task_id=task_id,
+        turn_index=turn_index,
         task_goal="diagnostic" if task_goal == "diagnostic" else "implementation",
     )
     artifact_store = runtime.services.code_change_artifact_store
@@ -1728,6 +1800,7 @@ def build_turn_hooks(
         runtime=runtime,
         task_id=str(ctx_dict.get("task_id") or ""),
         task_goal=str(ctx_dict.get("task_goal") or ""),
+        turn_index=_coerce_turn_index(ctx_dict.get("turn_index")),
         wired=_WiredHooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,

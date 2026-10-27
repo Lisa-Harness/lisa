@@ -16,7 +16,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import BlockDiagnostic, OperationResult, ToolExecutionContext, ToolResult
+from kernel.models import (
+    BlockDiagnostic,
+    OperationResult,
+    ToolExecutionContext,
+    ToolResult,
+    resolve_turn_index,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -258,6 +264,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         event_bus=getattr(ctx, "event_bus", None),
         state_provider=getattr(ctx, "state_provider", None),
         data_dir=getattr(ctx, "data_dir", ""),
+        turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
     )
 
 

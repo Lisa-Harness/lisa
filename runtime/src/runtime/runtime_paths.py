@@ -42,6 +42,7 @@ class HostPaths:
     log_path: Path | None
     host_log_path: Path
     token_usage_path: Path
+    decisions_path: Path
     models_path: Path
     models_proposal_path: Path
 
@@ -103,6 +104,7 @@ class HostPaths:
             log_path=config.resolved_log_path,
             host_log_path=config.resolved_host_log_path,
             token_usage_path=config.data_dir / LOGS_DIR / "token-usage.jsonl",
+            decisions_path=config.data_dir / LOGS_DIR / "decisions.jsonl",
             models_path=models_path_override or config.resolved_models_path,
             models_proposal_path=config.resolved_models_proposal_path,
         )

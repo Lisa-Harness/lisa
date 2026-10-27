@@ -6,6 +6,35 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Durable decision and dispatch telemetry (`decisions.jsonl`).** The turn loop
+  already published `turn.decision` (per-iteration lifecycle action, reason,
+  in-stage counter, receipt counts) and `tool.telemetry` (per-dispatch target,
+  status, duration, error) on the event bus — but nothing durable subscribed, so
+  both were dropped and the only persisted telemetry was token usage. That made
+  post-hoc "why did this turn behave that way?" unanswerable from logs: the
+  record existed only as rate-limited prose. `DecisionTelemetryHandler` now
+  appends both topics to `<data-dir>/logs/decisions.jsonl`, one JSON line per
+  record tagged with its `topic`. It writes directly rather than through stdlib
+  logging, because the root file handler's `RateLimitFilter` suppresses repeated
+  identical records — exactly the shape of a mode resolving the same lifecycle
+  action on consecutive iterations. A dedicated file also rotates independently,
+  so verbose runtime logging cannot evict the ledger.
+- **`turn_index` — one join key across thread, decisions, dispatches, and cost.**
+  `TurnIdentity`, `ToolExecutionContext`, `OperationExecutionContext`,
+  `TokenUsageEvent`, and `ToolExecutionTelemetry` now carry the global thread
+  turn index, propagated from the value `handle_message` computes at turn start.
+  Per-turn cost was previously unattributable: `TokenUsageEvent` named a `mode_id`
+  but no turn, so a model call could only be billed to a mode, never to the turn
+  that caused it. The index is threaded through `_build_minimal_context`,
+  `_to_tool_context`, the fork/declarative/FSM context copies, and the
+  `turn.decision` / `tool.telemetry` / `token_usage` publish sites, so a decision
+  row, a dispatch row, a token row, and a thread entry for the same turn address
+  each other. A `None` index means "not attributable to a turn" (off-turn slice
+  work, a thread-less host) and is deliberately distinct from `0`, the first
+  real turn; `resolve_turn_index` normalizes raw values.
+- **Tests:** `kernel/tests/test_decision_telemetry.py`,
+  `runtime/tests/test_turn_index_propagation.py`
+
 - **`/workflow` — inspect and conclude the active multi-step workflow.** A
   plan written by the `planner` mode (`## Plan`) is injected into every later
   turn's briefing and steers handoffs toward its declared steps. It previously

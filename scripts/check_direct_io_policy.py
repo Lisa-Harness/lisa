@@ -179,6 +179,13 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         'self._path.open("a"',
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Decision/dispatch telemetry appender: the same owner-only append-only
+    # JSONL contract as token_usage.py (a direct appender is required because
+    # the stdlib file handler's RateLimitFilter would drop repeated decisions).
+    "kernel/src/kernel/decision_telemetry.py": (
+        'self._path.open("a"',
+        "self._path.parent.mkdir(parents=True, exist_ok=True)",
+    ),
     "kernel/src/kernel/tools/mcp_client.py": (
         "Path(config.data_dir_path).mkdir(parents=True, exist_ok=True)",
     ),

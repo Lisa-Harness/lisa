@@ -278,6 +278,7 @@ async def _execute_declarative_tool_call(
                     event_bus=ctx.event_bus,
                     state_provider=ctx.state_provider,
                     data_dir=ctx.data_dir,
+                    turn_index=ctx.turn_index,
                 ),
             )
             if tool_name and tool_name not in used_tools:
