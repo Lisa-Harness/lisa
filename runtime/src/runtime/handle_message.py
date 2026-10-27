@@ -1669,7 +1669,7 @@ async def _execute_mode_turn(
     remediation_payload = _render_yield_remediation(runtime, result.yielded)
 
     return HostCommandResult(
-        text=result.response_text,
+        text=_with_yield_remediation(result, remediation_payload["remediation"]),
         operator_exit=getattr(result, "operator_exit", ""),
         # Surface the model's ask-the-user terminal action structurally: a
         # non-empty question means the turn ended in a yield — the model
@@ -1686,13 +1686,26 @@ async def _execute_mode_turn(
     )
 
 
+def _with_yield_remediation(result: Any, commands: list[str]) -> str:
+    """Return the response text, footnoted with yield escape commands.
+
+    Extracted from the turn pipeline to keep that function within its
+    statement budget; the behavior lives in :func:`_append_yield_remediation`.
+    """
+    if not result.yielded:
+        return result.response_text
+    return _append_yield_remediation(result.response_text, commands)
+
+
 def _render_yield_remediation(runtime: HostRuntime, yielded: Any) -> dict[str, Any]:
     """Render kernel remediation verbs as installed command lines.
 
     Returns ``{"remediation": [line, ...]}`` (empty list when there is
     nothing to render — no remediation on the yield, or no installed
     command matches a verb). Carried in ``data`` so panel transports can
-    render buttons/links instead of parsing prose.
+    render buttons/links instead of parsing prose, and appended to the
+    response text (see :func:`_append_yield_remediation`) so a plain-text
+    transport surfaces it too.
     """
     remediation = getattr(yielded, "remediation", None)
     if remediation is None:
@@ -1704,6 +1717,33 @@ def _render_yield_remediation(runtime: HostRuntime, yielded: Any) -> dict[str, A
             continue
         commands.append(f"{prefix} {action.target_id}")
     return {"remediation": commands}
+
+
+def _append_yield_remediation(text: str, commands: list[str]) -> str:
+    """Append the operator's escape commands below a yielded turn's question.
+
+    A stall yield can only be cleared by a slash command. The remediation
+    lines existed only in the ``data`` payload, so a transport that renders
+    text alone showed "A previous step stalled and needs your input to
+    continue" with no way to act — and a plain-sentence reply cannot clear a
+    stall, because the affirmative-resume path only fires when an approval is
+    pending.
+
+    Observed cost: turns 486-488 of the recorded session yielded the same
+    stall three times while the operator answered "approved", "proceed", and
+    "let's pick up where we left off" — every reply correct, none able to
+    escape, because nothing told them `/skip <id>` was the verb.
+
+    Follows the completion-block convention: appended as a footnote so the
+    model's own prose is never replaced, and idempotent so re-reading a
+    thread entry that already carries the footnote does not double it.
+    """
+    if not commands:
+        return text
+    block = "To continue, use: " + ", ".join(f"`{line}`" for line in commands)
+    if block in text:
+        return text
+    return f"{text}\n\n{block}" if text.strip() else block
 
 
 def _yield_payload(yielded: Any, *, remediation_lines: list[str]) -> dict[str, Any]:

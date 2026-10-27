@@ -117,6 +117,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **A stall yield now shows the operator how to escape it.** A recovery stall
+  blocks the turn and yields; only a slash command clears it. Those commands
+  were built and placed in `data["remediation"]` but never in
+  `response_text`, so a text-only transport showed "A previous step stalled
+  and needs your input to continue" with no way to act. A plain-sentence reply
+  cannot clear a stall — the affirmative-resume path fires only when an
+  approval is pending. The recorded session shows the cost: turns 486-488
+  yielded the same stall three times while the operator answered "approved",
+  "proceed", and "let's pick up where we left off"; every reply was correct and
+  none could escape. The commands are now appended to the text as a footnote,
+  following the completion-block convention (never replaces surfaced content,
+  idempotent so a thread entry replayed through the digest does not double it).
 - **Multi-step plans produced mid-turn now reach the operator.** Two code paths
   stage a rendered plan for the response, and only one was wired: turn start set
   `state.plan_prefix`, which `_append_post_turn_content` prepends, while the
