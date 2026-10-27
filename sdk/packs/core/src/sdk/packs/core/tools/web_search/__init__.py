@@ -1,0 +1,1 @@
+"""Web search contract tool."""

@@ -290,7 +290,7 @@ def test_validate_export_boundaries_rejects_cross_pack_non_exported_tool(
             )
         },
     )
-    tools = {"search": _tool("search", provider_id="lisa-pack-search", exportable=False)}
+    tools = {"search": _tool("search", provider_id="lisa-pack-brave", exportable=False)}
     monkeypatch.setattr(tool_registry, "get_tool_catalog", lambda: tools)
     with pytest.raises(Exception) as exc_info:
         validate_export_boundaries(operation_catalog={})
@@ -312,7 +312,7 @@ def test_validate_export_boundaries_allows_cross_pack_exported_tool(
             )
         },
     )
-    tools = {"search": _tool("search", provider_id="lisa-pack-search", exportable=True)}
+    tools = {"search": _tool("search", provider_id="lisa-pack-brave", exportable=True)}
     monkeypatch.setattr(tool_registry, "get_tool_catalog", lambda: tools)
     # Should not raise.
     validate_export_boundaries(operation_catalog={})

@@ -72,21 +72,16 @@ surface:
 
 resources:
   packs:
-    include: [lisa-pack-core, lisa-pack-search, lisa-pack-brave, lisa-pack-memory]
+    include: [lisa-pack-core, lisa-pack-brave, lisa-pack-memory]
     required: [lisa-pack-core]
     exclude: [lisa-pack-mem0]
 
 providers:
   modes:
     default: lisa-pack-core
-  operations:
-    # `web_search` is a TOOL, not an operation — it belongs under
-    # `providers.tools` below. The search pack's operations are
-    # `web_research` and `discussion_briefing`.
-    web_research: lisa-pack-search
   tools:
-    # Both lisa-pack-search and lisa-pack-brave ship tool_id `web_search`.
-    # This line resolves that collision.
+    # Both lisa-pack-core (the contract stub) and lisa-pack-brave ship
+    # tool_id `web_search`. This line resolves that collision.
     web_search: lisa-pack-brave
   capabilities:
     memory: lisa-pack-memory
@@ -162,19 +157,19 @@ Primary goals this week:
 - Keep postmortems blameless and action-oriented.
 ```
 
-## Worked Example: Memory, Markdown, Search, and Tavily
+## Worked Example: Memory, Markdown, Personas, and Tavily
 
 A complete, deployable session that wires four packs together: **`lisa-pack-memory`**
 (long-term recall and learning), **`lisa-pack-markdown`** (document forging and
-consolidation), **`lisa-pack-search`** (the research *operations* — `web_research`,
-`discussion_briefing`), and **`lisa-pack-tavily`** (the concrete `web_search`
-*tool* provider). `lisa-pack-core` supplies the default mode and the
-`fetch_page` tool.
+consolidation), **`lisa-pack-personas`** (the `thinker`/`researcher` modes and the
+`discussion_briefing` pre-turn operation), and **`lisa-pack-tavily`** (the concrete
+`web_search` *tool* provider). `lisa-pack-core` supplies the default mode, the
+`fetch_page` tool, and the `web_search` *contract*.
 
-You need a search pack like `lisa-pack-tavily` (or `lisa-pack-serper`),
-because research mode uses `tool_id: web_search`,
-so `lisa-pack-search` ships a stub that just tells you to install one,
-like `lisa-pack-tavily` which ships a real `web_search`.
+You need a provider pack like `lisa-pack-tavily` (or `lisa-pack-serper`) for live
+results, because research modes use `tool_id: web_search`. `lisa-pack-core` owns
+the contract and ships a stub that just tells you to install one, like
+`lisa-pack-tavily` which ships a real `web_search`.
 However,
 if you load both packs,
 the kernel bootstrap raises a `CatalogCollisionError`.
@@ -217,14 +212,14 @@ resources:
       - lisa-pack-core
       - lisa-pack-memory
       - lisa-pack-markdown
-      - lisa-pack-search
+      - lisa-pack-personas
       - lisa-pack-tavily
     auto_install:
       lisa-pack-tavily:
         source: git+https://github.com/Lisa-Harness/lisa-pack-tavily.git@v0.1.0
         pin: v0.1.0
-      lisa-pack-search:
-        source: git+https://github.com/Lisa-Harness/lisa-pack-search.git@v0.1.0
+      lisa-pack-personas:
+        source: git+https://github.com/Lisa-Harness/lisa-pack-personas.git@v0.1.0
         pin: v0.1.0
       lisa-pack-markdown:
         source: git+https://github.com/Lisa-Harness/lisa-pack-markdown.git@v0.1.0
@@ -242,9 +237,9 @@ providers:
   modes:
     default: lisa-pack-core
   operations:
-    # `web_research` and `discussion_briefing` are owned by the search pack.
-    web_research: lisa-pack-search
-    discussion_briefing: lisa-pack-search
+    # `discussion_briefing` is owned by the personas pack, alongside `thinker`
+    # — its only consumer.
+    discussion_briefing: lisa-pack-personas
     # Document forging and multi-source consolidation are the markdown pack's.
     markdown_forge_document: lisa-pack-markdown
     markdown_consolidate_sources: lisa-pack-markdown
@@ -253,7 +248,7 @@ providers:
     recall_memory: lisa-pack-memory
     synthesize_and_store_learning: lisa-pack-memory
   tools:
-    # Both lisa-pack-search and lisa-pack-tavily declare tool_id
+    # The core contract stub and lisa-pack-tavily both declare tool_id
     # `web_search`. This line is what resolves the collision.
     web_search: lisa-pack-tavily
     markdown_generate: lisa-pack-markdown
@@ -299,9 +294,9 @@ context:
       lane_id: retrieval
       packs: [lisa-pack-memory]
       priority: 80
-    - rule_id: web_research
+    - rule_id: web_search_results
       lane_id: retrieval
-      packs: [lisa-pack-tavily, lisa-pack-search]
+      packs: [lisa-pack-tavily, lisa-pack-personas]
       priority: 70
     # Everything else (live conversation excerpts, ambient items) goes to
     # the operational lane. Exactly one fallback rule is allowed.
@@ -351,7 +346,7 @@ answer when the user asks for a deliverable.
 | --- | --- |
 | `resources.packs.required` | All five packs are auto-installed at boot. A missing required pack is a **hard startup error** — the runtime does not start degraded. |
 | `resources.packs.auto_install` | Pins each external pack to a tagged ref. Git refs **must** pin `@tag/@branch/@sha`; the host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`. |
-| `providers.tools.web_search` | **Required.** `lisa-pack-search` and `lisa-pack-tavily` both ship `tool_id: web_search`. Without this line the catalog raises `CatalogCollisionError` at startup. |
+| `providers.tools.web_search` | **Required.** `lisa-pack-core` (the contract stub) and `lisa-pack-tavily` both ship `tool_id: web_search`. Without this line the catalog raises `CatalogCollisionError` at startup. |
 | `providers.operations.*` | Declares the owner for each research and document operation. Harmless when uncontested, but it makes ownership explicit and survives a future pack that ships a same-ID operation. |
 | `providers.capabilities.memory` | Selects the owner of the required `memory.add`, `memory.search`, and `memory.list` contract. Provider-specific optional tools may vary. |
 | `context.sources` | Authoring it **replaces** the default rule set, so the thread-digest rules are re-declared explicitly. The `catch_all` fallback preserves the operational lane. |
@@ -1051,7 +1046,7 @@ resolve and the catalog reports the available provider names in the error.
 Selection is exact — there is no ordered preference list. If the selected
 pack is not active, the catalog entry is absent (no fallback).
 
-**When a collision actually happens.** The catalog groups candidates by resource ID. A single candidate is used as-is. Two or more candidates from the same pack's directory are one pack, not a collision. But `lisa-pack-search`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` each ship a tool with `tool_id: web_search` from *different* pack roots — that is a genuine collision and needs an explicit `providers.tools.web_search` entry.
+**When a collision actually happens.** The catalog groups candidates by resource ID. A single candidate is used as-is. Two or more candidates from the same pack's directory are one pack, not a collision. But `lisa-pack-core`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` each ship a tool with `tool_id: web_search` from *different* pack roots — that is a genuine collision and needs an explicit `providers.tools.web_search` entry.
 
 Resolution order when several candidates share an ID:
 
@@ -1185,7 +1180,7 @@ providers:
   modes:
     default: lisa-pack-core
   operations:
-    web_research: lisa-pack-search    # the search pack's research operation
+    discussion_briefing: lisa-pack-personas  # the personas pack's pre-turn operation
   tools:
     web_search: lisa-pack-brave       # Brave owns the web_search tool
   capabilities:
@@ -1230,7 +1225,7 @@ conditions on a source-matched rule.
 ```yaml
 resources:
   packs:
-    include: [lisa-pack-core, lisa-pack-search]
+    include: [lisa-pack-core, lisa-pack-personas]
     required: [lisa-pack-core]
     exclude: [lisa-pack-mem0]
 ```
@@ -1252,9 +1247,9 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 - **`context_routing` is gone**: the legacy namespace-based routing block was removed. There is no `context_routing` key and no `ContextRoutingConfig`; use the `context` block (`lanes` + `sources`) instead. A `ContextRoutingConfig` reference in old code or docs is stale.
 - **`ContextItem.namespace` is a label, not a selector**: the mapper selects on `source`, `pack`, `source_type`, `evidence_type`, and `tags` — never on `namespace`. Setting `namespace="alerts"` does not route an item to an `alerts` lane; author a `context.sources` rule matching `evidence_types: [alert]` or `sources: [...]` instead.
 - **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv produces a `Duplicate operation ID`/`Duplicate tool ID` collision at boot because the catalog subprocess sees two content-root paths for one pack. Keep external packs in the packs venv only; uninstall them from the main `.venv`. (Bundled packs are fine in the main `.venv` — they are not installed into the packs venv.)
-- **Two search provider packs without a `providers.tools` entry**: `lisa-pack-search`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` all ship a tool with `tool_id: web_search`. Activating more than one without declaring the owner raises a `CatalogCollisionError` at startup. Exactly one pack can own `web_search` at a time.
+- **Two search provider packs without a `providers.tools` entry**: `lisa-pack-core`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` all ship a tool with `tool_id: web_search`. Activating more than one without declaring the owner raises a `CatalogCollisionError` at startup. Exactly one pack can own `web_search` at a time.
 - **A search provider pack without its API key**: the pack installs and the tool appears in the catalog, but every call fails with a "not configured" error naming the missing environment variable (for Tavily, `TAVILY_SEARCH_API_KEY`). The key is read from the environment, never from front matter — a secret does not belong in a versioned session file.
-- **`lisa-pack-search` alone is not a working search**: its `web_search` tool is a deliberate stub that returns "provider unavailable". It ships the research *operations* (`web_research`, `discussion_briefing`); a concrete provider pack (Tavily, Brave, Serper) supplies the tool.
+- **`lisa-pack-core` alone is not a working search**: its `web_search` tool is a deliberate contract stub that returns "provider unavailable". It keeps `tool_ids: [web_search]` resolvable so operation validation passes; a concrete provider pack (Tavily, Brave, Serper) supplies the live tool.
 - **Authoring `context.sources` drops the default rules**: the default rule set is replaced wholesale, not merged. A session that declares its own sources loses the `thread_digest`, `thread_digest_epistemics`, and `history_fallback` rules unless it re-declares them.
 - **Two source rules at the same priority naming different lanes**: the mapper raises a `ContextMappingError` rather than picking one. Split the priorities.
 - **`auto_install` for a pack that is not `required`**: the compiler rejects it. `auto_install` customizes *how* a required pack installs; it never decides *whether* it installs.

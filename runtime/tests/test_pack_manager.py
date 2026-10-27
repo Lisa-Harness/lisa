@@ -1566,7 +1566,7 @@ def test_seed_bundled_packs_lock_stamps_external_packs_as_package(
     tmp_path: Path,
 ) -> None:
     """A discovered pack whose root is not under sdk/packs/ is source_kind=package."""
-    external_root = _bundled_root(tmp_path, "lisa_pack_search", "lisa-pack-search")
+    external_root = _bundled_root(tmp_path, "lisa_pack_brave", "lisa-pack-brave")
     monkeypatch.setattr(
         content_roots,
         "discover_installed_content_roots",
@@ -1580,10 +1580,10 @@ def test_seed_bundled_packs_lock_stamps_external_packs_as_package(
     assert written is True
     lock = content_roots.load_installed_packs_lock(tmp_path)
     by_name = {entry["package_name"]: entry for entry in lock["packs"]}
-    assert set(by_name) == {"lisa-pack-search"}
-    assert by_name["lisa-pack-search"]["source_kind"] == "package"
-    assert by_name["lisa-pack-search"]["source_ref"] == "package"
-    assert by_name["lisa-pack-search"]["enabled"] is True
+    assert set(by_name) == {"lisa-pack-brave"}
+    assert by_name["lisa-pack-brave"]["source_kind"] == "package"
+    assert by_name["lisa-pack-brave"]["source_ref"] == "package"
+    assert by_name["lisa-pack-brave"]["enabled"] is True
 
 
 def test_seed_bundled_packs_lock_is_idempotent(

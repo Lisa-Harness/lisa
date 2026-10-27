@@ -20,7 +20,7 @@ Public surface::
 
     content_cfg = build_content_mcp_config(
         data_dir=Path("~/.lisa"),
-        content_roots=[Path("../lisa-packs/search/lisa_packs/search")],
+        content_roots=[Path("../lisa-packs/personas/lisa_packs/personas")],
         disabled_packs=frozenset(),
         provider_selections=selections,
         packs_venv_site_packages=Path("~/.lisa/venv/lib/python3.11/site-packages"),

@@ -13,5 +13,4 @@ packs:
   lisa-pack-markdown: ../../lisa-packs/markdown
   lisa-pack-personas: ../../lisa-packs/personas
   lisa-pack-recovery: ../sdk/packs/recovery
-  lisa-pack-search: ../../lisa-packs/search
   lisa-pack-serper: ../../lisa-packs/serper

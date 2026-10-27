@@ -156,7 +156,7 @@ class ToolDefinition(BaseModel):
     owner_id: str = ""
     pack_id: str = ""
     # The full distribution-package name that owns this tool (e.g.
-    # ``lisa-pack-search``), inferred from the content-root path during SDK
+    # ``lisa-pack-brave``), inferred from the content-root path during SDK
     # catalog build. Distinct from ``pack_id`` (the raw pack slug authored in
     # YAML). Used by ``validate_export_boundaries`` to compare against
     # ``WorkflowModeConfig.mode_provider_id`` so same-pack references are not

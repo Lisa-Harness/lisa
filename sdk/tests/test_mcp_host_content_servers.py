@@ -90,7 +90,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
         disabled_packs=set(),
         provider_selections=ProviderSelections(
             modes={"default": "lisa-pack-core"},
-            operations={"web_search": "lisa-pack-search"},
+            operations={"web_search": "lisa-pack-brave"},
             tools={"web_search": "lisa-pack-brave"},
         ),
     )
@@ -99,7 +99,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
     payload = json.loads(config.env["LISA_SESSION_PROVIDER_SELECTIONS"])
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
-        "operations": {"web_search": "lisa-pack-search"},
+        "operations": {"web_search": "lisa-pack-brave"},
         "tools": {"web_search": "lisa-pack-brave"},
     }
 
@@ -108,14 +108,14 @@ def test_build_content_mcp_config_passes_disabled_packs_to_child(tmp_path: Path)
     config = build_content_mcp_config(
         data_dir=tmp_path,
         content_roots=[],
-        disabled_packs={"lisa-pack-markdown", "lisa-pack-search"},
+        disabled_packs={"lisa-pack-markdown", "lisa-pack-brave"},
         provider_selections=ProviderSelections(),
     )
 
     assert config.env is not None
     disabled = config.env.get("LISA_DISABLED_PACKS", "")
     assert "lisa-pack-markdown" in disabled
-    assert "lisa-pack-search" in disabled
+    assert "lisa-pack-brave" in disabled
 
 
 def test_build_content_mcp_config_injects_packs_venv_site_packages(tmp_path: Path) -> None:
@@ -232,7 +232,7 @@ def test_build_catalog_mcp_config_handles_none_env(tmp_path: Path) -> None:
 def test_session_provider_selection_payload_round_trips() -> None:
     selections = ProviderSelections(
         modes={"default": "lisa-pack-core"},
-        operations={"web_search": "lisa-pack-search"},
+        operations={"web_search": "lisa-pack-brave"},
         tools={"web_search": "lisa-pack-brave"},
     )
 
@@ -240,7 +240,7 @@ def test_session_provider_selection_payload_round_trips() -> None:
 
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
-        "operations": {"web_search": "lisa-pack-search"},
+        "operations": {"web_search": "lisa-pack-brave"},
         "tools": {"web_search": "lisa-pack-brave"},
     }
     # Empty selections yield empty payload values (no env var set downstream).

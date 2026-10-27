@@ -152,7 +152,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
         disabled_packs=set(),
         provider_selections=ProviderSelections(
             modes={"default": "lisa-pack-core"},
-            operations={"web_search": "lisa-pack-search"},
+            operations={"web_search": "lisa-pack-brave"},
             tools={"web_search": "lisa-pack-brave"},
         ),
     )
@@ -161,7 +161,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
     payload = json.loads(config.env["LISA_SESSION_PROVIDER_SELECTIONS"])
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
-        "operations": {"web_search": "lisa-pack-search"},
+        "operations": {"web_search": "lisa-pack-brave"},
         "tools": {"web_search": "lisa-pack-brave"},
     }
 
@@ -224,7 +224,7 @@ async def test_modes_command_lists_modes_without_invoking_model(
 
     assert not called, "/modes must not route to the model"
     assert "## Lisa Modes" in output.text
-    # The core/learning/search packs ship at least the default mode.
+    # The core pack ships at least the default mode.
     assert "default" in output.text
 
 

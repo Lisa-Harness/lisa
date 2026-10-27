@@ -4,7 +4,39 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`lisa-pack-search` retired; its two capabilities moved to their real
+  owners.** The pack's `web_search` *contract* stub now ships in
+  `lisa-pack-core` (`sdk.packs.core.tools.web_search`), next to `fetch_page`,
+  so `tool_ids: [web_search]` stays resolvable in a session with no provider
+  pack installed — the kernel validates declared tool ids and would otherwise
+  raise at catalog build. `discussion_briefing` now ships in
+  `lisa-pack-personas` (`lisa_packs.personas.operations.research`), the same
+  pack as `thinker`, its only consumer, and no longer relies on cross-pack
+  export. `providers.tools.web_search` is still required whenever more than
+  one of core/Tavily/Brave/Serper is active: they all still declare
+  `tool_id: web_search`.
+
+### Removed
+
+- **`web_research` operation deleted.** It had zero executions across 1,023
+  logged turns; research work ran through the `web_search` *tool* directly,
+  and its only other appearances were a documentation example and repeated
+  startup import warnings (`No module named 'lisa_packs'`). No mode declared
+  it in `allowed_operation_ids` or any lifecycle slot, so nothing resolves
+  it.
+
+### Fixed
+
+- **`discussion_briefing` pre-turn timeout raised 15s → 45s.** The 15s
+  budget expired twice on 2026-10-26, and `thinker` treats a pre-turn
+  failure as a skip — so the turn silently ran without the briefing it was
+  configured to receive. 45s comfortably covers a provider round trip plus
+  one synthesis call.
+
 ## [0.3.0] - 2026-10-26
+
 
 ### Added
 

@@ -100,7 +100,7 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
                     "enabled": False,
                 },
                 {
-                    "package_name": "lisa-pack-search",
+                    "package_name": "lisa-pack-brave",
                     "source_kind": "bundled",
                     "enabled": True,
                 },

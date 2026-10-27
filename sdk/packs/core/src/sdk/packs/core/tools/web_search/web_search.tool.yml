@@ -1,0 +1,8 @@
+tool_id: web_search
+description: "Search the web and return grounded results. A provider pack supplies the live implementation."
+effect: read
+exportable: true
+# Per-turn cap: researcher-mode read-loop burn (2026-09-17) issued 15
+# web_search iterations with zero synthesis. 6 distinct queries is enough
+# for one turn's briefing.
+max_calls_per_turn: 6
