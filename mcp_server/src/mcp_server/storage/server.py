@@ -6,13 +6,15 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (10 total):
+Tools (11 total):
 
-- File I/O (8): ``read_file``, ``read_file_range``, ``write_file``,
-  ``append_file``, ``list_files``, ``delete_file``, ``stat_file``,
-  ``make_dir`` — scoped to ``data_dir / "files"``. ``read_file_range``
-  returns a char-bounded slice (never splits multibyte codepoints);
-  ``append_file`` creates parent dirs and the file if absent.
+- File I/O (9): ``read_file``, ``read_file_range``, ``write_file``,
+  ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
+  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+  ``read_file_range`` returns a char-bounded slice (never splits
+  multibyte codepoints); ``append_file`` creates parent dirs and the
+  file if absent; ``edit_file`` replaces one exact substring in place,
+  so changing a line never requires reconstructing the whole document.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -258,6 +260,55 @@ async def append_file(
     return _raise_on_error(_resolve_deps(ctx).backend.append_file(path, content))
 
 
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def edit_file(
+    path: str,
+    old_string: str,
+    new_string: str,
+    *,
+    replace_all: bool = False,
+    expected_sha256: str = "",
+    encoding: str = "utf-8",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Replace one exact substring in an existing file.
+
+    This is the surgical alternative to ``write_file``: only the matched
+    region changes, and every other byte stays as it is on disk. Use it
+    instead of read-modify-write whenever the intent is a bounded edit —
+    rewriting a document to change one line requires reproducing content
+    from memory, which is the failure mode this tool removes.
+
+    Args:
+        path: Relative path within the files sandbox (no ``..`` or absolute).
+        old_string: Exact text to replace, byte-identical to the file
+            (including indentation and line endings). Must occur exactly
+            once unless ``replace_all`` is set.
+        new_string: Replacement text. May be empty to delete the match.
+        replace_all: Replace every occurrence instead of requiring exactly one.
+        expected_sha256: Optional staleness guard — the ``sha256`` reported
+            by a prior ``stat_file`` or ``edit_file``. The edit is refused
+            if the file changed since then.
+        encoding: Text encoding (default ``utf-8``).
+
+    Returns:
+        JSON object with ``ok``, ``path``, ``replacements``, ``first_line``,
+        ``bytes_before``, ``bytes_after``, and ``sha256`` (the new hash).
+        Raises :class:`ToolError` when the match is absent, ambiguous, the
+        file changed, or the write fails.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.edit_file(
+            path,
+            old_string,
+            new_string,
+            replace_all=replace_all,
+            expected_sha256=expected_sha256,
+            encoding=encoding,
+        )
+    )
+
+
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def list_files(
     prefix: str = "",
@@ -289,7 +340,12 @@ async def stat_file(
     path: str,
     ctx: Context[StorageDeps, Any] | None = None,
 ) -> str:
-    """Return file metadata (size, modified timestamp, is_dir) for a path.
+    """Return file metadata for a path.
+
+    Reports ``size``, ``modified``, ``is_dir``, and ``sha256`` (the content
+    hash of a regular file, empty for a directory). The hash is what
+    ``edit_file(expected_sha256=...)`` accepts as proof the edit applies to
+    the revision the caller read.
 
     Raises :class:`ToolError` if the path is unsafe or not found.
     """

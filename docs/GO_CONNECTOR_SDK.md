@@ -114,7 +114,8 @@ conventions:
   must be preserved verbatim by any port — for `lisa-fetch` that is the SSRF
   gate (scheme/host/private-IP) and the response-size ceiling
   (see [sdk/content/_fetcher.py](../sdk/src/sdk/content/_fetcher.py)); for
-  `lisa-storage` the deny-glob files sandbox.
+  `lisa-storage` the deny-glob files sandbox and `edit_file`'s exact-match and
+  atomic-replace rules (see [storage](STORAGE.md#exact-edits)).
 
 A Go port that weakens a safety invariant to simplify the port is a defect, not
 a shortcut.

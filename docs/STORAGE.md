@@ -66,6 +66,33 @@ call added). The size alone cannot tell an append that moved bytes from
 an empty append that moved none, and a receipt that claims a write
 happened when no bytes moved is not proof of an effect.
 
+### Exact edits
+
+`edit_file` changes one region of an existing file and leaves every other
+byte as it was on disk. Rewriting a whole document to change one line
+means reconstructing the rest from the caller's own memory, which is the
+wrong basis for a document that exists to record evidence. The primitive
+removes that reconstruction entirely.
+
+- **The match is exact.** Indentation, line endings, and surrounding text
+  must be byte-identical. Exactness is the safety property: a fuzzy match
+  would rewrite a region the caller never saw.
+- **Ambiguity is refused.** `old_string` must occur once, or the caller
+  passes `replace_all`. A multi-site match returns the candidate line
+  numbers and writes nothing, so the caller adds context instead of the
+  tool guessing a site.
+- **The edit is bound to a revision.** `stat_file` reports `sha256`, and
+  passing it as `expected_sha256` makes the edit fail if the file changed
+  since. An edit can never apply against a document read in an earlier
+  revision.
+- **The write is atomic.** New bytes are staged beside the target and
+  swapped in with `os.replace`, so an interrupted edit leaves the original
+  intact instead of truncated, and no temporary file survives.
+
+Passing `new_string` as empty deletes the matched region. `edit_file` adds
+no newline normalization: the fragment's edges are part of the match, so
+the stored bytes are exactly `new_string` in place of `old_string`.
+
 Host-owned persistence and backend implementations sometimes need direct I/O.
 The repository's [direct-I/O check](../scripts/check_direct_io_policy.py) is
 an AST-based contributor gate:

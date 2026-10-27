@@ -70,6 +70,7 @@ async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
         "read_file_range",
         "write_file",
         "append_file",
+        "edit_file",
         "list_files",
         "delete_file",
         "stat_file",
@@ -152,6 +153,64 @@ async def test_append_file_reports_appended_bytes(storage_setup: None) -> None:
     assert data["ok"] is True
     assert data["appended_bytes"] == 0
     assert data["bytes"] == 3
+
+
+# ── Exact edits ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_edit_file_changes_one_line_in_place(storage_setup: None) -> None:
+    """The end-to-end surgical edit: a tracker row flips without a rewrite."""
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool(
+        "write_file",
+        {"path": "tracker.md", "content": "| A1 | Open |\n| A2 | Closed |\n"},
+    )
+
+    result = await mcp.call_tool(
+        "edit_file",
+        {"path": "tracker.md", "old_string": "| A1 | Open |", "new_string": "| A1 | Closed |"},
+    )
+    data = json.loads(_tool_text(result))
+    assert data["ok"] is True
+    assert data["replacements"] == 1
+    assert data["first_line"] == 1
+
+    read_result = await mcp.call_tool("read_file", {"path": "tracker.md"})
+    assert _tool_text(read_result) == "| A1 | Closed |\n| A2 | Closed |\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_ambiguous_match_is_a_tool_error(storage_setup: None) -> None:
+    """An error-shaped result must reach the model as ``is_error``, not as JSON."""
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "dup.md", "content": "same\nsame\n"})
+    with pytest.raises(ToolError, match="occurs 2 times"):
+        await mcp.call_tool(
+            "edit_file", {"path": "dup.md", "old_string": "same", "new_string": "other"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_edit_file_stale_hash_is_a_tool_error(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "doc.md", "content": "one\n"})
+    digest = json.loads(_tool_text(await mcp.call_tool("stat_file", {"path": "doc.md"})))["sha256"]
+    await mcp.call_tool("edit_file", {"path": "doc.md", "old_string": "one", "new_string": "two"})
+
+    with pytest.raises(ToolError, match="sha256 mismatch"):
+        await mcp.call_tool(
+            "edit_file",
+            {
+                "path": "doc.md",
+                "old_string": "two",
+                "new_string": "three",
+                "expected_sha256": digest,
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -245,6 +304,8 @@ async def test_stat_file(storage_setup: None) -> None:
     data = json.loads(_tool_text(result))
     assert data["size"] > 0
     assert data["is_dir"] is False
+    # The hash a guarded edit is bound to.
+    assert len(data["sha256"]) == 64
 
 
 @pytest.mark.asyncio
@@ -303,6 +364,14 @@ async def test_readonly_blocks_make_dir(storage_readonly: None) -> None:
 
     with pytest.raises(ToolError, match="read-only"):
         await mcp.call_tool("make_dir", {"path": "newdir"})
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocks_edit_file(storage_readonly: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool("edit_file", {"path": "doc.md", "old_string": "a", "new_string": "b"})
 
 
 # ── Model manifest ──────────────────────────────────────────────────────────
@@ -408,6 +477,10 @@ async def test_deny_blocks_delete_and_stat(storage_with_deny: Path) -> None:
         ("delete_file", {"path": "secret.db"}),
         ("stat_file", {"path": "secret.db"}),
         ("make_dir", {"path": "threads/new"}),
+        (
+            "edit_file",
+            {"path": "secret.db", "old_string": "a", "new_string": "b"},
+        ),
     ):
         with pytest.raises(ToolError, match="denied by policy"):
             await mcp.call_tool(tool, args)

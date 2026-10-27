@@ -1431,6 +1431,95 @@ async def test_parent_turn_unknown_action_backstop_does_not_fabricate_dispatch()
     assert all(not message.get("tool_calls") for message in result.transcript)
 
 
+@pytest.mark.asyncio
+async def test_parent_turn_mcp_edit_file_satisfies_write_contract() -> None:
+    """A successful ``storage.edit_file`` is a verified write, not a read.
+
+    ``edit_file`` carries ``read_only_hint=None`` (unset, not False) and
+    ``destructive_hint=True``. The receipt ledger must classify it as a
+    write: if the classification regressed to read, a turn whose only
+    landed change was a surgical edit would be flagged ``no_tools`` and
+    its honest claim labelled unverified. The bare-name match is what
+    lets the namespaced ``storage.edit_file`` satisfy an authored
+    ``edit_file`` action id.
+    """
+
+    class _EditPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text='{"ok": true, "replacements": 1, "first_line": 7}',
+            )
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=None)
+
+        async def __aenter__(self) -> _EditPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    async def editing(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "storage.edit_file",
+                        "arguments": (
+                            '{"path": "tracker.md", "old_string": "| A1 | Open |", '
+                            '"new_string": "| A1 | Closed |"}'
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def then_done(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Moved A1 to Closed.")
+
+    catalog = {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_tool_ids=["edit_file"],
+            allowed_tool_ids=["storage.edit_file"],
+        ),
+    }
+    hooks = TurnHooks(
+        models=ModelHooks(complete=_two_step_model(editing, then_done)),
+        tools=ToolHooks(mcp_tool_pool=_EditPool()),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=catalog,
+            create=True,
+        ),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        result = await run_turn(mode_id="writer", query="close A1", hooks=hooks)
+
+    writes = [r for r in result.effect_receipts if r.effect in ("write", "external_write")]
+    assert [r.capability_id for r in writes] == ["storage.edit_file"]
+    assert result.block_origin != "no_tools"
+    assert "Moved A1 to Closed." in result.response_text
+
+
 def test_work_backstop_can_only_synthesize_proven_zero_arg_tool() -> None:
     from kernel.models import ToolDefinition
     from kernel.turn_runner import _work_tool_accepts_empty_arguments

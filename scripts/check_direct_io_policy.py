@@ -205,6 +205,10 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "resolved.mkdir(parents=True, exist_ok=True)",
         "checkpoints_root.mkdir(parents=True, exist_ok=True)",
         "path.parent.mkdir(parents=True, exist_ok=True)",
+        # ``edit_file`` stages the new bytes beside the target, then swaps
+        # them in atomically, so a failed edit never truncates the original.
+        "os.replace(temporary_path, target)",
+        "temporary_path.unlink()",
     ),
     "sdk/packs/memory/src/sdk/packs/memory/slice_provider.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",

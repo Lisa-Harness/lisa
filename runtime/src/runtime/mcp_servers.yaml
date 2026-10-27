@@ -106,6 +106,7 @@ servers:
       - read_file_range
       - write_file
       - append_file
+      - edit_file
       - list_files
       - delete_file
       - stat_file
@@ -129,6 +130,7 @@ servers:
       - stat_file
       - write_file
       - append_file
+      - edit_file
 
   # ── Thread-access server (cold — lazily connected on first use) ──
   # The thread server exposes bounded reads, search, and content

@@ -15,9 +15,14 @@ can call the backend directly instead of spawning the MCP server.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
+import os
 import shutil
+import stat
+import tempfile
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -103,6 +108,152 @@ def _is_text_content(path: str, content: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _line_ending_hint(text: str, fragment: str) -> str:
+    """Explain an exact-match failure caused by differing line endings.
+
+    The commonest reason an exact match fails on a document the caller
+    just read is that it re-typed the fragment with ``\\n`` while the file
+    stores ``\\r\\n`` (or the reverse). Detecting it turns a bare
+    "not found" into an actionable message; the match itself stays exact.
+    """
+    file_crlf = "\r\n" in text
+    fragment_crlf = "\r\n" in fragment
+    if file_crlf == fragment_crlf:
+        return ""
+    if file_crlf:
+        return " (the file uses CRLF line endings; old_string must match them)"
+    return " (the file uses LF line endings; old_string contains CRLF)"
+
+
+def _match_line_numbers(text: str, fragment: str, *, limit: int = 10) -> list[int]:
+    """Return 1-based line numbers where ``fragment`` starts, capped at ``limit``."""
+    lines: list[int] = []
+    start = 0
+    while len(lines) < limit:
+        index = text.find(fragment, start)
+        if index < 0:
+            break
+        lines.append(text.count("\n", 0, index) + 1)
+        start = index + 1
+    return lines
+
+
+def _edit_target_error(resolved: Path, path: str) -> str | None:
+    """Return the JSON error for a target that cannot hold an edited file."""
+    if not resolved.exists():
+        return json.dumps({"error": f"file not found: {path}"})
+    if not resolved.is_file():
+        return json.dumps({"error": "edit_file targets a directory; use a file path"})
+    return None
+
+
+def _edit_precondition_error(*, readonly: bool, old_string: str, new_string: str) -> str | None:
+    """Return the JSON error for a request that cannot describe an edit.
+
+    Three cases, all decidable before touching the file: a read-only
+    server, an empty fragment (it has a position between every pair of
+    characters, so it can never name a region), and an edit to identical
+    text (no effect to report as one).
+    """
+    if readonly:
+        return json.dumps({"error": "server is read-only"})
+    if not old_string:
+        return json.dumps(
+            {"error": "old_string must not be empty (an empty match has no unique position)"}
+        )
+    if old_string == new_string:
+        return json.dumps(
+            {"error": "old_string and new_string are identical; the edit would change nothing"}
+        )
+    return None
+
+
+def _match_error(
+    text: str,
+    fragment: str,
+    *,
+    replace_all: bool,
+    sha256: str,
+    size_bytes: int,
+) -> str | None:
+    """Return the JSON error for an unusable match, or ``None`` when it is usable.
+
+    Two failures are reported, both without touching the file: no
+    occurrence, and more than one occurrence when only one was asked for.
+    Neither is an error in the file — they say the request does not name a
+    unique region, so the edit cannot be applied as written.
+    """
+    occurrences = text.count(fragment)
+    if occurrences == 0:
+        return json.dumps(
+            {
+                "error": "old_string not found in file" + _line_ending_hint(text, fragment),
+                "bytes": size_bytes,
+                "sha256": sha256,
+            }
+        )
+    if occurrences > 1 and not replace_all:
+        return json.dumps(
+            {
+                # More context in ``old_string`` selects exactly one site.
+                "error": (
+                    f"old_string occurs {occurrences} times; add surrounding "
+                    "context to select one, or set replace_all"
+                ),
+                "lines": _match_line_numbers(text, fragment, limit=10),
+                "sha256": sha256,
+            }
+        )
+    return None
+
+
+def _encode_edit(text: str, encoding: str) -> bytes | str:
+    """Encode edited text, returning a JSON error string when it is not encodable.
+
+    A ``new_string`` can carry a lone surrogate (a cut multi-byte character
+    produces one), which no text file can store. The edit reports that
+    instead of raising out of the tool.
+    """
+    try:
+        return text.encode(encoding)
+    except UnicodeEncodeError:
+        return json.dumps({"error": "new content is not valid text for the requested encoding"})
+
+
+def _atomic_replace(target: Path, payload: bytes) -> str | None:
+    """Replace ``target``'s bytes atomically, returning a JSON error or ``None``.
+
+    The new bytes are staged in a temporary file in the *same* directory —
+    ``os.replace`` is atomic only within a filesystem — then swapped in. A
+    failure part-way through leaves the original file intact rather than
+    truncated, which is what makes an interrupted edit safe. The temp file
+    is removed on any failure path so the sandbox never accumulates
+    half-written copies.
+    """
+    temporary_path: Path | None = None
+    try:
+        handle_fd, temporary_name = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f".{target.name}.", suffix=".edit"
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(handle_fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates the file 0600; an edit must not narrow access to a
+        # document that was readable before it.
+        os.chmod(temporary_path, stat.S_IMODE(target.stat().st_mode))
+        os.replace(temporary_path, target)
+        temporary_path = None
+    except OSError as exc:
+        return json.dumps({"error": f"edit failed: {exc}"})
+    finally:
+        if temporary_path is not None:
+            with suppress(OSError):
+                temporary_path.unlink()
+    return None
 
 
 class PathRejected(Exception):
@@ -348,6 +499,137 @@ class StorageBackend:
         except OSError as exc:
             return json.dumps({"error": f"write failed: {exc}"})
 
+    def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+        expected_sha256: str = "",
+        encoding: str = "utf-8",
+    ) -> str:
+        """Replace one exact substring in an existing file.
+
+        This is the surgical counterpart to ``write_file``. Rewriting a
+        whole document to change one line requires the caller to
+        reconstruct every byte it did not intend to touch — and a
+        reconstruction from memory is exactly what an evidence document
+        must not be. ``edit_file`` changes only the matched region and
+        leaves every other byte as it was on disk.
+
+        The match is exact: line endings, indentation, and surrounding
+        text must be byte-identical to the file. Exactness is the safety
+        property, not a limitation — a fuzzy matcher would silently
+        rewrite a region the caller never saw.
+
+        Ambiguity is an error. With ``replace_all`` false, ``old_string``
+        must occur exactly once; when it occurs more than once the error
+        lists the line numbers so the caller can add context. With
+        ``replace_all`` true every occurrence is replaced.
+
+        ``expected_sha256`` is the staleness guard. Pass the ``sha256`` a
+        prior ``stat_file`` reported and the edit is refused if the file
+        changed in between, so an edit can never be applied against a
+        document the caller read in an earlier revision.
+
+        The write is atomic (temp file in the same directory, then
+        ``os.replace``): a failure part-way through leaves the original
+        file intact instead of truncated. The stored bytes are exactly
+        ``new_string`` in place of ``old_string`` — no newline
+        normalization, because a fragment's edges are part of what was
+        matched.
+
+        Returns a JSON object with ``ok``, ``path``, ``replacements``,
+        ``first_line``, ``bytes_before``, ``bytes_after``, and ``sha256``
+        (the new content hash, for a follow-up guarded edit).
+        """
+        precondition = _edit_precondition_error(
+            readonly=self._readonly, old_string=old_string, new_string=new_string
+        )
+        if precondition is not None:
+            return precondition
+        loaded = self._load_for_edit(path, expected_sha256=expected_sha256, encoding=encoding)
+        if isinstance(loaded, str):
+            return loaded
+        resolved, original_bytes, text = loaded
+
+        current_sha256 = hashlib.sha256(original_bytes).hexdigest()
+        match_error = _match_error(
+            text,
+            old_string,
+            replace_all=replace_all,
+            sha256=current_sha256,
+            size_bytes=len(original_bytes),
+        )
+        if match_error is not None:
+            return match_error
+
+        replacements = text.count(old_string) if replace_all else 1
+        first_line = text.count("\n", 0, text.find(old_string)) + 1
+        new_text = (
+            text.replace(old_string, new_string)
+            if replace_all
+            else text.replace(old_string, new_string, 1)
+        )
+        payload = _encode_edit(new_text, encoding)
+        if isinstance(payload, str):
+            return payload
+
+        write_error = _atomic_replace(resolved, payload)
+        if write_error is not None:
+            return write_error
+
+        return json.dumps(
+            {
+                "ok": True,
+                "path": path,
+                "replacements": replacements,
+                "first_line": first_line,
+                "bytes_before": len(original_bytes),
+                "bytes_after": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+
+    def _load_for_edit(
+        self, path: str, *, expected_sha256: str, encoding: str
+    ) -> tuple[Path, bytes, str] | str:
+        """Resolve, read, and staleness-check the target of an edit.
+
+        Returns ``(resolved, original_bytes, text)`` on success, or the
+        JSON error string the caller should return unchanged. Separating
+        it keeps the edit itself a sequence of decisions, not a pile of
+        guards.
+        """
+        resolved, err = self.resolve_or_error(path)
+        if err is not None:
+            return err
+        assert resolved is not None
+        target_error = _edit_target_error(resolved, path)
+        if target_error is not None:
+            return target_error
+        try:
+            original_bytes = resolved.read_bytes()
+            text = original_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            return json.dumps({"error": "file is not valid text for the requested encoding"})
+        except OSError as exc:
+            return json.dumps({"error": f"read failed: {exc}"})
+        if expected_sha256:
+            current = hashlib.sha256(original_bytes).hexdigest()
+            if expected_sha256.strip().lower() != current:
+                return json.dumps(
+                    {
+                        "error": (
+                            "file changed since it was read (sha256 mismatch); "
+                            "re-read and edit the current content"
+                        ),
+                        "sha256": current,
+                    }
+                )
+        return resolved, original_bytes, text
+
     def list_files(self, prefix: str = "") -> str:
         """List files under a prefix in the files sandbox.
 
@@ -405,7 +687,13 @@ class StorageBackend:
         return json.dumps({"ok": True, "path": path})
 
     def stat_file(self, path: str) -> str:
-        """Return file metadata (size, modified timestamp, is_dir) for a path."""
+        """Return file metadata (size, modified timestamp, is_dir, sha256).
+
+        ``sha256`` is the content hash of a regular file (empty for a
+        directory). It is what ``edit_file(expected_sha256=...)`` compares
+        against, so a caller can prove its edit applies to the revision it
+        actually read.
+        """
         resolved, err = self.resolve_or_error(path)
         if err is not None:
             return err
@@ -413,12 +701,19 @@ class StorageBackend:
         if not resolved.exists():
             return json.dumps({"error": f"not found: {path}"})
         stat = resolved.stat()
+        digest = ""
+        if resolved.is_file():
+            try:
+                digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+            except OSError as exc:
+                return json.dumps({"error": f"read failed: {exc}"})
         return json.dumps(
             {
                 "path": path,
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                 "is_dir": resolved.is_dir(),
+                "sha256": digest,
             }
         )
 

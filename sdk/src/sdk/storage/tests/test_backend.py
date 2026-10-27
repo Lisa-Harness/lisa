@@ -9,6 +9,7 @@ without spawning the MCP server.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -253,6 +254,208 @@ def test_append_file_traversal_rejected(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.append_file("../escape.txt", "x"))
     assert "error" in data
+
+
+# ── Exact-edit contract ──────────────────────────────────────────────────────
+#
+# The failure ``edit_file`` exists to remove: changing one line of a
+# document by rewriting the whole file means reproducing every other byte
+# from memory. For a document whose value IS its evidence, that
+# reconstruction is the risk. The edit is exact, ambiguous matches are
+# refused, and the rest of the file is untouched.
+
+
+def _seeded(tmp_path: Path) -> StorageBackend:
+    """A backend holding a small tracker whose state cell must change."""
+    b = _backend(tmp_path)
+    b.write_file(
+        "tracker.md",
+        "# Tracker\n\n| Item | State |\n| --- | --- |\n| A1 | Open |\n| A2 | Closed |\n",
+    )
+    return b
+
+
+def test_edit_file_replaces_one_region_and_preserves_the_rest(tmp_path: Path) -> None:
+    b = _seeded(tmp_path)
+    before = b.read_file("tracker.md")
+
+    receipt = json.loads(b.edit_file("tracker.md", "| A1 | Open |", "| A1 | Closed |"))
+
+    assert receipt["ok"] is True
+    assert receipt["replacements"] == 1
+    assert receipt["first_line"] == 5
+    # The one-line change is exactly that: no other byte moved.
+    after = before.replace("| A1 | Open |", "| A1 | Closed |")
+    assert b.read_file("tracker.md") == after
+    assert receipt["bytes_before"] == len(before.encode())
+    assert receipt["bytes_after"] == len(after.encode())
+    assert receipt["bytes_after"] == (b.files_root() / "tracker.md").stat().st_size
+
+
+def test_edit_file_is_byte_exact_about_fragment_edges(tmp_path: Path) -> None:
+    """The fragment's own newline is part of the match.
+
+    ``edit_file`` applies no newline normalization: an empty
+    ``new_string`` removes exactly the matched bytes and nothing more.
+    """
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "keep\nremove me\nkeep\n")
+
+    receipt = json.loads(b.edit_file("doc.md", "remove me\n", ""))
+
+    assert receipt["ok"] is True
+    assert b.read_file("doc.md") == "keep\nkeep\n"
+
+
+def test_edit_file_refuses_an_ambiguous_match(tmp_path: Path) -> None:
+    """A fragment matching twice has no unique position, so nothing is written.
+
+    The error names the candidate lines; the caller adds context instead
+    of forcing the tool to guess which one was meant.
+    """
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "same\nmiddle\nsame\n")
+    before = b.read_file("doc.md")
+
+    receipt = json.loads(b.edit_file("doc.md", "same", "other"))
+
+    assert "occurs 2 times" in receipt["error"]
+    assert receipt["lines"] == [1, 3]
+    assert b.read_file("doc.md") == before
+
+
+def test_edit_file_replace_all_writes_every_occurrence(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "same\nmiddle\nsame\n")
+
+    receipt = json.loads(b.edit_file("doc.md", "same", "other", replace_all=True))
+
+    assert receipt["replacements"] == 2
+    assert b.read_file("doc.md") == "other\nmiddle\nother\n"
+
+
+def test_edit_file_missing_fragment_names_the_line_ending_cause(tmp_path: Path) -> None:
+    """A CRLF/LF mismatch is reported as such, not as a bare "not found"."""
+    b = _backend(tmp_path)
+    # Written byte-faithfully, so the stored file really has CRLF.
+    b.write_file("crlf.md", "one\r\ntwo\r\n")
+
+    receipt = json.loads(b.edit_file("crlf.md", "one\ntwo\n", "changed\n"))
+
+    assert "not found" in receipt["error"]
+    assert "CRLF" in receipt["error"]
+
+
+def test_edit_file_refuses_when_the_file_changed_since_read(tmp_path: Path) -> None:
+    """``expected_sha256`` binds the edit to the revision the caller saw."""
+    b = _seeded(tmp_path)
+    stale = json.loads(b.stat_file("tracker.md"))["sha256"]
+    b.edit_file("tracker.md", "| A2 | Closed |", "| A2 | Open |")
+
+    receipt = json.loads(
+        b.edit_file("tracker.md", "| A1 | Open |", "| A1 | Closed |", expected_sha256=stale)
+    )
+
+    assert "sha256 mismatch" in receipt["error"]
+    assert receipt["sha256"] == json.loads(b.stat_file("tracker.md"))["sha256"]
+    assert "| A2 | Open |" in b.read_file("tracker.md")
+
+
+def test_edit_file_accepts_the_hash_stat_file_reported(tmp_path: Path) -> None:
+    b = _seeded(tmp_path)
+    digest = json.loads(b.stat_file("tracker.md"))["sha256"]
+
+    receipt = json.loads(
+        b.edit_file("tracker.md", "| A1 | Open |", "| A1 | Closed |", expected_sha256=digest)
+    )
+
+    assert receipt["ok"] is True
+    assert receipt["sha256"] == json.loads(b.stat_file("tracker.md"))["sha256"]
+    assert receipt["sha256"] != digest
+
+
+def test_edit_file_absent_returns_error(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.edit_file("missing.md", "a", "b"))
+    assert "file not found" in receipt["error"]
+
+
+def test_edit_file_readonly_rejected(tmp_path: Path) -> None:
+    b = _readonly_backend(tmp_path)
+    receipt = json.loads(b.edit_file("doc.md", "a", "b"))
+    assert receipt["error"] == "server is read-only"
+
+
+def test_edit_file_traversal_rejected(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.edit_file("../escape.md", "a", "b"))
+    assert "path rejected" in receipt["error"]
+
+
+def test_edit_file_denied_glob_rejected(tmp_path: Path) -> None:
+    b = _backend(tmp_path, deny_globs=("*.db",))
+    (b.files_root() / "secret.db").write_text("a", encoding="utf-8")
+    receipt = json.loads(b.edit_file("secret.db", "a", "b"))
+    assert receipt["error"] == "path denied by policy"
+
+
+def test_edit_file_rejects_empty_fragment(tmp_path: Path) -> None:
+    """An empty match has a position between every pair of characters."""
+    b = _seeded(tmp_path)
+    receipt = json.loads(b.edit_file("tracker.md", "", "x"))
+    assert "must not be empty" in receipt["error"]
+
+
+def test_edit_file_rejects_a_no_op_edit(tmp_path: Path) -> None:
+    b = _seeded(tmp_path)
+    receipt = json.loads(b.edit_file("tracker.md", "Open", "Open"))
+    assert "would change nothing" in receipt["error"]
+
+
+def test_edit_file_reads_and_writes_the_requested_encoding(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("latin.md", "café\n")
+
+    receipt = json.loads(b.edit_file("latin.md", "café", "cafe", encoding="utf-8"))
+
+    assert receipt["ok"] is True
+    assert b.read_file("latin.md") == "cafe\n"
+
+
+def test_edit_file_leaves_mode_readable(tmp_path: Path) -> None:
+    """The atomic swap must not narrow access to a previously readable file."""
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "one\n")
+    target = b.files_root() / "doc.md"
+    target.chmod(0o644)
+
+    receipt = json.loads(b.edit_file("doc.md", "one", "two"))
+
+    assert receipt["ok"] is True
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert b.read_file("doc.md") == "two\n"
+
+
+def test_edit_file_leaves_no_temporary_file(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "one\n")
+
+    b.edit_file("doc.md", "one", "two")
+    b.edit_file("doc.md", "absent", "three")
+
+    assert sorted(p.name for p in b.files_root().iterdir()) == ["doc.md"]
+
+
+def test_stat_file_reports_sha256_for_files_only(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("hashed.txt", "abc")
+    (b.files_root() / "adir").mkdir()
+
+    file_stat = json.loads(b.stat_file("hashed.txt"))
+    dir_stat = json.loads(b.stat_file("adir"))
+
+    assert file_stat["sha256"] == hashlib.sha256(b"abc\n").hexdigest()
+    assert dir_stat["sha256"] == ""
 
 
 # ── Trailing-newline write contract ──────────────────────────────────────────
