@@ -71,6 +71,7 @@ PACKAGE_TESTPATHS: dict[str, tuple[str, ...]] = {
         "sdk/src/sdk/guard/tests",
         "sdk/src/sdk/memory/tests",
         "sdk/src/sdk/storage/tests",
+        "sdk/src/sdk/forensics/tests",
     ),
     "packs": (
         "sdk/packs/core/tests",

@@ -36,6 +36,7 @@ for cross-package contracts.
 | `memory/` | SQLite-backed memory store library (vec0 embeddings, backups). The `lisa-memory` MCP server wraps it. |
 | `thread/` | Lossless, segmented conversation-thread store (`ThreadStore`): three-tier layout (active/sealed segments + sparse index) with zstd sidecars and redaction policy. Owns the read path; the write path stays in `runtime.thread`. |
 | `storage/` | Sandboxed file I/O: `StorageBackend` owns the files sandbox, deny-glob policy, and model-manifest read/write. The `lisa-storage` MCP server wraps it. |
+| `forensics/` | Read-only forensic evidence assembly. `ForensicReader` joins the thread store with the decision, dispatch, and token-usage logs on `turn_index`; `render_bundle` is the single formatter both the introspect pack and the host's `/forensics` command use. Rotation-aware and byte-bounded, and it reports missing sources explicitly instead of presenting them as empty evidence. |
 | `workproducts.py` | Typed, pack-neutral `WorkProduct` contract plus `WorkProductStore` protocol — durable, approvable units of work shared across packs (cross-pack imports are forbidden, so the contract sits on neutral SDK ground). The host injects the file-based implementation. |
 
 ### Safety & Fetch

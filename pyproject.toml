@@ -90,6 +90,7 @@ testpaths = [
     "sdk/src/sdk/guard/tests",
     "sdk/src/sdk/memory/tests",
     "sdk/src/sdk/storage/tests",
+    "sdk/src/sdk/forensics/tests",
 ]
 addopts = "--import-mode=importlib"
 consider_namespace_packages = true

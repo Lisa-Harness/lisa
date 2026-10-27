@@ -6,6 +6,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **`sdk.forensics` — one forensic reader for the host and the pack layer.**
+  The rotation-aware JSONL reader, timestamp parsing, and window filtering added
+  with the introspection fix lived in `runtime.introspect`, but the introspect
+  pack may not import `runtime`. They now live in
+  [`sdk/forensics`](../sdk/src/sdk/forensics/), and `runtime.introspect` is a
+  thin caller — one parser, two consumers, instead of the two independent log
+  parsers that previously drifted far enough apart for one to read a field the
+  other never wrote. `ForensicReader` joins the thread store with the decision,
+  dispatch, and token-usage logs on `turn_index`; unmatched records are surfaced
+  as `unattributed` rather than dropped, and a missing source appears in
+  `sources.missing` rather than as a clean empty section. Reads are bounded by
+  turns, records, and bytes, and every bound that fires appends a note.
+  `render_bundle` is the single formatter, collapsing repeated receipts and
+  repeated log messages into counted entries so a busy turn stays a summary.
+  Thread text is redacted at read time, matching the `lisa-thread` server's
+  own projection contract.
+- **Tests:** `sdk/src/sdk/forensics/tests/`
+
 - **Introspection reads the real 24h window, and the real `msg` field.** The
   self-model's token summary claimed a 24h window while summing a fixed tail of
   200 lines, and its log-error list read `message` — the key the *retired*

@@ -9,7 +9,7 @@ shows the dependency diagram.
 | Layer | Owns | Must not own |
 | --- | --- | --- |
 | [Kernel](../kernel/README.md) | Typed contracts, model/tool loop, mode/workflow FSMs, authorization and completion mechanisms, session compilation | Runtime/SDK imports, UI, application workflows, deployment |
-| [SDK](../sdk/README.md) | Catalog/content scanners, reusable backends, provider gateways, CEL model router, memory/storage/thread-read primitives | Host transport and lifecycle, runtime imports, private application policy |
+| [SDK](../sdk/README.md) | Catalog/content scanners, reusable backends, provider gateways, CEL model router, memory/storage/thread-read primitives, forensic evidence reading | Host transport and lifecycle, runtime imports, private application policy |
 | [Packs](../sdk/packs/README.md) | Modes, operations, tools, prompts, sessions, extension contributions | Kernel state ownership, transport, cross-pack coupling |
 | [Runtime](../runtime/README.md) | Composition, resolved config, commands, MCP/proxy lifecycle, context assembly, thread writes, durable services | Rich/Typer/chat SDKs, product-specific workflow logic |
 | [MCP servers](../mcp_server/README.md) | Protocol adapters, tool decorators, CLI entry points, server-local state | Domain logic duplicated from SDK, host imports, cross-server imports |
