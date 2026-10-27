@@ -21,7 +21,7 @@ table is either shipped behavior or a proposal, labelled as such.
 | Receipts scoped by dispatching mode | Shipped (`08507538`) |
 | Diagnostic marker matches what the documentation promises | Shipped (Phase A) |
 | ~~Task-gate contract resolution by active mode~~ | **Withdrawn — premise was wrong; see Phase B** |
-| Planner retired as a mode | Proposed — Phase C |
+| ~~Planner retired as a mode~~ | **Withdrawn — the planner works; its output is discarded. See Phase C** |
 | Yields revisited | Proposed — Phase D |
 
 ## What the measurements say
@@ -31,7 +31,7 @@ against real use, most of them never carried work:
 
 | Mechanism | Usage in 1,047 turns |
 | --- | --- |
-| `## Plan` workflow (planner) | 2 plans. One was a single step; one left a footer stuck for 22 turns |
+| `## Plan` workflow (planner) | 56 plans produced; **2 visible**. See Phase C — the output is discarded |
 | `## Workflow progress` footer | 20 turns — 19 of them the stuck plan |
 | Staged FSM (`transitioned_to`) | 13 events, all mode-level re-entry; **no installed pack ever shipped stage files** |
 | Ad-hoc step compilation | 0 — it was double-gated unreachable; deleted |
@@ -39,8 +39,10 @@ against real use, most of them never carried work:
 | Mode handoffs (`handoff_to`) | 203 turns — the one routing mechanism that carries real work |
 | Effect receipts | Every dispatched capability — the load-bearing evidence |
 
-The conclusion: **handoffs and receipts are the working system.** Plans are a
-rare, deliberate layer on top. Everything else measured to zero.
+The conclusion: **handoffs and receipts are the working system.** Plans are
+produced often (56) but shown twice, because the mid-turn path that stages them
+for display is not wired — see Phase C. The staged FSM, ad-hoc compilation, and
+the route coordinator measured to zero and are gone or proposed for removal.
 
 ## Phase A — the diagnostic marker (shipped)
 
@@ -110,24 +112,81 @@ evidence about which mode did the work. `EffectReceipt.mode_id` (shipped in
 `08507538`) is the field that answers that question, and any further analysis
 should read it rather than the entry label.
 
-## Phase C — retire the planner as a mode
+## Phase C — the planner works and its plans are thrown away
 
-Lower value than A and B, and the reason to sequence it last.
+This phase was proposed as "retire the planner as a mode — tidying, 2 plans in
+2 months". That was wrong. The correct finding is worse and far more useful.
 
-`planner` is an action mode whose entire body is "call `plan_workflow`, do not
-call `transition_stage`". It exists to give a *model call* a place to happen
-before a handoff. Two plans in 1,047 turns means the indirection is paid on
-every turn's catalog, routing-hint, and schema construction for a path used
-twice.
+### What the number actually was
 
-Proposal: `plan_workflow` stays an operation; the mode goes. `/plan` becomes a
-host command that calls the operation directly and injects the resulting plan
-as the turn's query, exactly as `entry_op_kind: routing` does today. The
-routing-hint escalation branch that targets `planner` becomes a branch that
-invokes the operation.
+Counting plans by the presence of a `## Plan` block at the start of a turn's
+response gives 2. That measured **visibility**, not execution. Counting plans
+by the kernel's own signal — a `transition_stage` whose rationale is
+`"Kernel-driven handoff from the plan result"`, which only the kernel writes
+after `plan_workflow` returns steps — gives:
 
-Deliberately last: it touches the entry-op path that Phase A and B depend on
-being stable, and it is the only item here that is tidying rather than a fix.
+| Measurement | Count |
+| --- | --- |
+| Plans visible to the operator (`## Plan` at response start) | **2** |
+| Plans that were actually produced | **56** |
+| Plans produced and never shown | **54** |
+
+The planner is not underused. It runs constantly and its output is discarded.
+
+### Why it is discarded
+
+Two paths stage a rendered plan for the user, and only one of them is wired:
+
+- **Turn start.** `execute_entry_phase` returns `plan_prefix`, which the
+  turn-start helper stores on `state.plan_prefix`; `_append_post_turn_content`
+  then prepends it to the response. This path works — it produced the 2 visible
+  plans.
+- **Mid-turn handoff.** `_run_handoff_entry_operations` calls
+  `_record_turn_plan_position`, which sets `state.turn_plan_position` and
+  nothing else. It never assigns `state.plan_prefix`, so the prepend never
+  runs.
+
+Every escalation into the planner happens mid-turn, so every plan it produces
+takes the unwired path. `_record_turn_plan_position` even stores the plan text
+on the position (`plan_text=entry_result.output_text`), so the content exists —
+it is simply never read for display.
+
+### This is the same defect as the original stuck footer
+
+The footer in the original report persisted because completion could not credit
+a mid-turn mode. This is its sibling: presentation cannot see a mid-turn plan.
+Both come from a turn-start assumption baked into mid-turn handling, and both
+were invisible for the same reason — the plan was real, the bookkeeping was not.
+
+### What the forcing statistics actually show
+
+34 of the 48 transitions into the planner are kernel-forced, which reads like
+the enforcer fighting an unwilling model. It is not: 40 of 40 forced turns then
+produced a kernel-driven handoff, i.e. the planner ran and returned steps. The
+forcing is doing its job. The earlier conclusion that "escalation is forced
+against a model that does not want it" was drawn from turn-level response text,
+which as established above cannot show a mid-turn plan at all.
+
+### Proposed work
+
+1. **Wire the mid-turn path.** Have `_record_turn_plan_position` also stage
+   `state.plan_prefix` (guarded on non-empty output and real steps), so a plan
+   produced by a handoff reaches the response prefix exactly as the turn-start
+   path does. This is the whole fix for 54 discarded plans and is small.
+2. **Regression test.** A turn that enters in one mode, is forced into
+   `planner`, and receives a plan must render `## Plan` at the start of its
+   response. The test must be verified to fail without the change — the Phase B
+   lesson.
+3. **Do not retire the mode.** The mode works. Retiring it would delete the
+   mechanism that produces 56 plans and fix nothing.
+
+### Open question
+
+Whether an operator *wants* every escalated plan rendered inline. 54 plans
+appearing at the top of responses is a behavioral change, not just a bug fix.
+The alternative is to render them only when the plan has more than one step, or
+to keep them available via `/workflow status` without occupying the response.
+This needs a decision before implementation rather than after.
 
 ## Phase D — decide what yields are for
 
