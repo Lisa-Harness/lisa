@@ -914,8 +914,8 @@ def _with_pack_binary_versions(specs: list[Any], root: Path, package_name: str) 
 
     A pack that omits ``binary_download.version`` downloads the release tagged
     with its own installed version, so the tag the pack was installed from is
-    the single version selector. Untagged installs are left unresolved and
-    fail loudly when the binary is fetched.
+    the single version selector. Untagged installs cannot resolve that
+    selector, so those binary servers are omitted.
     """
     if not any(
         spec.binary_download is not None and spec.binary_download.version is None for spec in specs
@@ -923,13 +923,23 @@ def _with_pack_binary_versions(specs: list[Any], root: Path, package_name: str) 
         return specs
     pack_version = installed_pack_version(root, package_name)
     if pack_version is None or not _PACK_RELEASE_VERSION_RE.fullmatch(pack_version):
+        unresolved_servers = [
+            spec.server_id
+            for spec in specs
+            if spec.binary_download is not None and spec.binary_download.version is None
+        ]
         logger.warning(
-            "Pack %s has version %r, which is not a release; its binary MCP servers "
-            "need it installed from a vX.Y.Z tag",
+            "Pack %s has version %r, which is not a release; skipping binary MCP servers "
+            "without an explicit version: %s",
             package_name,
             pack_version,
+            ", ".join(unresolved_servers),
         )
-        return specs
+        return [
+            spec
+            for spec in specs
+            if spec.binary_download is None or spec.binary_download.version is not None
+        ]
     release = f"v{pack_version}"
     return [
         dataclasses.replace(

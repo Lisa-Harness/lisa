@@ -181,8 +181,10 @@ Binary server manifests may fetch a GitHub release with `binary_download`
 (`repository`, `binary_name`, and optional `version`). Pack manifests should
 omit `version`: the runtime then downloads the release tagged `v<pack
 version>`, so the tag the pack was installed from is the only version
-selector. The runtime downloads only selected implementations, verifies the
-asset against the release's `checksums.txt`, and caches it under
+selector. Pack binary servers without an explicit version are skipped when the
+installed pack version is not a release version. The runtime downloads only
+selected implementations, verifies the asset against the release's
+`checksums.txt`, and caches it under
 `<data_dir>/cache/mcp-binaries/`.
 
 A cached binary is trusted without re-hashing when its recorded size and

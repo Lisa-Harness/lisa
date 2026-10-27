@@ -48,6 +48,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -423,6 +424,7 @@ def install_log_excepthook() -> None:
             # Let the default hook handle Ctrl+C so the REPL stays responsive.
             previous(exc_type, exc, tb)
             return
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
         logging.getLogger("lisa.excepthook").critical(
             "excepthook: uncaught %s: %s",
             exc_type.__name__,
