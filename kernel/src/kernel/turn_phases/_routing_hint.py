@@ -147,8 +147,11 @@ def emit_transition_hint(
     cap — the 2026-08-11 executor→executor and researcher→researcher stuck
     loops). Otherwise returns ``prose_template.format(target=target_mode_id)``.
 
-    This is the single contract every hint site should use so the self-handoff
-    guard cannot be forgotten when new hint emission points are added. The
+    This wrapper is a convenience for prose-formatting hint sites, not the
+    self-handoff contract: the guarantee lives in the hint *producers*.
+    ``_compute_capability_routing_hint`` drops ``mode_id`` from its
+    ``routing_targets`` on entry precisely because the primary caller invokes
+    it directly (``kernel.turn_runner``), never through this wrapper. The
     do-the-work backstop at the post-handoff site is orthogonal to hint
     emission and stays at its call site.
 
@@ -1341,6 +1344,26 @@ def _compute_capability_routing_hint(
     intent-gap detection now relies on the declarative ``satisfies_intents``
     declared by each mode's front-matter, not the live manifest.
     """
+    # ── 0. Producer-side self-handoff guard ─────────────────────
+    # Drop the current mode from the candidate targets before any branch
+    # below can name it. This lives at the producer, not in a consumer
+    # wrapper: the primary caller invokes this function directly and
+    # unguarded (``kernel.turn_runner``), so a guard only in
+    # ``emit_transition_hint`` had exactly one reach (the plan-driven next
+    # step) and every other branch — the single-handoff choice, the
+    # partial-coverage fallback, the fork target list — could name the
+    # current mode. Today ``synthesize_routing_transitions`` already
+    # excludes self, so this is a no-op for the ambient path; it makes the
+    # invariant local so a caller that passes a self-target (a delegate
+    # approval resumption naming the parent mode) cannot produce a
+    # self-handoff hint. No other consumer has to remember the guard.
+    self_target_dropped = mode_id in routing_targets
+    if self_target_dropped:
+        _log.info(
+            "routing hint: dropping self-target %s from routing_targets",
+            mode_id,
+        )
+        routing_targets = [target for target in routing_targets if target != mode_id]
     if not routing_targets:
         _log.info("routing hint: no routing targets available (mode=%s)", mode_id)
         return ""
