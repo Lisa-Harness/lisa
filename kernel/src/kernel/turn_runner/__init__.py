@@ -5200,6 +5200,15 @@ def _record_turn_plan_position(
     The turn state copy makes the plan authoritative for the rest of this
     turn's handoffs; the host updater (when wired and no position exists)
     persists it across turns.
+
+    A plan with more than one step is also staged on ``state.plan_prefix`` so
+    ``_append_post_turn_content`` prepends it to the response. Escalation into
+    ``planner`` only ever happens mid-turn, and this was the one path that did
+    not stage the prefix: 56 plans were produced across the recorded session
+    and 2 reached the operator, because the turn-start path sets the prefix and
+    this one did not. Single-step plans are deliberately not rendered — a
+    one-line chain is just the handoff the model was already making, and
+    prefixing it would add ceremony without information.
     """
     try:
         from kernel.workflow_position import WorkflowPosition
@@ -5209,14 +5218,17 @@ def _record_turn_plan_position(
         )
         if not plan_steps:
             return
+        plan_text = (entry_result.output_text or "").strip()
         position = WorkflowPosition(
             declared_steps=tuple(plan_steps),
             current_step_id=plan_steps[0].step_id,
             mode_id=target_stage,
-            plan_text=entry_result.output_text or "",
+            plan_text=plan_text,
             spawned_from="plan_workflow_op",
         )
         state.turn_plan_position = position
+        if plan_text and len(plan_steps) > 1:
+            state.plan_prefix = plan_text
         updater = hooks.workflow.workflow_position_updater
         if updater is None:
             return

@@ -21,7 +21,8 @@ table is either shipped behavior or a proposal, labelled as such.
 | Receipts scoped by dispatching mode | Shipped (`08507538`) |
 | Diagnostic marker matches what the documentation promises | Shipped (Phase A) |
 | ~~Task-gate contract resolution by active mode~~ | **Withdrawn — premise was wrong; see Phase B** |
-| ~~Planner retired as a mode~~ | **Withdrawn — the planner works; its output is discarded. See Phase C** |
+| Mid-turn multi-step plans reach the operator | Shipped (Phase C) |
+| Planner retired as a mode | Withdrawn — the planner works; retiring it would delete the mechanism |
 | Yields revisited | Proposed — Phase D |
 
 ## What the measurements say
@@ -167,26 +168,25 @@ forcing is doing its job. The earlier conclusion that "escalation is forced
 against a model that does not want it" was drawn from turn-level response text,
 which as established above cannot show a mid-turn plan at all.
 
-### Proposed work
+### Shipped
 
-1. **Wire the mid-turn path.** Have `_record_turn_plan_position` also stage
-   `state.plan_prefix` (guarded on non-empty output and real steps), so a plan
-   produced by a handoff reaches the response prefix exactly as the turn-start
-   path does. This is the whole fix for 54 discarded plans and is small.
-2. **Regression test.** A turn that enters in one mode, is forced into
-   `planner`, and receives a plan must render `## Plan` at the start of its
-   response. The test must be verified to fail without the change — the Phase B
-   lesson.
-3. **Do not retire the mode.** The mode works. Retiring it would delete the
-   mechanism that produces 56 plans and fix nothing.
+`_record_turn_plan_position` now stages `state.plan_prefix` for plans with more
+than one step, so `_append_post_turn_content` prepends them exactly as the
+turn-start path does. Single-step plans are deliberately not prefixed: a
+one-line chain describes the handoff the model is already making, so rendering
+it adds ceremony without information — the plan still lands on
+`turn_plan_position` and still drives the handoff.
 
-### Open question
+Covered by two tests: a multi-step mid-turn plan must begin the response, and a
+single-step one must not. The first was verified to fail against the previous
+implementation, per the Phase B lesson.
 
-Whether an operator *wants* every escalated plan rendered inline. 54 plans
-appearing at the top of responses is a behavioral change, not just a bug fix.
-The alternative is to render them only when the plan has more than one step, or
-to keep them available via `/workflow status` without occupying the response.
-This needs a decision before implementation rather than after.
+### Decision taken
+
+Render only multi-step plans. Rendering all 54 would have changed every
+escalated response; rendering none would have kept the blindness. Multi-step is
+the boundary where a plan carries information the operator did not already
+have.
 
 ## Phase D — decide what yields are for
 

@@ -117,6 +117,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Multi-step plans produced mid-turn now reach the operator.** Two code paths
+  stage a rendered plan for the response, and only one was wired: turn start set
+  `state.plan_prefix`, which `_append_post_turn_content` prepends, while the
+  mid-turn handoff path (`_record_turn_plan_position`) set only
+  `state.turn_plan_position`. Every planner escalation happens mid-turn, so
+  plans were produced and discarded — 56 produced across the recorded session
+  and 2 visible, measured by the kernel's own "Kernel-driven handoff from the
+  plan result" signal rather than by response text (which cannot show a
+  mid-turn plan at all). `_record_turn_plan_position` now also stages the
+  prefix. Single-step plans are deliberately not prefixed: a one-line chain
+  describes the handoff the model is already making, so rendering it adds
+  ceremony without information. The plan still lands on `turn_plan_position`
+  and still drives the handoff for that case.
 - **The `task_goal: diagnostic` marker now matches its documentation.** The
   guide promised "case-insensitive, tolerates interior whitespace and a missing
   space after the colon", but detection compared against the literal

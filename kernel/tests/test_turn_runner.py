@@ -7736,3 +7736,195 @@ async def test_model_call_complete_proxy_telemetry_empty_without_proxy() -> None
 
     _label, data = next(e for e in events if e[0] == "model_call_complete")
     assert data["proxy_telemetry"] == {}
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_multi_step_plan_is_rendered_in_the_response() -> None:
+    """A plan produced by a mid-turn escalation reaches the operator.
+
+    Regression: turn-start staging put the rendered plan on
+    ``state.plan_prefix``, which ``_append_post_turn_content`` prepends to the
+    response. The mid-turn handoff path called ``_record_turn_plan_position``,
+    which set ``state.turn_plan_position`` only. Every planner escalation
+    happens mid-turn, so plans were produced and discarded: 56 produced across
+    the recorded session, 2 visible.
+
+    Single-step plans are intentionally not rendered — this test covers the
+    multi-step case, which is the one that carries information.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    plan_text = (
+        "## Plan\n\n"
+        "1. **search** — Find sources\n   _reads_\n"
+        "2. **markdown** — Write the summary\n   _writes: markdown_generate_\n"
+    )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "`markdown`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Summary written.")
+        if "`search`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Found sources.")
+        if "`plan`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Planning...")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text=plan_text,
+            output_json={
+                "target_stage_id": "search",
+                "steps": [
+                    {
+                        "mode_id": "search",
+                        "description": "Find sources",
+                        "rationale": "research",
+                        "write_capability": None,
+                    },
+                    {
+                        "mode_id": "markdown",
+                        "description": "Write the summary",
+                        "rationale": "write",
+                        "write_capability": "markdown_generate",
+                    },
+                ],
+            },
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_plan_steps_to_workflow_steps", create=True),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+        patch(
+            "kernel.turn_runner.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: mid,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_mode_system_intro",
+            lambda mid, _c=patched_catalog: mid,
+        ),
+    ):
+        result = await run_turn(
+            mode_id="default", query="search for rust news then write a summary", hooks=hooks
+        )
+
+    assert result.response_text.startswith("## Plan"), (
+        "a multi-step plan produced mid-turn must be prepended to the response; "
+        f"got: {result.response_text[:120]!r}"
+    )
+    assert "Find sources" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_single_step_plan_is_not_rendered() -> None:
+    """A one-step plan is not prefixed to the response.
+
+    A single-step plan describes the handoff the model is already making, so
+    rendering it would add ceremony without information. The plan still lands
+    on ``turn_plan_position`` (the kernel drives the handoff from it); only the
+    user-visible prefix is skipped.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {"default": default_cfg, "plan": plan_cfg, "search": search_cfg}
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "`plan`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Planning...")
+        if "`search`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Found sources.")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text="## Plan\n\n1. **search** — Find sources\n   _reads_\n",
+            output_json={
+                "target_stage_id": "search",
+                "steps": [
+                    {
+                        "mode_id": "search",
+                        "description": "Find sources",
+                        "rationale": "research",
+                        "write_capability": None,
+                    }
+                ],
+            },
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="default", query="search for rust news", hooks=hooks)
+
+    assert not result.response_text.startswith("## Plan"), (
+        f"a single-step plan must not be prefixed; got: {result.response_text[:120]!r}"
+    )
