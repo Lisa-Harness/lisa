@@ -5604,7 +5604,18 @@ async def _execute_mid_turn_handoff(
     tool_schemas: list[dict[str, Any]] = []
     mode_config: Any = None
     routing_targets = get_routing_targets(mode_id)
-    if target_stage not in routing_targets and target_stage != "default":
+    # Reject any target outside the current mode's routing targets. This
+    # subsumes the self-transition case: ``synthesize_routing_transitions``
+    # builds every routable mode's target list as ``[m for m in routable_ids
+    # if m != mode_id]``, so a mode is never in its own targets. A former
+    # ``and target_stage != "default"`` carve-out exempted ``default`` here,
+    # which made ``default`` -> ``default`` the one self-transition the gate
+    # let through; it is redundant for every other target, since ``default``
+    # is routable and therefore already listed in every other mode's targets.
+    # Approval resumption does not need the exemption: it re-enters the mode
+    # that owns the pending approval directly (carrying that mode as
+    # ``handoff_to``) and never traverses this function.
+    if target_stage not in routing_targets:
         tool_output = (
             f"Mode handoff not allowed: '{mode_id}' cannot transition to '{target_stage}'."
         )

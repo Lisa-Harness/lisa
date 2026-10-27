@@ -117,6 +117,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **A mode can no longer hand off to itself via the `default` carve-out.** The
+  mode-handoff gate in `_execute_mode_handoff` read
+  `if target_stage not in routing_targets and target_stage != "default":`. The
+  exemption was redundant for every ordinary target: `default` is routable, so
+  it is already listed in every other mode's routing targets, and a mode never
+  lists itself. Its only real effect was to accept `default` -> `default`, a
+  self-transition the general rule rejects, silently re-entering the mode that
+  issued the call (observed directly: a `default` -> `default` transition
+  returned `handoff_to == "default"`). The clause is gone; the
+  `routing_targets` check alone covers the self case. Approval resumption never
+  needed the exemption — it re-enters the mode that owns the pending approval
+  directly and does not traverse this function.
+
 - **A stall yield now shows the operator how to escape it.** A recovery stall
   blocks the turn and yields; only a slash command clears it. Those commands
   were built and placed in `data["remediation"]` but never in

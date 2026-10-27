@@ -280,8 +280,14 @@ async def test_fork_transition_empty_target_string_returns_error() -> None:
 
 @pytest.mark.asyncio
 async def test_handoff_to_non_routable_target_rejected() -> None:
-    """Handoff to a mode that is not in routing_targets (and not 'default')
-    is rejected with an error message in the tool output."""
+    """A nonexistent mode id is rejected before the routing gate runs.
+
+    ``is_routable_mode`` guards the interception path, so an unknown id never
+    reaches ``_execute_mode_handoff``'s ``routing_targets`` check at all. Assert
+    that exact upstream message rather than a disjunction over "handoff" or
+    "not": the loose form also matches "Target mode ... not found" and stays
+    green even if the routing gate is deleted outright.
+    """
 
     call_count = 0
     captured_tool_outputs: list[str] = []
@@ -305,8 +311,114 @@ async def test_handoff_to_non_routable_target_rejected() -> None:
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
     assert result.response_text == "Recovered."
-    # The tool output should mention handoff not allowed.
-    assert any("handoff" in out.lower() or "not" in out.lower() for out in captured_tool_outputs)
+    assert any(
+        "Unknown transition target: 'nonexistent_mode_xyz'" in out for out in captured_tool_outputs
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_transition_to_default_rejected() -> None:
+    """A handoff from ``default`` to ``default`` is rejected by the routing gate.
+
+    This is the only reachable path to ``_execute_mode_handoff``'s
+    ``routing_targets`` check: every other routable mode already lists
+    ``default`` as a target (``synthesize_routing_transitions`` builds the full
+    routable mesh), and a mode never lists itself. While the redundant
+    ``and target_stage != "default"`` carve-out existed, this call was accepted
+    and silently re-entered the same mode.
+    """
+
+    call_count = 0
+    captured_tool_outputs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "default")],
+            )
+        for msg in kwargs.get("messages", []):
+            if msg.get("role") == "tool":
+                captured_tool_outputs.append(str(msg.get("content", "")))
+        return _StubCompletion(content="Recovered.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.handoff_to is None
+    assert any(
+        "Mode handoff not allowed: 'default' cannot transition to 'default'." in out
+        for out in captured_tool_outputs
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_transition_to_non_default_mode_rejected() -> None:
+    """A routable mode cannot hand off to itself.
+
+    ``synthesize_routing_transitions`` excludes a mode from its own target
+    list, so the gate rejects this on the ``routing_targets`` clause alone and
+    never needed the removed carve-out.
+    """
+
+    call_count = 0
+    captured_tool_outputs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "markdown")],
+            )
+        for msg in kwargs.get("messages", []):
+            if msg.get("role") == "tool":
+                captured_tool_outputs.append(str(msg.get("content", "")))
+        return _StubCompletion(content="Recovered.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(mode_id="markdown", query="test", hooks=hooks)
+
+    assert result.handoff_to is None
+    assert any(
+        "Mode handoff not allowed: 'markdown' cannot transition to 'markdown'." in out
+        for out in captured_tool_outputs
+    )
+
+
+@pytest.mark.asyncio
+async def test_handoff_to_default_from_another_mode_allowed() -> None:
+    """``default`` stays a legal handoff target for every other routable mode.
+
+    Guards the carve-out removal against over-restriction: ``default`` is
+    routable, so it is already in every other mode's routing targets and the
+    deletion must not block ``X -> default``.
+    """
+
+    call_count = 0
+    captured_tool_outputs: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "default")],
+            )
+        for msg in kwargs.get("messages", []):
+            if msg.get("role") == "tool":
+                captured_tool_outputs.append(str(msg.get("content", "")))
+        return _StubCompletion(content="Recovered.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(mode_id="markdown", query="test", hooks=hooks)
+
+    assert result.handoff_to == "default"
+    assert any("Handed off to mode: default." in out for out in captured_tool_outputs)
 
 
 @pytest.mark.asyncio
