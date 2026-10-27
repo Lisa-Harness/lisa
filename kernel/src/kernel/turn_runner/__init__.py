@@ -9390,9 +9390,9 @@ def _resolve_soft_accept(
                 reason=(
                     "This task declares `task_goal: implementation` (the default), "
                     f"so it must commit through `{producer}` but the turn never "
-                    "invoked it. If this task is investigation only, declare "
-                    "`task_goal: diagnostic` on the task, or pass the operator "
-                    "diagnostic override at task creation, and re-run."
+                    "invoked it. If this task is investigation only, append "
+                    "`[task_goal: diagnostic]` to your message and re-run "
+                    "(spacing and case are flexible)."
                 ),
             ),
             False,

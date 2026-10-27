@@ -117,6 +117,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **The `task_goal: diagnostic` marker now matches its documentation.** The
+  guide promised "case-insensitive, tolerates interior whitespace and a missing
+  space after the colon", but detection compared against the literal
+  `"[task_goal: diagnostic]"` while *stripping* used a whitespace-tolerant
+  regex. A variant was therefore removed from the message — looking accepted —
+  while the turn still resolved `implementation` and blocked, then told the
+  operator to declare a diagnostic they had just declared. Detection and
+  stripping now share one pattern, so a declaration cannot be removed without
+  being read; a regression test asserts that invariant directly rather than
+  enumerating spellings. An unrecognized value (`[task_goal: investigation]`)
+  fails closed to `implementation` with a log line instead of silently
+  accepting a declaration it does not understand. The block message now names
+  the syntax to type rather than mentioning an operator override that has no
+  CLI flag behind it.
 - **Effect receipts record the mode that dispatched them.** A turn can span
   several modes — it enters in one, hands off mid-turn, and may hand off
   again — but the thread entry records only the *entry* mode. Completion was

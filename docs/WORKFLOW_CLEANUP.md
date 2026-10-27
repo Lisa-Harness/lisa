@@ -1,9 +1,8 @@
 # Workflow system cleanup
 
-This document is a reviewable plan, not a description of shipped behavior. It
-records what the workflow machinery actually does, measured against 1,047 real
-turns (2026-08-23 → 2026-10-27, 915 model turns), and proposes an ordering for
-finishing the cleanup.
+This document records what the workflow machinery actually does, measured
+against 1,047 real turns (2026-08-23 → 2026-10-27, 915 model turns): what is
+already shipped, and the ordering proposed for the remainder.
 
 Read [mode and workflow routing](ROUTER_DESIGN.md) for the current contract and
 [model taxonomy](MODE_TAXONOMY.md) for mode design. This guide covers only the
@@ -11,7 +10,8 @@ workflow-management surface and what remains to be done on it.
 
 ## Status
 
-Two changes are shipped; the rest is proposed.
+The status table below is the authority on what is done; everything below the
+table is either shipped behavior or a proposal, labelled as such.
 
 | Change | State |
 | --- | --- |
@@ -19,7 +19,7 @@ Two changes are shipped; the rest is proposed.
 | `/workflow status\|conclude` — a plan can be ended deliberately | Shipped (`89c4655a`) |
 | Staged-workflow FSM removed end to end | Shipped (`89c4655a`) |
 | Receipts scoped by dispatching mode | Shipped (`08507538`) |
-| **Diagnostic marker matches what the documentation promises** | **Proposed — Phase A** |
+| Diagnostic marker matches what the documentation promises | Shipped (Phase A) |
 | **Task-gate contract resolution by active mode** | **Proposed — Phase B** |
 | Planner retired as a mode | Proposed — Phase C |
 | Yields revisited | Proposed — Phase D |
@@ -42,51 +42,38 @@ against real use, most of them never carried work:
 The conclusion: **handoffs and receipts are the working system.** Plans are a
 rare, deliberate layer on top. Everything else measured to zero.
 
-## Phase A — the diagnostic marker silently disagrees with its documentation
+## Phase A — the diagnostic marker (shipped)
 
-This is the highest-value item found while verifying, and it is a correctness
-bug rather than a cleanup.
+The highest-value item found while verifying phases A–D, and a correctness bug
+rather than a cleanup.
 
-`docs/CODING_WORKFLOW.md` tells the operator:
+`docs/CODING_WORKFLOW.md` told the operator:
 
 > The match is case-insensitive and tolerates interior whitespace and a missing
 > space after the colon.
 
-The implementation does neither:
+The implementation did neither — detection compared against the literal
+`"[task_goal: diagnostic]"` while *stripping* used a whitespace-tolerant regex:
 
-```python
-_DIAGNOSTIC_TASK_MARKER = "[task_goal: diagnostic]"
-
-
-def _operator_declared_diagnostic(message: str) -> bool:
-    return _DIAGNOSTIC_TASK_MARKER in message.lower()
-```
-
-Measured behavior:
-
-| Operator types | Recognized | Stripped before the model sees it |
+| Operator typed | Recognized | Stripped before the model saw it |
 | --- | --- | --- |
 | `[task_goal: diagnostic]` | yes | yes |
 | `[task_goal:diagnostic]` | **no** | yes |
 | `[task_goal:  diagnostic]` | **no** | yes |
 | `[ task_goal : diagnostic ]` | **no** | yes |
 
-The failure is the worst shape available: the *stripping* regex is tolerant
-(`\[\s*task_goal\s*:[^\]]*\]`), so a variant declaration is removed from the
-message — the operator sees it accepted — while the *detection* returns false.
-The turn then runs as `implementation`, blocks, and the operator is told to
-declare a diagnostic they just declared.
+The worst shape available: the declaration was removed from the message, so it
+looked accepted, while the turn ran as `implementation` and blocked — and the
+block message then asked the operator to declare a diagnostic they had just
+declared. 38 of 102 task-gate blocks were read-only work in a write-contracted
+mode, which is precisely what the marker exists to resolve.
 
-**Why it matters beyond the typo:** of 102 `task_completion` blocks, 38 had no
-write receipt at all — pure read/diagnostic work inside a write-contracted
-mode. That is exactly the case this marker exists to resolve. The gate's block
-message is the only way an operator learns the syntax, and the documented
-syntax is the one that fails.
-
-**Proposed fix:** drive detection off the same tolerant pattern used for
-stripping, and assert the two agree in a test (a message that strips to empty
-must be detected). This makes the doc true by construction rather than by a
-second hardcoded string.
+**Shipped:** detection and stripping share one pattern
+(`_TASK_GOAL_MARKER_RE`), so a declaration cannot be removed without being
+read. An invariant test asserts that directly instead of enumerating spellings,
+and a value other than `diagnostic` fails closed with a log line. The block
+message names the syntax to type. The regression tests were verified to fail
+against the previous implementation.
 
 ## Phase B — resolve the task contract by the mode that is active
 

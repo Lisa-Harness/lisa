@@ -853,3 +853,82 @@ def test_task_goal_defaults_to_implementation_without_a_marker() -> None:
 
     assert _resolve_task_goal("implement the feature") == "implementation"
     assert _strip_task_goal_marker("implement the feature") == "implement the feature"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[task_goal: diagnostic]",
+        "[task_goal:diagnostic]",
+        "[task_goal:  diagnostic]",
+        "[ task_goal : diagnostic ]",
+        "[TASK_GOAL: DIAGNOSTIC]",
+    ],
+)
+def test_every_documented_marker_variant_declares_the_goal(raw: str) -> None:
+    """Every variant that gets stripped must also be *detected*.
+
+    Regression: detection compared against the literal string
+    ``"[task_goal: diagnostic]"`` while stripping used a whitespace-tolerant
+    regex. A variant was therefore removed from the message — looking accepted
+    — while the turn still resolved ``implementation`` and blocked, and the
+    operator was told to declare a diagnostic they had just declared. The
+    documentation promises whitespace tolerance, so the promise is what this
+    test pins.
+    """
+    from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker
+
+    assert _strip_task_goal_marker(raw) == ""
+    assert _resolve_task_goal(raw) == "diagnostic"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "why do the tests fail? [task_goal: diagnostic]",
+        "why do the tests fail? [task_goal:diagnostic]",
+        "why do the tests fail? [ task_goal : Diagnostic ]",
+    ],
+)
+def test_marker_after_a_request_still_declares_the_goal(raw: str) -> None:
+    from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker
+
+    assert _strip_task_goal_marker(raw) == "why do the tests fail?"
+    assert _resolve_task_goal(raw) == "diagnostic"
+
+
+def test_detection_and_stripping_agree_by_construction() -> None:
+    """A message whose marker is removed has necessarily been read.
+
+    Detection and stripping share one pattern, so the two can never diverge.
+    This asserts the invariant directly rather than enumerating spellings, so
+    a future edit that reintroduces a second literal fails here.
+    """
+    from runtime.handle_message import _declared_task_goal, _strip_task_goal_marker
+
+    samples = [
+        "[task_goal: diagnostic]",
+        "[task_goal:diagnostic]",
+        "[ task_goal :  Diagnostic  ]",
+        "prefix [TASK_GOAL: diagnostic] suffix",
+        "no marker at all",
+    ]
+    for raw in samples:
+        had_marker = _strip_task_goal_marker(raw) != raw
+        assert had_marker == bool(_declared_task_goal(raw)), raw
+
+
+def test_unrecognized_goal_value_fails_closed() -> None:
+    """An unknown value must not look like a declaration.
+
+    The marker is stripped either way, so silently accepting an unknown goal
+    would give the operator a no-op that appears to have worked. Only
+    ``diagnostic`` changes the contract; anything else keeps the
+    implementation default.
+    """
+    from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker
+
+    raw = "fix it [task_goal: investigation]"
+
+    assert _resolve_task_goal(raw) == "implementation"
+    assert _strip_task_goal_marker(raw) == "fix it"

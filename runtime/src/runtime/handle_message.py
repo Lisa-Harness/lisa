@@ -847,15 +847,39 @@ def _resumable_task_id(thread_path: Any, message: str) -> str:
 #: hand produces an unaudited exception. A declared, stamped exception is the
 #: better trade. This is deliberately an operator surface only: the model has
 #: no path to this value, so the exception can never be self-granted.
-_DIAGNOSTIC_TASK_MARKER = "[task_goal: diagnostic]"
+#:
+#: The syntax is ``[task_goal: <value>]``, parsed by ``_TASK_GOAL_MARKER_RE``
+#: below — not by the literal string that used to live here. Comparing against
+#: a literal made detection stricter than the stripping regex, so a
+#: whitespace variant was silently removed from the message while the turn
+#: still ran as ``implementation`` and blocked.
 
-#: Matches any ``[task_goal: <value>]`` declaration, for message stripping.
-_TASK_GOAL_MARKER_RE = re.compile(r"\[\s*task_goal\s*:[^\]]*\]", re.IGNORECASE)
+#: Matches any ``[task_goal: <value>]`` declaration, capturing the value.
+#: One pattern serves both detection and stripping so the two can never
+#: disagree: a message whose marker is removed has necessarily been read.
+#: ``docs/CODING_WORKFLOW.md`` documents whitespace tolerance, so the value
+#: group is trimmed rather than matched literally.
+_TASK_GOAL_MARKER_RE = re.compile(r"\[\s*task_goal\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)
+
+
+def _declared_task_goal(message: str) -> str:
+    """Return the goal named by an operator ``[task_goal: …]`` marker, or ``""``.
+
+    The marker is whitespace-tolerant and case-insensitive, matching the
+    documented syntax: ``[task_goal: diagnostic]``, ``[task_goal:diagnostic]``,
+    ``[ task_goal : Diagnostic ]`` and interior runs of spaces all resolve to
+    ``diagnostic``. An unrecognized value returns that value so the caller can
+    fail closed on it.
+    """
+    match = _TASK_GOAL_MARKER_RE.search(message)
+    if match is None:
+        return ""
+    return " ".join(match.group(1).split()).lower()
 
 
 def _operator_declared_diagnostic(message: str) -> bool:
     """Return True when the operator declared this task diagnostic at creation."""
-    return _DIAGNOSTIC_TASK_MARKER in message.lower()
+    return _declared_task_goal(message) == "diagnostic"
 
 
 def _strip_task_goal_marker(message: str) -> str:
@@ -887,8 +911,23 @@ def _resolve_task_goal(message: str) -> str:
 
     A delegate child declares its own goal through ``DelegationSpec``, so this
     operator surface is the parent-turn path only.
+
+    An unrecognized value fails closed to ``implementation``: the marker is
+    stripped either way, so accepting an unknown goal would give the operator a
+    silent no-op that looks like a declaration. Only a value this function
+    understands changes the contract, and the block message names the accepted
+    syntax when the turn then blocks.
     """
-    return "diagnostic" if _operator_declared_diagnostic(message) else "implementation"
+    declared = _declared_task_goal(message)
+    if not declared:
+        return "implementation"
+    if declared != "diagnostic":
+        logger.warning(
+            "unrecognized task_goal declaration %r; only 'diagnostic' changes the "
+            "completion contract, so this turn keeps the implementation default",
+            declared,
+        )
+    return "diagnostic" if declared == "diagnostic" else "implementation"
 
 
 def _proxy_protocol_for_provider(runtime: HostRuntime, provider: str) -> str | None:
