@@ -1272,3 +1272,63 @@ def test_planned_handoff_rationale_does_not_deny_the_dispatched_call() -> None:
     source = inspect.getsource(kernel.turn_runner)
     assert "the model is not asked to call " not in source
     assert "Kernel-synthesized handoff" in source
+
+
+@pytest.mark.asyncio
+async def test_kernel_synthesized_handoff_rationale_is_not_labelled_model_supplied() -> None:
+    """A kernel-authored rationale must not be attributed to the model.
+
+    Regression for the label added by 39bc8703. It labelled the rationale
+    "model-supplied" unconditionally, but the kernel writes rationales too —
+    the forced-action enforcer and the plan-driven handoff both synthesize a
+    ``transition_stage`` call, and the dispatcher reads ``rationale`` back out
+    of ``tool_arguments`` exactly as it does for a model call. So the kernel's
+    own sentence ("Kernel-forced transition handoff: 2 non-compliant
+    dispatch(es) reached the cap ...") was echoed as the model's, which is the
+    same misattribution the label exists to prevent — strictly worse than the
+    unmarked form, because it asserts the wrong author rather than none.
+
+    The call id decides it: synthesized calls are minted with a kernel prefix.
+    """
+    from kernel.turn_runner import _rationale_label
+
+    # Synthesized ids (forced-action enforcer, plan-driven handoff).
+    for synth_id in ("forced_transition_empty_3", "planned_handoff_2", "forced_work_empty_1"):
+        assert _rationale_label(synth_id) == "Rationale (kernel-supplied)", synth_id
+
+    # A provider-minted id is the model's.
+    assert _rationale_label("call_abc123") == "Rationale (model-supplied)"
+
+
+@pytest.mark.asyncio
+async def test_forced_transition_echoes_its_rationale_as_kernel_supplied() -> None:
+    """End to end: a forced handoff labels its own rationale as kernel-authored.
+
+    Exercises the real dispatch path rather than the helper alone, so a future
+    change that stops threading the call id through the handler is caught.
+    """
+    captured: list[str] = []
+    call_count = 0
+
+    async def refuses_then_finishes(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            # No tool calls while a forced action is pending -> the kernel
+            # synthesizes the transition after the non-compliance cap.
+            return _StubCompletion(content="Thinking about it.")
+        for msg in kwargs.get("messages", []):
+            if msg.get("role") == "tool":
+                captured.append(str(msg.get("content", "")))
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_hooks(refuses_then_finishes)
+    result = await run_turn(mode_id="default", query="write a doc then review it", hooks=hooks)
+
+    if not captured:
+        pytest.skip("no forced transition observed in this stub configuration")
+    forced = [out for out in captured if "Kernel-forced" in out]
+    assert forced, f"expected a kernel-forced rationale in {captured!r}"
+    assert all("Rationale (kernel-supplied)" in out for out in forced)
+    assert all("Rationale (model-supplied)" not in out for out in forced)
+    assert result is not None

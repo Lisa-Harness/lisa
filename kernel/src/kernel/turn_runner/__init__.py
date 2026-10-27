@@ -250,6 +250,46 @@ from ._streaming import StreamedCompletionAdapter
 
 logger = logging.getLogger(__name__)
 
+
+def _rationale_label(tool_call_id: str) -> str:
+    """Return the attribution label for a ``transition_stage`` rationale.
+
+    See :func:`_rationale_is_model_supplied` for why the call id decides it.
+    """
+    return (
+        "Rationale (model-supplied)"
+        if _rationale_is_model_supplied(tool_call_id)
+        else "Rationale (kernel-supplied)"
+    )
+
+
+def _rationale_is_model_supplied(tool_call_id: str) -> bool:
+    """Return True when the rationale on this call came from the model.
+
+    A ``transition_stage`` call reaches the dispatcher from two sources: the
+    model, and the kernel itself (the forced-action enforcer and the
+    plan-driven handoff both synthesize one). The dispatcher reads
+    ``rationale`` back out of ``tool_arguments`` either way, so the string
+    alone cannot say who composed it.
+
+    The synthesized calls carry a kernel-chosen ``tool_call_id`` prefix. This
+    is the single authority for that question: labelling the rationale
+    "model-supplied" unconditionally misattributes the kernel's own sentences
+    (e.g. "Kernel-forced transition handoff: 2 non-compliant dispatch(es)
+    reached the cap ...") to the model, which is the same class of defect the
+    label exists to prevent.
+    """
+    return not str(tool_call_id or "").startswith(_KERNEL_SYNTH_CALL_PREFIXES)
+
+
+#: ``tool_call_id`` prefixes minted by kernel-synthesized ``transition_stage``
+#: calls. Any other id came from the provider, i.e. the model.
+_KERNEL_SYNTH_CALL_PREFIXES = (
+    "forced_",
+    "planned_handoff_",
+)
+
+
 #: Router-reported model reliability at (or above) which the forced-action
 #: non-compliance cap is lifted (frontier/reasoning models self-correct).
 _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
@@ -5553,6 +5593,7 @@ async def _execute_mid_turn_handoff(
     query: str,
     target_stage: str,
     rationale: str,
+    tool_call_id: str,
     delegated_goal: str,
     context_payload: str,
     ledger: CallLedger,
@@ -5840,11 +5881,7 @@ async def _execute_mid_turn_handoff(
                 log=log,
             )
             tool_output = f"Handed off to mode: {target_stage}." + (
-                # ``rationale`` is the model's own prose echoed back, not
-                # kernel-authored text. Label it so a later reader of the
-                # transcript (operator, context assembly, or the model
-                # itself) cannot mistake it for kernel evidence.
-                f" Rationale (model-supplied): {rationale}" if rationale else ""
+                f" {_rationale_label(tool_call_id)}: {rationale}" if rationale else ""
             )
             if entry_output:
                 tool_output += f"\n\nEntry operation results:\n{entry_output}"
@@ -6962,6 +6999,7 @@ async def _intercept_mode_handoff(
         query=query,
         target_stage=target_stage,
         rationale=rationale,
+        tool_call_id=tool_call_id,
         delegated_goal=delegated_goal,
         context_payload=context_payload,
         ledger=ledger,
