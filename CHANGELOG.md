@@ -6,6 +6,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Introspection reads the real 24h window, and the real `msg` field.** The
+  self-model's token summary claimed a 24h window while summing a fixed tail of
+  200 lines, and its log-error list read `message` — the key the *retired*
+  bespoke writer used — so every error carried an empty message (576 of 576 rows
+  in a live log). Both summaries now stream the rotation set
+  (`logs/runtime.jsonl.1`..`.3`) under a byte budget and filter on the record's
+  own timestamp, so an error or a spend is attributed to the window it actually
+  falls in. Health classification deliberately keeps a **15-minute** window:
+  its thresholds were calibrated against a 100-line tail, and feeding them a 24h
+  count reclassifies nearly every session as `critical` — which, because the
+  self-model injects its vibe only when health is degraded or struggling, would
+  turn an ambient per-turn signal into permanent prompt overhead.
+- **Tests:** `runtime/tests/test_introspect.py`
+
 - **Durable decision and dispatch telemetry (`decisions.jsonl`).** The turn loop
   already published `turn.decision` (per-iteration lifecycle action, reason,
   in-stage counter, receipt counts) and `tool.telemetry` (per-dispatch target,

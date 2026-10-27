@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -47,30 +47,32 @@ async def test_gather_introspection_counts_asyncio_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_gather_introspection_reads_token_usage_file() -> None:
-    """Token usage summary is populated from the JSONL tail."""
+    """Token usage summary is populated from records inside the 24h window."""
     with TemporaryDirectory() as td:
         token_path = Path(td) / "token-usage.jsonl"
-        # Write a few token usage records
+        # Window-relevant: the summary is a trailing-24h view, so the fixture
+        # must be recent or the records are (correctly) excluded.
+        recent = datetime.now(UTC).replace(microsecond=0)
         records = [
             {
                 "model_id": "gpt-4.1-mini",
                 "total_tokens": 500,
                 "cached_tokens": 200,
                 "cost_usd": 0.01,
-                "emitted_at": "2026-07-09T10:00:00Z",
+                "emitted_at": (recent.replace(hour=10)).isoformat(),
             },
             {
                 "model_id": "gpt-4.1-mini",
                 "total_tokens": 300,
                 "cached_tokens": 100,
                 "cost_usd": 0.006,
-                "emitted_at": "2026-07-09T11:00:00Z",
+                "emitted_at": (recent.replace(hour=11)).isoformat(),
             },
             {
                 "model_id": "deepseek-chat",
                 "total_tokens": 1000,
                 "cost_usd": 0.003,
-                "emitted_at": "2026-07-09T12:00:00Z",
+                "emitted_at": (recent.replace(hour=12)).isoformat(),
             },
         ]
         with token_path.open("w", encoding="utf-8") as f:
@@ -90,6 +92,110 @@ async def test_gather_introspection_reads_token_usage_file() -> None:
 
 
 @pytest.mark.asyncio
+async def test_token_summary_excludes_records_older_than_24h() -> None:
+    """The summary is a 24h window, not 'the last N records on disk'.
+
+    Previously the label said 24h while the implementation summed a fixed tail
+    of 200 lines, so a quiet day reported stale spend as current.
+    """
+    with TemporaryDirectory() as td:
+        token_path = Path(td) / "token-usage.jsonl"
+        now = datetime.now(UTC)
+        stale = now - timedelta(days=3)
+        records = [
+            {
+                "model_id": "old",
+                "total_tokens": 9000,
+                "cost_usd": 9.0,
+                "emitted_at": stale.isoformat(),
+            },
+            {
+                "model_id": "new",
+                "total_tokens": 100,
+                "cost_usd": 0.5,
+                "emitted_at": now.isoformat(),
+            },
+        ]
+        with token_path.open("w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record) + "\n")
+
+        snapshot = await gather_introspection(token_usage_path=token_path)
+        summary = snapshot.token_usage_24h
+        assert summary is not None
+        assert summary.event_count == 1
+        assert summary.total_tokens == 100
+        assert summary.total_cost_estimate == pytest.approx(0.5)
+        assert summary.top_model == "new"
+
+
+@pytest.mark.asyncio
+async def test_token_summary_zeroed_when_all_records_stale() -> None:
+    """All-stale records yield a zeroed summary, not None (no-telemetry)."""
+    with TemporaryDirectory() as td:
+        token_path = Path(td) / "token-usage.jsonl"
+        stale = datetime.now(UTC) - timedelta(days=10)
+        token_path.write_text(
+            json.dumps(
+                {
+                    "model_id": "old",
+                    "total_tokens": 5,
+                    "cost_usd": 0.1,
+                    "emitted_at": stale.isoformat(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = await gather_introspection(token_usage_path=token_path)
+        summary = snapshot.token_usage_24h
+        assert summary is not None, "an unreadable/absent file is None; stale data is not"
+        assert summary.event_count == 0
+        assert summary.total_tokens == 0
+        assert summary.top_model == ""
+
+
+@pytest.mark.asyncio
+async def test_token_summary_reads_rotated_segments() -> None:
+    """Rotation must not hide records still inside the window."""
+    with TemporaryDirectory() as td:
+        token_path = Path(td) / "token-usage.jsonl"
+        now = datetime.now(UTC)
+        # The older record now lives in the rotated segment.
+        token_path.with_name(f"{token_path.name}.1").write_text(
+            json.dumps(
+                {
+                    "model_id": "rotated",
+                    "total_tokens": 400,
+                    "cost_usd": 0.2,
+                    "emitted_at": now.isoformat(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        token_path.write_text(
+            json.dumps(
+                {
+                    "model_id": "active",
+                    "total_tokens": 600,
+                    "cost_usd": 0.3,
+                    "emitted_at": now.isoformat(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = await gather_introspection(token_usage_path=token_path)
+        summary = snapshot.token_usage_24h
+        assert summary is not None
+        assert summary.event_count == 2
+        assert summary.total_tokens == 1000
+
+
+@pytest.mark.asyncio
 async def test_gather_introspection_token_usage_none_when_file_missing() -> None:
     """Token usage summary is None when the file doesn't exist."""
     snapshot = await gather_introspection(
@@ -100,19 +206,26 @@ async def test_gather_introspection_token_usage_none_when_file_missing() -> None
 
 @pytest.mark.asyncio
 async def test_gather_introspection_reads_log_errors() -> None:
-    """Log errors are extracted from the turn log tail."""
+    """Log errors are extracted from the turn log window, oldest first."""
     with TemporaryDirectory() as td:
         log_path = Path(td) / "turns.jsonl"
+        now = datetime.now(UTC).isoformat()
         records = [
-            {"level": "info", "event": "turn.completed", "message": "ok"},
+            {"ts": now, "level": "info", "event": "turn.completed", "msg": "ok"},
             {
+                "ts": now,
                 "level": "warning",
                 "event": "mcp.connect_failed",
-                "message": "mem0 unreachable",
+                "msg": "mem0 unreachable",
                 "server": "mem0",
             },
-            {"level": "error", "event": "operation.timeout", "message": "self_model timed out"},
-            {"level": "info", "event": "turn.completed", "message": "ok"},
+            {
+                "ts": now,
+                "level": "error",
+                "event": "operation.timeout",
+                "msg": "self_model timed out",
+            },
+            {"ts": now, "level": "info", "event": "turn.completed", "msg": "ok"},
         ]
         with log_path.open("w", encoding="utf-8") as f:
             for record in records:
@@ -124,6 +237,86 @@ async def test_gather_introspection_reads_log_errors() -> None:
         assert snapshot.recent_log_errors[0].event == "mcp.connect_failed"
         assert snapshot.recent_log_errors[1].level == "error"
         assert snapshot.logfile_tail_lines == 4
+
+
+@pytest.mark.asyncio
+async def test_log_errors_use_msg_key() -> None:
+    """The message comes from ``msg``, which is what JSONFormatter writes.
+
+    Reading only ``message`` (the retired bespoke writer's key) returned an
+    empty string for every error, so the self-model reported error *counts*
+    without any explanation.
+    """
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "runtime.jsonl"
+        now = datetime.now(UTC).isoformat()
+        log_path.write_text(
+            json.dumps(
+                {
+                    "ts": now,
+                    "level": "warning",
+                    "name": "kernel.turn_runner",
+                    "msg": "operation 'markdown_forge' returned status=degraded",
+                    "event": "operation.degraded",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = await gather_introspection(log_path=log_path)
+        assert len(snapshot.recent_log_errors) == 1
+        entry = snapshot.recent_log_errors[0]
+        assert entry.message == "operation 'markdown_forge' returned status=degraded"
+        assert entry.event == "operation.degraded"
+
+
+@pytest.mark.asyncio
+async def test_log_errors_fall_back_to_message_key() -> None:
+    """Older records using ``message`` still resolve a message."""
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "runtime.jsonl"
+        log_path.write_text(
+            json.dumps({"level": "error", "message": "legacy shape"}) + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = await gather_introspection(log_path=log_path)
+        assert snapshot.recent_log_errors[0].message == "legacy shape"
+
+
+@pytest.mark.asyncio
+async def test_log_errors_exclude_records_outside_window() -> None:
+    """A stale error is not 'recent'; the window bounds the read."""
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "runtime.jsonl"
+        stale = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+        now = datetime.now(UTC).isoformat()
+        with log_path.open("w", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": stale, "level": "error", "msg": "ancient"}) + "\n")
+            f.write(json.dumps({"ts": now, "level": "error", "msg": "current"}) + "\n")
+
+        snapshot = await gather_introspection(log_path=log_path)
+        assert [e.message for e in snapshot.recent_log_errors] == ["current"]
+
+
+@pytest.mark.asyncio
+async def test_log_errors_read_rotated_segments() -> None:
+    """Errors in a rotated segment are still inside the window."""
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "runtime.jsonl"
+        now = datetime.now(UTC).isoformat()
+        log_path.with_name(f"{log_path.name}.1").write_text(
+            json.dumps({"ts": now, "level": "error", "msg": "from rotated"}) + "\n",
+            encoding="utf-8",
+        )
+        log_path.write_text(
+            json.dumps({"ts": now, "level": "error", "msg": "from active"}) + "\n",
+            encoding="utf-8",
+        )
+
+        snapshot = await gather_introspection(log_path=log_path)
+        assert [e.message for e in snapshot.recent_log_errors] == ["from rotated", "from active"]
 
 
 @pytest.mark.asyncio
@@ -197,6 +390,35 @@ async def test_gather_introspection_operational_health_critical_from_errors() ->
         assert snapshot.recent_error_count == 9
         assert snapshot.operational_health == "critical"
         assert any("recent errors" in reason for reason in snapshot.operational_health_reasons)
+
+
+@pytest.mark.asyncio
+async def test_health_errors_use_short_window_while_evidence_stays_wide() -> None:
+    """Old errors are evidence but must not keep the process 'critical'.
+
+    The health thresholds are calibrated for a short window. Measuring them
+    against the wide evidence window reclassified nearly every session as
+    critical, and because the self-model injects its vibe only when health is
+    degraded or struggling, that converted a per-turn signal into permanent
+    prompt overhead.
+    """
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "runtime.jsonl"
+        now = datetime.now(UTC)
+        stale = (now - timedelta(hours=8)).isoformat()
+        recent = (now - timedelta(minutes=1)).isoformat()
+        with log_path.open("w", encoding="utf-8") as f:
+            for _ in range(20):
+                f.write(json.dumps({"ts": stale, "level": "error", "msg": "old"}) + "\n")
+            f.write(json.dumps({"ts": recent, "level": "warning", "msg": "recent"}) + "\n")
+
+        snapshot = await gather_introspection(log_path=log_path)
+
+        # Evidence keeps the full 24h window for a forensics reader...
+        assert len(snapshot.recent_log_errors) == 21
+        # ...but health counts only what is recent.
+        assert snapshot.recent_error_count == 1
+        assert snapshot.operational_health == "healthy"
 
 
 @pytest.mark.asyncio

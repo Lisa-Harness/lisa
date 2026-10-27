@@ -24,10 +24,12 @@ Design — soft dependencies:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import threading
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,9 +49,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TOKEN_USAGE_TAIL_LIMIT = 200
-_LOG_TAIL_LIMIT = 100
 _LOG_ERROR_LEVELS = frozenset({"error", "warning", "critical"})
+#: Both telemetry files are read bounded by bytes rather than line counts: a
+#: single serialized record can carry a full request or traceback, so a line
+#: cap is not a memory bound. 8 MiB spans the active log plus its rotation set
+#: with margin.
+_JSONL_TAIL_MAX_BYTES = 8 * 1024 * 1024
+_LOG_ERROR_LIMIT = 50
+#: ``logging.handlers.RotatingFileHandler`` keeps ``backupCount`` older
+#: segments as ``<name>.1`` .. ``<name>.N`` (sdk.logging_setup uses 3). A tail
+#: reader that only opens the active file silently loses the window whenever
+#: rotation has occurred, so the rotated segments are part of the read.
+_LOG_BACKUP_SEGMENTS = 3
+#: Both telemetry summaries are trailing windows, not "the last N lines".
+_WINDOW_SECONDS = 24 * 60 * 60
+#: Health classification uses a much shorter window than the evidence list.
+#: ``_ERROR_WARN_THRESHOLD`` / ``_ERROR_CRITICAL_THRESHOLD`` were calibrated
+#: against a 100-line tail (roughly minutes of activity). Feeding them a 24h
+#: count reclassifies almost every session as ``critical``, and since the
+#: self-model only injects its vibe when health is degraded or struggling,
+#: that turns a per-turn ambient signal into permanent prompt overhead. The
+#: list stays wide for evidence; the classifier stays narrow for "right now".
+_HEALTH_ERROR_WINDOW_SECONDS = 15 * 60
 _MCP_UNKNOWN = "unknown"
 _TASKS_WARN_THRESHOLD = 120
 _TASKS_CRITICAL_THRESHOLD = 250
@@ -89,7 +110,11 @@ async def gather_introspection(
     token_summary = _summarize_token_usage(token_usage_path)
     log_errors, log_tail_lines = _tail_log_errors(log_path)
     failed_mcp_servers = sum(1 for health in mcp_health.values() if health.status == "failed")
-    recent_error_count = len(log_errors)
+    # Health is a "right now" judgement, so it uses the short window even
+    # though the evidence list above stays wide. See _HEALTH_ERROR_WINDOW_SECONDS.
+    recent_error_count = _count_recent_errors(
+        log_errors, cutoff=datetime.now(UTC) - timedelta(seconds=_HEALTH_ERROR_WINDOW_SECONDS)
+    )
     operational_health, operational_health_reasons = _classify_operational_health(
         asyncio_tasks=asyncio_tasks,
         process_rss_mb=rss_mb,
@@ -283,20 +308,151 @@ def _derive_transport(config: Any) -> str:
     return "stdio"
 
 
-def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary | None:
-    """Read the tail of token-usage.jsonl and produce a 24h summary."""
-    if token_usage_path is None or not token_usage_path.exists():
+def _rotated_segments(path: Path, backup_count: int = _LOG_BACKUP_SEGMENTS) -> list[Path]:
+    """Return the existing rotation set for ``path``, oldest file first.
+
+    ``RotatingFileHandler`` renames the active file to ``<name>.1`` (shifting
+    older segments up) and keeps ``backupCount`` of them. A tail read that
+    ignores them silently truncates its window to whatever is left in the
+    active file — which after a burst of verbose logging can be minutes.
+    """
+    segments: list[Path] = []
+    for index in range(backup_count, 0, -1):
+        candidate = path.with_name(f"{path.name}.{index}")
+        if candidate.is_file():
+            segments.append(candidate)
+    if path.is_file():
+        segments.append(path)
+    return segments
+
+
+def _read_segment_tail(segment: Path, budget: int) -> tuple[str, int]:
+    """Read one log segment within ``budget`` bytes; return ``(text, spent)``.
+
+    A segment larger than the remaining budget is read from its tail and its
+    leading partial line is discarded, so a half-written record is never
+    parsed as if it were evidence.
+    """
+    size = segment.stat().st_size
+    if size <= budget:
+        return segment.read_text(encoding="utf-8", errors="replace"), size
+    with segment.open("rb") as handle:
+        handle.seek(size - budget)
+        text = handle.read().decode("utf-8", errors="replace")
+    newline = text.find("\n")
+    return (text[newline + 1 :] if newline >= 0 else ""), budget
+
+
+def _parse_jsonl_lines(lines: list[str]) -> Iterator[dict[str, Any]]:
+    """Yield the mapping records from raw JSONL lines, skipping anything else."""
+    for raw_line in lines:
+        if not raw_line.strip():
+            continue
+        try:
+            record = json.loads(raw_line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(record, dict):
+            yield record
+
+
+def _iter_jsonl_tail(
+    path: Path | None,
+    *,
+    max_bytes: int = _JSONL_TAIL_MAX_BYTES,
+) -> Iterator[dict[str, Any]]:
+    """Yield parsed records from a JSONL file's rotation set, oldest first.
+
+    The byte budget is spent from the newest file backwards, so a large
+    history degrades to "the most recent window" rather than to "the whole
+    file parsed into memory". Malformed and non-mapping lines are skipped: a
+    truncated write must not hide the rest of the evidence.
+    """
+    if path is None:
+        return
+    segments = _rotated_segments(path)
+    if not segments:
+        return
+
+    budget = max_bytes
+    chunks: list[list[str]] = []
+    for segment in reversed(segments):
+        if budget <= 0:
+            break
+        try:
+            text, spent = _read_segment_tail(segment, budget)
+        except OSError:
+            continue
+        budget -= spent
+        chunks.append(text.splitlines())
+
+    for lines in reversed(chunks):
+        yield from _parse_jsonl_lines(lines)
+
+
+def _parse_ts(raw: Any) -> datetime | None:
+    """Parse a telemetry timestamp into an aware UTC datetime, or ``None``.
+
+    Accepts the two shapes the writers emit: ISO-8601 (``logging_setup``'s
+    ``ts`` and ``TokenUsageEvent.emitted_at``) and a numeric epoch. Anything
+    else is unknown rather than "now", so a malformed record cannot
+    manufacture recency.
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        try:
+            return datetime.fromtimestamp(float(raw), tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(raw, str):
         return None
+    text = raw.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
     try:
-        lines = token_usage_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
         return None
-    if not lines:
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _record_ts(record: dict[str, Any]) -> datetime | None:
+    """Return a record's timestamp from the field its writer uses."""
+    return _parse_ts(
+        record.get("ts")
+        or record.get("emitted_at")
+        or record.get("timestamp_utc")
+        or record.get("logged_at")
+    )
+
+
+def _in_window(ts: datetime | None, cutoff: datetime) -> bool:
+    """Return whether ``ts`` falls inside the window.
+
+    An unparseable timestamp is admitted: the record was still recent enough
+    to be in the file we just read, and dropping unknown-time evidence would
+    hide exactly the malformed writes worth investigating.
+    """
+    return ts is None or ts >= cutoff
+
+
+def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary | None:
+    """Summarize ``token-usage.jsonl`` over the trailing 24 hours.
+
+    Both the file selection (rotation set, byte budget) and the time filter
+    are real: the summary previously described "the last 200 records" while
+    claiming a 24h window, which silently reported yesterday's spend as
+    today's on a quiet day and a partial hour as a full day on a busy one.
+    Returns ``None`` only when there is no readable file at all; a file whose
+    records are all older than the window returns a zeroed summary so the
+    caller can tell "no spend in 24h" from "no telemetry".
+    """
+    records = list(_iter_jsonl_tail(token_usage_path))
+    if not records:
         return None
 
-    import json
-
-    tail = lines[-_TOKEN_USAGE_TAIL_LIMIT:]
+    cutoff = datetime.now(UTC) - timedelta(seconds=_WINDOW_SECONDS)
     total_cost = 0.0
     total_tokens = 0
     billed_tokens = 0
@@ -307,12 +463,8 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
     spike_at = ""
     event_count = 0
 
-    for raw_line in tail:
-        try:
-            record = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
+    for record in records:
+        if not _in_window(_record_ts(record), cutoff):
             continue
         event_count += 1
         cost = float(record.get("cost_usd") or 0.0)
@@ -352,45 +504,71 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
 
 
 def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
-    """Read the tail of the turn log and extract error/warning entries.
+    """Extract error/warning entries from the log's trailing 24h window.
 
-    Returns ``(errors, total_lines_in_tail)``.
+    Returns ``(errors, records_read)``.
+
+    Reads the rotation set, not just the active file: ``RotatingFileHandler``
+    moves records into ``<name>.1``..``<name>.3``, so an active-file-only read
+    silently loses older evidence in the window.
+
+    The message comes from ``msg`` — the field :class:`sdk.logging_setup.
+    JSONFormatter` actually writes. Reading only ``message`` (the key the
+    retired bespoke writer used) produced an empty message for every error,
+    which is how the self-model reported "recent errors" without saying what
+    any of them were.
     """
-    if log_path is None or not log_path.exists():
+    if log_path is None:
         return [], 0
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return [], 0
-    if not lines:
+    records = list(_iter_jsonl_tail(log_path))
+    if not records:
         return [], 0
 
-    import json
-
-    tail = lines[-_LOG_TAIL_LIMIT:]
+    cutoff = datetime.now(UTC) - timedelta(seconds=_WINDOW_SECONDS)
     errors: list[LogErrorEntry] = []
-    for raw_line in tail:
-        try:
-            record = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
+    for record in records:
         level = str(record.get("level") or "").lower()
         if level not in _LOG_ERROR_LEVELS:
             continue
+        if not _in_window(_record_ts(record), cutoff):
+            continue
+        payload = record.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
         errors.append(
             LogErrorEntry(
-                ts=str(record.get("ts") or record.get("timestamp_utc") or ""),
+                ts=str(
+                    record.get("ts")
+                    or record.get("timestamp_utc")
+                    or record.get("emitted_at")
+                    or ""
+                ),
                 level=level,
                 event=str(record.get("event") or ""),
                 message=str(
-                    record.get("message") or record.get("payload", {}).get("error_message", "")
+                    record.get("msg") or record.get("message") or payload.get("error_message") or ""
                 ),
-                server=str(record.get("server") or record.get("payload", {}).get("server_id", "")),
+                server=str(record.get("server") or payload.get("server_id") or ""),
             )
         )
-    return errors, len(tail)
+    # Keep chronological order (oldest first), matching the long-standing read
+    # contract; when the window holds more than the cap, keep the most recent.
+    return errors[-_LOG_ERROR_LIMIT:], len(records)
+
+
+def _count_recent_errors(errors: list[LogErrorEntry], *, cutoff: datetime) -> int:
+    """Count errors inside the health window.
+
+    Separate from the evidence list on purpose: the list is a wide forensic
+    window, the classifier is a narrow "is the process healthy right now"
+    question. An entry without a parseable timestamp is counted — an error the
+    log could not date is still an error, and excluding it would let a broken
+    writer hide a live failure.
+    """
+    count = 0
+    for entry in errors:
+        if _in_window(_parse_ts(entry.ts), cutoff):
+            count += 1
+    return count
 
 
 def _classify_operational_health(

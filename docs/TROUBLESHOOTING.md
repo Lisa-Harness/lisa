@@ -61,7 +61,13 @@ to the CLI's own documentation.
 Under the resolved data root:
 
 - `logs/runtime.jsonl`: structured failures, routing and lifecycle decisions.
+  Rotates at 5 MiB with 3 backups, so a window read must span
+  `runtime.jsonl.1`..`.3` — readers that open only the active file silently
+  lose older evidence.
 - `logs/token-usage.jsonl`: provider-reported usage and cache counts.
+- `logs/decisions.jsonl`: one line per lifecycle decision and per dispatch,
+  with the `turn_index` that joins them to the thread and the cost log. See
+  [decision telemetry](LOGGING.md#decision-telemetry).
 - `data/threads/`: turn records, transcripts, sealed segments, request/result
   references. Use the [thread readout](SPEC/THREAD_STORE.md) to expand refs.
 - `state/`: approval, recovery, and work-product state.
