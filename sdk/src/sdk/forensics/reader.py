@@ -101,6 +101,7 @@ class ForensicReader:
         # silently lose it simply because the pack constructed the reader.
         # ``resolve_redaction_from_env=False`` opts a caller out (tests that
         # need raw thread text for assertions).
+        self._redaction: ThreadRedactionPolicy | None
         if redaction is not None:
             self._redaction = redaction
         elif resolve_redaction_from_env:

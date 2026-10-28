@@ -181,27 +181,27 @@ def build_bundle(
     stray_dispatches: list[DispatchRecord] = []
 
     for raw in decisions:
-        record = decision_from_record(raw)
-        if record.turn_index is not None and record.turn_index in wanted:
-            decisions_by_turn[record.turn_index].append(record)
+        decision = decision_from_record(raw)
+        if decision.turn_index is not None and decision.turn_index in wanted:
+            decisions_by_turn[decision.turn_index].append(decision)
         else:
-            stray_decisions.append(record)
+            stray_decisions.append(decision)
 
     for raw in dispatches:
-        record = dispatch_from_record(raw)
-        if record.turn_index is not None and record.turn_index in wanted:
-            dispatches_by_turn[record.turn_index].append(record)
+        dispatch = dispatch_from_record(raw)
+        if dispatch.turn_index is not None and dispatch.turn_index in wanted:
+            dispatches_by_turn[dispatch.turn_index].append(dispatch)
         else:
-            stray_dispatches.append(record)
+            stray_dispatches.append(dispatch)
 
     for raw in costs:
-        record = cost_from_record(raw)
+        cost = cost_from_record(raw)
         # Costs outside the requested range are simply not part of the answer;
         # unlike decisions/dispatches they are not a finding, because the
         # caller asked about specific turns and every model call in the window
         # is already attributed to its own turn.
-        if record.turn_index is not None and record.turn_index in wanted:
-            costs_by_turn[record.turn_index].append(record)
+        if cost.turn_index is not None and cost.turn_index in wanted:
+            costs_by_turn[cost.turn_index].append(cost)
 
     joined = [
         turn.model_copy(
