@@ -20,9 +20,10 @@ modes through the top-level map.
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
+
+from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
 
 from .classify import (
     PIN_EXPIRY_HORIZON_DAYS,
@@ -710,20 +711,9 @@ def write_manifest_yaml(
 ) -> None:
     """Atomically write ``payload`` to ``path`` as YAML.
 
-    Uses a temp file + ``os.replace`` so a crash mid-write never leaves a
-    corrupt ``models.proposed.yaml`` for ``/models apply`` to choke on.
+    Uses a sidecar file lock and unique temp file + ``os.replace`` so a
+    crash or concurrent write never leaves a corrupt YAML manifest.
     """
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_text(
-            render_manifest_yaml(payload, annotations=annotations, router_block=router_block),
-            encoding="utf-8",
-        )
-        tmp.replace(path)
-    except Exception:
-        # Ensure no stale .tmp lingers on failure.
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
+    rendered = render_manifest_yaml(payload, annotations=annotations, router_block=router_block)
+    with file_lock(sidecar_lock_path(path)):
+        atomic_write_text(path, rendered, encoding="utf-8")

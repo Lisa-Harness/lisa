@@ -1212,7 +1212,7 @@ def _record_operation_error_thread_entry(
         "type": type(exc).__name__,
         "message": str(exc),
     }
-    append_thread_entry(
+    committed_turn = append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         segment_turns=runtime.config.thread_segment_turns,
@@ -1226,6 +1226,8 @@ def _record_operation_error_thread_entry(
         },
         turn=turn_index,
     )
+    if committed_turn is not None:
+        run_context["turn_index"] = committed_turn
 
 
 def _update_completion_context(
@@ -1539,9 +1541,7 @@ async def _execute_mode_turn(
     # clean (the signal is one-shot; the transport re-sets it on the next
     # key press).
     runtime.session.operator_signal_value = ""
-
-    if result.transitioned_to:
-        runtime.session.current_stage_id = result.transitioned_to
+    runtime.session.current_stage_id = result.transitioned_to or runtime.session.current_stage_id
     _apply_turn_usage(
         runtime,
         usage_since_resume(result, continuation),
@@ -1598,13 +1598,14 @@ async def _execute_mode_turn(
     # rather than a claim made before persistence.
 
     # Persist the thread entry.
-    provenance: dict[str, Any] = _build_thread_provenance(
-        resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
-    )
-    provenance["task_id"] = task_id
-    provenance.update(_kernel_loop_provenance(runtime, result, continuation))
-    if result.block_origin:
-        provenance["block_origin"] = result.block_origin
+    provenance: dict[str, Any] = {
+        **_build_thread_provenance(
+            resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
+        ),
+        "task_id": task_id,
+        **_kernel_loop_provenance(runtime, result, continuation),
+        **({"block_origin": result.block_origin} if result.block_origin else {}),
+    }
 
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly
@@ -1614,7 +1615,7 @@ async def _execute_mode_turn(
     # duplicating the receipt list.
     receipts = _serialize_effect_receipts(result)
 
-    append_thread_entry(
+    committed_turn = append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         segment_turns=runtime.config.thread_segment_turns,
@@ -1642,6 +1643,8 @@ async def _execute_mode_turn(
         else None,
         transcript=result.transcript,
     )
+    turn_index = turn_index if committed_turn is None else committed_turn
+    run_context["turn_index"] = turn_index
 
     # Audit: emit the kernel turn's completion event, now that the entry the
     # event points at exists.

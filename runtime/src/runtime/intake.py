@@ -399,11 +399,12 @@ async def run_intake(*, data_dir: Path) -> UnifiedState:
     state = _merge_results(collections, processed)
 
     # 4. Write to disk
+    from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
     from sdk.layout import STATE_DIR
 
     state_path = data_dir / STATE_DIR / _DEFAULT_STATE_FILE
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+    with file_lock(sidecar_lock_path(state_path)):
+        atomic_write_text(state_path, state.model_dump_json(indent=2), encoding="utf-8")
     logger.info("State written to %s", state_path)
 
     return state

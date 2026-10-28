@@ -46,6 +46,7 @@ def _isolate_default_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     for name in (
         "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES",
+        "LISA_CONVERSATION_ID",
         "LISA_DATA_DIR",
         "LISA_PROFILE",
         "LISA_PACKS_VENV",
@@ -84,6 +85,7 @@ def _environ_hermeticity_guard() -> Any:
     watched = (
         "FRAMEWORK_ROOT",
         "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES",
+        "LISA_CONVERSATION_ID",
         "LISA_DATA_DIR",
         "LISA_PACKS_VENV",
         "LISA_PROFILE",

@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sdk.filelock import file_lock
 from sdk.thread import ThreadRedactionPolicy, ThreadStore, load_result_object, project_tool_messages
 
 from runtime.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
@@ -197,16 +198,20 @@ def _resolve_thread_turn(
     paths: _SegmentPaths,
     turn: int | None,
 ) -> int:
-    """Resolve the global turn number for a new thread entry.
+    """Resolve the global turn number for a new thread entry under the store lock.
 
-    Uses the caller-provided ``turn`` when set; otherwise computes it from
-    the sealed-segment index plus the active segment's entry count.
+    Computes the actual store turn count from the sealed-segment index plus the
+    active segment's entry count. When ``turn`` is provided by the caller, it
+    is used only if ``turn >= actual_turn``; if a concurrent turn appended in
+    the meantime (so ``turn < actual_turn``), the turn index advances to
+    ``actual_turn`` to preserve strict monotonicity.
     """
-    if turn is not None:
-        return turn
     sealed_records = _read_index(paths.index_path)
     active_count = _read_active_entries_count(paths.current)
-    return sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+    actual_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+    if turn is not None and turn >= actual_turn:
+        return turn
+    return actual_turn
 
 
 def _build_thread_entry(
@@ -332,46 +337,49 @@ def append_thread_entry(
     memory_ids: list[int] | None = None,
     transcript: list[dict[str, Any]] | None = None,
     verified_facts: list[dict[str, Any]] | None = None,
-) -> None:
-    """Append a new thread entry to the active segment.
+) -> int | None:
+    """Append a new thread entry to the active segment under the thread store lock.
 
     Seals the active segment first when it has reached ``segment_turns``
     entries (pressure-driven, synchronous, sub-10ms for 256 lines). No-ops
-    when ``thread_path`` is ``None`` or ``user_slug`` is empty.
+    and returns ``None`` when ``thread_path`` is ``None`` or ``user_slug`` is
+    empty; otherwise returns the committed 0-based ``global_turn``.
     """
     if thread_path is None or not user_slug:
-        return
+        return None
     paths = _segment_paths(thread_path)
-    _maybe_rename_legacy(paths)
+    with file_lock(paths.lock):
+        _maybe_rename_legacy(paths)
 
-    thread_path.parent.mkdir(parents=True, exist_ok=True)
-    if paths.current.exists() and _count_lines(paths.current) >= segment_turns:
-        _seal_segment(paths)
+        thread_path.parent.mkdir(parents=True, exist_ok=True)
+        if paths.current.exists() and _count_lines(paths.current) >= segment_turns:
+            _seal_segment(paths)
 
-    global_turn = _resolve_thread_turn(paths, turn)
-    entry = _build_thread_entry(
-        user_slug=user_slug,
-        mode_id=mode_id,
-        query=query,
-        response_text=response_text,
-        global_turn=global_turn,
-        content_source=content_source,
-        reasoning_text=reasoning_text,
-        provenance=provenance,
-        effect_receipts=effect_receipts,
-        handoff_to=handoff_to,
-        transitioned_to=transitioned_to,
-        yielded=yielded,
-        yield_question=yield_question,
-        turn_input=turn_input,
-        memory_ids=memory_ids,
-        transcript=transcript,
-        verified_facts=verified_facts,
-    )
+        global_turn = _resolve_thread_turn(paths, turn)
+        entry = _build_thread_entry(
+            user_slug=user_slug,
+            mode_id=mode_id,
+            query=query,
+            response_text=response_text,
+            global_turn=global_turn,
+            content_source=content_source,
+            reasoning_text=reasoning_text,
+            provenance=provenance,
+            effect_receipts=effect_receipts,
+            handoff_to=handoff_to,
+            transitioned_to=transitioned_to,
+            yielded=yielded,
+            yield_question=yield_question,
+            turn_input=turn_input,
+            memory_ids=memory_ids,
+            transcript=transcript,
+            verified_facts=verified_facts,
+        )
 
-    paths.current.parent.mkdir(parents=True, exist_ok=True)
-    with paths.current.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        paths.current.parent.mkdir(parents=True, exist_ok=True)
+        with paths.current.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    return global_turn
 
 
 __all__ = [

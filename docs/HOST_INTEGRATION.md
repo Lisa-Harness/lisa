@@ -57,10 +57,29 @@ loop**. MCP clients use task-bound async contexts. Do not start the pool in
 one `asyncio.run` and use or close it in another, or close it from an unrelated
 shielded task.
 
-Serialize messages for a runtime/session. Do not treat one mutable
-`HostRuntime` as an arbitrary concurrent request server. Framework discovery
-and some registries are process-global; distinct runtime objects alone do
-not establish strong multi-tenant isolation.
+Serialize messages within a single `HostRuntime` instance. Do not share one
+mutable `HostRuntime` across concurrent turns in the same process.
+
+### Concurrent executions across processes
+
+To run overlapping turns on the same host machine, launch one process per
+active execution (each with its own `HostRuntime` and event loop) sharing
+`data_dir`:
+
+- **Shared conversation (`user_slug`):** processes sharing the same
+  `user_slug` coordinate via cross-process advisory file locks
+  ([filelock.py](../sdk/src/sdk/filelock.py)), atomic temp-file replacements,
+  commit-time monotonic turn-index assignment on `<base>.lock`, owner-PID
+  liveness checks in recovery reconciliation, and SQLite WAL mode on
+  `memory.sqlite3`.
+- **Isolated conversations (`conversation_id` / `LISA_CONVERSATION_ID`):**
+  pass `conversation_id` to `build_runtime` or `HostConfig.from_env` (or set
+  `LISA_CONVERSATION_ID`) to isolate the thread store under
+  `<thread_dir>/<user_slug>--<conversation_id>` and scope `surface_id`
+  (approvals, recovery items, and work products) per conversation while
+  sharing packs, policy, and models under `data_dir`.
+- **Pack virtual environment:** concurrent pack installs and activation
+  updates serialize on `.packs-venv.lock`.
 
 Startup can flag a pending reload after installing required packs (host
 administrators surface it as a next-launch note). Honor that lifecycle

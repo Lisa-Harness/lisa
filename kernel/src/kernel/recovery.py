@@ -83,6 +83,7 @@ class RecoveryRecord(_FrozenRecoveryModel):
     state: RecoveryState = "running"
     retry_policy: RecoveryRetryPolicy = "safe"
     attempt: int = 1
+    owner_pid: int | None = None
     last_error: str = ""
     result_preview: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

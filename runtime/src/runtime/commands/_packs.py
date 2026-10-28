@@ -40,6 +40,7 @@ from typing import Any
 
 from kernel.content_roots import discover_installed_content_roots
 from kernel.extension_names import normalize_pack_name
+from sdk.filelock import async_file_lock, file_lock
 
 from runtime.content_roots import (
     always_on_pack_names,
@@ -91,6 +92,11 @@ _DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-Harness/{pack}@main"
 
 
 # ── Lock-file I/O ────────────────────────────────────────────────────
+
+
+def _packs_venv_lock_path(data_dir: Path) -> Path:
+    """Return the cross-process advisory lock path for packs venv + lock mutations."""
+    return _packs_venv_for(data_dir).parent / ".packs-venv.lock"
 
 
 def _load_installed_packs_lock(runtime: HostRuntime) -> dict[str, Any]:
@@ -261,59 +267,61 @@ def set_pack_enabled(
     enabled: bool,
 ) -> tuple[bool, str]:
     """Persist explicit activation for one pack and flag the runtime reload."""
-    lock = _load_installed_packs_lock(runtime)
-    resolved = resolve_pack_name(package_name, lock)
-    if not resolved:
-        return False, (
-            f"Unknown pack '{package_name}'. Run /pack list to see available packs "
-            "and their canonical names."
+    with file_lock(_packs_venv_lock_path(runtime.config.data_dir)):
+        lock = _load_installed_packs_lock(runtime)
+        resolved = resolve_pack_name(package_name, lock)
+        if not resolved:
+            return False, (
+                f"Unknown pack '{package_name}'. Run /pack list to see available packs "
+                "and their canonical names."
+            )
+
+        always_on = always_on_pack_names(
+            runtime.config.mcp_manifest_path,
+            always_on_packs=runtime.config.always_on_packs,
         )
+        if not enabled and resolved in always_on:
+            return False, f"Pack '{resolved}' is always on and cannot be disabled."
 
-    always_on = always_on_pack_names(
-        runtime.config.mcp_manifest_path,
-        always_on_packs=runtime.config.always_on_packs,
-    )
-    if not enabled and resolved in always_on:
-        return False, f"Pack '{resolved}' is always on and cannot be disabled."
-
-    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
-    index = next(
-        (
-            i
-            for i, entry in enumerate(entries)
-            if normalize_pack_name(str(entry.get("package_name") or "")) == resolved
-        ),
-        -1,
-    )
-    now_iso = datetime.now(UTC).isoformat()
-
-    if index >= 0:
-        entry = dict(entries[index])
-        entry["package_name"] = resolved
-        entry["enabled"] = enabled
-        entry["updated_at"] = now_iso
-        entry.setdefault("source_kind", "bundled")
-        if entry.get("source_kind") == "bundled":
-            entry.setdefault("source_ref", "bundled")
-        entries[index] = entry
-    else:
-        entries.append(
-            {
-                "package_name": resolved,
-                "enabled": enabled,
-                "source_kind": "bundled",
-                "source_ref": "bundled",
-                "updated_at": now_iso,
-            }
+        entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+        index = next(
+            (
+                i
+                for i, entry in enumerate(entries)
+                if normalize_pack_name(str(entry.get("package_name") or "")) == resolved
+            ),
+            -1,
         )
+        now_iso = datetime.now(UTC).isoformat()
 
-    lock["packs"] = entries
+        if index >= 0:
+            entry = dict(entries[index])
+            entry["package_name"] = resolved
+            entry["enabled"] = enabled
+            entry["updated_at"] = now_iso
+            entry.setdefault("source_kind", "bundled")
+            if entry.get("source_kind") == "bundled":
+                entry.setdefault("source_ref", "bundled")
+            entries[index] = entry
+        else:
+            entries.append(
+                {
+                    "package_name": resolved,
+                    "enabled": enabled,
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                    "updated_at": now_iso,
+                }
+            )
 
-    cleared: list[str] = []
-    if not enabled:
-        cleared = _clear_selected_provider_for_package(lock, resolved)
+        lock["packs"] = entries
 
-    _write_installed_packs_lock(runtime, lock)
+        cleared: list[str] = []
+        if not enabled:
+            cleared = _clear_selected_provider_for_package(lock, resolved)
+
+        _write_installed_packs_lock(runtime, lock)
+
     action = "enable" if enabled else "disable"
     runtime.session.request_restart(reason=f"pack {action}: {resolved}")
 
@@ -740,63 +748,65 @@ def run_pack_install_sync(
     is_local = _is_local_pack_spec(normalized_spec)
     install_target = normalized_spec.strip().strip('"') if is_local else normalized_spec
     packs_venv = _packs_venv_for(runtime.paths.data_dir)
-    ensured, ensure_err = _ensure_packs_venv_sync(packs_venv)
-    if not ensured:
-        return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
-    seeded, seed_err = _seed_packs_venv_with_framework_sync(packs_venv)
-    if not seeded:
-        return False, f"Install failed for '{normalized_spec}'.\n{seed_err}"
-    install_args = ["uv", "pip", "install", "--python", str(packs_venv)]
-    if editable and is_local:
-        install_args.append("-e")
-    install_args.append(install_target)
-    completed = subprocess.run(
-        install_args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=str(_FRAMEWORK_ROOT),
-        check=False,
-    )
-    if completed.returncode != 0:
-        output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
-        preview = "\n".join(output.splitlines()[-12:]).strip()
-        return False, f"Install failed for '{normalized_spec}'.\n{preview}"
-
-    package_name = normalize_pack_name(_extract_package_name_from_spec(normalized_spec))
-    if not package_name:
-        return (
-            False,
-            f"Install succeeded for '{normalized_spec}' but package name could not be inferred.",
+    with file_lock(_packs_venv_lock_path(runtime.paths.data_dir), timeout=120.0):
+        ensured, ensure_err = _ensure_packs_venv_sync(packs_venv)
+        if not ensured:
+            return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
+        seeded, seed_err = _seed_packs_venv_with_framework_sync(packs_venv)
+        if not seeded:
+            return False, f"Install failed for '{normalized_spec}'.\n{seed_err}"
+        install_args = ["uv", "pip", "install", "--python", str(packs_venv)]
+        if editable and is_local:
+            install_args.append("-e")
+        install_args.append(install_target)
+        completed = subprocess.run(
+            install_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(_FRAMEWORK_ROOT),
+            check=False,
         )
-    source_kind = (
-        "local" if is_local else ("git" if _is_git_pack_spec(normalized_spec) else "package")
-    )
-    lock = _load_installed_packs_lock(runtime)
-    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
-    now_iso = datetime.now(UTC).isoformat()
-    filtered = [
-        entry
-        for entry in entries
-        if normalize_pack_name(str(entry.get("package_name") or "")) != package_name
-    ]
-    entry_payload: dict[str, Any] = {
-        "package_name": package_name,
-        "installed_at": now_iso,
-        "source_kind": source_kind,
-        "source_ref": install_target,
-        "enabled": True,
-        "updated_at": now_iso,
-    }
-    if is_local and editable:
-        entry_payload["editable"] = True
-    filtered.append(entry_payload)
-    lock["packs"] = filtered
-    from runtime.mcp_pool import _resolved_mcp_env
+        if completed.returncode != 0:
+            output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
+            preview = "\n".join(output.splitlines()[-12:]).strip()
+            return False, f"Install failed for '{normalized_spec}'.\n{preview}"
 
-    _auto_select_capability_provider_on_install(
-        lock, package_name, env=_resolved_mcp_env(runtime, str(_FRAMEWORK_ROOT))
-    )
-    _write_installed_packs_lock(runtime, lock)
+        package_name = normalize_pack_name(_extract_package_name_from_spec(normalized_spec))
+        if not package_name:
+            msg = (
+                f"Install succeeded for '{normalized_spec}' "
+                "but package name could not be inferred."
+            )
+            return False, msg
+        source_kind = (
+            "local" if is_local else ("git" if _is_git_pack_spec(normalized_spec) else "package")
+        )
+        lock = _load_installed_packs_lock(runtime)
+        entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+        now_iso = datetime.now(UTC).isoformat()
+        filtered = [
+            entry
+            for entry in entries
+            if normalize_pack_name(str(entry.get("package_name") or "")) != package_name
+        ]
+        entry_payload: dict[str, Any] = {
+            "package_name": package_name,
+            "installed_at": now_iso,
+            "source_kind": source_kind,
+            "source_ref": install_target,
+            "enabled": True,
+            "updated_at": now_iso,
+        }
+        if is_local and editable:
+            entry_payload["editable"] = True
+        filtered.append(entry_payload)
+        lock["packs"] = filtered
+        from runtime.mcp_pool import _resolved_mcp_env
+
+        _auto_select_capability_provider_on_install(
+            lock, package_name, env=_resolved_mcp_env(runtime, str(_FRAMEWORK_ROOT))
+        )
+        _write_installed_packs_lock(runtime, lock)
 
     if request_restart:
         runtime.session.request_restart(reason=f"pack install: {package_name}")
@@ -816,42 +826,43 @@ async def run_pack_uninstall(
     if not requested:
         return False, "Usage: /pack uninstall <package-name>"
 
-    lock = _load_installed_packs_lock(runtime)
-    normalized = resolve_pack_name(requested, lock) or normalize_pack_name(requested)
-    if not normalized:
-        return False, "Usage: /pack uninstall <package-name>"
+    async with async_file_lock(_packs_venv_lock_path(runtime.paths.data_dir), timeout=120.0):
+        lock = _load_installed_packs_lock(runtime)
+        normalized = resolve_pack_name(requested, lock) or normalize_pack_name(requested)
+        if not normalized:
+            return False, "Usage: /pack uninstall <package-name>"
 
-    packs_venv = _packs_venv_for(runtime.paths.data_dir)
-    ensured, ensure_err = await _ensure_packs_venv(packs_venv)
-    if not ensured:
-        return False, f"Uninstall failed for '{normalized}'.\n{ensure_err}"
-    process = await asyncio.create_subprocess_exec(
-        "uv",
-        "pip",
-        "uninstall",
-        "-y",
-        "--python",
-        str(packs_venv),
-        normalized,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(_FRAMEWORK_ROOT),
-    )
-    output_bytes, _ = await process.communicate()
-    output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
-    if process.returncode != 0:
-        preview = "\n".join(output.splitlines()[-12:]).strip()
-        return False, f"Uninstall failed for '{normalized}'.\n{preview}"
+        packs_venv = _packs_venv_for(runtime.paths.data_dir)
+        ensured, ensure_err = await _ensure_packs_venv(packs_venv)
+        if not ensured:
+            return False, f"Uninstall failed for '{normalized}'.\n{ensure_err}"
+        process = await asyncio.create_subprocess_exec(
+            "uv",
+            "pip",
+            "uninstall",
+            "-y",
+            "--python",
+            str(packs_venv),
+            normalized,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(_FRAMEWORK_ROOT),
+        )
+        output_bytes, _ = await process.communicate()
+        output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
+        if process.returncode != 0:
+            preview = "\n".join(output.splitlines()[-12:]).strip()
+            return False, f"Uninstall failed for '{normalized}'.\n{preview}"
 
-    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
-    filtered = [
-        entry
-        for entry in entries
-        if normalize_pack_name(str(entry.get("package_name") or "")) != normalized
-    ]
-    lock["packs"] = filtered
-    cleared = _clear_selected_provider_for_package(lock, normalized)
-    _write_installed_packs_lock(runtime, lock)
+        entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+        filtered = [
+            entry
+            for entry in entries
+            if normalize_pack_name(str(entry.get("package_name") or "")) != normalized
+        ]
+        lock["packs"] = filtered
+        cleared = _clear_selected_provider_for_package(lock, normalized)
+        _write_installed_packs_lock(runtime, lock)
 
     runtime.session.request_restart(reason=f"pack uninstall: {normalized}")
     if cleared:

@@ -15,6 +15,7 @@ truth for workflow state.
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import io
 import json
@@ -25,6 +26,7 @@ from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from sdk.filelock import file_lock
 from sdk.thread.redaction import ThreadRedactionPolicy
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class _SegmentPaths(NamedTuple):
     marker: Path  # <base>.digest.marker
     dictionary: Path  # <base>.dict.zstd
     legacy: Path  # <base>.jsonl (pre-segmentation, for the rename guard)
+    lock: Path  # <base>.lock (cross-process advisory lock)
 
 
 def _segment_paths(base: Path) -> _SegmentPaths:
@@ -68,7 +71,20 @@ def _segment_paths(base: Path) -> _SegmentPaths:
         marker=Path(f"{base}.digest.marker"),
         dictionary=Path(f"{base}.dict.zstd"),
         legacy=Path(f"{base}.jsonl"),
+        lock=Path(f"{base}.lock"),
     )
+
+
+def _read_lock_context(paths: _SegmentPaths) -> contextlib.AbstractContextManager[None]:
+    """Acquire ``paths.lock`` when any thread-store artifact exists on disk."""
+    if (
+        paths.lock.exists()
+        or paths.current.exists()
+        or paths.index_path.exists()
+        or paths.legacy.exists()
+    ):
+        return file_lock(paths.lock)
+    return contextlib.nullcontext()
 
 
 def _sealed_segment_path(base: Path, seg_id: str) -> Path:
@@ -402,16 +418,17 @@ class ThreadStore:
         ``limit <= 0`` returns every active entry. Returns ``[]`` when no
         store exists.
         """
-        if limit <= 0:
-            return _read_active_entries(self._paths.current)
-        active = _newest_entries(_reverse_active_lines(self._paths.current), limit)
-        if len(active) >= limit:
-            return active
-        records = _read_index(self._paths.index_path)
-        if not records:
-            return active
-        sealed_path = _sealed_segment_path(self._paths.base, records[-1].seg_id)
-        return self._sealed_tail(sealed_path, limit - len(active)) + active
+        with _read_lock_context(self._paths):
+            if limit <= 0:
+                return _read_active_entries(self._paths.current)
+            active = _newest_entries(_reverse_active_lines(self._paths.current), limit)
+            if len(active) >= limit:
+                return active
+            records = _read_index(self._paths.index_path)
+            if not records:
+                return active
+            sealed_path = _sealed_segment_path(self._paths.base, records[-1].seg_id)
+            return self._sealed_tail(sealed_path, limit - len(active)) + active
 
     def _sealed_tail(self, sealed_path: Path, needed: int) -> list[dict[str, Any]]:
         """Return the newest ``needed`` valid entries of one sealed segment, oldest-first."""
@@ -439,9 +456,10 @@ class ThreadStore:
         stamped on the entry are one source of truth — no off-by-one.
         The active segment is counted by streaming lines, never parsed.
         """
-        records = _read_index(self._paths.index_path)
-        sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        return sealed_spans + _count_active_entries(self._paths.current)
+        with _read_lock_context(self._paths):
+            records = _read_index(self._paths.index_path)
+            sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+            return sealed_spans + _count_active_entries(self._paths.current)
 
     def load_range(self, *, start_turn: int, end_turn: int) -> list[dict[str, Any]]:
         """Load entries whose global turn index falls in ``[start_turn, end_turn]``.
@@ -479,13 +497,14 @@ class ThreadStore:
         """
         if start_turn > end_turn:
             return
-        records = _read_index(self._paths.index_path)
-        for record in records:
-            if record.turn_hi < start_turn or record.turn_lo > end_turn:
-                continue
-            yield from self._iter_sealed(record, start_turn, end_turn, wanted)
-        active_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        yield from self._iter_active(active_lo, start_turn, end_turn, wanted)
+        with _read_lock_context(self._paths):
+            records = _read_index(self._paths.index_path)
+            for record in records:
+                if record.turn_hi < start_turn or record.turn_lo > end_turn:
+                    continue
+                yield from self._iter_sealed(record, start_turn, end_turn, wanted)
+            active_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+            yield from self._iter_active(active_lo, start_turn, end_turn, wanted)
 
     def _iter_sealed(
         self,

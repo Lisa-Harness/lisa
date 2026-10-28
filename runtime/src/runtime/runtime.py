@@ -726,12 +726,20 @@ class HostRuntime:
             else self.session_plan.manifest.name
         )
         surface = self.session_plan.manifest.surface
+        resolved_conversation_id = config.conversation_id.strip()
         self.config = replace(
             config,
             user_slug=effective_user_slug,
+            conversation_id=resolved_conversation_id,
             session_context=self.session_plan.source_uri,
             surface_type=config.surface_type or surface.type,
-            surface_id=config.surface_id or surface.id,
+            surface_id=config.surface_id or resolved_conversation_id or surface.id,
+            identity_conversation_id=(
+                resolved_conversation_id or config.identity_conversation_id
+            ),
+            identity_surface_id=(
+                config.surface_id or resolved_conversation_id or config.identity_surface_id
+            ),
             memory_scope=config.memory_scope or surface.memory_scope,
         )
         self.execution_policy = resolve_execution_policy(

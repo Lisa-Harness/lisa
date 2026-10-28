@@ -138,11 +138,7 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
     "runtime/src/runtime/thread/_store.py": (
         "index_path.parent.mkdir(parents=True, exist_ok=True)",
-        "dict_path.parent.mkdir(parents=True, exist_ok=True)",
-        "dict_path.write_bytes(dict_data.as_bytes())",
-        "sealed_path.parent.mkdir(parents=True, exist_ok=True)",
-        "sealed_path.write_bytes(compressed)",
-        "paths.current.unlink()",
+        "paths.current.unlink(missing_ok=True)",
     ),
     "runtime/src/runtime/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
@@ -191,6 +187,12 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
     "mcp_server/src/mcp_server/config/cli.py": ("path.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/content/_fetcher.py": ("cache_dir.mkdir(parents=True, exist_ok=True)",),
+    "sdk/src/sdk/filelock.py": (
+        "resolved.parent.mkdir(parents=True, exist_ok=True)",
+        "path.parent.mkdir(parents=True, exist_ok=True)",
+        "os.replace(tmp_path, path)",
+        "tmp_path.unlink(missing_ok=True)",
+    ),
     "sdk/src/sdk/logging_setup.py": ("log_path.parent.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/memory/store.py": (
         "sqlite3.connect(",

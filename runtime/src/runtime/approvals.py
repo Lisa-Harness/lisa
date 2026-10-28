@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,8 +17,11 @@ from kernel.approval import (
     _find_pending_for_action,
     is_expired,
 )
+from sdk.filelock import async_file_lock, atomic_write_text, sidecar_lock_path
 
 __all__ = ["FileApprovalService"]
+
+logger = logging.getLogger(__name__)
 
 
 class FileApprovalService:
@@ -27,9 +30,10 @@ class FileApprovalService:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = asyncio.Lock()
+        self._lock_path = sidecar_lock_path(path)
 
     async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             existing = _find_pending_for_action(records, invocation, now=datetime.now(UTC))
             if existing is not None:
@@ -43,7 +47,7 @@ class FileApprovalService:
         request_id: str,
         identity: ApprovalIdentity,
     ) -> ApprovalReceipt | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if record is None or record.invocation.identity != identity:
@@ -80,7 +84,7 @@ class FileApprovalService:
         *,
         reason: str = "",
     ) -> bool:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if (
@@ -106,7 +110,7 @@ class FileApprovalService:
         request_id: str,
         invocation: ApprovalInvocation,
     ) -> ApprovalReceipt | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if record is None:
@@ -135,11 +139,11 @@ class FileApprovalService:
             return receipt
 
     async def get(self, request_id: str) -> ApprovalRecord | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             return self._load_records().get(request_id)
 
     async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             now = datetime.now(UTC)
             return [
                 record
@@ -155,6 +159,7 @@ class FileApprovalService:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            logger.warning("approvals: failed to load %s", self._path, exc_info=True)
             return {}
         if not isinstance(raw, dict):
             return {}
@@ -167,13 +172,10 @@ class FileApprovalService:
         return records
 
     def _store_records(self, records: dict[str, ApprovalRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             request_id: record.model_dump(mode="json") for request_id, record in records.items()
         }
-        temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
-        temp_path.write_text(
+        atomic_write_text(
+            self._path,
             json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
         )
-        os.replace(temp_path, self._path)

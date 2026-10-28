@@ -32,6 +32,7 @@ LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
 LISA_LOG_DEBUG_ENV = "LISA_LOG_DEBUG"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
 LISA_PROFILE_ENV = "LISA_PROFILE"
+LISA_CONVERSATION_ID_ENV = "LISA_CONVERSATION_ID"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
 LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
@@ -374,6 +375,7 @@ class HostConfig:
     timezone: str = "UTC"
     timezone_source: str = "default"
     user_slug: str = ""
+    conversation_id: str = ""
     session_context: str = ""
     no_thread: bool = False
 
@@ -537,6 +539,20 @@ class HostConfig:
     )
 
     @property
+    def thread_slug(self) -> str:
+        """Return the thread-store filename stem for this configuration.
+
+        When ``conversation_id`` is set, the thread store is isolated per
+        conversation as ``<user_slug>--<conversation_id>``; otherwise it
+        defaults to ``<user_slug>``.
+        """
+        conv = self.conversation_id.strip()
+        slug = self.user_slug.strip()
+        if conv and slug:
+            return f"{slug}--{conv}"
+        return conv or slug
+
+    @property
     def resolved_overlays_dir(self) -> Path:
         """Return the resolved overlays directory, defaulting to ``<data_dir>/config/overlays``."""
         return self.overlays_dir or (self.data_dir / CONFIG_DIR / "overlays")
@@ -592,6 +608,7 @@ class HostConfig:
         session_context: str = "",
         execution_policy: ExecutionPolicy | None = None,
         user_slug: str = "",
+        conversation_id: str = "",
         state_snapshot: str = "",
         mcp_manifest_path: str = "",
         streaming: str = "hybrid",
@@ -676,6 +693,9 @@ class HostConfig:
         resolved_session_context = session_context.strip()
         raw_user_slug = user_slug.strip()
         resolved_user_slug = raw_user_slug
+        resolved_conversation_id = (
+            conversation_id.strip() or _resolve_env(LISA_CONVERSATION_ID_ENV)
+        )
         resolved_surface_type = surface_type.strip()
         resolved_surface_id = surface_id.strip()
         resolved_memory_scope = ""
@@ -698,6 +718,7 @@ class HostConfig:
             timezone=resolved_tz,
             timezone_source=tz_source,
             user_slug=resolved_user_slug,
+            conversation_id=resolved_conversation_id,
             session_context=resolved_session_context,
             no_thread=no_thread,
             streaming=StreamingConfig(mode=stream_mode, char_delay_ms=stream_delay),

@@ -682,8 +682,8 @@ def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str
     }
     if not config.no_thread:
         exported["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
-    if config.user_slug:
-        exported["LISA_USER_SLUG"] = config.user_slug
+    if config.thread_slug:
+        exported["LISA_USER_SLUG"] = config.thread_slug
     # Thread-read redaction: the same env contract ``runtime.config`` resolves
     # for the host's in-process excerpt/manifest/search reads. The read-only
     # lisa-thread subprocess applies the same policy to ``thread_read_range``

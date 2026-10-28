@@ -45,6 +45,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
 from sdk.identity import execution_scope_key
 
 logger = logging.getLogger(__name__)
@@ -468,13 +469,13 @@ def remember_allow_prefix(data_dir: Path, *, tool: str, command_prefix: str) -> 
     path written.
     """
     path = _policy_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = load_policy(data_dir)
-    prefix = command_prefix.strip()
-    rule = PolicyRule(tool=tool, command_prefix=prefix)
-    if not any(r.tool == tool and r.command_prefix == prefix for r in doc.allow):
-        doc.allow.append(rule)
-    _write_policy(path, doc)
+    with file_lock(sidecar_lock_path(path)):
+        doc = load_policy(data_dir)
+        prefix = command_prefix.strip()
+        rule = PolicyRule(tool=tool, command_prefix=prefix)
+        if not any(r.tool == tool and r.command_prefix == prefix for r in doc.allow):
+            doc.allow.append(rule)
+        _write_policy(path, doc)
     logger.info("policy: remembered allow rule %s", rule.describe())
     return path
 
@@ -487,8 +488,8 @@ def write_policy(data_dir: Path, doc: PolicyDocument) -> Path:
     carries. Returns the path written.
     """
     path = _policy_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_policy(path, doc)
+    with file_lock(sidecar_lock_path(path)):
+        _write_policy(path, doc)
     return path
 
 
@@ -513,7 +514,7 @@ def _write_policy(path: Path, doc: PolicyDocument) -> None:
         "# Matchers: tool, effect (read|write|execute|external_write), pack,\n"
         "#   command_prefix, when (CEL expression; see docs/POLICY_GUIDE.md).\n"
     )
-    path.write_text(header + body, encoding="utf-8")
+    atomic_write_text(path, header + body, encoding="utf-8")
 
 
 # ── Containment fact ─────────────────────────────────────────────────────

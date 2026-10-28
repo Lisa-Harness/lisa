@@ -34,10 +34,13 @@ file extension). All derived file paths are computed from this base.
 | `<base>.current.jsonl` | Active segment — plain JSONL, append-only |
 | `<base>.<seg_id>.jsonl.zst` | Sealed segment — zstd-compressed JSONL |
 | `<base>.index.jsonl` | Sparse segment index — one JSON line per sealed segment |
-| `<base>.dict.zstd` | Trained zstd dictionary (optional) |
+| `<base>.dict.zstd` | Trained zstd dictionary (optional, immutable once created) |
+| `<base>.lock` | Cross-process advisory lock coordinating reads, appends, and segment seals |
 | `<base>.results/r<sha256>.json` | Tool results, model request snapshots, continuation objects |
 
-Where `<base> = <thread_dir>/<user_slug>` and `<seg_id>` is a zero-padded
+Where `<base> = <thread_dir>/<user_slug>` (or
+`<thread_dir>/<user_slug>--<conversation_id>` when `LISA_CONVERSATION_ID` is
+set) and `<seg_id>` is a zero-padded
 4-digit counter (`0001`, `0002`, ...).
 
 The legacy lossy digest sidecar (`<base>.digest.md` +
@@ -127,13 +130,21 @@ not an on-disk digest sidecar.
 
 ### Append
 
-1. Compute `current_path = <base>.current.jsonl`.
-2. One-time rename guard: if `current_path` does not exist but the
+All appends and segment seals execute under the cross-process advisory lock
+`<base>.lock` ([filelock.py](../../sdk/src/sdk/filelock.py)). Readers also
+acquire `<base>.lock` when present so reads never observe a half-sealed
+segment or unindexed rotation.
+
+1. Acquire `<base>.lock` and resolve the authoritative monotonic `turn`
+   index from `<base>.index.jsonl` + `<base>.current.jsonl` (advancing any
+   stale pre-computed turn number from a concurrent turn).
+2. Compute `current_path = <base>.current.jsonl`.
+3. One-time rename guard: if `current_path` does not exist but the
    legacy `<base>.jsonl` does, rename it to `current_path`.
-3. Count lines in `current_path`. If the count is >= `segment_turns`,
+4. Count lines in `current_path`. If the count is >= `segment_turns`,
    seal the active segment first.
-4. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
-   fresh) active segment.
+5. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
+   fresh) active segment and return the committed `turn` index.
 
 ### Sealing
 
@@ -156,10 +167,10 @@ is no latency guarantee based only on the entry count.
 
 - The **first seal** uses raw zstd (no dictionary).
 - After the first seal, a zstd dictionary is trained from the sealed
-  segment and stored as `<base>.dict.zstd`.
-- The dictionary is **retrained every 10 seals** from the most recent 10
-  sealed segments. This exploits the repeated JSON keys and similar turn
-  vocabulary for 4–6× compression.
+  segment and stored atomically as `<base>.dict.zstd`.
+- Once `<base>.dict.zstd` exists, it is **never overwritten in place** so
+  earlier sealed segments compressed with that dictionary remain
+  decompressable across the lifetime of the thread.
 
 ## Read paths
 
@@ -240,6 +251,7 @@ thread realignment (hard cutover, no compat shims).
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `LISA_THREAD_DIR` | `<data_dir>/data/threads` | Thread directory |
+| `LISA_CONVERSATION_ID` | `""` | Optional conversation identifier; when set, isolates the thread base path as `<thread_dir>/<user_slug>--<conversation_id>` |
 | `LISA_THREAD_SEGMENT_TURNS` | `256` | Seal threshold — active segment is sealed when it reaches this many entries |
 
 `LISA_THREAD_SEGMENT_TURNS` (256) controls how often the active segment

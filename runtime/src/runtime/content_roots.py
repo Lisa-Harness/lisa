@@ -37,6 +37,7 @@ from kernel.content_roots import (
     resolve_content_subdir_roots,
 )
 from kernel.extension_names import normalize_pack_name
+from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
 
 logger = logging.getLogger(__name__)
 
@@ -255,11 +256,12 @@ def save_installed_packs_lock(data_dir: Path, payload: dict[str, Any]) -> None:
     (indent, trailing newline, ensure_ascii) stays consistent.
     """
     path = runtime_pack_lock_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
+    with file_lock(sidecar_lock_path(path)):
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _normalize_lock_pack_entry(item: Any) -> dict[str, Any] | None:
@@ -359,41 +361,43 @@ def seed_bundled_packs_lock(data_dir: Path) -> bool:
         ``True`` if the lock was written (new bundled entries were added),
         ``False`` if no change was needed.
     """
-    lock = load_installed_packs_lock(data_dir)
-    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
-    known = {
-        normalize_pack_name(str(entry.get("package_name") or ""))
-        for entry in entries
-        if normalize_pack_name(str(entry.get("package_name") or ""))
-    }
+    path = runtime_pack_lock_path(data_dir)
+    with file_lock(sidecar_lock_path(path)):
+        lock = load_installed_packs_lock(data_dir)
+        entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+        known = {
+            normalize_pack_name(str(entry.get("package_name") or ""))
+            for entry in entries
+            if normalize_pack_name(str(entry.get("package_name") or ""))
+        }
 
-    added = False
-    now_iso = datetime.now(UTC).isoformat()
-    for root in discover_installed_content_roots():
-        package_name = infer_pack_package_name(root)
-        if not package_name or package_name in known:
-            continue
-        if package_name in EXCLUDED_PACK_NAMES:
-            continue
-        is_bundled = _is_bundled_pack_root(root)
-        entries.append(
-            {
-                "package_name": package_name,
-                "enabled": True,
-                "source_kind": "bundled" if is_bundled else "package",
-                "source_ref": "bundled" if is_bundled else "package",
-                "updated_at": now_iso,
-            }
-        )
-        known.add(package_name)
-        added = True
+        added = False
+        now_iso = datetime.now(UTC).isoformat()
+        for root in discover_installed_content_roots():
+            package_name = infer_pack_package_name(root)
+            if not package_name or package_name in known:
+                continue
+            if package_name in EXCLUDED_PACK_NAMES:
+                continue
+            is_bundled = _is_bundled_pack_root(root)
+            entries.append(
+                {
+                    "package_name": package_name,
+                    "enabled": True,
+                    "source_kind": "bundled" if is_bundled else "package",
+                    "source_ref": "bundled" if is_bundled else "package",
+                    "updated_at": now_iso,
+                }
+            )
+            known.add(package_name)
+            added = True
 
-    if not added:
-        return False
+        if not added:
+            return False
 
-    lock["packs"] = entries
-    save_installed_packs_lock(data_dir, lock)
-    return True
+        lock["packs"] = entries
+        save_installed_packs_lock(data_dir, lock)
+        return True
 
 
 def always_on_pack_names(

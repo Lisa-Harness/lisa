@@ -52,6 +52,7 @@ import copy
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -1245,7 +1246,11 @@ async def run_turn(
     # when the host declared one (host tool/total/wall limits preserved).
     turn_budget = _fold_mode_turn_budget(turn_budget, mode_config)
 
-    if hooks.services.recovery_service is not None:
+    if (
+        not sub_turn_kind
+        and delegate_depth == 0
+        and hooks.services.recovery_service is not None
+    ):
         try:
             await hooks.services.recovery_service.mark_running_indeterminate(
                 _build_recovery_identity(hooks)
@@ -4711,6 +4716,7 @@ async def _begin_recovery_record(
                 effect=cast(Any, effect),
                 parameters=(tool_arguments if isinstance(tool_arguments, dict) else {}),
                 retry_policy=cast(Any, recovery_retry_policy),
+                owner_pid=os.getpid(),
             )
         )
         recovery_item_id = started_record.work_item_id

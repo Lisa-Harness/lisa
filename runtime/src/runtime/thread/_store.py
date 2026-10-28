@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 if TYPE_CHECKING:
     import zstandard  # type-check-only; imported lazily at runtime
 
+from sdk.filelock import atomic_write_bytes
+
 logger = logging.getLogger(__name__)
 
 # ── Defaults ───────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ class _SegmentPaths(NamedTuple):
     index_path: Path  # <base>.index.jsonl
     dictionary: Path  # <base>.dict.zstd
     legacy: Path  # <base>.jsonl (pre-segmentation, for the rename guard)
+    lock: Path  # <base>.lock (cross-process advisory lock)
 
 
 def _segment_paths(base: Path) -> _SegmentPaths:
@@ -52,6 +55,7 @@ def _segment_paths(base: Path) -> _SegmentPaths:
         index_path=Path(f"{base}.index.jsonl"),
         dictionary=Path(f"{base}.dict.zstd"),
         legacy=Path(f"{base}.jsonl"),
+        lock=Path(f"{base}.lock"),
     )
 
 
@@ -179,15 +183,20 @@ def _train_dictionary(samples: Sequence[bytes | bytearray], dict_path: Path) -> 
         import zstandard  # lazy: defers optional dep startup cost
 
         dict_data = zstandard.train_dictionary(_DEFAULT_SEGMENT_TURNS, list(samples))
-        dict_path.parent.mkdir(parents=True, exist_ok=True)
-        dict_path.write_bytes(dict_data.as_bytes())
+        atomic_write_bytes(dict_path, dict_data.as_bytes())
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("thread: failed to train zstd dictionary: %s", exc)
 
 
 def _maybe_retrain_dictionary(paths: _SegmentPaths, sealed_segment_paths: list[Path]) -> None:
-    """Retrain the dictionary every ``_DICT_RETRAIN_EVERY`` seals."""
-    if len(sealed_segment_paths) % _DICT_RETRAIN_EVERY != 0:
+    """Train the dictionary once ``_DICT_RETRAIN_EVERY`` segments have been sealed.
+
+    Once ``paths.dictionary`` exists on disk, it is kept immutable so earlier
+    dictionary-compressed segments remain decodable with the same dictionary ID.
+    """
+    if paths.dictionary.exists():
+        return
+    if not sealed_segment_paths or len(sealed_segment_paths) % _DICT_RETRAIN_EVERY != 0:
         return
     samples: list[bytes] = []
     for seg_path in sealed_segment_paths[-_DICT_RETRAIN_EVERY:]:
@@ -262,8 +271,7 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
         return None
 
     compressed = _compress_bytes(raw_bytes, paths.dictionary)
-    sealed_path.parent.mkdir(parents=True, exist_ok=True)
-    sealed_path.write_bytes(compressed)
+    atomic_write_bytes(sealed_path, compressed)
 
     record = SegmentRecord(
         seg_id=seg_id,
@@ -287,7 +295,7 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
     sealed = sorted(paths.base.parent.glob(f"{paths.base.name}.*.jsonl.zst"))
     _maybe_retrain_dictionary(paths, sealed)
 
-    paths.current.unlink()
+    paths.current.unlink(missing_ok=True)
     return record
 
 
