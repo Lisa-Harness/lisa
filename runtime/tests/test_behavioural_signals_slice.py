@@ -146,3 +146,34 @@ def test_item_carries_verification_pointer(tmp_path: Path) -> None:
     _run_behavioral_signals_slice_impl(runtime)
 
     assert "thread_read_range" in _items(runtime)[0]["body"]
+
+
+def test_recovered_window_retracts_the_prior_finding(tmp_path: Path) -> None:
+    """Once the pattern clears, the previous turn's warning must not linger."""
+    _write_entries(tmp_path, [_entry(turn, blocked=True) for turn in range(4)])
+    runtime = _runtime(tmp_path)
+    assert _run_behavioral_signals_slice_impl(runtime)[0] == 1
+
+    _write_entries(tmp_path, [_entry(turn) for turn in range(4)])
+
+    assert _run_behavioral_signals_slice_impl(runtime) == (0, "", "")
+    assert _items(runtime) == []
+
+
+def test_scan_failure_retracts_the_prior_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finding from an earlier scan is not presented as current after a failure."""
+    import sdk.forensics
+
+    _write_entries(tmp_path, [_entry(turn, blocked=True) for turn in range(4)])
+    runtime = _runtime(tmp_path)
+    assert _run_behavioral_signals_slice_impl(runtime)[0] == 1
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(sdk.forensics, "compute_behavioral_signals", _boom)
+
+    assert _run_behavioral_signals_slice_impl(runtime) == (0, "", "")
+    assert _items(runtime) == []

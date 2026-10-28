@@ -265,6 +265,12 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **A cleared behavioural pattern no longer lingers in the prompt.** The
+  signals slice replaced its context item when a pattern fired but returned
+  early on a nominal window or a failed scan, so the previous turn's
+  "consecutive turns ended blocked" warning stayed in `context_items` after
+  the streak ended. Both paths now retract the item.
+- **Tests:** `runtime/tests/test_behavioural_signals_slice.py`
 - **Forensics reads sealed `decisions.jsonl` segments newest-last, and
   behavioural signals stay inside their turn window.** Append-only sealed
   segments (`.1` oldest) were ordered like `RotatingFileHandler` backups

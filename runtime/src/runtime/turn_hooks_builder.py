@@ -830,6 +830,17 @@ def _emit_context_item(
         tags=tags,
         metadata=metadata,
     )
+    _drop_context_item(runtime, item_id)
+    runtime.session.state_snapshot["context_items"].append(evidence.model_dump(mode="json"))
+
+
+def _drop_context_item(runtime: HostRuntime, item_id: str) -> None:
+    """Remove any context item with ``item_id`` from the session evidence lane.
+
+    Guarantees ``state_snapshot["context_items"]`` exists as a list afterwards.
+    """
+    if runtime.session.state_snapshot is None:
+        runtime.session.state_snapshot = {}
     catalog = runtime.session.state_snapshot.setdefault("context_items", [])
     if not isinstance(catalog, list):
         catalog = []
@@ -842,7 +853,6 @@ def _emit_context_item(
             or getattr(entry, "item_id", None) == item_id
         )
     ]
-    catalog.append(evidence.model_dump(mode="json"))
 
 
 def _run_behavioral_signals_slice_impl(
@@ -870,6 +880,7 @@ def _run_behavioral_signals_slice_impl(
 
     from runtime.thread import get_thread_redaction_policy
 
+    item_id = f"state:behavioural_signals:{runtime.config.user_slug}"
     try:
         store = ThreadStore(runtime.paths.thread_path, redaction=get_thread_redaction_policy())
         signals = compute_behavioral_signals(
@@ -878,17 +889,21 @@ def _run_behavioral_signals_slice_impl(
             token_usage_path=runtime.paths.token_usage_path,
         )
     except Exception as exc:  # pylint: disable=broad-except
-        # A slice must never break the turn; a failed scan is simply no signal.
+        # A slice must never break the turn; a failed scan is simply no signal,
+        # and a finding from an earlier scan must not be presented as current.
         logger.debug("behavioural-signals slice failed: %s", exc, exc_info=True)
+        _drop_context_item(runtime, item_id)
         return 0, "", ""
 
     body = render_signals(signals)
     if not body:
+        # A recovered window must retract the previous turn's finding.
+        _drop_context_item(runtime, item_id)
         return 0, "", ""
 
     _emit_context_item(
         runtime,
-        item_id=f"state:behavioural_signals:{runtime.config.user_slug}",
+        item_id=item_id,
         namespace="behavioural_signals",
         title=f"Observed patterns ({signals.window_turns} turns)",
         body=body,
