@@ -2220,15 +2220,32 @@ def _prepare_turn_messages_and_model(
     state.messages = messages
     state.transcript_start = len(messages) - 1
 
-    # Resolve preferred model
-    preferred_model_id = (
-        preferred_model_id.strip()
-        if isinstance(preferred_model_id, str) and preferred_model_id.strip()
-        else mode_config.default_model
-        if mode_config and mode_config.default_model
-        else "default"
-    )
-    model_def = resolve_model(preferred_model_id)
+    # Resolve preferred model. An explicit pin (the host's
+    # ``model_alias_for_mode`` result, or a delegate ``model_alias``) wins.
+    # Unpinned entries — delegate/fork children the kernel spawns itself —
+    # resolve the entry mode's ``mode_models`` pin first, so a
+    # coding_review → coding_execute delegate runs coding_execute's model
+    # instead of the ``default`` pin.
+    if isinstance(preferred_model_id, str) and preferred_model_id.strip():
+        preferred_model_id = preferred_model_id.strip()
+        model_def = resolve_model(preferred_model_id)
+    else:
+        _mode_pin = _resolve_mode_model_pin(
+            target_stage=mode_id,
+            target_mode_config=mode_config,
+            resolve_model=resolve_model,
+            log=log,
+        )
+        if _mode_pin is not None:
+            preferred_model_id, model_def = _mode_pin
+        else:
+            # Nothing resolved: let the seam raise its own diagnostic.
+            preferred_model_id = (
+                mode_config.default_model
+                if mode_config and mode_config.default_model
+                else "default"
+            )
+            model_def = resolve_model(preferred_model_id)
 
     # The routing context is established through the single writer
     # (``_apply_mode_routing_context``): the active mode id and the
@@ -5500,23 +5517,25 @@ def _advance_handoff_workflow_position(
         log.warning("workflow position advancement failed: %s", exc)
 
 
-def _resolve_mode_model_at_handoff(
+def _resolve_mode_model_pin(
     *,
     target_stage: str,
     target_mode_config: Any,
     resolve_model: Callable[[str], Any] | None,
     log: logging.Logger,
-) -> Any:
-    """Re-resolve the per-mode model pin for a mid-turn handoff target.
+) -> tuple[str, Any] | None:
+    """Resolve the per-mode model pin for a mode the kernel enters itself.
 
-    Mirrors the entry path's precedence (``model_alias_for_mode`` +
-    ``ModelManifest.resolve``: ``mode_models[target]`` wins, the mode's
-    authored ``default_model`` next, then the ``default`` mode's pin —
-    the host's ``resolve_model`` seam implements the mode-pin precedence).
-    Returns ``None`` when nothing resolves or no seam is wired — the
-    caller keeps the current model (the router can still select one per
-    iteration). Never raises: a pin that cannot resolve must not fail an
-    otherwise valid handoff.
+    Used for a mid-turn handoff target and for an unpinned turn entry
+    (delegate/fork children, which the host never routes through
+    ``model_alias_for_mode``). Precedence mirrors the host entry path
+    (``model_alias_for_mode`` + ``ModelManifest.resolve``):
+    ``mode_models[target]`` wins, the mode's authored ``default_model``
+    next, then the ``default`` mode's pin — the host's ``resolve_model``
+    seam implements the mode-pin precedence. Returns ``(ref, model_def)``
+    for the first candidate that resolves, or ``None`` when nothing
+    resolves or no seam is wired. Never raises: a pin that cannot resolve
+    must not fail an otherwise valid handoff.
     """
     if resolve_model is None:
         return None
@@ -5539,12 +5558,12 @@ def _resolve_mode_model_at_handoff(
         if resolved is not None:
             if ref != target_stage:
                 log.debug(
-                    "handoff model pin: mode '%s' resolved via '%s' -> %s",
+                    "mode model pin: mode '%s' resolved via '%s' -> %s",
                     target_stage,
                     ref,
                     getattr(resolved, "model_id", ref),
                 )
-            return resolved
+            return ref, resolved
     return None
 
 
@@ -5579,14 +5598,14 @@ def _apply_mode_routing_context(
     state.required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
     if not at_handoff:
         return
-    resolved = _resolve_mode_model_at_handoff(
+    resolved = _resolve_mode_model_pin(
         target_stage=mode_id,
         target_mode_config=mode_config,
         resolve_model=resolve_model,
         log=log,
     )
     if resolved is not None:
-        state.mode_model_def = resolved
+        state.mode_model_def = resolved[1]
 
 
 async def _execute_mid_turn_handoff(

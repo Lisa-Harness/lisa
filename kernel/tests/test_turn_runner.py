@@ -3828,6 +3828,56 @@ async def test_run_turn_handoff_falls_back_to_default_pin_when_target_unpinned()
 
 
 @pytest.mark.asyncio
+async def test_run_turn_unpinned_entry_resolves_entry_mode_pin() -> None:
+    """An unpinned turn entry resolves the entry mode's ``mode_models`` pin.
+
+    Regression for the 2026-10-27 incident: a ``coding_review`` turn
+    delegated to ``coding_execute``; the delegate child calls ``run_turn``
+    with no ``preferred_model_id`` (the host's ``model_alias_for_mode`` never
+    runs for kernel-spawned children), and the entry fallback skipped
+    ``mode_models[coding_execute]`` straight to the ``default`` pin.
+    """
+
+    from unittest.mock import patch
+
+    seen_model_defs: list[str] = []
+
+    async def one_step(**kwargs: Any) -> _StubCompletion:
+        seen_model_defs.append(str(getattr(kwargs.get("model_def"), "model_id", "?")))
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(model_ref: str) -> Any:
+        if model_ref == "coding_execute":
+            return SimpleNamespace(model_id="model-b", reasoning_model=False)
+        if model_ref == "default":
+            return SimpleNamespace(model_id="model-a", reasoning_model=False)
+        raise ValueError(f"unknown model {model_ref!r}")
+
+    catalog = {
+        "default": _mode_config(mode_id="default"),
+        "coding_execute": _mode_config(mode_id="coding_execute"),
+    }
+
+    hooks = _build_minimal_hooks(one_step)
+    hooks.models.resolve_model = resolve_model
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid),
+    ):
+        await run_turn(
+            mode_id="coding_execute",
+            query="implement the fix",
+            hooks=hooks,
+        )
+
+    assert seen_model_defs
+    assert all(mid == "model-b" for mid in seen_model_defs)
+
+
+@pytest.mark.asyncio
 async def test_run_turn_handoff_keeps_model_when_pin_unresolvable() -> None:
     """A handoff target whose pin cannot resolve keeps the current model.
 
