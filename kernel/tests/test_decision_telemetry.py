@@ -111,7 +111,7 @@ async def test_non_mapping_payload_is_rejected() -> None:
         await handler.publish_turn_decision("not-a-record")
         await handler.publish_turn_decision([1, 2, 3])
 
-        assert handler.read_recent() == []
+        assert not path.exists()
 
 
 @pytest.mark.asyncio
@@ -129,7 +129,7 @@ async def test_filter_can_drop_a_record() -> None:
         await handler.publish_turn_decision({"mode_id": "noisy", "turn_index": 1})
         await handler.publish_turn_decision({"mode_id": "quiet", "turn_index": 2})
 
-        records = handler.read_recent()
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         assert [r["mode_id"] for r in records] == ["quiet"]
         assert [topic for topic, _ in seen] == [TURN_DECISION_TOPIC, TURN_DECISION_TOPIC]
 
@@ -146,7 +146,8 @@ async def test_raising_filter_still_persists() -> None:
         handler = DecisionTelemetryHandler(path, filter_fn=_filter)
         await handler.publish_turn_decision({"mode_id": "kept", "turn_index": 9})
 
-        assert [r["mode_id"] for r in handler.read_recent()] == ["kept"]
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert [r["mode_id"] for r in records] == ["kept"]
 
 
 @pytest.mark.asyncio
@@ -159,30 +160,9 @@ async def test_sequence_distinguishes_same_clock_records() -> None:
         await handler.publish_turn_decision({"mode_id": "a", "turn_index": 1})
         await handler.publish_turn_decision({"mode_id": "a", "turn_index": 1})
 
-        records = handler.read_recent()
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         assert len(records) == 2
         assert records[0]["sequence"] != records[1]["sequence"]
-
-
-def test_read_recent_tolerates_malformed_lines() -> None:
-    """A truncated line is skipped rather than breaking the whole read."""
-    with TemporaryDirectory() as td:
-        path = Path(td) / "decisions.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            '{"mode_id": "ok", "turn_index": 1}\n{"mode_id": "truncated"\n',
-            encoding="utf-8",
-        )
-
-        records = DecisionTelemetryHandler(path).read_recent()
-        assert [r["mode_id"] for r in records] == ["ok"]
-
-
-def test_read_recent_returns_empty_when_missing() -> None:
-    """A missing file is 'no evidence yet', not an error."""
-    with TemporaryDirectory() as td:
-        handler = DecisionTelemetryHandler(Path(td) / "missing.jsonl")
-        assert handler.read_recent() == []
 
 
 @pytest.mark.asyncio

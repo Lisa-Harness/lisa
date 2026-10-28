@@ -171,41 +171,8 @@ def test_build_token_usage_event_supports_time_billed_kind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_recent_returns_last_n_records() -> None:
-    """read_recent returns the last N persisted records as parsed dicts."""
-    with TemporaryDirectory() as td:
-        path = Path(td) / "token-usage.jsonl"
-        handler = TokenUsageTelemetryHandler(path)
-
-        for i in range(5):
-            await handler.publish(
-                build_token_usage_event(
-                    provider="openai",
-                    model_id=f"model-{i}",
-                    prompt_tokens=i * 10,
-                    completion_tokens=5,
-                )
-            )
-
-        records = handler.read_recent(limit=3)
-        assert len(records) == 3
-        # Last 3 records: model-2, model-3, model-4
-        assert records[0]["model_id"] == "model-2"
-        assert records[1]["model_id"] == "model-3"
-        assert records[2]["model_id"] == "model-4"
-
-
-def test_read_recent_returns_empty_when_file_missing() -> None:
-    """read_recent returns [] when the file doesn't exist."""
-    with TemporaryDirectory() as td:
-        path = Path(td) / "nonexistent.jsonl"
-        handler = TokenUsageTelemetryHandler(path)
-        assert handler.read_recent(limit=10) == []
-
-
-@pytest.mark.asyncio
-async def test_read_recent_skips_invalid_json_lines() -> None:
-    """read_recent skips lines that can't be parsed as JSON."""
+async def test_reader_skips_invalid_json_lines() -> None:
+    """A malformed line in the JSONL file does not break a direct read."""
     with TemporaryDirectory() as td:
         path = Path(td) / "token-usage.jsonl"
         handler = TokenUsageTelemetryHandler(path)
@@ -222,7 +189,14 @@ async def test_read_recent_skips_invalid_json_lines() -> None:
             build_token_usage_event(provider="openai", model_id="valid2", prompt_tokens=10)
         )
 
-        records = handler.read_recent(limit=10)
+        records = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                decoded = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(decoded, dict):
+                records.append(decoded)
         # Two valid records, one invalid line skipped
         assert len(records) == 2
         assert records[0]["model_id"] == "valid"

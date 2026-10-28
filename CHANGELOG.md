@@ -185,6 +185,17 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Removed
 
+- **Dead whole-file `read_recent` readers deleted.**
+  `DecisionTelemetryHandler.read_recent` and
+  `TokenUsageTelemetryHandler.read_recent` had no production caller —
+  only their own tests invoked them — while performing an unbounded
+  `read_text().splitlines()` whole-file read that contradicts the
+  byte-bounded reader discipline the forensic path established, and the
+  decisions variant was silently lossy against the segmented format
+  (it read only the active file, ignoring sealed segments). Tests that
+  used `read_recent` as an oracle for append/filter/sequence behavior
+  now read the JSONL file directly, matching sibling tests. No behavior
+  change: no production caller existed.
 - **The staged-workflow FSM deleted.** Modes could declare `mode_kind:
   workflow` and ship one `{stage_id}.md` file per stage, forming an
   intra-mode finite state machine with `start_stage_id`,
