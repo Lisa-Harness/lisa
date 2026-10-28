@@ -944,6 +944,12 @@ class MCPToolPool:
             prior = next((t for t in self._tools if t.name == name), None)
             target_server_id = self._synthetic_targets.get(name)
             server_id = target_server_id or SYNTHETIC_SERVER_ID
+            if prior is None or not prior.input_schema:
+                logger.warning(
+                    "synthetic tool %r rebuilt with an empty input schema; "
+                    "it will be advertised to the model as taking no parameters",
+                    name,
+                )
             spec = MCPToolSpec(
                 server_id=server_id,
                 name=name,
@@ -1669,11 +1675,19 @@ class MCPToolPool:
 
         tools = []
         for t in list_result.get("tools", []):
+            raw_schema = t.get("inputSchema")
+            if not raw_schema:
+                logger.warning(
+                    "MCP server %r tool %r has no inputSchema in tools/list; "
+                    "it will be advertised to the model as taking no parameters",
+                    server_id,
+                    t.get("name", ""),
+                )
             tools.append(
                 _types.Tool(
                     name=t.get("name", ""),
                     description=t.get("description"),
-                    input_schema=t.get("inputSchema") or {"type": "object", "properties": {}},
+                    input_schema=raw_schema or {"type": "object", "properties": {}},
                 )
             )
         result = _types.ListToolsResult(
@@ -1838,18 +1852,27 @@ class MCPToolPool:
         tools: list[Any],
     ) -> list[MCPToolSpec]:
         """Build the MCPToolSpec list from one server's discovered tools."""
-        return [
-            MCPToolSpec(
-                server_id=config.server_id,
-                name=tool.name,
-                description=tool.description or "",
-                input_schema=tool.input_schema or {"type": "object", "properties": {}},
-                read_only_hint=bool(
-                    getattr(getattr(tool, "annotations", None), "read_only_hint", False)
-                ),
+        specs: list[MCPToolSpec] = []
+        for tool in tools:
+            if not tool.input_schema:
+                logger.warning(
+                    "MCP server %r tool %r has an empty input schema; "
+                    "it will be advertised to the model as taking no parameters",
+                    config.server_id,
+                    tool.name,
+                )
+            specs.append(
+                MCPToolSpec(
+                    server_id=config.server_id,
+                    name=tool.name,
+                    description=tool.description or "",
+                    input_schema=tool.input_schema or {"type": "object", "properties": {}},
+                    read_only_hint=bool(
+                        getattr(getattr(tool, "annotations", None), "read_only_hint", False)
+                    ),
+                )
             )
-            for tool in tools
-        ]
+        return specs
 
     def _merge_server_tool_indexes(
         self,

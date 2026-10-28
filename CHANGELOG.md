@@ -247,6 +247,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **MCP tools with a missing or empty input schema now warn instead of silently
+  degrading to "takes no parameters".** Three sites in
+  `kernel.tools.mcp_client` fell back to `{"type": "object", "properties": {}}`
+  without a diagnostic: the synthetic-tool rebuild
+  (`_reindex_synthetic_tools`), the lenient raw-POST `tools/list` retry
+  (`_list_tools_lenient`), and the server tool-spec build
+  (`_build_server_tool_specs`). A schema-losing MCP server therefore presented
+  as a model-side failure — the tool was advertised but its parameters were
+  invisible, so the model could not call it correctly and nothing in the log
+  said why. Each site now emits a warning naming the server and tool and
+  stating the consequence. The fallback value itself is unchanged; only the
+  silence is fixed.
 - **A mode can no longer hand off to itself via the `default` carve-out.** The
   mode-handoff gate in `_execute_mode_handoff` read
   `if target_stage not in routing_targets and target_stage != "default":`. The
