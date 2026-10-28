@@ -130,6 +130,72 @@ candidate revision. A dated baseline, file count, or test count does not
 certify the current tree. Historical baseline repairs remain in
 Git/change history; they are not current release blockers.
 
+## Task goal
+
+A checked-commit task ends in one of two ways: a real commit through the mode's
+artifact producer, or a declared diagnostic. The declaration is `task_goal`,
+carried on `TurnIdentity` (`kernel/src/kernel/turn_hooks.py`) with values
+`implementation` and `diagnostic`.
+
+**Undeclared tasks default to `implementation` and fail closed.** A mode with
+`task_completion: checked_commit` that makes no worktree and never invokes its
+producer blocks, rather than accepting the turn on prose. The block message
+reads:
+
+```plaintext
+This task declares `task_goal: implementation` (the default), so it must commit
+through `<producer>` but the turn never invoked it. If this task is
+investigation only, append `[task_goal: diagnostic]` to your message and re-run
+(spacing and case are flexible).
+```
+
+### Declaring a diagnostic task
+
+There are two surfaces, and they apply at different levels.
+
+**An operator opening a task** uses the inline marker on the message:
+
+```plaintext
+diagnose the flaky retry test [task_goal: diagnostic]
+```
+
+The runtime consumes the marker (`_TASK_GOAL_MARKER_RE`,
+`runtime/src/runtime/handle_message.py`), strips it from the query before the
+model sees it, and stamps the resolved goal on the turn. The match is
+case-insensitive and tolerates whitespace anywhere inside the brackets, so
+`[task_goal:diagnostic]`, `[task_goal:  diagnostic]` and
+`[ task_goal : Diagnostic ]` are equivalent to the canonical form.
+
+Detection and stripping share that one pattern, so a declaration can never be
+removed from the message without also being read — a property a regression test
+asserts directly. Only the value `diagnostic` changes the contract; any other
+value is stripped and logged, and the turn keeps the `implementation` default
+rather than accepting a declaration it does not understand.
+
+This is the only operator-facing syntax — there is no CLI flag for it.
+
+**A parent turn delegating a child** sets the `task_goal` parameter on the
+`delegate` operation, which defaults to `implementation`. The model can set it,
+which is intended: the parent scope is choosing what the child is for, and the
+mutation guard below still applies to the child. A child goal never widens the
+parent's own completion contract.
+
+What neither surface can do is bypass the write check, so a diagnostic
+declaration cannot launder a task that mutated the workspace.
+
+### What a diagnostic goal does and does not permit
+
+A diagnostic task is accepted without a producer only when the turn attempted
+no producer **and** recorded zero `write`/`external_write` effect receipts. Any
+write blocks it, so the worst a mistaken declaration can cause is a loud
+false-block, never a false-pass with changes on disk. Accepting the turn stamps
+`completion_contract="diagnostic_soft_accept"` on the result for audit; the
+stamp is informational in v1 and gates nothing.
+
+Declare a diagnostic for investigation. Do not declare one to avoid committing
+work that should have been committed — the mutation guard will block it, and
+the turn will have spent its budget.
+
 ## Approval
 
 Worktree creation, patching, checks, commits, pushes, cleanup, and pull-request
