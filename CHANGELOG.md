@@ -189,6 +189,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+- **`fetch_page` routes through the `fetch` MCP capability.**
+  `providers.capabilities.fetch` was silently ignored because `fetch_page`
+  fetched in-process, so selecting `lisa-fetch-go` never launched (or
+  downloaded) the Go binary. A built-in `lisa-fetch` capability server
+  (`fetch_url`, `invalidate_fetch_cache`) is now the default owner, and tools
+  reach it through the new `ToolExecutionContext.mcp_tool_call` seam, bound on
+  every dispatch path; `fetch_page` fails loudly without it. The Python fetch
+  server raises `ToolError` so the HTTP status reaches the caller.
+  **Migration:**
+  - `FETCH_PAGE_TIMEOUT_SECONDS` is removed; the selected fetch server owns
+    the timeout.
+  - `fetch_page` no longer revalidates with ETags.
+  - A `providers.capabilities` selection that no loaded manifest claims is now
+    a startup error instead of being ignored (`sandbox` is exempt). Fix the
+    capability name or install the pack that provides it.
+  - Custom hosts and test doubles that build `ToolExecutionContext` for
+    `fetch_page` must supply `mcp_tool_call` (packstest's
+    `ToolContextFactory` accepts a double).
 - **`lisa-pack-search` retired; its two capabilities moved to their real
   owners.** The pack's `web_search` *contract* stub now ships in
   `lisa-pack-core` (`sdk.packs.core.tools.web_search`), next to `fetch_page`,
@@ -265,6 +283,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Pack binary servers resolve the release you installed.** A
+  `git+...@vX.Y.Z` pack install now takes its binary release tag from the
+  PEP 610 `direct_url.json` `requested_revision`, not the built distribution
+  version, which hatch-vcs can derive as a post/dev version from uv's cached
+  git tags after a tag moves. That stale version made every pack binary server
+  get skipped, and an explicit `providers.capabilities` selection then failed
+  with an unexplained "does not match any declared implementation". Binary
+  servers without a resolvable release are now excluded before capability
+  selection (explicit `binary_download.version` and local binaries are
+  unaffected), a selection error naming a skipped server includes the skip
+  reason, and uncaught CLI tracebacks are printed to stderr alongside the
+  structured log. **Migration:** a host that previously limped along with a
+  skipped binary server now starts without it, and explicitly selecting it is
+  an error until a release resolves.
 - **Forensics no longer leaks another user's telemetry on a shared root:** the
   decision, dispatch, and token ledgers under `<data-dir>/logs` are shared by
   every user, and `turn_index` is per-thread, so a scoped `/forensics` or
