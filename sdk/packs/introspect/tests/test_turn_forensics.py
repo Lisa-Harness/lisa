@@ -56,12 +56,14 @@ def _seed(data_dir: Path, *, user: str = "u", turns: int = 2) -> None:
                 {
                     "topic": "turn.decision",
                     "turn_index": turn,
+                    "user_slug": user,
                     "action_type": "ContinueAction",
                     "iteration": 1,
                 },
                 {
                     "topic": "tool.telemetry",
                     "turn_index": turn,
+                    "user_slug": user,
                     "target_id": "read_file",
                     "target_type": "tool",
                     "status": "success",

@@ -21,7 +21,12 @@ and hitting one appends a note. A forensic call that silently truncates is
 worse than one that says it did.
 
 Paths are derived from the injected data root only — never from an argument —
-so a caller cannot address another user's evidence by naming a path.
+so a caller cannot address another user's evidence by naming a path. The
+telemetry ledgers are shared by every user of a root, so a user-scoped reader
+also keeps only ledger records stamped with its ``user_slug``; turn indices are
+per-thread and would otherwise join another user's dispatches and spend onto
+this user's turns. The runtime log carries no user and is read as host-wide
+process diagnostics.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from sdk.forensics._join import build_bundle, turn_from_entry
 from sdk.forensics._logrec import (
     DEFAULT_MAX_BYTES,
     JsonlTail,
+    filter_owned,
     filter_window,
     parse_ts,
     read_jsonl_tail,
@@ -77,9 +83,10 @@ class ForensicReader:
     Args:
         data_dir: The host's resolved data root. Log paths are derived from it.
         thread_dir: The directory holding per-user thread stores.
-        user_slug: The user whose thread is read. Selects the store; it is
-            never taken from a tool argument, so a caller cannot request
-            another user's history.
+        user_slug: The user whose thread is read. Selects the store and scopes
+            the shared decision and token ledgers to this user's records; it
+            is never taken from a tool argument, so a caller cannot request
+            another user's history. Empty means an unscoped whole-root read.
         redaction: Optional read-time redaction applied to every thread-derived
             string. Threads persist raw prompts and reasoning, so a forensic
             read is exactly the surface that must respect this policy.
@@ -353,7 +360,7 @@ class ForensicReader:
             )
             return [], []
         sources.decisions_log = True
-        records = _since(tail, floor)
+        records = self._owned(_since(tail, floor), _DECISIONS_FILENAME, notes)
         self._note_truncation(tail, _DECISIONS_FILENAME, "the selected turns", notes)
         decisions = _cap_unattributed(
             [r for r in records if r.get("topic") == "turn.decision"],
@@ -385,7 +392,20 @@ class ForensicReader:
             return []
         sources.token_usage_log = True
         self._note_truncation(tail, _TOKEN_USAGE_FILENAME, "the selected turns", notes)
-        return [r for r in _since(tail, floor) if r.get("turn_index") in wanted]
+        owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
+        return [r for r in owned if r.get("turn_index") in wanted]
+
+    def _owned(
+        self, records: list[dict[str, Any]], name: str, notes: list[str]
+    ) -> list[dict[str, Any]]:
+        """Keep this user's ledger records, noting any that predate attribution."""
+        owned = filter_owned(records, self._user_slug)
+        if owned.unowned:
+            notes.append(
+                f"{owned.unowned} {name} records predate per-user attribution and were "
+                "excluded; evidence for turns before the upgrade is incomplete"
+            )
+        return owned.records
 
     def _read_log_errors(
         self,

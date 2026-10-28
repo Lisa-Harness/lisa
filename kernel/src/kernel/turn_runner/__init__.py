@@ -2712,6 +2712,7 @@ async def _resolve_iteration_lifecycle(
                 {
                     "mode_id": mode_id,
                     "turn_index": hooks.identity.turn_index,
+                    "user_slug": hooks.identity.user_slug,
                     "iteration": state.iteration,
                     "turns_in_stage": _turns_in_stage,
                     "action_type": _action_type,

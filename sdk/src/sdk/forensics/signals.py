@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sdk.forensics._join import dispatch_from_record
-from sdk.forensics._logrec import read_jsonl_tail
+from sdk.forensics._logrec import filter_owned, read_jsonl_tail
 from sdk.forensics._models import DispatchRecord
 from sdk.thread import ThreadStore
 
@@ -164,12 +164,17 @@ def compute_behavioral_signals(
     *,
     decisions_path: Any = None,
     token_usage_path: Any = None,
+    user_slug: str | None = None,
     thresholds: SignalThresholds | None = None,
     window_turns: int = DEFAULT_WINDOW_TURNS,
     scan_bytes: int = DEFAULT_SCAN_BYTES,
     scan_records: int = DEFAULT_SCAN_RECORDS,
 ) -> BehavioralSignals:
-    """Scan a bounded recent window and return the findings that crossed threshold."""
+    """Scan a bounded recent window and return the findings that crossed threshold.
+
+    ``user_slug`` scopes the shared ledgers to the thread's owner (see
+    :func:`filter_owned`); ``None`` reads them unscoped.
+    """
     limits = thresholds or SignalThresholds()
     entries = store.load_recent(limit=max(1, window_turns))
     result = BehavioralSignals(window_turns=len(entries))
@@ -179,13 +184,15 @@ def compute_behavioral_signals(
     # Ledger rows are scoped to the turns actually examined; a byte budget
     # alone would admit dispatches and cost from turns outside the window.
     window = {turn for entry in entries if isinstance(turn := entry.get("turn"), int)}
-    dispatches = _recent_dispatches(decisions_path, scan_bytes, scan_records, window)
+    dispatches = _recent_dispatches(decisions_path, scan_bytes, scan_records, window, user_slug)
 
     _check_blocked(entries, limits, result)
     _check_dispatches(dispatches, limits, result)
     _check_receipts(entries, dispatches, result)
     _check_mode_dwell(entries, limits, result)
-    _check_cost_spike(token_usage_path, scan_bytes, window, limits, result)
+    _check_cost_spike(
+        _recent_token_totals(token_usage_path, scan_bytes, user_slug), window, limits, result
+    )
     return result
 
 
@@ -284,15 +291,14 @@ def _check_mode_dwell(
 
 
 def _check_cost_spike(
-    token_usage_path: Any,
-    scan_bytes: int,
+    token_records: list[dict[str, Any]],
     window: set[int],
     limits: SignalThresholds,
     result: BehavioralSignals,
 ) -> None:
     """Report a turn whose token total dwarfs the window median."""
     per_turn_tokens: dict[int, int] = {}
-    for record in _recent_token_totals(token_usage_path, scan_bytes):
+    for record in token_records:
         turn = record.get("turn_index")
         if isinstance(turn, int) and turn in window:
             per_turn_tokens[turn] = per_turn_tokens.get(turn, 0) + int(
@@ -318,25 +324,28 @@ def _recent_dispatches(
     scan_bytes: int,
     scan_records: int,
     window: set[int],
+    user_slug: str | None,
 ) -> list[DispatchRecord]:
     """Return the recent dispatch records for the window's turns, oldest first."""
     if decisions_path is None:
         return []
+    tail = read_jsonl_tail(decisions_path, max_bytes=scan_bytes, backup_count=None)
     raw = [
         record
-        for record in read_jsonl_tail(
-            decisions_path, max_bytes=scan_bytes, backup_count=None
-        ).records
+        for record in filter_owned(tail.records, user_slug).records
         if record.get("topic") == "tool.telemetry" and record.get("turn_index") in window
     ]
     return [dispatch_from_record(record) for record in raw[-scan_records:]]
 
 
-def _recent_token_totals(token_usage_path: Any, scan_bytes: int) -> list[dict[str, Any]]:
-    """Return recent token-usage payloads within the byte budget."""
+def _recent_token_totals(
+    token_usage_path: Any, scan_bytes: int, user_slug: str | None
+) -> list[dict[str, Any]]:
+    """Return this user's recent token-usage payloads within the byte budget."""
     if token_usage_path is None:
         return []
-    return read_jsonl_tail(token_usage_path, max_bytes=scan_bytes).records
+    tail = read_jsonl_tail(token_usage_path, max_bytes=scan_bytes)
+    return filter_owned(tail.records, user_slug).records
 
 
 def render_signals(signals: BehavioralSignals) -> str:

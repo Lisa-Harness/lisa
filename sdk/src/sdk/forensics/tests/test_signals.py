@@ -395,3 +395,30 @@ def test_dispatches_in_sealed_ledger_segments_are_read(tmp_path: Path) -> None:
     signals = compute_behavioral_signals(store, decisions_path=ledger)
 
     assert signals.counters["failed_dispatches"] == 3
+
+
+def test_ledgers_are_scoped_to_the_thread_owner(tmp_path: Path) -> None:
+    """Another user's failures and spend on colliding turn indices are ignored.
+
+    Unowned (pre-attribution) rows are excluded too: with several users on a
+    root they cannot be assigned to this thread.
+    """
+    store = _write_entries(tmp_path, count=4)
+    alice = [{**row, "user_slug": "alice"} for row in _dispatches(turn=1, count=8)]
+    bob = [{**row, "user_slug": "bob"} for row in _dispatches(turn=2, count=8, status="error")]
+    legacy = _dispatches(turn=3, count=8, status="error")
+    ledger = _ledger(tmp_path, alice + bob + legacy)
+    tokens = _tokens(
+        tmp_path,
+        [{"user_slug": "alice", "turn_index": turn, "total_tokens": 100} for turn in range(4)]
+        + [{"user_slug": "bob", "turn_index": 3, "total_tokens": 50000}],
+    )
+
+    signals = compute_behavioral_signals(
+        store, decisions_path=ledger, token_usage_path=tokens, user_slug="alice"
+    )
+
+    assert signals.counters["dispatches"] == 8
+    assert signals.counters["failed_dispatches"] == 0
+    assert signals.counters["token_peak"] == {"turn": 0, "tokens": 100}
+    assert signals.is_empty

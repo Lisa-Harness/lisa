@@ -62,12 +62,14 @@ def _seed(tmp_path: Path, *, user: str = "u", turns: int = 3) -> tuple[Path, Pat
                 {
                     "topic": "turn.decision",
                     "turn_index": turn,
+                    "user_slug": user,
                     "action_type": "ContinueAction",
                     "iteration": 1,
                 },
                 {
                     "topic": "tool.telemetry",
                     "turn_index": turn,
+                    "user_slug": user,
                     "target_id": "read_file",
                     "target_type": "tool",
                     "status": "success",
@@ -206,6 +208,7 @@ def test_reader_render_is_bounded_for_a_real_turn(tmp_path: Path) -> None:
         [
             {
                 "topic": "turn.decision",
+                "user_slug": "u",
                 "turn_index": 0,
                 "action_type": "ContinueAction",
                 "iteration": n,
@@ -215,6 +218,7 @@ def test_reader_render_is_bounded_for_a_real_turn(tmp_path: Path) -> None:
         + [
             {
                 "topic": "tool.telemetry",
+                "user_slug": "u",
                 "turn_index": 0,
                 "target_id": "read_file",
                 "target_type": "tool",
@@ -268,6 +272,7 @@ def test_reader_reads_decisions_beyond_old_three_segment_cap(tmp_path: Path) -> 
             [
                 {
                     "topic": "turn.decision",
+                    "user_slug": "u",
                     "turn_index": turn,
                     "action_type": "ContinueAction",
                     "iteration": 1,
@@ -279,6 +284,7 @@ def test_reader_reads_decisions_beyond_old_three_segment_cap(tmp_path: Path) -> 
         [
             {
                 "topic": "turn.decision",
+                "user_slug": "u",
                 "turn_index": 5,
                 "action_type": "ContinueAction",
                 "iteration": 1,
@@ -329,7 +335,13 @@ def test_requested_turn_dispatches_survive_a_long_newer_ledger(tmp_path: Path) -
     data_dir, thread_dir = _seed(tmp_path, turns=3)
     ledger = data_dir / "logs" / "decisions.jsonl"
     newer = [
-        {"topic": "tool.telemetry", "turn_index": 2, "target_id": f"t{n}", "status": "success"}
+        {
+            "user_slug": "u",
+            "topic": "tool.telemetry",
+            "turn_index": 2,
+            "target_id": f"t{n}",
+            "status": "success",
+        }
         for n in range(30)
     ]
     with ledger.open("a", encoding="utf-8") as handle:
@@ -352,6 +364,7 @@ def test_unattributed_records_are_bounded_in_the_rendered_bundle(tmp_path: Path)
         for n in range(1000):
             record = {
                 "topic": "turn.decision",
+                "user_slug": "u",
                 "turn_index": 500 + n,
                 "action_type": "ContinueAction",
                 "action_reason": "r" * 150,
@@ -393,8 +406,13 @@ def test_costs_join_for_turns_older_than_the_log_window(tmp_path: Path) -> None:
     _write_jsonl(
         data_dir / "logs" / "token-usage.jsonl",
         [
-            {"turn_index": 1, "total_tokens": 7, "emitted_at": "2025-06-01T00:00:00+00:00"},
-            {"turn_index": 1, "total_tokens": 40, "emitted_at": old.isoformat()},
+            {
+                "user_slug": "u",
+                "turn_index": 1,
+                "total_tokens": 7,
+                "emitted_at": "2025-06-01T00:00:00+00:00",
+            },
+            {"user_slug": "u", "turn_index": 1, "total_tokens": 40, "emitted_at": old.isoformat()},
         ],
     )
 
@@ -402,3 +420,78 @@ def test_costs_join_for_turns_older_than_the_log_window(tmp_path: Path) -> None:
 
     # The stale record from an earlier thread with a colliding index is excluded.
     assert bundle.turns[0].total_tokens == 40
+
+
+def test_shared_ledgers_do_not_leak_another_users_turns(tmp_path: Path) -> None:
+    """Bob's dispatches and spend on his turn 1 never join onto Alice's turn 1.
+
+    The ledgers live under the shared data root and turn indices are
+    per-thread, so a join on ``turn_index`` alone attributes another user's
+    activity (and private model names) to the requesting user.
+    """
+    data_dir, thread_dir = _seed(tmp_path, user="alice", turns=2)
+    _write_thread_entry(
+        thread_dir / "bob",
+        {"timestamp_utc": datetime.now(UTC).isoformat(), "turn": 1, "query": "bob secret"},
+    )
+    ledger = data_dir / "logs" / "decisions.jsonl"
+    with ledger.open("a", encoding="utf-8") as handle:
+        for record in (
+            {
+                "topic": "tool.telemetry",
+                "turn_index": 1,
+                "user_slug": "bob",
+                "target_id": "bob_private_tool",
+                "status": "success",
+            },
+            {
+                "topic": "turn.decision",
+                "turn_index": 1,
+                "user_slug": "bob",
+                "action_type": "BobOnlyAction",
+            },
+        ):
+            handle.write(json.dumps(record) + "\n")
+    now = datetime.now(UTC).isoformat()
+    _write_jsonl(
+        data_dir / "logs" / "token-usage.jsonl",
+        [
+            {"user_slug": "alice", "turn_index": 1, "total_tokens": 10, "emitted_at": now},
+            {
+                "user_slug": "bob",
+                "turn_index": 1,
+                "total_tokens": 4321,
+                "estimated_cost_usd": 1.23,
+                "model_id": "bob-private-model",
+                "emitted_at": now,
+            },
+        ],
+    )
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="alice").bundle(turns="1")
+    rendered = render_bundle(bundle)
+
+    turn = bundle.turns[0]
+    assert [d.target_id for d in turn.dispatches] == ["read_file"]
+    assert [d.action_type for d in turn.decisions] == ["ContinueAction"]
+    for leaked in ("bob_private_tool", "BobOnlyAction", "4321", "1.23", "bob-private-model"):
+        assert leaked not in rendered
+    assert not any("predate per-user attribution" in note for note in bundle.notes)
+
+
+def test_unowned_legacy_records_are_excluded_with_a_note(tmp_path: Path) -> None:
+    """Records written before attribution cannot be scoped, so they are dropped."""
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+    ledger = data_dir / "logs" / "decisions.jsonl"
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps({"topic": "tool.telemetry", "turn_index": 0, "target_id": "legacy_tool"})
+            + "\n"
+        )
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle()
+
+    assert [d.target_id for d in bundle.turns[0].dispatches] == ["read_file"]
+    assert any(
+        "1 decisions.jsonl records predate per-user attribution" in note for note in bundle.notes
+    )

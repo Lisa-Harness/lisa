@@ -48,6 +48,8 @@ __all__ = [
     "DEFAULT_BACKUP_SEGMENTS",
     "DEFAULT_MAX_BYTES",
     "JsonlTail",
+    "OwnedRecords",
+    "filter_owned",
     "filter_window",
     "in_window",
     "parse_ts",
@@ -298,3 +300,35 @@ def filter_window(
     """Return the records whose own timestamp falls within the trailing window."""
     cutoff = now - timedelta(seconds=window_seconds)
     return [record for record in records if in_window(record_ts(record), cutoff)]
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedRecords:
+    """Records attributed to one user, plus how many lacked any attribution."""
+
+    records: list[dict[str, Any]]
+    #: Records with no ``user_slug`` (written before attribution existed).
+    unowned: int = 0
+
+
+def filter_owned(records: list[dict[str, Any]], user_slug: str | None) -> OwnedRecords:
+    """Keep only records whose ``user_slug`` is ``user_slug``.
+
+    The telemetry logs are shared by every user of a data root, so a per-user
+    read must not join another user's records onto its own turns (turn indices
+    are per-thread and collide across users). Records without a ``user_slug``
+    cannot be attributed and are excluded too; the count is returned so the
+    caller can say evidence is missing rather than absent. A falsy
+    ``user_slug`` means an unscoped (whole-root) read and keeps everything.
+    """
+    if not user_slug:
+        return OwnedRecords(records=records)
+    owned: list[dict[str, Any]] = []
+    unowned = 0
+    for record in records:
+        owner = record.get("user_slug")
+        if owner == user_slug:
+            owned.append(record)
+        elif not owner:
+            unowned += 1
+    return OwnedRecords(records=owned, unowned=unowned)

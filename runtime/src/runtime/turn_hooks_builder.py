@@ -891,6 +891,7 @@ def _run_behavioral_signals_slice_impl(
             store,
             decisions_path=runtime.paths.decisions_path,
             token_usage_path=runtime.paths.token_usage_path,
+            user_slug=runtime.config.user_slug,
         )
     except Exception as exc:  # pylint: disable=broad-except
         # A slice must never break the turn; a failed scan is simply no signal,

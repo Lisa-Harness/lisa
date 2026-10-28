@@ -2673,6 +2673,9 @@ class ToolExecutionTelemetry(BusEvent):
     #: Global thread turn index this dispatch belongs to, so the dispatch
     #: ledger joins to the thread and the cost log. ``None`` = off-turn work.
     turn_index: int | None = None
+    #: Owner of the dispatch. The ledger is shared by every user of a data
+    #: root and turn indices are per-thread, so readers scope by this.
+    user_slug: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

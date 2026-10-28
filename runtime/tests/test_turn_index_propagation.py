@@ -112,7 +112,11 @@ def test_to_tool_context_tolerates_missing_turn_index() -> None:
 
 @pytest.mark.asyncio
 async def test_decision_and_tool_payloads_include_turn_index() -> None:
-    """Both published topics carry the turn key the forensic join depends on."""
+    """Both published topics carry the turn and owner keys the forensic join needs.
+
+    The ledger is shared by every user of a data root and turn indices are
+    per-thread, so a record without its ``user_slug`` cannot be scoped.
+    """
     from dataclasses import replace
     from typing import Any
 
@@ -144,6 +148,7 @@ async def test_decision_and_tool_payloads_include_turn_index() -> None:
     )
     hooks.context_seams.event_bus = bus
     hooks.identity.turn_index = 123
+    hooks.identity.user_slug = "alice"
 
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert result.response_text == "Hello world."
@@ -151,12 +156,13 @@ async def test_decision_and_tool_payloads_include_turn_index() -> None:
     decisions = [p for t, p in published if t == "turn.decision"]
     assert decisions, "turn.decision was never published"
     assert all(d["turn_index"] == 123 for d in decisions)
+    assert all(d["user_slug"] == "alice" for d in decisions)
 
     # The dispatch ledger uses the same context field; assert the publisher
     # stamps it rather than reconstructing turn state on its own.
     from kernel.models import ToolExecutionContext
 
-    tool_ctx = ToolExecutionContext(tool_id="fetch_page", turn_index=123)
+    tool_ctx = ToolExecutionContext(tool_id="fetch_page", turn_index=123, user_slug="alice")
     tool_ctx.event_bus = _CaptureEventBus()
     _publish_tool_telemetry(tool_ctx, "fetch_page", "success", 5, None)
     import asyncio
@@ -165,3 +171,4 @@ async def test_decision_and_tool_payloads_include_turn_index() -> None:
     telemetry = [p for t, p in published if t == "tool.telemetry"]
     assert telemetry, "tool.telemetry was never published"
     assert telemetry[-1]["turn_index"] == 123
+    assert telemetry[-1]["user_slug"] == "alice"

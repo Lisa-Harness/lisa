@@ -265,6 +265,21 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Forensics no longer leaks another user's telemetry on a shared root:** the
+  decision, dispatch, and token ledgers under `<data-dir>/logs` are shared by
+  every user, and `turn_index` is per-thread, so a scoped `/forensics` or
+  `turn_forensics` read joined another user's dispatches, spend, and model
+  names onto the requester's colliding turns, and the behavioural-signals
+  slice counted them. `turn.decision` and `tool.telemetry` payloads
+  (`ToolExecutionTelemetry.user_slug`) now carry the owner; `ForensicReader`
+  and `compute_behavioral_signals(user_slug=...)` keep only that user's
+  records via `sdk.forensics.filter_owned`. **Migration:** ledger records
+  written before this change have no owner and are excluded from scoped reads
+  (the bundle reports the count), so pre-upgrade turns show no dispatch or
+  decision evidence.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_reader.py`,
+  `sdk/src/sdk/forensics/tests/test_signals.py`,
+  `runtime/tests/test_turn_index_propagation.py`
 - **Forensic reads cover the requested turns, within bounds:** the forensic
   reader parsed the whole thread before applying the turn cap, read only the
   newest 8 MiB of each ledger (so dispatches and costs for older turns
