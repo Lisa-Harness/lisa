@@ -221,12 +221,22 @@ def _step_id_for(mode_id: str, index: int) -> str:
     return f"{slug}_{index}"
 
 
-def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
-    """Return the set of capability ids (raw + bare form) from write receipts."""
+def _write_receipt_pairs(entry: dict[str, Any]) -> set[tuple[str, str]]:
+    """Return ``(mode_id, capability_id)`` pairs from the entry's write receipts.
+
+    Mode and capability are paired per receipt: one thread entry can span
+    several modes (a turn may enter in one mode and hand off mid-turn), so
+    matching them independently would let one mode's receipt and another
+    mode's capability combine into false completion evidence. Each capability
+    is emitted in raw and bare form (``storage.save`` and ``save``). Receipts
+    persisted before ``EffectReceipt.mode_id`` existed carry an empty id, so
+    the entry's own ``mode_id`` is used as their fallback.
+    """
     receipts = entry.get("effect_receipts")
     if not receipts or not isinstance(receipts, list):
         return set()
-    ids: set[str] = set()
+    entry_mode = str(entry.get("mode_id") or "")
+    pairs: set[tuple[str, str]] = set()
     for r in receipts:
         if not isinstance(r, dict):
             continue
@@ -235,36 +245,11 @@ def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
         cap = str(r.get("capability_id") or "")
         if not cap:
             continue
-        ids.add(cap)
-        # Bare form: strip a ``provider.`` namespace prefix (e.g.
-        # ``storage.read_file`` -> ``read_file``).
+        mode = str(r.get("mode_id") or "") or entry_mode
+        pairs.add((mode, cap))
         if "." in cap:
-            ids.add(cap.rsplit(".", 1)[-1])
-    return ids
-
-
-def _receipt_mode_ids(entry: dict[str, Any]) -> set[str]:
-    """Return the modes that produced the entry's write receipts.
-
-    A receipt carries the mode that was active when it was dispatched. That
-    matters because one thread entry can span several modes: a turn may enter
-    in one mode, hand off mid-turn, and hand off again, and the entry records
-    only the *entry* mode. Receipts persisted before ``EffectReceipt.mode_id``
-    existed carry an empty id, so the entry's own ``mode_id`` is used as the
-    fallback for them.
-    """
-    receipts = entry.get("effect_receipts")
-    if not receipts or not isinstance(receipts, list):
-        return set()
-    modes: set[str] = set()
-    for r in receipts:
-        if not isinstance(r, dict):
-            continue
-        if str(r.get("effect", "")) not in ("write", "external_write"):
-            continue
-        mode = str(r.get("mode_id") or "")
-        modes.add(mode or str(entry.get("mode_id") or ""))
-    return modes
+            pairs.add((mode, cap.rsplit(".", 1)[-1]))
+    return pairs
 
 
 def _entry_satisfies_step(entry: dict[str, Any], step: WorkflowStep) -> bool:
@@ -280,13 +265,11 @@ def _entry_satisfies_step(entry: dict[str, Any], step: WorkflowStep) -> bool:
       the handoff is the completion signal.
 
     Mode scoping prevents one mode's work from completing another's step.
-    It is evaluated per receipt where possible, not per entry, because an
-    entry that spans several modes carries all of their receipts.
+    It is evaluated per receipt, not per entry, because an entry that spans
+    several modes carries all of their receipts.
     """
     if step.write_capability is not None:
-        if step.mode_id not in _receipt_mode_ids(entry):
-            return False
-        return step.write_capability in _receipt_capability_ids(entry)
+        return (step.mode_id, step.write_capability) in _write_receipt_pairs(entry)
     if entry.get("mode_id") != step.mode_id:
         return False
     handoff = str(entry.get("handoff_to") or "")

@@ -265,6 +265,14 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **A write step completes only when one receipt carries both its mode and its
+  capability.** Per-receipt mode stamping matched the step's mode and
+  capability against independent sets, so a multi-mode turn with
+  `writer/save_notes` and `other/save_report` receipts falsely completed a
+  `writer/save_report` step. Completion now matches `(mode, capability)`
+  pairs from the same receipt, keeping the entry-mode fallback for legacy
+  receipts.
+- **Tests:** `kernel/tests/test_workflow_view.py`
 - **MCP tools with a missing or empty input schema now warn instead of silently
   degrading to "takes no parameters".** Three sites in
   `kernel.tools.mcp_client` fell back to `{"type": "object", "properties": {}}`
