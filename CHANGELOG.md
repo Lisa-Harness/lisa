@@ -12,7 +12,8 @@ All notable changes to the Lisa Harness will be documented in this file.
   every PR and main push, including documentation-only changes. The single
   fail-closed `Merge gate` checks quality, documentation, and the full test
   matrix. The release checklist describes protected-main settings and release
-  PRs; publishing rejects tags whose commits are not on main.
+  PRs; publishing rejects tags whose commits are not on main. Manual workflow
+  dispatch is validation-only even when targeting an existing version tag.
 
 - **Conditional operation blocks in mode instruction markup.** Mode authors
   can wrap procedural instruction text in
