@@ -356,3 +356,42 @@ def test_rendered_block_states_how_to_verify(tmp_path: Path) -> None:
 def test_default_scan_budget_stays_small() -> None:
     """The slice-time budget must remain slice-sized, not forensic-sized."""
     assert DEFAULT_SCAN_BYTES <= 512 * 1024
+
+
+def test_ledger_rows_outside_the_turn_window_are_ignored(tmp_path: Path) -> None:
+    """Dispatches and cost from turns outside the examined window do not count."""
+    store = _write_entries(tmp_path, count=2)
+    ledger = _ledger(
+        tmp_path,
+        _dispatches(turn=1, count=1) + _dispatches(turn=99, count=20, status="error"),
+    )
+    tokens = _tokens(
+        tmp_path,
+        [
+            {"turn_index": 0, "total_tokens": 100},
+            {"turn_index": 1, "total_tokens": 100},
+            {"turn_index": 99, "total_tokens": 50_000},
+        ],
+    )
+
+    signals = compute_behavioral_signals(store, decisions_path=ledger, token_usage_path=tokens)
+
+    assert signals.counters["dispatches"] == 1
+    assert signals.counters["failed_dispatches"] == 0
+    assert signals.counters["token_peak"] == {"turn": 0, "tokens": 100}
+    assert signals.is_empty
+
+
+def test_dispatches_in_sealed_ledger_segments_are_read(tmp_path: Path) -> None:
+    """Sealed ``decisions.jsonl.<n>`` segments are part of the scanned ledger."""
+    store = _write_entries(tmp_path, count=1)
+    ledger = _ledger(tmp_path, [])
+    sealed = tmp_path / "decisions.jsonl.5"
+    sealed.write_text(
+        "".join(json.dumps(r) + "\n" for r in _dispatches(turn=0, count=3, status="error")),
+        encoding="utf-8",
+    )
+
+    signals = compute_behavioral_signals(store, decisions_path=ledger)
+
+    assert signals.counters["failed_dispatches"] == 3

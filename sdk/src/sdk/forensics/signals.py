@@ -176,13 +176,16 @@ def compute_behavioral_signals(
     if not entries:
         return result
 
-    dispatches = _recent_dispatches(decisions_path, scan_bytes, scan_records)
+    # Ledger rows are scoped to the turns actually examined; a byte budget
+    # alone would admit dispatches and cost from turns outside the window.
+    window = {turn for entry in entries if isinstance(turn := entry.get("turn"), int)}
+    dispatches = _recent_dispatches(decisions_path, scan_bytes, scan_records, window)
 
     _check_blocked(entries, limits, result)
     _check_dispatches(dispatches, limits, result)
     _check_receipts(entries, dispatches, result)
     _check_mode_dwell(entries, limits, result)
-    _check_cost_spike(token_usage_path, scan_bytes, limits, result)
+    _check_cost_spike(token_usage_path, scan_bytes, window, limits, result)
     return result
 
 
@@ -283,6 +286,7 @@ def _check_mode_dwell(
 def _check_cost_spike(
     token_usage_path: Any,
     scan_bytes: int,
+    window: set[int],
     limits: SignalThresholds,
     result: BehavioralSignals,
 ) -> None:
@@ -290,7 +294,7 @@ def _check_cost_spike(
     per_turn_tokens: dict[int, int] = {}
     for record in _recent_token_totals(token_usage_path, scan_bytes):
         turn = record.get("turn_index")
-        if isinstance(turn, int):
+        if isinstance(turn, int) and turn in window:
             per_turn_tokens[turn] = per_turn_tokens.get(turn, 0) + int(
                 record.get("total_tokens") or 0
             )
@@ -313,14 +317,15 @@ def _recent_dispatches(
     decisions_path: Any,
     scan_bytes: int,
     scan_records: int,
+    window: set[int],
 ) -> list[DispatchRecord]:
-    """Return the most recent dispatch records, oldest first."""
+    """Return the recent dispatch records for the window's turns, oldest first."""
     if decisions_path is None:
         return []
     raw = [
         record
-        for record in iter_jsonl_tail(decisions_path, max_bytes=scan_bytes)
-        if record.get("topic") == "tool.telemetry"
+        for record in iter_jsonl_tail(decisions_path, max_bytes=scan_bytes, backup_count=None)
+        if record.get("topic") == "tool.telemetry" and record.get("turn_index") in window
     ]
     return [dispatch_from_record(record) for record in raw[-scan_records:]]
 

@@ -265,6 +265,17 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Forensics reads sealed `decisions.jsonl` segments newest-last, and
+  behavioural signals stay inside their turn window.** Append-only sealed
+  segments (`.1` oldest) were ordered like `RotatingFileHandler` backups
+  (`.1` newest), so a byte budget kept the *oldest* sealed segment and dropped
+  newer evidence. The slice-time signal scan also read only `.1`–`.3` and
+  counted dispatches and token cost from turns outside the twelve examined,
+  so failures and spikes from old turns surfaced as current patterns. Sealed
+  segments are now discovered ascending, signals read the full sealed set,
+  and ledger and cost rows are scoped to the examined turns.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_logrec.py`,
+  `sdk/src/sdk/forensics/tests/test_signals.py`
 - **A write step completes only when one receipt carries both its mode and its
   capability.** Per-receipt mode stamping matched the step's mode and
   capability against independent sets, so a multi-mode turn with

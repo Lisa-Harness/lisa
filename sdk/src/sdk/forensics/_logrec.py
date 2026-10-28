@@ -9,9 +9,10 @@ append-only JSONL that can rotate underneath a reader.
   whatever was rotated out — after a burst of verbose logging, that can be the
   entire window worth investigating.
 - ``logs/decisions.jsonl`` is segmented independently by its handler: the
-  active file is sealed to ``decisions.jsonl.<n>`` once it reaches the size
-  threshold, and sealed segments are never deleted. The full segment set is
-  read when ``backup_count`` is ``None``.
+  active file is sealed to the next ``decisions.jsonl.<n>`` once it reaches
+  the size threshold, and sealed segments are never deleted. Its numbering is
+  therefore append-only (``.1`` oldest), the reverse of rotation backups. The
+  full segment set is read when ``backup_count`` is ``None``.
 - ``logs/token-usage.jsonl`` is appended by its own handler and does not
   segment today, but it is read through the same primitive so adding
   segmentation later cannot silently truncate a window.
@@ -60,11 +61,16 @@ DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 def rotated_segments(path: Path, backup_count: int | None = DEFAULT_BACKUP_SEGMENTS) -> list[Path]:
     """Return the existing rotation set for ``path``, oldest file first.
 
-    When ``backup_count`` is ``None``, every sealed segment (``<name>.<n>``)
-    is discovered, sorted descending by ``n``, and the active file is appended
-    last — preserving the oldest-first contract. When it is an int, only the
-    newest ``backup_count`` segments are returned (byte-identical to the
-    previous behaviour).
+    The two numbering schemes run in opposite directions:
+
+    - ``backup_count`` an int: ``RotatingFileHandler`` backups, where ``.1``
+      is the *newest* backup, so ``.N`` .. ``.1`` are returned.
+    - ``backup_count`` ``None``: append-only sealed segments (as written by
+      ``DecisionTelemetryHandler``), where each seal takes the next index, so
+      ``.1`` is the *oldest*. Every numbered segment is discovered and
+      returned ascending.
+
+    In both cases the active file is last.
     """
     if backup_count is None:
         parent = path.parent
@@ -77,7 +83,7 @@ def rotated_segments(path: Path, backup_count: int | None = DEFAULT_BACKUP_SEGME
                     suffix = candidate.name[len(prefix) :]
                     if suffix.isdigit():
                         numbered.append((int(suffix), candidate))
-        numbered.sort(key=lambda item: item[0], reverse=True)
+        numbered.sort(key=lambda item: item[0])
         discovered = [p for _, p in numbered]
         if path.is_file():
             discovered.append(path)

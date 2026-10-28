@@ -49,21 +49,34 @@ def test_rotated_segments_skips_absent_backups(tmp_path: Path) -> None:
     assert [p.name for p in rotated_segments(active)] == ["runtime.jsonl"]
 
 
-def test_rotated_segments_none_discovers_all_segments(tmp_path: Path) -> None:
-    """backup_count=None returns every numbered segment plus the active file."""
-    active = tmp_path / "runtime.jsonl"
+def test_rotated_segments_none_discovers_all_segments_oldest_first(tmp_path: Path) -> None:
+    """backup_count=None returns append-only sealed segments ascending (.1 oldest)."""
+    active = tmp_path / "decisions.jsonl"
     active.write_text("", encoding="utf-8")
     for n in (1, 2, 3, 5, 7):
-        (tmp_path / f"runtime.jsonl.{n}").write_text("", encoding="utf-8")
+        (tmp_path / f"decisions.jsonl.{n}").write_text("", encoding="utf-8")
 
     assert [p.name for p in rotated_segments(active, None)] == [
-        "runtime.jsonl.7",
-        "runtime.jsonl.5",
-        "runtime.jsonl.3",
-        "runtime.jsonl.2",
-        "runtime.jsonl.1",
-        "runtime.jsonl",
+        "decisions.jsonl.1",
+        "decisions.jsonl.2",
+        "decisions.jsonl.3",
+        "decisions.jsonl.5",
+        "decisions.jsonl.7",
+        "decisions.jsonl",
     ]
+
+
+def test_append_only_budget_keeps_the_newest_sealed_segment(tmp_path: Path) -> None:
+    """A tight budget over sealed segments keeps the most recent records."""
+    active = tmp_path / "decisions.jsonl"
+    _write(tmp_path / "decisions.jsonl.1", [{"seq": 1}])
+    _write(tmp_path / "decisions.jsonl.2", [{"seq": 2}])
+    _write(active, [{"seq": 3}])
+    budget = (tmp_path / "decisions.jsonl.2").stat().st_size + active.stat().st_size
+
+    records = iter_jsonl_tail(active, max_bytes=budget, backup_count=None)
+
+    assert [r["seq"] for r in records] == [2, 3]
 
 
 def test_rotated_segments_int_keeps_newest_three(tmp_path: Path) -> None:
