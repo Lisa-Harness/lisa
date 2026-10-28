@@ -106,6 +106,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         artifact.proxy_pool_health = snapshot.proxy_pool_health
         artifact.token_usage_24h = snapshot.token_usage_24h
         artifact.recent_log_errors = snapshot.recent_log_errors
+        artifact.log_errors_in_window = snapshot.log_errors_in_window
+        artifact.log_errors_partial = snapshot.log_errors_partial
         artifact.operational_health = snapshot.operational_health
         artifact.operational_health_reasons = snapshot.operational_health_reasons
 
@@ -171,12 +173,25 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
         vibe += runtime_line
         if artifact.operational_health_reasons:
             vibe += f"\nHealth reasons: {', '.join(artifact.operational_health_reasons[:3])}"
+        partial = _partial_telemetry(artifact)
+        if partial:
+            vibe += f"\nPartial telemetry (read budget hit; lower bounds): {', '.join(partial)}"
     if len(vibe) > _VIBE_MAX_CHARS:
         vibe = vibe[: _VIBE_MAX_CHARS - 3] + "..."
     return vibe
 
 
 # ── Private helpers ────────────────────────────────────────────────────────
+
+
+def _partial_telemetry(artifact: LisaSelfModelArtifact) -> list[str]:
+    """Name the 24h summaries whose read stopped before the window start."""
+    partial: list[str] = []
+    if artifact.token_usage_24h is not None and artifact.token_usage_24h.partial:
+        partial.append("token usage")
+    if artifact.log_errors_partial:
+        partial.append("log errors")
+    return partial
 
 
 async def _gather_introspection(ctx: OperationExecutionContext) -> IntrospectSnapshot | None:

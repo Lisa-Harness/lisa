@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sdk.forensics._join import dispatch_from_record
-from sdk.forensics._logrec import iter_jsonl_tail
+from sdk.forensics._logrec import read_jsonl_tail
 from sdk.forensics._models import DispatchRecord
 from sdk.thread import ThreadStore
 
@@ -324,7 +324,9 @@ def _recent_dispatches(
         return []
     raw = [
         record
-        for record in iter_jsonl_tail(decisions_path, max_bytes=scan_bytes, backup_count=None)
+        for record in read_jsonl_tail(
+            decisions_path, max_bytes=scan_bytes, backup_count=None
+        ).records
         if record.get("topic") == "tool.telemetry" and record.get("turn_index") in window
     ]
     return [dispatch_from_record(record) for record in raw[-scan_records:]]
@@ -334,7 +336,7 @@ def _recent_token_totals(token_usage_path: Any, scan_bytes: int) -> list[dict[st
     """Return recent token-usage payloads within the byte budget."""
     if token_usage_path is None:
         return []
-    return list(iter_jsonl_tail(token_usage_path, max_bytes=scan_bytes))
+    return read_jsonl_tail(token_usage_path, max_bytes=scan_bytes).records
 
 
 def render_signals(signals: BehavioralSignals) -> str:

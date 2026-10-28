@@ -512,3 +512,66 @@ def contextlib_suppress():
     import contextlib
 
     return contextlib.suppress(asyncio.CancelledError)
+
+
+def _budgeted(max_bytes: int):  # type: ignore[no-untyped-def]
+    """Wrap ``read_jsonl_tail`` with a tiny budget to force truncation."""
+    from sdk.forensics import read_jsonl_tail
+
+    def _read(path, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["max_bytes"] = max_bytes
+        return read_jsonl_tail(path, **kwargs)
+
+    return _read
+
+
+@pytest.mark.asyncio
+async def test_window_summaries_report_partial_reads() -> None:
+    """A read that stopped inside the window is a lower bound, and says so."""
+    with TemporaryDirectory() as td:
+        now = datetime.now(UTC).isoformat()
+        token_path = Path(td) / "token-usage.jsonl"
+        log_path = Path(td) / "runtime.jsonl"
+        token_path.write_text(
+            "".join(
+                json.dumps({"emitted_at": now, "total_tokens": 10, "pad": "x" * 200}) + "\n"
+                for _ in range(100)
+            ),
+            encoding="utf-8",
+        )
+        log_path.write_text(
+            "".join(
+                json.dumps({"ts": now, "level": "error", "msg": "boom " * 40}) + "\n"
+                for _ in range(100)
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("runtime.introspect.read_jsonl_tail", _budgeted(4096)):
+            snapshot = await gather_introspection(log_path=log_path, token_usage_path=token_path)
+
+        assert snapshot.token_usage_24h is not None
+        assert snapshot.token_usage_24h.partial is True
+        assert snapshot.token_usage_24h.event_count < 100
+        assert snapshot.log_errors_partial is True
+
+
+@pytest.mark.asyncio
+async def test_window_summaries_are_complete_and_counted() -> None:
+    """A covered window is not partial, and the total survives the list cap."""
+    with TemporaryDirectory() as td:
+        now = datetime.now(UTC)
+        log_path = Path(td) / "runtime.jsonl"
+        stale = (now - timedelta(days=3)).isoformat()
+        records = [{"ts": stale, "level": "error", "msg": "old"}] + [
+            {"ts": now.isoformat(), "level": "warning", "msg": f"w{n}"} for n in range(120)
+        ]
+        log_path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+        )
+
+        snapshot = await gather_introspection(log_path=log_path)
+
+        assert snapshot.log_errors_partial is False
+        assert snapshot.log_errors_in_window == 120
+        assert len(snapshot.recent_log_errors) == 50

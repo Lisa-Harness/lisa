@@ -27,6 +27,7 @@ import asyncio
 import logging
 import sys
 import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -43,8 +44,8 @@ from kernel.models import (
 from sdk.forensics import (
     filter_window,
     in_window,
-    iter_jsonl_tail,
     parse_ts,
+    read_jsonl_tail,
 )
 
 if TYPE_CHECKING:
@@ -104,7 +105,8 @@ async def gather_introspection(
     mcp_health = gather_mcp_pool_health(mcp_pool)
     proxy_health = await gather_proxy_pool_health(proxy_pool)
     token_summary = _summarize_token_usage(token_usage_path)
-    log_errors, log_tail_lines = _tail_log_errors(log_path)
+    log_read = _tail_log_errors(log_path)
+    log_errors = log_read.errors
     failed_mcp_servers = sum(1 for health in mcp_health.values() if health.status == "failed")
     # Health is a "right now" judgement, so it uses the short window even
     # though the evidence list above stays wide. See _HEALTH_ERROR_WINDOW_SECONDS.
@@ -135,7 +137,9 @@ async def gather_introspection(
         proxy_pool_health=proxy_health,
         token_usage_24h=token_summary,
         recent_log_errors=log_errors,
-        logfile_tail_lines=log_tail_lines,
+        log_errors_in_window=log_read.in_window,
+        log_errors_partial=log_read.partial,
+        logfile_tail_lines=log_read.records_read,
         failed_mcp_servers=failed_mcp_servers,
         recent_error_count=recent_error_count,
         operational_health=_normalize_operational_health(operational_health),
@@ -315,11 +319,12 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
     records are all older than the window returns a zeroed summary so the
     caller can tell "no spend in 24h" from "no telemetry".
     """
-    records = list(iter_jsonl_tail(token_usage_path))
-    if not records:
+    now = datetime.now(UTC)
+    tail = read_jsonl_tail(token_usage_path, since=now - timedelta(seconds=_WINDOW_SECONDS))
+    if not tail.records:
         return None
 
-    windowed = filter_window(records, now=datetime.now(UTC), window_seconds=_WINDOW_SECONDS)
+    windowed = filter_window(tail.records, now=now, window_seconds=_WINDOW_SECONDS)
     total_cost = 0.0
     total_tokens = 0
     billed_tokens = 0
@@ -365,13 +370,25 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
         event_count=event_count,
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
+        partial=tail.truncated,
     )
 
 
-def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
-    """Extract error/warning entries from the log's trailing 24h window.
+@dataclass(frozen=True, slots=True)
+class _LogErrorRead:
+    """Warning/error evidence from the runtime log's trailing window."""
 
-    Returns ``(errors, records_read)``.
+    errors: list[LogErrorEntry] = field(default_factory=list)
+    #: Records parsed from disk (includes records outside the window).
+    records_read: int = 0
+    #: Warning/error lines in the window, before the evidence-list cap.
+    in_window: int = 0
+    #: The read budget ran out before the window start.
+    partial: bool = False
+
+
+def _tail_log_errors(log_path: Path | None) -> _LogErrorRead:
+    """Extract error/warning entries from the log's trailing 24h window.
 
     Reads the rotation set, not just the active file: ``RotatingFileHandler``
     moves records into ``<name>.1``..``<name>.3``, so an active-file-only read
@@ -384,12 +401,13 @@ def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
     any of them were.
     """
     if log_path is None:
-        return [], 0
-    records = list(iter_jsonl_tail(log_path))
-    if not records:
-        return [], 0
+        return _LogErrorRead()
+    now = datetime.now(UTC)
+    tail = read_jsonl_tail(log_path, since=now - timedelta(seconds=_WINDOW_SECONDS))
+    if not tail.records:
+        return _LogErrorRead()
 
-    windowed = filter_window(records, now=datetime.now(UTC), window_seconds=_WINDOW_SECONDS)
+    windowed = filter_window(tail.records, now=now, window_seconds=_WINDOW_SECONDS)
     errors: list[LogErrorEntry] = []
     for record in windowed:
         level = str(record.get("level") or "").lower()
@@ -415,7 +433,12 @@ def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
         )
     # Keep chronological order (oldest first), matching the long-standing read
     # contract; when the window holds more than the cap, keep the most recent.
-    return errors[-_LOG_ERROR_LIMIT:], len(records)
+    return _LogErrorRead(
+        errors=errors[-_LOG_ERROR_LIMIT:],
+        records_read=len(tail.records),
+        in_window=len(errors),
+        partial=tail.truncated,
+    )
 
 
 def _count_recent_errors(errors: list[LogErrorEntry], *, cutoff: datetime) -> int:

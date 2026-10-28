@@ -297,3 +297,108 @@ def test_reader_reads_decisions_beyond_old_three_segment_cap(tmp_path: Path) -> 
     # Not reported as unattributed or missing.
     assert all(d.turn_index != 4 for d in bundle.unattributed_decisions)
     assert not any("decisions.jsonl" in note and "no records" in note for note in bundle.notes)
+
+
+def test_turn_cap_is_applied_before_the_thread_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wide range decodes only the turns it will return."""
+    from sdk.thread import ThreadStore
+
+    data_dir, thread_dir = _seed(tmp_path, turns=10)
+    calls: list[tuple[int, int]] = []
+    original = ThreadStore.iter_range
+
+    def _spy(self: ThreadStore, *, start_turn: int, end_turn: int):  # type: ignore[no-untyped-def]
+        calls.append((start_turn, end_turn))
+        return original(self, start_turn=start_turn, end_turn=end_turn)
+
+    monkeypatch.setattr(ThreadStore, "iter_range", _spy)
+    reader = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u", max_turns=3)
+
+    bundle = reader.bundle(turns="0-9")
+
+    assert [turn.turn_index for turn in bundle.turns] == [7, 8, 9]
+    assert (7, 9) in calls
+    assert all(start >= 6 for start, _ in calls)
+    assert any("10 turns requested but the read cap is 3" in note for note in bundle.notes)
+
+
+def test_requested_turn_dispatches_survive_a_long_newer_ledger(tmp_path: Path) -> None:
+    """The record cap never drops the evidence for the turns asked about."""
+    data_dir, thread_dir = _seed(tmp_path, turns=3)
+    ledger = data_dir / "logs" / "decisions.jsonl"
+    newer = [
+        {"topic": "tool.telemetry", "turn_index": 2, "target_id": f"t{n}", "status": "success"}
+        for n in range(30)
+    ]
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.writelines(json.dumps(record) + "\n" for record in newer)
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle(
+        turns="0", max_records=5
+    )
+
+    assert [d.target_id for d in bundle.turns[0].dispatches] == ["read_file"]
+    assert len(bundle.unattributed_dispatches) == 5
+    assert any("32 dispatch records named no requested turn" in n for n in bundle.notes)
+
+
+def test_unattributed_records_are_bounded_in_the_rendered_bundle(tmp_path: Path) -> None:
+    """A long ledger of other turns cannot swamp the answer."""
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+    ledger = data_dir / "logs" / "decisions.jsonl"
+    with ledger.open("a", encoding="utf-8") as handle:
+        for n in range(1000):
+            record = {
+                "topic": "turn.decision",
+                "turn_index": 500 + n,
+                "action_type": "ContinueAction",
+                "action_reason": "r" * 150,
+            }
+            handle.write(json.dumps(record) + "\n")
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle()
+    rendered = render_bundle(bundle)
+
+    assert len(bundle.unattributed_decisions) == 50
+    assert len(rendered) < 20_000
+    assert "1000 decision records named no requested turn" in rendered
+
+
+def test_budget_truncation_is_reported_as_a_lower_bound(tmp_path: Path) -> None:
+    """A read that ran out of budget says its counts are partial."""
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+    now = datetime.now(UTC).isoformat()
+    _write_jsonl(
+        data_dir / "logs" / "runtime.jsonl",
+        [{"ts": now, "level": "warning", "msg": "x" * 200} for _ in range(100)],
+    )
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u", max_bytes=4096).bundle()
+
+    assert any("runtime.jsonl read stopped" in n and "lower bound" in n for n in bundle.notes)
+
+
+def test_costs_join_for_turns_older_than_the_log_window(tmp_path: Path) -> None:
+    """Per-turn cost is bounded by the turn's own time, not a 24h window."""
+    data_dir = tmp_path / "data"
+    thread_dir = data_dir / "data" / "threads"
+    old = datetime(2026, 1, 1, tzinfo=UTC)
+    for turn in range(2):
+        _write_thread_entry(
+            thread_dir / "u",
+            {"timestamp_utc": old.isoformat(), "mode_id": "m", "query": "q", "turn": turn},
+        )
+    _write_jsonl(
+        data_dir / "logs" / "token-usage.jsonl",
+        [
+            {"turn_index": 1, "total_tokens": 7, "emitted_at": "2025-06-01T00:00:00+00:00"},
+            {"turn_index": 1, "total_tokens": 40, "emitted_at": old.isoformat()},
+        ],
+    )
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle(turns="1")
+
+    # The stale record from an earlier thread with a colliding index is excluded.
+    assert bundle.turns[0].total_tokens == 40

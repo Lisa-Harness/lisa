@@ -30,7 +30,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   semantics: sealed segments are never deleted, so forensic evidence is
   preserved. `RotatingFileHandler` is deliberately not used because it deletes
   the oldest backup. The forensic reader now passes `backup_count=None` for
-  `decisions_path`, so the full segment set is read. `iter_jsonl_tail` /
+  `decisions_path`, so the full segment set is read. `read_jsonl_tail` /
   `rotated_segments` gain a `backup_count=None` mode that discovers every
   numbered segment.
 - **Tests:** `kernel/tests/test_decision_telemetry.py`,
@@ -265,6 +265,27 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Forensic reads cover the requested turns, within bounds:** the forensic
+  reader parsed the whole thread before applying the turn cap, read only the
+  newest 8 MiB of each ledger (so dispatches and costs for older turns
+  silently vanished behind newer traffic), and emitted every unattributed
+  record in the bundle. The cap is now applied before the thread read; ledgers
+  are read backwards from the newest segment and stop at the requested turns'
+  time floor; records naming a requested turn are always kept while
+  unattributed ones are capped to the newest `max_records` with a note; and a
+  read that exhausts its byte budget before covering its span reports a
+  lower-bound note. `iter_jsonl_tail` is replaced by `read_jsonl_tail`, which
+  returns `JsonlTail(records, truncated)`, and the default budget rises from
+  8 MiB to 32 MiB so it covers a full runtime log rotation set.
+- **Partial telemetry is labelled in introspection:** the 24h token and
+  log-error summaries read with the same windowed reader. `TokenUsageSummary`
+  gains `partial`, and `IntrospectSnapshot` / `LisaSelfModelArtifact` gain
+  `log_errors_in_window` (the total before the 50-entry evidence cap) and
+  `log_errors_partial`; the self-model vibe names any summary that is a lower
+  bound.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_logrec.py`,
+  `sdk/src/sdk/forensics/tests/test_reader.py`,
+  `runtime/tests/test_introspect.py`, `sdk/tests/test_self_model_telemetry.py`
 - **A cleared behavioural pattern no longer lingers in the prompt.** The
   signals slice replaced its context item when a pattern fired but returned
   early on a nominal window or a failed scan, so the previous turn's

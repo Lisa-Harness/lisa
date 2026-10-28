@@ -619,6 +619,9 @@ class TokenUsageSummary(BaseModel):
     cached_tokens: int = 0
     #: Prompt-cache writes (Anthropic cache_creation_input_tokens) observed.
     cache_creation_tokens: int = 0
+    #: True when the read budget ran out before the window start, so every
+    #: total above is a lower bound rather than the window's full spend.
+    partial: bool = False
 
 
 class LogErrorEntry(BaseModel):
@@ -663,6 +666,11 @@ class LisaSelfModelArtifact(BaseModel):
     proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    #: Warning/error lines in the 24h window; ``recent_log_errors`` holds
+    #: only the most recent of them.
+    log_errors_in_window: int = 0
+    #: True when the log read stopped before the window start (lower bound).
+    log_errors_partial: bool = False
     operational_health: str = "unknown"  # healthy|degraded|critical|unknown
     operational_health_reasons: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -682,6 +690,11 @@ class IntrospectSnapshot(BaseModel):
     proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    #: Warning/error lines in the 24h window; ``recent_log_errors`` holds
+    #: only the most recent of them.
+    log_errors_in_window: int = 0
+    #: True when the log read stopped before the window start (lower bound).
+    log_errors_partial: bool = False
     logfile_tail_lines: int = 0
     failed_mcp_servers: int = 0
     recent_error_count: int = 0

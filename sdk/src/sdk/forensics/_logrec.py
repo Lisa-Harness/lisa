@@ -22,9 +22,14 @@ Two bounds apply, and they are deliberately different:
 - **Byte budget.** A line count is not a memory bound: one serialized record
   can carry a full model request or a traceback. The budget is spent from the
   newest segment backwards, so an oversized history degrades to "the most
-  recent window" rather than to "the whole file in memory".
-- **Time window.** Callers filter on the record's own timestamp; this module
-  supplies only the parsing, so the semantics live in one place.
+  recent window" rather than to "the whole file in memory" — and the result
+  says so (``JsonlTail.truncated``), so a partial read is never presented as
+  a complete one.
+- **Time window.** Files are read backwards in blocks and, given ``since``,
+  the read stops at the first record older than the window. A 24h summary
+  therefore costs the size of 24h of records, not of the whole history.
+  Callers still filter on each record's own timestamp; this module supplies
+  the parsing, so the semantics live in one place.
 
 Malformed lines are skipped, never raised: a torn write is evidence too, and
 one bad line must not hide the records around it.
@@ -34,6 +39,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -41,10 +47,11 @@ from typing import Any
 __all__ = [
     "DEFAULT_BACKUP_SEGMENTS",
     "DEFAULT_MAX_BYTES",
+    "JsonlTail",
     "filter_window",
     "in_window",
-    "iter_jsonl_tail",
     "parse_ts",
+    "read_jsonl_tail",
     "record_ts",
     "rotated_segments",
 ]
@@ -53,9 +60,16 @@ __all__ = [
 #: ``<name>.1`` .. ``<name>.N``. ``sdk.logging_setup`` uses 3.
 DEFAULT_BACKUP_SEGMENTS = 3
 
-#: Default read ceiling: spans the active runtime log plus its full rotation
-#: set with margin, while remaining a hard memory bound.
-DEFAULT_MAX_BYTES = 8 * 1024 * 1024
+#: Default read ceiling. Generous on purpose: forensic and introspection reads
+#: exist so the model can examine its own behaviour, and a budget that cuts a
+#: window short hides exactly the evidence that matters. It spans the active
+#: runtime log plus its full rotation set (5 MiB x 4) with headroom, and stays
+#: a hard memory bound. Time-windowed reads usually stop far earlier.
+DEFAULT_MAX_BYTES = 32 * 1024 * 1024
+
+#: Unit of a backwards read. Small enough that a windowed read past its
+#: window start wastes little; large enough that syscalls stay negligible.
+_READ_BLOCK_BYTES = 256 * 1024
 
 
 def rotated_segments(path: Path, backup_count: int | None = DEFAULT_BACKUP_SEGMENTS) -> list[Path]:
@@ -98,21 +112,78 @@ def rotated_segments(path: Path, backup_count: int | None = DEFAULT_BACKUP_SEGME
     return segments
 
 
-def _read_segment_tail(segment: Path, budget: int) -> tuple[str, int]:
-    """Read one segment within ``budget`` bytes; return ``(text, spent)``.
+@dataclass(frozen=True, slots=True)
+class JsonlTail:
+    """The records read from a JSONL rotation set, and whether the read was cut short.
 
-    A segment larger than the remaining budget is read from its tail and its
-    leading partial line is discarded, so a half-written record is never
-    parsed as if it were evidence.
+    ``truncated`` is True only when the byte budget stopped the read before
+    the requested span was covered: before the oldest segment's start, or —
+    when ``since`` was given — before reaching a record older than ``since``.
+    A caller summarising a window must report a truncated read as a lower
+    bound, never as the window's total.
+    """
+
+    records: list[dict[str, Any]] = field(default_factory=list)
+    truncated: bool = False
+
+
+def _older_than(line: bytes | str, since: datetime) -> bool:
+    """Return whether one raw JSONL line is a record dated before ``since``."""
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    ts = record_ts(record)
+    return ts is not None and ts < since
+
+
+def _first_full_line(buffer: bytes) -> bytes:
+    """Return the first complete line after the leading partial one."""
+    start = buffer.find(b"\n")
+    if start < 0:
+        return b""
+    end = buffer.find(b"\n", start + 1)
+    return buffer[start + 1 : end] if end >= 0 else b""
+
+
+def _read_segment_tail(
+    segment: Path,
+    budget: int,
+    since: datetime | None,
+) -> tuple[list[str], int, str]:
+    """Read one segment backwards within ``budget`` bytes.
+
+    Returns ``(lines, spent, stop)`` where ``stop`` is ``"complete"`` (the
+    whole segment was read), ``"window"`` (a record older than ``since`` was
+    reached, so older bytes are not needed), or ``"budget"``. A read that
+    starts mid-file discards its leading partial line, so a half-written
+    record is never parsed as evidence.
     """
     size = segment.stat().st_size
-    if size <= budget:
-        return segment.read_text(encoding="utf-8", errors="replace"), size
+    position = size
+    blocks: list[bytes] = []
+    stop = "complete"
     with segment.open("rb") as handle:
-        handle.seek(size - budget)
-        text = handle.read().decode("utf-8", errors="replace")
-    newline = text.find("\n")
-    return (text[newline + 1 :] if newline >= 0 else ""), budget
+        while position > 0:
+            if size - position >= budget:
+                stop = "budget"
+                break
+            step = min(_READ_BLOCK_BYTES, position, budget - (size - position))
+            position -= step
+            handle.seek(position)
+            blocks.insert(0, handle.read(step))
+            if since is not None and position > 0:
+                probe = blocks[0] + (blocks[1] if len(blocks) > 1 else b"")
+                if _older_than(_first_full_line(probe), since):
+                    stop = "window"
+                    break
+    text = b"".join(blocks).decode("utf-8", errors="replace")
+    if position > 0:
+        newline = text.find("\n")
+        text = text[newline + 1 :] if newline >= 0 else ""
+    return text.splitlines(), size - position, stop
 
 
 def _parse_lines(lines: list[str]) -> Iterator[dict[str, Any]]:
@@ -128,37 +199,47 @@ def _parse_lines(lines: list[str]) -> Iterator[dict[str, Any]]:
             yield record
 
 
-def iter_jsonl_tail(
+def read_jsonl_tail(
     path: Path | None,
     *,
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int | None = DEFAULT_BACKUP_SEGMENTS,
-) -> Iterator[dict[str, Any]]:
-    """Yield parsed records from a JSONL file's rotation set, oldest first.
+    since: datetime | None = None,
+) -> JsonlTail:
+    """Read a JSONL rotation set newest-first and return its records oldest-first.
 
-    Yields nothing when the path is ``None`` or no segment exists. Parse
-    failures and non-mapping payloads are skipped.
+    With ``since``, reading stops once a record older than ``since`` is
+    reached, so a time-windowed caller pays only for its window however large
+    the history grows; records older than ``since`` may still be returned and
+    are the caller's to filter. ``max_bytes`` is a memory safety rail, and
+    hitting it before the span is covered sets ``truncated``.
+
+    Returns an empty result when the path is ``None`` or no segment exists.
+    Parse failures and non-mapping payloads are skipped.
     """
     if path is None:
-        return
+        return JsonlTail()
     segments = rotated_segments(path, backup_count)
-    if not segments:
-        return
-
     budget = max_bytes
     chunks: list[list[str]] = []
+    truncated = False
     for segment in reversed(segments):
         if budget <= 0:
+            truncated = True
             break
         try:
-            text, spent = _read_segment_tail(segment, budget)
+            lines, spent, stop = _read_segment_tail(segment, budget, since)
         except OSError:
             continue
         budget -= spent
-        chunks.append(text.splitlines())
-
-    for lines in reversed(chunks):
-        yield from _parse_lines(lines)
+        chunks.append(lines)
+        if stop == "budget":
+            truncated = True
+            break
+        if stop == "window" or (since is not None and lines and _older_than(lines[0], since)):
+            break
+    records = [record for lines in reversed(chunks) for record in _parse_lines(lines)]
+    return JsonlTail(records=records, truncated=truncated)
 
 
 def parse_ts(raw: Any) -> datetime | None:
