@@ -67,15 +67,7 @@ def test_true_condition_keeps_content_and_drops_markers() -> None:
 
     result = strip_conditional_operation_blocks(body, {"present_op"})
 
-    assert result == (
-        "Intro.\n"
-        "\n"
-        "Call `present_op` when done.\n"
-        "\n"
-        "Second paragraph.\n"
-        "\n"
-        "Outro.\n"
-    )
+    assert result == ("Intro.\n\nCall `present_op` when done.\n\nSecond paragraph.\n\nOutro.\n")
 
 
 def test_false_condition_removes_block_and_collapses_whitespace() -> None:
@@ -154,25 +146,11 @@ def test_consecutive_blocks_back_to_back() -> None:
 
 def test_kept_block_preserves_preexisting_newline_runs() -> None:
     """No removal means no collapse: unrelated 3+ newline runs survive."""
-    body = (
-        "Intro.\n"
-        "\n\n\n"
-        "<!-- if operation:present_op -->\n"
-        "Kept.\n"
-        "<!-- endif -->\n"
-        "\n\n\n"
-        "Outro.\n"
-    )
+    body = "Intro.\n\n\n\n<!-- if operation:present_op -->\nKept.\n<!-- endif -->\n\n\n\nOutro.\n"
 
     result = strip_conditional_operation_blocks(body, {"present_op"})
 
-    assert result == (
-        "Intro.\n"
-        "\n\n\n"
-        "Kept.\n"
-        "\n\n\n"
-        "Outro.\n"
-    )
+    assert result == ("Intro.\n\n\n\nKept.\n\n\n\nOutro.\n")
 
 
 def test_trailing_newline_preserved_through_strip() -> None:
@@ -350,6 +328,7 @@ def test_fenced_marker_inside_conditional_block_is_literal() -> None:
 # Pure transform: malformed markup
 # ---------------------------------------------------------------------------
 
+
 def test_unterminated_block_drops_only_the_marker_line() -> None:
     """A missing endif keeps the content and drops the opener marker only.
 
@@ -367,13 +346,7 @@ def test_unterminated_block_drops_only_the_marker_line() -> None:
 
     result = strip_conditional_operation_blocks(body, set())
 
-    assert result == (
-        "Intro.\n"
-        "\n"
-        "Content that was meant to be conditional.\n"
-        "\n"
-        "Outro.\n"
-    )
+    assert result == ("Intro.\n\nContent that was meant to be conditional.\n\nOutro.\n")
 
 
 def test_stray_endif_dropped() -> None:
@@ -561,9 +534,7 @@ def _patch_operation_catalog(monkeypatch, available: set[str]) -> None:
     monkeypatch.setattr(ipsar_fsm, "_get_operation_catalog", lambda: dict.fromkeys(available))
 
 
-def test_disk_loader_strips_blocks_for_missing_operations(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_disk_loader_strips_blocks_for_missing_operations(tmp_path: Path, monkeypatch) -> None:
     """The disk loader evaluates conditionals against the operation catalog."""
     _patch_operation_catalog(monkeypatch, {"present_op"})
     body = (
@@ -587,10 +558,9 @@ def test_disk_loader_strips_blocks_for_missing_operations(
     assert mode.instruction_body_raw == body.strip()
 
 
-def test_disk_loader_skips_strip_when_catalog_unavailable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_disk_loader_skips_strip_when_catalog_unavailable(tmp_path: Path, monkeypatch) -> None:
     """Without registered operation callbacks the body passes through unchanged."""
+
     def _unavailable() -> dict[str, object]:
         raise RuntimeError("Operation callbacks not registered.")
 
@@ -605,9 +575,7 @@ def test_disk_loader_skips_strip_when_catalog_unavailable(
     assert mode.instruction_body_raw == ""
 
 
-def test_disk_loader_marker_free_mode_has_empty_raw_body(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_disk_loader_marker_free_mode_has_empty_raw_body(tmp_path: Path, monkeypatch) -> None:
     """A mode with no conditional blocks keeps an empty raw-body field."""
     _patch_operation_catalog(monkeypatch, {"present_op"})
     body = "# Demo\n\nPlain instructions.\n"
@@ -620,9 +588,7 @@ def test_disk_loader_marker_free_mode_has_empty_raw_body(
     assert mode.instruction_body_raw == ""
 
 
-def test_evaluate_mode_conditionals_debug_logs_missing_operations(
-    monkeypatch, caplog
-) -> None:
+def test_evaluate_mode_conditionals_debug_logs_missing_operations(monkeypatch, caplog) -> None:
     """Stripped operation IDs are visible at debug level for authoring."""
     _patch_operation_catalog(monkeypatch, {"present_op"})
     body = "<!-- if operation:missing_op -->\nDropped.\n<!-- endif -->\n"
@@ -680,6 +646,7 @@ def test_apply_mode_conditionals_skips_when_catalog_unavailable(
     monkeypatch,
 ) -> None:
     """Without operation callbacks the MCP path leaves bodies unevaluated."""
+
     def _unavailable() -> dict[str, object]:
         raise RuntimeError("Operation callbacks not registered.")
 
@@ -715,18 +682,14 @@ def _make_bound_mode(
     )
 
 
-def test_conditional_reference_downgrades_warning_to_debug(
-    monkeypatch, caplog
-) -> None:
+def test_conditional_reference_downgrades_warning_to_debug(monkeypatch, caplog) -> None:
     """A missing operation referenced only in a stripped block logs debug."""
     _patch_operation_catalog(monkeypatch, {"present_op"})
     mode = _make_bound_mode(
         allowed_operation_ids=["missing_op"],
         instruction_body="Plain instructions.\n",
         instruction_body_raw=(
-            "<!-- if operation:missing_op -->\n"
-            "Call `missing_op`.\n"
-            "<!-- endif -->\n"
+            "<!-- if operation:missing_op -->\nCall `missing_op`.\n<!-- endif -->\n"
         ),
     )
 
@@ -757,9 +720,7 @@ def test_unconditional_reference_keeps_the_warning(monkeypatch, caplog) -> None:
     )
 
 
-def test_conditional_reference_also_named_in_body_keeps_the_warning(
-    monkeypatch, caplog
-) -> None:
+def test_conditional_reference_also_named_in_body_keeps_the_warning(monkeypatch, caplog) -> None:
     """A conditional reference plus an unconditional mention still warns.
 
     The block was stripped, but the prose still names the operation, so the
@@ -770,9 +731,7 @@ def test_conditional_reference_also_named_in_body_keeps_the_warning(
         allowed_operation_ids=["missing_op"],
         instruction_body="Call `missing_op` when done.\n",
         instruction_body_raw=(
-            "<!-- if operation:missing_op -->\n"
-            "Call `missing_op`.\n"
-            "<!-- endif -->\n"
+            "<!-- if operation:missing_op -->\nCall `missing_op`.\n<!-- endif -->\n"
         ),
     )
 
@@ -848,9 +807,7 @@ def _write_coding_design_mode(mode_dir: Path) -> str:
     return body
 
 
-def test_coding_design_mode_end_to_end_okf_absent(
-    tmp_path: Path, monkeypatch, caplog
-) -> None:
+def test_coding_design_mode_end_to_end_okf_absent(tmp_path: Path, monkeypatch, caplog) -> None:
     """With okf uninstalled the prompt has no okf prose and no warning.
 
     This is the regression the feature exists for: the three real modes warn
@@ -877,14 +834,11 @@ def test_coding_design_mode_end_to_end_okf_absent(
     ]
     assert not warnings
     assert any(
-        "conditional block" in r.message and "okf_emit_concept" in r.message
-        for r in caplog.records
+        "conditional block" in r.message and "okf_emit_concept" in r.message for r in caplog.records
     )
 
 
-def test_coding_design_mode_end_to_end_okf_present(
-    tmp_path: Path, monkeypatch, caplog
-) -> None:
+def test_coding_design_mode_end_to_end_okf_present(tmp_path: Path, monkeypatch, caplog) -> None:
     """With okf installed the full procedural paragraph appears verbatim."""
     _patch_operation_catalog(monkeypatch, {"okf_emit_concept"})
     _write_coding_design_mode(tmp_path / "coding_design")

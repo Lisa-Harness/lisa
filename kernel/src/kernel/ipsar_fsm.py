@@ -968,9 +968,7 @@ def _load_mode_from_dir(
     # ``<!-- endif -->``) against the installed operation catalog so prose
     # for uninstalled operations never reaches the model's prompt. The raw
     # body is retained on the mode for the binding-warning downgrade.
-    instruction_body, instruction_body_raw = _evaluate_mode_conditionals(
-        mode_id, mode_body.strip()
-    )
+    instruction_body, instruction_body_raw = _evaluate_mode_conditionals(mode_id, mode_body.strip())
 
     return WorkflowModeConfig(
         mode_id=mode_id,
@@ -1060,8 +1058,7 @@ def _apply_mode_conditionals(catalog: dict[str, WorkflowModeConfig]) -> None:
         available_ids = set(_get_operation_catalog())
     except RuntimeError:
         logger.debug(
-            "Operation catalog unavailable; conditional operation blocks left "
-            "unevaluated.",
+            "Operation catalog unavailable; conditional operation blocks left unevaluated.",
         )
         return
     for mode in catalog.values():
