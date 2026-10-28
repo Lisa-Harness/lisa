@@ -286,6 +286,11 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **Tests:** `sdk/src/sdk/forensics/tests/test_logrec.py`,
   `sdk/src/sdk/forensics/tests/test_reader.py`,
   `runtime/tests/test_introspect.py`, `sdk/tests/test_self_model_telemetry.py`
+- **Self-model context item retracted on recovery:** the self-model slice
+  published `state:self_model:<user>` while degraded but returned early on a
+  healthy, empty or failed run without removing it, so a recovered runtime kept
+  injecting the stale degradation. Every non-degraded outcome now retracts it.
+- **Tests:** `runtime/tests/test_self_model_slice.py`
 - **A cleared behavioural pattern no longer lingers in the prompt.** The
   signals slice replaced its context item when a pattern fired but returned
   early on a nominal window or a failed scan, so the previous turn's

@@ -751,8 +751,10 @@ async def _run_self_model_slice_impl(
     ``runtime.session.state_snapshot`` when ``operational_health`` is
     ``degraded`` or ``struggling`` — healthy state leaves the vibe empty
     so the context mapper injects zero self-awareness tokens (ambient
-    silence when nothing is wrong).
+    silence when nothing is wrong). Any other outcome retracts the previous
+    turn's item so a recovered runtime stops reporting stale degradation.
     """
+    item_id = f"state:self_model:{runtime.config.user_slug}"
     try:
         ctx = OperationExecutionContext(
             operation_id="self_model",
@@ -766,19 +768,21 @@ async def _run_self_model_slice_impl(
         result = await execute_operation("self_model", ctx)
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("self_model slice failed: %s", exc, exc_info=True)
+        _drop_context_item(runtime, item_id)
         return 0, "", ""
     artifact_json = result.output_json
-    if not isinstance(artifact_json, dict):
-        return 0, "", ""
-    health = str(artifact_json.get("operational_health") or "")
-    if health not in ("degraded", "struggling"):
-        return 0, "", ""
-    vibe = result.output_text.strip()
+    health = (
+        str(artifact_json.get("operational_health") or "")
+        if isinstance(artifact_json, dict)
+        else ""
+    )
+    vibe = result.output_text.strip() if health in ("degraded", "struggling") else ""
     if not vibe:
+        _drop_context_item(runtime, item_id)
         return 0, "", ""
     _emit_context_item(
         runtime,
-        item_id=f"state:self_model:{runtime.config.user_slug}",
+        item_id=item_id,
         namespace="self_model",
         title=f"Self-model (health={health})",
         body=vibe,
