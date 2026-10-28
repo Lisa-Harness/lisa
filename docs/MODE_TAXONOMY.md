@@ -67,10 +67,20 @@ Landed:
   pass a small iteration cap and prefer read-only targets. The
   recommendation of `probe` as the shell-workload complement belongs to
   the bash pack's own content (its mode descriptions), not to core.
-- `lisa-pack-okf` installed in the runtime environment, resolving
-  `okf_emit_concept` for the modes that reference it.
 - Host `.env` retuned from the corpus: nudge threshold 9, stage cap 30,
   child caps 40 — see the inline evidence comments there.
+
+Not landed (previously listed here as landed):
+
+- `lisa-pack-okf` is **not** installed in the runtime environment. The
+  pack exists (`Lisa-Harness/lisa-pack-okf`, provides `okf_emit_concept`
+  via the `lisa.extensions.content_roots` entry point), but the live
+  runtime log still warns on every mode load that `coding_design`,
+  `coding_review`, and `researcher` reference `okf_emit_concept`, which
+  is not in the catalog (observed 2026-10-28T01:13:26Z, same continuous
+  session). Install it (`/pack install lisa-pack-okf`) or remove the
+  reference from those modes. Until then the zero-write regression gate
+  below cannot pass in this environment.
 
 Layering rule this phase established: **framework-owned prose (kernel
 fixtures, core pack prompts, operation instructions) never names a
