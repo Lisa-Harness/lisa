@@ -1325,6 +1325,14 @@ class WorkflowModeConfig(BaseModel):
     artifact_type: str = ""
     description: str = ""
     instruction_body: str = ""
+    # The authored instruction body before conditional operation blocks
+    # (``<!-- if operation:<id> -->`` ... ``<!-- endif -->``) were evaluated at
+    # load time. Empty when the body contained no conditional blocks. Retained
+    # so operation-binding validation can distinguish a deliberate conditional
+    # reference (downgraded to debug) from an unconditional one (warned), and
+    # so authors can diff exactly what the strip removed. See
+    # :mod:`kernel.instruction_conditionals`.
+    instruction_body_raw: str = ""
     # Absolute path to the mode's _mode.md source file populated during catalog load.
     mode_markdown_path: str = ""
     default_model: str | None = None

@@ -6,6 +6,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Conditional operation blocks in mode instruction markup.** Mode authors
+  can wrap procedural instruction text in
+  `<!-- if operation:<id> -->` ... `<!-- endif -->`; the kernel evaluates the
+  block once at mode-load time against the installed operation catalog
+  (new pure module `kernel.instruction_conditionals`). Blocks for
+  uninstalled operations are removed before the body is stored, so prose
+  naming a missing operation never reaches the model's prompt; kept blocks
+  lose only their marker lines. Markers inside fenced code blocks are
+  literal text (fence tracking follows CommonMark: same character, at least
+  as long), the transform is idempotent, and malformed markers drop only the
+  marker line so the authoring error stays visible. The pre-strip body is
+  retained as `WorkflowModeConfig.instruction_body_raw`, and the
+  operation-binding warning is downgraded to debug when the only reference
+  was inside a stripped conditional block. Applied at both load paths: the
+  disk loader (`_load_mode_from_dir`) and the MCP catalog path
+  (`_ensure_catalog_loaded`).
+- **Tests:** `kernel/tests/test_instruction_conditionals.py`
+
 - **Lossless size-segmentation for `decisions.jsonl`.** `DecisionTelemetryHandler`
   now seals the active file to `decisions.jsonl.<n>` once it reaches
   `segment_max_bytes` (default 8 MiB), mirroring the thread store's seal

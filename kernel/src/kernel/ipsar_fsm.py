@@ -38,6 +38,11 @@ import yaml
 from kernel.approval import ApprovalRequired
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.function_tools import build_strict_openai_function_tool
+from kernel.instruction_conditionals import (
+    conditional_operation_ids,
+    has_conditional_markers,
+    strip_conditional_operation_blocks,
+)
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     CallLedger,
@@ -959,12 +964,21 @@ def _load_mode_from_dir(
         if key not in _KERNEL_OWNED_FRONT_MATTER_KEYS
     }
 
+    # Evaluate conditional operation blocks (``<!-- if operation:<id> -->`` ...
+    # ``<!-- endif -->``) against the installed operation catalog so prose
+    # for uninstalled operations never reaches the model's prompt. The raw
+    # body is retained on the mode for the binding-warning downgrade.
+    instruction_body, instruction_body_raw = _evaluate_mode_conditionals(
+        mode_id, mode_body.strip()
+    )
+
     return WorkflowModeConfig(
         mode_id=mode_id,
         mode_kind=mode_kind,
         artifact_type=str(mode_front_matter.get("artifact_type", "")),
         description=mode_description,
-        instruction_body=mode_body.strip(),
+        instruction_body=instruction_body,
+        instruction_body_raw=instruction_body_raw,
         mode_markdown_path=str(mode_config_path),
         default_model=mode_default_model,
         routable=routing.routable,
@@ -1000,6 +1014,72 @@ def _load_mode_from_dir(
         task_artifact_tool_id=str(mode_front_matter.get("task_artifact_tool_id", "") or ""),
         extra_front_matter=extra_front_matter,
     )
+
+
+def _evaluate_mode_conditionals(mode_id: str, raw_body: str) -> tuple[str, str]:
+    """Evaluate conditional operation blocks in one mode's instruction body.
+
+    Returns ``(instruction_body, instruction_body_raw)``. The raw body is
+    non-empty only when conditional blocks were actually evaluated and the
+    strip changed the body; when operation callbacks are not registered (a
+    host that never dispatches operations), the body passes through
+    unchanged so the disk loader keeps its legacy behavior.
+    """
+    if not has_conditional_markers(raw_body):
+        return raw_body, ""
+    try:
+        available_ids = set(_get_operation_catalog())
+    except RuntimeError:
+        logger.debug(
+            "Mode '%s': operation catalog unavailable; conditional operation "
+            "blocks left unevaluated.",
+            mode_id,
+        )
+        return raw_body, ""
+    stripped = strip_conditional_operation_blocks(raw_body, available_ids)
+    if stripped == raw_body:
+        return raw_body, ""
+    missing = sorted(conditional_operation_ids(raw_body) - available_ids)
+    if missing:
+        logger.debug(
+            "Mode '%s': stripped conditional blocks for missing operations: %s",
+            mode_id,
+            ", ".join(missing),
+        )
+    return stripped, raw_body
+
+
+def _apply_mode_conditionals(catalog: dict[str, WorkflowModeConfig]) -> None:
+    """Evaluate conditional operation blocks across a loaded mode catalog.
+
+    MCP-path counterpart of the strip in :func:`_load_mode_from_dir`: the
+    catalog arrives deserialized from the ``lisa-catalog`` server, so the
+    conditional blocks are evaluated here, once, before validation runs.
+    """
+    try:
+        available_ids = set(_get_operation_catalog())
+    except RuntimeError:
+        logger.debug(
+            "Operation catalog unavailable; conditional operation blocks left "
+            "unevaluated.",
+        )
+        return
+    for mode in catalog.values():
+        raw_body = mode.instruction_body
+        if not has_conditional_markers(raw_body):
+            continue
+        stripped = strip_conditional_operation_blocks(raw_body, available_ids)
+        if stripped == raw_body:
+            continue
+        mode.instruction_body_raw = raw_body
+        mode.instruction_body = stripped
+        missing = sorted(conditional_operation_ids(raw_body) - available_ids)
+        if missing:
+            logger.debug(
+                "Mode '%s': stripped conditional blocks for missing operations: %s",
+                mode.mode_id,
+                ", ".join(missing),
+            )
 
 
 def load_catalog_from_disk(
@@ -1271,6 +1351,11 @@ def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
     from kernel.operations.registry import is_known_tool
 
     catalog = _get_operation_catalog()
+    # Conditional references (``<!-- if operation:<id> -->`` blocks stripped at
+    # load time) are deliberate: the author acknowledged the operation may be
+    # absent. Downgrade those to debug; unconditional references keep the
+    # warning because the model still sees them in the prompt.
+    conditional_ids = conditional_operation_ids(mode.instruction_body_raw)
     referenced_operation_ids = (
         mode.entry_operation_ids
         + mode.pre_turn_operation_ids
@@ -1279,6 +1364,15 @@ def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
     )
     for operation_id in referenced_operation_ids:
         if operation_id not in catalog and not is_known_tool(operation_id):
+            if operation_id in conditional_ids and operation_id not in mode.instruction_body:
+                logger.debug(
+                    "Mode '%s' references operation '%s' only inside a conditional "
+                    "block; the block was stripped because the operation is not "
+                    "installed.",
+                    mode.mode_id,
+                    operation_id,
+                )
+                continue
             logger.warning(
                 "Mode '%s' references operation '%s' which is not in the catalog "
                 "(the owning pack may not be installed); the operation will fail "
@@ -1487,6 +1581,7 @@ def _ensure_catalog_loaded() -> None:
 
     catalog_loader = MCPModeCatalog(_content_mcp_config)
     _workflow_catalog = catalog_loader.get_workflow_catalog()
+    _apply_mode_conditionals(_workflow_catalog)
     validate_workflow_catalog(_workflow_catalog)
     # Enforce the cross-pack export boundary now that both the workflow catalog
     # and the operation/tool catalogs are loaded. Generic rule over
