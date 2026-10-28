@@ -14,19 +14,23 @@ jobs:
     name: Validate release commit
     uses: ./.github/workflows/ci.yml
 
-  docs:
-    name: Validate documentation
-    uses: ./.github/workflows/docs.yml
-
   build:
     name: Build distributions
-    needs: [ci, docs]
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require release tags to point to a main commit
+        if: github.ref_type == 'tag'
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
 
       - uses: astral-sh/setup-uv@v3
         with:
@@ -58,12 +62,24 @@ jobs:
               "e2etest": "lisa-harness-e2e",
           }
           tag = os.environ["RELEASE_TAG"]
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          release_heading = f"## [{version}] - "
+          if not any(
+              line.startswith(release_heading)
+              for line in Path("CHANGELOG.md").read_text().splitlines()
+          ):
+              raise SystemExit(f"CHANGELOG.md has no dated release section for {version}")
           for directory, expected_name in packages.items():
               project = tomllib.loads(Path(directory, "pyproject.toml").read_text())["project"]
               if project["name"] != expected_name:
                   raise SystemExit(
                       f"{directory}: expected distribution {expected_name!r}, "
                       f"found {project['name']!r}"
+                  )
+              if project["version"] != version:
+                  raise SystemExit(
+                      f"{expected_name}: version {project['version']!r} "
+                      f"does not match workspace version {version!r}"
                   )
               expected_tag = f"v{project['version']}"
               if tag and tag != expected_tag:

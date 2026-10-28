@@ -4,7 +4,15 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-28
+
 ### Added
+
+- **PR-based release preparation and a required merge gate.** CI now runs for
+  every PR and main push, including documentation-only changes. The single
+  fail-closed `Merge gate` checks quality, documentation, and the full test
+  matrix. The release checklist describes protected-main settings and release
+  PRs; publishing rejects tags whose commits are not on main.
 
 - **Conditional operation blocks in mode instruction markup.** Mode authors
   can wrap procedural instruction text in

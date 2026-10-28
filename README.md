@@ -119,6 +119,11 @@ Read [storage](docs/STORAGE.md) and the [security policy](SECURITY.md).
 
 ## Publishing releases
 
+Prepare releases in a PR, not with direct pushes to `main`. Follow the
+[release checklist](docs/RELEASE_CHECKLIST.md#pr-based-releases-and-protected-main):
+update versions and release notes, pass the required **Merge gate** and a manual
+`Publish` validation, merge, then tag the verified main commit.
+
 The `Publish` workflow validates CI, builds wheels and source distributions for
 all ten workspace packages, checks distribution metadata, and retains the build
 artifacts. Run it manually on `main` to validate without publishing. Pushing a

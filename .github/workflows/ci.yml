@@ -4,55 +4,17 @@ on:
   workflow_call:
   push:
     branches: [main]
-    # A documentation-only change does not affect the code, so the full
-    # quality/test/coverage matrix is skipped. The Docs workflow still runs
-    # and checks the documentation itself.
-    #
-    # The patterns are ordered, and the last match wins: a negative
-    # pattern after a positive one excludes the path, and a positive
-    # pattern after a negative one includes it again. The list therefore
-    # excludes documentation, then re-includes the Markdown that the
-    # runtime or the agent host loads -- pack content (modes, operations,
-    # prompts, sessions), test fixtures, and Copilot customization files
-    # are behavior, not documentation.
-    paths:
-      - "**"
-      - "!docs/**"
-      - "!*.md"
-      - "!**/README.md"
-      - "!**/AUTHORING.md"
-      - "sdk/src/**"
-      - "sdk/packs/*/src/**"
-      - "sdk/packs/*/tests/**"
-      - "kernel/src/**"
-      - "mcp_server/src/**"
-      - "runtime/src/**"
-      - "packstest/src/**"
-      - "packstest/tests/**"
-      - "e2etest/src/**"
-      - "e2etest/tests/**"
-      - ".github/**"
   pull_request:
     branches: [main]
-    paths:
-      - "**"
-      - "!docs/**"
-      - "!*.md"
-      - "!**/README.md"
-      - "!**/AUTHORING.md"
-      - "sdk/src/**"
-      - "sdk/packs/*/src/**"
-      - "sdk/packs/*/tests/**"
-      - "kernel/src/**"
-      - "mcp_server/src/**"
-      - "runtime/src/**"
-      - "packstest/src/**"
-      - "packstest/tests/**"
-      - "e2etest/src/**"
-      - "e2etest/tests/**"
-      - ".github/**"
+
+permissions:
+  contents: read
 
 jobs:
+  docs:
+    name: Documentation
+    uses: ./.github/workflows/docs.yml
+
   quality:
     name: Quality gates
     runs-on: ubuntu-latest
@@ -122,3 +84,19 @@ jobs:
         run: |
           uv run coverage run -m pytest -m "not live" -q
           uv run python scripts/check_coverage.py
+
+  merge-gate:
+    name: Merge gate
+    if: ${{ always() }}
+    needs: [quality, test, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$DOCS_RESULT" = success
