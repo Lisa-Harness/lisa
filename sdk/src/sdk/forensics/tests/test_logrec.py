@@ -49,6 +49,38 @@ def test_rotated_segments_skips_absent_backups(tmp_path: Path) -> None:
     assert [p.name for p in rotated_segments(active)] == ["runtime.jsonl"]
 
 
+def test_rotated_segments_none_discovers_all_segments(tmp_path: Path) -> None:
+    """backup_count=None returns every numbered segment plus the active file."""
+    active = tmp_path / "runtime.jsonl"
+    active.write_text("", encoding="utf-8")
+    for n in (1, 2, 3, 5, 7):
+        (tmp_path / f"runtime.jsonl.{n}").write_text("", encoding="utf-8")
+
+    assert [p.name for p in rotated_segments(active, None)] == [
+        "runtime.jsonl.7",
+        "runtime.jsonl.5",
+        "runtime.jsonl.3",
+        "runtime.jsonl.2",
+        "runtime.jsonl.1",
+        "runtime.jsonl",
+    ]
+
+
+def test_rotated_segments_int_keeps_newest_three(tmp_path: Path) -> None:
+    """backup_count=3 returns only the newest 3 plus the active file."""
+    active = tmp_path / "runtime.jsonl"
+    active.write_text("", encoding="utf-8")
+    for n in (1, 2, 3, 4, 5):
+        (tmp_path / f"runtime.jsonl.{n}").write_text("", encoding="utf-8")
+
+    assert [p.name for p in rotated_segments(active, 3)] == [
+        "runtime.jsonl.3",
+        "runtime.jsonl.2",
+        "runtime.jsonl.1",
+        "runtime.jsonl",
+    ]
+
+
 def test_iter_jsonl_tail_spans_rotation_in_order(tmp_path: Path) -> None:
     """Records from a rotated segment precede the active file's records."""
     active = tmp_path / "runtime.jsonl"

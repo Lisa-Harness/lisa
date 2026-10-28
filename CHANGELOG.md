@@ -6,6 +6,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Lossless size-segmentation for `decisions.jsonl`.** `DecisionTelemetryHandler`
+  now seals the active file to `decisions.jsonl.<n>` once it reaches
+  `segment_max_bytes` (default 8 MiB), mirroring the thread store's seal
+  semantics: sealed segments are never deleted, so forensic evidence is
+  preserved. `RotatingFileHandler` is deliberately not used because it deletes
+  the oldest backup. The forensic reader now passes `backup_count=None` for
+  `decisions_path`, so the full segment set is read. `iter_jsonl_tail` /
+  `rotated_segments` gain a `backup_count=None` mode that discovers every
+  numbered segment.
+- **Tests:** `kernel/tests/test_decision_telemetry.py`,
+  `sdk/src/sdk/forensics/tests/test_logrec.py`
+
 - **Ambient behavioural signals — Lisa notices repeating failure instead of
   waiting to be asked.** The post-turn slice now runs
   `compute_behavioral_signals` over a short window of recent turns and injects
@@ -93,8 +105,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   record tagged with its `topic`. It writes directly rather than through stdlib
   logging, because the root file handler's `RateLimitFilter` suppresses repeated
   identical records — exactly the shape of a mode resolving the same lifecycle
-  action on consecutive iterations. A dedicated file also rotates independently,
-  so verbose runtime logging cannot evict the ledger.
+  action on consecutive iterations. A dedicated file also segments independently,
+  sealing the active file to ``decisions.jsonl.<n>`` once it reaches the size
+  threshold; sealed segments are never deleted, so verbose runtime logging
+  cannot evict the ledger.
 - **`turn_index` — one join key across thread, decisions, dispatches, and cost.**
   `TurnIdentity`, `ToolExecutionContext`, `OperationExecutionContext`,
   `TokenUsageEvent`, and `ToolExecutionTelemetry` now carry the global thread

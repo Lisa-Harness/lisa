@@ -185,6 +185,45 @@ def test_read_recent_returns_empty_when_missing() -> None:
         assert handler.read_recent() == []
 
 
+@pytest.mark.asyncio
+async def test_segmentation_is_lossless_across_seals() -> None:
+    """Sealing never deletes evidence: every record survives across segments."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "decisions.jsonl"
+        handler = DecisionTelemetryHandler(path, segment_max_bytes=200)
+
+        written = 0
+        for i in range(40):
+            await handler.publish_turn_decision({"mode_id": "m", "turn_index": i, "pad": "x" * 20})
+            written += 1
+
+        assert (Path(td) / "decisions.jsonl.1").exists()
+        assert (Path(td) / "decisions.jsonl.2").exists()
+        assert path.exists()
+
+        total = 0
+        sequences: list[int] = []
+        sealed = sorted(
+            (p for p in Path(td).glob("decisions.jsonl.*") if p.name.split(".")[-1].isdigit()),
+            key=lambda p: int(p.name.split(".")[-1]),
+        )
+        ordered = sealed + ([path] if path.exists() else [])
+        for seg in ordered:
+            for line in seg.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(rec, dict):
+                    total += 1
+                    sequences.append(rec.get("sequence", 0))
+        assert total == written
+        assert sequences == sorted(sequences)
+        assert len(set(sequences)) == len(sequences)
+
+
 def test_token_usage_event_carries_turn_index() -> None:
     """The cost log is per-turn attributable, not just per-mode."""
     event = build_token_usage_event(

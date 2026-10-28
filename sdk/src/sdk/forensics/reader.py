@@ -285,7 +285,9 @@ class ForensicReader:
         max_records: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Split the ledger into decision and dispatch payloads."""
-        records = list(iter_jsonl_tail(self.decisions_path, max_bytes=self._max_bytes))
+        records = list(
+            iter_jsonl_tail(self.decisions_path, max_bytes=self._max_bytes, backup_count=None)
+        )
         if not records:
             notes.append(
                 f"{_DECISIONS_FILENAME} has no records; decisions and dispatches "

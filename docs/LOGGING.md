@@ -100,9 +100,10 @@ Why a separate file rather than `runtime.jsonl`:
   same lifecycle action on consecutive iterations would have those decisions
   dropped. The appender writes directly instead of going through stdlib
   logging.
-- `decisions.jsonl` rotates independently, so verbose runtime logging cannot
-  evict the decision ledger and the ledger cannot consume the log's rotation
-  budget.
+- `decisions.jsonl` is segmented independently: the active file is sealed to
+  `decisions.jsonl.<n>` once it reaches the size threshold, and sealed
+  segments are never deleted, so verbose runtime logging cannot evict the
+  decision ledger and the ledger cannot consume the log's rotation budget.
 
 `turn_index` is the join key. It is computed once at turn start
 (`runtime.thread.next_turn_index`), stamped on the thread entry, and carried on

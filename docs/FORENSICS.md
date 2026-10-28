@@ -12,7 +12,7 @@ answers only part of the question. Forensics is the act of joining them.
 | Source | Written by | Answers |
 | --- | --- | --- |
 | `data/threads/<user>.*.jsonl` | [runtime.thread](../runtime/src/runtime/thread/) | What was asked, what was said, how it routed, whether it was blocked, what receipts it produced |
-| `logs/decisions.jsonl` | [DecisionTelemetryHandler](../kernel/src/kernel/decision_telemetry.py) | Why the loop continued, finished, or yielded at each iteration; and what ran, for how long, with what status |
+| `logs/decisions.jsonl` | [DecisionTelemetryHandler](../kernel/src/kernel/decision_telemetry.py) | Why the loop continued, finished, or yielded at each iteration; and what ran, for how long, with what status. The full segment set (`decisions.jsonl` plus every sealed `decisions.jsonl.<n>`) is read, not only the active file |
 | `logs/token-usage.jsonl` | [TokenUsageTelemetryHandler](../kernel/src/kernel/token_usage.py) | Which model was called, with how many tokens, at what cost |
 | `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | Process-level warnings and errors in the same window |
 

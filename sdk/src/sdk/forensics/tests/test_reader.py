@@ -230,3 +230,70 @@ def test_reader_render_is_bounded_for_a_real_turn(tmp_path: Path) -> None:
 
     assert len(rendered) < 6000
     assert "elided" in rendered
+
+
+def test_reader_reads_decisions_beyond_old_three_segment_cap(tmp_path: Path) -> None:
+    """A record in a segment beyond the old 3-segment cap is read and attributed.
+
+    The original bug: ``ForensicReader`` read only 3 segments, so a record
+    living in ``decisions.jsonl.5`` was silently dropped. With ``backup_count=None``
+    the full segment set is discovered.
+    """
+    data_dir = tmp_path / "data"
+    thread_dir = data_dir / "data" / "threads"
+    thread = thread_dir / "u"
+    now = datetime.now(UTC).isoformat()
+
+    for turn in range(6):
+        _write_thread_entry(
+            thread,
+            {
+                "timestamp_utc": now,
+                "mode_id": "coding_execute",
+                "query": f"query {turn}",
+                "response_text": f"response {turn}",
+                "turn": turn,
+                "provenance": {"source": "observed", "task_id": "t-1"},
+            },
+        )
+
+    logs = data_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    # One distinct turn per segment; turn_index=4 lives only in .5 (beyond the
+    # old 3-segment cap of .1/.2/.3).
+    segment_turns = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
+    for seg, turn in segment_turns.items():
+        _write_jsonl(
+            logs / f"decisions.jsonl.{seg}",
+            [
+                {
+                    "topic": "turn.decision",
+                    "turn_index": turn,
+                    "action_type": "ContinueAction",
+                    "iteration": 1,
+                }
+            ],
+        )
+    _write_jsonl(
+        logs / "decisions.jsonl",
+        [
+            {
+                "topic": "turn.decision",
+                "turn_index": 5,
+                "action_type": "ContinueAction",
+                "iteration": 1,
+            }
+        ],
+    )
+
+    reader = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u", max_bytes=1024 * 1024)
+    bundle = reader.bundle(turns="4")
+
+    assert bundle.sources.decisions_log
+    assert len(bundle.turns) == 1
+    assert bundle.turns[0].turn_index == 4
+    assert len(bundle.turns[0].decisions) == 1
+    assert bundle.turns[0].decisions[0].turn_index == 4
+    # Not reported as unattributed or missing.
+    assert all(d.turn_index != 4 for d in bundle.unattributed_decisions)
+    assert not any("decisions.jsonl" in note and "no records" in note for note in bundle.notes)

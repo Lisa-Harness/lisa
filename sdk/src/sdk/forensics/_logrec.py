@@ -8,9 +8,13 @@ append-only JSONL that can rotate underneath a reader.
   ``runtime.jsonl.3``. A reader that opens only the active file silently loses
   whatever was rotated out — after a burst of verbose logging, that can be the
   entire window worth investigating.
-- ``logs/decisions.jsonl`` and ``logs/token-usage.jsonl`` are appended by their
-  own handlers and do not rotate today, but they are read through the same
-  primitive so adding rotation later cannot silently truncate a window.
+- ``logs/decisions.jsonl`` is segmented independently by its handler: the
+  active file is sealed to ``decisions.jsonl.<n>`` once it reaches the size
+  threshold, and sealed segments are never deleted. The full segment set is
+  read when ``backup_count`` is ``None``.
+- ``logs/token-usage.jsonl`` is appended by its own handler and does not
+  segment today, but it is read through the same primitive so adding
+  segmentation later cannot silently truncate a window.
 
 Two bounds apply, and they are deliberately different:
 
@@ -53,8 +57,31 @@ DEFAULT_BACKUP_SEGMENTS = 3
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 
 
-def rotated_segments(path: Path, backup_count: int = DEFAULT_BACKUP_SEGMENTS) -> list[Path]:
-    """Return the existing rotation set for ``path``, oldest file first."""
+def rotated_segments(path: Path, backup_count: int | None = DEFAULT_BACKUP_SEGMENTS) -> list[Path]:
+    """Return the existing rotation set for ``path``, oldest file first.
+
+    When ``backup_count`` is ``None``, every sealed segment (``<name>.<n>``)
+    is discovered, sorted descending by ``n``, and the active file is appended
+    last — preserving the oldest-first contract. When it is an int, only the
+    newest ``backup_count`` segments are returned (byte-identical to the
+    previous behaviour).
+    """
+    if backup_count is None:
+        parent = path.parent
+        name = path.name
+        prefix = name + "."
+        numbered: list[tuple[int, Path]] = []
+        if parent.is_dir():
+            for candidate in parent.iterdir():
+                if candidate.name.startswith(prefix):
+                    suffix = candidate.name[len(prefix) :]
+                    if suffix.isdigit():
+                        numbered.append((int(suffix), candidate))
+        numbered.sort(key=lambda item: item[0], reverse=True)
+        discovered = [p for _, p in numbered]
+        if path.is_file():
+            discovered.append(path)
+        return discovered
     segments: list[Path] = []
     for index in range(backup_count, 0, -1):
         candidate = path.with_name(f"{path.name}.{index}")
@@ -99,7 +126,7 @@ def iter_jsonl_tail(
     path: Path | None,
     *,
     max_bytes: int = DEFAULT_MAX_BYTES,
-    backup_count: int = DEFAULT_BACKUP_SEGMENTS,
+    backup_count: int | None = DEFAULT_BACKUP_SEGMENTS,
 ) -> Iterator[dict[str, Any]]:
     """Yield parsed records from a JSONL file's rotation set, oldest first.
 

@@ -22,9 +22,12 @@ Design notes
   ``(name, level, message)``. A mode that resolves the same lifecycle action on
   consecutive iterations would have those decisions silently dropped. A direct
   appender is the only way to keep every record.
-- **Separate file.** ``decisions.jsonl`` rotates independently of
-  ``runtime.jsonl``, so verbose runtime logging cannot evict the decision
-  ledger, and the ledger cannot consume the log's rotation budget.
+- **Separate file.** ``decisions.jsonl`` is segmented independently of
+  ``runtime.jsonl``: sealed segments are never deleted (it does not use
+  ``RotatingFileHandler``, which would delete evidence), so verbose runtime
+  logging cannot evict the decision ledger and the ledger cannot consume the
+  log's rotation budget. The file is bounded only at read time, by the
+  forensic reader's byte budget.
 - **Failures are swallowed.** Telemetry must never break the turn loop; errors
   are logged and dropped, matching ``TokenUsageTelemetryHandler``.
 - **Untyped payloads are fine.** The publishers send plain dicts
@@ -42,6 +45,10 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: Default size threshold (bytes) at which the active ``decisions.jsonl`` is
+#: sealed to a numbered sidecar. Sealed segments are never deleted.
+_DEFAULT_SEGMENT_BYTES = 8 * 1024 * 1024
 
 #: Event-bus topic carrying per-iteration lifecycle decisions.
 TURN_DECISION_TOPIC = "turn.decision"
@@ -76,6 +83,9 @@ class DecisionTelemetryHandler:
         filter_fn: Optional predicate receiving ``(topic, record)`` and
             returning ``True`` to persist. Hosts use it to drop topics or
             redact fields before persistence.
+        segment_max_bytes: Size threshold at which the active file is sealed
+            to a numbered sidecar (``decisions.jsonl.<n>``). Sealed segments
+            are never deleted. Defaults to ``_DEFAULT_SEGMENT_BYTES``.
     """
 
     def __init__(
@@ -83,10 +93,13 @@ class DecisionTelemetryHandler:
         path: Path,
         *,
         filter_fn: Any | None = None,
+        segment_max_bytes: int = _DEFAULT_SEGMENT_BYTES,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn
         self._sequence = 0
+        self._segment_max_bytes = segment_max_bytes
+        self._segment_index = 0
 
     @property
     def path(self) -> Path:
@@ -132,16 +145,43 @@ class DecisionTelemetryHandler:
         record.setdefault("sequence", self._sequence)
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            if self._path.exists() and self._path.stat().st_size >= self._segment_max_bytes:
+                self._seal()
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError as exc:
             logger.warning("decision telemetry append failed for %s: %s", self._path, exc)
 
+    def _seal(self) -> None:
+        """Rename the active file to the next numbered segment. Never deletes."""
+        try:
+            if self._segment_index == 0:
+                parent = self._path.parent
+                name = self._path.name
+                max_suffix = 0
+                if parent.is_dir():
+                    prefix = name + "."
+                    for candidate in parent.iterdir():
+                        if candidate.name.startswith(prefix):
+                            suffix = candidate.name[len(prefix) :]
+                            if suffix.isdigit():
+                                max_suffix = max(max_suffix, int(suffix))
+                self._segment_index = max_suffix
+            self._segment_index += 1
+            n = self._segment_index
+            size = self._path.stat().st_size if self._path.exists() else 0
+            target = self._path.with_name(f"{self._path.name}.{n}")
+            self._path.rename(target)
+            logger.info("decision telemetry: sealed segment %d at %d bytes", n, size)
+        except OSError as exc:
+            logger.warning("decision telemetry seal failed for %s: %s", self._path, exc)
+
     def read_recent(self, limit: int = 200) -> list[dict[str, Any]]:
         """Return the last ``limit`` persisted records as parsed dicts.
 
         Oldest first within the tail window. Decode errors are skipped. Returns
-        an empty list when the file does not exist or is unreadable.
+        an empty list when the file does not exist or is unreadable. Sealed
+        segments are not consulted (only the active file is read).
         """
         if not self._path.exists():
             return []
