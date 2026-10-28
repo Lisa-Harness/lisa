@@ -405,6 +405,7 @@ async def _default_fork_fn(
             logger_override=_flog,
             emit_stage=emit_stage,
             max_tool_iterations=child_max_iters,
+            preferred_model_id=spec.model_alias or None,
             # Arm each child's wall budget so it force-completes
             # gracefully just before the registry's hard
             # ``asyncio.wait_for`` cancel would discard the fan-out

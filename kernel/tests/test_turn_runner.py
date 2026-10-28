@@ -13,12 +13,15 @@ import pytest
 from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
 from kernel.models import (
     CapabilityManifest,
+    ForkSpec,
+    ForkTarget,
     OperationExecutionContext,
     OperationResult,
     WorkflowModeConfig,
     YieldPolicy,
 )
 from kernel.seams.protocols import CoordinatorRouteDecision
+from kernel.tools.mcp_client import MCPToolPool
 from kernel.turn_hooks import (
     ModelHooks,
 )
@@ -28,6 +31,7 @@ from kernel.turn_runner import (
     _resolve_empty_completion_for_dispatch,
     run_turn,
 )
+from kernel.turn_runner._defaults import _default_fork_fn
 
 # ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
@@ -3180,6 +3184,67 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
     # ok, not no_tools.
     assert child.status == "ok"
     assert child.target.mode_id == "markdown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_alias", ["override", "", "   ", "unknown"])
+async def test_fork_model_alias_reaches_every_child(
+    monkeypatch: pytest.MonkeyPatch, model_alias: str
+) -> None:
+    """Fork overrides win over mode pins; empty aliases preserve mode resolution."""
+    seen_models: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        seen_models.append(kwargs["model_def"].model_id)
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(ref: str) -> Any:
+        pins = {"default": "default-model", "search": "search-model"}
+        if ref in pins:
+            return SimpleNamespace(model_id=pins[ref], reasoning_model=False)
+        if ref == "override":
+            return SimpleNamespace(model_id="override-model", reasoning_model=False)
+        raise ValueError(f"Unknown model: {ref}")
+
+    catalog = {
+        mode: _mode_config(mode_id=mode, fork_allowed=True) for mode in ("default", "search")
+    }
+    monkeypatch.setattr("kernel.turn_runner.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.turn_runner.get_mode_system_intro", lambda mid: mid)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid)
+    hooks = _build_minimal_hooks(complete)
+    hooks.models.resolve_model = resolve_model
+    result = await _default_fork_fn(
+        ForkSpec(
+            targets=[ForkTarget(mode_id=mode, query="hello") for mode in catalog],
+            model_alias=model_alias,
+        ),
+        hooks=hooks,
+        pool=MCPToolPool([]),
+        resolve_model=resolve_model,
+        complete=complete,
+        exec_op=_stub_execute_operation,
+        turn_budget=None,
+        execution_policy=None,
+        turn_start_mono=0,
+    )
+
+    assert len(result.children) == 2
+    if model_alias == "unknown":
+        assert seen_models == []
+        assert result.succeeded == 0
+        assert all(child.status == "error" for child in result.children)
+        assert all("Unknown model: unknown" in child.error_message for child in result.children)
+    else:
+        expected = (
+            ["override-model", "override-model"]
+            if model_alias.strip()
+            else ["default-model", "search-model"]
+        )
+        assert sorted(seen_models) == sorted(expected)
+        assert result.succeeded == 2
+        assert all(child.status == "ok" for child in result.children)
 
 
 @pytest.mark.asyncio

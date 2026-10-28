@@ -75,6 +75,7 @@ async def _run_fork_child_turn(
     started: float,
     logger_override: logging.Logger | None,
     max_tool_iterations: int = 0,
+    preferred_model_id: str | None = None,
 ) -> tuple[ForkChildResult, str, int]:
     """Run one fork child turn and map the outcome to a ``ForkChildResult``.
 
@@ -135,6 +136,7 @@ async def _run_fork_child_turn(
             # resolved from the mode's declared completion effects inside
             # ``_run_turn_inner`` via ``mode_completion_effects``.
             sub_turn_kind="fork",
+            preferred_model_id=preferred_model_id,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         # ── Shared child-turn classification ───────────────────────────
@@ -279,6 +281,7 @@ async def _run_fork_child(
     logger_override: logging.Logger | None,
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
+    preferred_model_id: str | None = None,
 ) -> None:
     """Run one fork child: emit start, run the child turn, store result, emit complete.
 
@@ -310,6 +313,7 @@ async def _run_fork_child(
         started=started,
         logger_override=_flog,
         max_tool_iterations=max_tool_iterations,
+        preferred_model_id=preferred_model_id,
     )
     results[idx] = result
     if emit_stage is not None:
@@ -339,12 +343,16 @@ async def _execute_fork_fanout(
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
+    preferred_model_id: str | None = None,
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 
     Each child runs in an isolated session with its own mode's system prompt
     and tool surface. Children are fanned out via ``asyncio.TaskGroup`` and
     collected into a list of ``ForkChildResult``.
+
+    ``preferred_model_id`` overrides every child's mode model pin. When
+    absent or blank, each child resolves its own mode's configured model.
 
     The parent turn's ``TurnBudget`` is divided equally across N children.
     Each child gets a sub-budget. If a child exhausts its sub-budget, it
@@ -400,6 +408,7 @@ async def _execute_fork_fanout(
             logger_override=_flog,
             max_tool_iterations=max_tool_iterations,
             wall_deadline_ms=wall_deadline_ms,
+            preferred_model_id=preferred_model_id,
         )
 
     try:
