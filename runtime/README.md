@@ -179,10 +179,13 @@ For a complete program and an observable production transport, see
 
 Binary server manifests may fetch a GitHub release with `binary_download`
 (`repository`, `binary_name`, and optional `version`). Pack manifests should
-omit `version`: the runtime then downloads the release tagged `v<pack
-version>`, so the tag the pack was installed from is the only version
-selector. Pack binary servers without an explicit version are skipped when the
-installed pack version is not a release version. The runtime downloads only
+omit `version`: the runtime then downloads the release the pack was installed
+from. For a `git+...@vX.Y.Z` install that is the requested tag recorded in the
+pack's `direct_url.json`, so a version derived from stale local tags cannot
+change it; otherwise a plain `X.Y.Z` distribution version maps to `vX.Y.Z`.
+Pack binary servers without an explicit version are skipped when neither names
+a release, and selecting a skipped server in `providers.capabilities` fails
+with the skip reason. The runtime downloads only
 selected implementations, verifies the asset against the release's
 `checksums.txt`, and caches it under
 `<data_dir>/cache/mcp-binaries/`.
