@@ -110,6 +110,14 @@ view genuinely cannot answer the question, and treat the result as private.
 Scope — the data root and `user_slug` — comes from the execution context, never
 from a tool parameter. A caller cannot name another user's evidence.
 
+The logs under `<data-dir>/logs` are shared by every user of a data root, and
+`turn_index` is per-thread, so two users' turn 5 collide. Decision, dispatch,
+and token records therefore carry `user_slug`, and a scoped read (forensics and
+behavioural signals) keeps only the requesting user's records. Ledger records
+with no `user_slug` predate attribution and cannot be assigned to one user, so
+they are excluded and the bundle states how many. `runtime.jsonl` carries no
+user and is read as host-wide process diagnostics.
+
 ## Intentionally unavailable
 
 - **Full `reasoning_text` and raw `turn_input`** through the thread readout.
@@ -121,6 +129,9 @@ from a tool parameter. A caller cannot name another user's evidence.
 - **Anything before the join key existed.** Records written before
   `turn_index` was stamped carry no index and appear as unattributed. That is
   accurate: they cannot be attributed retroactively.
+- **Ledger records before per-user attribution.** Decision and dispatch rows
+  written before `user_slug` was stamped are excluded from scoped reads, so
+  turns from before the upgrade show no dispatches or decisions.
 
 ## Ambient behavioural signals
 

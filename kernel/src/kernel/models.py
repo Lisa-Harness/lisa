@@ -619,6 +619,9 @@ class TokenUsageSummary(BaseModel):
     cached_tokens: int = 0
     #: Prompt-cache writes (Anthropic cache_creation_input_tokens) observed.
     cache_creation_tokens: int = 0
+    #: True when the read budget ran out before the window start, so every
+    #: total above is a lower bound rather than the window's full spend.
+    partial: bool = False
 
 
 class LogErrorEntry(BaseModel):
@@ -663,6 +666,11 @@ class LisaSelfModelArtifact(BaseModel):
     proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    #: Warning/error lines in the 24h window; ``recent_log_errors`` holds
+    #: only the most recent of them.
+    log_errors_in_window: int = 0
+    #: True when the log read stopped before the window start (lower bound).
+    log_errors_partial: bool = False
     operational_health: str = "unknown"  # healthy|degraded|critical|unknown
     operational_health_reasons: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -682,6 +690,11 @@ class IntrospectSnapshot(BaseModel):
     proxy_pool_health: list[ProxyHealthStatus] = Field(default_factory=list)
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    #: Warning/error lines in the 24h window; ``recent_log_errors`` holds
+    #: only the most recent of them.
+    log_errors_in_window: int = 0
+    #: True when the log read stopped before the window start (lower bound).
+    log_errors_partial: bool = False
     logfile_tail_lines: int = 0
     failed_mcp_servers: int = 0
     recent_error_count: int = 0
@@ -1325,6 +1338,14 @@ class WorkflowModeConfig(BaseModel):
     artifact_type: str = ""
     description: str = ""
     instruction_body: str = ""
+    # The authored instruction body before conditional operation blocks
+    # (``<!-- if operation:<id> -->`` ... ``<!-- endif -->``) were evaluated at
+    # load time. Empty when the body contained no conditional blocks. Retained
+    # so operation-binding validation can distinguish a deliberate conditional
+    # reference (downgraded to debug) from an unconditional one (warned), and
+    # so authors can diff exactly what the strip removed. See
+    # :mod:`kernel.instruction_conditionals`.
+    instruction_body_raw: str = ""
     # Absolute path to the mode's _mode.md source file populated during catalog load.
     mode_markdown_path: str = ""
     default_model: str | None = None
@@ -2652,6 +2673,9 @@ class ToolExecutionTelemetry(BusEvent):
     #: Global thread turn index this dispatch belongs to, so the dispatch
     #: ledger joins to the thread and the cost log. ``None`` = off-turn work.
     turn_index: int | None = None
+    #: Owner of the dispatch. The ledger is shared by every user of a data
+    #: root and turn indices are per-thread, so readers scope by this.
+    user_slug: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

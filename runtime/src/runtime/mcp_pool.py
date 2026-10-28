@@ -47,6 +47,7 @@ from sdk.layout import CACHE_DIR, LOGS_DIR, MCP_LOGS_SUBDIR
 from runtime.capability_servers import (
     CapabilityCandidate,
     CapabilitySelectionError,
+    candidate_identifiers,
     log_capability_selection,
     register_capability_server,
     reject_unclaimed_selections,
@@ -58,6 +59,7 @@ from runtime.content_roots import (
     always_on_pack_names,
     host_mcp_manifest_path,
     infer_pack_package_name,
+    installed_pack_requested_revision,
     installed_pack_version,
     load_disabled_pack_names,
     load_installed_packs_lock,
@@ -74,6 +76,8 @@ logger = logging.getLogger(__name__)
 
 #: Pack versions that map onto a ``vX.Y.Z`` binary release tag.
 _PACK_RELEASE_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+#: VCS refs that name a ``vX.Y.Z`` binary release tag.
+_PACK_RELEASE_TAG_RE = re.compile(r"v?(\d+\.\d+\.\d+)")
 
 
 class PackPrerequisiteError(RuntimeError):
@@ -854,6 +858,8 @@ def _resolve_capability_owners(
     registry: MCPServerRegistry,
     capability_candidates: list[CapabilityCandidate],
     selected_capability_providers: dict[str, str],
+    *,
+    skipped_candidates: list[_SkippedCandidate] | None = None,
 ) -> None:
     """Resolve and register one owner per claimed capability.
 
@@ -872,8 +878,25 @@ def _resolve_capability_owners(
     Raises :class:`CapabilitySelectionError` when a capability cannot be
     resolved deterministically — a contested or misconfigured capability,
     or a selection naming a capability nothing claims, is a startup error,
-    not a silent fallback.
+    not a silent fallback. When the selection names a server that was
+    skipped before selection, the error says why.
     """
+    try:
+        _select_capability_owners(registry, capability_candidates, selected_capability_providers)
+    except CapabilitySelectionError as exc:
+        reasons = _skipped_selection_reasons(
+            selected_capability_providers, skipped_candidates or []
+        )
+        if not reasons:
+            raise
+        raise CapabilitySelectionError(f"{exc}. {' '.join(reasons)}") from exc
+
+
+def _select_capability_owners(
+    registry: MCPServerRegistry,
+    capability_candidates: list[CapabilityCandidate],
+    selected_capability_providers: dict[str, str],
+) -> None:
     by_capability: dict[str, list[CapabilityCandidate]] = {}
     for candidate in capability_candidates:
         by_capability.setdefault(candidate.capability, []).append(candidate)
@@ -912,47 +935,108 @@ def _resolve_capability_owners(
             register_capability_server(registry, selection.winner)
 
 
-def _with_pack_binary_versions(specs: list[Any], root: Path, package_name: str) -> list[Any]:
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SkippedCandidate:
+    """A capability server dropped before selection, with the reason."""
+
+    candidate: CapabilityCandidate
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _PackBinaryResolution:
+    """Pack specs with binary releases resolved, plus the servers dropped."""
+
+    specs: list[Any]
+    skipped: list[Any]
+    skip_reason: str = ""
+
+
+def _skipped_selection_reasons(
+    selected_capability_providers: dict[str, str],
+    skipped_candidates: list[_SkippedCandidate],
+) -> list[str]:
+    """Explain explicit selections that name a server skipped before selection."""
+    reasons: list[str] = []
+    for capability, provider in sorted(selected_capability_providers.items()):
+        selected = provider.strip().lower()
+        if not selected:
+            continue
+        for skipped in skipped_candidates:
+            if skipped.candidate.capability == capability and selected in candidate_identifiers(
+                skipped.candidate
+            ):
+                reasons.append(f"{skipped.candidate.spec.server_id} was skipped: {skipped.reason}.")
+    return reasons
+
+
+def _pack_binary_release(root: Path, package_name: str) -> tuple[str | None, str | None]:
+    """Return ``(release_tag, observed_version)`` for a pack's binary servers.
+
+    The tag the pack was installed from (``direct_url.json``) wins: a
+    ``git+...@vX.Y.Z`` install names its release directly, independent of
+    the version a VCS build backend derives from possibly stale local tags.
+    Otherwise a plain ``X.Y.Z`` distribution version maps to ``vX.Y.Z``.
+    """
+    requested = installed_pack_requested_revision(root, package_name)
+    if requested is not None:
+        match = _PACK_RELEASE_TAG_RE.fullmatch(requested)
+        if match:
+            return f"v{match.group(1)}", requested
+    pack_version = installed_pack_version(root, package_name)
+    if pack_version is not None and _PACK_RELEASE_VERSION_RE.fullmatch(pack_version):
+        return f"v{pack_version}", pack_version
+    return None, pack_version
+
+
+def _with_pack_binary_versions(
+    specs: list[Any], root: Path, package_name: str
+) -> _PackBinaryResolution:
     """Resolve unversioned pack ``binary_download`` sources to the pack's release.
 
     A pack that omits ``binary_download.version`` downloads the release tagged
-    with its own installed version, so the tag the pack was installed from is
-    the single version selector. Untagged installs cannot resolve that
-    selector, so those binary servers are omitted.
+    with the release the pack was installed from (see
+    :func:`_pack_binary_release`), so that tag is the single version
+    selector. Installs that do not name a release cannot resolve that
+    selector, so those binary servers are skipped.
     """
-    if not any(
-        spec.binary_download is not None and spec.binary_download.version is None for spec in specs
-    ):
-        return specs
-    pack_version = installed_pack_version(root, package_name)
-    if pack_version is None or not _PACK_RELEASE_VERSION_RE.fullmatch(pack_version):
-        unresolved_servers = [
-            spec.server_id
-            for spec in specs
-            if spec.binary_download is not None and spec.binary_download.version is None
-        ]
+    unresolved = [
+        spec
+        for spec in specs
+        if spec.binary_download is not None and spec.binary_download.version is None
+    ]
+    if not unresolved:
+        return _PackBinaryResolution(specs=specs, skipped=[])
+    release, observed_version = _pack_binary_release(root, package_name)
+    if release is None:
+        reason = (
+            f"pack {package_name} version {observed_version!r} is not a release; "
+            "install it from a vX.Y.Z tag or set binary_download.version"
+        )
         logger.warning(
             "Pack %s has version %r, which is not a release; skipping binary MCP servers "
             "without an explicit version: %s",
             package_name,
-            pack_version,
-            ", ".join(unresolved_servers),
+            observed_version,
+            ", ".join(spec.server_id for spec in unresolved),
         )
-        return [
-            spec
+        return _PackBinaryResolution(
+            specs=[spec for spec in specs if spec not in unresolved],
+            skipped=unresolved,
+            skip_reason=reason,
+        )
+    return _PackBinaryResolution(
+        specs=[
+            dataclasses.replace(
+                spec,
+                binary_download=dataclasses.replace(spec.binary_download, version=release),
+            )
+            if spec in unresolved
+            else spec
             for spec in specs
-            if spec.binary_download is None or spec.binary_download.version is not None
-        ]
-    release = f"v{pack_version}"
-    return [
-        dataclasses.replace(
-            spec,
-            binary_download=dataclasses.replace(spec.binary_download, version=release),
-        )
-        if spec.binary_download is not None and spec.binary_download.version is None
-        else spec
-        for spec in specs
-    ]
+        ],
+        skipped=[],
+    )
 
 
 def _register_pack_servers(
@@ -960,6 +1044,7 @@ def _register_pack_servers(
     pack_specs: list[_PackManifestSpecs],
     excluded_pack_servers: set[str],
     capability_candidates: list[CapabilityCandidate],
+    skipped_candidates: list[_SkippedCandidate] | None = None,
 ) -> None:
     """Register pack-contributed servers (namespaced) onto the registry.
 
@@ -974,13 +1059,37 @@ def _register_pack_servers(
     Capability-claiming pack servers are collected into
     ``capability_candidates`` (``source="pack"``) instead of registered;
     the resolved winner retains its real server id for launch and dispatch.
+    Capability servers skipped for an unresolvable binary release are
+    collected into ``skipped_candidates`` so selection errors can say why.
     """
     for entry in pack_specs:
         pack_slug = entry.slug
         pack_package_name = infer_pack_package_name(entry.root)
-        entry_specs = _with_pack_binary_versions(entry.specs, entry.root, pack_package_name)
+        resolution = _with_pack_binary_versions(entry.specs, entry.root, pack_package_name)
 
-        for spec in entry_specs:
+        if skipped_candidates is not None:
+            for spec in resolution.skipped:
+                capability = getattr(spec, "capability", None)
+                if (
+                    capability
+                    and valid_capability_name(capability)
+                    and not pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers)
+                ):
+                    skipped_candidates.append(
+                        _SkippedCandidate(
+                            candidate=CapabilityCandidate(
+                                capability=capability,
+                                spec=spec,
+                                source="pack",
+                                pack_slug=pack_slug,
+                                package_name=pack_package_name,
+                                manifest_path=str(entry.manifest_path),
+                            ),
+                            reason=resolution.skip_reason,
+                        )
+                    )
+
+        for spec in resolution.specs:
             if pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
                 logger.info(
                     "Pack MCP server excluded by policy: %s.%s",
@@ -1132,15 +1241,25 @@ def compile_mcp_configs(
         excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
     excluded_pack_servers |= session_exclude_servers
 
+    skipped_candidates: list[_SkippedCandidate] = []
     _register_pack_servers(
-        registry, discovery.pack_specs, excluded_pack_servers, capability_candidates
+        registry,
+        discovery.pack_specs,
+        excluded_pack_servers,
+        capability_candidates,
+        skipped_candidates,
     )
 
     # One owner per claimed capability; the winner registers under the
     # bare capability id (model-facing tool ids are implementation-
     # independent). Contested or misconfigured capabilities fail
     # startup loudly.
-    _resolve_capability_owners(registry, capability_candidates, selected_capability_providers)
+    _resolve_capability_owners(
+        registry,
+        capability_candidates,
+        selected_capability_providers,
+        skipped_candidates=skipped_candidates,
+    )
 
     compiled = compile_registry(
         registry, data_dir=data_dir, workspace_root=workspace_root, base_env=resolved_env

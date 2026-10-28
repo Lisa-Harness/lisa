@@ -4,7 +4,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-28
+
 ### Added
+
+- **PR-based release preparation and a required merge gate.** CI now runs for
+  every PR and main push, including documentation-only changes. The single
+  fail-closed `Merge gate` checks quality, documentation, and the full test
+  matrix. The release checklist describes protected-main settings and release
+  PRs; publishing rejects tags whose commits are not on main.
+
+- **Conditional operation blocks in mode instruction markup.** Mode authors
+  can wrap procedural instruction text in
+  `<!-- if operation:<id> -->` ... `<!-- endif -->`; the kernel evaluates the
+  block once at mode-load time against the installed operation catalog
+  (new pure module `kernel.instruction_conditionals`). Blocks for
+  uninstalled operations are removed before the body is stored, so prose
+  naming a missing operation never reaches the model's prompt; kept blocks
+  lose only their marker lines. Markers inside fenced code blocks are
+  literal text (fence tracking follows CommonMark: same character, at least
+  as long), the transform is idempotent, and malformed markers drop only the
+  marker line so the authoring error stays visible. The pre-strip body is
+  retained as `WorkflowModeConfig.instruction_body_raw`, and the
+  operation-binding warning is downgraded to debug when the only reference
+  was inside a stripped conditional block. Applied at both load paths: the
+  disk loader (`_load_mode_from_dir`) and the MCP catalog path
+  (`_ensure_catalog_loaded`).
+- **Tests:** `kernel/tests/test_instruction_conditionals.py`
 
 - **Lossless size-segmentation for `decisions.jsonl`.** `DecisionTelemetryHandler`
   now seals the active file to `decisions.jsonl.<n>` once it reaches
@@ -12,7 +38,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   semantics: sealed segments are never deleted, so forensic evidence is
   preserved. `RotatingFileHandler` is deliberately not used because it deletes
   the oldest backup. The forensic reader now passes `backup_count=None` for
-  `decisions_path`, so the full segment set is read. `iter_jsonl_tail` /
+  `decisions_path`, so the full segment set is read. `read_jsonl_tail` /
   `rotated_segments` gain a `backup_count=None` mode that discovers every
   numbered segment.
 - **Tests:** `kernel/tests/test_decision_telemetry.py`,
@@ -171,6 +197,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+- **`fetch_page` routes through the `fetch` MCP capability.**
+  `providers.capabilities.fetch` was silently ignored because `fetch_page`
+  fetched in-process, so selecting `lisa-fetch-go` never launched (or
+  downloaded) the Go binary. A built-in `lisa-fetch` capability server
+  (`fetch_url`, `invalidate_fetch_cache`) is now the default owner, and tools
+  reach it through the new `ToolExecutionContext.mcp_tool_call` seam, bound on
+  every dispatch path; `fetch_page` fails loudly without it. The Python fetch
+  server raises `ToolError` so the HTTP status reaches the caller.
+  **Migration:**
+  - `FETCH_PAGE_TIMEOUT_SECONDS` is removed; the selected fetch server owns
+    the timeout.
+  - `fetch_page` no longer revalidates with ETags.
+  - A `providers.capabilities` selection that no loaded manifest claims is now
+    a startup error instead of being ignored (`sandbox` is exempt). Fix the
+    capability name or install the pack that provides it.
+  - Custom hosts and test doubles that build `ToolExecutionContext` for
+    `fetch_page` must supply `mcp_tool_call` (packstest's
+    `ToolContextFactory` accepts a double).
 - **`lisa-pack-search` retired; its two capabilities moved to their real
   owners.** The pack's `web_search` *contract* stub now ships in
   `lisa-pack-core` (`sdk.packs.core.tools.web_search`), next to `fetch_page`,
@@ -185,6 +229,17 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Removed
 
+- **Dead whole-file `read_recent` readers deleted.**
+  `DecisionTelemetryHandler.read_recent` and
+  `TokenUsageTelemetryHandler.read_recent` had no production caller —
+  only their own tests invoked them — while performing an unbounded
+  `read_text().splitlines()` whole-file read that contradicts the
+  byte-bounded reader discipline the forensic path established, and the
+  decisions variant was silently lossy against the segmented format
+  (it read only the active file, ignoring sealed segments). Tests that
+  used `read_recent` as an oracle for append/filter/sequence behavior
+  now read the JSONL file directly, matching sibling tests. No behavior
+  change: no production caller existed.
 - **The staged-workflow FSM deleted.** Modes could declare `mode_kind:
   workflow` and ship one `{stage_id}.md` file per stage, forming an
   intra-mode finite state machine with `start_stage_id`,
@@ -236,6 +291,98 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Pack binary servers resolve the release you installed.** A
+  `git+...@vX.Y.Z` pack install now takes its binary release tag from the
+  PEP 610 `direct_url.json` `requested_revision`, not the built distribution
+  version, which hatch-vcs can derive as a post/dev version from uv's cached
+  git tags after a tag moves. That stale version made every pack binary server
+  get skipped, and an explicit `providers.capabilities` selection then failed
+  with an unexplained "does not match any declared implementation". Binary
+  servers without a resolvable release are now excluded before capability
+  selection (explicit `binary_download.version` and local binaries are
+  unaffected), a selection error naming a skipped server includes the skip
+  reason, and uncaught CLI tracebacks are printed to stderr alongside the
+  structured log. **Migration:** a host that previously limped along with a
+  skipped binary server now starts without it, and explicitly selecting it is
+  an error until a release resolves.
+- **Forensics no longer leaks another user's telemetry on a shared root:** the
+  decision, dispatch, and token ledgers under `<data-dir>/logs` are shared by
+  every user, and `turn_index` is per-thread, so a scoped `/forensics` or
+  `turn_forensics` read joined another user's dispatches, spend, and model
+  names onto the requester's colliding turns, and the behavioural-signals
+  slice counted them. `turn.decision` and `tool.telemetry` payloads
+  (`ToolExecutionTelemetry.user_slug`) now carry the owner; `ForensicReader`
+  and `compute_behavioral_signals(user_slug=...)` keep only that user's
+  records via `sdk.forensics.filter_owned`. **Migration:** ledger records
+  written before this change have no owner and are excluded from scoped reads
+  (the bundle reports the count), so pre-upgrade turns show no dispatch or
+  decision evidence.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_reader.py`,
+  `sdk/src/sdk/forensics/tests/test_signals.py`,
+  `runtime/tests/test_turn_index_propagation.py`
+- **Forensic reads cover the requested turns, within bounds:** the forensic
+  reader parsed the whole thread before applying the turn cap, read only the
+  newest 8 MiB of each ledger (so dispatches and costs for older turns
+  silently vanished behind newer traffic), and emitted every unattributed
+  record in the bundle. The cap is now applied before the thread read; ledgers
+  are read backwards from the newest segment and stop at the requested turns'
+  time floor; records naming a requested turn are always kept while
+  unattributed ones are capped to the newest `max_records` with a note; and a
+  read that exhausts its byte budget before covering its span reports a
+  lower-bound note. `iter_jsonl_tail` is replaced by `read_jsonl_tail`, which
+  returns `JsonlTail(records, truncated)`, and the default budget rises from
+  8 MiB to 32 MiB so it covers a full runtime log rotation set.
+- **Partial telemetry is labelled in introspection:** the 24h token and
+  log-error summaries read with the same windowed reader. `TokenUsageSummary`
+  gains `partial`, and `IntrospectSnapshot` / `LisaSelfModelArtifact` gain
+  `log_errors_in_window` (the total before the 50-entry evidence cap) and
+  `log_errors_partial`; the self-model vibe names any summary that is a lower
+  bound.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_logrec.py`,
+  `sdk/src/sdk/forensics/tests/test_reader.py`,
+  `runtime/tests/test_introspect.py`, `sdk/tests/test_self_model_telemetry.py`
+- **Self-model context item retracted on recovery:** the self-model slice
+  published `state:self_model:<user>` while degraded but returned early on a
+  healthy, empty or failed run without removing it, so a recovered runtime kept
+  injecting the stale degradation. Every non-degraded outcome now retracts it.
+- **Tests:** `runtime/tests/test_self_model_slice.py`
+- **A cleared behavioural pattern no longer lingers in the prompt.** The
+  signals slice replaced its context item when a pattern fired but returned
+  early on a nominal window or a failed scan, so the previous turn's
+  "consecutive turns ended blocked" warning stayed in `context_items` after
+  the streak ended. Both paths now retract the item.
+- **Tests:** `runtime/tests/test_behavioural_signals_slice.py`
+- **Forensics reads sealed `decisions.jsonl` segments newest-last, and
+  behavioural signals stay inside their turn window.** Append-only sealed
+  segments (`.1` oldest) were ordered like `RotatingFileHandler` backups
+  (`.1` newest), so a byte budget kept the *oldest* sealed segment and dropped
+  newer evidence. The slice-time signal scan also read only `.1`–`.3` and
+  counted dispatches and token cost from turns outside the twelve examined,
+  so failures and spikes from old turns surfaced as current patterns. Sealed
+  segments are now discovered ascending, signals read the full sealed set,
+  and ledger and cost rows are scoped to the examined turns.
+- **Tests:** `sdk/src/sdk/forensics/tests/test_logrec.py`,
+  `sdk/src/sdk/forensics/tests/test_signals.py`
+- **A write step completes only when one receipt carries both its mode and its
+  capability.** Per-receipt mode stamping matched the step's mode and
+  capability against independent sets, so a multi-mode turn with
+  `writer/save_notes` and `other/save_report` receipts falsely completed a
+  `writer/save_report` step. Completion now matches `(mode, capability)`
+  pairs from the same receipt, keeping the entry-mode fallback for legacy
+  receipts.
+- **Tests:** `kernel/tests/test_workflow_view.py`
+- **MCP tools with a missing or empty input schema now warn instead of silently
+  degrading to "takes no parameters".** Three sites in
+  `kernel.tools.mcp_client` fell back to `{"type": "object", "properties": {}}`
+  without a diagnostic: the synthetic-tool rebuild
+  (`_reindex_synthetic_tools`), the lenient raw-POST `tools/list` retry
+  (`_list_tools_lenient`), and the server tool-spec build
+  (`_build_server_tool_specs`). A schema-losing MCP server therefore presented
+  as a model-side failure — the tool was advertised but its parameters were
+  invisible, so the model could not call it correctly and nothing in the log
+  said why. Each site now emits a warning naming the server and tool and
+  stating the consequence. The fallback value itself is unchanged; only the
+  silence is fixed.
 - **A mode can no longer hand off to itself via the `default` carve-out.** The
   mode-handoff gate in `_execute_mode_handoff` read
   `if target_stage not in routing_targets and target_stage != "default":`. The

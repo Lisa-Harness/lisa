@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from pathlib import Path
@@ -189,32 +188,6 @@ class TokenUsageTelemetryHandler:
                 handle.write(event.model_dump_json() + "\n")
         except OSError as exc:
             logger.warning("token-usage append failed for %s: %s", self._path, exc)
-
-    def read_recent(self, limit: int = 200) -> list[dict[str, Any]]:
-        """Return the last ``limit`` persisted records as parsed dicts.
-
-        Reads the JSONL file from the tail, parses each line, and returns a
-        list of dicts (oldest first within the tail window). Decode errors
-        are skipped silently. Returns an empty list when the file does not
-        exist or is unreadable.
-        """
-        if not self._path.exists():
-            return []
-        try:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
-
-        tail = lines[-limit:] if limit > 0 else lines
-        results: list[dict[str, Any]] = []
-        for raw_line in tail:
-            try:
-                decoded = json.loads(raw_line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(decoded, dict):
-                results.append(decoded)
-        return results
 
 
 def _time_ns_suffix() -> str:

@@ -103,7 +103,7 @@ async def test_host_handler_subscription_persists_events() -> None:
             )
         await asyncio.sleep(0.05)
 
-        records = handler.read_recent(limit=10)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
         assert [r["call_site"] for r in records] == [
             "turn_loop",
             "forced_final",
@@ -111,6 +111,5 @@ async def test_host_handler_subscription_persists_events() -> None:
         ]
         assert all(r["event_type"] == "token_used" for r in records)
         # The lifetime /tokens view reads the same file shape.
-        raw = [json.loads(line) for line in path.read_text().splitlines()]
-        assert len(raw) == 3
-        assert sum(int(r["total_tokens"]) for r in raw) == 45
+        assert len(records) == 3
+        assert sum(int(r["total_tokens"]) for r in records) == 45

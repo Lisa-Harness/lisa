@@ -90,8 +90,8 @@ its `topic`:
 
 | Topic | Publisher | Per | Carries |
 | --- | --- | --- | --- |
-| `turn.decision` | [`_resolve_lifecycle`](../kernel/src/kernel/turn_runner/__init__.py) | iteration | `mode_id`, `turn_index`, `iteration`, `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`, `read_receipts` |
-| `tool.telemetry` | [tools](../kernel/src/kernel/tools/registry.py) / [operations](../kernel/src/kernel/operations/registry.py) registry | dispatch | `target_id`, `target_type`, `status`, `duration_ms`, `error_message`, `turn_index` |
+| `turn.decision` | [`_resolve_lifecycle`](../kernel/src/kernel/turn_runner/__init__.py) | iteration | `mode_id`, `turn_index`, `user_slug`, `iteration`, `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`, `read_receipts` |
+| `tool.telemetry` | [tools](../kernel/src/kernel/tools/registry.py) / [operations](../kernel/src/kernel/operations/registry.py) registry | dispatch | `target_id`, `target_type`, `status`, `duration_ms`, `error_message`, `turn_index`, `user_slug` |
 
 Why a separate file rather than `runtime.jsonl`:
 

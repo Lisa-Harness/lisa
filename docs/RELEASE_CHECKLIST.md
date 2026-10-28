@@ -5,6 +5,34 @@ the current working tree, repository visibility, or CI state. Record the
 actual release evidence in the release/PR, not by checking off this template
 forever.
 
+## PR-based releases and protected main
+
+All changes, including release preparation, reach `main` through pull requests.
+Main protection requires the GitHub Actions **Merge gate** check, with the branch
+up to date before merging. It covers quality gates, documentation, and the full
+OS/Python test and coverage matrix, including docs-only changes. Failed,
+cancelled, or skipped dependencies cannot produce a successful merge gate.
+
+Require PR conversations to be resolved, block force pushes and branch deletion,
+and enforce protection for administrators. No approving review is mandatory so a
+solo maintainer can merge their own passing PR. Configure these repository
+settings in GitHub; workflow files alone do not enable branch protection.
+
+1. Create a `release/vX.Y.Z` branch from current `main`.
+2. Update the root workspace and all ten package versions, refresh `uv.lock`,
+   and move the changelog's Unreleased entries into a dated version section.
+   Leave an empty Unreleased heading for subsequent changes.
+3. Open a release PR with migration notes and complete this checklist. Wait
+   for **Merge gate** and all other checks to pass on its latest commit.
+4. Run `Publish` manually against the release branch. This runs the release
+   validation and distribution build without uploading to PyPI. Verify that
+   the run succeeded on the PR's latest commit; rerun after changes.
+5. Merge the PR without bypassing protection. Fetch `main` and wait for its
+   checks to pass, then create and push an annotated `vX.Y.Z` tag on that
+   verified main commit. Never tag an unmerged release branch.
+6. Monitor `Publish` through all ten uploads and GitHub release creation.
+   Do not move a release tag or reuse a published version.
+
 Host and external-pack releases belong to their own repositories. Do not
 gate a framework release on a hardcoded list or historical count of external
 packs.
@@ -55,10 +83,12 @@ packs.
 
 ## Build and publication contract
 
-The current publish workflow runs reusable CI, validates each target's name
-and version against the pushed `v<version>` tag, builds with `uv build
---no-cache`, checks the output counts, and publishes through PyPI trusted
-publishing.
+The current publish workflow runs reusable CI, requires a tag's commit to be on
+`main`, validates each target's name and version against the pushed `v<version>`
+tag and the workspace version, requires a dated changelog section for that
+version, builds with `uv build --no-sources --all-packages`, checks the output
+counts, and publishes through PyPI trusted publishing. Manual dispatch validates
+and builds without publishing.
 
 Its current ten targets are:
 

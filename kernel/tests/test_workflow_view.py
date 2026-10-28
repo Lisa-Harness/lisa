@@ -631,6 +631,24 @@ class TestReceiptModeAttribution:
         assert view is not None
         assert "coding_execute_1" not in view.completed_steps
 
+    def test_mode_and_capability_must_come_from_the_same_receipt(self):
+        """One mode's receipt and another mode's capability must not combine."""
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="thinker",
+                response_text="Two unrelated writes.",
+                effect_receipts=[
+                    {"capability_id": "save_notes", "effect": "write", "mode_id": "coding_execute"},
+                    {"capability_id": "coding_commit", "effect": "write", "mode_id": "thinker"},
+                ],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "coding_execute_1" not in view.completed_steps
+
     def test_legacy_receipt_without_mode_falls_back_to_entry_mode(self):
         """Receipts persisted before the field existed still attribute."""
         plan = """\

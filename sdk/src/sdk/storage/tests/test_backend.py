@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -428,11 +429,13 @@ def test_edit_file_leaves_mode_readable(tmp_path: Path) -> None:
     b.write_file("doc.md", "one\n")
     target = b.files_root() / "doc.md"
     target.chmod(0o644)
+    # Windows reports 0o666 for any writable file, so compare to the observed mode.
+    expected_mode = stat.S_IMODE(target.stat().st_mode)
 
     receipt = json.loads(b.edit_file("doc.md", "one", "two"))
 
     assert receipt["ok"] is True
-    assert target.stat().st_mode & 0o777 == 0o644
+    assert stat.S_IMODE(target.stat().st_mode) == expected_mode
     assert b.read_file("doc.md") == "two\n"
 
 

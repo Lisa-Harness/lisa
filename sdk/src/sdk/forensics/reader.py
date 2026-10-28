@@ -21,21 +21,30 @@ and hitting one appends a note. A forensic call that silently truncates is
 worse than one that says it did.
 
 Paths are derived from the injected data root only — never from an argument —
-so a caller cannot address another user's evidence by naming a path.
+so a caller cannot address another user's evidence by naming a path. The
+telemetry ledgers are shared by every user of a root, so a user-scoped reader
+also keeps only ledger records stamped with its ``user_slug``; turn indices are
+per-thread and would otherwise join another user's dispatches and spend onto
+this user's turns. The runtime log carries no user and is read as host-wide
+process diagnostics.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sdk.forensics._join import build_bundle, turn_from_entry
 from sdk.forensics._logrec import (
     DEFAULT_MAX_BYTES,
+    JsonlTail,
+    filter_owned,
     filter_window,
-    iter_jsonl_tail,
+    parse_ts,
+    read_jsonl_tail,
+    record_ts,
 )
 from sdk.forensics._models import BundleSources, ForensicBundle, TurnEvidence
 from sdk.layout import DATA_DIR, LOGS_DIR
@@ -58,6 +67,10 @@ DEFAULT_MAX_TURNS = 20
 #: Hard ceiling on log lines included in a bundle.
 DEFAULT_LOG_ERROR_LIMIT = 50
 
+#: Clock slack applied to the turn-derived lower bound for ledger reads, so a
+#: record stamped fractionally before the previous turn's entry is still read.
+_TURN_FLOOR_SLACK = timedelta(minutes=5)
+
 _ERROR_LEVELS = frozenset({"error", "warning", "critical"})
 _DECISIONS_FILENAME = "decisions.jsonl"
 _TOKEN_USAGE_FILENAME = "token-usage.jsonl"
@@ -70,9 +83,10 @@ class ForensicReader:
     Args:
         data_dir: The host's resolved data root. Log paths are derived from it.
         thread_dir: The directory holding per-user thread stores.
-        user_slug: The user whose thread is read. Selects the store; it is
-            never taken from a tool argument, so a caller cannot request
-            another user's history.
+        user_slug: The user whose thread is read. Selects the store and scopes
+            the shared decision and token ledgers to this user's records; it
+            is never taken from a tool argument, so a caller cannot request
+            another user's history. Empty means an unscoped whole-root read.
         redaction: Optional read-time redaction applied to every thread-derived
             string. Threads persist raw prompts and reasoning, so a forensic
             read is exactly the surface that must respect this policy.
@@ -160,25 +174,16 @@ class ForensicReader:
         store = ThreadStore(self.thread_store_path(), redaction=self._redaction)
         start, end = self._resolve_range(store, turns, notes)
         sources.thread_store = start is not None
-
         entries: list[TurnEvidence] = []
+        floor: datetime | None = None
         if start is not None and end is not None:
-            try:
-                for turn, entry in store.iter_range(start_turn=start, end_turn=end):
-                    entries.append(turn_from_entry(turn, self._redact_entry(entry)))
-            except (OSError, ValueError) as exc:
-                notes.append(f"thread read failed for {start}-{end}: {exc}")
-                sources.thread_store = False
+            start = self._clamp_to_max_turns(start, end, notes)
+            entries = self._read_turns(store, start, end, sources, notes)
+            floor = self._turn_floor(store, start)
+        wanted = {turn.turn_index for turn in entries}
 
-        if len(entries) > self._max_turns:
-            notes.append(
-                f"{len(entries)} turns matched but the read cap is {self._max_turns}; "
-                f"showing the most recent {self._max_turns}. Narrow the range."
-            )
-            entries = entries[-self._max_turns :]
-
-        decisions, dispatches = self._read_decisions(sources, notes, max_records)
-        costs = self._read_costs(sources, now, notes)
+        decisions, dispatches = self._read_decisions(sources, notes, max_records, wanted, floor)
+        costs = self._read_costs(sources, notes, wanted, floor)
         log_errors = self._read_log_errors(sources, now, notes, max_records)
 
         bundle = build_bundle(
@@ -196,6 +201,59 @@ class ForensicReader:
         return bundle
 
     # ── Internals ──────────────────────────────────────────────────────
+
+    def _clamp_to_max_turns(self, start: int, end: int, notes: list[str]) -> int:
+        """Narrow ``start`` so the range spans at most ``max_turns`` turns.
+
+        Applied before the thread read, so a wide range costs only the turns
+        that will be returned rather than decoding and redacting all of them.
+        """
+        span = end - start + 1
+        if span <= self._max_turns:
+            return start
+        notes.append(
+            f"{span} turns requested but the read cap is {self._max_turns}; "
+            f"showing the most recent {self._max_turns}. Narrow the range."
+        )
+        return end - self._max_turns + 1
+
+    def _read_turns(
+        self,
+        store: ThreadStore,
+        start: int,
+        end: int,
+        sources: BundleSources,
+        notes: list[str],
+    ) -> list[TurnEvidence]:
+        """Read and redact the thread entries for ``start..end``."""
+        entries: list[TurnEvidence] = []
+        try:
+            for turn, entry in store.iter_range(start_turn=start, end_turn=end):
+                entries.append(turn_from_entry(turn, self._redact_entry(entry)))
+        except (OSError, ValueError) as exc:
+            notes.append(f"thread read failed for {start}-{end}: {exc}")
+            sources.thread_store = False
+        return entries
+
+    @staticmethod
+    def _turn_floor(store: ThreadStore, start: int) -> datetime | None:
+        """Return the earliest time a record for turn ``start`` can carry.
+
+        Telemetry for turn ``start`` is written after turn ``start - 1``'s
+        entry, so that entry's timestamp (less clock slack) bounds how far
+        back the append-only ledgers need to be read. ``None`` when there is no
+        earlier turn or it carries no usable timestamp: the read is then
+        bounded by bytes alone.
+        """
+        if start <= 0:
+            return None
+        try:
+            for _, entry in store.iter_range(start_turn=start - 1, end_turn=start - 1):
+                stamp = parse_ts(entry.get("timestamp_utc"))
+                return stamp - _TURN_FLOOR_SLACK if stamp is not None else None
+        except (OSError, ValueError):
+            return None
+        return None
 
     def _redact_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Apply the read-time redaction policy to a raw thread entry.
@@ -283,41 +341,71 @@ class ForensicReader:
         sources: BundleSources,
         notes: list[str],
         max_records: int,
+        wanted: set[int],
+        floor: datetime | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Split the ledger into decision and dispatch payloads."""
-        records = list(
-            iter_jsonl_tail(self.decisions_path, max_bytes=self._max_bytes, backup_count=None)
+        """Return the ledger's decision and dispatch payloads for the selection.
+
+        Every record for a requested turn is kept. Records naming another turn
+        (or none) are surfaced as unattributed, capped to the most recent
+        ``max_records`` per kind so a long ledger cannot crowd out the answer.
+        """
+        tail = read_jsonl_tail(
+            self.decisions_path, max_bytes=self._max_bytes, backup_count=None, since=floor
         )
-        if not records:
+        if not tail.records:
             notes.append(
                 f"{_DECISIONS_FILENAME} has no records; decisions and dispatches "
                 "are unknown (not absent)"
             )
             return [], []
         sources.decisions_log = True
-        decisions = [r for r in records if r.get("topic") == "turn.decision"]
-        dispatches = [r for r in records if r.get("topic") == "tool.telemetry"]
-        if len(dispatches) > max_records:
-            notes.append(
-                f"{len(dispatches)} dispatch records in the ledger; "
-                f"using the most recent {max_records}"
-            )
-            dispatches = dispatches[-max_records:]
+        records = self._owned(_since(tail, floor), _DECISIONS_FILENAME, notes)
+        self._note_truncation(tail, _DECISIONS_FILENAME, "the selected turns", notes)
+        decisions = _cap_unattributed(
+            [r for r in records if r.get("topic") == "turn.decision"],
+            wanted,
+            max_records,
+            "decision",
+            notes,
+        )
+        dispatches = _cap_unattributed(
+            [r for r in records if r.get("topic") == "tool.telemetry"],
+            wanted,
+            max_records,
+            "dispatch",
+            notes,
+        )
         return decisions, dispatches
 
     def _read_costs(
         self,
         sources: BundleSources,
-        now: datetime,
         notes: list[str],
+        wanted: set[int],
+        floor: datetime | None,
     ) -> list[dict[str, Any]]:
-        """Return token-usage records inside the window."""
-        records = list(iter_jsonl_tail(self.token_usage_path, max_bytes=self._max_bytes))
-        if not records:
+        """Return the token-usage records for the requested turns."""
+        tail = read_jsonl_tail(self.token_usage_path, max_bytes=self._max_bytes, since=floor)
+        if not tail.records:
             notes.append(f"{_TOKEN_USAGE_FILENAME} has no records; per-turn cost is unknown")
             return []
         sources.token_usage_log = True
-        return filter_window(records, now=now, window_seconds=self._window_seconds)
+        self._note_truncation(tail, _TOKEN_USAGE_FILENAME, "the selected turns", notes)
+        owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
+        return [r for r in owned if r.get("turn_index") in wanted]
+
+    def _owned(
+        self, records: list[dict[str, Any]], name: str, notes: list[str]
+    ) -> list[dict[str, Any]]:
+        """Keep this user's ledger records, noting any that predate attribution."""
+        owned = filter_owned(records, self._user_slug)
+        if owned.unowned:
+            notes.append(
+                f"{owned.unowned} {name} records predate per-user attribution and were "
+                "excluded; evidence for turns before the upgrade is incomplete"
+            )
+        return owned.records
 
     def _read_log_errors(
         self,
@@ -327,12 +415,14 @@ class ForensicReader:
         max_records: int,
     ) -> list[dict[str, Any]]:
         """Return warning/error log lines inside the window, newest last."""
-        records = list(iter_jsonl_tail(self.runtime_log_path, max_bytes=self._max_bytes))
-        if not records:
+        cutoff = now - timedelta(seconds=self._window_seconds)
+        tail = read_jsonl_tail(self.runtime_log_path, max_bytes=self._max_bytes, since=cutoff)
+        if not tail.records:
             notes.append(f"{_RUNTIME_LOG_FILENAME} has no records; log diagnostics are unknown")
             return []
         sources.runtime_log = True
-        windowed = filter_window(records, now=now, window_seconds=self._window_seconds)
+        self._note_truncation(tail, _RUNTIME_LOG_FILENAME, "the log window", notes)
+        windowed = filter_window(tail.records, now=now, window_seconds=self._window_seconds)
         errors = [
             record for record in windowed if str(record.get("level") or "").lower() in _ERROR_LEVELS
         ]
@@ -343,3 +433,37 @@ class ForensicReader:
             )
             errors = errors[-max_records:]
         return errors
+
+    def _note_truncation(self, tail: JsonlTail, name: str, span: str, notes: list[str]) -> None:
+        """Record that a read hit its byte budget before covering ``span``."""
+        if tail.truncated:
+            notes.append(
+                f"{name} read stopped at its {self._max_bytes // (1024 * 1024)} MiB budget "
+                f"before covering {span}; older records are missing, so counts from it "
+                "are a lower bound"
+            )
+
+
+def _since(tail: JsonlTail, floor: datetime | None) -> list[dict[str, Any]]:
+    """Drop records dated before ``floor``; undated records are kept."""
+    if floor is None:
+        return tail.records
+    return [r for r in tail.records if (ts := record_ts(r)) is None or ts >= floor]
+
+
+def _cap_unattributed(
+    records: list[dict[str, Any]],
+    wanted: set[int],
+    limit: int,
+    kind: str,
+    notes: list[str],
+) -> list[dict[str, Any]]:
+    """Keep every record for a wanted turn and the newest ``limit`` of the rest."""
+    others = [r for r in records if r.get("turn_index") not in wanted]
+    if len(others) <= limit:
+        return records
+    keep = {id(r) for r in others[-limit:]}
+    notes.append(
+        f"{len(others)} {kind} records named no requested turn; listing the most recent {limit}"
+    )
+    return [r for r in records if r.get("turn_index") in wanted or id(r) in keep]

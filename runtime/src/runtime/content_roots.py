@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import tomllib
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from kernel.content_roots import (
@@ -124,21 +126,57 @@ def infer_pack_package_name(root: Path) -> str:
 
 
 def installed_pack_version(root: Path, package_name: str) -> str | None:
-    """Return the installed distribution version for the pack at ``root``.
+    """Return the installed distribution version for the pack at ``root``."""
+    distribution = _installed_pack_distribution(root, package_name)
+    if distribution is None:
+        return None
+    return distribution.version
+
+
+def installed_pack_requested_revision(root: Path, package_name: str) -> str | None:
+    """Return the VCS revision the pack at ``root`` was installed from.
+
+    ``direct_url.json`` (PEP 610) records the ref named at install time,
+    e.g. ``v0.2.2`` for ``git+https://...@v0.2.2``. Returns ``None`` for
+    non-VCS installs or unreadable metadata.
+    """
+    distribution = _installed_pack_distribution(root, package_name)
+    if distribution is None:
+        return None
+    raw = distribution.read_text("direct_url.json")
+    if not raw:
+        return None
+    try:
+        direct_url: object = json.loads(raw)
+    except ValueError:
+        return None
+    vcs_info = _json_field(direct_url, "vcs_info")
+    revision = _json_field(vcs_info, "requested_revision")
+    return revision if isinstance(revision, str) and revision else None
+
+
+def _json_field(value: object, key: str) -> object:
+    """Return ``value[key]`` when ``value`` is a JSON object, else ``None``."""
+    if not isinstance(value, dict):
+        return None
+    return cast("dict[str, object]", value).get(key)
+
+
+def _installed_pack_distribution(root: Path, package_name: str) -> metadata.Distribution | None:
+    """Find the installed distribution for the pack at ``root``, or ``None``.
 
     Non-editable packs keep their ``*.dist-info`` beside ``lisa_packs/`` in
     the packs venv, so ``root``'s ancestors are searched first; editable
     installs fall back to ``sys.path`` (which includes the packs venv).
     """
-    import sys
-    from importlib import metadata
-
     search_path = [str(parent) for parent in root.parents]
     search_path.extend(entry for entry in sys.path if entry not in search_path)
     for distribution in metadata.distributions(name=package_name, path=search_path):
-        version = distribution.version
+        # A dist-info without a usable Version (e.g. a half-removed install)
+        # must not shadow the real one further down the path.
+        version: object = distribution.version
         if isinstance(version, str) and version:
-            return version
+            return distribution
     return None
 
 

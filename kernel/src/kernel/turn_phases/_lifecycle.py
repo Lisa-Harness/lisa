@@ -304,6 +304,15 @@ class _TurnStateView:
     # diagnostic visibility only.
     forced_action_target: str = ""
     forced_action_non_compliant_dispatches: int = 0
+    # True when the effective model is trusted (frontier / reasoning /
+    # high structured_reliability) and is therefore exempt from the
+    # forced-action enforcer in BOTH sites (dispatch loop and lifecycle
+    # resolver). Carried here because the resolver is pure and only sees
+    # this view, not the model. Must agree with the dispatch loop's
+    # exemption check or the two enforcers desync (the 2026-10-28 bug:
+    # trusted models exempt from the loop enforcer but not the resolver,
+    # so the resolver force-transitioned them at cap=2).
+    forced_action_exempt: bool = False
     # Handoff-loop backstop: total mid-turn mode handoffs this turn.
     handoff_count: int = 0
     # Operator-initiated terminal signal (Phase: pause/stop/terminate).
@@ -672,6 +681,7 @@ def _forced_transition_action(
     if (
         not state.forced_action_target
         or state.forced_action_target.startswith("fork:")
+        or state.forced_action_exempt
         or state.forced_action_non_compliant_dispatches < settings.forced_action_non_compliant_cap
     ):
         return None

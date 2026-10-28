@@ -181,3 +181,30 @@ async def test_self_model_tool_count_from_registry_not_ctx(
     summary: str = artifact_json["identity_summary"]
     assert "1 tools" in summary
     assert "0 tools" not in summary
+
+
+def test_build_self_model_vibe_flags_partial_telemetry() -> None:
+    """A summary read short of its window is labelled as a lower bound."""
+    from kernel.models import TokenUsageSummary
+
+    artifact = _make_artifact()
+    artifact.uptime_seconds = 10.0
+    artifact.token_usage_24h = TokenUsageSummary(total_tokens=5, partial=True)
+    artifact.log_errors_partial = True
+
+    vibe = build_self_model_vibe(artifact)
+
+    assert "Partial telemetry" in vibe
+    assert "token usage" in vibe
+    assert "log errors" in vibe
+
+
+def test_build_self_model_vibe_is_silent_on_complete_telemetry() -> None:
+    """Complete reads add nothing to the vibe."""
+    from kernel.models import TokenUsageSummary
+
+    artifact = _make_artifact()
+    artifact.uptime_seconds = 10.0
+    artifact.token_usage_24h = TokenUsageSummary(total_tokens=5)
+
+    assert "Partial telemetry" not in build_self_model_vibe(artifact)

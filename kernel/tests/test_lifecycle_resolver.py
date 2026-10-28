@@ -48,6 +48,10 @@ class _State:
     # count of consecutive non-compliant tool dispatches.
     forced_action_target: str = ""
     forced_action_non_compliant_dispatches: int = 0
+    # Trust exemption (defaults match _TurnStateView): True when the
+    # effective model is trusted and exempt from the forced-action
+    # enforcer in both sites.
+    forced_action_exempt: bool = False
     handoff_count: int = 0
     # Operator-signal field (pause/stop/terminate). Defaults to "" so
     # existing tests ignore it; the resolver only acts on non-empty.
@@ -620,6 +624,30 @@ def test_forced_action_enforcer_not_triggered_without_target() -> None:
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
         settings=_settings(forced_action_non_compliant_cap=3),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+def test_forced_transition_enforcer_exempt_for_trusted_model() -> None:
+    """A trusted model is exempt from the resolver-side enforcer.
+
+    Regression for the 2026-10-28 desync: the dispatch-loop enforcer
+    exempts frontier / reasoning / high-reliability models (effective
+    cap = inf), but the lifecycle resolver applied the raw cap, so a
+    trusted model's counter still reached the cap and the resolver
+    force-transitioned it. The resolver must honor the same exemption
+    via ``forced_action_exempt`` or the weaker of the two enforcers
+    wins.
+    """
+    action = resolve_lifecycle_action(
+        state=_State(
+            forced_action_target="plan",
+            forced_action_non_compliant_dispatches=10,
+            forced_action_exempt=True,
+        ),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=_settings(forced_action_non_compliant_cap=2),
     )
     assert isinstance(action, ContinueAction)
 

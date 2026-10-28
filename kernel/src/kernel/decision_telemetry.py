@@ -176,31 +176,6 @@ class DecisionTelemetryHandler:
         except OSError as exc:
             logger.warning("decision telemetry seal failed for %s: %s", self._path, exc)
 
-    def read_recent(self, limit: int = 200) -> list[dict[str, Any]]:
-        """Return the last ``limit`` persisted records as parsed dicts.
-
-        Oldest first within the tail window. Decode errors are skipped. Returns
-        an empty list when the file does not exist or is unreadable. Sealed
-        segments are not consulted (only the active file is read).
-        """
-        if not self._path.exists():
-            return []
-        try:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
-
-        tail = lines[-limit:] if limit > 0 else lines
-        results: list[dict[str, Any]] = []
-        for raw_line in tail:
-            try:
-                decoded = json.loads(raw_line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(decoded, dict):
-                results.append(decoded)
-        return results
-
 
 def _coerce_record(payload: Any) -> dict[str, Any] | None:
     """Normalize one published payload into a JSON-serializable mapping.
