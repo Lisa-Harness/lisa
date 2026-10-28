@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 _CAPABILITY_NAME_RE = re.compile(r"[a-z][a-z0-9_-]*")
 
 
+#: ``providers.capabilities`` keys resolved outside the MCP pool. ``sandbox``
+#: selects a pack sandbox floor (``kernel.sandbox_floor``), not an MCP server.
+NON_MCP_CAPABILITIES: frozenset[str] = frozenset({"sandbox"})
+
+
 def valid_capability_name(name: str) -> bool:
     """Return whether ``name`` is a valid capability slug."""
     return bool(_CAPABILITY_NAME_RE.fullmatch(name or ""))
@@ -96,6 +101,37 @@ def candidate_identifiers(candidate: CapabilityCandidate) -> set[str]:
         if normalized.startswith("lisa-pack-"):
             identifiers.add(normalized[len("lisa-pack-") :])
     return {identifier.strip().lower() for identifier in identifiers if identifier}
+
+
+def reject_unclaimed_selections(
+    selected_providers: dict[str, str],
+    claimed_capabilities: set[str],
+) -> None:
+    """Raise when a session selects an implementation for an unclaimed capability.
+
+    A ``providers.capabilities.<name>`` entry that no loaded manifest claims
+    (and no non-MCP resolver owns) would otherwise be ignored, silently
+    running without the selected implementation — e.g. selecting a pack's
+    Go fetch server from a pack release that does not declare it.
+    """
+    unclaimed = sorted(
+        (capability, provider)
+        for capability, provider in selected_providers.items()
+        if provider.strip()
+        and capability not in claimed_capabilities
+        and capability not in NON_MCP_CAPABILITIES
+    )
+    if not unclaimed:
+        return
+    details = "; ".join(
+        f"providers.capabilities.{capability}={provider!r}" for capability, provider in unclaimed
+    )
+    raise CapabilitySelectionError(
+        f"{details}: no loaded MCP server manifest declares "
+        f"{'this capability' if len(unclaimed) == 1 else 'these capabilities'}. "
+        "Install a pack version that provides the selected implementation or "
+        "remove the selection."
+    )
 
 
 def select_capability_owner(

@@ -216,6 +216,17 @@ async def _invoke(
     return await _run_tool(pack_path, tool_id, factory, parameters)
 
 
+def test_factory_wires_mcp_tool_call_seam(tmp_path: Path) -> None:
+    """Tools that delegate to an MCP capability get the test double."""
+
+    async def _capability(_tool_id: str, _arguments: object) -> object:
+        raise AssertionError("not called")
+
+    factory = ToolContextFactory(root=tmp_path, pack_config={}, mcp_tool_call=_capability)
+    assert factory.context().mcp_tool_call is _capability
+    assert ToolContextFactory(root=tmp_path, pack_config={}).context().mcp_tool_call is None
+
+
 def test_make_context_stamps_identity_and_store(tmp_path: Path) -> None:
     """One-shot contexts carry ownership identity and an artifact store."""
 

@@ -265,6 +265,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         state_provider=getattr(ctx, "state_provider", None),
         data_dir=getattr(ctx, "data_dir", ""),
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        mcp_tool_call=getattr(ctx, "mcp_tool_call", None),
     )
 
 

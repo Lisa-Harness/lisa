@@ -102,6 +102,13 @@ class ToolExecutionContext(BaseModel):
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = (
         Field(default=None, exclude=True)
     )
+    # Dispatch to an MCP tool by its published id (``fetch.fetch_url``), so a
+    # pack tool can delegate to the session's selected capability
+    # implementation instead of embedding one. Bound to the turn's MCP pool by
+    # the tool executors; ``None`` where no pool is attached.
+    mcp_tool_call: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = Field(
+        default=None, exclude=True
+    )
     # Idle-deadline propagation across composed dispatch: when a streaming
     # tool delegates to a child tool (e.g. bash_run → bwrap_run), the child's
     # incremental output must reset the PARENT's idle clock too, or the

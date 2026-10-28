@@ -16,6 +16,7 @@ def test_in_process_server_ids_contains_first_party() -> None:
     ids = in_process_server_ids()
     assert "lisa-catalog" in ids
     assert "lisa-content" in ids
+    assert "lisa-fetch" in ids
     assert "lisa-guard" in ids
     assert "lisa-memory" in ids
     assert "lisa-storage" in ids

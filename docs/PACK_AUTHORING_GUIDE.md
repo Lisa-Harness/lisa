@@ -184,7 +184,11 @@ A Python tool normally has a `.tool.yml` metadata file and implementation
 module returning `ToolResult` from `ToolExecutionContext`. Its metadata
 declares ID, parameters, effect, timeout/call budget, and module location.
 Use the [core fetch tool](../sdk/packs/core/src/sdk/packs/core/tools/fetch_page/)
-as a real example and validate with `packstest.run_tool`.
+as a real example and validate with `packstest.run_tool`. A tool that needs
+an MCP capability calls it by published ID through
+`ctx.mcp_tool_call("<capability>.<tool>", arguments)` (as `fetch_page` calls
+`fetch.fetch_url`) rather than embedding an implementation; the seam is
+`None` when no MCP pool is attached, and the tool must fail loudly then.
 
 Declare effects truthfully (`read`, `write`, `execute`, `external_write`).
 Receipts and approvals depend on them. Model-requested file I/O uses the

@@ -20,6 +20,7 @@ Covers:
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -235,3 +236,56 @@ class _FakeToolSpec:
         self.description = ""
         self.input_schema = {"type": "object", "properties": {}}
         self.read_only_hint = False
+
+
+def _cold(config: MCPClientConfig) -> MCPClientConfig:
+    return dataclasses.replace(config, warm=False)
+
+
+@pytest.mark.asyncio
+async def test_published_id_lazily_connects_cold_capability_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold owner with no ambient tools is reachable by its published id.
+
+    ``fetch_page`` calls ``fetch.fetch_url`` on a cold server that is never
+    connected while building a mode's tool list; the pool must connect the
+    declared owner instead of reporting the tool as unregistered.
+    """
+    session = _FakeSession([_FakeTool("fetch_url"), _FakeTool("invalidate_fetch_cache")])
+    _patch_connect(monkeypatch, {"lisa-fetch-go": session})
+    pool = MCPToolPool(
+        [
+            _cold(
+                _capability_config(
+                    "lisa-fetch-go", "fetch", ("fetch_url", "invalidate_fetch_cache")
+                )
+            )
+        ]
+    )
+    await pool.start()
+    assert "lisa-fetch-go" not in pool._sessions
+
+    result = await pool.call_tool("fetch.fetch_url", {"url": "https://example.com"})
+
+    assert result.is_error is False
+    assert session.calls == [("fetch_url", {"url": "https://example.com"})]
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_undeclared_published_id_is_not_dispatched_to_capability_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An id outside the owner's declared contract is not dispatched to it."""
+    session = _FakeSession([_FakeTool("fetch_url")])
+    _patch_connect(monkeypatch, {"lisa-fetch-go": session})
+    pool = MCPToolPool([_cold(_capability_config("lisa-fetch-go", "fetch", ("fetch_url",)))])
+    await pool.start()
+
+    result = await pool.call_tool("fetch.not_declared", {})
+
+    assert result.is_error is True
+    assert "not registered" in result.output_text
+    assert session.calls == []
+    await pool.aclose()

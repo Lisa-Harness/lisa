@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_server.fetch.server import (
     FetchDeps,
     fetch_url,
@@ -89,7 +90,7 @@ async def test_invalidate_fetch_cache_clears_entry(
 @pytest.mark.asyncio
 async def test_fetch_url_ssrf_rejected(tmp_path: Path) -> None:
     _seed_deps(tmp_path)
-    with pytest.raises(ValueError, match="private"):
+    with pytest.raises(ToolError, match="private"):
         await fetch_url("https://169.254.169.254/meta")
 
 
@@ -97,10 +98,12 @@ async def test_fetch_url_ssrf_rejected(tmp_path: Path) -> None:
 async def test_fetch_url_http_error_status_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A refused fetch raises with its status code, not a generic failure.
+    """A refused fetch raises a ToolError carrying its status code.
 
     The server must not present a 403 as a transport error, and must not
-    answer with stale content.
+    answer with stale content. The error must be a ToolError: any other
+    exception reaches MCP clients as a generic "Error executing tool" and
+    the status is lost.
     """
     from sdk.content import FetchStatusError
 
@@ -111,6 +114,9 @@ async def test_fetch_url_http_error_status_surfaces(
         return httpx.Response(403, request=httpx.Request("GET", req_url), content=b"blocked")
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _forbidden)
-    with pytest.raises(FetchStatusError) as excinfo:
+    with pytest.raises(
+        ToolError, match=r"^HTTP 403 \(Forbidden\) for url 'https://github.com/foo.md'$"
+    ) as excinfo:
         await fetch_url(url)
-    assert excinfo.value.status_code == 403
+    assert isinstance(excinfo.value.__cause__, FetchStatusError)
+    assert excinfo.value.__cause__.status_code == 403

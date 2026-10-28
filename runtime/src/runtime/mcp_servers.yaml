@@ -132,6 +132,24 @@ servers:
       - append_file
       - edit_file
 
+  # ── Fetch server (cold — lazily connected on first use) ──
+  # ``capability: fetch`` makes this the built-in implementation of the
+  # fetch capability: tools publish as ``fetch.*`` and the core pack's
+  # ``fetch_page`` tool calls ``fetch.fetch_url`` through the tool context's
+  # MCP seam. Session ``providers.capabilities.fetch: <pack server>`` swaps
+  # in an alternate (e.g. the Go Connector SDK binary). No ambient tools:
+  # ``fetch_page`` stays the only model-facing fetch tool. Each
+  # implementation owns its cache under the host data_dir.
+  - server_id: lisa-fetch
+    capability: fetch
+    capability_tools:
+      - fetch_url
+      - invalidate_fetch_cache
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    warm: false
+    data_dir_subdir: "."
+
   # ── Thread-access server (cold — lazily connected on first use) ──
   # The thread server exposes bounded reads, search, and content
   # expansion so the model can pull older conversation

@@ -149,6 +149,39 @@ def test_resolve_honors_explicit_selection() -> None:
     assert [spec.server_id for spec in registry.all_specs()] == ["lisa-storage-go"]
 
 
+def test_resolve_rejects_selection_for_unclaimed_capability() -> None:
+    """A selection nothing claims is a startup error, not silently ignored.
+
+    Regression: ``providers.capabilities.fetch: lisa-fetch-go`` with a pack
+    release that declared no fetch server ran the in-process fetcher with
+    no error, so the selected Go binary was never launched or downloaded.
+    """
+    registry = MCPServerRegistry()
+    builtin = _candidate("lisa-storage", "storage", source="builtin")
+    with pytest.raises(
+        capability_servers.CapabilitySelectionError,
+        match=r"providers\.capabilities\.search='lisa-search-go': no loaded MCP server",
+    ):
+        mcp_pool._resolve_capability_owners(
+            registry,
+            [builtin],
+            selected_capability_providers={"search": "lisa-search-go"},
+        )
+    assert registry.all_specs() == []
+
+
+def test_resolve_allows_non_mcp_and_blank_selections() -> None:
+    """``sandbox`` is resolved by the sandbox floor; blank selections select nothing."""
+    registry = MCPServerRegistry()
+    builtin = _candidate("lisa-storage", "storage", source="builtin")
+    mcp_pool._resolve_capability_owners(
+        registry,
+        [builtin],
+        selected_capability_providers={"sandbox": "bwrap", "search": " "},
+    )
+    assert [spec.server_id for spec in registry.all_specs()] == ["lisa-storage"]
+
+
 def test_resolve_rejects_different_capability_contracts() -> None:
     builtin = _candidate(
         "lisa-storage",

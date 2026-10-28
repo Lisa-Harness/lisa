@@ -124,7 +124,8 @@ async def fetch_url(
 
     Optional overrides build a per-call :class:`FetchPolicy` on top of the
     server default. SSRF rejection (scheme/host/private-IP) raises a
-    :class:`ToolError` (surfaced from the SDK fetcher's ``ValueError``).
+    :class:`ToolError` carrying the SDK fetcher's ``ValueError`` message, as
+    does an HTTP error status (``HTTP <code> (<reason>) for url '<url>'``).
     On a network failure with a valid stale cache, the stale content is
     returned.
     """
@@ -139,7 +140,15 @@ async def fetch_url(
         )
     else:
         policy = base
-    result = await deps.fetcher.fetch(url, policy=policy)
+    try:
+        result = await deps.fetcher.fetch(url, policy=policy)
+    except ValueError as exc:
+        # SSRF rejections, HTTP error statuses (``FetchStatusError``) and
+        # uncached transport failures are expected tool errors. A ToolError
+        # keeps the message on the wire — clients parse the
+        # ``HTTP <code> ... for url`` status from it — where any other
+        # exception is replaced by a generic "Error executing tool".
+        raise ToolError(str(exc)) from exc
     return json.dumps(
         {
             "url": result.url,

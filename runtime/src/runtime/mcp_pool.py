@@ -49,6 +49,7 @@ from runtime.capability_servers import (
     CapabilitySelectionError,
     log_capability_selection,
     register_capability_server,
+    reject_unclaimed_selections,
     select_capability_owner,
     valid_capability_name,
 )
@@ -869,12 +870,14 @@ def _resolve_capability_owners(
     - log (not register) the losers.
 
     Raises :class:`CapabilitySelectionError` when a capability cannot be
-    resolved deterministically — a contested or misconfigured capability
-    is a startup error, not a silent fallback.
+    resolved deterministically — a contested or misconfigured capability,
+    or a selection naming a capability nothing claims, is a startup error,
+    not a silent fallback.
     """
     by_capability: dict[str, list[CapabilityCandidate]] = {}
     for candidate in capability_candidates:
         by_capability.setdefault(candidate.capability, []).append(candidate)
+    reject_unclaimed_selections(selected_capability_providers, set(by_capability))
     for capability in sorted(by_capability):
         candidates = by_capability[capability]
         contracts = {frozenset(candidate.spec.capability_tools) for candidate in candidates}

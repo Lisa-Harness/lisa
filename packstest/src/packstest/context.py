@@ -56,6 +56,9 @@ class ToolContextFactory:
         tool_id: Tool id stamped on every context.
         approvals: Optional mutable dict the tool may read for
             approval-service seams; harness tests never require it.
+        mcp_tool_call: Optional double for ``ctx.mcp_tool_call`` — tools
+            that delegate to an MCP capability (``fetch_page`` calls
+            ``fetch.fetch_url``) fail loudly without one.
     """
 
     root: Path
@@ -68,6 +71,7 @@ class ToolContextFactory:
     tool_id: str = "packstest-tool"
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = None
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = None
+    mcp_tool_call: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = None
 
     def context(
         self,
@@ -89,6 +93,7 @@ class ToolContextFactory:
             pack_config=dict(self.pack_config),
             execution_floor_for=self.execution_floor_for,
             delegated_tool_dispatch=self.delegated_tool_dispatch,
+            mcp_tool_call=self.mcp_tool_call,
             approval_service=None,
             approval_request_id=approval_request_id,
             task_id=self.identity.get("task_id", ""),

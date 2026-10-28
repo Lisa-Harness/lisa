@@ -27,6 +27,7 @@ lisa-memory = "mcp_server.memory.server:main"
 lisa-guard = "mcp_server.guard.server:main"
 lisa-content = "mcp_server.content.server:main"
 lisa-catalog = "mcp_server.catalog.server:main"
+lisa-fetch = "mcp_server.fetch.server:main"
 lisa-storage = "mcp_server.storage.server:main"
 lisa-thread = "mcp_server.thread.server:main"
 

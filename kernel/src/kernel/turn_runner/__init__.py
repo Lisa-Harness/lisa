@@ -214,7 +214,7 @@ from kernel.turn_phases._tool_schemas import (
     _tool_schema_name,
     build_tool_surface,
 )
-from kernel.turn_phases._turn_state import _TurnState
+from kernel.turn_phases._turn_state import _TurnState, mcp_tool_caller
 
 # ── Package satellites (split from the former single-file turn_runner) ────
 # The engine imports these back so ``kernel.turn_runner`` keeps its historical
@@ -1482,6 +1482,7 @@ async def execute_approved_invocation(
                 )
                 tool_ctx.stream_output = bool(getattr(definition, "stream_output", False))
                 tool_ctx.event_bus = _tool_output_bus
+                tool_ctx.mcp_tool_call = mcp_tool_caller(pool)
                 return await execute_tool(tool_id, tool_ctx)
             mcp_result = await pool.call_tool(
                 tool_id,
@@ -1527,6 +1528,7 @@ async def execute_approved_invocation(
                     if _tool_def
                     else False,
                     event_bus=_tool_output_bus,
+                    mcp_tool_call=mcp_tool_caller(pool),
                     **common,
                 ),
             )

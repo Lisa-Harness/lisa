@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -557,6 +558,20 @@ async def emit_tool_output(
         log.debug("on_stage(tool_output) hook failed: %s", stage_exc, exc_info=True)
 
 
+def mcp_tool_caller(
+    pool: MCPToolPool,
+) -> Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]]:
+    """Bind ``ToolExecutionContext.mcp_tool_call`` to the turn's MCP pool."""
+
+    async def call(tool_id: str, arguments: Mapping[str, Any]) -> ToolResult:
+        result = await pool.call_tool(tool_id, dict(arguments))
+        if result.is_error:
+            return ToolResult(tool_id=tool_id, error=result.output_text or "tool error")
+        return ToolResult(tool_id=tool_id, output_text=result.output_text or "")
+
+    return call
+
+
 async def mcp_tool_executor(
     tool_id: str,
     _ctx: Any,
@@ -576,6 +591,7 @@ async def mcp_tool_executor(
     definition = tool_catalog.get(tool_id)
     if definition is not None and definition.implementation_module is not None:
         tool_ctx = _to_tool_context(tool_id, _ctx)
+        tool_ctx.mcp_tool_call = mcp_tool_caller(pool)
         return await execute_tool(tool_id, tool_ctx)
 
     params = getattr(_ctx, "parameters", {}) or {}

@@ -519,6 +519,13 @@ candidates require an explicit choice. The selected server publishes the
 capability's stable `<name>.<tool>` IDs, while provider-specific argument
 and result adaptation stays in its pack-owned MCP server.
 
+The host ships built-in implementations of `storage`, `thread`, and
+`fetch`. The core `fetch_page` tool calls `fetch.fetch_url`, so
+`providers.capabilities.fetch: <pack-or-server>` swaps the implementation
+behind it. A selection that names a capability no loaded manifest declares
+(other than `sandbox`, which selects a sandbox floor) is a startup error,
+as is a selection that matches none of the declared implementations.
+
 ### `execution`
 
 Requests tighten the host's resolved envelope; they do not grant capabilities

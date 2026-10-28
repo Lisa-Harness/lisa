@@ -25,7 +25,7 @@ Key principles:
 | `lisa-catalog` | `mcp_server.catalog.server` | Mode/operation/tool catalog and diagnostics. |
 | `lisa-storage` | `mcp_server.storage.server` | Thin facade over `sdk.storage.StorageBackend` (includes model manifest read/write tools). |
 | `lisa-thread` | `mcp_server.thread.server` | Thin facade over `sdk.thread.ThreadStore`. |
-| — | `mcp_server.fetch.server` | Fetch-and-cache of remote http(s) content (not registered as a console script). |
+| `lisa-fetch` | `mcp_server.fetch.server` | Built-in `fetch` capability: fetch-and-cache of remote http(s) content over `sdk.content.ContentFetcher`. |
 
 ## The CLI Contract
 

@@ -37,6 +37,7 @@ from kernel.turn_phases._post_turn import (
 )
 from kernel.turn_phases._turn_state import (
     _TurnState,
+    mcp_tool_caller,
 )
 from kernel.turn_phases._turn_state import (
     merge_child_usage as _merge_child_usage_fn,
@@ -394,6 +395,7 @@ async def _dispatch_pack_tool(
         tool_ctx = _to_tool_context(tool_name, ctx)
         tool_ctx.parameters = tool_arguments
         tool_ctx.stream_output = bool(getattr(tool_def, "stream_output", False))
+        tool_ctx.mcp_tool_call = mcp_tool_caller(pool)
         tool_result = await execute_tool(tool_name, tool_ctx)
         tool_output = _decorate_pack_tool_output(
             hooks,

@@ -2098,6 +2098,35 @@ class MCPToolPool:
                 self._cold_failed.add(config.server_id)
         await self._refresh_tool_index()
 
+    async def _lookup_published_tool(self, tool_id: str) -> tuple[str, MCPToolSpec] | None:
+        """Return the index entry for a published tool id, connecting its owner if cold.
+
+        A published capability id (``fetch.fetch_url``) names its owner through the
+        config's declared ``capability`` + ``capability_tools`` contract, so
+        an internal caller can reach a cold capability server whose tools are
+        not ambient (never connected while building a mode's tool list).
+        Returns ``None`` when the id is unindexed and no configured capability
+        declares it, or its owner fails to start.
+        """
+        entry = self._tool_index.get(tool_id)
+        if entry is not None:
+            return entry
+        capability, _, published = tool_id.partition(".")
+        if not published:
+            return None
+        for config in self._configs:
+            if getattr(config, "capability", None) != capability:
+                continue
+            declared = (getattr(config, "capability_tools", ()) or ()) + (
+                getattr(config, "capability_optional_tools", ()) or ()
+            )
+            if published not in declared:
+                continue
+            if await self._ensure_connected(config):
+                return self._tool_index.get(tool_id)
+            return None
+        return None
+
     async def _resolve_server_for_bare_name(self, tool_id: str) -> str | None:
         """Find which server exposes a bare tool name.
 
@@ -2405,7 +2434,7 @@ class MCPToolPool:
         if server_id is not None:
             return await self._call_tool_scoped(tool_id, arguments, server_id)
 
-        entry = self._tool_index.get(tool_id)
+        entry = await self._lookup_published_tool(tool_id)
         if entry is None:
             # Bare-name fallback: internal callers (e.g. operations calling
             # ``execute_tool_fn`` with a bare MCP tool name like
