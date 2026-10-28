@@ -108,7 +108,7 @@ jobs:
   publish:
     name: Publish ${{ matrix.package }} to PyPI
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
