@@ -2659,6 +2659,17 @@ async def _resolve_iteration_lifecycle(
         forced_action_non_compliant_dispatches=(
             _forced.non_compliant_dispatches if _forced is not None else 0
         ),
+        # Same trust predicate as the dispatch-loop enforcer
+        # (``_enforce_forced_action_on_dispatch``): frontier / reasoning /
+        # structured_reliability >= ``_PLAN_MODEL_RELIABILITY_EXEMPT``.
+        # The resolver reads this flag instead of the model so the two
+        # enforcer sites cannot drift apart.
+        forced_action_exempt=(
+            getattr(state.effective_model, "cost_tier", "") == "frontier"
+            or bool(getattr(state.effective_model, "reasoning_model", False))
+            or float(getattr(state.effective_model, "structured_reliability", 0.0) or 0.0)
+            >= _PLAN_MODEL_RELIABILITY_EXEMPT
+        ),
         handoff_count=state.handoff_count,
         operator_signal=_operator_signal,
         action_tool_ids=frozenset(state.action_tool_ids),
@@ -6607,17 +6618,23 @@ def _enforce_forced_action_on_dispatch(
     # do not synthesize; the real call in the batch is dispatched on its own.
     if batch_has_expected:
         return tool_name, tool_arguments
-    _forced.non_compliant_dispatches += 1
 
-    # Trust-Aware Enforcer Cap
+    # Trust-Aware Enforcer Cap. Trusted models (frontier / reasoning /
+    # high structured_reliability) are exempt from the enforcer entirely:
+    # do not count the dispatch and do not synthesize. The lifecycle
+    # resolver applies the same exemption via ``forced_action_exempt`` on
+    # ``_TurnStateView`` — the two sites must agree or the weaker one
+    # wins (the 2026-10-28 bug: trusted models exempt here but not in
+    # the resolver, so the resolver force-transitioned them at cap=2).
     reliability = float(getattr(state.effective_model, "structured_reliability", 0.0) or 0.0)
     is_frontier = getattr(state.effective_model, "cost_tier", "") == "frontier"
     is_reasoning = getattr(state.effective_model, "reasoning_model", False)
 
     if is_frontier or is_reasoning or reliability >= _PLAN_MODEL_RELIABILITY_EXEMPT:
-        effective_cap = float("inf")
-    else:
-        effective_cap = _kernel_settings.forced_action_non_compliant_cap
+        return tool_name, tool_arguments
+
+    _forced.non_compliant_dispatches += 1
+    effective_cap = _kernel_settings.forced_action_non_compliant_cap
 
     if _forced.non_compliant_dispatches < effective_cap:
         return tool_name, tool_arguments
