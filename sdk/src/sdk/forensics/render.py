@@ -114,6 +114,8 @@ def _render_turn_header(turn: TurnEvidence) -> list[str]:
         f"### Turn {turn.turn_index} · {turn.mode_id or 'unknown mode'}",
         f"- recorded: {turn.timestamp_utc or 'unknown'}",
     ]
+    if turn.provisional_turn is not None:
+        lines.append(f"- ran as turn {turn.provisional_turn} (committed out of start order)")
     for label, value in (
         ("task", turn.task_id),
         ("provenance", turn.provenance_source),

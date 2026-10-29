@@ -13,7 +13,11 @@ Covers:
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 # Registration of host-command prefixes is no longer an import side effect —
 # it is an explicit, idempotent call the composition root owns
@@ -42,6 +46,7 @@ from runtime.thread import (  # noqa: E402
     load_recent_thread_entries,
     load_thread_range,
     next_turn_index,
+    reserved_turn,
 )
 
 # ── is_host_command_query ────────────────────────────────────────────
@@ -547,3 +552,126 @@ def test_core_pack_redaction_patterns_match_defaults() -> None:
     assert isinstance(pack_patterns, list)
     # The YAML patterns must match the framework defaults exactly.
     assert set(pack_patterns) == set(DEFAULT_REDACTION_PATTERNS)
+
+
+# ── reserved_turn (in-flight provisional indices) ────────────────────
+
+
+def _reservations_file(thread_path: Path) -> Path:
+    return Path(f"{thread_path}.reservations.json")
+
+
+class TestReservedTurn:
+    def test_none_path_reserves_nothing(self) -> None:
+        with reserved_turn(thread_path=None) as reservation:
+            assert reservation == (0, "")
+
+    def test_overlapping_reservations_get_distinct_indices(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(thread_path, query="q0")
+        with (
+            reserved_turn(thread_path=thread_path) as first,
+            reserved_turn(thread_path=thread_path) as second,
+        ):
+            assert (first.turn, second.turn) == (1, 2)
+            assert first.token != second.token
+        assert not _reservations_file(thread_path).exists()
+        with reserved_turn(thread_path=thread_path) as third:
+            assert third.turn == 1
+
+    def test_commit_releases_reservation_and_takes_log_position(self, tmp_path: Path) -> None:
+        """The 2026-10-28 overlap: both turns ran as 1095 and committed blind.
+
+        Now the later-starting turn reserves the next index, whichever
+        commits first takes the next log position, and an index that moved
+        is recorded as ``provisional_turn``.
+        """
+        thread_path = tmp_path / "thread"
+        with reserved_turn(thread_path=thread_path) as first:
+            with reserved_turn(thread_path=thread_path) as second:
+                committed_second = append_thread_entry(
+                    thread_path=thread_path,
+                    user_slug="tester",
+                    mode_id="default",
+                    query="second",
+                    response_text="",
+                    turn=second.turn,
+                    reservation=second.token,
+                )
+                registry = json.loads(_reservations_file(thread_path).read_text())
+                assert [r["token"] for r in registry] == [first.token]
+            committed_first = append_thread_entry(
+                thread_path=thread_path,
+                user_slug="tester",
+                mode_id="default",
+                query="first",
+                response_text="",
+                turn=first.turn,
+                reservation=first.token,
+            )
+            assert not _reservations_file(thread_path).exists()
+        assert (committed_second, committed_first) == (0, 1)
+        entries = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=1)
+        assert [(e["query"], e["turn"], e.get("provisional_turn")) for e in entries] == [
+            ("second", 0, 1),
+            ("first", 1, 0),
+        ]
+
+    def test_matching_index_records_no_provisional_turn(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        with reserved_turn(thread_path=thread_path) as reservation:
+            append_thread_entry(
+                thread_path=thread_path,
+                user_slug="tester",
+                mode_id="default",
+                query="q",
+                response_text="",
+                turn=reservation.turn,
+                reservation=reservation.token,
+            )
+        (entry,) = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=0)
+        assert "provisional_turn" not in entry
+
+    def test_exception_releases_reservation(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        with pytest.raises(RuntimeError), reserved_turn(thread_path=thread_path):
+            raise RuntimeError("turn crashed")
+        assert not _reservations_file(thread_path).exists()
+
+    def test_dead_process_reservations_are_pruned(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        thread_path.parent.mkdir(parents=True, exist_ok=True)
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        _reservations_file(thread_path).write_text(
+            json.dumps([{"token": "stale", "pid": dead.pid, "turn": 40}])
+        )
+        with reserved_turn(thread_path=thread_path) as reservation:
+            assert reservation.turn == 0
+            registry = json.loads(_reservations_file(thread_path).read_text())
+            assert [r["token"] for r in registry] == [reservation.token]
+
+    def test_corrupt_registry_falls_back_to_entry_count(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(thread_path, query="q0")
+        _reservations_file(thread_path).write_text("{not json")
+        with reserved_turn(thread_path=thread_path) as reservation:
+            assert reservation.turn == 1
+
+    def test_stale_caller_turn_never_duplicates_or_skips(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        for turn in (0, 0, 9):
+            append_thread_entry(
+                thread_path=thread_path,
+                user_slug="tester",
+                mode_id="default",
+                query="q",
+                response_text="",
+                turn=turn,
+            )
+        entries = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=2)
+        assert [(e["turn"], e.get("provisional_turn")) for e in entries] == [
+            (0, None),
+            (1, 0),
+            (2, 9),
+        ]

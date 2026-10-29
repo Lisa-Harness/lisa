@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from kernel.execution_policy import ExecutionPolicy
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
@@ -95,7 +96,12 @@ from runtime.commands import (
 from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
 from runtime.provider_endpoints import proxy_route_view
-from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
+from runtime.thread import (
+    TurnReservation,
+    append_thread_entry,
+    load_recent_thread_entries,
+    paused_turn_owner_mode,
+)
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_continuation import (
     load_continuation,
@@ -1104,6 +1110,7 @@ async def _handle_pending_approval(
     turn_index: int,
     task_id: str,
     transport: TransportCallbacks,
+    reservation: str = "",
 ) -> HostCommandResult | None:
     """Persist a turn paused for approval, then auto-continue or return the approval payload."""
     pending_approval = getattr(result, "pending_approval", None)
@@ -1139,6 +1146,7 @@ async def _handle_pending_approval(
         effect_receipts=_serialize_effect_receipts(result),
         handoff_to=result.handoff_to or "",
         turn=turn_index,
+        reservation=reservation,
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
     )
@@ -1206,6 +1214,7 @@ def _record_operation_error_thread_entry(
     exc: OperationExecutionError,
     response_text: str,
     turn_index: int,
+    reservation: str = "",
 ) -> None:
     """Persist the thread entry for a turn that failed with an operation error."""
     run_context["operation_error"] = {
@@ -1225,6 +1234,7 @@ def _record_operation_error_thread_entry(
             "task_id": run_context.get("task_id", ""),
         },
         turn=turn_index,
+        reservation=reservation,
     )
     if committed_turn is not None:
         run_context["turn_index"] = committed_turn
@@ -1468,15 +1478,51 @@ async def _execute_mode_turn(
 
     resolved_model = _resolve_model_cmd(runtime, preferred_model_id)
 
-    # Compute the global turn index at turn start (before the turn runs)
-    # so the model can be annotated with its turn number and the
-    # pre-computed value can be threaded through to ``append_thread_entry``.
-    # One source of truth: the number the model sees in the briefing is the
-    # number stamped on the thread entry — no off-by-one between display and
-    # persistence.
-    from runtime.thread import next_turn_index
+    # Reserve the turn's provisional global index at turn start (before the
+    # turn runs) so the model can be annotated with its turn number. Live
+    # reservations keep overlapping turns on one thread from sharing a
+    # number; the committed index is still the entry's log position, and
+    # the entry records the provisional one when they differ. The commit
+    # releases the reservation; leaving the block releases it on every
+    # other exit path.
+    from runtime.thread import reserved_turn
 
-    turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
+    with reserved_turn(thread_path=runtime.paths.thread_path) as reservation:
+        return await _run_reserved_turn(
+            runtime,
+            message,
+            mode,
+            query,
+            transport,
+            reservation=reservation,
+            task_id=task_id,
+            task_goal=task_goal,
+            continuation=continuation,
+            extra_item_builders=extra_item_builders,
+            execution_policy=execution_policy,
+            preferred_model_id=preferred_model_id,
+            resolved_model=resolved_model,
+        )
+
+
+async def _run_reserved_turn(
+    runtime: HostRuntime,
+    message: str,
+    mode: Any,
+    query: str,
+    transport: TransportCallbacks,
+    *,
+    reservation: TurnReservation,
+    task_id: str,
+    task_goal: str,
+    continuation: TurnContinuation | None,
+    extra_item_builders: list[ExtensionItemBuilder] | None,
+    execution_policy: ExecutionPolicy,
+    preferred_model_id: str,
+    resolved_model: Any,
+) -> HostCommandResult | str:
+    """Run one kernel turn under its turn-index reservation and persist it."""
+    turn_index = reservation.turn
     task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
 
     # Resolve the live approval state for recorded blockers before the
@@ -1532,6 +1578,7 @@ async def _execute_mode_turn(
             exc=exc,
             response_text=response_text,
             turn_index=turn_index,
+            reservation=reservation.token,
         )
         await transport.on_error(f"Operation error: {exc}", exc)
         runtime.session.operator_signal_value = ""
@@ -1578,6 +1625,7 @@ async def _execute_mode_turn(
         turn_index=turn_index,
         task_id=task_id,
         transport=transport,
+        reservation=reservation.token,
     )
     if pending_approval_result is not None:
         return pending_approval_result
@@ -1628,7 +1676,9 @@ async def _execute_mode_turn(
         effect_receipts=receipts,
         handoff_to=result.handoff_to or "",
         transitioned_to=result.transitioned_to or "",
+        departed_modes=list(result.departed_modes),
         turn=turn_index,
+        reservation=reservation.token,
         yielded=result.yielded is not None,
         yield_question=result.yielded.question if result.yielded else "",
         turn_input={"calls": result.model_requests}

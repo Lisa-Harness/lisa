@@ -180,7 +180,7 @@ class ForensicReader:
             start = self._clamp_to_max_turns(start, end, notes)
             entries = self._read_turns(store, start, end, sources, notes)
             floor = self._turn_floor(store, start)
-        wanted = {turn.turn_index for turn in entries}
+        wanted = {turn.telemetry_turn_index for turn in entries}
 
         decisions, dispatches = self._read_decisions(sources, notes, max_records, wanted, floor)
         costs = self._read_costs(sources, notes, wanted, floor)

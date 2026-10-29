@@ -140,6 +140,7 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "index_path.parent.mkdir(parents=True, exist_ok=True)",
         "paths.current.unlink(missing_ok=True)",
     ),
+    "runtime/src/runtime/thread/_reservations.py": ("path.unlink(missing_ok=True)",),
     "runtime/src/runtime/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",

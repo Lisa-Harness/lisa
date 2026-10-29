@@ -91,6 +91,7 @@ def turn_from_entry(turn: int, entry: dict[str, Any]) -> TurnEvidence:
     ]
     return TurnEvidence(
         turn_index=int(turn),
+        provisional_turn=_int_or_none(entry.get("provisional_turn")),
         timestamp_utc=str(entry.get("timestamp_utc") or ""),
         mode_id=str(entry.get("mode_id") or ""),
         query_preview=_preview(entry.get("query")),
@@ -171,9 +172,12 @@ def build_bundle(
     """Join raw telemetry records onto ``turns`` and return the bundle.
 
     ``turns`` is consumed for its indices and returned with evidence attached
-    (model copies — the inputs are not mutated).
+    (model copies — the inputs are not mutated). A turn that committed under
+    a different index than it ran under is matched by its
+    ``provisional_turn``: the decision/dispatch/cost records were emitted
+    mid-turn, before the commit fixed the final index.
     """
-    wanted = {turn.turn_index for turn in turns}
+    wanted = {turn.telemetry_turn_index for turn in turns}
     decisions_by_turn: dict[int, list[DecisionRecord]] = defaultdict(list)
     dispatches_by_turn: dict[int, list[DispatchRecord]] = defaultdict(list)
     costs_by_turn: dict[int, list[CostRecord]] = defaultdict(list)
@@ -206,9 +210,9 @@ def build_bundle(
     joined = [
         turn.model_copy(
             update={
-                "decisions": decisions_by_turn.get(turn.turn_index, []),
-                "dispatches": dispatches_by_turn.get(turn.turn_index, []),
-                "costs": costs_by_turn.get(turn.turn_index, []),
+                "decisions": decisions_by_turn.get(turn.telemetry_turn_index, []),
+                "dispatches": dispatches_by_turn.get(turn.telemetry_turn_index, []),
+                "costs": costs_by_turn.get(turn.telemetry_turn_index, []),
             }
         )
         for turn in turns

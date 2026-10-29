@@ -36,6 +36,7 @@ file extension). All derived file paths are computed from this base.
 | `<base>.index.jsonl` | Sparse segment index — one JSON line per sealed segment |
 | `<base>.dict.zstd` | Trained zstd dictionary (optional, immutable once created) |
 | `<base>.lock` | Cross-process advisory lock coordinating reads, appends, and segment seals |
+| `<base>.reservations.json` | In-flight turn reservations (`{token, pid, turn}`); present only while turns are running |
 | `<base>.results/r<sha256>.json` | Tool results, model request snapshots, continuation objects |
 
 Where `<base> = <thread_dir>/<user_slug>` (or
@@ -82,10 +83,12 @@ One JSON object per line in the active and sealed segments:
 | `query` | string | yes | User's input |
 | `response_text` | string | yes | Model/system response |
 | `provenance` | object | no | Optional metadata (`source`, `finish_reason`, `model_id`) |
-| `turn` | int | yes | 0-based global turn index |
+| `turn` | int | yes | 0-based global turn index — the entry's log position, assigned at commit |
+| `provisional_turn` | int | no | Index the turn ran under (briefing, telemetry) when it differs from `turn` because overlapping turns committed out of start order |
 | `effect_receipts` | list[object] | no | Each: `{capability_id, effect, artifact_id}` |
 | `handoff_to` | string | no | Mode handoff target |
 | `transitioned_to` | string | no | Stage transition target |
+| `departed_modes` | list[string] | no | Modes the turn handed off *out of*, in order, before it ended in `handoff_to`; lets the workflow view credit a plan step completed by an in-turn handoff chain |
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
 | `turn_input` | object | no | Model request archive: runtime calls use `{"calls": [{"iteration": 1, "ref": "r<sha256>"}]}`; expand the result object to recover the exact request and `context_budget`. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
@@ -135,16 +138,33 @@ All appends and segment seals execute under the cross-process advisory lock
 acquire `<base>.lock` when present so reads never observe a half-sealed
 segment or unindexed rotation.
 
-1. Acquire `<base>.lock` and resolve the authoritative monotonic `turn`
-   index from `<base>.index.jsonl` + `<base>.current.jsonl` (advancing any
-   stale pre-computed turn number from a concurrent turn).
+1. Acquire `<base>.lock` and resolve the authoritative `turn` index — the
+   entry count from `<base>.index.jsonl` + `<base>.current.jsonl`. The
+   caller's provisional index is never honoured (it would duplicate or skip
+   a turn when overlapping turns commit out of order); when it differs it is
+   recorded as `provisional_turn`.
 2. Compute `current_path = <base>.current.jsonl`.
 3. One-time rename guard: if `current_path` does not exist but the
    legacy `<base>.jsonl` does, rename it to `current_path`.
 4. Count lines in `current_path`. If the count is >= `segment_turns`,
    seal the active segment first.
 5. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
-   fresh) active segment and return the committed `turn` index.
+   fresh) active segment, release the turn's reservation (still under the
+   lock), and return the committed `turn` index.
+
+### Turn reservations
+
+A turn needs its index at start — for the briefing's "Turn N", the banner,
+and the `turn_index` on every telemetry record — but the committed index is
+only fixed at append. `reserved_turn` takes `<base>.lock` and records
+`{token, pid, turn}` in `<base>.reservations.json` with
+`turn = max(entry count, highest live reservation + 1)`, so overlapping turns
+(several processes on one data dir) run under distinct indices. The commit
+releases the reservation atomically with the append; leaving the turn by any
+other path (error, cancellation) releases it too. Reservations whose `pid` is
+no longer alive are pruned on every read, so a crashed turn's index is
+reused by the next turn. Forensic joins match a turn's telemetry by
+`provisional_turn` when present.
 
 ### Sealing
 

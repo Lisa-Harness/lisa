@@ -99,9 +99,13 @@ class TurnEvidence(_Record):
 
     ``turn_index`` is the thread's own key and is never ``None`` for an entry
     read out of the store; the optional sub-records are what may be missing.
+    ``provisional_turn`` is the index the turn ran under when it differs
+    from the committed one (overlapping turns commit in completion order);
+    the turn's in-flight telemetry carries that index.
     """
 
     turn_index: int
+    provisional_turn: int | None = None
     timestamp_utc: str = ""
     mode_id: str = ""
     query_preview: str = ""
@@ -117,6 +121,11 @@ class TurnEvidence(_Record):
     decisions: list[DecisionRecord] = Field(default_factory=list)
     dispatches: list[DispatchRecord] = Field(default_factory=list)
     costs: list[CostRecord] = Field(default_factory=list)
+
+    @property
+    def telemetry_turn_index(self) -> int:
+        """Return the index the turn's in-flight telemetry was stamped with."""
+        return self.turn_index if self.provisional_turn is None else self.provisional_turn
 
     @property
     def total_tokens(self) -> int:

@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import errno
 import os
+import sys
 import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
-if os.name == "nt":  # pragma: no cover - Windows-specific
+if sys.platform == "win32":  # pragma: no cover - Windows-specific
     import msvcrt
 else:
     import fcntl
@@ -57,7 +58,7 @@ def _owner_key(resolved_path: Path) -> tuple[Path, int, int | None]:
 
 def _try_flock_nonblocking(fd: int) -> bool:
     """Attempt a non-blocking exclusive advisory lock on ``fd``."""
-    if os.name == "nt":  # pragma: no cover - Windows-specific
+    if sys.platform == "win32":  # pragma: no cover - Windows-specific
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -78,7 +79,7 @@ def _try_flock_nonblocking(fd: int) -> bool:
 def _unlock_and_close(fd: int) -> None:
     """Release the advisory lock on ``fd`` and close the descriptor."""
     try:
-        if os.name == "nt":  # pragma: no cover - Windows-specific
+        if sys.platform == "win32":  # pragma: no cover - Windows-specific
             with contextlib.suppress(OSError):
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
@@ -247,6 +248,8 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
 
 
 def _is_process_alive_windows(pid: int) -> bool:  # pragma: no cover - Windows-specific
+    if sys.platform != "win32":  # narrows ``ctypes.windll`` for type checkers
+        return False
     import ctypes
 
     process_query_limited_information = 0x1000
@@ -288,7 +291,7 @@ def is_process_alive(pid: int) -> bool:
         return False
     if pid == os.getpid():
         return True
-    if os.name == "nt":  # pragma: no cover - Windows-specific
+    if sys.platform == "win32":  # pragma: no cover - Windows-specific
         return _is_process_alive_windows(pid)
     if _proc_stat_state(pid) in {"MISSING", "Z", "X", "x"}:
         return False

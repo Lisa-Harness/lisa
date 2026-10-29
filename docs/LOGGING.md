@@ -105,10 +105,13 @@ Why a separate file rather than `runtime.jsonl`:
   segments are never deleted, so verbose runtime logging cannot evict the
   decision ledger and the ledger cannot consume the log's rotation budget.
 
-`turn_index` is the join key. It is computed once at turn start
-(`runtime.thread.next_turn_index`), stamped on the thread entry, and carried on
-`TurnIdentity` into every operation/tool context, so a decision row, a dispatch
-row, a token row, and a thread entry for the same turn address each other.
+`turn_index` is the join key. It is reserved once at turn start
+(`runtime.thread.reserved_turn`), carried on `TurnIdentity` into every
+operation/tool context, and matched against the thread entry, so a decision
+row, a dispatch row, a token row, and a thread entry for the same turn address
+each other. When overlapping turns commit out of start order the entry's `turn`
+is its log position and the index the turn ran under is kept as
+`provisional_turn`; the forensics reader joins on that.
 Without it, per-turn cost is attributable only to a *mode*, not a turn.
 
 `turn_index` is `null` for work that belongs to no thread turn — off-turn slice

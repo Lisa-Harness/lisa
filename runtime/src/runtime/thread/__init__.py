@@ -32,13 +32,17 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
+from uuid import uuid4
 
 from sdk.filelock import file_lock
 from sdk.thread import ThreadRedactionPolicy, ThreadStore, load_result_object, project_tool_messages
 
+from runtime.thread import _reservations
 from runtime.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
 from runtime.thread._replay import build_open_task_messages
 from runtime.thread._results import _persist_result
@@ -181,12 +185,12 @@ def latest_turn_owner_mode(*, thread_path: Path | None) -> str:
 
 
 def next_turn_index(*, thread_path: Path | None) -> int:
-    """Return the 0-based global turn index the next appended entry will receive.
+    """Return the number of committed entries — the next entry's index if no turn overlaps.
 
     Delegates to :meth:`sdk.thread.ThreadStore.next_turn_index`. Returns ``0``
-    when ``thread_path`` is ``None`` or no store exists. The host computes
-    this at turn start so it can annotate the model briefing with the turn
-    number and thread the pre-computed value through to ``append_thread_entry``.
+    when ``thread_path`` is ``None`` or no store exists. A turn starting
+    while others are in flight takes its provisional index from
+    :func:`reserved_turn` instead, so overlapping turns do not share one.
     """
     store = _thread_store(thread_path)
     if store is None:
@@ -194,24 +198,58 @@ def next_turn_index(*, thread_path: Path | None) -> int:
     return store.next_turn_index()
 
 
-def _resolve_thread_turn(
-    paths: _SegmentPaths,
-    turn: int | None,
-) -> int:
+class TurnReservation(NamedTuple):
+    """A turn's provisional index and the token that releases its reservation."""
+
+    turn: int
+    token: str
+
+
+@contextmanager
+def reserved_turn(*, thread_path: Path | None) -> Iterator[TurnReservation]:
+    """Reserve a provisional turn index for the duration of one turn.
+
+    The index is ``max(committed entries, highest live reservation + 1)``,
+    so overlapping turns on one thread get distinct numbers for the briefing,
+    banner and telemetry. Pass ``reservation.token`` to
+    :func:`append_thread_entry`, which releases it atomically with the commit;
+    leaving the block releases it on every other exit path. The committed
+    index is still the log position and can differ — the entry then records
+    the provisional one as ``provisional_turn``. With ``thread_path=None`` the
+    reservation is ``(0, "")`` and nothing is persisted.
+    """
+    if thread_path is None:
+        yield TurnReservation(turn=0, token="")
+        return
+    paths = _segment_paths(thread_path)
+    token = uuid4().hex
+    thread_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(paths.lock):
+        _maybe_rename_legacy(paths)
+        turn = _reservations.reserve(
+            _reservations.reservations_path(thread_path),
+            entry_count=_resolve_thread_turn(paths),
+            token=token,
+        )
+    try:
+        yield TurnReservation(turn=turn, token=token)
+    finally:
+        with file_lock(paths.lock):
+            _reservations.release(_reservations.reservations_path(thread_path), token=token)
+
+
+def _resolve_thread_turn(paths: _SegmentPaths) -> int:
     """Resolve the global turn number for a new thread entry under the store lock.
 
-    Computes the actual store turn count from the sealed-segment index plus the
-    active segment's entry count. When ``turn`` is provided by the caller, it
-    is used only if ``turn >= actual_turn``; if a concurrent turn appended in
-    the meantime (so ``turn < actual_turn``), the turn index advances to
-    ``actual_turn`` to preserve strict monotonicity.
+    The turn number is the entry's position in the log: the sealed-segment
+    turn count plus the active segment's entry count. It is never taken from
+    the caller's provisional index — overlapping turns commit in completion
+    order, so a provisional index may already be taken or may run ahead of
+    the log, and honouring it would duplicate or skip a turn number.
     """
     sealed_records = _read_index(paths.index_path)
     active_count = _read_active_entries_count(paths.current)
-    actual_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
-    if turn is not None and turn >= actual_turn:
-        return turn
-    return actual_turn
+    return sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
 
 
 def _build_thread_entry(
@@ -233,6 +271,8 @@ def _build_thread_entry(
     memory_ids: list[int] | None,
     transcript: list[dict[str, Any]] | None = None,
     verified_facts: list[dict[str, Any]] | None = None,
+    departed_modes: list[str] | None = None,
+    provisional_turn: int | None = None,
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -243,6 +283,10 @@ def _build_thread_entry(
         "response_text": response_text,
         "turn": global_turn,
     }
+    if provisional_turn is not None and provisional_turn != global_turn:
+        # The turn ran (and stamped its telemetry) under a different index
+        # than the one it committed at; forensics remaps through this.
+        entry["provisional_turn"] = provisional_turn
     _apply_thread_metadata_fields(
         entry,
         provenance=provenance,
@@ -253,6 +297,8 @@ def _build_thread_entry(
         yield_question=yield_question,
         verified_facts=verified_facts,
     )
+    if departed_modes:
+        entry["departed_modes"] = departed_modes
     _apply_thread_content_fields(
         entry,
         turn_input=turn_input,
@@ -337,13 +383,20 @@ def append_thread_entry(
     memory_ids: list[int] | None = None,
     transcript: list[dict[str, Any]] | None = None,
     verified_facts: list[dict[str, Any]] | None = None,
+    departed_modes: list[str] | None = None,
+    reservation: str = "",
 ) -> int | None:
     """Append a new thread entry to the active segment under the thread store lock.
 
     Seals the active segment first when it has reached ``segment_turns``
     entries (pressure-driven, synchronous, sub-10ms for 256 lines). No-ops
     and returns ``None`` when ``thread_path`` is ``None`` or ``user_slug`` is
-    empty; otherwise returns the committed 0-based ``global_turn``.
+    empty; otherwise returns the committed 0-based ``global_turn``. ``turn``
+    is the provisional index the turn ran under; the committed index is the
+    entry's log position, and a mismatch is recorded as ``provisional_turn``.
+    ``reservation`` is the :func:`reserved_turn` token, released under the
+    same lock so no new turn can observe the entry without the reservation
+    being gone (or vice versa).
     """
     if thread_path is None or not user_slug:
         return None
@@ -355,7 +408,7 @@ def append_thread_entry(
         if paths.current.exists() and _count_lines(paths.current) >= segment_turns:
             _seal_segment(paths)
 
-        global_turn = _resolve_thread_turn(paths, turn)
+        global_turn = _resolve_thread_turn(paths)
         entry = _build_thread_entry(
             user_slug=user_slug,
             mode_id=mode_id,
@@ -374,16 +427,20 @@ def append_thread_entry(
             memory_ids=memory_ids,
             transcript=transcript,
             verified_facts=verified_facts,
+            departed_modes=departed_modes,
+            provisional_turn=turn,
         )
 
         paths.current.parent.mkdir(parents=True, exist_ok=True)
         with paths.current.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        _reservations.release(_reservations.reservations_path(thread_path), token=reservation)
     return global_turn
 
 
 __all__ = [
     "SegmentRecord",
+    "TurnReservation",
     "append_thread_entry",
     "build_open_task_messages",
     "build_recent_thread_excerpt",
@@ -393,5 +450,6 @@ __all__ = [
     "load_thread_range",
     "next_turn_index",
     "paused_turn_owner_mode",
+    "reserved_turn",
     "set_thread_redaction_policy",
 ]
