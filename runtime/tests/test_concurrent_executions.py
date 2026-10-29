@@ -38,7 +38,12 @@ from runtime.policy import load_policy, remember_allow_prefix
 from runtime.recovery import FileRecoveryService
 from runtime.runtime import HostRuntime
 from runtime.runtime_paths import HostPaths
-from runtime.thread import append_thread_entry, load_recent_thread_entries, load_thread_range
+from runtime.thread import (
+    append_thread_entry,
+    load_recent_thread_entries,
+    load_thread_range,
+    reserved_turn,
+)
 from sdk.filelock import (
     FileLockTimeoutError,
     async_file_lock,
@@ -75,6 +80,24 @@ def _thread_append_worker(args: tuple[str, int, int, int]) -> list[int | None]:
         )
         committed_turns.append(turn)
     return committed_turns
+
+
+def _overlapping_turn_worker(base_str: str, worker_id: int, barrier: Any, results: Any) -> None:
+    base = Path(base_str)
+    with reserved_turn(thread_path=base) as reservation:
+        # Every worker holds its reservation before any commits: the
+        # overlap that handed two live turns the same index.
+        barrier.wait(timeout=30)
+        committed = append_thread_entry(
+            user_slug="shared-user",
+            mode_id="build",
+            query=f"worker-{worker_id}",
+            response_text="",
+            thread_path=base,
+            turn=reservation.turn,
+            reservation=reservation.token,
+        )
+    results.put((worker_id, reservation.turn, committed))
 
 
 def _approval_create_worker(args: tuple[str, int, int]) -> list[str]:
@@ -238,6 +261,39 @@ def test_multiprocess_thread_store_appends_seals_and_dictionary_training(
     recent = load_recent_thread_entries(limit=4, thread_path=base)
     assert len(recent) == 4
     assert [e["turn"] for e in recent] == list(range(total_expected - 4, total_expected))
+
+
+def test_overlapping_processes_reserve_distinct_turns_and_commit_contiguously(
+    tmp_path: Path,
+) -> None:
+    """Overlapping turns never share a provisional index nor a committed one."""
+    base = tmp_path / "threads" / "shared-user"
+    append_thread_entry(
+        user_slug="shared-user", mode_id="build", query="seed", response_text="", thread_path=base
+    )
+    workers = 4
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(workers)
+    results = ctx.Queue()
+    procs = [
+        ctx.Process(target=_overlapping_turn_worker, args=(str(base), w, barrier, results))
+        for w in range(workers)
+    ]
+    for proc in procs:
+        proc.start()
+    outcomes = [results.get(timeout=60) for _ in procs]
+    for proc in procs:
+        proc.join(timeout=30)
+        assert proc.exitcode == 0
+
+    assert sorted(turn for _, turn, _ in outcomes) == [1, 2, 3, 4]
+    assert sorted(committed for _, _, committed in outcomes) == [1, 2, 3, 4]
+    assert not Path(f"{base}.reservations.json").exists()
+    entries = load_thread_range(thread_path=base, start_turn=1, end_turn=4)
+    provisional = {w: turn for w, turn, _ in outcomes}
+    for entry in entries:
+        ran_as = provisional[int(entry["query"].removeprefix("worker-"))]
+        assert entry.get("provisional_turn", entry["turn"]) == ran_as
 
 
 def test_multiprocess_file_approval_service_preserves_all_records(tmp_path: Path) -> None:

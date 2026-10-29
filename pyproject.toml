@@ -70,6 +70,9 @@ pythonpath = [
     "sdk/packs/introspect/src",
     "sdk/packs/memory/src",
     "sdk/packs/recovery/src",
+    "kernel/tests",
+    "sdk/tests",
+    "runtime/tests",
 ]
 testpaths = [
     "kernel/tests",
