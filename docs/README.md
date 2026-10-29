@@ -29,6 +29,9 @@ The [project README](../README.md) explains the project and its current status.
   concepts, a turn's lifecycle, and host responsibilities.
 - [Host integration](HOST_INTEGRATION.md): composition, async ownership,
   transport callbacks, and the integration checklist.
+- [MCP interoperability](MCP_INTEROP.md): running Lisa's first-party MCP
+  servers without the turn loop, which servers to expose, identity limits, and
+  the client-config export.
 - [Pack authoring](PACK_AUTHORING_GUIDE.md): modes, tools, extension entry
   points, packaging, and a local walkthrough.
 - [Operation authoring](../sdk/AUTHORING.md): Python versus declarative operations.

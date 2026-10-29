@@ -174,6 +174,7 @@ For a complete program and an observable production transport, see
 | `mcp_pool.py` | Compiles MCP server configurations from the host manifest (`mcp_servers.yaml`) and pack-contributed declarations. |
 | `mcp_binary_cache.py` | Downloads release-hosted binary MCP servers, verifies release checksums, and caches them under the host data directory. |
 | `mcp_servers.yaml` | The host's first-party MCP server manifest (shipped as package data). |
+| `mcp_export.py` | Projects the compiled MCP configs into another agent client's `mcpServers` document (`/mcp export`), resolving in-process console scripts and the resolved data dir. |
 | `capability_servers.py` | Selects one MCP implementation for each declared capability. |
 | `ambient_resolvers.py` | Resolves runtime identity for capability-owned MCP tools. |
 

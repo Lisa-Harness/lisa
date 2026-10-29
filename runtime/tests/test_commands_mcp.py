@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from kernel.mcp_launch.policy import ToolPolicy
 from kernel.models import McpServerHealth
-from kernel.tools.mcp_client import MCPToolSpec
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolSpec
 from runtime.commands import _mcp
 
 
@@ -337,3 +339,124 @@ def test_truncate_short_and_long() -> None:
     # Trailing whitespace before the ellipsis is stripped.
     assert _mcp._truncate("abc   ", 5) == "abc…"
     assert _mcp._truncate("abc \n" + "z" * 50, 5) == "abc…"
+
+
+# ── /mcp export ───────────────────────────────────────────────────────
+
+
+def _compiled(**overrides: Any) -> MCPClientConfig:
+    values: dict[str, Any] = {
+        "server_id": "lisa-storage",
+        "command": "/venv/bin/lisa-storage",
+        "args": ["--data-dir", "/home/u/.lisa"],
+        "runtime_kind": "venv_bin",
+    }
+    values.update(overrides)
+    return MCPClientConfig(**values)
+
+
+def _export_runtime(warm: list[MCPClientConfig] | None = None, cold: list[Any] | None = None):
+    return SimpleNamespace(
+        resources=SimpleNamespace(
+            mcp_warm_configs=warm or [],
+            mcp_cold_configs=cold or [],
+            mcp_tool_pool=None,
+        ),
+        paths=SimpleNamespace(data_dir=Path("/home/u/.lisa")),
+        session=SimpleNamespace(
+            current_mode_id="",
+            current_stage_id="",
+            next_model_id="",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export(_stub_command_log: None) -> None:
+    runtime = _export_runtime(warm=[_compiled()])
+
+    result = await _mcp.handle_mcp_command(runtime, "/mcp export", "/mcp export")
+
+    assert "```json" in result
+    assert '"lisa-storage"' in result
+    assert runtime.session.current_mode_id == "mcp"
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_empty_configs(_stub_command_log: None) -> None:
+    result = await _mcp.handle_mcp_command(_export_runtime(), "/mcp export", "raw")
+
+    assert "No configured server can be exported" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_server_filter(_stub_command_log: None) -> None:
+    runtime = _export_runtime(warm=[_compiled(), _compiled(server_id="lisa-memory")])
+
+    result = await _mcp.handle_mcp_command(runtime, "/mcp export --server lisa-memory", "raw")
+
+    assert '"lisa-memory"' in result
+    assert '"lisa-storage"' not in result
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_unknown_server_is_usage_error(
+    _stub_command_log: None,
+) -> None:
+    runtime = _export_runtime(warm=[_compiled()])
+
+    result = await _mcp.handle_mcp_command(runtime, "/mcp export --server nope", "raw")
+
+    assert "unknown server id" in result
+    assert "## /mcp export" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_unknown_flag_is_usage_error(
+    _stub_command_log: None,
+) -> None:
+    runtime = _export_runtime(warm=[_compiled()])
+
+    result = await _mcp.handle_mcp_command(runtime, "/mcp export --include-httpx", "raw")
+
+    assert "Unknown `/mcp export` argument" in result
+    assert "## /mcp export" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_missing_server_value(_stub_command_log: None) -> None:
+    result = await _mcp.handle_mcp_command(
+        _export_runtime(warm=[_compiled()]), "/mcp export --server", "raw"
+    )
+
+    assert "`--server` needs a server id" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_export_include_internal(_stub_command_log: None) -> None:
+    runtime = _export_runtime(
+        warm=[_compiled(server_id="lisa-content", tool_policy=ToolPolicy(allowed_tools=[]))]
+    )
+
+    default = await _mcp.handle_mcp_command(runtime, "/mcp export", "raw")
+    included = await _mcp.handle_mcp_command(runtime, "/mcp export --include-internal", "raw")
+
+    assert "### Not exported" in default
+    assert '"lisa-content"' not in default
+    assert '"lisa-content"' in included
+
+
+@pytest.mark.asyncio
+async def test_handle_mcp_command_detail_still_works_after_export_branch(
+    _stub_command_log: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server literally named ``export`` is reachable through the detail path.
+
+    ``/mcp export`` is reserved; the check is on the first token only, so a
+    server id that merely starts with "export" is unaffected.
+    """
+    monkeypatch.setattr(_mcp, "gather_mcp_pool_health", lambda pool: {})
+
+    result = await _mcp.handle_mcp_command(_export_runtime(), "/mcp export-helper", "raw")
+
+    assert result == "No MCP server named 'export-helper' is configured."

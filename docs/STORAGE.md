@@ -145,8 +145,11 @@ derived facts; logs and scenario bundles may expose additional details.
 1. Resolve the actual data root, thread overrides, session-selected roster,
    and packs environment. Record the framework/host/pack versions.
 2. Stop new work and close the runtime through its owner task. For an online
-   memory backup, use the backend's SQLite-aware backup path rather than
-   copying a live database file without its journal/WAL.
+   memory backup, use SQLite's own backup mechanism (`sqlite3 memory.db
+   ".backup copy.db"`) or a filesystem snapshot rather than copying a live
+   database file without its journal/WAL. Memory retention dumps are not
+   produced by the framework; if you need point-in-time copies, create them
+   in the deployment's own backup pipeline.
 3. Copy configuration, durable data, and related state together. Include
    all thread segments, indexes, dictionaries, and `.results` directories.
    Do not publish the archive.

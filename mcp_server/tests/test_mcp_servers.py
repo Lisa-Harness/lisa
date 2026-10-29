@@ -50,20 +50,84 @@ def memory_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return data_dir / "memory.db"
 
 
-def test_memory_init_accepts_in_process_namespace_without_backup_keep(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_memory_init_generic_namespace_defaults_to_readonly_false(tmp_path: Path) -> None:
     """The in-process launcher's generic Namespace omits server-specific flags."""
     from argparse import Namespace
 
     from mcp_server.memory import server as mem_server
 
-    monkeypatch.setenv("LISA_MEMORY_BACKUP_KEEP", "3")
     mem_server._init(
         Namespace(data_dir=str(tmp_path), embedding_model=None, embedding_endpoint=None)
     )
 
-    assert mem_server._cfg.backup_keep == 3
+    assert mem_server._cfg.readonly is False
+    assert mem_server._deps is not None
+    assert mem_server._deps.store.readonly is False
+
+
+def test_memory_init_honors_readonly_flag(tmp_path: Path) -> None:
+    """``--readonly`` reaches the store, and no database file is created."""
+    from argparse import Namespace
+
+    from mcp_server.memory import server as mem_server
+
+    mem_server._init(
+        Namespace(
+            data_dir=str(tmp_path),
+            embedding_model=None,
+            embedding_endpoint=None,
+            readonly=True,
+        )
+    )
+
+    assert mem_server._cfg.readonly is True
+    assert mem_server._deps is not None
+    assert mem_server._deps.store.readonly is True
+    assert not (tmp_path / "data" / "memory.db").exists()
+    assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_readonly_server_rejects_writes(tmp_path: Path) -> None:
+    """``--readonly`` must fail the mutating tools, not silently accept them."""
+    from mcp_server.memory import server as mem_server
+
+    writable = tmp_path / "writable"
+    mem_server.init_store(writable)
+    await mem_server.mcp.call_tool("add_memory", {"user_slug": "alice", "content": "kept"})
+    mem_server._deps.store.close()  # type: ignore[union-attr]
+
+    mem_server.init_store(writable, readonly=True)
+    for tool, args in (
+        ("add_memory", {"user_slug": "alice", "content": "rejected"}),
+        ("delete_memory", {"memory_id": 1, "user_slug": "alice"}),
+        ("retire_memory", {"memory_id": 1, "user_slug": "alice"}),
+    ):
+        with pytest.raises(ToolError, match="read-only"):
+            await mem_server.mcp.call_tool(tool, args)
+
+
+@pytest.mark.asyncio
+async def test_memory_readonly_server_still_reads(tmp_path: Path) -> None:
+    """Reads — including recall, which normally bumps access tracking — work."""
+    from mcp_server.memory import server as mem_server
+
+    writable = tmp_path / "writable"
+    mem_server.init_store(writable)
+    await mem_server.mcp.call_tool(
+        "add_memory", {"user_slug": "alice", "content": "the quick brown fox"}
+    )
+    mem_server._deps.store.close()  # type: ignore[union-attr]
+
+    mem_server.init_store(writable, readonly=True)
+    result = await mem_server.mcp.call_tool(
+        "search_memory", {"user_slug": "alice", "query": "quick fox"}
+    )
+    assert "quick brown fox" in _tool_text(result)
+    listed = await mem_server.mcp.call_tool("list_memories", {"user_slug": "alice"})
+    assert "quick brown fox" in _tool_text(listed)
+    counted = await mem_server.mcp.call_tool("count_memories", {"user_slug": "alice"})
+    assert _tool_text(counted).strip() == "1"
 
 
 @pytest.mark.asyncio

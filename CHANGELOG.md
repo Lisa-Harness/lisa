@@ -4,6 +4,58 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP client-config export — Lisa's servers usable without the turn loop.**
+  `/mcp export` renders the runtime's compiled MCP servers as an `mcpServers`
+  document another agent client (Claude Desktop, VS Code, Cursor, another
+  harness) can paste, plus the warnings, omissions, and per-entry shell
+  invocation. The pure projection lives in
+  `sdk.mcp_host.export.export_mcp_servers`; `runtime.mcp_export`
+  supplies the resolved data dir and the console-script path for
+  in-process configs. The export never starts the pool, so it works before
+  startup and after shutdown. Flags: `--server <id>` (repeatable),
+  `--include-http`, `--include-internal`. Three properties are enforced and
+  tested: only an allowlist of behavioral env vars is exported (credential
+  values become `${NAME}` placeholders, and inherited `PATH`/`HOME`/tokens
+  never appear); servers whose host tool policy hides all their tools
+  (`lisa-content`) are omitted by default because exporting them would expose
+  a surface the host never exposed; and a restrictive `tool_policy` is
+  reported as widened rather than presented as equivalent. Unrepresentable
+  servers (in-process without an installed console script, download-only
+  binaries, HTTP endpoints without a resolved URL) are reported with a reason
+  instead of dropped.
+- **Docs:** [MCP interoperability](docs/MCP_INTEROP.md) covers the deployment
+  scenario, which servers to expose, the identity-is-a-host-responsibility
+  limit, and the export contract.
+- **Tests:** `sdk/tests/test_mcp_host_export.py`,
+  `runtime/tests/test_mcp_export.py`, and the `/mcp export` cases in
+  `runtime/tests/test_commands_mcp.py`.
+
+### Changed
+
+- **`lisa-memory --readonly` is now enforced.** The flag was declared but
+  ignored, so writes succeeded on a read-only server. `SqliteMemoryStore`
+  gains `readonly=True`, which opens the database with SQLite `mode=ro`,
+  creates no file when the database is absent, refuses to migrate a stale
+  schema, and raises `ReadOnlyMemoryStoreError` from `record_memory`,
+  `delete_memory`, `retire_memory`, and `update_salience`. The three mutating
+  MCP tools translate that into a tool error. Recall keeps working: its
+  access-tracking update is skipped rather than turning a read into a failure.
+- **Tests:** `sdk/src/sdk/memory/tests/test_store.py`,
+  `mcp_server/tests/test_mcp_servers.py`.
+
+### Removed
+
+- **Automatic memory backup on server boot.** `lisa-memory` dumped `memory.db`
+  to `<data_dir>/data/backups/` and pruned old dumps every time it started —
+  a write on a read path, and repeated churn for a client that spawns the
+  server per call. The whole feature is gone: `sdk.memory.backup`, the
+  `--backup-keep` flag, `LISA_MEMORY_BACKUP_KEEP`, `DEFAULT_KEEP_BACKUPS`, its
+  tests, and its direct-I/O allowlist entry. Point-in-time copies belong to
+  the deployment's own SQLite-aware backup process; `docs/STORAGE.md` now says
+  so.
+
 ## [0.4.0] - 2026-10-28
 
 ### Added

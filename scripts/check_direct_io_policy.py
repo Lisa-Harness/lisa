@@ -199,12 +199,6 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "sqlite3.connect(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "sdk/src/sdk/memory/backup.py": (
-        "sqlite3.connect(",
-        "target.write_text(",
-        "path.unlink()",
-        "target_dir.mkdir(parents=True, exist_ok=True)",
-    ),
     "sdk/src/sdk/storage/_backend.py": (
         "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
