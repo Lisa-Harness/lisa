@@ -305,7 +305,26 @@ class Settings(BaseSettings):
     # burn: 16 round-trips at ~48k prompt tokens each after hint
     # suppression). Override via ``HINT_OVERRIDE_LIMIT``.
     hint_override_limit: int = 5
+    # Identical tool-batch repetition ceiling. The model may re-issue the
+    # exact same tool-call batch (same tools, same arguments) this many
+    # times in a row; the next repeat is refused and the model is told to
+    # answer from the results it already holds, and one further repeat
+    # forces a final completion. 0 disables the guard. Read-only tools
+    # return the same output for the same arguments, so a repeat buys
+    # nothing — the 2026-10-28 researcher loop re-ran one
+    # thread_read_recent + thread_search pair 33 times.
+    # Override via ``MAX_IDENTICAL_TOOL_BATCH_REPEATS``.
+    max_identical_tool_batch_repeats: int = 3
 
+    # ── Derived workflow view ─────────────────────────────────────────────
+    # A ``## Plan`` stays active only while it makes progress. After this
+    # many consecutive later turns that neither complete a step nor run in
+    # any open step's mode, the plan is retired so it stops decorating and
+    # re-routing unrelated turns (the 2026-10-28 zombie plan re-attached
+    # its progress footer and ``WORKFLOW CHAIN IN FLIGHT`` handoff to every
+    # turn after it). ``/workflow conclude`` still retires a plan at once.
+    # Override via ``WORKFLOW_PLAN_IDLE_TURN_LIMIT``.
+    workflow_plan_idle_turn_limit: int = 2
     # ── Budget briefing ───────────────────────────────────────────────────
     # When True, inject a compact per-iteration budget status block into
     # the system prompt — remaining iterations, remaining tool calls, and
@@ -455,6 +474,8 @@ class Settings(BaseSettings):
         "duplicate_hint_limit",
         "hint_cycle_min_len",
         "hint_override_limit",
+        "max_identical_tool_batch_repeats",
+        "workflow_plan_idle_turn_limit",
         "chat_mode_dense_content_min_chars",
         "context_budget_token_char_ratio",
         "context_default_window_tokens",

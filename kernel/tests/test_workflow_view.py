@@ -31,6 +31,7 @@ def _entry(  # noqa: PLR0917 — one default per synthetic-entry field
     handoff_to: str = "",
     transitioned_to: str = "",
     turn: int | None = None,
+    departed_modes: list[str] | None = None,
 ) -> dict:
     """Build a synthetic thread entry."""
     entry: dict = {
@@ -40,6 +41,8 @@ def _entry(  # noqa: PLR0917 — one default per synthetic-entry field
         "query": "test query",
         "response_text": response_text,
     }
+    if departed_modes is not None:
+        entry["departed_modes"] = departed_modes
     if effect_receipts:
         entry["effect_receipts"] = effect_receipts
     if handoff_to:
@@ -253,7 +256,7 @@ class TestDeriveWorkflowView:
             _entry(mode_id="search", response_text="Turn 2"),
             _entry(mode_id="search", response_text="Turn 3"),
         ]
-        view = derive_workflow_view(entries)
+        view = derive_workflow_view(entries, idle_turn_limit=0)
         assert view is not None
         assert view.turn_count == 3
 
@@ -263,7 +266,7 @@ class TestDeriveWorkflowView:
             _entry(mode_id="search", response_text="Turn 1"),
             _entry(mode_id="coding", response_text="Turn 2"),
         ]
-        view = derive_workflow_view(entries)
+        view = derive_workflow_view(entries, idle_turn_limit=0)
         assert view is not None
         assert view.turn_count == 1
 
@@ -667,3 +670,222 @@ class TestReceiptModeAttribution:
             ),
         ]
         assert derive_workflow_view(entries) is None
+
+
+# ── Regression: the 2026-10-28 zombie plan ────────────────────────────
+
+
+class TestPlanTurnCompletion:
+    """Work done inside the plan-emitting turn completes its steps.
+
+    Turn 1094 opened with a two-step plan (``thinker`` reads, then
+    ``researcher`` writes) and executed both steps in the same turn. The
+    view only scanned *later* entries, so neither step was credited and the
+    plan re-attached itself to every turn after it.
+    """
+
+    _PLAN = """\
+## Plan
+
+1. **thinker** — Analyze the competitive landscape
+   _reads_
+2. **researcher** — Research incumbent strategies
+   _writes: markdown_forge_document_
+
+Interpretation: a competitive threat analysis.
+"""
+
+    def _plan_turn(self, **extra: object) -> dict:
+        entry = _entry(
+            mode_id="default",
+            response_text=self._PLAN + "\nResearch complete.",
+            handoff_to="researcher",
+            effect_receipts=[
+                {
+                    "capability_id": "markdown_forge_document",
+                    "effect": "write",
+                    "mode_id": "researcher",
+                }
+            ],
+            turn=1094,
+        )
+        entry.update(extra)
+        return entry
+
+    def test_plan_turn_that_runs_every_step_retires_the_plan(self):
+        entry = self._plan_turn(departed_modes=["default", "planner", "thinker"])
+        assert derive_workflow_view([entry]) is None
+
+    def test_write_receipt_in_the_plan_turn_completes_its_step(self):
+        view = derive_workflow_view([self._plan_turn()], idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ("researcher_1",)
+        assert view.declared_steps[1].completing_turn == 1094
+
+    def test_departed_mode_mid_turn_completes_a_read_step(self):
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="default",
+                response_text="Thought it through.",
+                handoff_to="coding",
+                departed_modes=["default", "thinker"],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ("thinker_0",)
+
+    def test_departed_modes_replace_the_entry_mode_fallback(self):
+        """A recorded trail is authoritative: the entry mode alone is not a departure."""
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="thinker",
+                response_text="Stayed in thinker.",
+                handoff_to="",
+                transitioned_to="",
+                departed_modes=[],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ()
+
+    def test_one_receipt_cannot_complete_two_steps(self):
+        plan = """\
+## Plan
+
+1. **coding** — First change
+   _writes: coding_commit_
+2. **coding** — Second change
+   _writes: coding_commit_
+"""
+        entries = [
+            _entry(mode_id="planner", response_text=plan, turn=0),
+            _entry(
+                mode_id="coding",
+                response_text="Committed once.",
+                effect_receipts=[_receipt("coding_commit")],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ("coding_0",)
+
+    def test_one_turn_can_complete_steps_in_several_modes(self):
+        """Evidence is claimed per unit, so a multi-mode turn credits each mode."""
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            self._plan_turn(
+                response_text="Did both.",
+                departed_modes=["thinker"],
+                turn=1,
+            ),
+        ]
+        assert derive_workflow_view(entries) is None
+
+
+class TestStepResultPreview:
+    """A step's result preview is a single line, free of response structure."""
+
+    _PLAN = """\
+## Plan
+
+1. **researcher** — Research it
+   _writes: markdown_forge_document_
+2. **thinker** — Reflect
+   _reads_
+"""
+
+    def _view(self, response_text: str) -> WorkflowView:
+        entries = [
+            _entry(mode_id="planner", response_text=self._PLAN, turn=0),
+            _entry(
+                mode_id="researcher",
+                response_text=response_text,
+                effect_receipts=[_receipt("markdown_forge_document")],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=0)
+        assert view is not None
+        return view
+
+    def test_multiline_markdown_is_flattened(self):
+        view = self._view("## Findings\n\n- one\n- two\n\n**Bold** close.")
+        preview = view.step_results["researcher_0"]
+        assert "\n" not in preview
+        assert preview == "## Findings - one - two **Bold** close."
+        rendered = render_workflow_progress(view)
+        assert rendered.splitlines()[1] == f"[x] researcher: {preview} ← turn 1"
+
+    def test_prior_progress_footer_is_dropped(self):
+        view = self._view("Wrote it.\n\n## Workflow progress\n[ ] stale: old footer")
+        assert view.step_results["researcher_0"] == "Wrote it."
+
+    def test_long_preview_is_truncated_with_ellipsis(self):
+        view = self._view("word " * 200)
+        preview = view.step_results["researcher_0"]
+        assert len(preview) == 300
+        assert preview.endswith("…")
+
+    def test_plan_block_of_the_plan_turn_is_dropped(self):
+        entry = _entry(
+            mode_id="default",
+            response_text=self._PLAN + "\nResearch summary here.",
+            effect_receipts=[
+                {
+                    "capability_id": "markdown_forge_document",
+                    "effect": "write",
+                    "mode_id": "researcher",
+                }
+            ],
+            turn=7,
+        )
+        view = derive_workflow_view([entry], idle_turn_limit=0)
+        assert view is not None
+        assert view.step_results["researcher_0"] == "Research summary here."
+
+
+class TestIdlePlanRetirement:
+    """A plan that stops making progress retires after the idle limit."""
+
+    def _entries(self, *responses: str) -> list[dict]:
+        return [_entry(mode_id="planner", response_text=_PLAN_3_STEP, turn=0)] + [
+            _entry(mode_id="default", response_text=text, turn=i + 1)
+            for i, text in enumerate(responses)
+        ]
+
+    def test_plan_stays_active_below_the_limit(self):
+        view = derive_workflow_view(self._entries("unrelated"), idle_turn_limit=2)
+        assert view is not None
+
+    def test_plan_retires_at_the_limit(self):
+        entries = self._entries("unrelated", "also unrelated")
+        assert derive_workflow_view(entries, idle_turn_limit=2) is None
+
+    def test_idle_turns_count_from_the_latest_progress(self):
+        entries = [
+            *self._entries("unrelated"),
+            _entry(mode_id="search", response_text="Found it.", handoff_to="coding", turn=2),
+            _entry(mode_id="default", response_text="unrelated", turn=3),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=2)
+        assert view is not None
+        assert view.completed_steps == ("search_0",)
+
+    def test_zero_limit_disables_retirement(self):
+        entries = self._entries("a", "b", "c", "d")
+        assert derive_workflow_view(entries, idle_turn_limit=0) is not None
+
+    def test_default_limit_comes_from_settings(self, monkeypatch):
+        from kernel.config import settings
+
+        monkeypatch.setattr(settings, "workflow_plan_idle_turn_limit", 3)
+        entries = self._entries("a", "b")
+        assert derive_workflow_view(entries) is not None
+        assert derive_workflow_view([*entries, _entry(response_text="c", turn=3)]) is None
