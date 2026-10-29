@@ -1246,11 +1246,7 @@ async def run_turn(
     # when the host declared one (host tool/total/wall limits preserved).
     turn_budget = _fold_mode_turn_budget(turn_budget, mode_config)
 
-    if (
-        not sub_turn_kind
-        and delegate_depth == 0
-        and hooks.services.recovery_service is not None
-    ):
+    if not sub_turn_kind and delegate_depth == 0 and hooks.services.recovery_service is not None:
         try:
             await hooks.services.recovery_service.mark_running_indeterminate(
                 _build_recovery_identity(hooks)
@@ -5831,7 +5827,7 @@ async def _execute_mid_turn_handoff(
             # "... is not allowed for mode '<entry>'".
             # Patch ctx.mode_id so subsequent dispatches
             # authorize against the new mode.
-            _departing_mode_id = mode_id
+            state.departed_modes.append(mode_id)
             mode_id = target_stage
             mode_config = target_mode_config
             handoff_to = target_stage
@@ -5871,7 +5867,7 @@ async def _execute_mid_turn_handoff(
             # iteration.
             _advance_handoff_workflow_position(
                 hooks=hooks,
-                departing_mode_id=_departing_mode_id,
+                departing_mode_id=state.departed_modes[-1],
                 target_stage=target_stage,
                 query=query,
                 rationale=rationale,
@@ -6332,7 +6328,14 @@ async def _resolve_empty_turn_content(
     elif pending_yield is not None:
         content = pending_yield.question
         _yielded = True
-    elif _resolve_yield_policy(mode_config, yield_policy_override).allowed:
+    elif (
+        # The identical-batch breaker stopped a model that kept re-issuing
+        # one unchanged tool call. Its results are already in ``messages``;
+        # the forced synthesis below answers the user, a yield question
+        # would not.
+        not getattr(state, "repeated_tool_batch_tripped", False)
+        and _resolve_yield_policy(mode_config, yield_policy_override).allowed
+    ):
         _yield_policy = _resolve_yield_policy(mode_config, yield_policy_override)
         # Be honest about WHY the turn ended with no content. The budget
         # claim is only true when the iteration cap actually fired; an
@@ -6453,6 +6456,96 @@ def _track_handoff_and_guard_loops(
             f"Forcing a final response."
         )
     return ""
+
+
+def _tool_batch_signature(tool_calls: list[dict[str, Any]]) -> str:
+    """Return a canonical signature of a tool-call batch: names plus arguments.
+
+    Arguments are re-serialized with sorted keys so key order and spacing
+    differences in the model's JSON do not hide a repeat; call ids are
+    ignored because the model mints fresh ones every iteration.
+    """
+    parts: list[str] = []
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        function = function if isinstance(function, dict) else {}
+        raw_args = function.get("arguments", "")
+        try:
+            args = json.dumps(
+                json.loads(raw_args) if isinstance(raw_args, str) else raw_args,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            args = str(raw_args)
+        parts.append(f"{function.get('name', '')}:{args}")
+    return "\n".join(sorted(parts))
+
+
+def _guard_repeated_tool_batch(
+    *,
+    state: Any,
+    tool_calls: list[dict[str, Any]],
+    synthesized_forced: bool,
+    messages: list[dict[str, Any]],
+    log: logging.Logger,
+) -> Literal["dispatch", "refuse", "stop"]:
+    """Refuse a tool-call batch the model keeps re-issuing unchanged.
+
+    The same tools with the same arguments return the same results, so a
+    repeat buys nothing while the loop burns its iteration budget (the
+    2026-10-28 researcher loop re-ran one ``thread_read_recent`` +
+    ``thread_search`` pair 33 times until killed — the one-shot read-loop
+    nudge had already fired). ``max_identical_tool_batch_repeats`` repeats
+    still dispatch; the next one is answered with refusals telling the model
+    to answer from what it holds (``"refuse"``); one further repeat stops the loop
+    (``"stop"``) and the empty-content resolver forces a no-tools synthesis.
+    Kernel-synthesized batches never count: the kernel, not the model,
+    chose them. A limit of 0 disables the guard.
+    """
+    limit = _kernel_settings.max_identical_tool_batch_repeats
+    if limit <= 0 or synthesized_forced or not tool_calls:
+        return "dispatch"
+    signature = _tool_batch_signature(tool_calls)
+    if signature == state.last_tool_batch_signature:
+        state.identical_tool_batch_repeats += 1
+    else:
+        state.last_tool_batch_signature = signature
+        state.identical_tool_batch_repeats = 0
+        return "dispatch"
+    repeats = state.identical_tool_batch_repeats
+    if repeats <= limit:
+        return "dispatch"
+    action: Literal["refuse", "stop"] = "refuse" if repeats == limit + 1 else "stop"
+    log.warning(
+        "identical tool batch re-issued %d times in a row (cap=%d); %s",
+        repeats,
+        limit,
+        "refusing it" if action == "refuse" else "stopping the loop",
+    )
+    refusal = (
+        f"Not executed: this exact tool call was already made {repeats + 1} times in a "
+        "row with identical arguments, and its result has not changed — the earlier "
+        "results are above. Do not call it again. Answer now from the results you "
+        "already have, or call a different tool if something is genuinely missing."
+    )
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        tool_msg: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": str(call.get("id") or ""),
+            "name": str((function or {}).get("name") or ""),
+            "content": refusal,
+        }
+        thought_signature = call.get("thought_signature") or (function or {}).get(
+            "thought_signature"
+        )
+        if thought_signature:
+            tool_msg["thought_signature"] = thought_signature
+        messages.append(tool_msg)
+    if action == "stop":
+        state.repeated_tool_batch_tripped = True
+    return action
 
 
 def _handle_truncated_tool_arguments(
@@ -9873,6 +9966,7 @@ async def _finalize_turn_result(
         completion_contract=completion_contract,
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
+        departed_modes=list(state.departed_modes),
         fork_results=state.fork_results if state.fork_results else fork_results,
         workflow_terminated=workflow_terminated,
         operator_exit=pending_operator_exit,
@@ -10652,6 +10746,18 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
         if _empty_completion.action == "break":
             break
         if _empty_completion.action == "continue":
+            continue
+
+        _repeat_action = _guard_repeated_tool_batch(
+            state=_state,
+            tool_calls=tool_calls,
+            synthesized_forced=_synthesized_forced,
+            messages=messages,
+            log=_log,
+        )
+        if _repeat_action == "stop":
+            break
+        if _repeat_action == "refuse":
             continue
 
         _tool_loop_state = _ToolDispatchLoopState(

@@ -298,8 +298,9 @@ class TurnIdentity:
     memory_scope: str = "personal"
     session_plan_digest: str = ""
     task_id: str = ""
-    #: Global thread turn index this turn will occupy, computed at turn start
-    #: (``runtime.thread.next_turn_index``) and stamped on the thread entry.
+    #: Global thread turn index this turn runs under, reserved at turn start
+    #: by the host; the thread entry records it (as ``provisional_turn`` when
+    #: overlapping turns committed out of start order and moved the entry).
     #: Threaded into every dispatch/token/decision payload so forensic readers
     #: can join the thread, the dispatch ledger, and the cost log by one key.
     #: ``None`` means the work is not attributable to a thread turn (off-turn

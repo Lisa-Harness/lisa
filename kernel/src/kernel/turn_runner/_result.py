@@ -92,6 +92,11 @@ class TurnResult:
     (routing FSM handoff), the new ``mode_id``. The host reads this to update
     ``current_mode_id`` and persist the mode switch. None when no handoff
     occurred. See ``docs/ROUTING_RFC_HANDOFF.md``."""
+    departed_modes: list[str] = field(default_factory=list)
+    """Every mode that handed off mid-turn, in order (the departing side of
+    each executed handoff). A turn can traverse several modes, but
+    ``handoff_to`` keeps only the last hop; the host persists this list so
+    the workflow view can credit a read step completed inside the turn."""
     fork_results: list[ForkChildResult] | None = None
     """When the ``fork`` operation ran this turn, the collected results
     from all parallel child runs. None when no fork occurred. The host

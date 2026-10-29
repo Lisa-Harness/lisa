@@ -20,6 +20,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from kernel.config import settings
 from kernel.provider_contracts import (
     CompletionRequest,
     CompletionUsage,
@@ -427,7 +428,9 @@ def test_aggregate_keeps_indexed_calls_with_distinct_indices_apart() -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_runner_stream_tool_deltas_skip_the_fallback_complete() -> None:
+async def test_turn_runner_stream_tool_deltas_skip_the_fallback_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A tool_calls stream with parsed deltas dispatches without regenerating.
 
     Regression for the 2026-10-12 performance review: the v1 gateway
@@ -437,6 +440,10 @@ async def test_turn_runner_stream_tool_deltas_skip_the_fallback_complete() -> No
     When the stream carries parseable tool-call deltas, the dispatch must
     run off the streamed payload and ``complete()`` must not be called.
     """
+    # The stub stream re-issues one identical call every iteration; the
+    # identical-batch breaker would end that loop with a forced synthesis
+    # (a legitimate ``complete()``), which is not what this test measures.
+    monkeypatch.setattr(settings, "max_identical_tool_batch_repeats", 0)
     stream_chunks = [
         StreamedChunk(content="Editing."),
         StreamedChunk(

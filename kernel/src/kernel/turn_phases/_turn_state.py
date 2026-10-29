@@ -257,6 +257,19 @@ class _TurnState:
     backstop against routing-hint loops that the ``chain_satisfied``
     accumulator fails to break (e.g. when a pack omits
     ``routing_intent_tags`` or ``_detect_query_intents`` over-detects)."""
+    departed_modes: list[str] = field(default_factory=list)
+    """The departing mode of every executed mid-turn handoff, in order.
+    Surfaced on ``TurnResult.departed_modes`` for the workflow view."""
+    last_tool_batch_signature: str = ""
+    """Canonical signature (tool names + arguments) of the previous
+    model-issued tool-call batch, for the identical-batch breaker."""
+    identical_tool_batch_repeats: int = 0
+    """How many consecutive times the model re-issued the batch recorded in
+    ``last_tool_batch_signature``. Bounded by
+    ``max_identical_tool_batch_repeats`` (``kernel.config.Settings``)."""
+    repeated_tool_batch_tripped: bool = False
+    """True once the breaker stopped the loop; the empty-content resolver
+    then forces a no-tools synthesis instead of asking a yield question."""
     last_hint_text: str = ""
     """The most recently injected routing-hint text. Used by the
     duplicate-hint dedup guard: when the recomputed post-handoff hint is

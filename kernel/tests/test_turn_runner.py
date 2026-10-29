@@ -3285,7 +3285,7 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
             )
         # The coding child inspects via read-only ambient storage tools
         # and never reaches its write tools before the iteration cap
-        # forces a yield. It keeps calling a read-only tool every turn
+        # forces a yield. It keeps reading a different file every turn
         # so the loop never produces final content and the cap fires.
         return _StubCompletion(
             content="",
@@ -3294,7 +3294,7 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
                     "id": f"call_{call_count['n']}",
                     "function": {
                         "name": "lisa-storage.read_file",
-                        "arguments": '{"path": "src/main.py"}',
+                        "arguments": json.dumps({"path": f"src/main_{call_count['n']}.py"}),
                     },
                 }
             ],
