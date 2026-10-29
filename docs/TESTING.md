@@ -14,8 +14,19 @@ previous scope of knowledge, and the full suite remains the pre-push gate.
 | Tier | Command | When |
 | --- | --- | --- |
 | Unit | `uv run pytest <test module(s)> -m "not live" -q` | After each edit; the test module(s) mirroring the changed source file |
-| Package | `uv run pytest <owning package testpaths> -m "not live" -q` | Before commit; every package whose testpaths the change can reach |
+| Package | `uv run python scripts/check_tests.py` | Before commit; selects the owning package testpaths from the worktree's changed paths |
 | Full | `uv run pytest -m "not live" -q` | Before push/PR; the required CI scope |
+
+[check_tests.py](../scripts/check_tests.py) computes the package tier from
+Git state, so selection cannot be narrowed by declaring less work. It runs
+the testpaths of every package the changed paths reach and escalates to the
+full suite for `kernel` (the shared contract layer every package imports),
+`pyproject.toml`, `uv.lock`, `scripts/`, `.github/`, `typings/`, any
+`conftest.py`, and any path outside a known package. `--dry-run` prints the
+command without running it; `--paths` selects explicitly. Its package table
+is asserted against the configured `testpaths` by
+`packstest/tests/test_check_tests.py`, so a new suite cannot silently fall
+outside selection.
 
 Map a changed file to its owning package's testpaths (all of them — a
 package's tests are split between its top-level `tests/` and colocated
