@@ -105,6 +105,19 @@ Why a separate file rather than `runtime.jsonl`:
   segments are never deleted, so verbose runtime logging cannot evict the
   decision ledger and the ledger cannot consume the log's rotation budget.
 
+## Concurrent-ledger safety
+
+Both telemetry ledgers are shared across host processes: overlapping Lisa
+turns on one data dir append to the same `decisions.jsonl` and
+`token-usage.jsonl`. The runtime serializes those appends (and the
+decisions seal decision) under sidecar advisory locks
+(`<file>.lock`), so every process's lines land whole and no process's
+sealed segment can overwrite another's. The kernel handlers stay
+runtime-neutral: they accept a `lock_factory` and the host injects the
+lock ([`HostServices.build`](../runtime/src/runtime/services.py)). The
+locks are best-effort with a short timeout — a stuck holder drops one
+telemetry line rather than stalling a live turn.
+
 `turn_index` is the join key. It is reserved once at turn start
 (`runtime.thread.reserved_turn`), carried on `TurnIdentity` into every
 operation/tool context, and matched against the thread entry, so a decision

@@ -23,6 +23,8 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +134,10 @@ class TokenUsageTelemetryHandler:
             returns ``True`` to persist, ``False`` to skip. Hosts use
             this to drop events below a severity threshold or to
             redact sensitive fields before persistence.
+        lock_factory: Optional callable returning a context manager that
+            serializes the append across processes sharing one file (the
+            runtime injects ``sdk.filelock.file_lock`` over a sidecar
+            ``.lock``). ``None`` keeps appends unsynchronized, as before.
     """
 
     def __init__(
@@ -139,9 +145,11 @@ class TokenUsageTelemetryHandler:
         path: Path,
         *,
         filter_fn: Any | None = None,
+        lock_factory: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn
+        self._lock_factory = lock_factory or contextlib.nullcontext
 
     @property
     def path(self) -> Path:
@@ -183,10 +191,13 @@ class TokenUsageTelemetryHandler:
         if not event.idempotency_key:
             event.idempotency_key = f"{event.emitted_at}:{_time_ns_suffix()}"
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(event.model_dump_json() + "\n")
-        except OSError as exc:
+            with self._lock_factory():
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                with self._path.open("a", encoding="utf-8") as handle:
+                    handle.write(event.model_dump_json() + "\n")
+        except (OSError, TimeoutError) as exc:
+            # TimeoutError covers the host-injected lock timing out (dropping
+            # one line is better than stalling the turn).
             logger.warning("token-usage append failed for %s: %s", self._path, exc)
 
 

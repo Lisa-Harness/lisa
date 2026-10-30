@@ -14,13 +14,19 @@ multiple host processes on the same machine:
    indeterminate).
 5. Per-conversation isolation (`conversation_id` / `LISA_CONVERSATION_ID`).
 6. Multi-process `SqliteMemoryStore` WAL + busy-timeout safety.
+7. Cross-process telemetry ledgers (`decisions.jsonl` appends/seals and
+   `token-usage.jsonl` appends) under host-injected sidecar locks, plus the
+   in-process two-`HostRuntime`/two-`HostServices` overlap tier that
+   multiprocessing cannot observe (per-instance asyncio locks).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import os
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +44,7 @@ from runtime.policy import load_policy, remember_allow_prefix
 from runtime.recovery import FileRecoveryService
 from runtime.runtime import HostRuntime
 from runtime.runtime_paths import HostPaths
+from runtime.services import HostServices
 from runtime.thread import (
     append_thread_entry,
     load_recent_thread_entries,
@@ -166,6 +173,94 @@ def _sqlite_memory_worker(args: tuple[str, int, int]) -> int:
         return asyncio.run(_run())
     finally:
         store.close()
+
+
+def _decision_telemetry_worker(args: tuple[str, int, int]) -> int:
+    """Publish decisions through a lock-wired handler exactly as HostServices does."""
+    path_str, worker_id, count = args
+    from kernel.decision_telemetry import DecisionTelemetryHandler
+    from sdk.filelock import file_lock, sidecar_lock_path
+
+    path = Path(path_str)
+    handler = DecisionTelemetryHandler(
+        path,
+        segment_max_bytes=600,
+        lock_factory=lambda: file_lock(sidecar_lock_path(path), timeout=10.0),
+    )
+
+    async def _run() -> int:
+        for i in range(count):
+            await handler.publish_turn_decision({"worker": worker_id, "item": i, "pad": "x" * 40})
+        return count
+
+    return asyncio.run(_run())
+
+
+def _token_usage_worker(args: tuple[str, int, int]) -> int:
+    """Append token-usage events through a lock-wired handler as HostServices does."""
+    path_str, worker_id, count = args
+    from kernel.models import TokenUsageEvent
+    from kernel.token_usage import TokenUsageTelemetryHandler
+    from sdk.filelock import file_lock, sidecar_lock_path
+
+    path = Path(path_str)
+    handler = TokenUsageTelemetryHandler(
+        path,
+        lock_factory=lambda: file_lock(sidecar_lock_path(path), timeout=10.0),
+    )
+
+    async def _run() -> int:
+        for i in range(count):
+            event = TokenUsageEvent(
+                provider="ollama",
+                model_id="m",
+                prompt_tokens=worker_id,
+                completion_tokens=i,
+                mode_id="build",
+                turn_index=worker_id,
+                call_site="test",
+            )
+            await handler.publish(event)
+        return count
+
+    return asyncio.run(_run())
+
+
+def _overlapping_turn_lifecycle(
+    thread_path: Path,
+    mode_id: str,
+    barrier: Any,
+    results: Any,
+) -> None:
+    """Run one turn's reservation/commit lifecycle against a shared store, in-process."""
+    from runtime.thread import append_thread_entry, reserved_turn
+
+    with reserved_turn(thread_path=thread_path) as reservation:
+        # Both turns hold their reservations before either commits: the
+        # overlap that once handed two live turns the same index.
+        barrier.wait(timeout=30)
+        committed = append_thread_entry(
+            thread_path=thread_path,
+            user_slug="shared-user",
+            mode_id=mode_id,
+            query=f"turn-{reservation.turn}",
+            response_text="",
+            turn=reservation.turn,
+            reservation=reservation.token,
+        )
+    results.append((reservation.turn, committed))
+
+
+def _telemetry_append_lifecycle(services: Any, worker: int, count: int) -> int:
+    """Publish decisions through one HostServices instance from one thread."""
+    handler = services.decision_telemetry_handler
+
+    async def _run() -> int:
+        for i in range(count):
+            await handler.publish_turn_decision({"worker": worker, "item": i, "pad": "x" * 40})
+        return count
+
+    return asyncio.run(_run())
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -495,6 +590,24 @@ def test_conversation_id_isolates_thread_path_and_surface_identity(
     assert _mcp_environment(rt_b, str(tmp_path))["LISA_USER_SLUG"] == "alice--conv-beta"
 
 
+def test_conversation_id_without_user_slug_degrades_to_shared_conversation_store(
+    tmp_path: Path,
+) -> None:
+    """A conversation_id with no user_slug pins today's documented fallback.
+
+    ``thread_slug`` becomes the bare conversation id, so every userless host
+    on the same conversation shares one thread store. This is the current
+    contract (pinned here so a future change must consciously decide whether
+    to reject the combination or keep the sharing) — an undocumented drift
+    would otherwise go unnoticed.
+    """
+    cfg = HostConfig.from_env(data_dir=str(tmp_path), conversation_id="conv-only")
+
+    assert cfg.thread_slug == "conv-only"
+    paths = HostPaths.from_config(cfg)
+    assert paths.thread_path == tmp_path / "data" / "threads" / "conv-only"
+
+
 def test_multiprocess_sqlite_memory_store_concurrent_writes(tmp_path: Path) -> None:
     """Multiple processes writing to the same SqliteMemoryStore succeed with WAL + busy_timeout."""
     db_path = tmp_path / "data" / "memory.sqlite3"
@@ -525,3 +638,185 @@ def test_multiprocess_sqlite_memory_store_concurrent_writes(tmp_path: Path) -> N
         assert total == workers * per_worker
     finally:
         verify_store.close()
+
+
+def _count_jsonl_lines(path: Path) -> int:
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def test_host_services_wires_cross_process_telemetry_locks(tmp_path: Path) -> None:
+    """HostServices.build hands both telemetry handlers a sidecar file lock."""
+    services = HostServices.build(tmp_path / "data")
+
+    decisions = services.decision_telemetry_handler
+    token_usage = services.token_usage_handler
+
+    assert callable(decisions._lock_factory)
+    assert callable(token_usage._lock_factory)
+
+    # The injected factories lock the sidecar paths, and reentry works.
+    from sdk.filelock import sidecar_lock_path
+
+    with decisions._lock_factory(), decisions._lock_factory():
+        assert sidecar_lock_path(Path(str(decisions.path))).exists()
+
+
+def test_multiprocess_decision_telemetry_appends_and_seals_losslessly(tmp_path: Path) -> None:
+    """Concurrent processes appending/sealing one decisions.jsonl lose nothing.
+
+    The seal decision (stat-then-rename) and the append form one critical
+    section under the sidecar lock; the segment number is recomputed from the
+    directory at seal time so no process overwrites another's sealed segment.
+    """
+    path = tmp_path / "logs" / "decisions.jsonl"
+    workers = 4
+    per_worker = 30
+
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(processes=workers) as pool:
+        counts = pool.map(
+            _decision_telemetry_worker,
+            [(str(path), w, per_worker) for w in range(workers)],
+        )
+    assert sum(counts) == workers * per_worker
+
+    sidecars = {
+        p.name for p in path.parent.glob("decisions.jsonl.*") if p.name.rsplit(".", 1)[1].isdigit()
+    }
+    assert sidecars, "seal threshold crossed but no sidecar was written"
+    numbers = sorted(int(n.rsplit(".", 1)[1]) for n in sidecars)
+    assert numbers == list(range(1, len(numbers) + 1)), f"segments overwritten: {numbers}"
+
+    total = _count_jsonl_lines(path) + sum(
+        _count_jsonl_lines(p)
+        for p in path.parent.glob("decisions.jsonl.*")
+        if p.name.rsplit(".", 1)[1].isdigit()
+    )
+    assert total == workers * per_worker
+
+    # Every line is intact JSON carrying its worker tag.
+    seen_workers: set[int] = set()
+    segments = [
+        p for p in path.parent.glob("decisions.jsonl.*") if p.name.rsplit(".", 1)[1].isdigit()
+    ]
+    for seg in [path, *segments]:
+        for line in seg.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                assert record["topic"] == "turn.decision"
+                seen_workers.add(record["worker"])
+    assert seen_workers == set(range(workers))
+
+
+def test_multiprocess_token_usage_appends_are_intact(tmp_path: Path) -> None:
+    """Concurrent processes appending token-usage events produce whole lines only."""
+    path = tmp_path / "logs" / "token-usage.jsonl"
+    workers = 4
+    per_worker = 25
+
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(processes=workers) as pool:
+        counts = pool.map(
+            _token_usage_worker,
+            [(str(path), w, per_worker) for w in range(workers)],
+        )
+    assert sum(counts) == workers * per_worker
+
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == workers * per_worker
+    assert len({json.loads(ln)["idempotency_key"] for ln in lines}) == workers * per_worker
+
+
+# ── In-process overlapping-turn tier ───────────────────────────────────
+
+
+def test_two_host_runtimes_overlapping_turns_share_one_thread_store_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Two HostRuntime instances on one data dir give overlapping turns distinct indices.
+
+    This is the runtime tier of the 2026-10-28 incident: two live turns on
+    one thread store must never share a provisional index, their commits
+    must land contiguously, and each entry must record the index it ran as
+    when the two differ. Both runtimes resolve the same thread path from
+    config, so the whole path derivation is exercised too.
+    """
+    cfg = HostConfig.from_env(
+        data_dir=str(tmp_path / "data"),
+        user_slug="shared-user",
+        conversation_id="conv-one",
+    )
+    runtime_a = HostRuntime(cfg)
+    runtime_b = HostRuntime(
+        HostConfig.from_env(
+            data_dir=str(tmp_path / "data"),
+            user_slug="shared-user",
+            conversation_id="conv-one",
+        )
+    )
+    assert runtime_a.paths.thread_path == runtime_b.paths.thread_path
+
+    thread_path = runtime_a.paths.thread_path
+    barrier = threading.Barrier(2)
+    results: list[tuple[int, int | None]] = []
+    results_guard = threading.Lock()
+
+    def _run(mode_id: str) -> None:
+        local: list[tuple[int, int | None]] = []
+        _overlapping_turn_lifecycle(thread_path, mode_id, barrier, local)
+        with results_guard:
+            results.extend(local)
+
+    workers = [threading.Thread(target=_run, args=(f"mode-{i}",)) for i in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=30)
+
+    assert len(results) == 2
+    # Distinct provisional indices (the incident's dual-claim)…
+    reserved = sorted(turn for turn, _ in results)
+    assert reserved == [0, 1]
+    # …and contiguous committed log positions, released cleanly.
+    committed = sorted(c for _, c in results)
+    assert committed == [0, 1]
+    assert not Path(f"{thread_path}.reservations.json").exists()
+
+    entries = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=1)
+    assert [e["turn"] for e in entries] == [0, 1]
+    for entry in entries:
+        ran_as = int(entry["query"].removeprefix("turn-"))
+        assert entry.get("provisional_turn", entry["turn"]) == ran_as
+
+
+@pytest.mark.asyncio
+async def test_two_host_services_instances_append_telemetry_without_interleaving(
+    tmp_path: Path,
+) -> None:
+    """Two HostServices stacks on one data dir serialize telemetry appends.
+
+    Each instance owns an asyncio.Lock (useless across instances); the
+    injected file lock is the only serializer. Interleaved appends from two
+    stacks on one event loop must still produce whole, parseable lines.
+    """
+    from runtime.services import HostServices
+
+    services_a = HostServices.build(tmp_path / "data")
+    services_b = HostServices.build(tmp_path / "data")
+
+    async def _publish(handler: Any, worker: int) -> None:
+        for i in range(25):
+            await handler.publish_turn_decision({"worker": worker, "item": i, "pad": "x" * 40})
+
+    await asyncio.gather(
+        _publish(services_a.decision_telemetry_handler, 0),
+        _publish(services_b.decision_telemetry_handler, 1),
+    )
+
+    path = services_a.decision_telemetry_handler.path
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 50
+    for line in lines:
+        record = json.loads(line)  # every append is one whole line, never torn
+        assert record["topic"] == "turn.decision"
+    assert {json.loads(ln)["worker"] for ln in lines} == {0, 1}

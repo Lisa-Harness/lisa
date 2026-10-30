@@ -30,6 +30,11 @@ Design notes
   forensic reader's byte budget.
 - **Failures are swallowed.** Telemetry must never break the turn loop; errors
   are logged and dropped, matching ``TokenUsageTelemetryHandler``.
+- **Cross-process appends need a host-injected lock.** The append and the
+  seal decision (stat-then-rename) form one critical section, but the kernel
+  cannot import the host's locking library. Hosts that share one
+  ``decisions.jsonl`` across processes pass a ``lock_factory`` (the runtime
+  injects ``sdk.filelock.file_lock`` over a sidecar ``<path>.lock``).
 - **Untyped payloads are fine.** The publishers send plain dicts
   (``turn.decision``) or serialized events (``tool.telemetry``), so the handler
   records whatever mapping it receives and stamps a provenance marker naming
@@ -38,9 +43,12 @@ Design notes
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +76,11 @@ __all__ = [
 ]
 
 
+def _null_lock_factory() -> AbstractContextManager[None]:
+    """Return an unlocked context so single-process hosts keep today's behavior."""
+    return contextlib.nullcontext()
+
+
 class DecisionTelemetryHandler:
     """Append ``turn.decision`` and ``tool.telemetry`` payloads to one JSONL file.
 
@@ -86,6 +99,12 @@ class DecisionTelemetryHandler:
         segment_max_bytes: Size threshold at which the active file is sealed
             to a numbered sidecar (``decisions.jsonl.<n>``). Sealed segments
             are never deleted. Defaults to ``_DEFAULT_SEGMENT_BYTES``.
+        lock_factory: Optional callable returning a context manager that
+            serializes the append + seal decision across processes sharing
+            one file (e.g. ``sdk.filelock.file_lock`` over a sidecar
+            ``.lock``). The kernel stays runtime-neutral: the host injects
+            the cross-process lock. When ``None``, appends are unsynchronized
+            as before — safe for a single-process host.
     """
 
     def __init__(
@@ -94,9 +113,11 @@ class DecisionTelemetryHandler:
         *,
         filter_fn: Any | None = None,
         segment_max_bytes: int = _DEFAULT_SEGMENT_BYTES,
+        lock_factory: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn
+        self._lock_factory = lock_factory or _null_lock_factory
         self._sequence = 0
         self._segment_max_bytes = segment_max_bytes
         self._segment_index = 0
@@ -144,30 +165,38 @@ class DecisionTelemetryHandler:
         record.setdefault("logged_at", time.time())
         record.setdefault("sequence", self._sequence)
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            if self._path.exists() and self._path.stat().st_size >= self._segment_max_bytes:
-                self._seal()
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except OSError as exc:
+            with self._lock_factory():
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                if self._path.exists() and self._path.stat().st_size >= self._segment_max_bytes:
+                    self._seal()
+                with self._path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except (OSError, TimeoutError) as exc:
+            # TimeoutError covers the host-injected lock timing out (dropping
+            # one line is better than stalling the turn).
             logger.warning("decision telemetry append failed for %s: %s", self._path, exc)
 
     def _seal(self) -> None:
-        """Rename the active file to the next numbered segment. Never deletes."""
+        """Rename the active file to the next numbered segment. Never deletes.
+
+        The next segment number is always recomputed from the directory listing
+        (never served from the per-process ``_segment_index`` cache) so two
+        processes that sealed at different points in time cannot race to
+        overwrite one sidecar with another's records. Must be called with the
+        lock (when one is configured) held.
+        """
         try:
-            if self._segment_index == 0:
-                parent = self._path.parent
-                name = self._path.name
-                max_suffix = 0
-                if parent.is_dir():
-                    prefix = name + "."
-                    for candidate in parent.iterdir():
-                        if candidate.name.startswith(prefix):
-                            suffix = candidate.name[len(prefix) :]
-                            if suffix.isdigit():
-                                max_suffix = max(max_suffix, int(suffix))
-                self._segment_index = max_suffix
-            self._segment_index += 1
+            parent = self._path.parent
+            name = self._path.name
+            max_suffix = 0
+            if parent.is_dir():
+                prefix = name + "."
+                for candidate in parent.iterdir():
+                    if candidate.name.startswith(prefix):
+                        suffix = candidate.name[len(prefix) :]
+                        if suffix.isdigit():
+                            max_suffix = max(max_suffix, int(suffix))
+            self._segment_index = max_suffix + 1
             n = self._segment_index
             size = self._path.stat().st_size if self._path.exists() else 0
             target = self._path.with_name(f"{self._path.name}.{n}")

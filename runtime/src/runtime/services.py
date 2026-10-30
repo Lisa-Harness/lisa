@@ -17,12 +17,19 @@ from pathlib import Path
 
 from kernel.decision_telemetry import DecisionTelemetryHandler
 from kernel.token_usage import TokenUsageTelemetryHandler
+from sdk.filelock import file_lock, sidecar_lock_path
 from sdk.layout import LOGS_DIR, STATE_DIR
 
 from runtime.approvals import FileApprovalService
 from runtime.code_artifacts import FileCodeChangeArtifactStore
 from runtime.policy_service import PolicyApprovalService
 from runtime.recovery import FileRecoveryService
+
+#: Telemetry is best-effort: rather than stalling a live turn behind a stuck
+#: lock holder for the file-lock default (30s), the ledger drops the line
+#: after a short wait. Cross-process contention between two appending hosts
+#: resolves in milliseconds; seconds of contention means something is wrong.
+_TELEMETRY_LOCK_TIMEOUT_S = 5.0
 
 
 @dataclass(slots=True)
@@ -45,7 +52,15 @@ class HostServices:
 
     @classmethod
     def build(cls, data_dir: Path) -> HostServices:
-        """Construct the service stack rooted at the host data directory."""
+        """Construct the service stack rooted at the host data directory.
+
+        The two telemetry appenders are serialized across processes through
+        sidecar advisory locks: multiple Lisa processes sharing one data dir
+        append to the same JSONL ledgers, and the lock keeps every line
+        intact while holding the kernel free of host-locking imports.
+        """
+        token_usage_path = data_dir / LOGS_DIR / "token-usage.jsonl"
+        decisions_path = data_dir / LOGS_DIR / "decisions.jsonl"
         return cls(
             approval_service=PolicyApprovalService(
                 FileApprovalService(data_dir / STATE_DIR / "approvals.json"),
@@ -56,10 +71,16 @@ class HostServices:
                 data_dir / STATE_DIR / "code-change-artifacts.json"
             ),
             token_usage_handler=TokenUsageTelemetryHandler(
-                data_dir / LOGS_DIR / "token-usage.jsonl"
+                token_usage_path,
+                lock_factory=lambda: file_lock(
+                    sidecar_lock_path(token_usage_path), timeout=_TELEMETRY_LOCK_TIMEOUT_S
+                ),
             ),
             decision_telemetry_handler=DecisionTelemetryHandler(
-                data_dir / LOGS_DIR / "decisions.jsonl"
+                decisions_path,
+                lock_factory=lambda: file_lock(
+                    sidecar_lock_path(decisions_path), timeout=_TELEMETRY_LOCK_TIMEOUT_S
+                ),
             ),
         )
 
