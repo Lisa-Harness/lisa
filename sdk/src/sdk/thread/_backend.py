@@ -24,10 +24,13 @@ import sys
 from collections import deque
 from collections.abc import Collection, Iterator
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sdk.filelock import file_lock
 from sdk.thread.redaction import ThreadRedactionPolicy
+
+if TYPE_CHECKING:
+    from sdk.thread._verify import ChainVerification
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +107,13 @@ class SegmentRecord(NamedTuple):
     ts_hi: str
     bytes_raw: int
     bytes_zst: int
+    #: SHA-256 of the segment's terminal raw entry line (no newline); the
+    #: hash chain continues across the seal boundary through this value.
+    #: Empty on index lines written before the chain existed.
+    tail_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "seg_id": self.seg_id,
             "turn_lo": self.turn_lo,
             "turn_hi": self.turn_hi,
@@ -115,6 +122,9 @@ class SegmentRecord(NamedTuple):
             "bytes_raw": self.bytes_raw,
             "bytes_zst": self.bytes_zst,
         }
+        if self.tail_sha256:
+            record["tail_sha256"] = self.tail_sha256
+        return record
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> SegmentRecord:
@@ -126,6 +136,7 @@ class SegmentRecord(NamedTuple):
             ts_hi=str(raw["ts_hi"]),
             bytes_raw=int(raw["bytes_raw"]),
             bytes_zst=int(raw["bytes_zst"]),
+            tail_sha256=str(raw.get("tail_sha256") or ""),
         )
 
 
@@ -407,6 +418,18 @@ class ThreadStore:
     @property
     def paths(self) -> _SegmentPaths:
         return self._paths
+
+    def verify_chain(self) -> ChainVerification:
+        """Verify this store's tamper-evidence chain (on-demand integrity audit).
+
+        Walks the whole store — every sealed segment is decompressed — so
+        it is never part of a per-read path. See
+        :func:`sdk.thread.verify_chain` for the result contract and the
+        honest threat model.
+        """
+        from sdk.thread._verify import verify_chain as _verify
+
+        return _verify(self._base)
 
     def load_recent(self, *, limit: int = 30) -> list[dict[str, Any]]:
         """Load up to ``limit`` recent thread entries (oldest-first in the tail).

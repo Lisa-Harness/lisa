@@ -221,3 +221,23 @@ thread_read_range(start_turn=N, end_turn=N, include_transcript=true)
 ```
 
 The bundle is a summary. The thread is the evidence.
+
+## Verifying the evidence itself
+
+The thread is append-only, but "append-only" is a property of the writer,
+not a proof about the files. Every entry since the chain feature commits
+to its predecessor's raw-line hash, and every seal's index line records
+its terminal hash (see the [thread spec](SPEC/THREAD_STORE.md#hash-chain)).
+`/forensics <selection> --verify-chain` (and
+`turn_forensics(verify_chain=true)` for the model) walks the whole store
+and appends one read note: verified (with chained/pre-chain counts), or
+**THREAD CHAIN BROKEN** naming the first divergence. It decompresses every
+sealed segment, so it is an explicit audit — never the default read.
+
+Honest limits: it detects after-the-fact edits and deletions (an attacker
+must coherently rewrite everything after the edit point, including the
+index); it cannot detect a full-store rewrite by an attacker who controls
+the files, or tampering with the *newest* entry — nothing links to it yet,
+which is why the note also reports the chain head, the value to notarize
+externally. History predating the chain is reported as pre-chain, never
+pretended to be checked.

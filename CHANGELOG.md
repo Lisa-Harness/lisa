@@ -6,6 +6,30 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Thread-store hash chain — tamper evidence for the primary record.**
+  "Append-only" described the writer, not the files: an operator could edit
+  or delete any stored entry and nothing could detect it. Every appended
+  entry now carries `prev_entry_sha256` (SHA-256 of the previous stored
+  entry's raw line), and each seal's index line records the segment's
+  terminal-line hash so the chain continues across seal boundaries. Cost is
+  one 64 KiB tail-block read per append (the index serves post-seal links —
+  no sealed segment is ever decompressed at append time) plus one SHA-256;
+  nothing touches the request path or the prompt. New
+  `sdk.thread.verify_chain` / `ThreadStore.verify_chain()` walks the whole
+  store on demand: it reports `ok`, the notarizable `head_sha256`,
+  chained/pre-chain counts, and every divergence with the first named —
+  detecting edits, deletions, and index tampering after the fact. The
+  honest threat model is documented: it cannot catch a coherent full-store
+  rewrite or tampering of the newest entry (nothing links to it yet —
+  periodic external notarization of the head closes that window), and
+  pre-chain history is reported as unchained rather than pretended to be
+  checked. Surfaces: `/forensics <selection> --verify-chain` and
+  `turn_forensics(verify_chain=true)`, each appending a one-line status
+  note; the ordinary read carries none. Tests:
+  `runtime/tests/test_thread_chain_writes.py`,
+  `sdk/tests/test_thread_chain_verify.py`,
+  `sdk/tests/test_forensics_chain_note.py`.
+
 - **Append-only approval decision ledger — "who authorized what, when."**
   The approval *outcome* was already durable (`approvals.json` holds each
   request's latest state), but the authorizing decisions themselves were

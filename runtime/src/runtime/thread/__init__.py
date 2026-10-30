@@ -51,6 +51,7 @@ from runtime.thread._store import (
     SegmentRecord,
     _count_lines,
     _maybe_rename_legacy,
+    _prev_entry_sha,
     _read_active_entries_count,
     _read_index,
     _seal_segment,
@@ -273,6 +274,7 @@ def _build_thread_entry(
     verified_facts: list[dict[str, Any]] | None = None,
     departed_modes: list[str] | None = None,
     provisional_turn: int | None = None,
+    prev_entry_sha256: str = "",
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -287,6 +289,10 @@ def _build_thread_entry(
         # The turn ran (and stamped its telemetry) under a different index
         # than the one it committed at; forensics remaps through this.
         entry["provisional_turn"] = provisional_turn
+    if prev_entry_sha256:
+        # Tamper-evidence chain: SHA-256 of the previous stored entry's
+        # raw line, "" (omitted) only for the first chained entry.
+        entry["prev_entry_sha256"] = prev_entry_sha256
     _apply_thread_metadata_fields(
         entry,
         provenance=provenance,
@@ -429,6 +435,7 @@ def append_thread_entry(
             verified_facts=verified_facts,
             departed_modes=departed_modes,
             provisional_turn=turn,
+            prev_entry_sha256=_prev_entry_sha(paths),
         )
 
         paths.current.parent.mkdir(parents=True, exist_ok=True)

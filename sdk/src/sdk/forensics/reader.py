@@ -184,6 +184,7 @@ class ForensicReader:
         turns: str | int = "last",
         max_records: int = DEFAULT_LOG_ERROR_LIMIT,
         focus: str = "all",
+        verify_chain: bool = False,
     ) -> ForensicBundle:
         """Read the evidence for a turn selection.
 
@@ -195,12 +196,19 @@ class ForensicReader:
                 Selects which sections the renderer emphasizes; every value
                 still returns the same evidence (filtering evidence would let a
                 caller miss the finding by asking the wrong question).
+            verify_chain: When ``True``, also verify the thread store's
+                tamper-evidence chain and append a one-line status note.
+                The verification decompresses every sealed segment, so it
+                is an explicit integrity audit — never the default read
+                path.
         """
         notes: list[str] = []
         sources = BundleSources()
         now = datetime.now(UTC)
 
         store = ThreadStore(self.thread_store_path(), redaction=self._redaction)
+        if verify_chain:
+            notes.append(self._chain_note(store))
         start, end = self._resolve_range(store, turns, notes)
         sources.thread_store = start is not None
         entries: list[TurnEvidence] = []
@@ -247,6 +255,24 @@ class ForensicReader:
             f"showing the most recent {self._max_turns}. Narrow the range."
         )
         return end - self._max_turns + 1
+
+    def _chain_note(self, store: ThreadStore) -> str:
+        """Render the tamper-evidence chain verification as one read note."""
+        try:
+            verification = store.verify_chain()
+        except Exception as exc:  # pylint: disable=broad-except
+            return f"chain verification could not run: {exc}"
+        if verification.ok:
+            return (
+                f"thread chain verified: {verification.chained_entries} chained "
+                f"entr{'y' if verification.chained_entries == 1 else 'ies'}, "
+                f"{verification.unchained_entries} pre-chain, "
+                f"{verification.verified_seals} seal(s) checked"
+            )
+        return (
+            f"THREAD CHAIN BROKEN: {verification.first_divergence}. "
+            f"{len(verification.divergences)} divergence(s) total"
+        )
 
     def _read_turns(
         self,

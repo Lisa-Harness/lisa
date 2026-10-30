@@ -89,6 +89,18 @@ class Parameters(BaseModel):
             "this when the redacted view genuinely cannot answer the question."
         ),
     )
+    verify_chain: bool = Field(
+        default=False,
+        description=(
+            "Verify the thread store's tamper-evidence hash chain and append "
+            "a one-line integrity status to the read notes. The check "
+            "decompresses every sealed segment, so it is an on-demand audit, "
+            "not part of the ordinary read. It detects entries edited or "
+            "removed after the fact (an attacker must rewrite every later "
+            "entry and seal to hide it), and reports pre-chain history "
+            "honestly rather than claiming to check what it cannot."
+        ),
+    )
 
 
 def _resolve_data_dir(ctx: OperationExecutionContext) -> Path | None:
@@ -172,6 +184,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         turns=params.turns,
         max_records=params.max_records,
         focus=params.focus,
+        verify_chain=params.verify_chain,
     )
 
     if params.include_raw:

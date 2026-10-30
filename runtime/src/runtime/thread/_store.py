@@ -9,6 +9,7 @@ See ``docs/SPEC/THREAD_STORE.md`` for the on-disk format.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Sequence
@@ -63,6 +64,72 @@ def _sealed_segment_path(base: Path, seg_id: str) -> Path:
     return Path(f"{base}.{seg_id}.jsonl.zst")
 
 
+# ── Hash chain ─────────────────────────────────────────────────────────
+
+#: Hash the entry *line content* (UTF-8 bytes, no newline terminator) so the
+#: value is stable across the newline conventions of any transport and
+#: identical for the active JSONL and the sealed (compressed) copy.
+def _entry_sha256(raw_line: str) -> str:
+    return hashlib.sha256(raw_line.encode("utf-8")).hexdigest()
+
+
+def _tail_line_sha(path: Path, *, block_bytes: int = 65536) -> str | None:
+    """Return the SHA-256 of the last non-empty raw line of ``path``.
+
+    Streams from the end in blocks, so the cost is O(tail bytes), not
+    O(file). Returns ``None`` when the file is absent or has no
+    non-empty line.
+    """
+    if not path.exists():
+        return None
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        if size == 0:
+            return None
+        tail = b""
+        while size > 0:
+            step = min(block_bytes, size)
+            size -= step
+            handle.seek(size)
+            tail = handle.read(step) + tail
+            lines = tail.split(b"\n")
+            # The writer terminates every entry with a newline, so the
+            # sought line is the last non-empty element; the trailing empty
+            # element (and any blank lines) are skipped.
+            for candidate in reversed(lines):
+                if candidate.strip():
+                    return _entry_sha256(candidate.decode("utf-8", errors="replace"))
+            # No newline in this window yet; the last line may span blocks,
+            # so keep the whole accumulation (bounded by that line's size).
+        # The whole file is one unterminated line.
+        text = tail.decode("utf-8", errors="replace").strip()
+        return _entry_sha256(text) if text else None
+
+
+def _prev_entry_sha(paths: _SegmentPaths) -> str:
+    """Return the chain link for the next appended entry, or ``""`` for the head.
+
+    The previous entry's hash comes from the active segment's tail when one
+    exists; after a seal (or a fresh store with sealed history), the index's
+    newest ``tail_sha256`` serves the link without decompressing anything.
+    ``""`` names the chain head — the first chained entry in this store —
+    so the verifier can state where chaining begins rather than assuming
+    history it cannot check.
+    """
+    tail = _tail_line_sha(paths.current)
+    if tail is not None:
+        return tail
+    records = _read_index(paths.index_path)
+    for record in reversed(records):
+        if record.tail_sha256:
+            return record.tail_sha256
+        # A pre-chain sealed segment: the entries after it cannot link to a
+        # verifiable predecessor, so chaining restarts at the next append.
+        return ""
+    return ""
+
+
 # ── Index records ──────────────────────────────────────────────────────
 
 
@@ -76,9 +143,15 @@ class SegmentRecord(NamedTuple):
     ts_hi: str
     bytes_raw: int
     bytes_zst: int
+    #: SHA-256 of the segment's terminal raw entry line (no newline). The
+    #: hash chain continues across the seal boundary: the first entry
+    #: appended after this seal links to this value. Empty on index lines
+    #: written before the chain existed — the verifier treats those
+    #: segments as unchained history, honestly, not as tampered.
+    tail_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "seg_id": self.seg_id,
             "turn_lo": self.turn_lo,
             "turn_hi": self.turn_hi,
@@ -87,6 +160,9 @@ class SegmentRecord(NamedTuple):
             "bytes_raw": self.bytes_raw,
             "bytes_zst": self.bytes_zst,
         }
+        if self.tail_sha256:
+            record["tail_sha256"] = self.tail_sha256
+        return record
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> SegmentRecord:
@@ -98,6 +174,7 @@ class SegmentRecord(NamedTuple):
             ts_hi=str(raw["ts_hi"]),
             bytes_raw=int(raw["bytes_raw"]),
             bytes_zst=int(raw["bytes_zst"]),
+            tail_sha256=str(raw.get("tail_sha256") or ""),
         )
 
 
@@ -273,6 +350,12 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
     compressed = _compress_bytes(raw_bytes, paths.dictionary)
     atomic_write_bytes(sealed_path, compressed)
 
+    # The seal's terminal raw line is the chain link for the first entry
+    # appended after this seal; hash it here (the raw bytes are already in
+    # hand) so the next append needs no decompression.
+    raw_lines = raw_bytes.decode("utf-8").splitlines()
+    tail_sha = _entry_sha256(raw_lines[-1]) if raw_lines and raw_lines[-1].strip() else ""
+
     record = SegmentRecord(
         seg_id=seg_id,
         turn_lo=0,  # filled below from the first entry's global turn index
@@ -281,6 +364,7 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
         ts_hi=str(entries[-1].get("timestamp_utc", "")),
         bytes_raw=len(raw_bytes),
         bytes_zst=len(compressed),
+        tail_sha256=tail_sha,
     )
     # Compute absolute turn range from the index (sum of prior sealed
     # segment turn counts + this segment's own count).

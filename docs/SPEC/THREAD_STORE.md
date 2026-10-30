@@ -94,6 +94,7 @@ One JSON object per line in the active and sealed segments:
 | `turn_input` | object | no | Model request archive: runtime calls use `{"calls": [{"iteration": 1, "ref": "r<sha256>"}]}`; expand the result object to recover the exact request and `context_budget`. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
 | `transcript` | list[object] | no | Verbatim non-system messages the turn added: its user message, every assistant tool call (with arguments), and every tool result. Replayed messages from earlier turns are excluded. The latest turn and its unfinished task (paused, awaiting approval, host-approved) are replayed at full fidelity; `thread_read_range(include_transcript=true)` returns older ones. Redaction applies on read. |
 | `memory_ids` | list[int] | no | Memory records minted from this turn (auto-capture or `synthesize_and_store_learning`). The thread → memory provenance link. |
+| `prev_entry_sha256` | string | no | SHA-256 of the previous stored entry's raw line (UTF-8, no newline): the tamper-evidence chain link. Absent on the first chained entry (the chain head) and on entries written before the chain existed. See [hash chain](#hash-chain). |
 
 ### Segment index record
 
@@ -120,6 +121,42 @@ One JSON line per sealed segment in `<base>.index.jsonl`:
 | `ts_hi` | string | Timestamp of the last entry |
 | `bytes_raw` | int | Uncompressed segment size |
 | `bytes_zst` | int | Compressed segment size |
+| `tail_sha256` | string | SHA-256 of the segment's terminal raw entry line (UTF-8, no newline); the chain link the first post-seal entry commits to, so the chain continues across seal boundaries without decompressing anything at append time. Empty/absent on index lines written before the chain existed. |
+
+## Hash chain
+
+Every appended entry carries `prev_entry_sha256` — the SHA-256 of the
+previous stored entry's **raw line** — and every seal records its terminal
+line's hash in the index, so the chain spans seal boundaries. Editing or
+removing any stored entry breaks the link its successor committed to;
+hiding that edit means rewriting every later entry *and* every later
+index line.
+
+Verification (`sdk.thread.verify_chain(base)` / `ThreadStore.verify_chain()`)
+walks the whole store — every sealed segment is decompressed — so it is an
+on-demand integrity audit, never part of a per-read path. It reports:
+
+- `ok`, `head_sha256` (the newest entry's raw-line hash — the value to
+  notarize externally), `chained_entries`, `verified_seals`;
+- `unchained_entries` / `unchained_seals`: history predating the chain,
+  reported honestly rather than pretended to be checked;
+- `first_divergence` plus every `divergences` entry (verification continues
+  past the first so one audit reports the full damage).
+
+Honest threat model — what this does and does not prove:
+
+- **Detects**: any edit, deletion, or truncation of a stored entry or
+  index line after the fact, unless the attacker coherently rewrites
+  everything from the edit point onward.
+- **Does not detect**: a full-store rewrite including the index; tampering
+  with the newest entry (nothing links to it yet — periodic external
+  notarization of `head_sha256` closes that window); an attacker who
+  controls the writer before evidence exists.
+- Forensic reads surface the audit on explicit request only:
+  `/forensics <selection> --verify-chain` and
+  `turn_forensics(verify_chain=true)` append a one-line status note.
+
+## Removed sidecars
 
 ### Digest marker
 
@@ -148,7 +185,12 @@ segment or unindexed rotation.
    legacy `<base>.jsonl` does, rename it to `current_path`.
 4. Count lines in `current_path`. If the count is >= `segment_turns`,
    seal the active segment first.
-5. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
+5. Resolve the chain link: the SHA-256 of the previous stored entry's raw
+   line — the active file's tail (one 64 KiB block read), or the newest
+   seal's `tail_sha256` from the index after a seal, or absent for the
+   first chained entry. Append cost stays O(tail): no sealed segment is
+   ever decompressed at append time.
+6. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
    fresh) active segment, release the turn's reservation (still under the
    lock), and return the committed `turn` index.
 
