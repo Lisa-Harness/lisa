@@ -399,12 +399,43 @@ def _requirement_from_direct_url(dist_name: str, payload: object) -> str | None:
             requirement += f"#subdirectory={subdirectory}"
         return requirement
     dir_info = payload.get("dir_info")
-    if isinstance(url, str) and url.startswith("file://"):
-        path = url.removeprefix("file://")
-        if isinstance(dir_info, dict) and dir_info.get("editable"):
-            return f"-e {path}"
-        return path
-    return None
+    path = _file_url_to_path(url) if isinstance(url, str) and url.startswith("file://") else None
+    if path is None:
+        return None
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return f"-e {path}"
+    return path
+
+
+def _file_url_to_path(url: str) -> str | None:
+    """Convert a PEP 610 ``file://`` URL to a local filesystem path.
+
+    ``uv`` records local-directory installs as drive-letter URLs on Windows
+    (``file:///C:/Code/lisa/kernel``) and empty-authority URLs on POSIX
+    (``file:///opt/lisa/kernel``). Stripping the scheme prefix textually left
+    ``/C:/Code/lisa/kernel`` — a malformed path ``uv pip install`` rejects
+    with *"path could not be converted to a URL"*, which broke packs-venv
+    seeding at first boot after a Windows ``--source local`` install. The
+    drive-letter form is therefore decoded by dropping the leading slash
+    (``C:/Code/lisa/kernel`` — uv accepts forward slashes); POSIX paths pass
+    through unchanged after percent-decoding.
+
+    A ``file://`` URL with a non-``localhost`` host (UNC shares, remote
+    filesystems) is not a locally reinstallable requirement, so it yields
+    ``None`` and the caller skips it.
+    """
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(url)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        return None
+    path = unquote(parsed.path)
+    # Windows drive-letter form: ``/C:/...`` → ``C:/...``. The stray leading
+    # slash is what breaks uv's URL round-trip. uv itself never records this
+    # shape on POSIX, so the decode is safe everywhere.
+    if len(path) >= _DRIVE_PATH_MIN_LEN and path[0] == "/" and path[1].isalpha() and path[2] == ":":
+        path = path[1:]
+    return path
 
 
 # Repo-mode seed members: distribution name → directory under framework root.
@@ -413,6 +444,9 @@ _REPO_SEED_MEMBERS: dict[str, str] = {
     "lisa-harness-sdk": "sdk",
     "lisa-harness-mcp-servers": "mcp_server",
 }
+
+# Minimum length of a ``/C:/...`` drive path (``/``, drive letter, ``:``).
+_DRIVE_PATH_MIN_LEN = 3
 
 # Tool-mode seed distributions: framework packages external packs depend on.
 _TOOL_SEED_DISTRIBUTIONS: tuple[str, ...] = (

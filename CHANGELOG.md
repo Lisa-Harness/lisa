@@ -173,6 +173,22 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Packs-venv seeding no longer breaks on Windows drive-letter URLs.** A
+  `--source local` install on Windows records each framework package's PEP 610
+  `direct_url.json` as a drive-letter URL (`file:///C:/Code/lisa/kernel`).
+  First-boot seeding of the packs venv decoded that record textually
+  (`removeprefix("file://")`), producing `/C:/Code/lisa/kernel` — a malformed
+  path `uv pip install` rejects with *"path could not be converted to a
+  URL"*. Every required-pack auto-install then failed
+  (`Install failed for 'git+…lisa-pack-serper@main'` / `Failed to seed packs
+  venv with framework packages`), surfacing as the startup error panel on
+  both installer steps that launch `lisa`. The decode now strips the stray
+  leading slash from drive-letter paths (uv accepts forward slashes) and
+  percent-decodes via `urlparse`; `file://` URLs with a non-`localhost`
+  host (UNC shares) are skipped rather than producing an unshippable
+  requirement. POSIX shapes (`file:///opt/lisa/kernel`) are unchanged.
+  Tests: `runtime/tests/test_paths_framework_root.py`.
+
 - **Forensics reads the conversation-scoped thread store.** A host that
   isolates one thread store per conversation names the store
   `<user_slug>--<conversation_id>`, but `/forensics` resolved the store from

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from runtime.paths import (
     _is_repo_checkout,
     _repo_root_from_module,
@@ -102,6 +103,38 @@ def test_direct_url_local_editable_yields_e_flag() -> None:
     """Editable local install: -e prefix preserved for the caller."""
     payload = {"url": "file:///opt/lisa/kernel", "dir_info": {"editable": True}}
     assert _requirement_from_direct_url("lisa-harness-kernel", payload) == "-e /opt/lisa/kernel"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # uv's Windows drive-letter shape: empty authority, ``/C:/...`` path.
+        ("file:///C:/Code/lisa/kernel", "C:/Code/lisa/kernel"),
+        # Editable variant of the same install.
+        ("file:///C:/Code/lisa/sdk", "-e C:/Code/lisa/sdk"),
+        # ``localhost`` authority is a local path, not a remote one.
+        ("file://localhost/C:/Code/lisa/kernel", "C:/Code/lisa/kernel"),
+        # UNC-style hosts cannot be reinstalled locally → skipped.
+        ("file://server/share/pkg", None),
+        ("file://example.test/pkg", None),
+        # Percent-escapes must decode (spaces in paths).
+        ("file:///opt/lisa%20kernel", "/opt/lisa kernel"),
+    ],
+)
+def test_direct_url_windows_drive_and_localhost_shapes(url: str, expected: str | None) -> None:
+    """Drive-letter and localhost file URLs convert to valid seed requirements.
+
+    Regression: ``file:///C:/Code/lisa/kernel`` was decoded textually to
+    ``/C:/Code/lisa/kernel``, which ``uv pip install`` rejects with *"path
+    could not be converted to a URL"*, breaking packs-venv seeding after a
+    Windows ``--source local`` install. Non-local hosts are skipped rather
+    than seeding from an unshippable requirement.
+    """
+    payload: dict[str, object] = {
+        "url": url,
+        "dir_info": {"editable": isinstance(expected, str) and expected.startswith("-e ")},
+    }
+    assert _requirement_from_direct_url("lisa-harness-kernel", payload) == expected
 
 
 def test_direct_url_registry_shape_is_skipped() -> None:
