@@ -9,6 +9,11 @@ parameters, and returns the rendered bundle.
 Scope rule: ``user_slug`` and the data root come from the execution context —
 never from an operation parameter — so a caller cannot ask to read another
 user's evidence by naming it.
+
+``thread_store_slug`` also comes from the context: a host that isolates one
+thread store per conversation names the store ``<user>--<conversation>``, so
+the store stem and the ledger owner are different values. Reading the store by
+the user slug alone would open a store the host never wrote.
 """
 
 from __future__ import annotations
@@ -101,17 +106,19 @@ def _resolve_data_dir(ctx: OperationExecutionContext) -> Path | None:
 def _resolve_thread_dir(data_dir: Path, ctx: OperationExecutionContext) -> Path:
     """Return the thread directory, honoring the host's layout contract.
 
-    ``<data-dir>/data/threads`` is the canonical location. A host that moved it
-    sets ``LISA_THREAD_DIR``; the reader accepts the resolved path so this
-    module does not have to duplicate the host's path resolution beyond the
-    documented default.
+    The host's own resolved directory wins: it is the one the runtime writes
+    to, and it accounts for a CLI argument the environment does not carry.
+    ``<data-dir>/data/threads`` is the documented default, and
+    ``LISA_THREAD_DIR`` is the fallback for a host that did not resolve one.
     """
     import os
 
+    resolved = str(getattr(ctx, "thread_dir", "") or "").strip()
+    if resolved:
+        return Path(resolved).expanduser()
     override = os.getenv("LISA_THREAD_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    del ctx  # thread dir is derived from the data root only
     return data_dir / DATA_DIR / "threads"
 
 
@@ -151,6 +158,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         data_dir,
         thread_dir=_resolve_thread_dir(data_dir, ctx),
         user_slug=str(ctx.user_slug or ""),
+        # The thread store is isolated per conversation, so its stem is not
+        # the user slug. ``user_slug`` still scopes the shared ledgers,
+        # whose rows are stamped with the plain user slug.
+        thread_store_slug=str(ctx.thread_store_slug or ""),
         # Redaction is the deployment's contract, resolved by the reader from
         # the shared environment contract. ``include_raw`` is the only way to
         # opt out, and only for this call.

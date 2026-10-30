@@ -87,6 +87,14 @@ class ForensicReader:
             the shared decision and token ledgers to this user's records; it
             is never taken from a tool argument, so a caller cannot request
             another user's history. Empty means an unscoped whole-root read.
+        thread_store_slug: The thread store's filename stem when it differs
+            from ``user_slug``. A host that isolates one store per
+            conversation names the store ``<user>--<conversation>``. The same
+            stem scopes the shared ledgers, because turn indices are
+            per-thread: two conversations of one user both count from zero, so
+            the owner alone cannot tell their rows apart. Passing the stem
+            here reads the store the host wrote and only the rows that join
+            onto it.
         redaction: Optional read-time redaction applied to every thread-derived
             string. Threads persist raw prompts and reasoning, so a forensic
             read is exactly the surface that must respect this policy.
@@ -101,6 +109,7 @@ class ForensicReader:
         *,
         thread_dir: Path | str | None = None,
         user_slug: str = "",
+        thread_store_slug: str = "",
         redaction: ThreadRedactionPolicy | None = None,
         resolve_redaction_from_env: bool = True,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
@@ -110,6 +119,13 @@ class ForensicReader:
         self._data_dir = Path(data_dir)
         self._thread_dir = Path(thread_dir) if thread_dir else self._data_dir / DATA_DIR / "threads"
         self._user_slug = user_slug
+        # The thread store stem and the ledger owner are different things.
+        # A host that isolates one thread store per conversation names the
+        # store ``<user>--<conversation>`` while ledger rows stay stamped
+        # with the plain user slug, so the two cannot share one parameter:
+        # scoping the store by the user slug reads a store the host never
+        # wrote, and scoping the ledger by the store stem drops every row.
+        self._thread_store_slug = thread_store_slug
         # An explicit policy always wins. Otherwise resolve the shared
         # environment contract, so a host that configured redaction does not
         # silently lose it simply because the pack constructed the reader.
@@ -144,8 +160,14 @@ class ForensicReader:
         return self._data_dir / LOGS_DIR / _RUNTIME_LOG_FILENAME
 
     def thread_store_path(self) -> Path:
-        """Return the per-user thread store base path."""
-        return self._thread_dir / self._user_slug if self._user_slug else self._thread_dir
+        """Return the thread store base path this reader reads.
+
+        The stem is ``thread_store_slug`` when given, else ``user_slug``.
+        A host that isolates one store per conversation passes the resolved
+        store stem here and keeps ``user_slug`` for ledger scoping.
+        """
+        stem = self._thread_store_slug or self._user_slug
+        return self._thread_dir / stem if stem else self._thread_dir
 
     # ── Public read ────────────────────────────────────────────────────
 
@@ -399,10 +421,15 @@ class ForensicReader:
         self, records: list[dict[str, Any]], name: str, notes: list[str]
     ) -> list[dict[str, Any]]:
         """Keep this user's ledger records, noting any that predate attribution."""
-        owned = filter_owned(records, self._user_slug)
+        owned = filter_owned(records, self._user_slug, self._thread_store_slug)
         if owned.unowned:
             notes.append(
                 f"{owned.unowned} {name} records predate per-user attribution and were "
+                "excluded; evidence for turns before the upgrade is incomplete"
+            )
+        if owned.unstemmed:
+            notes.append(
+                f"{owned.unstemmed} {name} records predate per-thread attribution and were "
                 "excluded; evidence for turns before the upgrade is incomplete"
             )
         return owned.records

@@ -391,6 +391,7 @@ def _publish_tool_telemetry(
         error_message=err_msg,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         user_slug=ctx.user_slug,
+        thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
     )
     event_bus = ctx.event_bus
     if event_bus is None:

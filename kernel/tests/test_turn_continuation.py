@@ -23,6 +23,97 @@ class _Allow(InMemoryApprovalService):
         return recorded
 
 
+def test_identity_same_turn_ignores_the_store_stem() -> None:
+    """A continuation saved before the stem existed is still the same turn.
+
+    ``thread_store_slug`` names where the turn's evidence lives, not whose
+    turn it is. A continuation persisted by an older kernel carries no stem,
+    so comparing whole identities would strand every paused turn across an
+    upgrade — on any host, not just conversation-isolated ones.
+    """
+    saved = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+    )
+    live = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+        thread_store_slug="u--c",
+    )
+
+    assert saved.same_turn(live)
+    assert live.same_turn(saved)
+
+
+@pytest.mark.asyncio
+async def test_a_pre_upgrade_continuation_still_validates() -> None:
+    """The resume guard accepts a continuation saved before the stem existed.
+
+    This exercises the guard itself, not just the comparison helper: a
+    whole-object comparison rejects the resume, and the error escapes the
+    turn as a ``ValueError``.
+    """
+    from dataclasses import replace
+
+    from kernel.turn_runner import _validate_turn_continuation
+
+    identity = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+    )
+    saved = TurnContinuation(
+        identity=identity,
+        mode_id="default",
+        query="q",
+        state_json="{}",
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="{}",
+        preferred_model_id=None,
+        max_iterations=1,
+        per_step_max_iterations=1,
+        per_step_max_tool_calls=1,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        reason="cap",
+    )
+    hooks = TurnHooks(
+        models=ModelHooks(),
+        context=ContextHooks(),
+        services=HostServiceHandles(),
+        identity=replace(identity, thread_store_slug="u--c"),
+    )
+
+    await _validate_turn_continuation(saved, hooks)
+
+
+def test_identity_same_turn_still_separates_different_turns() -> None:
+    """The stem is excluded; the fields that identify the turn are not."""
+    base = TurnIdentity(user_slug="u", conversation_id="c", task_id="t")
+
+    assert not base.same_turn(TurnIdentity(user_slug="other", conversation_id="c", task_id="t"))
+    assert not base.same_turn(TurnIdentity(user_slug="u", conversation_id="other", task_id="t"))
+    assert not base.same_turn(TurnIdentity(user_slug="u", conversation_id="c", task_id="other"))
+    assert not base.same_turn(
+        TurnIdentity(user_slug="u", conversation_id="c", task_id="t", session_plan_digest="other")
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True])
 async def test_approval_keeps_pending_batch_and_context(

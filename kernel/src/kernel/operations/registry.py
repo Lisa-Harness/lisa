@@ -798,6 +798,7 @@ def _emit_operation_telemetry(
             error_message=err_msg,
             turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
             user_slug=ctx.user_slug,
+            thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         )
         try:
             task = asyncio.create_task(

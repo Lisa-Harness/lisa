@@ -1098,7 +1098,7 @@ def _scale_iteration_ceiling(
 
 
 async def _validate_turn_continuation(saved: TurnContinuation, hooks: TurnHooks) -> None:
-    if saved.identity != hooks.identity:
+    if not saved.identity.same_turn(hooks.identity):
         raise ValueError("Continuation belongs to a different turn identity or session plan.")
     if not saved.requires_approval:
         return
@@ -1502,6 +1502,7 @@ async def execute_approved_invocation(
             "user_slug": identity.user_slug,
             "user_name": hooks.identity.user_name,
             "principal_key": hooks.identity.principal_key,
+            "thread_store_slug": hooks.identity.thread_store_slug,
             "conversation_id": hooks.identity.conversation_id,
             "surface_type": cast(ConversationSurface, identity.surface_type),
             "surface_id": identity.surface_id,
@@ -1515,6 +1516,7 @@ async def execute_approved_invocation(
             "session_plan_digest": hooks.identity.session_plan_digest,
             "code_change_artifact_store": hooks.services.code_change_artifact_store,
             "data_dir": hooks.services.data_dir,
+            "thread_dir": hooks.services.thread_dir,
             "turn_index": hooks.identity.turn_index,
             "model_router": hooks.context_seams.model_router,
         }
@@ -1702,6 +1704,7 @@ async def _pre_turn_memory_recall(
                 user_slug=hooks.identity.user_slug,
                 user_name=hooks.identity.user_name,
                 principal_key=hooks.identity.principal_key,
+                thread_store_slug=hooks.identity.thread_store_slug,
                 conversation_id=hooks.identity.conversation_id,
                 surface_type=hooks.identity.surface_type,
                 surface_id=hooks.identity.surface_id,
@@ -1709,6 +1712,7 @@ async def _pre_turn_memory_recall(
                 task_id=hooks.identity.task_id,
                 session_plan_digest=hooks.identity.session_plan_digest,
                 data_dir=hooks.services.data_dir,
+                thread_dir=hooks.services.thread_dir,
                 turn_index=hooks.identity.turn_index,
                 delegate_fn=delegate_fn,
                 fork_fn=fork_fn,
@@ -2714,6 +2718,11 @@ async def _resolve_iteration_lifecycle(
                     "mode_id": mode_id,
                     "turn_index": hooks.identity.turn_index,
                     "user_slug": hooks.identity.user_slug,
+                    # Which thread the row belongs to. Turn indices are
+                    # per-thread, so two conversations of one user collide on
+                    # the same index; without this the ledger rows of one
+                    # thread join onto another's turns.
+                    "thread_store_slug": hooks.identity.thread_store_slug,
                     "iteration": state.iteration,
                     "turns_in_stage": _turns_in_stage,
                     "action_type": _action_type,
@@ -3836,6 +3845,7 @@ async def _record_iteration_completion(
             call_site="turn_loop",
             conversation_id=hooks.identity.conversation_id,
             user_slug=hooks.identity.user_slug,
+            thread_store_slug=hooks.identity.thread_store_slug,
             surface_id=str(hooks.identity.surface_id or ""),
         ),
     )
@@ -6042,6 +6052,7 @@ async def _force_final_content_completion(
                     call_site="forced_final",
                     conversation_id=hooks.identity.conversation_id,
                     user_slug=hooks.identity.user_slug,
+                    thread_store_slug=hooks.identity.thread_store_slug,
                     surface_id=str(hooks.identity.surface_id or ""),
                 ),
             )
@@ -7738,6 +7749,7 @@ def _wire_build_entry_ctx(
             user_slug=hooks.identity.user_slug,
             user_name=hooks.identity.user_name,
             principal_key=hooks.identity.principal_key,
+            thread_store_slug=hooks.identity.thread_store_slug,
             conversation_id=hooks.identity.conversation_id,
             surface_type=hooks.identity.surface_type,
             surface_id=hooks.identity.surface_id,
@@ -7745,6 +7757,7 @@ def _wire_build_entry_ctx(
             task_id=hooks.identity.task_id,
             session_plan_digest=hooks.identity.session_plan_digest,
             data_dir=hooks.services.data_dir,
+            thread_dir=hooks.services.thread_dir,
             turn_index=hooks.identity.turn_index,
             delegate_fn=delegate_fn,
             fork_fn=fork_fn,
@@ -7892,7 +7905,14 @@ async def _run_turn_entry_sequence(
     if continuation is not None:
         context = OperationExecutionContext.model_validate_json(continuation.context_json)
         ctx = build_entry_ctx()
+        # The persisted context wins for everything it carried, except the
+        # thread store stem: that names where this turn's evidence lives, and
+        # it is the live host's answer, not the saved one's. A continuation
+        # saved before the stem existed carries none, so adopting it would
+        # make this turn write rows no scoped read could find.
+        stem = ctx.thread_store_slug
         ctx = ctx.model_copy(update=context.model_dump())
+        ctx.thread_store_slug = stem
         ctx.approval_request_id = continuation.approval_request_id
         return (
             None,

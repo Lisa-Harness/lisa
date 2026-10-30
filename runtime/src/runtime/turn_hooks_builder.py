@@ -500,6 +500,8 @@ async def _maybe_auto_capture(
             user_slug=runtime.config.user_slug,
             user_name=runtime.config.user_slug,
             principal_key=runtime.config.user_slug,
+            thread_store_slug=runtime.config.thread_slug,
+            thread_dir=str(runtime.paths.thread_dir),
             conversation_id=runtime.config.surface_id,
             surface_type=runtime.config.surface_type,
             surface_id=runtime.config.surface_id,
@@ -759,6 +761,8 @@ async def _run_self_model_slice_impl(
         ctx = OperationExecutionContext(
             operation_id="self_model",
             user_slug=runtime.config.user_slug,
+            thread_store_slug=runtime.config.thread_slug,
+            thread_dir=str(runtime.paths.thread_dir),
             host=build_callable_host(
                 resolve_model_fn=resolve_model,
                 introspect_fn=introspect_fn,
@@ -892,6 +896,9 @@ def _run_behavioral_signals_slice_impl(
             decisions_path=runtime.paths.decisions_path,
             token_usage_path=runtime.paths.token_usage_path,
             user_slug=runtime.config.user_slug,
+            # Turn indices are per-thread, so one thread's ledger rows must
+            # not be scanned as another's.
+            thread_store_slug=runtime.config.thread_slug,
         )
     except Exception as exc:  # pylint: disable=broad-except
         # A slice must never break the turn; a failed scan is simply no signal,
@@ -1140,6 +1147,7 @@ def _assemble_turn_hooks(
         user_slug=runtime.config.user_slug,
         user_name=runtime.config.user_slug,
         principal_key=runtime.config.user_slug,
+        thread_store_slug=runtime.config.thread_slug,
         conversation_id=runtime.config.surface_id,
         surface_type=runtime.config.surface_type,
         surface_id=runtime.config.surface_id,
@@ -1217,6 +1225,7 @@ def _assemble_turn_hooks(
             if artifact_store is not None
             else None,
             data_dir=str(runtime.paths.data_dir),
+            thread_dir=str(runtime.paths.thread_dir),
         ),
         identity=turn_identity,
         recall=RecallHooks(

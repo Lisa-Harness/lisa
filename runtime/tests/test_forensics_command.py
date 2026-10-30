@@ -18,6 +18,17 @@ from runtime.thread import set_thread_redaction_policy
 from sdk.thread import ThreadRedactionPolicy
 from sdk.thread._backend import _segment_paths
 
+#: Minimal model manifest for a test runtime.
+_MODELS_YAML = "\n".join(
+    [
+        "version: 1",
+        "mode_models: {default: gemma3:latest}",
+        "models:",
+        "  - model_id: gemma3:latest",
+        "    provider: ollama",
+    ]
+)
+
 
 def _write_thread_entry(thread: Path, entry: dict) -> None:
     paths = _segment_paths(thread)
@@ -27,8 +38,13 @@ def _write_thread_entry(thread: Path, entry: dict) -> None:
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
+    """Write ledger rows, appending so a second conversation's rows coexist.
+
+    The ledgers are shared by every conversation of a data root, so seeding
+    two conversations must not truncate the first one's rows.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    with path.open("a", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record) + "\n")
 
@@ -42,7 +58,15 @@ def _reset_redaction() -> object:
 
 
 def _seed(runtime: object, *, turns: int = 2) -> None:
-    """Write a thread store and ledger for ``turns`` turns under the runtime."""
+    """Write a thread store and ledger for ``turns`` turns under the runtime.
+
+    Ledger rows carry the plain ``user_slug`` because that is what the
+    telemetry writer stamps: the shared ledgers are scoped by owner, while
+    the thread store may be isolated per conversation. A reader that scoped
+    the ledgers by the store stem instead would silently join no evidence.
+    Rows also carry ``thread_store_slug``, so one thread's rows stay off
+    another's turns.
+    """
     base = runtime.paths.thread_path
     assert base is not None
     now = datetime.now(UTC).isoformat()
@@ -63,8 +87,11 @@ def _seed(runtime: object, *, turns: int = 2) -> None:
             {
                 "topic": "turn.decision",
                 "turn_index": turn,
-                "action_type": "ContinueAction",
+                "user_slug": runtime.config.user_slug,
+                "thread_store_slug": runtime.config.thread_slug,
+                "action_type": f"ContinueAction-{runtime.config.thread_slug}",
                 "iteration": 1,
+                "emitted_at": now,
             }
             for turn in range(turns)
         ]
@@ -72,9 +99,12 @@ def _seed(runtime: object, *, turns: int = 2) -> None:
             {
                 "topic": "tool.telemetry",
                 "turn_index": turn,
-                "target_id": "read_file",
+                "user_slug": runtime.config.user_slug,
+                "thread_store_slug": runtime.config.thread_slug,
+                "target_id": f"read_file-{runtime.config.thread_slug}",
                 "target_type": "tool",
                 "status": "success",
+                "emitted_at": now,
             }
             for turn in range(turns)
         ],
@@ -84,16 +114,19 @@ def _seed(runtime: object, *, turns: int = 2) -> None:
 def _runtime(tmp_path: Path) -> object:
     from runtime.testing import build_test_runtime
 
-    models = "\n".join(
-        [
-            "version: 1",
-            "mode_models: {default: gemma3:latest}",
-            "models:",
-            "  - model_id: gemma3:latest",
-            "    provider: ollama",
-        ]
+    return build_test_runtime(tmp_path, models_yaml=_MODELS_YAML, user_slug="u")
+
+
+def _conversation_runtime(tmp_path: Path, *, conversation_id: str = "conv-alpha") -> object:
+    """Build a runtime whose thread store is isolated per conversation."""
+    from runtime.testing import build_test_runtime
+
+    return build_test_runtime(
+        tmp_path,
+        models_yaml=_MODELS_YAML,
+        user_slug="u",
+        conversation_id=conversation_id,
     )
-    return build_test_runtime(tmp_path, models_yaml=models, user_slug="u")
 
 
 def test_default_argument_reads_the_latest_turn(tmp_path: Path) -> None:
@@ -217,3 +250,93 @@ def test_command_appends_a_thread_entry(tmp_path: Path) -> None:
     ]
     assert entries[-1]["mode_id"] == "forensics"
     assert entries[-1]["query"] == "/forensics last"
+
+
+def test_forensics_reads_the_conversation_scoped_thread_store(tmp_path: Path) -> None:
+    """``/forensics`` must read the store the runtime writes to.
+
+    Regression: with ``conversation_id`` set, the runtime writes the thread
+    store to ``<user_slug>--<conversation_id>`` but ``/forensics`` resolved
+    the store from ``config.user_slug`` alone, so the operator's view of a
+    turn read a different (usually empty) store than the one the turn wrote.
+    """
+    runtime = _conversation_runtime(tmp_path)
+    _seed(runtime, turns=2)
+
+    # The runtime writes to the conversation-scoped store.
+    assert runtime.paths.thread_path is not None
+    assert runtime.paths.thread_path.name == "u--conv-alpha"
+
+    out = render_forensics(runtime, "last")
+
+    assert "Turn 1" in out
+
+
+def test_forensics_joins_the_ledger_for_a_conversation_scoped_store(tmp_path: Path) -> None:
+    """The store stem and the ledger owner are different values.
+
+    The thread store is isolated per conversation, but the shared ledgers are
+    stamped with the plain user slug. Scoping the ledgers by the store stem
+    would join no evidence at all — silently, with no note — so this pins
+    both halves: the store is found by its stem and the ledger is still
+    scoped by its owner.
+    """
+    runtime = _conversation_runtime(tmp_path)
+    _seed(runtime, turns=2)
+
+    out = render_forensics(runtime, "last")
+
+    assert "Turn 1" in out
+    # The decision and dispatch rows are joined onto the turn.
+    assert "ContinueAction" in out
+    assert "read_file" in out
+    # And no row was dropped for want of an owner match.
+    assert "predate per-user attribution" not in out
+
+
+def test_forensics_does_not_join_another_conversation(tmp_path: Path) -> None:
+    """A conversation's bundle must not read another conversation's store.
+
+    Two conversations of one user share a data root. Reading the store by
+    the user slug alone would blend them, so each must see only its own.
+    """
+    first = _conversation_runtime(tmp_path, conversation_id="conv-alpha")
+    _seed(first, turns=1)
+
+    second = _conversation_runtime(tmp_path, conversation_id="conv-beta")
+    _seed(second, turns=1)
+
+    alpha_out = render_forensics(first, "last")
+    beta_out = render_forensics(second, "last")
+
+    assert "query 0" in alpha_out
+    assert "query 0" in beta_out
+    # Both stores hold a turn 0; each view shows its own single turn.
+    assert alpha_out.count("### Turn ") == 1
+    assert beta_out.count("### Turn ") == 1
+
+
+def test_forensics_does_not_join_another_conversations_ledger(tmp_path: Path) -> None:
+    """A conversation's bundle must not show another conversation's telemetry.
+
+    Turn indices are per-thread, so two conversations of one user both count
+    from zero and their ledger rows collide on the same index. The owner
+    alone cannot tell them apart, so the rows carry the conversation too.
+    """
+    first = _conversation_runtime(tmp_path, conversation_id="conv-alpha")
+    _seed(first, turns=1)
+
+    second = _conversation_runtime(tmp_path, conversation_id="conv-beta")
+    _seed(second, turns=1)
+
+    alpha_out = render_forensics(first, "last")
+    beta_out = render_forensics(second, "last")
+
+    # Each conversation's own telemetry is present.
+    assert "ContinueAction-u--conv-alpha" in alpha_out
+    assert "ContinueAction-u--conv-beta" in beta_out
+    # And the other conversation's is not.
+    assert "read_file-u--conv-alpha" in alpha_out
+    assert "read_file-u--conv-beta" in beta_out
+    assert "conv-beta" not in alpha_out
+    assert "conv-alpha" not in beta_out

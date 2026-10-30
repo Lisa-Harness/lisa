@@ -43,6 +43,13 @@ def render_forensics(runtime: HostRuntime, arg: str) -> str:
         runtime.paths.data_dir,
         thread_dir=runtime.paths.thread_dir,
         user_slug=runtime.config.user_slug,
+        # The thread store is isolated per conversation, so its stem is not
+        # the user slug. ``user_slug`` still scopes the shared ledgers,
+        # whose rows are stamped with the plain user slug.
+        thread_store_slug=runtime.config.thread_slug,
+        # One conversation of one user shares the ledgers with the others,
+        # and turn indices are per-thread, so the conversation keeps one
+        # conversation's rows off another's turns.
         # The host resolved the deployment's policy at startup; pass it
         # explicitly so the operator view is redacted exactly like every other
         # projection, regardless of ambient environment at command time.

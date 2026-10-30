@@ -88,6 +88,10 @@ class ToolExecutionContext(BaseModel):
     workspace_id: str = "default"
     user_id: str = ""
     user_slug: str = "default"
+    #: Thread the tool runs in, named by its store stem. Turn indices are
+    #: per-thread and two conversations of one user both count from zero, so
+    #: a shared ledger needs this to keep their rows apart.
+    thread_store_slug: str = ""
     surface_type: ConversationSurface = "personal_dm"
     surface_id: str = ""
     memory_scope: MemoryScope = "personal"
@@ -137,6 +141,10 @@ class ToolExecutionContext(BaseModel):
     # a relative path against the process CWD. There is deliberately NO
     # fallback — the host always injects a resolved, absolute data dir.
     data_dir: str = Field(default="", exclude=True)
+    # Canonical thread-store directory, injected by the host alongside
+    # ``data_dir``. The host resolves it once, so a tool that must open the
+    # host's own thread store uses this rather than re-deriving it.
+    thread_dir: str = Field(default="", exclude=True)
     # Global thread turn index of the turn this dispatch belongs to. Carried
     # on the context so the telemetry publisher can stamp it without the
     # registry reaching back into turn state. ``None`` means the dispatch is
@@ -248,6 +256,11 @@ class OperationExecutionContext(BaseModel):
     user_name: str = ""
     principal_key: str = ""
     thread_user_id: str = ""
+    #: Filename stem of the thread store this turn writes to. A host that
+    #: isolates one store per conversation names it ``<user>--<conversation>``,
+    #: so it differs from ``user_slug``. A reader that must open the turn's
+    #: own store uses this; ledger scoping still uses ``user_slug``.
+    thread_store_slug: str = ""
     conversation_id: str = ""
     surface_type: ConversationSurface = "personal_dm"
     surface_id: str = ""
@@ -292,6 +305,11 @@ class OperationExecutionContext(BaseModel):
     # same no-fallback contract applies to operations that write/persist
     # caches (e.g. ``fetch_page``) or need the host data root.
     data_dir: str = Field(default="", exclude=True)
+    # Canonical thread-store directory. The host resolves it once (a CLI
+    # argument wins over the environment), so an operation that must open
+    # the host's own thread store uses this rather than re-deriving it and
+    # reading a directory the host never wrote.
+    thread_dir: str = Field(default="", exclude=True)
     # The invoking operation's wall-clock ceiling in seconds (from
     # ``OperationDefinition.timeout_seconds``), set by ``execute_operation``
     # before dispatch. Operations that recurse into sub-turns (delegate /
@@ -2627,6 +2645,10 @@ class TokenUsageEvent(BusEvent):
     #: attributable. ``None`` = not attributable to a turn (off-turn slice
     #: work); ``0`` is the thread's first real turn.
     turn_index: int | None = None
+    #: Thread this model call belongs to, named by its store stem. Turn indices
+    #: are per-thread and two conversations of one user both count from zero,
+    #: so the owner alone cannot separate their cost rows.
+    thread_store_slug: str = ""
     call_site: str = ""
     provider: str = ""
     model_id: str = ""
@@ -2676,6 +2698,12 @@ class ToolExecutionTelemetry(BusEvent):
     #: Owner of the dispatch. The ledger is shared by every user of a data
     #: root and turn indices are per-thread, so readers scope by this.
     user_slug: str | None = None
+    #: Thread the dispatch belongs to, named by its store stem. Turn indices
+    #: are per-thread and two conversations of one user both count from zero,
+    #: so the owner alone cannot separate them. The stem is the same value
+    #: that names the thread store, so a reader scopes the store and the
+    #: ledger rows that join onto it by one identifier.
+    thread_store_slug: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

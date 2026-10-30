@@ -77,6 +77,43 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Forensics reads the conversation-scoped thread store.** A host that
+  isolates one thread store per conversation names the store
+  `<user_slug>--<conversation_id>`, but `/forensics` resolved the store from
+  `config.user_slug` alone. The operator's view therefore read a different
+  (usually empty) store than the one the turn wrote, and the model's
+  `turn_forensics` operation read the same wrong store — so the two views
+  diverged exactly where they are supposed to agree. `ForensicReader` now
+  takes a `thread_store_slug` separate from `user_slug`: the store stem
+  selects the thread, while `user_slug` still scopes the shared ledgers,
+  whose rows are stamped with the plain user slug. The two must not be
+  conflated — scoping the ledgers by the store stem would silently join no
+  evidence at all, with no note to say so. The store stem rides on the
+  operation context (`OperationExecutionContext.thread_store_slug`,
+  `TurnIdentity.thread_store_slug`) so the pack layer reads the store the
+  host wrote without guessing it.
+- **Tests:** `runtime/tests/test_forensics_command.py`,
+  `sdk/packs/introspect/tests/test_turn_forensics.py`.
+- **Forensics keeps one conversation's telemetry off another's turns.** Turn
+  indices are per-thread, so two conversations of one user both count from
+  zero and their ledger rows collide on the same index. Scoping the shared
+  ledgers by owner alone therefore presented one conversation's decisions and
+  dispatches as another's — which is worse than an empty thread, because it
+  looks correct. `turn.decision` and `tool.telemetry` rows now carry the
+  thread's store stem, and `sdk.forensics.filter_owned` scopes by it beside
+  the owner. The stem is the same value that names the thread store, so the
+  store and the rows that join onto it are scoped by one identifier.
+  The stem rides on every writer: `turn.decision`, `tool.telemetry` (tool and
+  operation dispatch), and the token-usage cost rows, so a turn's decisions,
+  its dispatches, and its cost are all attributable to one thread. The host's
+  resolved thread directory rides on the operation context too, so the model
+  view reads the directory the host writes to rather than re-deriving one
+  from the environment (a `--thread-dir` argument was invisible to it).
+  **Migration:** ledger rows written before this change carry no stem and are
+  excluded from a scoped read, so pre-upgrade turns show no dispatch or
+  decision evidence (the bundle states the count). A turn paused before this
+  change still resumes: the stem is not part of a turn's identity, so it does
+  not affect the resume guard.
 - **Identical tool-call batches no longer loop.** The model could re-issue
   the exact same tool-call batch (same tools, same arguments) until the turn
   was killed — the 2026-10-28 researcher loop repeated one

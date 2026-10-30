@@ -11,7 +11,7 @@ answers only part of the question. Forensics is the act of joining them.
 
 | Source | Written by | Answers |
 | --- | --- | --- |
-| `data/threads/<user>.*.jsonl` | [runtime.thread](../runtime/src/runtime/thread/) | What was asked, what was said, how it routed, whether it was blocked, what receipts it produced |
+| `data/threads/<store>.*.jsonl` | [runtime.thread](../runtime/src/runtime/thread/) | What was asked, what was said, how it routed, whether it was blocked, what receipts it produced. `<store>` is the user slug, or `<user>--<conversation>` when the host isolates one store per conversation |
 | `logs/decisions.jsonl` | [DecisionTelemetryHandler](../kernel/src/kernel/decision_telemetry.py) | Why the loop continued, finished, or yielded at each iteration; and what ran, for how long, with what status. The full segment set (`decisions.jsonl` plus every sealed `decisions.jsonl.<n>`) is read, not only the active file |
 | `logs/token-usage.jsonl` | [TokenUsageTelemetryHandler](../kernel/src/kernel/token_usage.py) | Which model was called, with how many tokens, at what cost |
 | `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | Process-level warnings and errors in the same window |
@@ -107,8 +107,20 @@ default**. Enabling it bypasses read-time redaction for that one call, logs a
 warning, and states the bypass in the bundle. Use it only when the redacted
 view genuinely cannot answer the question, and treat the result as private.
 
-Scope — the data root and `user_slug` — comes from the execution context, never
-from a tool parameter. A caller cannot name another user's evidence.
+Scope — the data root, `user_slug`, and the thread store's own name — comes
+from the execution context, never from a tool parameter. A caller cannot name
+another user's evidence.
+
+**The store and the ledgers are scoped by different values.** The thread
+store is named by its *store stem*, which for a host that isolates one store
+per conversation is `<user_slug>--<conversation_id>`. The shared ledgers are
+scoped by *owner*, which is the plain `user_slug` stamped on every ledger
+row, and by *thread*, which is the store stem also stamped on every row. A
+reader therefore takes both: `ForensicReader(thread_store_slug=...)` opens the
+store the host wrote, while `user_slug` selects the owner's ledger rows and
+the stem keeps one thread's rows off another's turns. Conflating them fails
+quietly — reading the store by owner finds nothing, and scoping the ledger
+by owner alone joins another thread's rows onto this one's turns.
 
 The logs under `<data-dir>/logs` are shared by every user of a data root, and
 `turn_index` is per-thread, so two users' turn 5 collide. Decision, dispatch,
@@ -117,6 +129,17 @@ behavioural signals) keeps only the requesting user's records. Ledger records
 with no `user_slug` predate attribution and cannot be assigned to one user, so
 they are excluded and the bundle states how many. `runtime.jsonl` carries no
 user and is read as host-wide process diagnostics.
+
+Two conversations of one user share the same ledgers, and their turn indices
+collide the same way two users' do — so rows also carry the thread's store
+stem, and a scoped read keeps each thread's rows off the others' turns. Rows
+written before that stamp existed carry no stem and are excluded from a
+scoped read; the bundle states how many.
+
+Both views read the same store. The host resolves the thread directory once
+and injects it, so the operator's `/forensics` and the model's
+`turn_forensics` open the same directory even when the host moved it with a
+command-line argument the environment does not carry.
 
 ## Intentionally unavailable
 

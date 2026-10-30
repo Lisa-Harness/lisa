@@ -422,3 +422,33 @@ def test_ledgers_are_scoped_to_the_thread_owner(tmp_path: Path) -> None:
     assert signals.counters["failed_dispatches"] == 0
     assert signals.counters["token_peak"] == {"turn": 0, "tokens": 100}
     assert signals.is_empty
+
+
+def test_ledgers_are_scoped_to_the_thread_store(tmp_path: Path) -> None:
+    """Another conversation's failures on a colliding turn index are ignored.
+
+    Turn indices are per-thread, so two conversations of one user both count
+    from zero. The owner alone cannot tell their rows apart, so the rows
+    carry the thread's store stem and the scan is scoped by it.
+    """
+    store = _write_entries(tmp_path, count=4)
+    mine = [
+        {**row, "user_slug": "alice", "thread_store_slug": "alice--conv-a"}
+        for row in _dispatches(turn=1, count=8)
+    ]
+    theirs = [
+        {**row, "user_slug": "alice", "thread_store_slug": "alice--conv-b"}
+        for row in _dispatches(turn=2, count=8, status="error")
+    ]
+    ledger = _ledger(tmp_path, mine + theirs)
+
+    signals = compute_behavioral_signals(
+        store,
+        decisions_path=ledger,
+        user_slug="alice",
+        thread_store_slug="alice--conv-a",
+    )
+
+    assert signals.counters["dispatches"] == 8
+    assert signals.counters["failed_dispatches"] == 0
+    assert signals.is_empty

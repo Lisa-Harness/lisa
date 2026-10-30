@@ -309,9 +309,16 @@ class OwnedRecords:
     records: list[dict[str, Any]]
     #: Records with no ``user_slug`` (written before attribution existed).
     unowned: int = 0
+    #: Records owned by the user but carrying no thread stem (written before
+    #: thread attribution existed). Dropped by a thread-scoped read.
+    unstemmed: int = 0
 
 
-def filter_owned(records: list[dict[str, Any]], user_slug: str | None) -> OwnedRecords:
+def filter_owned(
+    records: list[dict[str, Any]],
+    user_slug: str | None,
+    thread_store_slug: str | None = None,
+) -> OwnedRecords:
     """Keep only records whose ``user_slug`` is ``user_slug``.
 
     The telemetry logs are shared by every user of a data root, so a per-user
@@ -320,15 +327,38 @@ def filter_owned(records: list[dict[str, Any]], user_slug: str | None) -> OwnedR
     cannot be attributed and are excluded too; the count is returned so the
     caller can say evidence is missing rather than absent. A falsy
     ``user_slug`` means an unscoped (whole-root) read and keeps everything.
+
+    ``thread_store_slug`` narrows the result to one thread of that user. Turn
+    indices are per-thread, so two conversations of the same user both count
+    from zero and their rows collide on the same index; the owner alone
+    cannot separate them. The stem is the same value that names the thread
+    store, so the store and the rows that join onto it are scoped by one
+    identifier. A record written before thread attribution existed carries no
+    stem and is dropped when a thread is requested; those rows are counted
+    separately so the caller can report the gap instead of silently losing
+    evidence.
+
+    The stem is applied on the unscoped path too. A falsy ``user_slug`` means
+    an unscoped read, but a stem still names one thread, so honouring it is
+    what the caller asked for — ignoring it would join every user's rows onto
+    one thread's turns.
     """
-    if not user_slug:
+    if not user_slug and not thread_store_slug:
         return OwnedRecords(records=records)
     owned: list[dict[str, Any]] = []
     unowned = 0
+    unstemmed = 0
     for record in records:
         owner = record.get("user_slug")
-        if owner == user_slug:
-            owned.append(record)
-        elif not owner:
-            unowned += 1
-    return OwnedRecords(records=owned, unowned=unowned)
+        if user_slug and owner != user_slug:
+            if not owner:
+                unowned += 1
+            continue
+        if thread_store_slug:
+            stem = record.get("thread_store_slug")
+            if stem != thread_store_slug:
+                if not stem:
+                    unstemmed += 1
+                continue
+        owned.append(record)
+    return OwnedRecords(records=owned, unowned=unowned, unstemmed=unstemmed)

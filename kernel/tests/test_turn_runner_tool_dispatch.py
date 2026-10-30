@@ -317,6 +317,23 @@ def test_to_tool_context_defaults_when_source_missing_fields() -> None:
     assert tool_ctx.parameters == {}
 
 
+def test_to_tool_context_carries_the_thread_store_stem() -> None:
+    """A pack tool's telemetry is stamped with the thread it ran in.
+
+    The tool's telemetry row is read back by the forensic reader, which
+    scopes rows by the thread's store stem. A tool context that dropped the
+    stem would write a row the reader cannot see — the turn's decisions and
+    operation dispatches would appear while its pack-tool dispatches did
+    not.
+    """
+    ctx = OperationExecutionContext(
+        user_slug="u",
+        thread_store_slug="u--conv-alpha",
+    )
+    tool_ctx = _to_tool_context("my_tool", ctx)
+    assert tool_ctx.thread_store_slug == "u--conv-alpha"
+
+
 # ── _build_minimal_context ─────────────────────────────────────────────
 
 
@@ -374,6 +391,133 @@ def test_build_minimal_context_uses_defaults() -> None:
     assert ctx.surface_type == "personal_dm"
     assert ctx.surface_id == "default"
     assert ctx.memory_scope == "personal"
+
+
+def test_build_minimal_context_carries_the_thread_store_stem() -> None:
+    """The thread store stem reaches the context beside the user slug.
+
+    A host that isolates one store per conversation names the store
+    ``<user>--<conversation>``. The stem is carried separately from
+    ``user_slug`` because the shared ledgers are still scoped by the plain
+    user slug, and a reader that conflated the two would silently join no
+    evidence.
+    """
+    ctx = _build_minimal_context(
+        mode_id="default",
+        query="test",
+        resolve_model_fn=None,
+        complete_fn=None,
+        read_authored_text_fn=None,
+        execute_tool_fn=None,
+        execute_operation_fn=None,
+        user_slug="u",
+        thread_store_slug="u--conv-alpha",
+    )
+    assert ctx.thread_store_slug == "u--conv-alpha"
+    assert ctx.user_slug == "u"
+
+
+def test_build_minimal_context_defaults_the_thread_store_stem_to_empty() -> None:
+    """No stem means the store is named by the user slug alone."""
+    ctx = _build_minimal_context(
+        mode_id="default",
+        query="test",
+        resolve_model_fn=None,
+        complete_fn=None,
+        read_authored_text_fn=None,
+        execute_tool_fn=None,
+        execute_operation_fn=None,
+        user_slug="u",
+    )
+    assert ctx.thread_store_slug == ""
+
+
+def test_resumed_turn_keeps_the_live_thread_store_stem() -> None:
+    """A resumed turn writes its rows under the live stem, not the saved one.
+
+    The persisted context replaces the freshly built one on the resume path,
+    so a continuation saved before the stem existed would leave this turn
+    writing rows no scoped read could find — its own evidence, invisible.
+    """
+    persisted = OperationExecutionContext.model_validate_json(
+        '{"user_slug": "u", "conversation_id": "c", "thread_store_slug": ""}'
+    )
+    live = OperationExecutionContext(user_slug="u", thread_store_slug="u--c")
+
+    stem = live.thread_store_slug
+    resumed = live.model_copy(update=persisted.model_dump())
+    resumed.thread_store_slug = stem
+
+    assert resumed.thread_store_slug == "u--c"
+
+
+def test_entry_context_factory_carries_the_thread_store_stem() -> None:
+    """The turn's entry context carries the store stem from the identity.
+
+    This is the context every operation dispatched during a turn receives,
+    so it is the only one that matters for a model-facing reader. Testing
+    ``_build_minimal_context`` alone would miss a factory that never
+    supplies the stem.
+    """
+    from kernel.turn_runner import _wire_build_entry_ctx
+
+    hooks = _build_hooks(
+        complete_fn=None,
+        user_slug="u",
+        thread_store_slug="u--conv-alpha",
+    )
+    build_entry_ctx = _wire_build_entry_ctx(
+        hooks=hooks,
+        mode_id="default",
+        query="test",
+        resolve_model=lambda _model_id: None,
+        complete=None,
+        exec_op=None,
+        mcp_tool_executor=None,
+        delegate_fn=None,
+        fork_fn=None,
+        tool_output_bus=None,
+    )
+
+    ctx = build_entry_ctx()
+
+    assert ctx.thread_store_slug == "u--conv-alpha"
+    assert ctx.user_slug == "u"
+
+
+def test_entry_context_factory_carries_the_thread_dir() -> None:
+    """The turn's entry context carries the host's resolved thread directory.
+
+    The host resolves the directory once, and a CLI argument wins over the
+    environment. An operation that re-derives the directory from the
+    environment would read a directory the host never wrote — the operator
+    and the model would then read different stores.
+    """
+    from kernel.turn_runner import _wire_build_entry_ctx
+
+    hooks = _build_hooks(
+        complete_fn=None,
+        user_slug="u",
+        data_dir="/host/data",
+        thread_dir="/host/resolved/threads",
+    )
+    build_entry_ctx = _wire_build_entry_ctx(
+        hooks=hooks,
+        mode_id="default",
+        query="test",
+        resolve_model=lambda _model_id: None,
+        complete=None,
+        exec_op=None,
+        mcp_tool_executor=None,
+        delegate_fn=None,
+        fork_fn=None,
+        tool_output_bus=None,
+    )
+
+    ctx = build_entry_ctx()
+
+    assert ctx.thread_dir == "/host/resolved/threads"
+    assert ctx.data_dir == "/host/data"
 
 
 # ── Tool dispatch: operation branch ──────────────────────────────────

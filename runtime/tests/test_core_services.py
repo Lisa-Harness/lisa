@@ -2150,6 +2150,21 @@ def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -
     assert hooks.models.complete_stream is None
 
 
+def test_build_turn_hooks_carries_the_conversation_scoped_thread_store(tmp_path: Path) -> None:
+    """The turn's identity names the store the host actually writes.
+
+    A host that isolates one store per conversation names the store
+    ``<user>--<conversation>``. The identity must carry that stem beside the
+    plain user slug, because the shared ledgers are still scoped by the user
+    slug — one value cannot serve both.
+    """
+    runtime = _make_hooks_runtime(tmp_path, user_slug="u", conversation_id="conv-alpha")
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+
+    assert hooks.identity.thread_store_slug == "u--conv-alpha"
+    assert hooks.identity.user_slug == "u"
+
+
 def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
     """With streaming disabled, complete_stream stays None (non-streaming path)."""
     runtime = _make_hooks_runtime(tmp_path, streaming="none")

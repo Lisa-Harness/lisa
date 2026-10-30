@@ -233,6 +233,7 @@ def build_token_usage_event(
     call_site: str = "",
     conversation_id: str = "",
     user_slug: str = "default",
+    thread_store_slug: str = "",
     surface_id: str = "",
     extra: dict[str, Any] | None = None,
 ) -> TokenUsageEvent:
@@ -275,6 +276,7 @@ def build_token_usage_event(
         call_site=str(call_site or ""),
         conversation_id=str(conversation_id or ""),
         user_slug=str(user_slug or "default"),
+        thread_store_slug=str(thread_store_slug or ""),
         surface_id=str(surface_id or ""),
         extra=dict(extra) if extra else {},
     )

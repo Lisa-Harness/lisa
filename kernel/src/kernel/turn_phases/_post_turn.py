@@ -248,6 +248,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         workspace_id=getattr(ctx, "workspace_id", "default"),
         user_id=getattr(ctx, "user_id", ""),
         user_slug=getattr(ctx, "user_slug", "default"),
+        thread_store_slug=getattr(ctx, "thread_store_slug", ""),
         surface_type=getattr(ctx, "surface_type", "personal_dm"),
         surface_id=getattr(ctx, "surface_id", ""),
         memory_scope=getattr(ctx, "memory_scope", "personal"),
@@ -264,6 +265,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         event_bus=getattr(ctx, "event_bus", None),
         state_provider=getattr(ctx, "state_provider", None),
         data_dir=getattr(ctx, "data_dir", ""),
+        thread_dir=getattr(ctx, "thread_dir", ""),
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         mcp_tool_call=getattr(ctx, "mcp_tool_call", None),
     )
