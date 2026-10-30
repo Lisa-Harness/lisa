@@ -589,18 +589,37 @@ def derive_workflow_view(
         steps, thread_entries, plan_entry_index
     )
 
+    # Completion frontier: the declaration index of the latest completed
+    # step. Steps complete by *evidence* (receipts and mode departures),
+    # not in declared order — step 2 can run while step 1 is abandoned —
+    # so the frontier, not the naive "first open step", decides what the
+    # plan still routes to. Both the idle retirement and the current-step
+    # pointer below read it.
+    completed_indexes = [idx for idx, s in enumerate(steps) if s.step_id in completed]
+    high_water = max(completed_indexes, default=-1)
+
     # A plan that stopped making progress is retired: without this, an
     # abandoned plan re-attaches its footer and chain-in-flight handoff to
     # every later turn, re-routing work that has nothing to do with it.
     #
     # The rule is "idle turns" — consecutive turns that neither complete a
-    # step nor run in any *open* step's mode. Counting every turn since the
+    # step nor run in an open step's mode. Counting every turn since the
     # last completion would retire a plan whose step is still being worked
     # on (the step's own turns are not idle), which is the difference
     # between an abandoned plan and a slow one.
+    #
+    # Front-awareness matters here too: only open steps at or after the
+    # completion frontier keep the plan alive. A turn that runs in an
+    # abandoned pre-frontier step's mode (exactly what a backward routing
+    # hint produces) must not reset the idle count and immortalize the
+    # zombie plan — the t1107/t1108 loop sustained itself precisely
+    # because each hijacked turn ended in `thinker`, the abandoned step's
+    # mode, resetting the retirement clock.
     limit = settings.workflow_plan_idle_turn_limit if idle_turn_limit is None else idle_turn_limit
     if limit > 0:
-        open_step_modes = {step.mode_id for step in steps if step.step_id not in completed}
+        open_step_modes = {
+            step.mode_id for step in steps[high_water + 1 :] if step.step_id not in completed
+        }
         idle_turns = _count_idle_turns(
             thread_entries,
             last_progress=last_progress,
@@ -617,7 +636,16 @@ def derive_workflow_view(
     # Derive turn_count: consecutive entries with same mode_id + stage_id.
     turn_count = _count_consecutive_same_mode_turns(thread_entries, current_mode, current_stage)
 
-    # Determine current step: first non-completed step.
+    # Determine current step: the first non-completed step at or after the
+    # completion frontier computed above. The naive ``remaining[0]`` pinned
+    # the pointer on an abandoned pre-frontier step forever, so every
+    # post-handoff routing hint pointed backward at it and the
+    # forced-action enforcer dragged a compliant model back on each
+    # handoff (the 2026-10-30 t1107/t1108 loop: the view said `thinker`
+    # while the turn was in `coding_review`). When no open step sits after
+    # the frontier, the pointer is *empty* — the chain has no forward step
+    # to name — but the view stays alive: the checklist still renders, and
+    # only the routing (hint, resume, budget transition) goes silent.
     current_step_id = ""
     remaining = [s for s in steps if s.step_id not in completed]
     if not remaining:
@@ -625,7 +653,10 @@ def derive_workflow_view(
         # caller doesn't inject a stale plan ("if I finished a plan then
         # quit, there shouldn't be a plan").
         return None
-    current_step_id = remaining[0].step_id
+    current_step_id = next(
+        (s.step_id for s in steps[high_water + 1 :] if s.step_id not in completed),
+        "",
+    )
 
     # Deterministic position_id from plan_text hash (stable across turns
     # for the same plan, so recovery record correlation works).

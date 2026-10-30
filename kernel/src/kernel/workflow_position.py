@@ -52,9 +52,11 @@ __all__ = [
     "WorkflowStep",
     "advance_step",
     "is_complete",
+    "next_step_after_pointer",
     "note_turn",
     "remaining_steps",
     "render_workflow_progress",
+    "resumed_step",
 ]
 
 
@@ -199,6 +201,80 @@ def remaining_steps(position: WorkflowPosition) -> tuple[WorkflowStep, ...]:
     return tuple(s for s in position.declared_steps if s.step_id not in completed)
 
 
+def next_step_after_pointer(position: Any) -> WorkflowStep | None:
+    """Return the first uncompleted step strictly after the position's pointer.
+
+    The forward-only routing rule, shared by every routing consumer
+    (post-handoff hint, resume-of-completed-pointer, yield fallback,
+    per-step budget transition, planned-writer rescue):
+
+    - Pointer **on-plan** (``current_step_id`` names a declared step): the
+      first uncompleted step whose declaration index is greater than the
+      pointer's. ``None`` when no uncompleted step follows. A step declared
+      *before* the pointer is never named: steps can complete out of
+      declared order (step 2 runs while step 1 is abandoned), and the
+      naive "first remaining" fallback then names the abandoned step
+      every turn — the hint and the forced-action enforcer obey it and
+      drag the turn back on each handoff (the 2026-10-30 t1107/t1108
+      loop: pointer on the tail, every hint said `thinker`, the enforcer
+      synthesized the backward transition over the model's refusal twice
+      per turn).
+    - Pointer **absent** (``current_step_id`` empty): ``None`` — routing
+      stays silent. An empty pointer with open steps means those steps
+      precede the completion frontier: abandoned, not resumable.
+    - Pointer **off-plan** (names no declared step, e.g. a recompile
+      dropped the step — positions only; derived views always name a
+      declared step or none): the first remaining step — there is no
+      in-plan front to be backward from, so the earliest open step is
+      the best available guess.
+
+    This rule never *resumes* the pointer step itself — the resume
+    consumer (``_active_position_resume_target``) checks the open
+    pointer before calling, because "resume the step in flight" and
+    "route to the next step" are different intents.
+
+    Duck-typed over any position-like (``declared_steps`` /
+    ``current_step_id`` / ``completed_steps``): both ``WorkflowPosition``
+    and the thread-derived ``WorkflowView`` carry the three fields.
+    """
+    steps = tuple(getattr(position, "declared_steps", ()) or ())
+    current_id = str(getattr(position, "current_step_id", "") or "")
+    completed = set(getattr(position, "completed_steps", ()) or ())
+    if not steps or not current_id:
+        return None
+    current_index = next(
+        (idx for idx, step in enumerate(steps) if step.step_id == current_id),
+        None,
+    )
+    if current_index is None:
+        return next((step for step in steps if step.step_id not in completed), None)
+    return next(
+        (step for step in steps[current_index + 1 :] if step.step_id not in completed),
+        None,
+    )
+
+
+def resumed_step(position: Any) -> WorkflowStep | None:
+    """Return the step a resume should continue: the open pointer, else forward.
+
+    ``next_step_after_pointer`` refuses to name the pointer itself (correct
+    for routing), but a resume continues work in flight: when the pointer
+    names a declared step that is still open, that step IS the resume
+    target (re-entering the chain's originating mode must not re-run the
+    planner against a continuation query — the 2026-08-01
+    plan→markdown→learn→re-plan failure). A completed pointer falls
+    through to the forward rule.
+    """
+    steps = tuple(getattr(position, "declared_steps", ()) or ())
+    current_id = str(getattr(position, "current_step_id", "") or "")
+    completed = set(getattr(position, "completed_steps", ()) or ())
+    if steps and current_id:
+        current = next((step for step in steps if step.step_id == current_id), None)
+        if current is not None and current.step_id not in completed:
+            return current
+    return next_step_after_pointer(position)
+
+
 def is_complete(position: WorkflowPosition) -> bool:
     """Return True when the position has no remaining work.
 
@@ -237,9 +313,12 @@ def advance_step(
 
     Idempotent: re-advancing an already-completed step is a no-op (the
     step set and pointer do not change), so recovery resume can call this
-    safely. When advancing the last remaining step, ``current_step_id`` is
-    cleared; ``mode_id`` keeps pointing at the mode the position is parked
-    in (mode identity is the stage pointer's concern, not the step
+    safely. The pointer advances to the first uncompleted step *after* the
+    completed one in declaration order and clears when none follows — it
+    never moves backward to an abandoned earlier step, even when steps
+    complete out of order (completing the last step clears the pointer;
+    ``mode_id`` keeps pointing at the mode the position is parked
+    in — mode identity is the stage pointer's concern, not the step
     pointer's — the caller's ``enter_mode`` applies the mode move).
     Completing a step declared ``is_terminal`` (the chain's last step)
     sets ``terminal_reached`` so the host store clears the finished
@@ -256,8 +335,20 @@ def advance_step(
     completed = list(position.completed_steps)
     if step_id not in completed:
         completed.append(step_id)
-    remaining = [s for s in position.declared_steps if s.step_id not in completed]
-    next_step = remaining[0] if remaining else None
+    # Advance the pointer to the first remaining step *after* the completed
+    # one in declaration order — never backward. Steps can complete out of
+    # order (step 2 runs while step 1 is abandoned), and a
+    # ``remaining[0]`` fallback would then park the pointer on the
+    # abandoned earlier step, making every later hint name it (the
+    # 2026-10-30 backward-routing loop). When nothing uncompleted follows,
+    # the pointer clears — the same terminal handling as completing the
+    # last step.
+    steps = list(position.declared_steps)
+    done_index = steps.index(step)
+    next_step = next(
+        (s for s in steps[done_index + 1 :] if s.step_id not in completed),
+        None,
+    )
     step_results = dict(position.step_results)
     preview = (result_preview or "").strip()
     if preview:

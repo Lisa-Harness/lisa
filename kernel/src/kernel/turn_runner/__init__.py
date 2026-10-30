@@ -902,33 +902,6 @@ def _is_workflow_position_complete(position: Any) -> bool:
         return True
 
 
-def _next_remaining_step(position: Any) -> Any:
-    """Return the first uncompleted ``WorkflowStep`` after the current one.
-
-    Wraps ``kernel.workflow_position.remaining_steps`` and selects the
-    step immediately following ``current_step_id`` in declaration order
-    (falling back to the first remaining step when the current step is
-    already advanced or missing). Returns ``None`` when there are no
-    remaining steps or on any exception.
-    """
-    try:
-        from kernel.workflow_view import remaining_steps
-
-        remaining = remaining_steps(position)
-        if not remaining:
-            return None
-        current = getattr(position, "current_step_id", "") or ""
-        # Prefer the step immediately after the current one in
-        # declaration order; fall back to the first remaining step.
-        for step in remaining:
-            if step.step_id != current:
-                return step
-        return remaining[0]
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("remaining_steps check raised (degrading to None): %s", exc)
-        return None
-
-
 def _resolve_yield_policy(mode_config: Any, override: YieldPolicy | None = None) -> YieldPolicy:
     """Return the ``YieldPolicy`` for one mode, tolerating missing config.
 
@@ -955,25 +928,6 @@ def _resolve_yield_policy(mode_config: Any, override: YieldPolicy | None = None)
     return YieldPolicy()
 
 
-def _next_remaining_step_mode_id(hooks: Any) -> str:
-    """Return the mode id of the next uncompleted workflow step, or "".
-
-    Thin wrapper around ``_next_remaining_step`` that reads the active
-    ``WorkflowPosition`` from ``hooks.workflow.workflow_position``. Used by the
-    stuck-in-stage yield path to route a forced yield to the next step's
-    mode when the current mode forbids inline asks (action modes).
-    """
-    if hooks.workflow.workflow_position is None:
-        return ""
-    try:
-        position = hooks.workflow.workflow_position()
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("hooks.workflow.workflow_position() raised in next step lookup: %s", exc)
-        return ""
-    step = _next_remaining_step(position)
-    return step.mode_id if step is not None else ""
-
-
 def _promises_routing_contract(mode_config: Any) -> bool:
     """Return True when the mode declares ``entry_op_kind: routing``.
 
@@ -993,16 +947,17 @@ def _promises_routing_contract(mode_config: Any) -> bool:
 
 
 def _active_position_resume_target(hooks: Any) -> str:
-    """Return the resume target mode from an active workflow position, or "".
+    """Return the next forward step's mode from an active position, or "".
 
     Origin-blind: reads the active ``WorkflowPosition`` (when wired) and,
-    if it is non-complete with a remaining step, returns that step's
-    ``mode_id``. Used by the mid-turn handoff path so re-entering the
-    originating mode of a chain (e.g. ``plan``) while a broader workflow
-    is in flight resumes that position instead of blindly re-running the
-    entry op against a continuation/status query (the 2026-08-01
-    plan→markdown→learn→re-plan failure). Returns "" when no resumable
-    position is active, so the caller falls through to the normal path.
+    if it is non-complete, returns the first *forward* step after the
+    pointer (``workflow_position.next_step_after_pointer`` — never the
+    pointer itself and never a step declared before it). Used by the
+    turn-start resume path (``_resume_in_flight_target``): a continuation
+    query in the parked mode advances the chain to the next step rather
+    than re-feeding the parked mode's entry op. Returns "" when no
+    resumable position is active or the chain has no forward step, so the
+    caller falls through to the normal path.
     """
     if hooks.workflow.workflow_position is None:
         return ""
@@ -1015,7 +970,37 @@ def _active_position_resume_target(hooks: Any) -> str:
         return ""
     if _is_workflow_position_complete(position):
         return ""
-    step = _next_remaining_step(position)
+    from kernel.workflow_position import next_step_after_pointer
+
+    step = next_step_after_pointer(position)
+    return step.mode_id if step is not None else ""
+
+
+def _active_position_resume_in_flight_target(hooks: Any) -> str:
+    """Return the in-flight resume step's mode from an active position, or "".
+
+    Distinct from ``_active_position_resume_target`` (turn-start advance
+    semantics): a mid-turn handoff into the chain's originating mode (e.g.
+    re-entering ``plan``) resumes the work *in flight* — the open step the
+    pointer names — instead of re-running the entry op against a
+    continuation/status query (the 2026-08-01 plan→markdown→learn→re-plan
+    failure). Falls back to the forward rule when the pointer's step is
+    complete. Returns "" when no resumable position is active.
+    """
+    if hooks.workflow.workflow_position is None:
+        return ""
+    try:
+        position = hooks.workflow.workflow_position()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("hooks.workflow.workflow_position() raised in resume lookup: %s", exc)
+        return ""
+    if position is None:
+        return ""
+    if _is_workflow_position_complete(position):
+        return ""
+    from kernel.workflow_position import resumed_step
+
+    step = resumed_step(position)
     return step.mode_id if step is not None else ""
 
 
@@ -4870,6 +4855,17 @@ def _plan_driven_next_step(*, state: Any, hooks: TurnHooks, target_stage: str) -
     current one; on its last step it names the current step, which the
     self-handoff guard turns into silence. Otherwise the turn-start view's
     current step is the next step. ``None`` when no plan applies.
+
+    The turn-start-view branch is front-aware: it only names a next step
+    when the handed-off-to mode IS the view's current step mode — the handoff
+    landed on the step the plan says is current. When the handoff lands on a
+    mode the plan does not consider current (e.g. an off-plan
+    ``coding_review`` while the pointer is parked on an abandoned earlier
+    step, or the pointer is empty because every open step precedes the
+    completion frontier), there is no in-plan "next" to name — returning it
+    would route backward and the enforcer would force that transition over
+    the model's refusal (the 2026-10-30 t1107/t1108 loop). ``None`` keeps
+    the hint silent and the turn in the mode the model chose.
     """
     planned = _on_plan_turn_position(state=state, target_stage=target_stage)
     if planned is not None:
@@ -4886,7 +4882,9 @@ def _plan_driven_next_step(*, state: Any, hooks: TurnHooks, target_stage: str) -
     if position is None or not position.current_step_id:
         return None
     step = position.step_by_id(position.current_step_id)
-    if step is None:
+    if step is None or step.mode_id != target_stage:
+        # The handoff is off the plan's current step — no in-plan next
+        # step applies. Naming one would be a backward or sideways route.
         return None
     return position, step
 
@@ -5382,7 +5380,9 @@ async def _run_handoff_entry_operations(
     # (``_coordinator_routing_hint``) for the
     # mid-turn handoff case.
     _promises_routing = _promises_routing_contract(target_mode_config)
-    _plan_resume_target = _active_position_resume_target(hooks) if _promises_routing else ""
+    _plan_resume_target = (
+        _active_position_resume_in_flight_target(hooks) if _promises_routing else ""
+    )
     if _plan_resume_target:
         # Resuming an active plan: do NOT run the
         # planner entry op (it would refuse the

@@ -344,6 +344,111 @@ and finally write the documentation.
         assert view.mode_id == "search"
 
 
+class TestOutOfOrderCompletion:
+    """Steps completing out of declared order must never route backward.
+
+    Regression lock for the 2026-10-30 t1107/t1108 loop: a plan declared
+    ``thinker → researcher`` where only ``researcher`` completed. The naive
+    ``remaining[0]`` pointer parked on the abandoned ``thinker`` step
+    forever, so every post-handoff routing hint said "go to thinker" and
+    the forced-action enforcer synthesized that backward transition over
+    the model's refusal — twice per turn, with the loop feeding itself
+    because each hijacked turn ran in ``thinker`` and reset the idle
+    retirement clock.
+    """
+
+    _PLAN_TWO_STEP = """\
+## Plan
+
+1. **thinker** — Analyze the landscape
+   _reads_
+2. **researcher** — Investigate the trends
+   _writes: markdown_forge_document_
+"""
+
+    def _completed_second_step_entries(self) -> list[dict]:
+        """A plan whose second step completed; first step never did."""
+        return [
+            _entry(mode_id="planner", response_text=self._PLAN_TWO_STEP, turn=0),
+            _entry(
+                mode_id="researcher",
+                response_text="Research done.",
+                effect_receipts=[
+                    {
+                        "capability_id": "markdown_forge_document",
+                        "effect": "write",
+                        "mode_id": "researcher",
+                    }
+                ],
+                turn=1,
+            ),
+        ]
+
+    def test_pointer_never_parks_on_abandoned_earlier_step(self):
+        """With the tail step complete, the pointer is empty — not backward.
+
+        The chain has no forward step to name: ``researcher`` is done and
+        ``thinker`` was abandoned (it precedes the completion frontier).
+        The view stays alive so the checklist renders, but routing
+        (hint, resume, budget transition) goes silent.
+        """
+        view = derive_workflow_view(self._completed_second_step_entries(), idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ("researcher_1",)
+        assert view.current_step_id == ""
+
+    def test_abandoned_pre_frontier_mode_does_not_keep_plan_alive(self):
+        """A turn in the abandoned step's mode must not reset the idle clock.
+
+        Each hijacked turn of the 2026-10-30 loop ended in `thinker` —
+        the abandoned pre-frontier step's mode — which reset the idle
+        retirement count under the old rule and immortalized the zombie
+        plan. Only post-frontier open steps keep a plan alive now.
+        """
+        entries = [
+            *self._completed_second_step_entries(),
+            _entry(mode_id="thinker", response_text="Looped back.", turn=2),
+            _entry(mode_id="default", response_text="Unrelated.", turn=3),
+        ]
+        # The thinker turn would reset the idle count under the old rule;
+        # with the front-aware open-mode set, turns 2 and 3 are both idle
+        # and the plan retires at limit 2.
+        assert derive_workflow_view(entries, idle_turn_limit=2) is None
+
+    def test_pointer_resumes_on_first_open_step_after_frontier(self):
+        """With a post-frontier step open, the pointer names it — never earlier.
+
+        ``search → coding → markdown`` with ``coding`` completed but
+        ``search`` abandoned: the pointer is ``markdown_2`` (first open
+        step after the frontier), not the abandoned ``search_0``.
+        """
+        plan = """\
+## Plan
+
+1. **search** — Search for the news
+   _reads_
+2. **coding** — Implement it
+   _writes: coding_apply_patch_
+3. **markdown** — Document it
+   _writes: markdown_generate_
+"""
+        entries = [
+            _entry(mode_id="planner", response_text=plan, turn=0),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented.",
+                effect_receipts=[
+                    {"capability_id": "coding_apply_patch", "effect": "write", "mode_id": "coding"}
+                ],
+                turn=1,
+            ),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=0)
+        assert view is not None
+        assert view.completed_steps == ("coding_1",)
+        assert view.current_step_id == "markdown_2"
+
+
 class TestRenderWorkflowProgress:
     """Tests for render_workflow_progress."""
 
