@@ -123,6 +123,10 @@ test module).
 Quality jobs run on Ubuntu/Python 3.12. Tests and per-package coverage gates
 run on Python 3.11/3.12 across Linux, macOS, and Windows.
 
+Linear history is a repository setting, not a CI job: `main` requires linear
+history and disallows merge commits, so GitHub rejects a non-linear merge at
+the server. There is no redundant workflow check for it.
+
 ```sh
 uv run ruff format --check .
 uv run ruff check .

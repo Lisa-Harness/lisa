@@ -49,6 +49,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+- **Linear history: rebase and squash, never merge commits.** `main` receives
+  changes only by rebase (fast-forward) or squash merge. Repository protection
+  enables required linear history and disables merge commits, so GitHub rejects
+  a merge at the server; the release checklist records those settings and no
+  workflow check duplicates them. The release sequence now rebases the release
+  branch instead of merging `main` into it. `.github/instructions/commit-workflow.md`
+  states the rule for agents: integrate with `git rebase origin/main`, fold
+  corrections with `fixup!` plus `--autosquash`, and never merge or force-push
+  `main`.
+- **Docs:** [Release checklist](docs/RELEASE_CHECKLIST.md#pr-based-releases-and-protected-main),
+  [contributing](CONTRIBUTING.md#commit-conventions), and the README publishing
+  section describe the linear-history policy.
+
 - **`lisa-memory --readonly` is now enforced.** The flag was declared but
   ignored, so writes succeeded on a read-only server. `SqliteMemoryStore`
   gains `readonly=True`, which opens the database with SQLite `mode=ro`,
