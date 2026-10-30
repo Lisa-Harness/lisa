@@ -32,17 +32,12 @@ adapters keep the previous no-recording behavior by default.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
-from typing import Any, Callable, NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
-
-#: Strong references to in-flight audit publishes (fire-and-forget
-#: telemetry). Pruned on completion so the set cannot grow unboundedly.
-_PENDING_AUDIT_TASKS: set[asyncio.Task[None]] = set()
-
 
 class CompletionAuditContext(NamedTuple):
     """Durable-audit wiring for one operation dispatch's completions.
@@ -247,28 +242,20 @@ class _CallableHost:
 
     def _publish_model_request_row(self, audit: CompletionAuditContext, ref: str) -> None:
         from kernel.decision_telemetry import MODEL_REQUEST_TOPIC
+        from kernel.telemetry import schedule_telemetry_publish
 
-        try:
-            task = asyncio.create_task(
-                audit.event_bus.publish(
-                    MODEL_REQUEST_TOPIC,
-                    {
-                        "operation_id": audit.operation_id,
-                        "request_ref": ref,
-                        "turn_index": audit.turn_index,
-                        "user_slug": audit.user_slug,
-                        "thread_store_slug": audit.thread_store_slug,
-                    },
-                )
-            )
-            _PENDING_AUDIT_TASKS.add(task)
-            task.add_done_callback(_PENDING_AUDIT_TASKS.discard)
-        except Exception:  # pylint: disable=broad-except
-            logger.debug(
-                "operation completion: model.request publish failed for %s",
-                audit.operation_id,
-                exc_info=True,
-            )
+        schedule_telemetry_publish(
+            audit.event_bus,
+            MODEL_REQUEST_TOPIC,
+            {
+                "operation_id": audit.operation_id,
+                "request_ref": ref,
+                "turn_index": audit.turn_index,
+                "user_slug": audit.user_slug,
+                "thread_store_slug": audit.thread_store_slug,
+            },
+            source=f"model_request:{audit.operation_id}",
+        )
 
     def _publish_usage_event(
         self, audit: CompletionAuditContext, request: Any, result: Any
@@ -281,6 +268,8 @@ class _CallableHost:
         """
         from kernel.token_usage import (
             build_token_usage_event as _build_usage,
+        )
+        from kernel.token_usage import (
             publish_token_usage as _publish_usage,
         )
 

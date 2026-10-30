@@ -71,6 +71,13 @@ points.
 ### Read notes                 Every cap or bound that fired
 ```
 
+A *dropped row* note is special: both ledger handlers stamp each row with a
+per-instance `sequence` and `ledger_instance`, so a gap within one writer's
+numbering proves rows were lost (failed publish, lock timeout, crash) and
+counts them. The note is a lower bound and rows predating the stamps are
+skipped, not reported — the same honest posture as pre-attribution ledger
+rows. See [loss observability](LOGGING.md#loss-observability).
+
 ### Distinguish the three failure shapes
 
 | Shape | Meaning |

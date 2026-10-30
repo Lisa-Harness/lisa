@@ -31,6 +31,7 @@ process diagnostics.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -384,6 +385,7 @@ class ForensicReader:
         sources.decisions_log = True
         records = self._owned(_since(tail, floor), _DECISIONS_FILENAME, notes)
         self._note_truncation(tail, _DECISIONS_FILENAME, "the selected turns", notes)
+        self._note_sequence_gaps(records, _DECISIONS_FILENAME, notes)
         decisions = _cap_unattributed(
             [r for r in records if r.get("topic") == "turn.decision"],
             wanted,
@@ -415,6 +417,7 @@ class ForensicReader:
         sources.token_usage_log = True
         self._note_truncation(tail, _TOKEN_USAGE_FILENAME, "the selected turns", notes)
         owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
+        self._note_sequence_gaps(owned, _TOKEN_USAGE_FILENAME, notes)
         return [r for r in owned if r.get("turn_index") in wanted]
 
     def _owned(
@@ -468,6 +471,45 @@ class ForensicReader:
                 f"{name} read stopped at its {self._max_bytes // (1024 * 1024)} MiB budget "
                 f"before covering {span}; older records are missing, so counts from it "
                 "are a lower bound"
+            )
+
+    def _note_sequence_gaps(
+        self, records: list[dict[str, Any]], name: str, notes: list[str]
+    ) -> None:
+        """Report dropped rows detectable in one writer's sequence numbering.
+
+        Both durable ledgers stamp each row with a per-instance ``sequence``
+        and the writer's ``ledger_instance`` (a restart or a second host
+        process starts a new instance at 1, so sequences are compared only
+        within one instance). A jump between consecutive rows of one
+        instance means rows in between were dropped — by a failed publish, a
+        lock timeout, or a crash between the stamp and the append. The count
+        is a lower bound: it proves rows went missing, not which rows.
+
+        Rows predating the instance stamps carry neither field; they are
+        skipped rather than reported, the same honest posture as ledger rows
+        written before per-user attribution.
+        """
+        missing_total = 0
+        by_instance: dict[str, list[int]] = {}
+        for record in records:
+            instance = record.get("ledger_instance")
+            sequence = record.get("sequence")
+            if not instance or not isinstance(sequence, int):
+                continue
+            by_instance.setdefault(str(instance), []).append(sequence)
+        for sequences in by_instance.values():
+            ordered = sorted(sequences)
+            # Only gaps within the observed span count: rows before the
+            # first or after the last observed sequence of an instance may
+            # simply live outside this read window.
+            missing_total += sum(
+                nxt - prev - 1 for prev, nxt in itertools.pairwise(ordered) if nxt - prev > 1
+            )
+        if missing_total:
+            notes.append(
+                f"{name} sequence numbering accounts for {missing_total} dropped row(s) "
+                "across its stamped writers; the ledger is incomplete for that span"
             )
 
 

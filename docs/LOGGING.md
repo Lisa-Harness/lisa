@@ -128,6 +128,26 @@ lock ([`HostServices.build`](../runtime/src/runtime/services.py)). The
 locks are best-effort with a short timeout — a stuck holder drops one
 telemetry line rather than stalling a live turn.
 
+## Loss observability
+
+Dropping a ledger row is a real loss of evidence, not a debug curiosity,
+so every fire-and-forget ledger publish goes through
+[`schedule_telemetry_publish`](../kernel/src/kernel/telemetry.py): a
+failure — scheduling the task *or* an exception raised inside it — logs a
+WARNING naming the source (`tool:<id>`, `operation:<id>`,
+`token_usage:<call_site>`, `model_request:<operation>`), so a lost row is
+visible in `runtime.jsonl` instead of vanishing. The no-bus headless path
+remains a silent no-op.
+
+Rows carry two handler-stamped fields that make the loss *countable* after
+the fact: `sequence` (per-instance monotonic counter) and
+`ledger_instance` (identity of the writing handler). A reader detects
+dropped rows by finding sequence gaps within one instance — a restart or a
+second host process starts a new instance at 1, so gaps never span
+instances. `/forensics` and `turn_forensics` report the count as a read
+note (`accounts for N dropped row(s)`); it is a lower bound, proving rows
+went missing, not which rows.
+
 `turn_index` is the join key. It is reserved once at turn start
 (`runtime.thread.reserved_turn`), carried on `TurnIdentity` into every
 operation/tool context, and matched against the thread entry, so a decision

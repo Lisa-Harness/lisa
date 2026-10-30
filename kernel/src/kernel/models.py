@@ -2688,6 +2688,14 @@ class TokenUsageEvent(BusEvent):
     latency_ms: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
     extra_context_appended: bool = False
+    #: Per-instance monotonic counter the durable handler stamps at append
+    #: time (publishers never set it). A reader detects dropped rows by
+    #: finding sequence gaps within one ``ledger_instance``.
+    sequence: int | None = None
+    #: Identity of the handler instance that appended this row. Sequences
+    #: are per-instance — a restart or a second host process starts a new
+    #: instance at 1 — so gap detection partitions on this field.
+    ledger_instance: str = ""
 
 
 class ToolExecutionTelemetry(BusEvent):

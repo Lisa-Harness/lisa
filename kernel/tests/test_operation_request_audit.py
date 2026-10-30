@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from kernel.decision_telemetry import MODEL_REQUEST_TOPIC, DecisionTelemetryHandler
 from kernel.models import OperationExecutionContext
 from kernel.seams.host_adapter import CompletionAuditContext, build_callable_host

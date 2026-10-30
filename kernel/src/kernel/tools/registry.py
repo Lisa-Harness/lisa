@@ -57,17 +57,17 @@ from kernel.models import (
     ToolResult,
     resolve_turn_index,
 )
-from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
+from kernel.telemetry import (
+    get_tracer,
+    mark_span_failed,
+    schedule_telemetry_publish,
+    set_span_attributes,
+)
 from kernel.tools.mcp_client import MCPClientConfig
 from kernel.tools.output_stream import TOOL_OUTPUT_TOPIC
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
-
-#: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
-#: fire-and-forget telemetry; the set keeps them garbage-collectable only
-#: after completion and is pruned on each publish.
-_PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
 
 __all__ = [
     "execute_tool",
@@ -396,15 +396,12 @@ def _publish_tool_telemetry(
     event_bus = ctx.event_bus
     if event_bus is None:
         return
-    try:
-        task = asyncio.create_task(
-            event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
-        )
-    except Exception:  # pylint: disable=broad-except
-        logger.debug("tool telemetry publish failed for %s", tool_id, exc_info=True)
-        return
-    _PENDING_TELEMETRY_TASKS.add(task)
-    task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+    schedule_telemetry_publish(
+        event_bus,
+        "tool.telemetry",
+        event.model_dump(mode="json"),
+        source=f"tool:{tool_id}",
+    )
 
 
 def _coerce_tool_result(tool_id: str, result: Any) -> ToolResult:

@@ -52,6 +52,7 @@ import contextlib
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -81,8 +82,8 @@ MODEL_REQUEST_TOPIC = "model.request"
 TOPIC_FIELD = "topic"
 
 __all__ = [
-    "TOOL_TELEMETRY_TOPIC",
     "MODEL_REQUEST_TOPIC",
+    "TOOL_TELEMETRY_TOPIC",
     "TOPIC_FIELD",
     "TURN_DECISION_TOPIC",
     "DecisionTelemetryHandler",
@@ -134,11 +135,22 @@ class DecisionTelemetryHandler:
         self._sequence = 0
         self._segment_max_bytes = segment_max_bytes
         self._segment_index = 0
+        # Instance identity for loss detection: the ledger is shared by
+        # every process writing one data dir, so ``sequence`` alone is not
+        # comparable across writers. A reader partitions on
+        # ``ledger_instance`` and detects dropped rows within one writer's
+        # run (a restart or a second process starts a new instance at 1).
+        self._instance = uuid.uuid4().hex[:12]
 
     @property
     def path(self) -> Path:
         """Return the resolved JSONL path."""
         return self._path
+
+    @property
+    def instance(self) -> str:
+        """Return this handler's instance id (stamped on every row)."""
+        return self._instance
 
     async def publish_turn_decision(self, payload: Any) -> None:
         """Persist one ``turn.decision`` payload."""
@@ -181,6 +193,7 @@ class DecisionTelemetryHandler:
         self._sequence += 1
         record.setdefault("logged_at", time.time())
         record.setdefault("sequence", self._sequence)
+        record.setdefault("ledger_instance", self._instance)
         try:
             with self._lock_factory():
                 self._path.parent.mkdir(parents=True, exist_ok=True)

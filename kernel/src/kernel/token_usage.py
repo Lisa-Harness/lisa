@@ -19,10 +19,10 @@ Design notes:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -36,11 +36,6 @@ logger = logging.getLogger(__name__)
 #: subscribes its durable ``TokenUsageTelemetryHandler`` to this topic;
 #: headless contexts (no bus, no subscriber) drop the events silently.
 TOKEN_USAGE_TOPIC = "lisa.token_usage"
-
-#: Strong references to in-flight token-usage publish tasks (RUF006). Tasks
-#: are fire-and-forget telemetry; the set keeps them garbage-collectable
-#: only after completion and is pruned on each publish.
-_PENDING_PUBLISH_TASKS: set[asyncio.Task[None]] = set()
 
 __all__ = [
     "TOKEN_USAGE_TOPIC",
@@ -72,16 +67,22 @@ def publish_token_usage(bus: Any, event: TokenUsageEvent) -> None:
     survives process restarts; headless contexts (no bus) drop the event.
 
     Strictly best-effort per the telemetry contract: a publish failure is
-    swallowed and must never break the model-call path. When no event loop
-    is running (sync test contexts) the publish is dropped rather than
-    blocking.
+    never allowed to break the model-call path, but it is no longer silent —
+    :func:`schedule_telemetry_publish` logs a WARNING so a lost durable
+    token row is visible in ``runtime.jsonl`` instead of vanishing. When no
+    event loop is running (sync test contexts) the publish is dropped with
+    the same warning rather than blocking.
     """
+    from kernel.telemetry import schedule_telemetry_publish
+
     if bus is None or not hasattr(bus, "publish"):
         return
-    with contextlib.suppress(Exception):
-        task = asyncio.create_task(bus.publish(TOKEN_USAGE_TOPIC, event.model_dump(mode="json")))
-        _PENDING_PUBLISH_TASKS.add(task)
-        task.add_done_callback(_PENDING_PUBLISH_TASKS.discard)
+    schedule_telemetry_publish(
+        bus,
+        TOKEN_USAGE_TOPIC,
+        event.model_dump(mode="json"),
+        source=f"token_usage:{event.call_site or 'unknown'}",
+    )
 
 
 def coerce_non_negative_float(value: Any) -> float:
@@ -150,11 +151,24 @@ class TokenUsageTelemetryHandler:
         self._path = path
         self._filter_fn = filter_fn
         self._lock_factory = lock_factory or contextlib.nullcontext
+        # Per-instance sequence + identity: the token ledger is shared by
+        # every process writing one data dir, so a global counter is not
+        # comparable across writers. ``sequence`` orders this instance's
+        # rows and ``ledger_instance`` names this instance, letting a
+        # forensic reader detect dropped rows *within* one writer's run
+        # (a restart or a second process starts a new instance at 1).
+        self._sequence = 0
+        self._instance = uuid.uuid4().hex[:12]
 
     @property
     def path(self) -> Path:
         """Return the resolved JSONL path."""
         return self._path
+
+    @property
+    def instance(self) -> str:
+        """Return this handler's instance id (stamped on every row)."""
+        return self._instance
 
     async def publish(self, event: Any) -> None:
         """Persist one ``TokenUsageEvent`` as a single JSONL line.
@@ -190,6 +204,13 @@ class TokenUsageTelemetryHandler:
     def _append(self, event: TokenUsageEvent) -> None:
         if not event.idempotency_key:
             event.idempotency_key = f"{event.emitted_at}:{_time_ns_suffix()}"
+        # Handler-stamped loss-detection fields, same posture as the
+        # idempotency key: publishers never set them. A reader detects
+        # dropped rows by finding sequence gaps within one
+        # ``ledger_instance``.
+        self._sequence += 1
+        event.sequence = self._sequence
+        event.ledger_instance = self._instance
         try:
             with self._lock_factory():
                 self._path.parent.mkdir(parents=True, exist_ok=True)

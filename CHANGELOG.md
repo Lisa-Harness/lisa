@@ -6,6 +6,22 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Telemetry loss observability — dropped ledger rows are never silent.**
+  Every fire-and-forget ledger publish (tool/operation telemetry, token
+  usage, off-turn `model.request` rows) now goes through
+  `kernel.telemetry.schedule_telemetry_publish`, which logs a WARNING
+  naming the source when the publish fails — including the previously
+  invisible failure shape: an exception raised *inside* the scheduled
+  task was never retrieved and vanished, and the old per-site `try`
+  blocks logged at DEBUG at best. Both durable handlers additionally
+  stamp each row with a per-instance `sequence` and the writer's
+  `ledger_instance` (a restart or a second host process starts a new
+  instance at 1), and `ForensicReader` detects sequence gaps within one
+  instance, reporting the dropped count as a read note
+  (`accounts for N dropped row(s)`) — a lower bound proving rows went
+  missing, not which rows. Tests:
+  `kernel/tests/test_telemetry_loss_observability.py`.
+
 - **Durable recording of off-turn model calls.** Model calls made by
   operation dispatches outside the turn loop (memory-mining distills,
   consolidation, self-model enrichment) previously left no durable record

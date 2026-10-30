@@ -37,17 +37,17 @@ from kernel.models import (
     ToolExecutionTelemetry,
     resolve_turn_index,
 )
-from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
+from kernel.telemetry import (
+    get_tracer,
+    mark_span_failed,
+    schedule_telemetry_publish,
+    set_span_attributes,
+)
 from kernel.tools.mcp_client import MCPClientConfig
 from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
-
-#: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
-#: fire-and-forget telemetry; the set keeps them garbage-collectable only
-#: after completion and is pruned on each publish.
-_PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
 
 __all__ = [
     "build_operation_tool_schemas",
@@ -833,15 +833,12 @@ def _emit_operation_telemetry(
             user_slug=ctx.user_slug,
             thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         )
-        try:
-            task = asyncio.create_task(
-                ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
-            )
-        except Exception:  # pylint: disable=broad-except
-            logger.debug("operation telemetry publish failed for %s", operation_id, exc_info=True)
-        else:
-            _PENDING_TELEMETRY_TASKS.add(task)
-            task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+        schedule_telemetry_publish(
+            ctx.event_bus,
+            "tool.telemetry",
+            event.model_dump(mode="json"),
+            source=f"operation:{operation_id}",
+        )
 
 
 def _normalize_operation_result(
