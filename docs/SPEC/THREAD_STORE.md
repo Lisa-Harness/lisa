@@ -37,7 +37,7 @@ file extension). All derived file paths are computed from this base.
 | `<base>.dict.zstd` | Trained zstd dictionary (optional, immutable once created) |
 | `<base>.lock` | Cross-process advisory lock coordinating reads, appends, and segment seals |
 | `<base>.reservations.json` | In-flight turn reservations (`{token, pid, turn}`); present only while turns are running |
-| `<base>.results/r<sha256>.json` | Tool results, model request snapshots, continuation objects |
+| `<base>.results/r<sha256>.json` | Tool results, model request snapshots (turn loop **and** operation-dispatch calls — the latter addressed by `model.request` ledger rows), continuation objects |
 
 Where `<base> = <thread_dir>/<user_slug>` (or
 `<thread_dir>/<user_slug>--<conversation_id>` when `LISA_CONVERSATION_ID` is

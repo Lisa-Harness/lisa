@@ -1519,6 +1519,7 @@ async def execute_approved_invocation(
             "thread_dir": hooks.services.thread_dir,
             "turn_index": hooks.identity.turn_index,
             "model_router": hooks.context_seams.model_router,
+            "request_recorder": hooks.models.record_request,
         }
         if invocation.target_kind == "tool":
             _tool_def = get_tool_catalog().get(invocation.target_id)
@@ -1717,6 +1718,7 @@ async def _pre_turn_memory_recall(
                 delegate_fn=delegate_fn,
                 fork_fn=fork_fn,
                 model_router=hooks.context_seams.model_router,
+                request_recorder=hooks.models.record_request,
             )
             recall_ctx.params = {
                 "query": query,
@@ -7763,6 +7765,7 @@ def _wire_build_entry_ctx(
             fork_fn=fork_fn,
             model_router=hooks.context_seams.model_router,
             event_bus=tool_output_bus,
+            request_recorder=hooks.models.record_request,
         )
         base_ctx_kwargs.update(overrides)
         return _build_minimal_context(**base_ctx_kwargs)

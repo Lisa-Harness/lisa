@@ -8,6 +8,11 @@ event bus:
   the record that answers "why did the turn do that?".
 - ``tool.telemetry`` — one payload per dispatch carrying target id, kind,
   status, duration, and the error message.
+- ``model.request`` — one payload per off-turn model call an operation
+  dispatch made (request ref, owning operation, turn attribution). The
+  turn loop's own calls ride the thread entry's ``turn_input.calls``, so
+  this topic closes the recording gap for completions the thread entry
+  never sees.
 
 Both were published and dropped: only ``lisa.token_usage`` had a durable
 subscriber, so the bus recreated on every hook build carried them nowhere.
@@ -64,12 +69,20 @@ TURN_DECISION_TOPIC = "turn.decision"
 #: Event-bus topic carrying per-dispatch tool/operation telemetry.
 TOOL_TELEMETRY_TOPIC = "tool.telemetry"
 
+#: Event-bus topic carrying one row per off-turn model call an operation
+#: dispatch made (memory mining, consolidation, distills) — the request
+#: ref, the owning operation, and the turn attribution. In-turn calls ride
+#: the thread entry's ``turn_input.calls`` instead, so this topic exists
+#: precisely for the calls the thread entry never sees.
+MODEL_REQUEST_TOPIC = "model.request"
+
 #: Field stamped onto every persisted record so a reader can tell which topic
 #: produced a line without inferring it from its key set.
 TOPIC_FIELD = "topic"
 
 __all__ = [
     "TOOL_TELEMETRY_TOPIC",
+    "MODEL_REQUEST_TOPIC",
     "TOPIC_FIELD",
     "TURN_DECISION_TOPIC",
     "DecisionTelemetryHandler",
@@ -134,6 +147,10 @@ class DecisionTelemetryHandler:
     async def publish_tool_telemetry(self, payload: Any) -> None:
         """Persist one ``tool.telemetry`` payload."""
         self._persist(TOOL_TELEMETRY_TOPIC, payload)
+
+    async def publish_model_request(self, payload: Any) -> None:
+        """Persist one ``model.request`` payload."""
+        self._persist(MODEL_REQUEST_TOPIC, payload)
 
     # ── Internals ──────────────────────────────────────────────────────
 

@@ -6,6 +6,25 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Durable recording of off-turn model calls.** Model calls made by
+  operation dispatches outside the turn loop (memory-mining distills,
+  consolidation, self-model enrichment) previously left no durable record
+  of the exact request they sent — the thread entry's `turn_input.calls`
+  covers only the turn loop's own calls, so an off-turn distillation was
+  invisible to every forensic read. The `OperationHost` adapter now accepts
+  a `CompletionAuditContext` (built by the operation registry from the
+  dispatch's own context, the single choke point every dispatch flows
+  through): each gateway completion archives the verbatim request as an
+  `r<sha256>` result object via the same `persist_request` seam the turn
+  loop uses, appends a `model.request` row to `decisions.jsonl`
+  (`operation_id`, `request_ref`, `turn_index` — `null` when the dispatch
+  belongs to no turn — `user_slug`, `thread_store_slug`), and publishes its
+  token usage on `lisa.token_usage` with `call_site: "operation"` so
+  off-turn spend is attributable for the first time. Recording and
+  telemetry are strictly best-effort: neither can fail the completion.
+  Hosts that stamp no `request_recorder` keep the previous unrecorded
+  behavior. Tests: `kernel/tests/test_operation_request_audit.py`.
+
 - **MCP client-config export — Lisa's servers usable without the turn loop.**
   `/mcp export` renders the runtime's compiled MCP servers as an `mcpServers`
   document another agent client (Claude Desktop, VS Code, Cursor, another

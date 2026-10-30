@@ -92,6 +92,7 @@ its `topic`:
 | --- | --- | --- | --- |
 | `turn.decision` | [`_resolve_lifecycle`](../kernel/src/kernel/turn_runner/__init__.py) | iteration | `mode_id`, `turn_index`, `user_slug`, `iteration`, `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`, `read_receipts` |
 | `tool.telemetry` | [tools](../kernel/src/kernel/tools/registry.py) / [operations](../kernel/src/kernel/operations/registry.py) registry | dispatch | `target_id`, `target_type`, `status`, `duration_ms`, `error_message`, `turn_index`, `user_slug` |
+| `model.request` | [host adapter](../kernel/src/kernel/seams/host_adapter.py) | off-turn model call | `operation_id`, `request_ref`, `turn_index`, `user_slug`, `thread_store_slug` |
 
 Why a separate file rather than `runtime.jsonl`:
 
@@ -104,6 +105,15 @@ Why a separate file rather than `runtime.jsonl`:
   `decisions.jsonl.<n>` once it reaches the size threshold, and sealed
   segments are never deleted, so verbose runtime logging cannot evict the
   decision ledger and the ledger cannot consume the log's rotation budget.
+
+Operation completions also publish `model.request`: one row per model call
+an operation dispatch makes outside the turn loop (memory mining,
+consolidation, distills), carrying the content-addressed `request_ref` for
+the archived request. The turn loop's own calls are already archived on the
+thread entry's `turn_input.calls`, so this row covers precisely the calls
+the thread entry never sees; its token usage rides the same
+`lisa.token_usage` topic with `call_site: "operation"`. `turn_index` is
+`null` when the dispatch belongs to no thread turn.
 
 ## Concurrent-ledger safety
 

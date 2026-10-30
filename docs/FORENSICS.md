@@ -17,7 +17,12 @@ answers only part of the question. Forensics is the act of joining them.
 | `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | Process-level warnings and errors in the same window |
 
 The thread is the primary record: it is lossless, append-only, and segmented.
-The other three are telemetry around it.
+The other three are telemetry around it. Off-turn model calls an operation
+dispatch makes (memory mining, consolidation, distills) never reach the
+thread entry's `turn_input.calls`; their `model.request` rows in the
+decisions ledger — carrying the content-addressed `request_ref` for the
+archived request — are the record for exactly those calls, and they join
+on the same `turn_index` (`null` when the dispatch belongs to no turn).
 
 ## The join key
 

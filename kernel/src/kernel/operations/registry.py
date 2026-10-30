@@ -718,6 +718,34 @@ def _mode_allowlist_write_tools(
     return result
 
 
+def _build_completion_audit(
+    operation_id: str,
+    ctx: OperationExecutionContext,
+) -> Any | None:
+    """Derive the host adapter's completion-audit context for one dispatch.
+
+    Returns ``None`` when the host stamped no ``request_recorder`` — the
+    host never wired durable recording, so the dispatch keeps the previous
+    unrecorded behavior rather than raising at dispatch time. Recording
+    without telemetry (no event bus) still archives the request; telemetry
+    without recording (bus but no recorder) publishes no ``model.request``
+    row, because the row's ``request_ref`` would point at nothing.
+    """
+    recorder = ctx.request_recorder
+    if recorder is None:
+        return None
+    from kernel.seams.host_adapter import CompletionAuditContext
+
+    return CompletionAuditContext(
+        record_request=recorder,
+        event_bus=ctx.event_bus,
+        operation_id=operation_id,
+        turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        user_slug=str(getattr(ctx, "user_slug", "") or ""),
+        thread_store_slug=str(getattr(ctx, "thread_store_slug", "") or ""),
+    )
+
+
 def _rebuild_host_with_tool_wrapper(
     definition: OperationDefinition,
     ctx: OperationExecutionContext,
@@ -759,6 +787,11 @@ def _rebuild_host_with_tool_wrapper(
         gateway_provider_fn=(
             _existing_host._gateway_provider_fn if _existing_host is not None else None
         ),
+        # Durable off-turn request recording: every operation dispatch
+        # rebuilds its host here, so this is where the audit wiring attaches.
+        # A host that stamps no ``request_recorder`` keeps the previous
+        # unrecorded behavior (audit=None).
+        audit=_build_completion_audit(definition.operation_id, ctx),
     )
 
 

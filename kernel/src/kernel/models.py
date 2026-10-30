@@ -321,6 +321,14 @@ class OperationExecutionContext(BaseModel):
     # ``ToolExecutionContext.turn_index`` — same contract, and propagated
     # through ``_to_tool_context`` so nested tool calls keep the attribution.
     turn_index: int | None = Field(default=None, exclude=True)
+    # Durable recorder for model requests made by this dispatch's
+    # completions (``runtime.turn_continuation.persist_request`` shape:
+    # persist one snapshot dict, return its content-addressed ref). Wired by
+    # the host; ``None`` leaves operation completions unrecorded (the
+    # previous behavior). The registry derives the host adapter's
+    # ``CompletionAuditContext`` from this seam so every operation dispatch
+    # archives its off-turn model calls next to the turn loop's own.
+    request_recorder: Any = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):

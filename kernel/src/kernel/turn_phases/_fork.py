@@ -483,6 +483,7 @@ def _build_minimal_context(
     gateway_provider_fn: Any = None,
     model_router: Any = None,
     event_bus: Any = None,
+    request_recorder: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -490,6 +491,11 @@ def _build_minimal_context(
     host's ``complete`` dispatches through the provider gateway (the live
     completion path) instead of the removed legacy callable. Callers pass a
     zero-arg callable that resolves ``hooks.context_seams.provider_gateways``.
+
+    ``request_recorder`` is the durable model-request recorder
+    (``persist_request`` shape). When supplied, operations dispatched from
+    this context archive their off-turn completions; when omitted the
+    dispatches stay unrecorded (tests, bare hosts).
     """
     host = build_callable_host(
         complete_fn=complete_fn,
@@ -542,4 +548,5 @@ def _build_minimal_context(
         host=host,
         model_router=model_router,
         event_bus=event_bus,
+        request_recorder=request_recorder,
     )
