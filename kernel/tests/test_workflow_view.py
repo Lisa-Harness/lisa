@@ -889,3 +889,32 @@ class TestIdlePlanRetirement:
         entries = self._entries("a", "b")
         assert derive_workflow_view(entries) is not None
         assert derive_workflow_view([*entries, _entry(response_text="c", turn=3)]) is None
+
+    def test_turns_in_an_open_steps_mode_are_not_idle(self):
+        """A step still being worked on keeps the plan alive.
+
+        Regression: the idle rule counted every turn since the last
+        completion, so a plan whose open step kept being worked on still
+        retired once enough turns had passed. The rule is "idle turns" —
+        turns that neither complete a step nor run in an open step's mode.
+        """
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP, turn=0),
+            _entry(mode_id="search", response_text="Still searching.", turn=1),
+            _entry(mode_id="search", response_text="Still searching.", turn=2),
+            _entry(mode_id="search", response_text="Still searching.", turn=3),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=2)
+        assert view is not None
+        assert view.completed_steps == ()
+
+    def test_idle_run_breaks_when_an_open_steps_mode_returns(self):
+        """An open step's mode resets the idle run rather than ending it."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP, turn=0),
+            _entry(mode_id="default", response_text="unrelated", turn=1),
+            _entry(mode_id="coding", response_text="Implementing.", turn=2),
+            _entry(mode_id="default", response_text="unrelated", turn=3),
+        ]
+        view = derive_workflow_view(entries, idle_turn_limit=2)
+        assert view is not None

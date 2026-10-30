@@ -774,8 +774,7 @@ def run_pack_install_sync(
         package_name = normalize_pack_name(_extract_package_name_from_spec(normalized_spec))
         if not package_name:
             msg = (
-                f"Install succeeded for '{normalized_spec}' "
-                "but package name could not be inferred."
+                f"Install succeeded for '{normalized_spec}' but package name could not be inferred."
             )
             return False, msg
         source_kind = (

@@ -279,6 +279,52 @@ def _handoff_evidence(entry: dict[str, Any]) -> list[_Evidence]:
     return units
 
 
+def _entry_modes(entry: dict[str, Any]) -> set[str]:
+    """Return every mode a thread entry ran in.
+
+    The entry's own ``mode_id`` is the mode the turn entered in. A turn that
+    hands off mid-turn also runs in the mode it left, recorded in
+    ``departed_modes``, and ends in the mode it handed off to.
+    """
+    modes: set[str] = set()
+    entry_mode = str(entry.get("mode_id") or "")
+    if entry_mode:
+        modes.add(entry_mode)
+    departed = entry.get("departed_modes")
+    if isinstance(departed, list):
+        modes.update(str(mode) for mode in departed if mode)
+    handoff = str(entry.get("handoff_to") or "")
+    if handoff:
+        modes.add(handoff)
+    return modes
+
+
+def _count_idle_turns(
+    thread_entries: list[dict[str, Any]],
+    *,
+    last_progress: int,
+    open_step_modes: set[str],
+) -> int:
+    """Return the length of the trailing run of turns that are idle for the plan.
+
+    A turn is idle when it neither completes a step nor runs in any open
+    step's mode. The run is counted backwards from the newest entry and
+    stops at the first turn that is not idle, so a turn that did the open
+    step's work resets the count. Only a stretch of turns that ignore the
+    plan entirely retires it — a plan whose step is still being worked on
+    is not abandoned, however long the step takes.
+
+    Entries at or before ``last_progress`` completed a step, so they are
+    never idle and are excluded from the scan.
+    """
+    idle = 0
+    for entry in reversed(thread_entries[last_progress + 1 :]):
+        if open_step_modes & _entry_modes(entry):
+            break
+        idle += 1
+    return idle
+
+
 def _evidence_satisfies_step(unit: _Evidence, step: WorkflowStep) -> bool:
     """Return True when one evidence unit completes ``step``.
 
@@ -509,8 +555,9 @@ def derive_workflow_view(
       the view should not be injected — "if I finished a plan then quit,
       there shouldn't be a plan").
     - The plan was concluded by the operator (``/workflow conclude``).
-    - ``idle_turn_limit`` consecutive turns followed the plan's latest
-      progress without completing a step (the plan went stale). Defaults to
+    - ``idle_turn_limit`` consecutive *idle* turns followed the plan's latest
+      progress — turns that neither completed a step nor ran in any open
+      step's mode (the plan went stale). Defaults to
       ``Settings.workflow_plan_idle_turn_limit``; ``0`` disables the rule.
 
     The ``catalog`` parameter is optional and currently unused — it's
@@ -545,9 +592,22 @@ def derive_workflow_view(
     # A plan that stopped making progress is retired: without this, an
     # abandoned plan re-attaches its footer and chain-in-flight handoff to
     # every later turn, re-routing work that has nothing to do with it.
+    #
+    # The rule is "idle turns" — consecutive turns that neither complete a
+    # step nor run in any *open* step's mode. Counting every turn since the
+    # last completion would retire a plan whose step is still being worked
+    # on (the step's own turns are not idle), which is the difference
+    # between an abandoned plan and a slow one.
     limit = settings.workflow_plan_idle_turn_limit if idle_turn_limit is None else idle_turn_limit
-    if limit > 0 and len(thread_entries) - 1 - last_progress >= limit:
-        return None
+    if limit > 0:
+        open_step_modes = {step.mode_id for step in steps if step.step_id not in completed}
+        idle_turns = _count_idle_turns(
+            thread_entries,
+            last_progress=last_progress,
+            open_step_modes=open_step_modes,
+        )
+        if idle_turns >= limit:
+            return None
 
     # Derive mode/stage pointer from the most recent entry.
     last_entry = thread_entries[-1]

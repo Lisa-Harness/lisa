@@ -693,9 +693,7 @@ class HostConfig:
         resolved_session_context = session_context.strip()
         raw_user_slug = user_slug.strip()
         resolved_user_slug = raw_user_slug
-        resolved_conversation_id = (
-            conversation_id.strip() or _resolve_env(LISA_CONVERSATION_ID_ENV)
-        )
+        resolved_conversation_id = conversation_id.strip() or _resolve_env(LISA_CONVERSATION_ID_ENV)
         resolved_surface_type = surface_type.strip()
         resolved_surface_id = surface_id.strip()
         resolved_memory_scope = ""

@@ -32,6 +32,21 @@ All notable changes to the Lisa Harness will be documented in this file.
   `runtime/tests/test_mcp_export.py`, and the `/mcp export` cases in
   `runtime/tests/test_commands_mcp.py`.
 
+- **Concurrent multi-process executions.** Overlapping turns on one data dir
+  no longer collide on the thread store. A new `sdk.filelock` module provides
+  cross-process advisory locking (`file_lock` / `async_file_lock`), atomic
+  temp-file replacement (`atomic_write_text` / `atomic_write_bytes`), and
+  owner-PID liveness checks (`is_process_alive`). The thread store, the
+  approval store, the code-artifact store, the installed-packs lock, and the
+  intake state file all serialize on a sidecar `.lock` and write atomically.
+  Pack installs and activation updates serialize on `.packs-venv.lock`.
+- **Isolated conversations.** `conversation_id` (or `LISA_CONVERSATION_ID`)
+  isolates a conversation's thread store under
+  `<thread_dir>/<user_slug>--<conversation_id>` and scopes `surface_id` for
+  approvals, recovery items, and work products, while packs, policy, and
+  models stay shared under `data_dir`.
+- **Tests:** `runtime/tests/test_concurrent_executions.py`.
+
 ### Changed
 
 - **`lisa-memory --readonly` is now enforced.** The flag was declared but
@@ -45,6 +60,49 @@ All notable changes to the Lisa Harness will be documented in this file.
 - **Tests:** `sdk/src/sdk/memory/tests/test_store.py`,
   `mcp_server/tests/test_mcp_servers.py`.
 
+- **Overlapping turns get distinct turn indices.** A turn's index is now
+  reserved at start from `<base>.reservations.json`
+  (`max(committed entries, highest live reservation + 1)`) and released at
+  commit — atomically, under the same store lock — or on any other exit path.
+  Two concurrent turns previously both claimed the same index. The committed
+  index remains the log position, so the log stays contiguous; when a turn
+  commits under a different number the entry records `provisional_turn`, and
+  the forensic reader joins telemetry through it. Reservations owned by dead
+  processes are pruned on read, so a crashed turn's index is reusable.
+- **The zstd thread dictionary is no longer retrained in place.** Once
+  `<base>.dict.zstd` exists it is never overwritten, so segments compressed
+  with it stay decompressable for the lifetime of the thread.
+- **Tests:** `runtime/tests/test_thread.py`,
+  `sdk/src/sdk/forensics/tests/test_join_render.py`.
+
+### Fixed
+
+- **Identical tool-call batches no longer loop.** The model could re-issue
+  the exact same tool-call batch (same tools, same arguments) until the turn
+  was killed — the 2026-10-28 researcher loop repeated one
+  `thread_read_recent` + `thread_search` pair 33 times. The new
+  `max_identical_tool_batch_repeats` setting (default 3) refuses the next
+  repeat with tool messages telling the model to answer from the results it
+  already holds, and one further repeat forces a no-tools final synthesis.
+  The signature is the sorted (name, sorted-key arguments) pairs, so call
+  ids, argument key order, and spacing cannot hide a repeat; kernel-
+  synthesized batches never count, and `0` disables the guard.
+- **Tests:** `kernel/tests/test_repeated_tool_batch_guard.py`.
+
+- **Abandoned workflow plans retire instead of decorating every later turn.**
+  A plan's steps could only be completed by a write-receipt match, so a read
+  step never completed and an abandoned plan kept re-attaching its progress
+  footer and in-flight handoff to every later turn, re-routing unrelated
+  work. A plan now retires after `workflow_plan_idle_turn_limit` (default 2)
+  consecutive *idle* turns — turns that neither complete a step nor run in
+  any open step's mode. Completion evidence is rebuilt as per-unit
+  `(kind, mode_id, capability_id)` units: write receipts for write steps,
+  and for read steps the step's mode handing off, recorded per entry in the
+  new `departed_modes` field so multi-hop turns (planner → thinker →
+  researcher) credit every departed mode rather than only the last
+  `handoff_to` hop.
+- **Tests:** `kernel/tests/test_workflow_view.py`.
+
 ### Removed
 
 - **Automatic memory backup on server boot.** `lisa-memory` dumped `memory.db`
@@ -55,6 +113,13 @@ All notable changes to the Lisa Harness will be documented in this file.
   tests, and its direct-I/O allowlist entry. Point-in-time copies belong to
   the deployment's own SQLite-aware backup process; `docs/STORAGE.md` now says
   so.
+- **BREAKING for SDK consumers: `sdk.memory`'s public surface changed.**
+  `sdk.memory` previously re-exported only `DEFAULT_KEEP_BACKUPS` and
+  `backup_memory_db`; it now exports the store's real public API —
+  `SqliteMemoryStore`, `ReadOnlyMemoryStoreError`, `EmbeddingProvider`,
+  `SCHEMA_VERSION`, and `DEFAULT_TTL_DAYS`. The two removed names are gone
+  with the backup feature, so a consumer importing them from `sdk.memory`
+  must move to its own backup process.
 
 ## [0.4.0] - 2026-10-28
 
