@@ -7,17 +7,23 @@ Lisa records four kinds of durable evidence about a turn. They are written by
 different components, for different reasons, and any single one of them
 answers only part of the question. Forensics is the act of joining them.
 
-## The four sources
+## The five sources
 
 | Source | Written by | Answers |
 | --- | --- | --- |
 | `data/threads/<store>.*.jsonl` | [runtime.thread](../runtime/src/runtime/thread/) | What was asked, what was said, how it routed, whether it was blocked, what receipts it produced. `<store>` is the user slug, or `<user>--<conversation>` when the host isolates one store per conversation |
 | `logs/decisions.jsonl` | [DecisionTelemetryHandler](../kernel/src/kernel/decision_telemetry.py) | Why the loop continued, finished, or yielded at each iteration; and what ran, for how long, with what status. The full segment set (`decisions.jsonl` plus every sealed `decisions.jsonl.<n>`) is read, not only the active file |
 | `logs/token-usage.jsonl` | [TokenUsageTelemetryHandler](../kernel/src/kernel/token_usage.py) | Which model was called, with how many tokens, at what cost |
+| `logs/approvals.jsonl` | [ApprovalLedger](../runtime/src/runtime/approval_ledger.py) | Who authorized each write/execute effect, and how: one append-only row per approval state transition (requested, approved, denied, consumed, expired), with the operator identity, the policy-vs-operator source, and the turn attribution |
 | `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | Process-level warnings and errors in the same window |
 
 The thread is the primary record: it is lossless, append-only, and segmented.
-The other three are telemetry around it. Off-turn model calls an operation
+The other four are telemetry around it. The approval ledger is one row per
+state *transition*, not per request: a single approval can contribute
+requested → approved → consumed, and the bundle groups those by
+`request_id` into the decision's lifecycle. A policy auto-allow records
+`decision_source: "policy"` so an automatic authorization is never
+misattributed to an operator. Off-turn model calls an operation
 dispatch makes (memory mining, consolidation, distills) never reach the
 thread entry's `turn_input.calls`; their `model.request` rows in the
 decisions ledger — carrying the content-addressed `request_ref` for the
@@ -65,6 +71,7 @@ points.
   - decisions (N iteration(s)) Why the loop did what it did
   - dispatches (N, M failed)   What executed, how long, what failed
   - cost                       Tokens and spend for the turn
+  - approvals (N request(s))  Who authorized each effect, and how
 ### Totals                     Aggregates over the requested turns
 ### Unattributed records       Activity that attached to no requested turn
 ### Log warnings and errors    Process problems in the same window

@@ -63,7 +63,10 @@ class HostServices:
         decisions_path = data_dir / LOGS_DIR / "decisions.jsonl"
         return cls(
             approval_service=PolicyApprovalService(
-                FileApprovalService(data_dir / STATE_DIR / "approvals.json"),
+                FileApprovalService(
+                    data_dir / STATE_DIR / "approvals.json",
+                    ledger_path=data_dir / LOGS_DIR / "approvals.jsonl",
+                ),
                 data_dir=data_dir,
             ),
             recovery_service=FileRecoveryService(data_dir / STATE_DIR / "recovery-items.json"),

@@ -22,7 +22,12 @@ Design rules, in order:
 
 from __future__ import annotations
 
-from sdk.forensics._models import DecisionRecord, ForensicBundle, TurnEvidence
+from sdk.forensics._models import (
+    ApprovalEvidence,
+    DecisionRecord,
+    ForensicBundle,
+    TurnEvidence,
+)
 
 __all__ = ["render_bundle", "render_turn_line"]
 
@@ -66,6 +71,7 @@ def _render_sources(bundle: ForensicBundle) -> list[str]:
     lines.append(f"- thread store: {'read' if sources.thread_store else 'unavailable'}")
     lines.append(f"- decisions log: {'read' if sources.decisions_log else 'unavailable'}")
     lines.append(f"- token usage log: {'read' if sources.token_usage_log else 'unavailable'}")
+    lines.append(f"- approvals log: {'read' if sources.approvals_log else 'unavailable'}")
     lines.append(f"- runtime log: {'read' if sources.runtime_log else 'unavailable'}")
     if sources.missing:
         lines.append(f"- **missing:** {', '.join(sources.missing)}")
@@ -195,12 +201,35 @@ def _render_cost(turn: TurnEvidence) -> list[str]:
     ]
 
 
+def _render_approvals(turn: TurnEvidence) -> list[str]:
+    """Render the approval decisions that touched this turn.
+
+    Rows are transitions, so one request can appear several times (requested
+    → approved → consumed). Grouped by ``request_id`` in first-seen order so
+    the operator reads the lifecycle of each decision, not a flat event log.
+    """
+    if not turn.approvals:
+        return []
+    by_request: dict[str, list[ApprovalEvidence]] = {}
+    for row in turn.approvals:
+        by_request.setdefault(row.request_id or row.target_id, []).append(row)
+    lines = [f"- approvals ({len(by_request)} request(s)):"]
+    for request_id, rows in by_request.items():
+        target = rows[0].target_id or "unknown"
+        # The latest transition names the current state.
+        latest = rows[-1]
+        who = latest.decision_by or latest.decision_source or "unknown"
+        lines.append(f"  - {target} → {latest.state} (by {who}, request {request_id[:8]})")
+    return lines
+
+
 def _render_turn_detail(turn: TurnEvidence) -> list[str]:
     """Render one turn in full."""
     lines = _render_turn_header(turn)
     lines.extend(_render_decisions(turn))
     lines.extend(_render_dispatches(turn))
     lines.extend(_render_cost(turn))
+    lines.extend(_render_approvals(turn))
     return lines
 
 
@@ -218,7 +247,11 @@ def _render_totals(bundle: ForensicBundle) -> list[str]:
 
 def _render_unattributed(bundle: ForensicBundle) -> list[str]:
     """Render records that could not join a requested turn."""
-    if not (bundle.unattributed_decisions or bundle.unattributed_dispatches):
+    if not (
+        bundle.unattributed_decisions
+        or bundle.unattributed_dispatches
+        or bundle.unattributed_approvals
+    ):
         return []
     lines = [
         "### Unattributed records",
@@ -237,6 +270,13 @@ def _render_unattributed(bundle: ForensicBundle) -> list[str]:
         lines.append(
             f"- dispatch (turn {turn}): {dispatch.target_id or 'unknown'} "
             f"({dispatch.status or '?'})"
+        )
+    for approval in bundle.unattributed_approvals:
+        turn = approval.turn_index if approval.turn_index is not None else "no turn"
+        who = approval.decision_by or approval.decision_source or "unknown"
+        lines.append(
+            f"- approval (turn {turn}): {approval.target_id or 'unknown'} "
+            f"→ {approval.state or '?'} (by {who})"
         )
     return lines
 

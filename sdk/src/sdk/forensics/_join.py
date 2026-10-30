@@ -28,6 +28,7 @@ from typing import Any
 
 from sdk.forensics._logrec import record_ts
 from sdk.forensics._models import (
+    ApprovalEvidence,
     CostRecord,
     DecisionRecord,
     DispatchRecord,
@@ -37,6 +38,7 @@ from sdk.forensics._models import (
 
 __all__ = [
     "PREVIEW_CHARS",
+    "approval_from_record",
     "build_bundle",
     "cost_from_record",
     "decision_from_record",
@@ -152,6 +154,22 @@ def cost_from_record(record: dict[str, Any]) -> CostRecord:
     )
 
 
+def approval_from_record(record: dict[str, Any]) -> ApprovalEvidence:
+    """Project one approval-ledger transition row."""
+    return ApprovalEvidence(
+        turn_index=_int_or_none(record.get("turn_index")),
+        request_id=str(record.get("request_id") or ""),
+        target_id=str(record.get("target_id") or ""),
+        target_kind=str(record.get("target_kind") or ""),
+        effect=str(record.get("effect") or ""),
+        state=str(record.get("state") or ""),
+        decision_by=str(record.get("decision_by") or ""),
+        decision_source=str(record.get("decision_source") or ""),
+        reason=str(record.get("reason") or ""),
+        logged_at=_ts_text(record),
+    )
+
+
 def _ts_text(record: dict[str, Any]) -> str:
     """Return a record's ISO timestamp for display, or ``""``."""
     parsed = record_ts(record)
@@ -168,6 +186,7 @@ def build_bundle(
     log_errors: list[dict[str, Any]],
     sources: Any,
     notes: list[str],
+    approvals: list[dict[str, Any]] | None = None,
 ) -> ForensicBundle:
     """Join raw telemetry records onto ``turns`` and return the bundle.
 
@@ -181,8 +200,10 @@ def build_bundle(
     decisions_by_turn: dict[int, list[DecisionRecord]] = defaultdict(list)
     dispatches_by_turn: dict[int, list[DispatchRecord]] = defaultdict(list)
     costs_by_turn: dict[int, list[CostRecord]] = defaultdict(list)
+    approvals_by_turn: dict[int, list[ApprovalEvidence]] = defaultdict(list)
     stray_decisions: list[DecisionRecord] = []
     stray_dispatches: list[DispatchRecord] = []
+    stray_approvals: list[ApprovalEvidence] = []
 
     for raw in decisions:
         decision = decision_from_record(raw)
@@ -207,12 +228,20 @@ def build_bundle(
         if cost.turn_index is not None and cost.turn_index in wanted:
             costs_by_turn[cost.turn_index].append(cost)
 
+    for raw in approvals or []:
+        approval = approval_from_record(raw)
+        if approval.turn_index is not None and approval.turn_index in wanted:
+            approvals_by_turn[approval.turn_index].append(approval)
+        else:
+            stray_approvals.append(approval)
+
     joined = [
         turn.model_copy(
             update={
                 "decisions": decisions_by_turn.get(turn.telemetry_turn_index, []),
                 "dispatches": dispatches_by_turn.get(turn.telemetry_turn_index, []),
                 "costs": costs_by_turn.get(turn.telemetry_turn_index, []),
+                "approvals": approvals_by_turn.get(turn.telemetry_turn_index, []),
             }
         )
         for turn in turns
@@ -224,6 +253,7 @@ def build_bundle(
         sources=sources,
         unattributed_decisions=stray_decisions,
         unattributed_dispatches=stray_dispatches,
+        unattributed_approvals=stray_approvals,
         log_errors=log_errors,
         notes=notes,
     )

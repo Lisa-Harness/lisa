@@ -1106,6 +1106,12 @@ async def _require_approval(
         pack_config=ctx.pack_config,
         safe_preview=definition.approval_preview,
     )
+    invocation = invocation.model_copy(
+        update={
+            "turn_index": resolve_turn_index(ctx.turn_index),
+            "thread_store_slug": getattr(ctx, "thread_store_slug", "") or "",
+        }
+    )
     if ctx.approval_request_id:
         receipt = await service.consume(ctx.approval_request_id, invocation)
         if receipt is None:

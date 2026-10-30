@@ -130,7 +130,11 @@ class PolicyApprovalService:
         recorded = await self._store.request(invocation)
 
         if decision.verdict == VERDICT_ALLOW:
-            receipt = await self._store.approve(recorded.request_id, recorded.identity)
+            receipt = await self._store.approve(
+                recorded.request_id,
+                recorded.identity,
+                decision_source="policy",
+            )
             if receipt is not None:
                 logger.info(
                     "policy: auto-approved %s (receipt %s) — %s",

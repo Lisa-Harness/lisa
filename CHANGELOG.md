@@ -6,6 +6,30 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Append-only approval decision ledger — "who authorized what, when."**
+  The approval *outcome* was already durable (`approvals.json` holds each
+  request's latest state), but the authorizing decisions themselves were
+  state-overwrites: a denied-then-expired request left no ordered record of
+  who decided what. `FileApprovalService` now appends one row per state
+  transition (requested / approved / denied / consumed / expired) to
+  `logs/approvals.jsonl` — sealed-never-deleted, sidecar-locked, stamped
+  with `sequence`/`ledger_instance` for loss detection — inside the same
+  critical section that commits the working store (the working store
+  remains authoritative; a ledger append failure warns and never blocks).
+  Rows carry the join keys (`turn_index` at request time — `null` for
+  off-turn, never `0` — plus `user_slug`/`thread_store_slug`) and the
+  decision's provenance: `decision_by` names the operator,
+  `decision_source` distinguishes `"operator"` from `"policy"` so a policy
+  auto-allow is never misattributed, and deny reasons ride the row.
+  `ApprovalInvocation` gained the stamp fields (excluded from
+  `action_digest` — turn position is evidence, not action identity, so
+  pending-request dedup still works), and `/forensics` +
+  `turn_forensics` render each turn's approvals grouped by request
+  lifecycle and surface other turns' transitions as unattributed
+  findings. Tests: `kernel/tests/test_approval_invocation_stamping.py`,
+  `runtime/tests/test_approval_ledger.py`,
+  `sdk/tests/test_forensics_approvals.py`.
+
 - **Telemetry loss observability — dropped ledger rows are never silent.**
   Every fire-and-forget ledger publish (tool/operation telemetry, token
   usage, off-turn `model.request` rows) now goes through

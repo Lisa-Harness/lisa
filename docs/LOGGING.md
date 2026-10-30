@@ -12,7 +12,11 @@ Hosts own presentation; first-party MCP adapters use their shared CLI setup.
 - Runtime events normally live in `<data-dir>/logs/runtime.jsonl`;
   token usage lives in `<data-dir>/logs/token-usage.jsonl`.
 - Turn decisions and dispatches live in `<data-dir>/logs/decisions.jsonl`
-  (see [decision telemetry](#decision-telemetry)).
+  (see [decision telemetry](#decision-telemetry)). Approval decisions — the
+  authorizing operator or policy action for every write/execute effect — live
+  in `<data-dir>/logs/approvals.jsonl`, one append-only row per state
+  transition (requested, approved, denied, consumed, expired), joining on
+  `turn_index` like the other ledgers.
 - First-party servers accept `--log-level` and `--data-dir`; their parser
   uses `LOG_LEVEL` when no log-level argument is supplied.
 

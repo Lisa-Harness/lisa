@@ -75,6 +75,7 @@ _TURN_FLOOR_SLACK = timedelta(minutes=5)
 _ERROR_LEVELS = frozenset({"error", "warning", "critical"})
 _DECISIONS_FILENAME = "decisions.jsonl"
 _TOKEN_USAGE_FILENAME = "token-usage.jsonl"
+_APPROVALS_FILENAME = "approvals.jsonl"
 _RUNTIME_LOG_FILENAME = "runtime.jsonl"
 
 
@@ -156,6 +157,11 @@ class ForensicReader:
         return self._data_dir / LOGS_DIR / _TOKEN_USAGE_FILENAME
 
     @property
+    def approvals_path(self) -> Path:
+        """Return the approval decision ledger path."""
+        return self._data_dir / LOGS_DIR / _APPROVALS_FILENAME
+
+    @property
     def runtime_log_path(self) -> Path:
         """Return the structured runtime log path."""
         return self._data_dir / LOGS_DIR / _RUNTIME_LOG_FILENAME
@@ -207,6 +213,7 @@ class ForensicReader:
 
         decisions, dispatches = self._read_decisions(sources, notes, max_records, wanted, floor)
         costs = self._read_costs(sources, notes, wanted, floor)
+        approvals = self._read_approvals(sources, notes, wanted, floor, max_records)
         log_errors = self._read_log_errors(sources, now, notes, max_records)
 
         bundle = build_bundle(
@@ -218,6 +225,7 @@ class ForensicReader:
             log_errors=log_errors,
             sources=sources,
             notes=notes,
+            approvals=approvals,
         )
         if focus not in {"all", "blocked", "receipts", "cost", "latency"}:
             notes.append(f"unknown focus {focus!r}; rendered everything")
@@ -419,6 +427,35 @@ class ForensicReader:
         owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
         self._note_sequence_gaps(owned, _TOKEN_USAGE_FILENAME, notes)
         return [r for r in owned if r.get("turn_index") in wanted]
+
+    def _read_approvals(
+        self,
+        sources: BundleSources,
+        notes: list[str],
+        wanted: set[int],
+        floor: datetime | None,
+        max_records: int,
+    ) -> list[dict[str, Any]]:
+        """Return the owned approval transitions in the selection's window.
+
+        Rows for requested turns and the newest ``max_records`` strays are
+        returned — the same contract as decision and dispatch rows — and the
+        join routes them: wanted rows onto their turns, strays to the
+        bundle's unattributed list. An absent file is not an error: a host
+        that never requested an approval writes no rows, and one predating
+        the ledger writes none either — both render as no approval
+        evidence, noted so the absence stays distinguishable from
+        "approvals were denied".
+        """
+        tail = read_jsonl_tail(self.approvals_path, max_bytes=self._max_bytes, since=floor)
+        if not tail.records:
+            notes.append(f"{_APPROVALS_FILENAME} has no approval transitions recorded")
+            return []
+        sources.approvals_log = True
+        self._note_truncation(tail, _APPROVALS_FILENAME, "the selected turns", notes)
+        owned = self._owned(_since(tail, floor), _APPROVALS_FILENAME, notes)
+        self._note_sequence_gaps(owned, _APPROVALS_FILENAME, notes)
+        return _cap_unattributed(owned, wanted, max_records, "approval", notes)
 
     def _owned(
         self, records: list[dict[str, Any]], name: str, notes: list[str]
