@@ -30,3 +30,7 @@ htmlcov/
 # Outputs
 artifacts/
 .e2e/
+
+# Scratch
+.lisa-tmp/
+
