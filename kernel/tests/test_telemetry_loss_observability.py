@@ -58,8 +58,7 @@ async def test_async_publish_failure_warns(caplog: pytest.LogCaptureFixture) -> 
         schedule_telemetry_publish(_BrokenBus(), "tool.telemetry", {}, source="tool:read_file")
         await _drain()
     assert any(
-        "telemetry publish failed for tool:read_file" in record.message
-        for record in caplog.records
+        "telemetry publish failed for tool:read_file" in record.message for record in caplog.records
     ), [r.message for r in caplog.records]
 
 
@@ -112,12 +111,8 @@ async def test_token_usage_no_bus_stays_silent(caplog: pytest.LogCaptureFixture)
 async def test_token_usage_rows_carry_sequence_and_instance(tmp_path: Path) -> None:
     handler = TokenUsageTelemetryHandler(tmp_path / "token-usage.jsonl")
     for _ in range(3):
-        await handler.publish(
-            build_token_usage_event(provider="p", model_id="m", prompt_tokens=5)
-        )
-    rows = [
-        json.loads(line) for line in (tmp_path / "token-usage.jsonl").read_text().splitlines()
-    ]
+        await handler.publish(build_token_usage_event(provider="p", model_id="m", prompt_tokens=5))
+    rows = [json.loads(line) for line in (tmp_path / "token-usage.jsonl").read_text().splitlines()]
     assert [r["sequence"] for r in rows] == [1, 2, 3]
     assert all(r["ledger_instance"] == handler.instance for r in rows)
 
@@ -127,9 +122,7 @@ async def test_decision_rows_carry_sequence_and_instance(tmp_path: Path) -> None
     handler = DecisionTelemetryHandler(tmp_path / "decisions.jsonl")
     await handler.publish_turn_decision({"turn_index": 0, "action_type": "ContinueAction"})
     await handler.publish_tool_telemetry({"turn_index": 0, "target_id": "t"})
-    rows = [
-        json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()]
     assert [r["sequence"] for r in rows] == [1, 2]
     assert all(r["ledger_instance"] == handler.instance for r in rows)
     assert handler.instance != ""
@@ -142,8 +135,6 @@ async def test_new_handler_instance_restarts_sequence(tmp_path: Path) -> None:
     await first.publish(build_token_usage_event(provider="p", model_id="m", prompt_tokens=1))
     second = TokenUsageTelemetryHandler(tmp_path / "token-usage.jsonl")
     await second.publish(build_token_usage_event(provider="p", model_id="m", prompt_tokens=1))
-    rows = [
-        json.loads(line) for line in (tmp_path / "token-usage.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "token-usage.jsonl").read_text().splitlines()]
     assert rows[0]["ledger_instance"] != rows[1]["ledger_instance"]
     assert rows[0]["sequence"] == rows[1]["sequence"] == 1

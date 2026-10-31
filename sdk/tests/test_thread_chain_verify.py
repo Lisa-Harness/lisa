@@ -51,9 +51,7 @@ def _seal(base: Path, seg_id: str, lines: list[str]) -> str:
     import zstandard
 
     raw = ("\n".join(lines) + "\n").encode("utf-8")
-    Path(f"{base}.{seg_id}.jsonl.zst").write_bytes(
-        zstandard.ZstdCompressor().compress(raw)
-    )
+    Path(f"{base}.{seg_id}.jsonl.zst").write_bytes(zstandard.ZstdCompressor().compress(raw))
     tail = hashlib.sha256(lines[-1].encode("utf-8")).hexdigest()
     record = {
         "seg_id": seg_id,
@@ -166,9 +164,7 @@ def test_edited_sealed_entry_is_detected(tmp_path: Path) -> None:
 
     tampered = _entry_line(0, query="falsified history")
     raw = ("\n".join([tampered, line1]) + "\n").encode("utf-8")
-    Path(f"{base}.0001.jsonl.zst").write_bytes(
-        zstandard.ZstdCompressor().compress(raw)
-    )
+    Path(f"{base}.0001.jsonl.zst").write_bytes(zstandard.ZstdCompressor().compress(raw))
 
     result = verify_chain(base)
     assert not result.ok

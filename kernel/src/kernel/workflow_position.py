@@ -271,7 +271,7 @@ def resumed_step(position: Any) -> WorkflowStep | None:
     if steps and current_id:
         current = next((step for step in steps if step.step_id == current_id), None)
         if current is not None and current.step_id not in completed:
-            return current
+            return current  # type: ignore[no-any-return]  # position object is Any at this boundary
     return next_step_after_pointer(position)
 
 

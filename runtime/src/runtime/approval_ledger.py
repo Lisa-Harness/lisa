@@ -112,7 +112,7 @@ class ApprovalLedger:
             row["reason"] = reason
         try:
             with file_lock(self._lock_path):
-                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._path.parent.mkdir(parents=True, exist_ok=True)  # host-internal evidence dir
                 with self._path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         except (OSError, TimeoutError) as exc:

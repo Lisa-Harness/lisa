@@ -66,6 +66,7 @@ def _sealed_segment_path(base: Path, seg_id: str) -> Path:
 
 # ── Hash chain ─────────────────────────────────────────────────────────
 
+
 #: Hash the entry *line content* (UTF-8 bytes, no newline terminator) so the
 #: value is stable across the newline conventions of any transport and
 #: identical for the active JSONL and the sealed (compressed) copy.

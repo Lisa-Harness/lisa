@@ -35,9 +35,7 @@ def _hooks_and_seams(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
     async def _failing_completion(**_kwargs: Any) -> None:
         raise exc
 
-    monkeypatch.setattr(
-        "kernel.turn_runner._model_completion_for_iteration", _failing_completion
-    )
+    monkeypatch.setattr("kernel.turn_runner._model_completion_for_iteration", _failing_completion)
 
 
 def _call(state: _TurnState) -> Any:
@@ -121,9 +119,7 @@ def test_quota_loop_condition_breaks_to_finalization() -> None:
     from kernel.turn_runner import _run_turn_inner
 
     source = inspect.getsource(_run_turn_inner)
-    loop_condition = source[
-        source.index("while (") : source.index("_state.iteration += 1")
-    ]
+    loop_condition = source[source.index("while (") : source.index("_state.iteration += 1")]
     assert "not _state.provider_quota_exhausted" in loop_condition
     assert "not _state.wall_budget_expired" in loop_condition
     assert "not _state.stream_stalled" in loop_condition

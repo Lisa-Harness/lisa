@@ -35,9 +35,7 @@ def _invocation(turn_index: int | None = None, **overrides: object) -> ApprovalI
         pack_config={},
         **overrides,  # type: ignore[arg-type]
     )
-    return inv.model_copy(
-        update={"turn_index": turn_index, "thread_store_slug": "adam"}
-    )
+    return inv.model_copy(update={"turn_index": turn_index, "thread_store_slug": "adam"})
 
 
 # ── Turn stamping ──────────────────────────────────────────────────────
@@ -54,9 +52,7 @@ def test_turn_stamp_does_not_change_action_digest() -> None:
         identity=_identity(),
         pack_config={},
     )
-    stamped = unstamped.model_copy(
-        update={"turn_index": 7, "thread_store_slug": "adam--conv"}
-    )
+    stamped = unstamped.model_copy(update={"turn_index": 7, "thread_store_slug": "adam--conv"})
     assert stamped.turn_index == 7
     assert stamped.action_digest == unstamped.action_digest
 

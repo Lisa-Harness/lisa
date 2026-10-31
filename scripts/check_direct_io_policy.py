@@ -114,6 +114,12 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(temp_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Approval ledger rows are host-internal evidence: the working store owns
+    # the transition; the ledger is the secondary stream (see
+    # ApprovalLedger._append_transition).
+    "runtime/src/runtime/approval_ledger.py": (
+        "self._path.parent.mkdir(parents=True, exist_ok=True)",
+    ),
     "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",

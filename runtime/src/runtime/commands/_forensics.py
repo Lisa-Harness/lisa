@@ -61,9 +61,10 @@ def render_forensics(runtime: HostRuntime, arg: str) -> str:
         # The full-store integrity audit (every sealed segment is
         # decompressed) is an explicit opt-in, never the default read.
         verify = True
-        selection = " ".join(
-            part for part in selection.split() if part != "--verify-chain"
-        ).strip() or "last"
+        selection = (
+            " ".join(part for part in selection.split() if part != "--verify-chain").strip()
+            or "last"
+        )
     return render_bundle(reader.bundle(turns=selection, verify_chain=verify))
 
 

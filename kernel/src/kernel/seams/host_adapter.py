@@ -39,6 +39,7 @@ from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
+
 class CompletionAuditContext(NamedTuple):
     """Durable-audit wiring for one operation dispatch's completions.
 

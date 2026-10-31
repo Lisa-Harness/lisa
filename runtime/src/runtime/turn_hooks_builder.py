@@ -550,9 +550,7 @@ async def _maybe_auto_capture(
         # call the turn's own ``turn_input.calls`` never captures, so
         # give the dispatch the same recorder the turn loop uses.
         capture_ctx.request_recorder = partial(persist_request, runtime.paths.thread_path)
-        capture_ctx.turn_index = (
-            raw_turn_index if isinstance(raw_turn_index, int) else None
-        )
+        capture_ctx.turn_index = raw_turn_index if isinstance(raw_turn_index, int) else None
         capture_result = await execute_operation("synthesize_and_store_learning", capture_ctx)
         # Thread → memory linkage: record the minted memory id(s) on the
         # turn context so ``append_thread_entry`` stamps them into the

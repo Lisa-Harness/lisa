@@ -111,6 +111,4 @@ def test_unreadable_store_reports_cannot_run(tmp_path: Path) -> None:
     # rather than fabricating a verification result.
     (threads / "u.current.jsonl").mkdir()
     bundle = _reader(base_dir, threads).bundle(turns="last", verify_chain=True)
-    assert any(
-        "chain verification could not run" in note for note in bundle.notes
-    ), bundle.notes
+    assert any("chain verification could not run" in note for note in bundle.notes), bundle.notes

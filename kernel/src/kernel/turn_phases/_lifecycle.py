@@ -477,6 +477,8 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
     if position is None:
         return ""
     try:
+        # ``str(...)`` converts the ``Any`` that ``getattr`` returns, so the
+        # declared ``-> str`` return never actually returns Any.
         steps = tuple(getattr(position, "declared_steps", ()) or ())
         completed = set(getattr(position, "completed_steps", ()) or ())
         current = str(getattr(position, "current_step_id", "") or "")
@@ -488,11 +490,11 @@ def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
             if current_index is not None:
                 for step in steps[current_index + 1 :]:
                     if step.step_id not in completed and getattr(step, "write_capability", None):
-                        return step.mode_id
+                        return str(step.mode_id)
                 return ""
         for step in steps:
             if step.step_id not in completed and getattr(step, "write_capability", None):
-                return step.mode_id
+                return str(step.mode_id)
         return ""
     except Exception as exc:  # pylint: disable=broad-except
         _log.debug("planned_writer_mode_id raised: %s", exc)

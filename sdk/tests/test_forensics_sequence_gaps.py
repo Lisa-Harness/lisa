@@ -63,8 +63,7 @@ def test_reader_reports_sequence_gaps(tmp_path: Path) -> None:
     )
     notes = _read_notes(tmp_path)
     assert any(
-        "accounts for 2 dropped row(s)" in note and "decisions.jsonl" in note
-        for note in notes
+        "accounts for 2 dropped row(s)" in note and "decisions.jsonl" in note for note in notes
     ), notes
 
 
@@ -125,6 +124,5 @@ def test_reader_reports_token_ledger_gaps(tmp_path: Path) -> None:
     )
     notes = _read_notes(tmp_path)
     assert any(
-        "accounts for 1 dropped row(s)" in note and "token-usage.jsonl" in note
-        for note in notes
+        "accounts for 1 dropped row(s)" in note and "token-usage.jsonl" in note for note in notes
     ), notes

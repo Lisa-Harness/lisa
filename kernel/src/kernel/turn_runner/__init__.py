@@ -3482,9 +3482,7 @@ async def _iteration_completion_or_expiry(
             exc.model_id,
         )
         state.provider_quota_exhausted = True
-        state.provider_quota_detail = (
-            f"{exc.provider}:{exc.model_id} — {exc.message}"
-        )
+        state.provider_quota_detail = f"{exc.provider}:{exc.model_id} — {exc.message}"
         return None
 
 
@@ -6916,7 +6914,9 @@ def _apply_lifecycle_action(
     session side effect).
 
     Returns ``(should_break, content, operator_exit, cap_pause_reason,
-    pending_yield, strip_tools)``.
+    pending_yield, strip_tools)``. The sixth element is consumed by the
+    caller to advertise no tools on a stripped completion — it is a real
+    output, not a discarded slot.
     """
     should_break = False
     content = ""
@@ -9719,15 +9719,22 @@ def _apply_iteration_lifecycle_action(
     Literal["", "paused", "stopped", "terminated"],
     str,
     YieldAction | None,
+    bool,
 ]:
-    """Apply lifecycle output to turn locals and return loop controls."""
+    """Apply lifecycle output to turn locals and return loop controls.
+
+    The sixth element carries ``strip_tools`` from
+    ``_apply_lifecycle_action`` (True for a ``FinishAction`` that strips and
+    for a forced yield) so the caller advertises no tools on that
+    completion without re-deriving the rule from the action type.
+    """
     (
         should_break,
         lifecycle_content,
         lifecycle_operator_exit,
         lifecycle_cap_pause,
         lifecycle_pending_yield,
-        _,
+        lifecycle_strip_tools,
     ) = _apply_lifecycle_action(
         state=state,
         mode_id=mode_id,
@@ -9741,6 +9748,7 @@ def _apply_iteration_lifecycle_action(
         lifecycle_operator_exit or pending_operator_exit,
         lifecycle_cap_pause or cap_pause_reason,
         lifecycle_pending_yield or pending_yield,
+        lifecycle_strip_tools,
     )
 
 
@@ -10601,6 +10609,9 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
         _pre_handoff_text,
         _yielded,
     ) = (
+        # Attribute unpack, not positional: every element names its own
+        # field, so a field insertion or reorder cannot silently transpose
+        # two same-typed locals.
         resumed_loop.mode_id,
         resumed_loop.mode_config,
         resumed_loop.ctx,
@@ -10660,6 +10671,7 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
             _pending_operator_exit,
             _cap_pause_reason,
             _pending_yield,
+            lifecycle_strip_tools,
         ) = _apply_iteration_lifecycle_action(
             state=_state,
             mode_id=mode_id,
@@ -10707,10 +10719,15 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
             max_turn_tool_calls=turn_budget.max_tool_calls if turn_budget is not None else 0,
         )
 
-        # Determine effective_tools from the budget/yield state.
-        if _pending_yield is not None:
+        # Determine effective_tools from the budget/yield state. ``strip_tools``
+        # is the computed value from ``_apply_lifecycle_action`` (FinishAction
+        # that strips, forced yield) — consumed, not re-derived: the previous
+        # ``elif not isinstance(_lifecycle_action, _FinishAction)`` re-derivation
+        # was dead code (every FinishAction breaks the loop above, so the guard
+        # could never change the outcome).
+        if _pending_yield is not None or lifecycle_strip_tools:
             effective_tools = None
-        elif not isinstance(_lifecycle_action, _FinishAction):
+        else:
             effective_tools = tool_schemas if tool_schemas else None
 
         # Derive budget_exhausted for the budget-briefing block below.

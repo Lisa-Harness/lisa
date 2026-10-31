@@ -275,6 +275,9 @@ class SealedErrorsHandler(logging.FileHandler):
     ) -> None:
         super().__init__(path, encoding=encoding)
         self._seal_max_bytes = seal_max_bytes
+        # Level-floor marker: configure_logging raises this to ERROR so a
+        # later global-level change never widens the ledger below ERROR.
+        self._lisa_level_floor: int = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         self._seal_if_needed()
@@ -292,7 +295,7 @@ class SealedErrorsHandler(logging.FileHandler):
             segment = 1
             prefix = path.name + "."
             for candidate in path.parent.iterdir():
-                suffix = candidate.name[len(prefix):]
+                suffix = candidate.name[len(prefix) :]
                 if candidate.name.startswith(prefix) and suffix.isdigit():
                     segment = max(segment, int(suffix) + 1)
             path.rename(path.with_name(f"{path.name}.{segment}"))
@@ -396,15 +399,15 @@ def configure_logging(
     file_handler.addFilter(rate_filter)
     root.addHandler(file_handler)
 
-    resolved_errors_path = errors_path if errors_path is not None else (
-        log_path.parent / _ERRORS_FILENAME
+    resolved_errors_path = (
+        errors_path if errors_path is not None else (log_path.parent / _ERRORS_FILENAME)
     )
     if resolved_errors_path != log_path:
         errors_handler = SealedErrorsHandler(resolved_errors_path)
         errors_handler.setLevel(logging.ERROR)
         # Marker read by apply_log_levels so a later global-level change
         # never widens this handler below ERROR.
-        errors_handler._lisa_level_floor = logging.ERROR  # noqa: SLF001  # own handler marker
+        errors_handler._lisa_level_floor = logging.ERROR  # floor marker
         errors_handler.setFormatter(fmt)
         root.addHandler(errors_handler)
 
@@ -442,7 +445,8 @@ def apply_log_levels(
         # Never lower a handler below its configured floor (the errors
         # ledger must stay ERROR-only even when the global level is INFO).
         if getattr(handler, "_lisa_level_floor", 0):
-            handler.setLevel(max(_level_value(level), handler._lisa_level_floor))  # noqa: SLF001  # stdlib handler attribute marker
+            floor = int(getattr(handler, "_lisa_level_floor", 0))
+            handler.setLevel(max(_level_value(level), floor))
         else:
             handler.setLevel(_level_value(level))
 

@@ -65,9 +65,7 @@ async def test_ledger_records_each_transition(tmp_path: Path) -> None:
     consumed = await store.consume(recorded.request_id, inv)
     assert consumed is not None
 
-    rows = [
-        json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()]
     assert [r["state"] for r in rows] == ["requested", "approved", "consumed"]
     assert all(r["turn_index"] == 7 for r in rows)
     assert all(r["user_slug"] == "adam" for r in rows)
@@ -89,9 +87,7 @@ async def test_ledger_records_deny_with_reason(tmp_path: Path) -> None:
     recorded = await store.request(inv)
     assert await store.deny(recorded.request_id, identity, reason="not today")
 
-    rows = [
-        json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()]
     assert [r["state"] for r in rows] == ["requested", "denied"]
     assert rows[1]["reason"] == "not today"
     assert rows[1]["decision_source"] == "operator"
@@ -113,9 +109,7 @@ async def test_ledger_records_expiry_observation(tmp_path: Path) -> None:
     recorded = await store.request(stale)
     assert await store.approve(recorded.request_id, identity) is None
 
-    rows = [
-        json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()]
     assert [r["state"] for r in rows] == ["requested", "expired"]
     assert rows[1]["decision_source"] == "expiry"
 
@@ -133,9 +127,7 @@ async def test_deduped_request_writes_no_second_row(tmp_path: Path) -> None:
     second = await store.request(inv)
     assert second.request_id == first.request_id
 
-    rows = [
-        json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()]
     assert [r["state"] for r in rows] == ["requested"]
 
 
@@ -166,9 +158,7 @@ async def test_policy_auto_allow_is_not_recorded_as_operator(tmp_path: Path) -> 
     inv = inv.model_copy(update={"effect": "read"})
     await svc.request(inv)
 
-    rows = [
-        json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()
-    ]
+    rows = [json.loads(line) for line in (tmp_path / "approvals.jsonl").read_text().splitlines()]
     assert [r["state"] for r in rows] == ["requested", "approved"]
     assert rows[1]["decision_source"] == "policy"
 

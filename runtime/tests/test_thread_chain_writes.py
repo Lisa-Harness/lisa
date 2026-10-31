@@ -72,9 +72,12 @@ def test_seal_records_terminal_hash_in_the_index(tmp_path: Path) -> None:
     # The recorded terminal hash is the sealed content's true last line…
     import zstandard
 
-    sealed_lines = zstandard.ZstdDecompressor().decompress(
-        Path(f"{base}.0001.jsonl.zst").read_bytes()
-    ).decode().splitlines()
+    sealed_lines = (
+        zstandard.ZstdDecompressor()
+        .decompress(Path(f"{base}.0001.jsonl.zst").read_bytes())
+        .decode()
+        .splitlines()
+    )
     assert records[0].tail_sha256 == _sha(sealed_lines[-1])
     # …and the first post-seal entry links through the index value.
     post = json.loads(_active_lines(base)[0])
