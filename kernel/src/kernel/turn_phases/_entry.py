@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, Any
 from kernel.ipsar_fsm import run_mode_entry_operations
 from kernel.models import CallLedger
 from kernel.routing_vocabulary import mark_plan_unreliable_for_model
-from kernel.turn_phases._routing import RoutingContext, save_route_decision
+from kernel.turn_phases._routing import (
+    RoutingContext,
+    save_route_decision,
+)
 
 if TYPE_CHECKING:
     from kernel.execution_policy import ExecutionPolicy
@@ -24,6 +27,7 @@ _log = logging.getLogger(__name__)
 
 __all__ = [
     "EntryPhaseResult",
+    "build_plan_failure_recovery",
     "execute_entry_phase",
 ]
 
@@ -48,17 +52,25 @@ class EntryPhaseResult:
     """Pre-built conversation excerpt for entry ops."""
 
 
-def _build_plan_failure_recovery(
+def build_plan_failure_recovery(
     *,
     mode_id: str,
     plan_reason: str,
-    partial_steps: list[Any],
+    partial_step_dicts: list[Any],
 ) -> str:
-    """Render a structured recovery message when plan_workflow returns no target."""
+    """Render the plan-failure recovery prompt — the single renderer.
+
+    BOTH entry origins render the user-visible recovery prompt through this
+    function: the turn-start entry phase (an ``early_return`` TurnResult) and
+    the mid-turn handoff loop (``_intercept_mode_handoff``, after the gate
+    stamps ``state.plan_failed``). The handoff origin previously carried a
+    second, inline copy of this f-string — the incident-2 drift class — so
+    the copy was deleted and both origins call this one renderer.
+    """
     partial_block = ""
-    if partial_steps:
+    if partial_step_dicts:
         partial_lines = ["The planner partially identified these steps before failing:"]
-        for idx, s in enumerate(partial_steps, start=1):
+        for idx, s in enumerate(partial_step_dicts, start=1):
             if isinstance(s, dict):
                 partial_lines.append(
                     f"  {idx}. {s.get('mode_id', '?')} — {s.get('description', '')}"
@@ -234,10 +246,10 @@ async def execute_entry_phase(
     )
     raw_steps = (result.output_json or {}).get("steps") or []
     partial_steps = [s for s in raw_steps if isinstance(s, dict)]
-    recovery = _build_plan_failure_recovery(
+    recovery = build_plan_failure_recovery(
         mode_id=mode_id,
         plan_reason=plan_reason,
-        partial_steps=partial_steps,
+        partial_step_dicts=partial_steps,
     )
     from kernel.turn_runner import TurnResult
 

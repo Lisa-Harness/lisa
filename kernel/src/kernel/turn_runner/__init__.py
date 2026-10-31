@@ -129,7 +129,6 @@ from kernel.provider_contracts import (
 from kernel.recovery import RecoveryRecord
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import (
-    CoordinatorRouteDecision,
     GuardResult,
 )
 from kernel.slice import (
@@ -172,7 +171,7 @@ from kernel.turn_phases._dispatch import (
     dispatch_capability,
     summarize_json_result,
 )
-from kernel.turn_phases._entry import execute_entry_phase
+from kernel.turn_phases._entry import build_plan_failure_recovery, execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
@@ -227,7 +226,11 @@ from kernel.turn_phases._post_turn import (
     _to_tool_context,
     _validate_model_capabilities,
 )
-from kernel.turn_phases._routing import RoutingContext, apply_routing
+from kernel.turn_phases._routing import (
+    RoutingContext,
+    apply_routing,
+    save_route_decision,
+)
 from kernel.turn_phases._routing_hint import (
     _compute_capability_routing_hint,
     _compute_fork_targets,
@@ -5211,18 +5214,26 @@ def _build_structured_handoff_context(
         )
 
 
-def _apply_entry_result_routing_contract(
+def _apply_handoff_entry_routing_gate(
     *,
     state: Any,
     hooks: TurnHooks,
     query: str,
     target_stage: str,
     entry_result: Any,
+    routing_ctx: RoutingContext,
     promises_routing: bool,
     preferred_model_id: str | None,
     log: logging.Logger,
 ) -> None:
-    """Apply the kernel-driven next-handoff / plan-failure contract to an entry result.
+    """The handoff origin of the kernel-driven next-handoff / plan-failure contract.
+
+    One contract, two origins: ``execute_entry_phase`` applies the same rules
+    at turn start (returning an ``early_return`` TurnResult for a plan
+    failure), while this gate is the mid-turn handoff origin — it cannot
+    return an early result, so it stamps ``state.plan_failed`` and the turn
+    loop's ``StopLoop`` guard surfaces the same recovery prompt, rendered by
+    the shared ``build_plan_failure_recovery`` in ``_intercept_mode_handoff``.
 
     Data-driven: a non-empty ``target_stage_id`` in the entry-op result IS the
     routing contract, so the kernel drives the next handoff for any op that
@@ -5241,34 +5252,21 @@ def _apply_entry_result_routing_contract(
         # WorkflowView derives declared/
         # completed steps from it on the
         # next turn. No mutable position
-        # is persisted.
-        if hooks.workflow.route_coordinator is not None:
-            _identity = hooks.identity
-            _route_metadata = {
-                "mode_id": _planned_next,
-                "query": query,
-                "surface_id": _identity.surface_id,
-                "conversation_id": _identity.conversation_id,
-                "user_id": _identity.user_id,
-                "session_plan_digest": (_identity.session_plan_digest),
-            }
-            try:
-                hooks.workflow.route_coordinator.save(
-                    CoordinatorRouteDecision(
-                        next_target=_planned_next,
-                        reason=(
-                            entry_result.output_json.get("rationale")
-                            or f"planned handoff from {target_stage}"
-                        ),
-                    ),
-                    _route_metadata,
-                )
-            except Exception as coord_exc:  # pylint: disable=broad-except
-                log.warning(
-                    "route_coordinator.save failed for planned next target %s: %s",
-                    _planned_next,
-                    coord_exc,
-                )
+        # is persisted. The coordinator
+        # save goes through the shared
+        # ``save_route_decision`` — the
+        # same builder the turn-start
+        # origin uses, so one metadata
+        # shape and one failure posture
+        # own the resume hint.
+        save_route_decision(
+            hooks,
+            routing_ctx,
+            target_mode_id=_planned_next,
+            reason=(
+                entry_result.output_json.get("rationale") or f"planned handoff from {target_stage}"
+            ),
+        )
         log.debug(
             "kernel-driven next handoff from planner mode=%s target=%s (planned by entry op)",
             target_stage,
@@ -5465,6 +5463,7 @@ async def _run_handoff_entry_operations(
     ctx: Any,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     pool: MCPToolPool,
     log: logging.Logger,
@@ -5476,8 +5475,9 @@ async def _run_handoff_entry_operations(
     instance's next step instead of blindly re-running ``plan_workflow``
     against a continuation/status query. For routing-declared action
     modes, runs the entry operations and applies the kernel-driven
-    next-handoff and plan-failure contracts (coordinator save, model
-    unreliable-marking, and ``state.entry_failed`` on an exception).
+    next-handoff and plan-failure contracts (the shared
+    ``save_route_decision`` builder, the plan-failure stamp, and
+    ``state.entry_failed`` on an exception).
     Returns the entry output text (empty when the mode has no entry ops).
     """
     # Action modes (e.g. search) run entry
@@ -5552,15 +5552,17 @@ async def _run_handoff_entry_operations(
             )
             entry_output = entry_result.output_text.strip() or "Done"
             # ── Kernel-driven next handoff ──
-            # The routing-contract application (coordinator save /
-            # pending next handoff / plan-failure stamping) lives in
-            # ``_apply_entry_result_routing_contract``.
-            _apply_entry_result_routing_contract(
+            # The routing-contract application (shared coordinator
+            # save / pending next handoff / plan-failure stamping)
+            # lives in ``_apply_handoff_entry_routing_gate`` — the
+            # handoff origin of the one contract.
+            _apply_handoff_entry_routing_gate(
                 state=state,
                 hooks=hooks,
                 query=query,
                 target_stage=target_stage,
                 entry_result=entry_result,
+                routing_ctx=routing_ctx,
                 promises_routing=_promises_routing,
                 preferred_model_id=preferred_model_id,
                 log=log,
@@ -5589,34 +5591,32 @@ async def _run_handoff_entry_operations(
     return entry_output
 
 
-async def _run_mid_turn_pre_turn_operations(
+async def _run_mode_pre_turn_operations(
     *,
-    target_stage: str,
-    target_mode_config: Any,
+    mode_id: str,
     build_entry_ctx: Callable[..., Any],
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
     log: logging.Logger,
-) -> None:
-    """Run the handoff target mode's ``pre_turn_operation_ids`` mid-turn.
+) -> OperationResult:
+    """Run ``pre_turn_operation_ids`` for one mode — the single runner.
 
-    Without this, lifecycle-bound prewarms (the bash pack's ``sandbox_facts``
-    session probe) never run for a mode reached mid-turn, so the first
-    effectful gate in that mode sees a MISSING containment fact and the host
-    policy engine fail-closed to an approval prompt even though the command
-    would have run sandboxed (the 2026-09-10 scratch-dir approval prompt).
-    Non-approval failures stay isolated inside ``run_mode_pre_turn_operations``
-    (``failure_policy="skip"``); an ``ApprovalRequired`` propagates to the turn
-    wrapper's existing handler like at turn start.
+        Both entry origins route through this function: turn start calls it
+    directly (its briefing feeds prompt assembly) and the mid-turn handoff
+    calls it through ``_run_handoff_pre_turn_operations``. The error posture
+    is owned once here, mirroring ``run_mode_pre_turn_operations``: an
+    ``ApprovalRequired`` propagates to the turn wrapper's existing handler
+    (the host must see the approval gate), while any other failure stays
+    isolated — a flaky prewarm target logs a warning and the turn continues
+    (the 2026-09-10 scratch-dir approval prompt is why prewarms must run at
+    both origins at all).
     """
-    if not target_mode_config.pre_turn_operation_ids:
-        return
     try:
         pre_ctx = build_entry_ctx(
-            mode_id=target_stage,
+            mode_id=mode_id,
         )
-        await run_mode_pre_turn_operations(
-            target_stage,
+        return await run_mode_pre_turn_operations(
+            mode_id,
             pre_ctx,
             ledger=ledger,
             execution_policy=execution_policy,
@@ -5625,10 +5625,44 @@ async def _run_mid_turn_pre_turn_operations(
         raise
     except Exception as pre_exc:  # pylint: disable=broad-except
         log.warning(
-            "mid-turn pre_turn targets failed for mode '%s': %s",
-            target_stage,
+            "pre_turn targets failed for mode '%s': %s",
+            mode_id,
             pre_exc,
         )
+        return OperationResult()
+
+
+async def _run_handoff_pre_turn_operations(
+    *,
+    mode_id: str,
+    build_entry_ctx: Callable[..., Any],
+    ledger: CallLedger,
+    execution_policy: ExecutionPolicy | None,
+    log: logging.Logger,
+) -> None:
+    """The handoff origin of the one pre-turn operations runner.
+
+    Both entry origins route through ``_run_mode_pre_turn_operations``: turn
+    start calls it directly (its briefing feeds prompt assembly), and the
+    mid-turn handoff calls it through this thin wrapper (no briefing is
+    consumed). The former wrapper duplicated the runner's error posture —
+    ``ApprovalRequired`` passthrough plus a warning swallow — but that
+    posture already lives once inside ``run_mode_pre_turn_operations``
+    (``ipsar_fsm``), so the copy was deleted, not gated.
+
+    Without this, lifecycle-bound prewarms (the bash pack's ``sandbox_facts``
+    session probe) never run for a mode reached mid-turn, so the first
+    effectful gate in that mode sees a MISSING containment fact and the host
+    policy engine fail-closed to an approval prompt even though the command
+    would have run sandboxed (the 2026-09-10 scratch-dir approval prompt).
+    """
+    await _run_mode_pre_turn_operations(
+        mode_id=mode_id,
+        build_entry_ctx=build_entry_ctx,
+        ledger=ledger,
+        execution_policy=execution_policy,
+        log=log,
+    )
 
 
 def _advance_handoff_workflow_position(
@@ -5952,6 +5986,7 @@ async def _execute_mid_turn_handoff(
                 ctx=ctx,
                 ledger=ledger,
                 execution_policy=execution_policy,
+                routing_ctx=routing_ctx,
                 preferred_model_id=preferred_model_id,
                 pool=pool,
                 log=log,
@@ -6013,12 +6048,11 @@ async def _execute_mid_turn_handoff(
                 log=log,
             )
             # ── Mid-turn pre-turn operations ────────────
-            # Run the new mode's ``pre_turn_operation_ids``
-            # exactly as the turn-start path does; lives in
-            # ``_run_mid_turn_pre_turn_operations``.
-            await _run_mid_turn_pre_turn_operations(
-                target_stage=target_stage,
-                target_mode_config=target_mode_config,
+            # through the ONE pre-turn operations runner; the
+            # handoff wrapper owns only the origin difference
+            # (no briefing is consumed mid-turn).
+            await _run_handoff_pre_turn_operations(
+                mode_id=target_stage,
                 build_entry_ctx=build_entry_ctx,
                 ledger=ledger,
                 execution_policy=execution_policy,
@@ -7450,25 +7484,15 @@ async def _intercept_mode_handoff(
         # The planner (e.g. ``plan``) returned no
         # routing target. Surface a structured recovery
         # prompt instead of continuing in the data-less
-        # planner mode (the 2026-07-30 bounce).
-        content = (
-            f"I attempted to plan this request in "
-            f"`{state.plan_failed_mode}` mode but could "
-            f"not produce a routing decision (reason: "
-            f"{state.plan_failed_reason}). This is often "
-            f"a sign of a complex or ambiguous multi-step "
-            f"request.\n\n"
-            f"You can:\n"
-            f"  1. Rephrase the request with explicit "
-            f"sequential steps "
-            f'(e.g. "search for X, then write a markdown '
-            f'report").\n'
-            f"  2. Name the target mode directly (e.g. "
-            f"`/markdown ...`, `/ponder ...`) to bypass "
-            f"planning.\n"
-            f"  3. Ask me to discuss it first "
-            f"(`/discuss ...`) so I can clarify what you "
-            f"want before committing to a workflow."
+        # planner mode (the 2026-07-30 bounce). The text is
+        # rendered by the ONE renderer
+        # (``build_plan_failure_recovery``) — the turn-start
+        # origin calls it inside ``execute_entry_phase``;
+        # this origin must not carry a second copy.
+        content = build_plan_failure_recovery(
+            mode_id=state.plan_failed_mode,
+            plan_reason=state.plan_failed_reason,
+            partial_step_dicts=[],
         )
         return _ModeHandoff(
             action=_BreakIteration(),
@@ -8169,13 +8193,16 @@ async def _run_turn_entry_sequence(
     query = entry_result.first_step_query or query
     early_user_context = entry_result.early_user_context
 
-    # Chat/workflow modes: run pre-turn operations
+    # Chat/workflow modes: run pre-turn operations through the one
+    # pre-turn operations runner (the handoff origin calls the same
+    # runner through ``_run_handoff_pre_turn_operations``).
     ctx = build_entry_ctx(conversation_excerpt_markdown=early_user_context)
-    pre_result = await run_mode_pre_turn_operations(
-        mode_id,
-        ctx,
+    pre_result = await _run_mode_pre_turn_operations(
+        mode_id=mode_id,
+        build_entry_ctx=build_entry_ctx,
         ledger=ledger,
         execution_policy=execution_policy,
+        log=log,
     )
     pre_briefing = _extract_pre_turn_briefing(pre_result)
     # ── Phase 1.0: Input guard ─────────────────────────────────────
