@@ -620,7 +620,7 @@ def _extract_hint_target(hint_text: str) -> str:
 
 def _build_budget_briefing(
     *,
-    state: Any,
+    state: _TurnState,
     max_tool_iterations: int,
     per_step_max_iterations: int,
     per_step_max_tool_calls: int,
@@ -757,7 +757,7 @@ def _build_budget_briefing(
 _LEDGER_REF_ABBREV_CHARS = 12
 
 
-def _build_state_ledger_lines(*, state: Any) -> list[str]:
+def _build_state_ledger_lines(*, state: _TurnState) -> list[str]:
     """Build the deterministic receipts/refs lines for the lifecycle block.
 
     The state ledger (R3: state is not history): writes landed/attempted
@@ -789,7 +789,7 @@ def _build_state_ledger_lines(*, state: Any) -> list[str]:
 
 def _build_budget_count_lines(
     *,
-    state: Any,
+    state: _TurnState,
     max_tool_iterations: int,
     per_step_max_iterations: int,
     per_step_max_tool_calls: int,
@@ -827,7 +827,7 @@ def _build_budget_count_lines(
 
 def _build_per_target_call_limits(
     *,
-    state: Any,
+    state: _TurnState,
     tool_schemas: list[dict[str, Any]],
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
@@ -877,7 +877,7 @@ def _build_per_target_call_limits(
 
 def _build_sub_turn_contract(
     *,
-    state: Any,
+    state: _TurnState,
     remaining_iterations: int,
     budget_exhausted: bool,
 ) -> str:
@@ -1804,7 +1804,7 @@ def _wire_delegate_fn(
 
 def _wire_tool_output_events(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     on_stage_hook: Any,
     emit_tool_output_fn: Any,
@@ -1897,7 +1897,7 @@ def _wire_fork_fn(
 
 def _wire_record_model_usage(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     record_model_usage_fn: Any,
 ) -> Callable[..., None]:
@@ -1944,7 +1944,7 @@ def _wire_record_model_usage(
 
 def _wire_budget_forces_final(
     *,
-    state: Any,
+    state: _TurnState,
     turn_budget: TurnBudget | None,
     turn_start_mono: float,
     budget_forces_final_fn: Any,
@@ -2017,7 +2017,7 @@ async def _bound_by_wall_deadline(awaitable: Awaitable[Any], deadline_s: float |
 
 def _wire_resolve_iteration_model(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     preferred_model_id: str | None,
     resolve_model: Callable[[str], Any],
@@ -2079,7 +2079,7 @@ def _wire_resolve_iteration_model(
 
 def _init_turn_routing_hint(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -2195,7 +2195,7 @@ def _init_turn_routing_hint(
 
 def _prepare_turn_messages_and_model(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -2395,7 +2395,7 @@ def _append_completion_block(content: str, block_message: str) -> str:
 
 def _apply_turn_completion_contract(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     content: str,
@@ -2520,7 +2520,7 @@ def _apply_turn_completion_contract(
 
 def _append_post_turn_content(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     content: str,
     pre_handoff_text: str,
@@ -2605,7 +2605,7 @@ def _poll_operator_signal(hooks: TurnHooks) -> str:
 
 async def _resolve_iteration_lifecycle(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     mode_config: Any,
@@ -2769,7 +2769,7 @@ async def _resolve_iteration_lifecycle(
 
 def _per_iteration_nudges(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     max_tool_iterations: int,
     turns_in_stage: int,
@@ -3417,7 +3417,7 @@ def _record_request_snapshot(state: _TurnState, hooks: TurnHooks, snapshot: dict
 
 async def _iteration_completion_or_expiry(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -3521,7 +3521,7 @@ async def _iteration_completion_or_expiry(
 
 async def _model_completion_for_iteration(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -3671,7 +3671,11 @@ async def _model_completion_for_iteration(
         # ``completion_budget_tokens`` tightens further
         # (BUDGET_SCOPES_RFC scope 2: min(mode, model, settings)).
         # See _effective_completion_max_tokens.
-        max_tokens=state.request_context_budget.completion_tokens,
+        max_tokens=(
+            state.request_context_budget.completion_tokens
+            if state.request_context_budget
+            else 0
+        ),
         temperature=0.4,
         tools=effective_tools,
         # Carry the typed segment view alongside ``messages`` so the
@@ -3802,7 +3806,7 @@ def _resolve_call_cost(
 
 async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry fold
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     max_tool_iterations: int,
@@ -4004,7 +4008,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
 
 def _synthesize_empty_completion_call(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     query: str,
     completion: Any,
@@ -4124,7 +4128,7 @@ def _synthesize_empty_completion_call(
 
 def _compute_post_handoff_hint(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     query: str,
     target_stage: str,
@@ -4291,7 +4295,7 @@ def _compute_post_handoff_hint(
 
 def _apply_post_handoff_hint_guards(
     *,
-    state: Any,
+    state: _TurnState,
     target_stage: str,
     target_mode_config: Any,
     yield_policy_override: YieldPolicy | None,
@@ -4508,7 +4512,7 @@ def _apply_post_handoff_hint_guards(
 
 async def _intercept_yield_tool_call(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     yield_policy_override: YieldPolicy | None,
@@ -4580,7 +4584,7 @@ async def _intercept_yield_tool_call(
 
 def _arm_write_contract_backstop(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     budget_forces_final: Callable[[], bool],
@@ -4648,7 +4652,7 @@ def _arm_write_contract_backstop(
 
 def _arm_stalled_write_rescue(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     content: str,
@@ -4821,7 +4825,7 @@ async def _begin_recovery_record(
 
 async def _begin_tool_dispatch(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     max_tool_iterations: int,
@@ -4915,7 +4919,7 @@ async def _begin_tool_dispatch(
     return _tool_kind, _tool_dispatch_started, recovery_item_id, recovery_retry_policy
 
 
-def _advance_turn_plan_position(*, state: Any, target_stage: str) -> None:
+def _advance_turn_plan_position(*, state: _TurnState, target_stage: str) -> None:
     """Point the turn's mid-turn plan at the step a handoff lands on.
 
     Moves ``current_step_id`` forward to the first declared step at or after
@@ -4938,7 +4942,7 @@ def _advance_turn_plan_position(*, state: Any, target_stage: str) -> None:
             return
 
 
-def _on_plan_turn_position(*, state: Any, target_stage: str) -> Any:
+def _on_plan_turn_position(*, state: _TurnState, target_stage: str) -> Any:
     """Return the turn's mid-turn plan when ``target_stage`` is its current step."""
     position = getattr(state, "turn_plan_position", None)
     if position is None:
@@ -4949,7 +4953,7 @@ def _on_plan_turn_position(*, state: Any, target_stage: str) -> Any:
     return position
 
 
-def _plan_driven_next_step(*, state: Any, hooks: TurnHooks, target_stage: str) -> Any:
+def _plan_driven_next_step(*, state: _TurnState, hooks: TurnHooks, target_stage: str) -> Any:
     """Return ``(position, next_step)`` for the plan-driven post-handoff hint.
 
     A mid-turn plan the handoff landed on names the declared step after the
@@ -4992,7 +4996,7 @@ def _plan_driven_next_step(*, state: Any, hooks: TurnHooks, target_stage: str) -
 
 def _remaining_chain_steps(
     *,
-    state: Any,
+    state: _TurnState,
     query: str,
     target_stage: str,
     target_mode_config: Any,
@@ -5030,7 +5034,7 @@ def _remaining_chain_steps(
 
 def _refresh_user_message_capability_block(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     query: str,
     target_stage: str,
@@ -5087,7 +5091,7 @@ def _refresh_user_message_capability_block(
 
 def _recompile_manifest_and_refresh_user(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     query: str,
     tool_schemas: list[dict[str, Any]],
@@ -5112,7 +5116,7 @@ def _recompile_manifest_and_refresh_user(
 
 def _build_structured_handoff_context(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -5216,7 +5220,7 @@ def _build_structured_handoff_context(
 
 def _apply_handoff_entry_routing_gate(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     query: str,
     target_stage: str,
@@ -5321,7 +5325,7 @@ def _apply_handoff_entry_routing_gate(
 
 def _handle_entry_operation_failure(
     *,
-    state: Any,
+    state: _TurnState,
     query: str,
     target_stage: str,
     entry_exc: Exception,
@@ -5372,7 +5376,7 @@ def _handle_entry_operation_failure(
 
 def _record_turn_plan_position(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     target_stage: str,
     entry_result: Any,
@@ -5455,7 +5459,7 @@ def _record_turn_plan_position(
 
 async def _run_handoff_entry_operations(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     query: str,
     target_stage: str,
@@ -5757,7 +5761,7 @@ def _resolve_mode_model_pin(
 
 def _apply_mode_routing_context(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     resolve_model: Callable[[str], Any] | None,
@@ -5798,7 +5802,7 @@ def _apply_mode_routing_context(
 
 async def _execute_mid_turn_handoff(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
@@ -6113,7 +6117,7 @@ async def _execute_mid_turn_handoff(
 
 async def _force_final_content_completion(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     content: str,
@@ -6237,7 +6241,7 @@ async def _force_final_content_completion(
     return content, content_source
 
 
-def _structured_operation_failure_context(state: Any) -> list[str]:
+def _structured_operation_failure_context(state: _TurnState) -> list[str]:
     """Extract structured failure context from the last ``OperationResult.extra``.
 
     Surfaces *why* the last in-process operation kept failing (e.g. "truncated
@@ -6265,7 +6269,7 @@ def _structured_operation_failure_context(state: Any) -> list[str]:
 
 def _build_cap_pause_diagnostic(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     cap_pause_reason: str,
     log: logging.Logger,
@@ -6324,7 +6328,7 @@ def _build_cap_pause_diagnostic(
 
 def _build_provider_quota_diagnostic(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     log: logging.Logger,
 ) -> str:
@@ -6365,7 +6369,7 @@ def _build_provider_quota_diagnostic(
 
 def _build_stream_stall_diagnostic(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     log: logging.Logger,
 ) -> str:
@@ -6404,7 +6408,7 @@ def _build_stream_stall_diagnostic(
 
 def _yield_fallback_question(
     *,
-    state: Any,
+    state: _TurnState,
     yield_policy: YieldPolicy,
     max_tool_iterations: int,
 ) -> tuple[str, str]:
@@ -6442,7 +6446,7 @@ def _yield_fallback_question(
 
 def _resolve_provider_failure_diagnostic(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     log: logging.Logger,
 ) -> str | None:
@@ -6466,7 +6470,7 @@ def _resolve_provider_failure_diagnostic(
 
 async def _resolve_empty_turn_content(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     mode_config: Any,
@@ -6638,7 +6642,7 @@ async def _resolve_empty_turn_content(
 
 def _track_handoff_and_guard_loops(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     target_stage: str,
     routing_hint: str,
@@ -6713,7 +6717,7 @@ def _tool_batch_signature(tool_calls: list[dict[str, Any]]) -> str:
 
 def _guard_repeated_tool_batch(
     *,
-    state: Any,
+    state: _TurnState,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     messages: list[dict[str, Any]],
@@ -6784,7 +6788,7 @@ def _guard_repeated_tool_batch(
 
 def _handle_truncated_tool_arguments(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     tool_name: str,
     tool_arguments: Any,
@@ -6848,7 +6852,7 @@ def _handle_truncated_tool_arguments(
 
 def _abort_synthesized_call_missing_params(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     tool_name: str,
     tool_arguments: Any,
@@ -6903,7 +6907,7 @@ def _abort_synthesized_call_missing_params(
 
 def _enforce_forced_action_on_dispatch(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     query: str,
     tool_call: dict[str, Any],
@@ -7022,7 +7026,7 @@ def _enforce_forced_action_on_dispatch(
 
 def _apply_lifecycle_action(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     max_handoffs_per_turn: int,
     lifecycle_action: Any,
@@ -7160,7 +7164,7 @@ def _apply_lifecycle_action(
 
 def _inject_iteration_briefing(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     max_tool_iterations: int,
     per_step_max_iterations: int,
@@ -7248,7 +7252,7 @@ class _ModeHandoff:
 
 async def _intercept_mode_handoff(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: Any,
@@ -7558,7 +7562,7 @@ async def _run_fork_transition(
     target_stage: str,
     tool_arguments: Any,
     query: str,
-    state: Any,
+    state: _TurnState,
     ctx: Any,
 ) -> str:
     target_ids = [item.strip() for item in target_stage[5:].split(",") if item.strip()]
@@ -7587,7 +7591,7 @@ async def _run_fork_transition(
 
 async def _intercept_transition_stage(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: Any,
@@ -7835,7 +7839,7 @@ async def _dispatch_capability_and_track(
     tool_arguments: Any,
     tool_kind: str,
     ctx: Any,
-    state: Any,
+    state: _TurnState,
     ledger: Any,
     pool: MCPToolPool,
     operation_catalog: Any,
@@ -7988,7 +7992,7 @@ def _wire_build_entry_ctx(
 
 def _apply_router_terminal_action(
     *,
-    state: Any,
+    state: _TurnState,
     router_decision: Any,
     effective_tools: Any,
     transitioned_to: str | None,
@@ -8086,7 +8090,7 @@ async def _run_turn_entry_sequence(
     promises_routing_contract_fn: Any,
     resume_in_flight_target_fn: Any,
     run_mode_entry_operations_fn: Any,
-    state: Any,
+    state: _TurnState,
     log: logging.Logger,
     continuation: TurnContinuation | None = None,
 ) -> tuple[
@@ -8136,7 +8140,7 @@ async def _run_turn_entry_sequence(
             caller_suppress_routing_hint,
             "",
             "",
-            str(state.messages[0].get("content", "")),
+            str((state.messages[0] if state.messages else {}).get("content", "")),
             [],
             continuation.mode_instruction,
             None,
@@ -8263,7 +8267,7 @@ async def _run_turn_entry_sequence(
 
 async def _process_empty_completion(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     query: str,
     completion: Any,
@@ -8569,7 +8573,7 @@ class _TurnInfrastructure:
         delegate_fn: Any,
         ledger: CallLedger,
         turn_start_mono: float,
-        state: Any,
+        state: _TurnState,
         on_stage_hook: Any,
         max_handoffs_per_turn: int,
         hint_override_limit: int,
@@ -8818,7 +8822,7 @@ def _prepare_turn_infrastructure(
 
 async def _assemble_turn_surface_and_messages(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     pool: MCPToolPool,
     mode_id: str,
@@ -9110,7 +9114,7 @@ class _TurnLoopSetup:
 
 def _prepare_turn_loop(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     mode_config: Any,
     hooks: TurnHooks,
@@ -9178,7 +9182,7 @@ class _PreparedToolCall:
 
 
 def _batch_contains_expected_tool(
-    state: Any,
+    state: _TurnState,
     tool_calls: list[dict[str, Any]],
     current_call_id: str,
 ) -> bool:
@@ -9215,7 +9219,7 @@ async def _prepare_tool_call_dispatch(
     synthesized_forced: bool,
     mode_id: str,
     query: str,
-    state: Any,
+    state: _TurnState,
     ledger: CallLedger,
     messages: list[dict[str, Any]],
     operation_catalog: Any,
@@ -9393,7 +9397,7 @@ async def _resolve_empty_completion_for_dispatch(
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     yielded: bool,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     query: str,
     completion: Any,
@@ -9472,7 +9476,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     prepared: _PreparedToolCall,
     tool_call: dict[str, Any],
     tool_calls: list[dict[str, Any]],
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: CallLedger,
@@ -9636,7 +9640,7 @@ async def _dispatch_turn_tool_calls(
     *,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: CallLedger,
@@ -9762,7 +9766,7 @@ async def _dispatch_turn_tool_calls(
     return tools_dispatched
 
 
-def _has_terminal_dispatch_failure(state: Any, max_handoffs_per_turn: int) -> bool:
+def _has_terminal_dispatch_failure(state: _TurnState, max_handoffs_per_turn: int) -> bool:
     return bool(
         state.entry_failed
         or state.plan_failed
@@ -9777,7 +9781,7 @@ def _has_terminal_dispatch_failure(state: Any, max_handoffs_per_turn: int) -> bo
 def _interpret_natural_completion(
     *,
     completion: Any,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     max_tool_iterations: int,
     content: str,
@@ -9812,7 +9816,7 @@ def _interpret_natural_completion(
 
 def _next_loop_action(
     *,
-    state: Any,
+    state: _TurnState,
     max_tool_iterations: int,
     max_handoffs_per_turn: int,
 ) -> _LoopControl:
@@ -9863,7 +9867,7 @@ def _next_loop_action(
 
 def _resolve_dispatch_loop_action(
     *,
-    state: Any,
+    state: _TurnState,
     max_handoffs_per_turn: int,
     tools_dispatched: bool,
     completion: Any,
@@ -9902,7 +9906,7 @@ def _resolve_dispatch_loop_action(
 
 def _apply_iteration_lifecycle_action(
     *,
-    state: Any,
+    state: _TurnState,
     mode_id: str,
     max_handoffs_per_turn: int,
     lifecycle_action: Any,
@@ -9952,7 +9956,7 @@ def _apply_iteration_lifecycle_action(
 
 def _resolve_soft_accept(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     producer: str,
     mode_id: str,
@@ -10016,7 +10020,7 @@ def _resolve_soft_accept(
 
 async def _resolve_checked_commit_evidence(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     mode_config: Any,
@@ -10117,7 +10121,7 @@ async def _resolve_checked_commit_evidence(
 
 async def _finalize_turn_result(
     *,
-    state: Any,
+    state: _TurnState,
     hooks: TurnHooks,
     mode_id: str,
     query: str,
