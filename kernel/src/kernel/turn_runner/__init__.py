@@ -152,6 +152,11 @@ from kernel.tools.schema_translator import (
 )
 from kernel.turn_continuation import TurnContinuation, capture_segments, capture_state
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest, TurnHooks, TurnIdentity
+from kernel.turn_phases._compaction import (
+    hard_ceiling_stop_reason,
+    maybe_run_soft_epoch,
+    tool_size_refusal,
+)
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
     BlockNoCheckedCommit,
@@ -209,6 +214,7 @@ from kernel.turn_phases._routing_hint import (
     _format_remaining_steps,
     emit_transition_hint,
 )
+from kernel.turn_phases._spill import maybe_spill_tool_result
 from kernel.turn_phases._tool_schemas import (
     _TRANSITION_TOOL_NAME,
     _YIELD_TOOL_NAME,
@@ -250,6 +256,9 @@ from ._result import TurnResult
 from ._seams import ContextSeams
 from ._streaming import StreamedCompletionAdapter
 
+# Logger for the intra-turn compaction breaker block inside
+# ``_record_iteration_completion``: that function takes no ``log`` parameter.
+_intra_turn_log = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -3767,7 +3776,7 @@ def _resolve_call_cost(
     return canonical, provider_cost
 
 
-async def _record_iteration_completion(
+async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry fold
     *,
     state: Any,
     hooks: TurnHooks,
@@ -3812,6 +3821,15 @@ async def _record_iteration_completion(
     state.total_cache_creation_tokens += cache_creation_tokens
     state.total_duration_ms += duration_ms
     state.total_latency_ms += latency_ms
+    # Anchor the intra-turn compaction estimator on the kernel's own
+    # counted input tokens for this request (authoritative; includes
+    # framing), so the governor's soft/hard thresholds are computed from
+    # the same number the request fitter sized against.
+    state.intra_turn_compaction_estimator.observe_request_tokens(
+        state.request_context_budget.input_tokens
+        if state.request_context_budget is not None
+        else prompt_tokens
+    )
     proxy_telemetry = dict(usage.proxy_telemetry or {})
     if proxy_telemetry:
         # Sum the proxy's per-call counters across the turn so a footer can
@@ -3917,6 +3935,35 @@ async def _record_iteration_completion(
     if continuation is not None:
         assistant_msg["provider_continuation"] = asdict(continuation)
     messages.append(assistant_msg)
+    # ── Intra-turn governor: breaker + hard ceiling ──────────────
+    # One-way output circuit-breaker: the FIRST mid-turn
+    # ``finish_reason='length'`` trips it for the rest of the turn.
+    # A context-starved model cannot keep a behavioral rule (turn 1116
+    # made ~90 hallucinated calls after its first truncation), so the
+    # enforcement is the loop itself: ``finish_now`` strips tools at the
+    # next dispatch boundary and the turn ends with a clean final
+    # completion instead of retry floods. The hard ceiling forces the
+    # same clean finish. No mid-dispatch loop-break adapter is required.
+    cfg = state.intra_turn_compaction
+    if cfg.enabled:
+        if not state.truncation_tripped and getattr(completion, "finish_reason", None) == "length":
+            state.truncation_tripped = True
+            _intra_turn_log.warning(
+                "intra-turn compaction: output truncation observed "
+                "(mode=%s, iteration=%d); circuit-breaker tripped for the "
+                "rest of the turn",
+                mode_id,
+                state.iteration,
+            )
+        if state.truncation_tripped or hard_ceiling_stop_reason(state=state):
+            if not cfg.finish_now:
+                _intra_turn_log.warning(
+                    "intra-turn compaction: forcing clean turn end at the "
+                    "next dispatch boundary (mode=%s, estimate=%d)",
+                    mode_id,
+                    state.intra_turn_compaction_estimator.estimate(),
+                )
+            cfg.finish_now = True
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -9128,6 +9175,30 @@ async def _prepare_tool_call_dispatch(
 ) -> _PreparedToolCall:
     tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
     tool_call_id = str(tool_call.get("id") or "")
+    # ── Hard-ceiling / circuit-breaker large-dispatch gate ─────────
+    # Under the hard ceiling (or after the breaker tripped), large
+    # dispatches are denied with a model-visible refusal. Read-only
+    # tools are never gated: the model may still need to inspect what
+    # it already holds. The refusal keeps the loop alive so the model
+    # can observe the cap and finalize instead of being mistaken for a
+    # natural empty completion.
+    _ceiling_refusal = tool_size_refusal(state=state, tool_arguments=tool_arguments)
+    if _ceiling_refusal:
+        log.warning(
+            "refusing large dispatch of %s (mode=%s, breaker=%s)",
+            tool_name,
+            mode_id,
+            state.truncation_tripped,
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": _ceiling_refusal,
+            }
+        )
+        return _PreparedToolCall("continue", True)
     if _handle_truncated_tool_arguments(
         state=state,
         mode_id=mode_id,
@@ -9342,7 +9413,7 @@ async def _resolve_empty_completion_for_dispatch(
     )
 
 
-async def _execute_prepared_tool_call(
+async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chain
     *,
     prepared: _PreparedToolCall,
     tool_call: dict[str, Any],
@@ -9493,6 +9564,18 @@ async def _execute_prepared_tool_call(
     if thought_signature:
         tool_result_msg["thought_signature"] = thought_signature
     messages.append(tool_result_msg)
+    # Spill-on-arrival: the cache-aware default. A large result is ref'd
+    # out at delivery, BEFORE it ever enters the cached prefix, so normal
+    # operation stays append-only. The estimator always observes the
+    # (possibly previewed) append.
+    if state.intra_turn_compaction.enabled:
+        maybe_spill_tool_result(
+            result_message=tool_result_msg,
+            persist=hooks.tools.persist_tool_result,
+            task_id=hooks.identity.task_id,
+            preview_repeat_limit=state.intra_turn_compaction.preview_repeat_limit,
+        )
+    state.intra_turn_compaction_estimator.observe_append(tool_result_msg)
     return "continue"
 
 
@@ -10198,7 +10281,7 @@ def _save_pause_continuation(
         state.suspension_reason = ""
 
 
-async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares the existing turn loop
+async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch shares the existing turn loop
     *,
     mode_id: str,
     query: str,
@@ -10819,6 +10902,35 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
             record_model_usage=_record_model_usage,
             emit_stage=_emit_stage,
         )
+        _state.intra_turn_compaction_estimator.observe_request_tokens(
+            _state.request_context_budget.input_tokens
+            if _state.request_context_budget is not None
+            else 0
+        )
+        if _state.intra_turn_compaction.enabled:
+            maybe_run_soft_epoch(
+                state=_state,
+                hooks=hooks,
+                messages=messages,
+                model_def=effective_model_def,
+                tools=effective_tools,
+                max_tokens=(
+                    _state.request_context_budget.completion_tokens
+                    if _state.request_context_budget is not None
+                    else 0
+                ),
+                mode_id=mode_id,
+                prompt_cache_key=_prompt_cache_key(hooks),
+                log=_log,
+            )
+        if _state.intra_turn_compaction.finish_now and effective_tools is not None:
+            effective_tools = None
+            _log.warning(
+                "intra-turn compaction: stripping tools for a clean finish "
+                "(tripped=%s, estimate=%d)",
+                _state.truncation_tripped,
+                _state.intra_turn_compaction_estimator.estimate(),
+            )
         assistant_msg = _iteration_record["assistant_msg"]
         tool_calls = _iteration_record["tool_calls"]
 

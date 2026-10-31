@@ -28,6 +28,7 @@ from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolR
 from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
+from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 if TYPE_CHECKING:
@@ -488,6 +489,26 @@ class _TurnState:
     genuine answer to the user's question, and the guard's own contract
     is "surfacing model prose". A turn that dispatched real tools never
     sets this (failed writes still block strictly)."""
+
+    # ── Intra-turn compaction (turn-1116) ────────────────────────────
+    # The mid-turn context governor's per-turn state. ``cfg`` mirrors
+    # kernel settings once per turn so the governor's decisions are
+    # consistent even if the process-wide settings object is reloaded
+    # mid-turn; ``estimator`` anchors on the kernel's counted request
+    # tokens and advances with byte deltas; ``epoch_done_for_crossing``
+    # implements the hysteresis (at most ONE batched ref-out epoch per
+    # soft-trigger crossing); ``truncation_tripped`` is the one-way
+    # output circuit-breaker (first finish_reason=length mid-turn).
+    intra_turn_compaction: IntraTurnCompactionState = field(
+        default_factory=IntraTurnCompactionState
+    )
+    intra_turn_compaction_estimator: LiveArrayEstimator = field(default_factory=LiveArrayEstimator)
+    truncation_tripped: bool = False
+    """One-way output circuit-breaker: set at the FIRST mid-turn
+    finish_reason=length. Further large emissions are kernel-blocked
+    for the rest of the turn — a context-starved model cannot keep a
+    behavioral rule (turn 1116 made ~90 hallucinated calls after its
+    first truncation)."""
 
     # ── Within-turn read cache (Level C) ─────────────────────────────
     # Per-turn cache of read-tool call signatures → one-line abbreviations.

@@ -109,6 +109,17 @@ def project_thread_messages(
     )
 
 
+def persist_thread_tool_result(thread_path: Path, record: dict[str, Any]) -> str:
+    """Persist one tool-result record and return its dereferenceable ref.
+
+    Wired as ``ToolHooks.persist_tool_result`` so the kernel's
+    spill-on-arrival path stores large tool results in the SAME store and
+    record shape the result projector uses — a preview's ref dereferences
+    via ``thread_read_content`` and via the projector's loader alike.
+    """
+    return _persist_result(thread_path, record)
+
+
 def _thread_store(thread_path: Path | None) -> ThreadStore | None:
     """Return a ``ThreadStore`` for ``thread_path``, or ``None``.
 

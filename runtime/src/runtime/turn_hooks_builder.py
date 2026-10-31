@@ -79,6 +79,7 @@ from runtime.context_assembly import (
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from runtime.provider_endpoints import proxy_route_view
+from runtime.spill_on_arrival import build_persist_tool_result_hook
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
 from runtime.thread import (
     build_open_task_messages,
@@ -1188,6 +1189,7 @@ def _assemble_turn_hooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
             post_dispatch_result=runtime.decorate_pack_tool_result,
+            persist_tool_result=build_persist_tool_result_hook(runtime.paths.thread_path),
         ),
         operations=OperationHooks(
             execute_operation=wired.execute_operation,

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from kernel.provider_contracts import CompletionRequest, CompletionResult, ProviderContinuation
 from kernel.turn_hooks import ModelHooks, TurnHooks
+from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.turn_runner import ContextSeams, _record_iteration_completion, run_turn
 
 
@@ -35,6 +36,11 @@ async def test_recording_completion_keeps_provider_context_separate_from_prose()
         total_duration_ms=0.0,
         total_latency_ms=0.0,
         iteration=1,
+        # Intra-turn compaction state the recording phase now reads.
+        intra_turn_compaction=IntraTurnCompactionState(),
+        intra_turn_compaction_estimator=LiveArrayEstimator(),
+        truncation_tripped=False,
+        request_context_budget=None,
     )
     messages = []
     await _record_iteration_completion(

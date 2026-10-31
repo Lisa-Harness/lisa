@@ -6,6 +6,31 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Intra-turn context compaction with cache-aware policy.** The mid-turn
+  governor (`kernel.turn_phases._compaction`) bounds the live provider
+  message array inside a single turn — the accumulation surface behind the
+  2026-10-31 turn-1116 failure (61 dispatches full-text resident, ~144K-token
+  average calls, output headroom collapse, truncation-and-hallucination
+  spiral). An incremental, over-count-biased live-array estimator anchors on
+  the kernel's own per-request token count; crossing
+  `intra_turn_soft_trigger_share` (default 0.5) of the model window runs ONE
+  batched ref-out epoch per crossing by driving the existing
+  `fit_request_context` host-projector path (newest-first near-tail eviction,
+  previews + `r<sha256>` refs, projection bookkeeping resynced). Large tool
+  results are spilled at delivery (`ToolHooks.persist_tool_result` wired by
+  the host to the same thread store the projector uses) before they ever
+  enter the cached prefix, so normal operation stays append-only and
+  dispatches keep prefix-cache hits; eviction is one-way and recovery is a
+  dereference. At `intra_turn_hard_ceiling_share` (default 0.65) large
+  dispatches are refused with a model-visible message and the loop is
+  pointed at a clean finish at the next dispatch boundary — deliberately not
+  dependent on the in-flight loop-control adapter. The first mid-turn
+  `finish_reason='length'` trips a one-way output circuit-breaker for the
+  rest of the turn. Cache economics constants (`intra_turn_cache_read_share`,
+  `intra_turn_cache_write_share`) support bust-cost accounting and logging.
+  Off-switch: `INTRA_TURN_COMPACTION_ENABLED=false`.
+- **Tests:** `kernel/tests/test_intra_turn_compaction.py`
+
 - **Thread-store hash chain — tamper evidence for the primary record.**
   "Append-only" described the writer, not the files: an operator could edit
   or delete any stored entry and nothing could detect it. Every appended

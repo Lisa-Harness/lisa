@@ -435,6 +435,16 @@ class ToolHooks:
     #: return typed results; neither is decorated.
     post_dispatch_result: Callable[[str, dict[str, Any], str, str], str] | None = None
 
+    #: Optional persistence closure for spill-on-arrival (the cache-aware
+    #: default for large tool results, ``kernel.turn_phases._spill``).
+    #: ``persist_tool_result(record) -> ref`` persists one tool-result
+    #: payload and returns a dereferenceable ``r<sha256>`` ref. The record
+    #: shape and store MUST match the host's result projector so the ref
+    #: dereferences via both the projector's loader and the thread tools.
+    #: When ``None``, large results stay inline and only the governor's
+    #: epoch (which drives the projector) can evict them.
+    persist_tool_result: Callable[[dict[str, Any]], str] | None = None
+
 
 # ── TurnHooks — the composed container ──────────────────────────────────
 @dataclass

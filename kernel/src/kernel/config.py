@@ -375,6 +375,46 @@ class Settings(BaseSettings):
     # append without rewriting anything.
     context_reduction_target_share: float = Field(default=0.75, gt=0, le=1)
 
+    # ── Intra-turn compaction (turn-1116) ────────────────────────────
+    # Master flag for the mid-turn context governor: an incremental live
+    # -array estimator, ONE batched ref-out epoch per soft-trigger
+    # crossing (hysteresis), a hard ceiling that denies new large
+    # dispatches, and a one-truncation output circuit-breaker. Default
+    # ON with conservative thresholds; set
+    # ``INTRA_TURN_COMPACTION_ENABLED=false`` to disable the whole
+    # mechanism and fall back to the reactive request-fit reduction
+    # alone.
+    intra_turn_compaction_enabled: bool = Field(default=True)
+    # Soft trigger: at/above this share of the model context window, the
+    # governor runs ONE batched ref-out epoch (spilling large tool
+    # results to the thread store and leaving previews + refs). Between
+    # epochs the live array is append-only, which is also what keeps
+    # normal dispatches cache-hits instead of prefix rewrites. Chosen
+    # conservatively low: an early epoch costs one rewrite; a late one
+    # risks the truncation spiral it exists to prevent.
+    intra_turn_soft_trigger_share: float = Field(default=0.5, gt=0, lt=1)
+    # Hard ceiling: at/above this share, new large tool dispatches are
+    # refused (model-visible message) and the loop is pointed at a clean
+    # finish at the next dispatch boundary instead of relying on
+    # mid-dispatch loop breaks.
+    intra_turn_hard_ceiling_share: float = Field(default=0.65, gt=0, le=1)
+    # Minimum serialized tool-call arguments (characters) the hard
+    # ceiling treats as a "large" dispatch. Read-only tools are never
+    # gated, so the model can still inspect results it already holds.
+    intra_turn_large_dispatch_min_chars: int = Field(default=2000)
+    # Spill-on-arrival: previews use the first/last excerpt of a large
+    # tool result; only fresh (non-ref, non-preview) content counts.
+    # Pending dedupes collapse to a single line when one preview has
+    # appeared this many times in the current result.
+    intra_turn_spill_preview_repeat_limit: int = Field(default=3)
+    # Cache economics constants for bust accounting/logging (0.0 =
+    # use the manifest's per-model prices). Provider-standard defaults:
+    # cache reads bill at roughly 0.1x base input and cache creation at
+    # roughly 1.25x, so rewriting a cached suffix re-pays it at about
+    # 12.5x the read rate. Accounting only — they never hard-gate.
+    intra_turn_cache_read_share: float = Field(default=0.1, ge=0, le=1)
+    intra_turn_cache_write_share: float = Field(default=1.25, ge=0)
+
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
     # authority component as ``authority × confidence × multiplier``.
@@ -481,6 +521,12 @@ class Settings(BaseSettings):
         "context_default_window_tokens",
         "context_request_margin_share",
         "context_reduction_target_share",
+        "intra_turn_soft_trigger_share",
+        "intra_turn_hard_ceiling_share",
+        "intra_turn_large_dispatch_min_chars",
+        "intra_turn_spill_preview_repeat_limit",
+        "intra_turn_cache_read_share",
+        "intra_turn_cache_write_share",
         mode="before",
     )
     @classmethod
