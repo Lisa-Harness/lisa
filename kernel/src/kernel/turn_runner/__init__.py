@@ -60,7 +60,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from math import ceil
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -3672,9 +3672,7 @@ async def _model_completion_for_iteration(
         # (BUDGET_SCOPES_RFC scope 2: min(mode, model, settings)).
         # See _effective_completion_max_tokens.
         max_tokens=(
-            state.request_context_budget.completion_tokens
-            if state.request_context_budget
-            else 0
+            state.request_context_budget.completion_tokens if state.request_context_budget else 0
         ),
         temperature=0.4,
         tools=effective_tools,
@@ -5800,6 +5798,25 @@ def _apply_mode_routing_context(
         state.mode_model_def = resolved[1]
 
 
+class _MidTurnHandoffOutcome(NamedTuple):
+    """The ordered result of the mid-turn mode handoff (Case B).
+
+    Positional order is load-bearing: the dispatch loop unpacks it positionally.
+    """
+
+    mode_id: str
+    mode_config: Any
+    ctx: Any
+    tool_output: str
+    tool_schemas: list[dict[str, Any]]
+    capability_manifest: CapabilityManifest
+    routing_hint: str
+    chain_advance_guidance: str
+    pending_yield: YieldAction | None
+    handoff_to: str | None
+    entry_output: str
+
+
 async def _execute_mid_turn_handoff(
     *,
     state: _TurnState,
@@ -5831,19 +5848,7 @@ async def _execute_mid_turn_handoff(
     assemble_system: Callable[[str, str | None], str],
     assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     log: logging.Logger,
-) -> tuple[
-    str,
-    Any,
-    Any,
-    str,
-    list[dict[str, Any]],
-    CapabilityManifest,
-    str,
-    str,
-    YieldAction | None,
-    str | None,
-    str,
-]:
+) -> _MidTurnHandoffOutcome:
     """Execute the mid-turn mode handoff (Case B of ``transition_stage``).
 
     Swaps the system prompt base for the target mode, builds the structured
@@ -6100,7 +6105,7 @@ async def _execute_mid_turn_handoff(
             )
             if entry_output:
                 tool_output += f"\n\nEntry operation results:\n{entry_output}"
-    return (
+    return _MidTurnHandoffOutcome(
         mode_id,
         mode_config,
         ctx,
@@ -8071,6 +8076,24 @@ async def _apply_output_guard(
     return content, turn_blocked, block_origin
 
 
+class _TurnEntryOutcome(NamedTuple):
+    """The ordered result of the Phase-1 turn-start sequence.
+
+    Positional order is load-bearing: callers unpack it positionally.
+    """
+
+    early_return: TurnResult | None
+    query: str
+    suppress_routing_hint: bool
+    early_user_context: str
+    pre_briefing: str
+    system_prompt: str
+    slice_outcomes: list[SliceOutcome]
+    mode_instruction: str
+    stage_instruction: str | None
+    ctx: Any
+
+
 async def _run_turn_entry_sequence(
     *,
     hooks: TurnHooks,
@@ -8093,18 +8116,7 @@ async def _run_turn_entry_sequence(
     state: _TurnState,
     log: logging.Logger,
     continuation: TurnContinuation | None = None,
-) -> tuple[
-    TurnResult | None,
-    str,
-    bool,
-    str,
-    str,
-    str,
-    list[SliceOutcome],
-    str,
-    str | None,
-    Any,
-]:
+) -> _TurnEntryOutcome:
     """Run the Phase-1 sequence: entry phase, pre-turn ops, input guard, slice.
 
     Returns ``(early_return, query, suppress_routing_hint, early_user_context,
@@ -8134,7 +8146,7 @@ async def _run_turn_entry_sequence(
         ctx = ctx.model_copy(update=context.model_dump())
         ctx.thread_store_slug = stem
         ctx.approval_request_id = continuation.approval_request_id
-        return (
+        return _TurnEntryOutcome(
             None,
             query,
             caller_suppress_routing_hint,
@@ -8163,7 +8175,7 @@ async def _run_turn_entry_sequence(
         run_mode_entry_operations_fn=run_mode_entry_operations_fn,
     )
     if entry_result.early_return is not None:
-        return (
+        return _TurnEntryOutcome(
             entry_result.early_return,
             query,
             caller_suppress_routing_hint,
@@ -8217,7 +8229,7 @@ async def _run_turn_entry_sequence(
     if not input_guard_result.allowed:
         blocked_reason = input_guard_result.blocked_reason or "Input blocked by safety policy."
         log.warning("Input guard blocked turn for mode=%s: %s", mode_id, blocked_reason)
-        return (
+        return _TurnEntryOutcome(
             TurnResult(
                 response_text=blocked_reason,
                 blocked=True,
@@ -8251,7 +8263,7 @@ async def _run_turn_entry_sequence(
         stage_id_override=stage_id_override,
     )
     system_prompt = assemble_system(mode_instruction, stage_instruction)
-    return (
+    return _TurnEntryOutcome(
         None,
         query,
         suppress_routing_hint,
@@ -8820,6 +8832,31 @@ def _prepare_turn_infrastructure(
     )
 
 
+class _TurnSurfaceAssembly(NamedTuple):
+    """The ordered result of the pre-loop tool-surface and message assembly.
+
+    Positional order is load-bearing: ``run_turn`` unpacks it positionally.
+    """
+
+    early_return: TurnResult | None
+    tool_schemas: list[dict[str, Any]]
+    operation_catalog: Any
+    tool_catalog: Any
+    capability_manifest: Any
+    sys_segments: SystemPromptSegments
+    chain_advance_guidance: str
+    stalled_write_guidance: str
+    routing_hint: str
+    system_prompt: str
+    user_context: str
+    memory_snippet: str
+    messages: list[dict[str, Any]]
+    preferred_model_id: str | None
+    model_def: Any
+    pregate_iteration1_model: Any
+    pregate_decision: Any
+
+
 async def _assemble_turn_surface_and_messages(
     *,
     state: _TurnState,
@@ -8844,25 +8881,7 @@ async def _assemble_turn_surface_and_messages(
     assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     log: logging.Logger,
     continuation: TurnContinuation | None = None,
-) -> tuple[
-    TurnResult | None,
-    Any,
-    Any,
-    Any,
-    Any,
-    Any,
-    str,
-    str,
-    str,
-    str,
-    str,
-    str,
-    list[dict[str, Any]],
-    str | None,
-    Any,
-    Any,
-    Any,
-]:
+) -> _TurnSurfaceAssembly:
     """Assemble the turn's tool surface, context, and seeded messages.
 
     Runs the pre-loop assembly: tool-surface build + capability-manifest
@@ -8932,7 +8951,7 @@ async def _assemble_turn_surface_and_messages(
         )
         state.mode_model_def = model_def
         state.effective_model = model_def
-        return (
+        return _TurnSurfaceAssembly(
             None,
             tool_schemas,
             operation_catalog,
@@ -9058,7 +9077,7 @@ async def _assemble_turn_surface_and_messages(
         log=log,
     )
     if isinstance(_preamble, TurnResult):
-        return (
+        return _TurnSurfaceAssembly(
             _preamble,
             tool_schemas,
             operation_catalog,
@@ -9084,7 +9103,7 @@ async def _assemble_turn_surface_and_messages(
         _pregate_iteration1_model,
         _pregate_decision,
     ) = _preamble
-    return (
+    return _TurnSurfaceAssembly(
         None,
         tool_schemas,
         operation_catalog,
