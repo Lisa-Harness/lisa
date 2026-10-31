@@ -143,6 +143,19 @@ on-demand integrity audit, never part of a per-read path. It reports:
 - `first_divergence` plus every `divergences` entry (verification continues
   past the first so one audit reports the full damage).
 
+Chain-link identity is the **whole raw line**, `\n`-delimited. Two
+implementation rules follow from that — violations forge links to line
+fragments and surface as false divergences:
+
+- The append-time tail read streams from EOF in 64 KiB blocks and must
+  assemble the terminal line across block windows before hashing; the last
+  `\n`-bounded fragment inside one window is not the line when the line
+  exceeds the window.
+- All readers and sealers split raw bytes on `\n` only (JSONL line
+  identity). `str.splitlines()` also splits on raw NEL/LS/PS characters
+  that `json.dumps(ensure_ascii=False)` writes unescaped inside strings,
+  shearing one stored entry into fragments.
+
 Honest threat model — what this does and does not prove:
 
 - **Detects**: any edit, deletion, or truncation of a stored entry or
@@ -186,10 +199,11 @@ segment or unindexed rotation.
 4. Count lines in `current_path`. If the count is >= `segment_turns`,
    seal the active segment first.
 5. Resolve the chain link: the SHA-256 of the previous stored entry's raw
-   line — the active file's tail (one 64 KiB block read), or the newest
-   seal's `tail_sha256` from the index after a seal, or absent for the
-   first chained entry. Append cost stays O(tail): no sealed segment is
-   ever decompressed at append time.
+   line — the active file's tail (one 64 KiB block read, assembling the
+   terminal line across windows so a line longer than the window is hashed
+   whole), or the newest seal's `tail_sha256` from the index after a seal,
+   or absent for the first chained entry. Append cost stays O(tail): no
+   sealed segment is ever decompressed at append time.
 6. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
    fresh) active segment, release the turn's reservation (still under the
    lock), and return the committed `turn` index.
