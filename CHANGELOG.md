@@ -6,6 +6,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **One turn state, passed by reference (`_TurnState` mode surface).** The
+  turn loop's 13 mode-scoped values (`mode_id`, `mode_config`, `ctx`,
+  `tool_schemas`, `capability_manifest`, `routing_hint`,
+  `chain_advance_guidance`, `pending_yield`, `handoff_to`,
+  `transitioned_to`, `content`, `pre_handoff_text`, `yielded`) lived as
+  loop locals packed into and unpacked out of a per-dispatch
+  `_ToolDispatchLoopState` round-trip — an out-parameter disguised as a
+  dataclass, with the same fact maintained in three places. They now live
+  on `_TurnState` (`kernel.turn_phases._turn_state`), written in place by
+  the loop and its interceptors; `_ToolDispatchLoopState` and both
+  pack/unpack sites are deleted. Mode identity is unified: the loop-local
+  `mode_id` is gone in favor of `state.active_mode_id` (the documented
+  single writer, `_apply_mode_routing_context`). The suspension snapshot
+  (`capture_state`) excludes the new live-object fields — the
+  continuation already carries them in its own fields — and the
+  deliberate `pending_yield=None` / `yielded=False` resume reset is
+  preserved. No behavior change: data-flow only. Tests:
+  `kernel/tests/test_turn_loop_strip_tools_resume.py` (attribute-based
+  reads, field-order independence).
+
 - **Loop-control tagged union (`kernel.turn_phases._loop_control`).** "What
   does the loop do next" was five incompatible encodings — a
   `Literal["continue", "break", "dispatch"]` on `_PreparedToolCall`, a bare

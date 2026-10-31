@@ -9054,23 +9054,6 @@ async def _assemble_turn_surface_and_messages(
     )
 
 
-@dataclass(slots=True)
-class _ToolDispatchLoopState:
-    mode_id: str
-    mode_config: Any
-    ctx: Any
-    tool_schemas: list[dict[str, Any]]
-    capability_manifest: CapabilityManifest
-    routing_hint: str
-    chain_advance_guidance: str
-    pending_yield: YieldAction | None
-    handoff_to: str | None
-    transitioned_to: str | None
-    content: str
-    pre_handoff_text: str
-    yielded: bool
-
-
 @dataclass(frozen=True, slots=True)
 class _TurnLoopSetup:
     record_model_usage: Any
@@ -9442,7 +9425,6 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     prepared: _PreparedToolCall,
     tool_call: dict[str, Any],
     tool_calls: list[dict[str, Any]],
-    loop_state: _ToolDispatchLoopState,
     state: Any,
     hooks: TurnHooks,
     pool: MCPToolPool,
@@ -9471,8 +9453,8 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     try:
         yield_intercept = await _intercept_yield_tool_call(
             state=state,
-            mode_id=loop_state.mode_id,
-            mode_config=loop_state.mode_config,
+            mode_id=state.active_mode_id,
+            mode_config=state.mode_config,
             yield_policy_override=yield_policy_override,
             tool_name=prepared.tool_name,
             tool_arguments=prepared.tool_arguments,
@@ -9482,8 +9464,8 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             log=log,
         )
         if yield_intercept is not None:
-            loop_state.pending_yield, loop_state.content = yield_intercept
-            loop_state.yielded = True
+            state.pending_yield, state.content = yield_intercept
+            state.yielded = True
             return _BreakIteration()
 
         if prepared.tool_name == _TRANSITION_TOOL_NAME:
@@ -9500,19 +9482,19 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
                 hint_override_limit=hint_override_limit,
                 max_handoffs_per_turn=max_handoffs_per_turn,
                 max_tool_iterations=max_tool_iterations,
-                mode_id=loop_state.mode_id,
-                mode_config=loop_state.mode_config,
+                mode_id=state.active_mode_id,
+                mode_config=state.mode_config,
                 query=query,
-                ctx=loop_state.ctx,
+                ctx=state.ctx,
                 messages=messages,
-                capability_manifest=loop_state.capability_manifest,
-                routing_hint=loop_state.routing_hint,
-                chain_advance_guidance=loop_state.chain_advance_guidance,
-                pending_yield=loop_state.pending_yield,
-                handoff_to=loop_state.handoff_to,
-                transitioned_to=loop_state.transitioned_to,
-                content=loop_state.content,
-                pre_handoff_text=loop_state.pre_handoff_text,
+                capability_manifest=state.capability_manifest,
+                routing_hint=state.routing_hint,
+                chain_advance_guidance=state.chain_advance_guidance,
+                pending_yield=state.pending_yield,
+                handoff_to=state.handoff_to,
+                transitioned_to=state.transitioned_to,
+                content=state.content,
+                pre_handoff_text=state.pre_handoff_text,
                 tool_calls=tool_calls,
                 tool_call=tool_call,
                 tool_name=prepared.tool_name,
@@ -9522,32 +9504,32 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
                 assemble_user=assemble_user,
                 build_entry_ctx=build_entry_ctx,
                 sys_segments=sys_segments,
-                tool_schemas=loop_state.tool_schemas,
+                tool_schemas=state.tool_schemas,
                 emit_stage=emit_stage,
                 tool_dispatch_started=prepared.tool_dispatch_started,
                 log=log,
             )
-            loop_state.mode_id = transition.mode_id
-            loop_state.mode_config = transition.mode_config
-            loop_state.ctx = transition.ctx
-            loop_state.tool_schemas = transition.tool_schemas
-            loop_state.capability_manifest = transition.capability_manifest
-            loop_state.routing_hint = transition.routing_hint
-            loop_state.chain_advance_guidance = transition.chain_advance_guidance
+            state.active_mode_id = transition.mode_id
+            state.mode_config = transition.mode_config
+            state.ctx = transition.ctx
+            state.tool_schemas = transition.tool_schemas
+            state.capability_manifest = transition.capability_manifest
+            state.routing_hint = transition.routing_hint
+            state.chain_advance_guidance = transition.chain_advance_guidance
             if transition.pending_yield is not None:
-                loop_state.pending_yield = transition.pending_yield
+                state.pending_yield = transition.pending_yield
             if transition.handoff_to is not None:
-                loop_state.handoff_to = transition.handoff_to
-            loop_state.transitioned_to = transition.transitioned_to
-            loop_state.content = transition.content
-            loop_state.pre_handoff_text = transition.pre_handoff_text
+                state.handoff_to = transition.handoff_to
+            state.transitioned_to = transition.transitioned_to
+            state.content = transition.content
+            state.pre_handoff_text = transition.pre_handoff_text
             return transition.action
 
         dispatch = await _dispatch_capability_and_track(
             tool_name=prepared.tool_name,
             tool_arguments=prepared.tool_arguments,
             tool_kind=prepared.tool_kind,
-            ctx=loop_state.ctx,
+            ctx=state.ctx,
             state=state,
             ledger=ledger,
             pool=pool,
@@ -9560,14 +9542,14 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             build_recovery_identity_fn=_build_recovery_identity,
             messages=messages,
             tool_call_id=prepared.tool_call_id,
-            mode_id=loop_state.mode_id,
+            mode_id=state.active_mode_id,
             emit_stage=emit_stage,
             log=log,
         )
         if dispatch["delegate_yield"] is not None:
-            loop_state.pending_yield = dispatch["delegate_yield"]
-            loop_state.content = loop_state.pending_yield.question
-            loop_state.yielded = True
+            state.pending_yield = dispatch["delegate_yield"]
+            state.content = state.pending_yield.question
+            state.yielded = True
             return _BreakIteration()
     except ApprovalRequired:
         state.pending_approval_tool_call_id = prepared.tool_call_id
@@ -9605,7 +9587,6 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
 
 async def _dispatch_turn_tool_calls(
     *,
-    loop_state: _ToolDispatchLoopState,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     state: Any,
@@ -9617,7 +9598,6 @@ async def _dispatch_turn_tool_calls(
     tool_catalog: Any,
     query: str,
     messages: list[dict[str, Any]],
-    ctx: Any,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     suppress_routing_hint: bool,
@@ -9629,14 +9609,19 @@ async def _dispatch_turn_tool_calls(
     assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     build_entry_ctx: Callable[..., Any],
     sys_segments: SystemPromptSegments,
-    tool_schemas: list[dict[str, Any]],
     emit_stage: Callable[..., Awaitable[None]],
     exec_op: Callable[..., Awaitable[OperationResult]],
     log: logging.Logger,
     continuation: TurnContinuation | None = None,
     suspend: Callable[..., None] | None = None,
 ) -> bool:
-    """Dispatch one completion's tool calls and update transition state."""
+    """Dispatch one completion's tool calls and update transition state.
+
+    Mode-surface values (active_mode_id, mode_config, ctx, tool_schemas,
+    capability_manifest, routing_hint, chain_advance_guidance, pending_yield,
+    handoff_to, transitioned_to, content, pre_handoff_text, yielded) live on
+    ``state`` and are read/written in place — no pack/unpack round-trip.
+    """
     tools_dispatched = False
     log.debug(
         "tool dispatch: iteration=%d tool_count=%d names=%s",
@@ -9667,7 +9652,7 @@ async def _dispatch_turn_tool_calls(
                 tool_call=tool_call,
                 tool_calls=tool_calls,
                 synthesized_forced=synthesized_forced,
-                mode_id=loop_state.mode_id,
+                mode_id=state.active_mode_id,
                 query=query,
                 state=state,
                 ledger=ledger,
@@ -9693,7 +9678,6 @@ async def _dispatch_turn_tool_calls(
                 prepared=prepared,
                 tool_call=tool_call,
                 tool_calls=tool_calls,
-                loop_state=loop_state,
                 state=state,
                 hooks=hooks,
                 pool=pool,
@@ -9720,11 +9704,11 @@ async def _dispatch_turn_tool_calls(
             )
         except ApprovalRequired as required:
             if suspend is not None:
-                suspend(loop_state, tool_calls, index, prepared, required)
+                suspend(tool_calls, index, prepared, required)
             raise
         finally:
             if continuation is not None and index == start_index:
-                loop_state.ctx.approval_request_id = ""
+                state.ctx.approval_request_id = ""
         if isinstance(action, _BreakIteration):
             break
 
@@ -10203,7 +10187,6 @@ async def _finalize_turn_result(
 
 
 def _save_dispatch_continuation(
-    loop: _ToolDispatchLoopState,
     calls: list[dict[str, Any]],
     index: int,
     prepared: _PreparedToolCall | None,
@@ -10229,18 +10212,15 @@ def _save_dispatch_continuation(
 ) -> None:
     if capture is None:
         return
-    state.content = loop.content
-    state.handoff_to = loop.handoff_to
-    state.transitioned_to = loop.transitioned_to
     capture[1:] = [
         TurnContinuation(
             turn_id=previous.turn_id if previous is not None else uuid4().hex,
             identity=identity,
-            mode_id=loop.mode_id,
+            mode_id=state.active_mode_id,
             query=query,
             state_json=capture_state(state),
-            context_json=loop.ctx.model_dump_json(),
-            mode_config_json=loop.mode_config.model_dump_json() if loop.mode_config else "",
+            context_json=state.ctx.model_dump_json(),
+            mode_config_json=state.mode_config.model_dump_json() if state.mode_config else "",
             segments_json=capture_segments(segments),
             preferred_model_id=preferred_model_id,
             resident_model_id=str(
@@ -10254,10 +10234,10 @@ def _save_dispatch_continuation(
             suppress_routing_hint=suppress_routing_hint,
             delegate_depth=delegate_depth,
             mode_instruction=mode_instruction,
-            chain_guidance=loop.chain_advance_guidance,
+            chain_guidance=state.chain_advance_guidance,
             stalled_guidance=stalled_guidance,
-            routing_hint=loop.routing_hint,
-            pre_handoff_text=loop.pre_handoff_text,
+            routing_hint=state.routing_hint,
+            pre_handoff_text=state.pre_handoff_text,
             pending_calls=copy.deepcopy(calls),
             pending_index=index,
             pending_tool_name=prepared.tool_name if prepared else "",
@@ -10285,7 +10265,6 @@ def _save_dispatch_continuation(
 
 def _save_pause_continuation(
     suspend: Callable[..., None],
-    loop: _ToolDispatchLoopState,
     *,
     state: _TurnState,
     operator_exit: str,
@@ -10298,7 +10277,7 @@ def _save_pause_continuation(
     state.iteration -= 1
     state.step_iteration = max(0, state.step_iteration - 1)
     try:
-        suspend(loop, [], 0, None, None)
+        suspend([], 0, None, None)
     finally:
         state.iteration += 1
         state.step_iteration += 1
@@ -10654,23 +10633,21 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         turn_start_mono=turn_start_mono,
     )
 
-    resumed_loop = _ToolDispatchLoopState(
-        mode_id=mode_id,
-        mode_config=mode_config,
-        ctx=ctx,
-        tool_schemas=tool_schemas,
-        capability_manifest=capability_manifest,
-        routing_hint=routing_hint,
-        chain_advance_guidance=_chain_advance_guidance,
-        pending_yield=None,
-        handoff_to=_state.handoff_to,
-        transitioned_to=_state.transitioned_to,
-        content=_state.content,
-        pre_handoff_text=continuation.pre_handoff_text if continuation else _pre_handoff_text,
-        yielded=False,
-    )
+    # Resume seeding: the mode surface lives on ``_state``. The yield pair
+    # is deliberately reset — the pause consumed the pending yield, and a
+    # resumed turn starts un-yielded (the pre-F4 pack site seeded
+    # ``pending_yield=None, yielded=False``; that behavior is preserved).
+    _state.active_mode_id = mode_id
+    _state.mode_config = mode_config
+    _state.ctx = ctx
+    _state.tool_schemas = tool_schemas
+    _state.capability_manifest = capability_manifest
+    _state.routing_hint = routing_hint
+    _state.chain_advance_guidance = _chain_advance_guidance
+    _state.pending_yield = None
+    _state.pre_handoff_text = continuation.pre_handoff_text if continuation else _pre_handoff_text
+    _state.yielded = False
     await _dispatch_turn_tool_calls(
-        loop_state=resumed_loop,
         tool_calls=continuation.pending_calls if continuation else [],
         synthesized_forced=False,
         state=_state,
@@ -10682,7 +10659,6 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         tool_catalog=tool_catalog,
         query=query,
         messages=messages,
-        ctx=ctx,
         routing_ctx=_routing_ctx,
         preferred_model_id=preferred_model_id,
         suppress_routing_hint=suppress_routing_hint,
@@ -10694,45 +10670,28 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         assemble_user=assemble_user,
         build_entry_ctx=_build_entry_ctx,
         sys_segments=_sys_segments,
-        tool_schemas=tool_schemas,
         emit_stage=_emit_stage,
         exec_op=exec_op,
         log=_log,
         continuation=continuation,
         suspend=suspend_dispatch,
     )
-    (
-        mode_id,
-        mode_config,
-        ctx,
-        tool_schemas,
-        capability_manifest,
-        routing_hint,
-        _chain_advance_guidance,
-        _pending_yield,
-        handoff_to,
-        transitioned_to,
-        content,
-        _pre_handoff_text,
-        _yielded,
-    ) = (
-        # Attribute unpack, not positional: every element names its own
-        # field, so a field insertion or reorder cannot silently transpose
-        # two same-typed locals.
-        resumed_loop.mode_id,
-        resumed_loop.mode_config,
-        resumed_loop.ctx,
-        resumed_loop.tool_schemas,
-        resumed_loop.capability_manifest,
-        resumed_loop.routing_hint,
-        resumed_loop.chain_advance_guidance,
-        resumed_loop.pending_yield,
-        resumed_loop.handoff_to,
-        resumed_loop.transitioned_to,
-        resumed_loop.content,
-        resumed_loop.pre_handoff_text,
-        resumed_loop.yielded,
-    )
+    # The dispatch path updated ``_state`` in place; the loop's remaining
+    # locals re-sync from it. ``handoff_to`` / ``transitioned_to`` / ``content``
+    # were already written through to ``_state`` by the interceptors.
+    mode_id = _state.active_mode_id
+    mode_config = _state.mode_config
+    ctx = _state.ctx
+    tool_schemas = _state.tool_schemas
+    capability_manifest = _state.capability_manifest
+    routing_hint = _state.routing_hint
+    _chain_advance_guidance = _state.chain_advance_guidance
+    _pending_yield = _state.pending_yield
+    handoff_to = _state.handoff_to
+    transitioned_to = _state.transitioned_to
+    content = _state.content
+    _pre_handoff_text = _state.pre_handoff_text
+    _yielded = _state.yielded
 
     while (
         _state.iteration < max_tool_iterations
@@ -10791,23 +10750,25 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             log=_log,
         )
         if _lifecycle_break:
+            # Sync the loop's current values into ``_state`` before the
+            # pause snapshot — the continuation reads the mode surface from
+            # ``_state``. The yield pair is deliberately reset: the pause
+            # consumed the pending yield (pre-F4 behavior preserved).
+            _state.active_mode_id = mode_id
+            _state.mode_config = mode_config
+            _state.ctx = ctx
+            _state.tool_schemas = tool_schemas
+            _state.capability_manifest = capability_manifest
+            _state.routing_hint = routing_hint
+            _state.chain_advance_guidance = _chain_advance_guidance
+            _state.pending_yield = None
+            _state.handoff_to = handoff_to
+            _state.transitioned_to = transitioned_to
+            _state.content = content
+            _state.pre_handoff_text = _pre_handoff_text
+            _state.yielded = False
             _save_pause_continuation(
                 suspend_dispatch,
-                _ToolDispatchLoopState(
-                    mode_id=mode_id,
-                    mode_config=mode_config,
-                    ctx=ctx,
-                    tool_schemas=tool_schemas,
-                    capability_manifest=capability_manifest,
-                    routing_hint=routing_hint,
-                    chain_advance_guidance=_chain_advance_guidance,
-                    pending_yield=None,
-                    handoff_to=handoff_to,
-                    transitioned_to=transitioned_to,
-                    content=content,
-                    pre_handoff_text=_pre_handoff_text,
-                    yielded=False,
-                ),
                 state=_state,
                 operator_exit=_pending_operator_exit,
                 cap_pause_reason=_cap_pause_reason,
@@ -11025,23 +10986,27 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         if isinstance(_repeat_action, _RefuseToolBatch):
             continue
 
-        _tool_loop_state = _ToolDispatchLoopState(
-            mode_id=mode_id,
-            mode_config=mode_config,
-            ctx=ctx,
-            tool_schemas=tool_schemas,
-            capability_manifest=capability_manifest,
-            routing_hint=routing_hint,
-            chain_advance_guidance=_chain_advance_guidance,
-            pending_yield=_pending_yield,
-            handoff_to=handoff_to,
-            transitioned_to=transitioned_to,
-            content=content,
-            pre_handoff_text=_pre_handoff_text,
-            yielded=_yielded,
-        )
+        # Sync the loop's current values into ``_state`` before dispatch —
+        # the dispatch path (and its interceptors) read and write the mode
+        # surface in place on ``_state``. All 13 values sync, field-for-field
+        # with the pre-F4 pack: content/handoff_to/transitioned_to are
+        # updated by helpers between the last re-sync and here (the
+        # empty-completion resolver, the router terminal action) without
+        # writing state, and the interceptors must see the current values.
+        _state.active_mode_id = mode_id
+        _state.mode_config = mode_config
+        _state.ctx = ctx
+        _state.tool_schemas = tool_schemas
+        _state.capability_manifest = capability_manifest
+        _state.routing_hint = routing_hint
+        _state.chain_advance_guidance = _chain_advance_guidance
+        _state.pending_yield = _pending_yield
+        _state.handoff_to = handoff_to
+        _state.transitioned_to = transitioned_to
+        _state.content = content
+        _state.pre_handoff_text = _pre_handoff_text
+        _state.yielded = _yielded
         tools_dispatched = await _dispatch_turn_tool_calls(
-            loop_state=_tool_loop_state,
             tool_calls=tool_calls,
             synthesized_forced=_synthesized_forced,
             state=_state,
@@ -11053,7 +11018,6 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             tool_catalog=tool_catalog,
             query=query,
             messages=messages,
-            ctx=ctx,
             routing_ctx=_routing_ctx,
             preferred_model_id=preferred_model_id,
             suppress_routing_hint=suppress_routing_hint,
@@ -11065,41 +11029,27 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             assemble_user=assemble_user,
             build_entry_ctx=_build_entry_ctx,
             sys_segments=_sys_segments,
-            tool_schemas=tool_schemas,
             emit_stage=_emit_stage,
             exec_op=exec_op,
             log=_log,
             suspend=suspend_dispatch,
         )
-        (
-            mode_id,
-            mode_config,
-            ctx,
-            tool_schemas,
-            capability_manifest,
-            routing_hint,
-            _chain_advance_guidance,
-            _pending_yield,
-            handoff_to,
-            transitioned_to,
-            content,
-            _pre_handoff_text,
-            _yielded,
-        ) = (
-            _tool_loop_state.mode_id,
-            _tool_loop_state.mode_config,
-            _tool_loop_state.ctx,
-            _tool_loop_state.tool_schemas,
-            _tool_loop_state.capability_manifest,
-            _tool_loop_state.routing_hint,
-            _tool_loop_state.chain_advance_guidance,
-            _tool_loop_state.pending_yield,
-            _tool_loop_state.handoff_to,
-            _tool_loop_state.transitioned_to,
-            _tool_loop_state.content,
-            _tool_loop_state.pre_handoff_text,
-            _tool_loop_state.yielded,
-        )
+        # The dispatch path updated ``_state`` in place; re-sync the loop's
+        # locals from it (the interceptors already wrote content/handoff_to/
+        # transitioned_to through to ``_state``).
+        mode_id = _state.active_mode_id
+        mode_config = _state.mode_config
+        ctx = _state.ctx
+        tool_schemas = _state.tool_schemas
+        capability_manifest = _state.capability_manifest
+        routing_hint = _state.routing_hint
+        _chain_advance_guidance = _state.chain_advance_guidance
+        _pending_yield = _state.pending_yield
+        handoff_to = _state.handoff_to
+        transitioned_to = _state.transitioned_to
+        content = _state.content
+        _pre_handoff_text = _state.pre_handoff_text
+        _yielded = _state.yielded
 
         # ── Hard-failure / loop-guard while-break ──────────────────────
         # The handoff, fork, and max-hops guards above set ``content`` and

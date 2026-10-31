@@ -118,10 +118,26 @@ def resume_after_pause(saved: TurnContinuation, note: str) -> TurnContinuation:
 
 
 def capture_state(state: _TurnState) -> str:
-    """Exclude live model descriptors and already-archived request snapshots."""
+    """Exclude live model descriptors and already-archived request snapshots.
+
+    The mode-surface live objects (``ctx``, ``mode_config``, ``tool_schemas``,
+    ``capability_manifest``) are excluded too: the continuation carries them
+    in its own fields (``context_json``, ``mode_config_json``, ``routing_hint``,
+    ``chain_guidance``, ``pre_handoff_text``), so serializing them here would
+    duplicate state and bloat every snapshot.
+    """
     return _STATE.dump_json(
         state,
-        exclude={"mode_model_def", "effective_model", "pending_router_decision", "model_requests"},
+        exclude={
+            "mode_model_def",
+            "effective_model",
+            "pending_router_decision",
+            "model_requests",
+            "ctx",
+            "mode_config",
+            "tool_schemas",
+            "capability_manifest",
+        },
     ).decode("utf-8")
 
 

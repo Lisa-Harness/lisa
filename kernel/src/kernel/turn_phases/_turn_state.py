@@ -24,7 +24,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolResult
+from kernel.models import (
+    EffectReceipt,
+    ForkChildResult,
+    OperationResult,
+    ToolResult,
+    YieldAction,
+)
 from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
@@ -489,6 +495,48 @@ class _TurnState:
     genuine answer to the user's question, and the guard's own contract
     is "surfacing model prose". A turn that dispatched real tools never
     sets this (failed writes still block strictly)."""
+
+    # ── Mode surface (F4: one state object, passed by reference) ──────
+    # The turn loop's mode-scoped values. Before F4 these lived as ~13
+    # loop locals packed into and unpacked out of a per-dispatch
+    # ``_ToolDispatchLoopState`` round-trip — an out-parameter disguised
+    # as a dataclass, with the same fact maintained in three places
+    # (loop local, loop-state field, and here for content/handoff_to/
+    # transitioned_to). They now live here, written in place by the loop
+    # and its helpers. Live objects (ctx, mode_config, tool_schemas,
+    # capability_manifest) are excluded from ``capture_state`` — the
+    # continuation carries them in its own fields (context_json,
+    # mode_config_json, routing_hint, chain_guidance, pre_handoff_text).
+    mode_config: Any = None
+    """The active mode's config. Rebound on every successful mid-turn
+    handoff by the transition intercept."""
+    ctx: Any = None
+    """The turn's routing context object. Rebound on every successful
+    mid-turn handoff."""
+    tool_schemas: list[dict[str, Any]] = field(default_factory=list)
+    """The active mode's tool schemas. Rebuilt on every successful
+    mid-turn handoff."""
+    capability_manifest: Any = None
+    """The active mode's capability manifest. Rebound on every successful
+    mid-turn handoff."""
+    routing_hint: str = ""
+    """The most recently computed routing hint for the active mode.
+    Recomputed on handoffs and consumed by the briefing."""
+    chain_advance_guidance: str = ""
+    """One-shot chain-advance directive riding the next iteration's
+    lifecycle briefing after a handoff leaves a residual intent gap."""
+    pre_handoff_text: str = ""
+    """Model text captured just before a mid-turn handoff, surfaced in the
+    final result so the pre-handoff answer is not lost."""
+    pending_yield: YieldAction | None = None
+    """A forced yield armed by the lifecycle resolver (stuck-in-stage
+    cap, iteration cap, recovery stall). Applied after the model's next
+    completion: the loop breaks with the yield's question as content.
+    Deliberately reset to ``None`` on suspension — the pause consumed it."""
+    yielded: bool = False
+    """True once the turn broke via a forced or model-emitted yield. The
+    thread entry records it for durable resume. Deliberately reset to
+    ``False`` on suspension."""
 
     # ── Intra-turn compaction (turn-1116) ────────────────────────────
     # The mid-turn context governor's per-turn state. ``cfg`` mirrors
