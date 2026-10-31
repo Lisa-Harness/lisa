@@ -65,6 +65,101 @@ def test_loop_guard_order_is_stable() -> None:
     assert lifecycle_pos < empty_pos < repeat_pos < dispatch_pos
 
 
+def test_full_guard_sequence_is_pinned() -> None:
+    """F8: all six decision points fire in one fixed order, precondition first.
+
+    The review's F8 list plus the completion-``None`` break the review did
+    not enumerate: the while-precondition (``_next_loop_action``) must fire
+    before the lifecycle break, which must precede the completion-``None``
+    break, the empty-completion resolution, the repeated-batch guard, and
+    the dispatch-loop action. The precondition is now a named pure function
+    (not an anonymous conjunction in the ``while`` header), so its position
+    is pinnable too.
+    """
+
+    from kernel.turn_runner import _run_turn_inner
+
+    source = inspect.getsource(_run_turn_inner)
+    precondition_pos = source.index("_next_loop_action(")
+    lifecycle_pos = source.index("_apply_iteration_lifecycle_action(")
+    completion_none_pos = source.index("if completion is None:")
+    empty_pos = source.index("_resolve_empty_completion_for_dispatch(")
+    repeat_pos = source.index("_guard_repeated_tool_batch(")
+    dispatch_pos = source.index("_resolve_dispatch_loop_action(")
+
+    assert (
+        precondition_pos
+        < lifecycle_pos
+        < completion_none_pos
+        < empty_pos
+        < repeat_pos
+        < dispatch_pos
+    )
+
+
+def test_next_loop_action_is_pure_and_ordered() -> None:
+    """F8: the while-precondition is one ordered pure function.
+
+    Each condition is a branch returning ``StopLoop`` with its reason; the
+    fallthrough is ``ContinueIteration``. The branch order mirrors the
+    original conjunction's clause order, so the first matching condition is
+    the same one that would have short-circuited the ``and`` chain.
+    """
+
+    from kernel.turn_runner import _next_loop_action
+
+    def _state(**overrides: object) -> object:
+        base = {
+            "iteration": 1,
+            "yielded": False,
+            "wall_budget_expired": False,
+            "stream_stalled": False,
+            "provider_quota_exhausted": False,
+            "entry_failed": False,
+            "plan_failed": False,
+            "handoff_count": 0,
+            "fork_results": None,
+        }
+        base.update(overrides)
+        return type("S", (), base)()
+
+    # Fallthrough: every condition clear → proceed with the iteration.
+    assert isinstance(
+        _next_loop_action(state=_state(), max_tool_iterations=50, max_handoffs_per_turn=8),
+        ContinueIteration,
+    )
+
+    # Each condition alone stops the loop, with its reason.
+    cases = [
+        ({"iteration": 50}, "iteration cap"),
+        ({"yielded": True}, "yielded"),
+        ({"wall_budget_expired": True}, "wall budget"),
+        ({"stream_stalled": True}, "stream stalled"),
+        ({"provider_quota_exhausted": True}, "provider quota"),
+        ({"entry_failed": True}, "terminal dispatch failure"),
+        ({"plan_failed": True}, "terminal dispatch failure"),
+        ({"handoff_count": 9}, "terminal dispatch failure"),
+        ({"fork_results": [type("R", (), {"status": "error"})()]}, "terminal dispatch failure"),
+    ]
+    for overrides, expected_reason in cases:
+        action = _next_loop_action(
+            state=_state(**overrides), max_tool_iterations=50, max_handoffs_per_turn=8
+        )
+        assert isinstance(action, StopLoop), f"{overrides} should stop the loop, got {action!r}"
+        assert expected_reason in action.reason, (
+            f"{overrides} reason {action.reason!r} should mention {expected_reason!r}"
+        )
+
+    # Precedence: the first condition in the chain wins when several apply.
+    both = _next_loop_action(
+        state=_state(iteration=50, yielded=True),
+        max_tool_iterations=50,
+        max_handoffs_per_turn=8,
+    )
+    assert isinstance(both, StopLoop)
+    assert both.reason == "iteration cap reached (iteration=50)"
+
+
 def test_payload_variants_carry_their_data() -> None:
     """RefuseToolBatch and StopLoop carry their diagnostic payloads.
 

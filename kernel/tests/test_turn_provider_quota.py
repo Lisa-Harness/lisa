@@ -112,14 +112,18 @@ def test_quota_diagnostic_names_cause_and_partial_work() -> None:
 
 
 def test_quota_loop_condition_breaks_to_finalization() -> None:
-    """The loop condition breaks on the quota flag next to its siblings."""
+    """The loop condition breaks on the quota flag next to its siblings.
+
+    F8 moved the while-precondition into ``_next_loop_action`` (one ordered
+    pure function); the quota flag must appear in its branch chain so an
+    exhausted quota still stops the loop before the next iteration.
+    """
 
     import inspect
 
-    from kernel.turn_runner import _run_turn_inner
+    from kernel.turn_runner import _next_loop_action
 
-    source = inspect.getsource(_run_turn_inner)
-    loop_condition = source[source.index("while (") : source.index("_state.iteration += 1")]
-    assert "not _state.provider_quota_exhausted" in loop_condition
-    assert "not _state.wall_budget_expired" in loop_condition
-    assert "not _state.stream_stalled" in loop_condition
+    source = inspect.getsource(_next_loop_action)
+    assert "state.provider_quota_exhausted" in source
+    assert "state.wall_budget_expired" in source
+    assert "state.stream_stalled" in source

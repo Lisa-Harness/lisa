@@ -9766,6 +9766,57 @@ def _interpret_natural_completion(
     return content, content_source, turn_reasoning_text
 
 
+def _next_loop_action(
+    *,
+    state: Any,
+    max_tool_iterations: int,
+    max_handoffs_per_turn: int,
+) -> _LoopControl:
+    """Decision point 1: the while-precondition, as one ordered pure function (F8).
+
+    The turn loop's guard sequence is load-bearing: a single iteration passes
+    through up to six sequential break/continue decision points, and which one
+    fires first when several apply is the accumulated result of incident fixes,
+    not an arbitrary choice. This function owns the first — the while-
+    precondition — so its precedence is one auditable list instead of an
+    anonymous six-way conjunction in the ``while`` header:
+
+    1. ``_next_loop_action`` — this while-precondition (iteration cap,
+       yielded, wall budget, stream stall, provider quota, terminal
+       dispatch failure). ``ContinueIteration`` = proceed with the
+       iteration; ``StopLoop`` = leave the loop before it starts.
+    2. ``_apply_iteration_lifecycle_action`` — the lifecycle break
+       (pause/stop/terminate/finish). Returns a bool break-flag because
+       ``False`` means "proceed with this iteration", a meaning the
+       ``LoopControl`` union has no variant for (``ContinueIteration``
+       means skip the model call — a different action).
+    3. the completion-``None`` break — wall budget expired mid-call.
+    4. ``_resolve_empty_completion_for_dispatch`` — break/continue on an
+       empty completion.
+    5. ``_guard_repeated_tool_batch`` — stop/refuse on a repeated batch.
+    6. ``_resolve_dispatch_loop_action`` — terminal dispatch failure or
+       no-tools natural completion; returns ``LoopControl``.
+
+    The order is pinned by ``test_loop_control_ordering.py``; changing it
+    changes which guard wins when two fire in one iteration.
+    """
+    if state.iteration >= max_tool_iterations:
+        reason = f"iteration cap reached (iteration={state.iteration})"
+    elif state.yielded:
+        reason = "turn already yielded"
+    elif state.wall_budget_expired:
+        reason = "wall budget expired"
+    elif state.stream_stalled:
+        reason = "stream stalled"
+    elif state.provider_quota_exhausted:
+        reason = "provider quota exhausted"
+    elif _has_terminal_dispatch_failure(state, max_handoffs_per_turn):
+        reason = "terminal dispatch failure"
+    else:
+        return _ContinueIteration()
+    return _StopLoop(reason=reason)
+
+
 def _resolve_dispatch_loop_action(
     *,
     state: Any,
@@ -9778,11 +9829,20 @@ def _resolve_dispatch_loop_action(
     content_source: str,
     turn_reasoning_text: str,
     log: logging.Logger,
-) -> tuple[bool, str, str, str]:
+) -> tuple[_LoopControl, str, str, str]:
+    """Decision point 6: terminal dispatch failure or no-tools natural completion.
+
+    Returns the loop action in the ``LoopControl`` vocabulary (F8): a
+    ``BreakIteration`` leaves the loop with the current content (terminal
+    failure, or a natural completion with no tool calls); a
+    ``ContinueIteration`` wraps to the next while-iteration (tools were
+    dispatched — the model gets another completion). The content triple is
+    data, not control, and stays a tuple.
+    """
     if _has_terminal_dispatch_failure(state, max_handoffs_per_turn):
-        return True, content, content_source, turn_reasoning_text
+        return _BreakIteration(), content, content_source, turn_reasoning_text
     if tools_dispatched:
-        return False, content, content_source, turn_reasoning_text
+        return _ContinueIteration(), content, content_source, turn_reasoning_text
     content, content_source, turn_reasoning_text = _interpret_natural_completion(
         completion=completion,
         state=state,
@@ -9793,7 +9853,7 @@ def _resolve_dispatch_loop_action(
         turn_reasoning_text=turn_reasoning_text,
         log=log,
     )
-    return True, content, content_source, turn_reasoning_text
+    return _BreakIteration(), content, content_source, turn_reasoning_text
 
 
 def _apply_iteration_lifecycle_action(
@@ -10696,13 +10756,18 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
     _pre_handoff_text = _state.pre_handoff_text
     _yielded = _state.yielded
 
-    while (
-        _state.iteration < max_tool_iterations
-        and not _yielded
-        and not _state.wall_budget_expired
-        and not _state.stream_stalled
-        and not _state.provider_quota_exhausted
-        and not _has_terminal_dispatch_failure(_state, _max_handoffs_per_turn)
+    # Decision point 1 (F8): the while-precondition, as one ordered pure
+    # function. ``ContinueIteration`` = proceed with the iteration;
+    # ``StopLoop`` = leave the loop before it starts. The full six-point
+    # guard sequence is documented in ``_next_loop_action`` and pinned by
+    # ``test_loop_control_ordering.py``.
+    while isinstance(
+        _next_loop_action(
+            state=_state,
+            max_tool_iterations=max_tool_iterations,
+            max_handoffs_per_turn=_max_handoffs_per_turn,
+        ),
+        _ContinueIteration,
     ):
         _state.iteration += 1
         _state.step_iteration += 1
@@ -11064,7 +11129,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         # flag on ``_state``; honor it here by breaking the ``while`` so
         # the deterministic failure ``content`` reaches the output guard.
         (
-            _should_break,
+            _dispatch_loop_action,
             content,
             _content_source,
             _turn_reasoning_text,
@@ -11080,7 +11145,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             turn_reasoning_text=_turn_reasoning_text,
             log=_log,
         )
-        if _should_break:
+        if isinstance(_dispatch_loop_action, _BreakIteration):
             break
 
     return await _finalize_turn_result(

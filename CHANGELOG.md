@@ -6,6 +6,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **`next_loop_action`: the while-precondition as one ordered pure function
+  (F8).** The turn loop's guard sequence is load-bearing but only
+  half-uniform: the while-precondition was an anonymous six-way `and`
+  conjunction in the `while` header, and the dispatch-tail decision
+  (`_resolve_dispatch_loop_action`) still returned a bool break-flag
+  instead of the `LoopControl` union F2 established. `_next_loop_action`
+  now owns the precondition — one if-chain returning
+  `ContinueIteration`/`StopLoop(reason)`, branch order mirroring the
+  original conjunction so the first matching condition is the same one
+  that would have short-circuited the `and` chain — and the dispatch-tail
+  returns `BreakIteration`/`ContinueIteration` in the union vocabulary.
+  The full six-point sequence (precondition, lifecycle break,
+  completion-`None` break, empty-completion, repeated-batch,
+  dispatch-tail) is documented as one list in `_next_loop_action`'s
+  docstring and pinned by `test_loop_control_ordering.py`. The lifecycle
+  applicator keeps its bool break-flag deliberately: its `False` means
+  "proceed with this iteration", a meaning the union has no variant for
+  (`ContinueIteration` means skip the model call — a different action).
+  No behavior change: the conjunction maps to the if-chain exactly.
+
 - **One handoff-cap predicate (`handoff_cap_exceeded`).** The
   `max_handoffs_per_turn` rule was implemented three times independently —
   the dispatch-time loop guard (`_track_handoff_and_guard_loops`), the
