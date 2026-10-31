@@ -628,6 +628,23 @@ def _stall_remediation(
     return YieldRemediation(actions=actions)
 
 
+def handoff_cap_exceeded(handoff_count: int, max_handoffs_per_turn: int) -> bool:
+    """The single handoff-cap predicate (F7).
+
+    True once the turn's mid-turn handoff count exceeds the configured
+    ``max_handoffs_per_turn``. The boundary is exclusive (``>``): a turn at
+    exactly the cap may still hand off — the cap bounds the handoff AFTER
+    the cap-th one, not the cap-th itself. Every consumer of the rule —
+    the resolver's priority-2b backstop (``_handoff_loop_action``), the
+    dispatch-time loop guard (``_track_handoff_and_guard_loops``), and the
+    while-condition terminal-failure check (``_has_terminal_dispatch_failure``)
+    — must call this predicate so the three sites cannot drift apart
+    (e.g. one flipping to ``>=`` would desync the dispatch guard from the
+    resolver and change which handoff gets blocked).
+    """
+    return handoff_count > max_handoffs_per_turn
+
+
 def _handoff_loop_action(
     *,
     mode_id: str,
@@ -641,7 +658,7 @@ def _handoff_loop_action(
     iteration cap so a tight handoff loop (A→B→A→B...) is caught early
     rather than burning the full iteration budget.
     """
-    if state.handoff_count <= settings.max_handoffs_per_turn:
+    if not handoff_cap_exceeded(state.handoff_count, settings.max_handoffs_per_turn):
         return None
     _log.warning(
         "lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)",

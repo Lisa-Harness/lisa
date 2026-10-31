@@ -6,6 +6,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **One handoff-cap predicate (`handoff_cap_exceeded`).** The
+  `max_handoffs_per_turn` rule was implemented three times independently —
+  the dispatch-time loop guard (`_track_handoff_and_guard_loops`), the
+  while-condition terminal-failure check (`_has_terminal_dispatch_failure`),
+  and the lifecycle resolver's priority-2b backstop
+  (`_handoff_loop_action`) — all agreeing today, but one site drifting to
+  `>=` would desync the dispatch guard from the resolver and change which
+  handoff gets blocked. One predicate in
+  `kernel.turn_phases._lifecycle.handoff_cap_exceeded` now owns the rule;
+  all three sites call it, and the exclusive (`>`) boundary is pinned by
+  unit tests plus a source-lock test asserting no independent
+  `handoff_count > max_handoffs_per_turn` comparison survives. No behavior
+  change: the `>` semantics are preserved exactly.
+
 - **One turn state, passed by reference (`_TurnState` mode surface).** The
   turn loop's 13 mode-scoped values (`mode_id`, `mode_config`, `ctx`,
   `tool_schemas`, `capability_manifest`, `routing_hint`,

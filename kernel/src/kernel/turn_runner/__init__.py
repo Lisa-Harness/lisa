@@ -199,6 +199,9 @@ from kernel.turn_phases._lifecycle import (
     _TurnStateView as _TSV,
 )
 from kernel.turn_phases._lifecycle import (
+    handoff_cap_exceeded as _handoff_cap_exceeded,
+)
+from kernel.turn_phases._lifecycle import (
     resolve_lifecycle_action as _resolve_lifecycle,
 )
 from kernel.turn_phases._loop_control import (
@@ -6607,7 +6610,7 @@ def _track_handoff_and_guard_loops(
             hint_override_limit,
         )
     state.handoff_count += 1
-    if state.handoff_count > max_handoffs_per_turn:
+    if _handoff_cap_exceeded(state.handoff_count, max_handoffs_per_turn):
         log.warning(
             "routing hint loop guard: %d handoffs in turn (cap=%d); forcing final completion",
             state.handoff_count,
@@ -9719,7 +9722,7 @@ def _has_terminal_dispatch_failure(state: Any, max_handoffs_per_turn: int) -> bo
     return bool(
         state.entry_failed
         or state.plan_failed
-        or state.handoff_count > max_handoffs_per_turn
+        or _handoff_cap_exceeded(state.handoff_count, max_handoffs_per_turn)
         or (
             state.fork_results is not None
             and any(result.status != "ok" for result in state.fork_results)
