@@ -188,6 +188,7 @@ class BundleSources(BaseModel):
     token_usage_log: bool = False
     approvals_log: bool = False
     runtime_log: bool = False
+    errors_log: bool = False
     missing: list[str] = Field(default_factory=list)
 
 

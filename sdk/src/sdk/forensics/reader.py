@@ -76,6 +76,7 @@ _ERROR_LEVELS = frozenset({"error", "warning", "critical"})
 _DECISIONS_FILENAME = "decisions.jsonl"
 _TOKEN_USAGE_FILENAME = "token-usage.jsonl"
 _APPROVALS_FILENAME = "approvals.jsonl"
+_ERRORS_LOG_FILENAME = "errors.jsonl"
 _RUNTIME_LOG_FILENAME = "runtime.jsonl"
 
 
@@ -165,6 +166,11 @@ class ForensicReader:
     def runtime_log_path(self) -> Path:
         """Return the structured runtime log path."""
         return self._data_dir / LOGS_DIR / _RUNTIME_LOG_FILENAME
+
+    @property
+    def errors_log_path(self) -> Path:
+        """Return the sealed errors ledger path."""
+        return self._data_dir / LOGS_DIR / _ERRORS_LOG_FILENAME
 
     def thread_store_path(self) -> Path:
         """Return the thread store base path this reader reads.
@@ -507,8 +513,36 @@ class ForensicReader:
         notes: list[str],
         max_records: int,
     ) -> list[dict[str, Any]]:
-        """Return warning/error log lines inside the window, newest last."""
+        """Return warning/error log lines inside the window, newest last.
+
+        The dedicated errors ledger (``errors.jsonl``, ERROR+ only, never
+        rotated or rate-limited) is preferred when it exists: the rotating
+        ``runtime.jsonl`` evicts old records and suppresses repeats, so a
+        bundle built from it can understate the error history. The
+        fallback keeps hosts that predate the ledger working, with the
+        source named either way.
+        """
         cutoff = now - timedelta(seconds=self._window_seconds)
+        errors_tail = read_jsonl_tail(self.errors_log_path, max_bytes=self._max_bytes, since=cutoff)
+        if errors_tail.records:
+            sources.errors_log = True
+            self._note_truncation(errors_tail, _ERRORS_LOG_FILENAME, "the log window", notes)
+            windowed = filter_window(
+                errors_tail.records, now=now, window_seconds=self._window_seconds
+            )
+            errors = [
+                record
+                for record in windowed
+                if str(record.get("level") or "").lower() in _ERROR_LEVELS
+            ]
+            if len(errors) > max_records:
+                notes.append(
+                    f"{len(errors)} warning/error lines in the window; "
+                    f"using the most recent {max_records}"
+                )
+                errors = errors[-max_records:]
+            return errors
+
         tail = read_jsonl_tail(self.runtime_log_path, max_bytes=self._max_bytes, since=cutoff)
         if not tail.records:
             notes.append(f"{_RUNTIME_LOG_FILENAME} has no records; log diagnostics are unknown")

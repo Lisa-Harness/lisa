@@ -59,6 +59,7 @@ __all__ = [
     "LISA_LOG_STDERR_ENV",
     "JSONFormatter",
     "RateLimitFilter",
+    "SealedErrorsHandler",
     "apply_log_levels",
     "configure_logging",
     "emit_structured_event",
@@ -80,6 +81,14 @@ _DEDUP_SUPPRESS_AFTER = 5
 
 _ROTATE_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 _ROTATE_BACKUP_COUNT = 3
+
+#: Size threshold at which the errors ledger seals to a numbered sidecar.
+#: Sealed segments are never deleted — the same discipline as
+#: ``decisions.jsonl`` — so a flood of errors cannot evict earlier ones.
+_ERRORS_SEAL_MAX_BYTES = 8 * 1024 * 1024
+
+#: Name of the errors ledger beside the rotating runtime log.
+_ERRORS_FILENAME = "errors.jsonl"
 
 _log = logging.getLogger(__name__)
 
@@ -239,6 +248,62 @@ class RateLimitFilter(logging.Filter):
                 handler.emit(summary)
 
 
+class SealedErrorsHandler(logging.FileHandler):
+    """Append ERROR+ records to a JSONL ledger that never loses them.
+
+    The rotating ``runtime.jsonl`` evicts old records and the
+    :class:`RateLimitFilter` suppresses repeats — both correct for
+    diagnostics, both wrong for the error ledger a forensic read depends
+    on ("no errors" and "I could not read the error log" are different
+    answers). This handler appends to ``errors.jsonl`` with neither:
+    every ERROR+ record lands, including repeats.
+
+    Bounded like the decision ledger: when the active file reaches
+    ``seal_max_bytes`` it is sealed to ``errors.jsonl.<n>`` and a fresh
+    one starts. Sealed segments are never deleted, so a flood of errors
+    cannot evict earlier ones and the ledger cannot consume the rotating
+    log's budget. The seal is best-effort: a failed seal logs a warning
+    and the record still appends.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        seal_max_bytes: int = _ERRORS_SEAL_MAX_BYTES,
+        encoding: str = "utf-8",
+    ) -> None:
+        super().__init__(path, encoding=encoding)
+        self._seal_max_bytes = seal_max_bytes
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._seal_if_needed()
+        super().emit(record)
+
+    def _seal_if_needed(self) -> None:
+        try:
+            path = Path(self.baseFilename)
+            if not path.exists() or path.stat().st_size < self._seal_max_bytes:
+                return
+            # Close before renaming so the open append handle does not
+            # keep writing to the renamed file on platforms where the
+            # handle follows the rename.
+            self.close()
+            segment = 1
+            prefix = path.name + "."
+            for candidate in path.parent.iterdir():
+                suffix = candidate.name[len(prefix):]
+                if candidate.name.startswith(prefix) and suffix.isdigit():
+                    segment = max(segment, int(suffix) + 1)
+            path.rename(path.with_name(f"{path.name}.{segment}"))
+        except OSError as exc:
+            # Never lose the record because bookkeeping failed: the
+            # append proceeds to whatever file state exists.
+            logging.getLogger(__name__).warning(
+                "errors ledger seal failed for %s: %s", self.baseFilename, exc
+            )
+
+
 # ── Configuration ────────────────────────────────────────────────────
 
 
@@ -284,6 +349,7 @@ def configure_logging(
     debug_modules: list[str] | None = None,
     host_kind: str | None = None,
     formatter: logging.Formatter | None = None,
+    errors_path: Path | None = None,
 ) -> logging.Logger:
     """Configure the root logger with a rotating file handler and optional stderr.
 
@@ -303,6 +369,12 @@ def configure_logging(
         stderr-handler default; ``LISA_LOG_STDERR`` overrides either way.
     formatter:
         Override the default :class:`JSONFormatter` (used by tests).
+    errors_path:
+        Destination for the ERROR+ evidence ledger (default:
+        ``<log_path.parent>/errors.jsonl``). Unlike the rotating log, this
+        handler is neither rotated nor rate-limited — every ERROR+ record
+        lands, sealed to never-deleted numbered sidecars when large. Pass
+        ``log_path`` explicitly to disable the ledger (single-file hosts).
     """
     root = logging.getLogger()
     root.setLevel(_level_value(level))
@@ -323,6 +395,18 @@ def configure_logging(
     file_handler.setFormatter(fmt)
     file_handler.addFilter(rate_filter)
     root.addHandler(file_handler)
+
+    resolved_errors_path = errors_path if errors_path is not None else (
+        log_path.parent / _ERRORS_FILENAME
+    )
+    if resolved_errors_path != log_path:
+        errors_handler = SealedErrorsHandler(resolved_errors_path)
+        errors_handler.setLevel(logging.ERROR)
+        # Marker read by apply_log_levels so a later global-level change
+        # never widens this handler below ERROR.
+        errors_handler._lisa_level_floor = logging.ERROR  # noqa: SLF001  # own handler marker
+        errors_handler.setFormatter(fmt)
+        root.addHandler(errors_handler)
 
     if _resolve_stderr_enabled(host_kind):
         stderr_handler = logging.StreamHandler(sys.stderr)
@@ -347,10 +431,20 @@ def apply_log_levels(
     Idempotent: safe to call repeatedly to react to env changes. Resets
     previously-overridden loggers back to the global level before applying
     the new set, so removing a name from ``LISA_LOG_DEBUG`` takes effect.
+
+    Handler-specific floors above the global level (the errors ledger's
+    ERROR-only handler) are preserved: the global level widens what
+    *loggers* may emit, it never narrows what a dedicated evidence
+    handler accepts.
     """
     root.setLevel(_level_value(level))
     for handler in root.handlers:
-        handler.setLevel(_level_value(level))
+        # Never lower a handler below its configured floor (the errors
+        # ledger must stay ERROR-only even when the global level is INFO).
+        if getattr(handler, "_lisa_level_floor", 0):
+            handler.setLevel(max(_level_value(level), handler._lisa_level_floor))  # noqa: SLF001  # stdlib handler attribute marker
+        else:
+            handler.setLevel(_level_value(level))
 
     # Reset any loggers we previously forced to DEBUG.
     for name in list(_DEBUG_OVERRIDDEN):
