@@ -17,6 +17,11 @@ from typing import Any
 
 import pytest
 from kernel.config import settings
+from kernel.turn_phases._loop_control import (
+    DispatchToolBatch,
+    RefuseToolBatch,
+    StopLoop,
+)
 from kernel.turn_phases._turn_state import _TurnState
 from kernel.turn_runner import (
     _guard_repeated_tool_batch,
@@ -38,7 +43,7 @@ def _batch(prefix: str) -> list[dict[str, Any]]:
     ]
 
 
-def _guard(state: _TurnState, batch: list[dict[str, Any]], messages: list, **kw: Any) -> str:
+def _guard(state: _TurnState, batch: list[dict[str, Any]], messages: list, **kw: Any) -> Any:
     return _guard_repeated_tool_batch(
         state=state,
         tool_calls=batch,
@@ -72,17 +77,19 @@ def test_guard_dispatches_then_refuses_then_stops(monkeypatch: pytest.MonkeyPatc
     state = _TurnState()
     messages: list[dict[str, Any]] = []
 
-    assert _guard(state, _batch("1"), messages) == "dispatch"
-    assert _guard(state, _batch("2"), messages) == "dispatch"
-    assert _guard(state, _batch("3"), messages) == "dispatch"
+    assert isinstance(_guard(state, _batch("1"), messages), DispatchToolBatch)
+    assert isinstance(_guard(state, _batch("2"), messages), DispatchToolBatch)
+    assert isinstance(_guard(state, _batch("3"), messages), DispatchToolBatch)
     assert messages == []
 
-    assert _guard(state, _batch("4"), messages) == "refuse"
+    refused = _guard(state, _batch("4"), messages)
+    assert isinstance(refused, RefuseToolBatch)
     assert [m["tool_call_id"] for m in messages] == ["4a", "4b"]
     assert all(m["role"] == "tool" and "Not executed" in m["content"] for m in messages)
     assert not state.repeated_tool_batch_tripped
 
-    assert _guard(state, _batch("5"), messages) == "stop"
+    stopped = _guard(state, _batch("5"), messages)
+    assert isinstance(stopped, StopLoop)
     assert [m["tool_call_id"] for m in messages[2:]] == ["5a", "5b"]
     assert state.repeated_tool_batch_tripped
 
@@ -93,25 +100,27 @@ def test_a_different_batch_resets_the_count(monkeypatch: pytest.MonkeyPatch) -> 
     messages: list[dict[str, Any]] = []
     other = [_call("o", "thread.thread_search", {"query": "something else"})]
 
-    assert _guard(state, _batch("1"), messages) == "dispatch"
-    assert _guard(state, other, messages) == "dispatch"
-    assert _guard(state, _batch("2"), messages) == "dispatch"
-    assert _guard(state, _batch("3"), messages) == "dispatch"
-    assert _guard(state, _batch("4"), messages) == "refuse"
+    assert isinstance(_guard(state, _batch("1"), messages), DispatchToolBatch)
+    assert isinstance(_guard(state, other, messages), DispatchToolBatch)
+    assert isinstance(_guard(state, _batch("2"), messages), DispatchToolBatch)
+    assert isinstance(_guard(state, _batch("3"), messages), DispatchToolBatch)
+    assert isinstance(_guard(state, _batch("4"), messages), RefuseToolBatch)
 
 
 def test_kernel_synthesized_batches_are_never_counted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "max_identical_tool_batch_repeats", 1)
     state = _TurnState()
     for i in range(4):
-        assert _guard(state, _batch(str(i)), [], synthesized_forced=True) == "dispatch"
+        assert isinstance(
+            _guard(state, _batch(str(i)), [], synthesized_forced=True), DispatchToolBatch
+        )
 
 
 def test_zero_limit_disables_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "max_identical_tool_batch_repeats", 0)
     state = _TurnState()
     for i in range(10):
-        assert _guard(state, _batch(str(i)), []) == "dispatch"
+        assert isinstance(_guard(state, _batch(str(i)), []), DispatchToolBatch)
 
 
 @dataclass(frozen=True, slots=True)

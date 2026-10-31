@@ -201,6 +201,24 @@ from kernel.turn_phases._lifecycle import (
 from kernel.turn_phases._lifecycle import (
     resolve_lifecycle_action as _resolve_lifecycle,
 )
+from kernel.turn_phases._loop_control import (
+    BreakIteration as _BreakIteration,
+)
+from kernel.turn_phases._loop_control import (
+    ContinueIteration as _ContinueIteration,
+)
+from kernel.turn_phases._loop_control import (
+    DispatchToolBatch as _DispatchToolBatch,
+)
+from kernel.turn_phases._loop_control import (
+    LoopControl as _LoopControl,
+)
+from kernel.turn_phases._loop_control import (
+    RefuseToolBatch as _RefuseToolBatch,
+)
+from kernel.turn_phases._loop_control import (
+    StopLoop as _StopLoop,
+)
 from kernel.turn_phases._post_turn import (
     _extract_completion_usage,
     _to_tool_context,
@@ -6635,7 +6653,7 @@ def _guard_repeated_tool_batch(
     synthesized_forced: bool,
     messages: list[dict[str, Any]],
     log: logging.Logger,
-) -> Literal["dispatch", "refuse", "stop"]:
+) -> _LoopControl:
     """Refuse a tool-call batch the model keeps re-issuing unchanged.
 
     The same tools with the same arguments return the same results, so a
@@ -6644,36 +6662,41 @@ def _guard_repeated_tool_batch(
     ``thread_search`` pair 33 times until killed — the one-shot read-loop
     nudge had already fired). ``max_identical_tool_batch_repeats`` repeats
     still dispatch; the next one is answered with refusals telling the model
-    to answer from what it holds (``"refuse"``); one further repeat stops the loop
-    (``"stop"``) and the empty-content resolver forces a no-tools synthesis.
+    to answer from what it holds (a ``_RefuseToolBatch``); one further
+    repeat stops the loop (a ``_StopLoop``) and the empty-content resolver
+    forces a no-tools synthesis.
     Kernel-synthesized batches never count: the kernel, not the model,
     chose them. A limit of 0 disables the guard.
     """
     limit = _kernel_settings.max_identical_tool_batch_repeats
     if limit <= 0 or synthesized_forced or not tool_calls:
-        return "dispatch"
+        return _DispatchToolBatch()
     signature = _tool_batch_signature(tool_calls)
     if signature == state.last_tool_batch_signature:
         state.identical_tool_batch_repeats += 1
     else:
         state.last_tool_batch_signature = signature
         state.identical_tool_batch_repeats = 0
-        return "dispatch"
+        return _DispatchToolBatch()
     repeats = state.identical_tool_batch_repeats
     if repeats <= limit:
-        return "dispatch"
-    action: Literal["refuse", "stop"] = "refuse" if repeats == limit + 1 else "stop"
-    log.warning(
-        "identical tool batch re-issued %d times in a row (cap=%d); %s",
-        repeats,
-        limit,
-        "refusing it" if action == "refuse" else "stopping the loop",
-    )
-    refusal = (
+        return _DispatchToolBatch()
+    refusal_text = (
         f"Not executed: this exact tool call was already made {repeats + 1} times in a "
         "row with identical arguments, and its result has not changed — the earlier "
         "results are above. Do not call it again. Answer now from the results you "
         "already have, or call a different tool if something is genuinely missing."
+    )
+    action: _LoopControl = (
+        _RefuseToolBatch(refusal=refusal_text)
+        if repeats == limit + 1
+        else _StopLoop(reason="identical tool batch re-issued past its cap")
+    )
+    log.warning(
+        "identical tool batch re-issued %d times in a row (cap=%d); %s",
+        repeats,
+        limit,
+        "refusing it" if isinstance(action, _RefuseToolBatch) else "stopping the loop",
     )
     for call in tool_calls:
         function = call.get("function") if isinstance(call, dict) else None
@@ -6681,7 +6704,7 @@ def _guard_repeated_tool_batch(
             "role": "tool",
             "tool_call_id": str(call.get("id") or ""),
             "name": str((function or {}).get("name") or ""),
-            "content": refusal,
+            "content": refusal_text,
         }
         thought_signature = call.get("thought_signature") or (function or {}).get(
             "thought_signature"
@@ -6689,7 +6712,7 @@ def _guard_repeated_tool_batch(
         if thought_signature:
             tool_msg["thought_signature"] = thought_signature
         messages.append(tool_msg)
-    if action == "stop":
+    if isinstance(action, _StopLoop):
         state.repeated_tool_batch_tripped = True
     return action
 
@@ -7141,11 +7164,11 @@ def _inject_iteration_briefing(
 class _ModeHandoff:
     """The outcome of one intercepted mode handoff (Case B).
 
-    ``action`` is the loop control: ``"break"`` leaves the dispatch loop
-    (every Case-B path does — success, loop-guard, entry/plan failure).
+    ``action`` is the loop control: a ``_BreakIteration`` leaves the dispatch
+    loop (every Case-B path does — success, loop-guard, entry/plan failure).
     """
 
-    action: str
+    action: _LoopControl
     mode_id: str
     mode_config: Any
     ctx: Any
@@ -7238,7 +7261,7 @@ async def _intercept_mode_handoff(
         )
         content = tool_output
         return _ModeHandoff(
-            action="break",
+            action=_BreakIteration(),
             mode_id=mode_id,
             mode_config=mode_config,
             ctx=ctx,
@@ -7380,7 +7403,7 @@ async def _intercept_mode_handoff(
             f"request."
         )
         return _ModeHandoff(
-            action="break",
+            action=_BreakIteration(),
             mode_id=mode_id,
             mode_config=mode_config,
             ctx=ctx,
@@ -7417,7 +7440,7 @@ async def _intercept_mode_handoff(
             f"want before committing to a workflow."
         )
         return _ModeHandoff(
-            action="break",
+            action=_BreakIteration(),
             mode_id=mode_id,
             mode_config=mode_config,
             ctx=ctx,
@@ -7436,7 +7459,7 @@ async def _intercept_mode_handoff(
             len(tool_calls) - tool_calls.index(tool_call) - 1,
         )
     return _ModeHandoff(
-        action="break",
+        action=_BreakIteration(),
         mode_id=mode_id,
         mode_config=mode_config,
         ctx=ctx,
@@ -7454,13 +7477,13 @@ async def _intercept_mode_handoff(
 class _TransitionIntercept:
     """The outcome of intercepting one ``transition_stage`` tool call.
 
-    ``action`` is the loop control the caller must apply: ``"break"`` leaves
-    the tool-calls dispatch loop, ``"continue"`` skips to the next tool
-    call. Every interception path resolves the call — the helper never
-    returns ``"proceed"``.
+    ``action`` is the loop control the caller must apply: a
+    ``_BreakIteration`` leaves the tool-calls dispatch loop, a
+    ``_ContinueIteration`` skips to the next tool call. Every interception
+    path resolves the call — the helper never returns a dispatch verdict.
     """
 
-    action: str
+    action: _LoopControl
     mode_id: str
     mode_config: Any
     ctx: Any
@@ -7562,7 +7585,7 @@ async def _intercept_transition_stage(
     reject path).
     """
 
-    def _ret(action: str) -> _TransitionIntercept:
+    def _ret(action: _LoopControl) -> _TransitionIntercept:
         return _TransitionIntercept(
             action=action,
             mode_id=mode_id,
@@ -7605,7 +7628,7 @@ async def _intercept_transition_stage(
                 "duration_ms": int((time.monotonic() - tool_dispatch_started) * 1000),
             },
         )
-        return _ret("continue")
+        return _ret(_ContinueIteration())
     if target_stage.startswith("fork:"):
         tool_output = await _run_fork_transition(
             target_stage=target_stage,
@@ -7622,7 +7645,7 @@ async def _intercept_transition_stage(
                 "content": tool_output,
             }
         )
-        return _ret("continue")
+        return _ret(_ContinueIteration())
     # ── Guard: don't route a research/review intent into an
     # action mode after a search entry op failed this turn.
     # Once ``state.entry_failed`` is set, the research
@@ -7652,7 +7675,7 @@ async def _intercept_transition_stage(
                 "content": tool_output,
             }
         )
-        return _ret("continue")
+        return _ret(_ContinueIteration())
 
     # ── Unified target resolution (Phase 6c) ──────────
     # One resolution order for every mode kind: the target
@@ -7748,7 +7771,7 @@ async def _intercept_transition_stage(
             "content": tool_output,
         }
     )
-    return _ret("continue")
+    return _ret(_ContinueIteration())
 
 
 async def _dispatch_capability_and_track(
@@ -8220,15 +8243,16 @@ async def _process_empty_completion(
     str,
     bool,
     str,
-    str,
+    _LoopControl,
 ]:
     """Handle a model completion with no tool calls (the empty-completion path).
 
     Runs the forced-action enforcer / do-the-work backstop synthesis, applies
     a pending forced yield, arms the write-contract backstop and the
     stalled-write rescue, and returns the updated loop values plus a control
-    action: ``""`` (continue to dispatch the synthesized calls), ``"break"``
-    (end the turn with ``content``), or ``"continue"`` (next while-iteration).
+    action: a ``_DispatchToolBatch`` (continue to dispatch the synthesized
+    calls), a ``_BreakIteration`` (end the turn with ``content``), or a
+    ``_ContinueIteration`` (next while-iteration).
     """
     synthesized_forced = False
     tool_calls, synthesized_forced, pre_handoff_text = _synthesize_empty_completion_call(
@@ -8304,7 +8328,7 @@ async def _process_empty_completion(
                 turn_reasoning_text,
                 True,
                 stalled_write_guidance,
-                "break",
+                _BreakIteration(),
             )
 
         if state.unfillable_work_tool and not state.write_backstop_reminded:
@@ -8322,7 +8346,7 @@ async def _process_empty_completion(
                 turn_reasoning_text,
                 False,
                 stalled_write_guidance,
-                "continue",
+                _ContinueIteration(),
             )
         if state.unfillable_work_tool and state.total_tool_calls == 0:
             state.routing_misfire_prose = _synthesized_call_missing_all_required(
@@ -8361,7 +8385,7 @@ async def _process_empty_completion(
                 turn_reasoning_text,
                 False,
                 stalled_write_guidance,
-                "break",
+                _BreakIteration(),
             )
 
         # ── Write-contract empty-completion backstop ──────────────
@@ -8384,7 +8408,7 @@ async def _process_empty_completion(
                 turn_reasoning_text,
                 False,
                 stalled_write_guidance,
-                "continue",
+                _ContinueIteration(),
             )
 
         # ── Stalled-write rescue (read-work, no write attempt) ────
@@ -8408,7 +8432,7 @@ async def _process_empty_completion(
                 turn_reasoning_text,
                 False,
                 stalled_write_guidance,
-                "continue",
+                _ContinueIteration(),
             )
 
         log.debug(
@@ -8446,8 +8470,8 @@ async def _process_empty_completion(
                 state.total_reasoning_tokens,
             )
     # A synthesized forced call falls through to the dispatch loop below
-    # (action ""); a natural completion ends the turn (action "break").
-    action = "" if synthesized_forced else "break"
+    # (a dispatch verdict); a natural completion ends the turn (a break).
+    action: _LoopControl = _DispatchToolBatch() if synthesized_forced else _BreakIteration()
     return (
         tool_calls,
         synthesized_forced,
@@ -9112,7 +9136,7 @@ def _prepare_turn_loop(
 
 @dataclass(frozen=True, slots=True)
 class _PreparedToolCall:
-    action: Literal["continue", "break", "dispatch"]
+    action: _LoopControl
     tools_dispatched: bool
     tool_name: str = ""
     tool_arguments: Any = None
@@ -9198,7 +9222,7 @@ async def _prepare_tool_call_dispatch(
                 "content": _ceiling_refusal,
             }
         )
-        return _PreparedToolCall("continue", True)
+        return _PreparedToolCall(_ContinueIteration(), True)
     if _handle_truncated_tool_arguments(
         state=state,
         mode_id=mode_id,
@@ -9209,7 +9233,7 @@ async def _prepare_tool_call_dispatch(
         messages=messages,
         log=log,
     ):
-        return _PreparedToolCall("continue", True)
+        return _PreparedToolCall(_ContinueIteration(), True)
 
     if synthesized_forced and _abort_synthesized_call_missing_params(
         state=state,
@@ -9220,7 +9244,7 @@ async def _prepare_tool_call_dispatch(
         tool_catalog=tool_catalog,
         log=log,
     ):
-        return _PreparedToolCall("break", False)
+        return _PreparedToolCall(_BreakIteration(), False)
 
     tool_name, tool_arguments = _enforce_forced_action_on_dispatch(
         state=state,
@@ -9254,7 +9278,7 @@ async def _prepare_tool_call_dispatch(
         # A rejected call still produced a tool-result message; keep the
         # outer loop alive so the model can observe the cap and finalize
         # instead of being mistaken for a natural empty completion.
-        return _PreparedToolCall("continue", True)
+        return _PreparedToolCall(_ContinueIteration(), True)
 
     (
         tool_kind,
@@ -9307,9 +9331,9 @@ async def _prepare_tool_call_dispatch(
         # A withheld call still produced a tool-result message; keep the outer
         # loop alive so the model can observe the refusal and finalize instead
         # of being mistaken for a natural empty completion.
-        return _PreparedToolCall("continue", True)
+        return _PreparedToolCall(_ContinueIteration(), True)
     return _PreparedToolCall(
-        "dispatch",
+        _DispatchToolBatch(),
         True,
         tool_name,
         tool_arguments,
@@ -9331,7 +9355,7 @@ class _EmptyCompletionResult:
     turn_reasoning_text: str
     yielded: bool
     stalled_write_guidance: str
-    action: str
+    action: _LoopControl
 
 
 async def _resolve_empty_completion_for_dispatch(
@@ -9368,7 +9392,7 @@ async def _resolve_empty_completion_for_dispatch(
             turn_reasoning_text,
             yielded,
             stalled_write_guidance,
-            "",
+            _DispatchToolBatch(),
         )
     (
         tool_calls,
@@ -9442,7 +9466,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     emit_stage: Callable[..., Awaitable[None]],
     exec_op: Callable[..., Awaitable[OperationResult]],
     log: logging.Logger,
-) -> Literal["break", "continue"]:
+) -> _LoopControl:
     """Apply yield/transition interception or execute a prepared capability."""
     try:
         yield_intercept = await _intercept_yield_tool_call(
@@ -9460,7 +9484,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
         if yield_intercept is not None:
             loop_state.pending_yield, loop_state.content = yield_intercept
             loop_state.yielded = True
-            return "break"
+            return _BreakIteration()
 
         if prepared.tool_name == _TRANSITION_TOOL_NAME:
             transition = await _intercept_transition_stage(
@@ -9517,7 +9541,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             loop_state.transitioned_to = transition.transitioned_to
             loop_state.content = transition.content
             loop_state.pre_handoff_text = transition.pre_handoff_text
-            return transition.action  # type: ignore[return-value]
+            return transition.action
 
         dispatch = await _dispatch_capability_and_track(
             tool_name=prepared.tool_name,
@@ -9544,7 +9568,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             loop_state.pending_yield = dispatch["delegate_yield"]
             loop_state.content = loop_state.pending_yield.question
             loop_state.yielded = True
-            return "break"
+            return _BreakIteration()
     except ApprovalRequired:
         state.pending_approval_tool_call_id = prepared.tool_call_id
         state.pending_approval_recovery_item_id = prepared.recovery_item_id or ""
@@ -9576,7 +9600,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             preview_repeat_limit=state.intra_turn_compaction.preview_repeat_limit,
         )
     state.intra_turn_compaction_estimator.observe_append(tool_result_msg)
-    return "continue"
+    return _ContinueIteration()
 
 
 async def _dispatch_turn_tool_calls(
@@ -9628,7 +9652,7 @@ async def _dispatch_turn_tool_calls(
         tool_call = tool_calls[index]
         if continuation is not None and index == start_index:
             prepared = _PreparedToolCall(
-                "dispatch",
+                _DispatchToolBatch(),
                 True,
                 continuation.pending_tool_name,
                 continuation.pending_tool_arguments,
@@ -9658,9 +9682,9 @@ async def _dispatch_turn_tool_calls(
                 log=log,
             )
         tools_dispatched = tools_dispatched or prepared.tools_dispatched
-        if prepared.action == "break":
+        if isinstance(prepared.action, _BreakIteration):
             break
-        if prepared.action == "continue":
+        if isinstance(prepared.action, _ContinueIteration):
             continue
 
         tools_dispatched = True
@@ -9701,7 +9725,7 @@ async def _dispatch_turn_tool_calls(
         finally:
             if continuation is not None and index == start_index:
                 loop_state.ctx.approval_request_id = ""
-        if action == "break":
+        if isinstance(action, _BreakIteration):
             break
 
     return tools_dispatched
@@ -10984,9 +11008,9 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             _empty_completion.yielded,
             _empty_completion.stalled_write_guidance,
         )
-        if _empty_completion.action == "break":
+        if isinstance(_empty_completion.action, _BreakIteration):
             break
-        if _empty_completion.action == "continue":
+        if isinstance(_empty_completion.action, _ContinueIteration):
             continue
 
         _repeat_action = _guard_repeated_tool_batch(
@@ -10996,9 +11020,9 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             messages=messages,
             log=_log,
         )
-        if _repeat_action == "stop":
+        if isinstance(_repeat_action, _StopLoop):
             break
-        if _repeat_action == "refuse":
+        if isinstance(_repeat_action, _RefuseToolBatch):
             continue
 
         _tool_loop_state = _ToolDispatchLoopState(

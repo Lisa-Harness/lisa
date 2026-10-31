@@ -6,6 +6,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Loop-control tagged union (`kernel.turn_phases._loop_control`).** "What
+  does the loop do next" was five incompatible encodings — a
+  `Literal["continue", "break", "dispatch"]` on `_PreparedToolCall`, a bare
+  `"break"/"continue"` return from the executor, `"dispatch"/"refuse"/"stop"`
+  from the repeated-batch guard, and `"break"/"continue"/""` from the
+  empty-completion resolver — so reading the loop meant holding five control
+  conventions in working memory, and a new guard author picked one by
+  imitation. One frozen-dataclass union (`ContinueIteration`,
+  `BreakIteration`, `DispatchToolBatch`, `RefuseToolBatch(refusal)`,
+  `StopLoop(reason)`) now covers every in-loop guard; consumers dispatch
+  with `isinstance`, so an unhandled variant fails statically instead of
+  silently falling through a string comparison. The application-side sibling
+  of the lifecycle resolver's `LifecycleAction` union. No behavior change:
+  every conversion is a mechanical string-to-variant mapping. Tests:
+  `kernel/tests/test_loop_control_ordering.py` (variant set, guard order,
+  payload variants).
+
 - **Intra-turn context compaction with cache-aware policy.** The mid-turn
   governor (`kernel.turn_phases._compaction`) bounds the live provider
   message array inside a single turn — the accumulation surface behind the
