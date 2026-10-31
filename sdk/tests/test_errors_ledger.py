@@ -205,8 +205,15 @@ def test_forensics_prefers_errors_ledger(tmp_path: Path) -> None:
     _seed_thread(threads, turns=2)
     logs = tmp_path / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    # Stamp relative to the current clock: the reader applies a trailing
+    # 24h window to log evidence, so a hardcoded date ages the test out
+    # of its own window a day later (observed 2026-10-31 when the seeded
+    # 2026-10-30T19:00Z row fell outside the window).
+    from datetime import UTC, datetime, timedelta
+
+    fresh_ts = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
     ledger_row = {
-        "ts": "2026-10-30T19:00:00+00:00",
+        "ts": fresh_ts,
         "level": "error",
         "name": "runtime.tools",
         "msg": "tool exploded",
@@ -224,8 +231,13 @@ def test_forensics_falls_back_to_rotating_log(tmp_path: Path) -> None:
     _seed_thread(threads, turns=2)
     logs = tmp_path / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    # Same clock-relative stamp as the ledger test: the rotating log is
+    # read through the same trailing window.
+    from datetime import UTC, datetime, timedelta
+
+    fresh_ts = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
     log_row = {
-        "ts": "2026-10-30T19:00:00+00:00",
+        "ts": fresh_ts,
         "level": "error",
         "name": "runtime.tools",
         "msg": "old-style error",

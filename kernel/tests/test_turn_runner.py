@@ -8043,3 +8043,177 @@ async def test_mid_turn_single_step_plan_is_not_rendered() -> None:
     assert not result.response_text.startswith("## Plan"), (
         f"a single-step plan must not be prefixed; got: {result.response_text[:120]!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_start_plan_prefix_and_position_route_through_one_recorder() -> None:
+    """The turn-start plan staging uses the same recorder as the handoff path.
+
+    F1 consolidation regression: the turn-start path previously staged the
+    prefix and seeded the host position inline while the handoff path called
+    ``_record_turn_plan_position`` — two implementations of one concern. Both
+    origins now route through the one recorder, with the origin-gated rules
+    preserved: turn-start stages the prefix whenever the entry phase produced
+    one (including single-step plans) and seeds the host position from the
+    compiled workflow steps; it does not set ``turn_plan_position``.
+
+    Scenario: the turn *starts* in ``plan`` mode (the turn-start origin), so
+    the entry phase runs ``plan_workflow`` before any model call. The planner
+    returns a single-step plan; the kernel synthesizes the planned handoff to
+    ``search`` deterministically, and the search iteration answers. The
+    single-step prefix must still be staged — the any-steps rule is the
+    turn-start contract.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {"plan": plan_cfg, "search": search_cfg}
+
+    plan_text = "## Plan\n\n1. **search** — Find sources\n   _reads_\n"
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        # Only the search-mode iteration reaches a model call: the planned
+        # handoff is synthesized deterministically from the entry result.
+        return _StubCompletion(content="Found sources.")
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text=plan_text,
+            output_json={
+                "target_stage_id": "search",
+                "steps": [
+                    {
+                        "mode_id": "search",
+                        "description": "Find sources",
+                        "rationale": "research",
+                        "write_capability": None,
+                    }
+                ],
+            },
+        )
+
+    seeded_positions: list[Any] = []
+
+    def position_updater(position: Any) -> None:
+        seeded_positions.append(position)
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow.workflow_position_updater = position_updater
+    hooks.workflow.workflow_position = lambda: None
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
+
+    # The turn-start origin stages the prefix even for a single-step plan
+    # (the any-steps rule) and seeds the host position from the compiled
+    # steps — both through the one recorder.
+    assert result.response_text.startswith("## Plan"), (
+        "turn-start staging must keep the any-steps prefix rule; "
+        f"got: {result.response_text[:120]!r}"
+    )
+    assert len(seeded_positions) == 1, (
+        "the turn-start origin must seed the host position exactly once "
+        f"through the shared recorder; got {len(seeded_positions)}"
+    )
+    seeded = seeded_positions[0]
+    assert seeded.mode_id == "search"
+    # The staged prefix is the stripped plan block — the same value the
+    # old inline turn-start staging stored (``execute_entry_phase`` strips
+    # the plan text when computing ``plan_prefix``).
+    assert seeded.plan_text == plan_text.strip()
+    assert len(seeded.declared_steps) == 1
+
+
+def test_plan_recorder_origin_gate_boundary() -> None:
+    """The recorder's origin gate is explicit: turn_start vs handoff rules.
+
+    Unit-level boundary on the origin-gated rules: the handoff origin sets
+    ``turn_plan_position`` and stages the prefix only for multi-step plans;
+    the turn-start origin stages the prefix whenever the entry phase produced
+    one and does not set ``turn_plan_position``.
+    """
+    from kernel.turn_phases._entry import EntryPhaseResult
+    from kernel.turn_runner import _record_turn_plan_position
+    from kernel.workflow_position import WorkflowStep
+
+    class _State:
+        def __init__(self) -> None:
+            self.plan_prefix = ""
+            self.turn_plan_position = None
+
+    class _WorkflowHooks:
+        def __init__(self) -> None:
+            self.updates: list[Any] = []
+            self.workflow_position_updater = None
+            self.workflow_position = None
+
+    class _Hooks:
+        def __init__(self) -> None:
+            self.workflow = _WorkflowHooks()
+
+    entry_result = EntryPhaseResult(
+        plan_prefix="## Plan\n\n1. **search** — Find sources\n",
+        workflow_steps=(
+            WorkflowStep(step_id="s1", mode_id="search", step_query="find sources"),
+        ),
+    )
+
+    state = _State()
+    hooks = _Hooks()
+    _record_turn_plan_position(
+        state=state,
+        hooks=hooks,
+        target_stage="plan",
+        entry_result=entry_result,
+        origin="turn_start",
+        log=logging.getLogger(__name__),
+    )
+    assert state.plan_prefix.startswith("## Plan")
+    assert state.turn_plan_position is None, (
+        "turn-start staging must not set turn_plan_position (entry-phase semantics)"
+    )
+
+    handoff_result = OperationResult(
+        output_text="## Plan\n\n1. **search** — Find sources\n",
+        output_json={
+            "target_stage_id": "search",
+            "steps": [
+                {
+                    "mode_id": "search",
+                    "description": "Find sources",
+                    "rationale": "research",
+                    "write_capability": None,
+                }
+            ],
+        },
+    )
+    state2 = _State()
+    _record_turn_plan_position(
+        state=state2,
+        hooks=hooks,
+        target_stage="plan",
+        entry_result=handoff_result,
+        origin="handoff",
+        log=logging.getLogger(__name__),
+    )
+    assert state2.turn_plan_position is not None
+    assert state2.plan_prefix == "", (
+        "handoff staging must keep the multi-step-only prefix rule"
+    )
