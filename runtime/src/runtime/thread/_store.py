@@ -95,14 +95,28 @@ def _tail_line_sha(path: Path, *, block_bytes: int = 65536) -> str | None:
             handle.seek(size)
             tail = handle.read(step) + tail
             lines = tail.split(b"\n")
-            # The writer terminates every entry with a newline, so the
-            # sought line is the last non-empty element; the trailing empty
-            # element (and any blank lines) are skipped.
-            for candidate in reversed(lines):
-                if candidate.strip():
-                    return _entry_sha256(candidate.decode("utf-8", errors="replace"))
-            # No newline in this window yet; the last line may span blocks,
-            # so keep the whole accumulation (bounded by that line's size).
+            if len(lines) == 1:
+                # No newline in this window yet; the last line may span
+                # blocks, so keep the whole accumulation (bounded by that
+                # line's size).
+                continue
+            # The writer terminates every entry with a newline, so the last
+            # raw line runs from just after the previous ``\n`` (or the file
+            # head) through EOF minus its own terminator. A line longer than
+            # the window must be hashed whole: taking only the final
+            # ``\n``-bounded fragment inside the window would hash a
+            # mid-line piece and forge a chain link to bytes that never
+            # existed as a stored line.
+            body = tail[:-1] if tail.endswith(b"\n") else tail
+            start = body.rfind(b"\n") + 1
+            if start == 0 and size > 0 and not tail.startswith(b"\n"):
+                # The candidate's head extends beyond this window and no
+                # earlier newline bounds it — keep accumulating.
+                continue
+            candidate = body[start:]
+            if candidate.strip():
+                return _entry_sha256(candidate.decode("utf-8", errors="replace"))
+            # Only blank lines since the last newline; keep accumulating.
         # The whole file is one unterminated line.
         text = tail.decode("utf-8", errors="replace").strip()
         return _entry_sha256(text) if text else None
@@ -344,7 +358,10 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
         seg_id = _next_seg_id(paths.index_path)
     sealed_path = _sealed_segment_path(paths.base, seg_id)
 
-    entries = _parse_entries(raw_bytes.decode("utf-8").splitlines())
+    # Lines are \n-delimited (JSONL): splitlines() would also split on raw
+    # NEL/LS/PS characters that json.dumps(ensure_ascii=False) writes
+    # unescaped inside strings, shearing an entry into fragments.
+    entries = _parse_entries(raw_bytes.decode("utf-8").split("\n"))
     if not entries:
         return None
 
@@ -354,8 +371,13 @@ def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRec
     # The seal's terminal raw line is the chain link for the first entry
     # appended after this seal; hash it here (the raw bytes are already in
     # hand) so the next append needs no decompression.
-    raw_lines = raw_bytes.decode("utf-8").splitlines()
-    tail_sha = _entry_sha256(raw_lines[-1]) if raw_lines and raw_lines[-1].strip() else ""
+    # \n-delimited (see _parse_entries call above): the tail must be the
+    # whole stored line, not a Unicode-separator fragment of it. The final
+    # \n piece is empty (the writer terminates every entry), so take the
+    # last non-empty piece.
+    raw_lines = raw_bytes.decode("utf-8").split("\n")
+    tail_piece = next((line for line in reversed(raw_lines) if line.strip()), "")
+    tail_sha = _entry_sha256(tail_piece) if tail_piece else ""
 
     record = SegmentRecord(
         seg_id=seg_id,

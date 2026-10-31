@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from runtime.thread import append_thread_entry
-from runtime.thread._store import _read_index, _segment_paths
+from runtime.thread._store import _read_index, _segment_paths, _tail_line_sha
 
 
 def _append(base: Path, n: int, segment_turns: int = 256) -> int | None:
@@ -25,6 +25,33 @@ def _append(base: Path, n: int, segment_turns: int = 256) -> int | None:
         mode_id="default",
         query=f"q{n}",
         response_text=f"r{n}",
+        turn=n,
+        segment_turns=segment_turns,
+    )
+
+
+def _append_big(base: Path, n: int, *, segment_turns: int = 256, tail_chars: int) -> int | None:
+    """Append an entry whose raw line exceeds 64 KiB by ``tail_chars`` bytes."""
+    filler = "x" * (65536 + tail_chars)
+    return append_thread_entry(
+        thread_path=base,
+        user_slug="u",
+        mode_id="default",
+        query=f"q{n}",
+        response_text=filler,
+        turn=n,
+        segment_turns=segment_turns,
+    )
+
+
+def _append_tail(base: Path, n: int, *, segment_turns: int = 2) -> int | None:
+    """Append an entry with a raw NEL byte in its response text."""
+    return append_thread_entry(
+        thread_path=base,
+        user_slug="u",
+        mode_id="default",
+        query=f"q{n}",
+        response_text=f"payload{n} with raw NEL:  inside",
         turn=n,
         segment_turns=segment_turns,
     )
@@ -58,6 +85,93 @@ def test_each_entry_links_to_the_previous_raw_line(tmp_path: Path) -> None:
     entries = [json.loads(line) for line in lines]
     assert entries[1]["prev_entry_sha256"] == _sha(lines[0])
     assert entries[2]["prev_entry_sha256"] == _sha(lines[1])
+
+
+def test_tail_hash_covers_a_line_spanning_the_read_window(tmp_path: Path) -> None:
+    """The 64 KiB tail read hashes the whole last line, not its final block.
+
+    A predecessor line longer than the tail-read window was hashed as only
+    its trailing ``\\n``-bounded fragment (the last piece inside the 64 KiB
+    window), so the successor's ``prev_entry_sha256`` never matched the
+    verifier's whole-line hash — every such link reported a false divergence.
+    """
+    base = tmp_path / "u"
+    _append_big(base, 0, tail_chars=4096)  # raw line ≈ 68 KiB
+    path = Path(f"{base}.current.jsonl")
+    big_line = path.read_text(encoding="utf-8").rstrip("\n")
+    assert len(big_line) > 65536
+    assert _tail_line_sha(path) == _sha(big_line)
+
+
+def test_chain_link_after_a_window_spanning_predecessor(tmp_path: Path) -> None:
+    base = tmp_path / "u"
+    _append_big(base, 0, tail_chars=4096)
+    _append(base, 1)
+    _append(base, 2)
+    lines = _active_lines(base)
+    entries = [json.loads(line) for line in lines]
+    assert entries[1]["prev_entry_sha256"] == _sha(lines[0])
+    assert entries[2]["prev_entry_sha256"] == _sha(lines[1])
+
+
+def test_chain_survives_unicode_line_separator_in_payload(tmp_path: Path) -> None:
+    """A raw U+0085 (NEL) inside a JSON string is not a line break.
+
+    JSONL line identity is ``\\n``-delimited. ``splitlines()`` splits on
+    NEL (and other Unicode separators), so a payload carrying a raw NEL
+    was verified as two fragments — ``verify_chain`` reported a false
+    "malformed entry (raw bytes changed?)" divergence and mis-hashed the
+    entry's own chain contribution.
+    """
+    from sdk.thread import verify_chain
+
+    base = tmp_path / "u"
+    assert _append(base, 0) is not None
+    payload = "tool output with raw NEL:  inside JSON"
+    assert (
+        append_thread_entry(
+            thread_path=base,
+            user_slug="u",
+            mode_id="default",
+            query="q1",
+            response_text=payload,
+            turn=1,
+            segment_turns=256,
+        )
+        == 1
+    )
+    active = Path(f"{base}.current.jsonl").read_text(encoding="utf-8")
+    assert "\x85" in active  # the raw byte really is on disk
+    verification = verify_chain(base)
+    assert verification.ok, verification.divergences
+    assert verification.head_sha256 == _sha(active.split("\n")[-2])
+
+
+def test_seal_after_a_payload_with_unicode_separator_ignored(tmp_path: Path) -> None:
+    """A seal records the WHOLE terminal line as tail_sha256, NEL and all.
+
+    The seal hashed ``raw.splitlines()[-1]`` — a raw U+0085 inside the last
+    entry's JSON string sheared that entry, so the index recorded a fragment
+    hash, turning the segment into an unverifiable "malformed" mess.
+    """
+    from sdk.thread import verify_chain
+
+    base = tmp_path / "u"
+    _append_tail(base, 0)
+    _append_tail(base, 1)
+    assert _append_tail(base, 2) == 2  # segment_turns=2 triggers the seal
+    records = _read_index(_segment_paths(base).index_path)
+    assert len(records) == 1
+    sealed = Path(f"{base}.0001.jsonl.zst")
+    assert sealed.exists()
+    import zstandard
+
+    raw_lines = (
+        zstandard.ZstdDecompressor().decompress(sealed.read_bytes()).decode("utf-8").split("\n")
+    )
+    assert records[0].tail_sha256 == _sha(raw_lines[-2])
+    verification = verify_chain(base)
+    assert verification.ok, verification.divergences
 
 
 def test_seal_records_terminal_hash_in_the_index(tmp_path: Path) -> None:

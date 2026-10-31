@@ -70,7 +70,13 @@ def _entry_sha256(raw_line: str) -> str:
 
 
 def _iter_sealed_lines(base: Path, seg_id: str) -> list[str]:
-    """Decompress one sealed segment and return its raw non-empty lines."""
+    """Decompress one sealed segment and return its raw non-empty lines.
+
+    Lines are ``\\n``-delimited (JSONL). ``str.splitlines()`` would also
+    split on raw NEL/LS/PS characters that a legitimate JSON string may
+    contain, shearing one stored entry into two fragments and reporting
+    false "malformed entry" divergences.
+    """
     sealed_path = Path(f"{base}.{seg_id}.jsonl.zst")
     try:
         compressed = sealed_path.read_bytes()
@@ -82,16 +88,16 @@ def _iter_sealed_lines(base: Path, seg_id: str) -> list[str]:
         raw = zstandard.ZstdDecompressor().decompress(compressed)
     except Exception:  # pylint: disable=broad-except
         return []
-    return [line for line in raw.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    return [line for line in raw.decode("utf-8", errors="replace").split("\n") if line.strip()]
 
 
 def _active_lines(current_path: Path) -> list[str]:
-    """Return the active segment's raw non-empty lines."""
+    """Return the active segment's raw non-empty ``\\n``-delimited lines."""
     if not current_path.exists():
         return []
     return [
         line
-        for line in current_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in current_path.read_text(encoding="utf-8", errors="replace").split("\n")
         if line.strip()
     ]
 
