@@ -209,6 +209,21 @@ class _TurnState:
     stream_stall_detail: str = ""
     """The ``StreamIdleTimeout`` message (window seconds), carried so the
     finalization diagnostic can state how long the provider was silent."""
+    provider_quota_exhausted: bool = False
+    """Set when the provider rejected the iteration's model call with an
+    HTTP 429 quota/rate failure (``ProviderGatewayError`` caught by
+    ``_iteration_completion_or_expiry``). Same graceful-finalize family as
+    ``stream_stalled``: the loop breaks to finalization, which surfaces the
+    partial-work diagnostic instead of the error escaping and the whole
+    turn being discarded (the 2026-10-31 00:48 incident: a session-quota
+    429 escaped ``run_turn``, the turn failed whole, and the receipts
+    evaporated). Quota failures are not retried in-turn — the provider
+    already retried (429 is in ``_TRANSIENT_STATUS_CODES``), and a session
+    quota stays exhausted for the rest of the turn."""
+    provider_quota_detail: str = ""
+    """The ``ProviderGatewayError`` message (provider, model, quota text),
+    carried so the finalization diagnostic can state which provider refused
+    and why."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)

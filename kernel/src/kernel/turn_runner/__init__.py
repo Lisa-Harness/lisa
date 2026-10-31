@@ -121,6 +121,7 @@ from kernel.operations.structured_output import (
 )
 from kernel.provider_contracts import (
     CompletionRequest,
+    ProviderGatewayError,
     RequestTokenCount,
     StreamedChunk,
     _aggregate_streamed_chunks,
@@ -294,6 +295,11 @@ _KERNEL_SYNTH_CALL_PREFIXES = (
 #: Router-reported model reliability at (or above) which the forced-action
 #: non-compliance cap is lifted (frontier/reasoning models self-correct).
 _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
+
+#: HTTP status the provider returns for quota/rate-limit refusals. Caught by
+#: ``_iteration_completion_or_expiry`` for graceful finalization instead of
+#: escaping ``run_turn`` and discarding the turn's receipts.
+_QUOTA_STATUS_CODE = 429
 
 
 def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3411,7 +3417,7 @@ async def _iteration_completion_or_expiry(
     between). Marked on ``state.stream_stalled`` (distinct from
     ``wall_budget_expired``) so the finalization content can name the real
     cause honestly.
-    A non-budget, non-stream-stall failure still propagates.
+    A non-budget, non-stream-stall, non-quota failure still propagates.
     """
     try:
         return await _model_completion_for_iteration(
@@ -3453,6 +3459,32 @@ async def _iteration_completion_or_expiry(
         )
         state.stream_stalled = True
         state.stream_stall_detail = str(exc)
+        return None
+    except ProviderGatewayError as exc:
+        if exc.status_code != _QUOTA_STATUS_CODE:
+            # Non-quota provider failures keep the historical contract:
+            # they propagate and the host's handler reports them.
+            raise
+        # The provider refused the call with a quota/rate failure. Not
+        # retried here (the gateway client already retried — 429 is in
+        # ``_TRANSIENT_STATUS_CODES`` — and a session quota stays
+        # exhausted), and not allowed to escape: finalize with the
+        # receipts earlier iterations captured, same graceful path as the
+        # wall-budget and stream-stall expiries (the 2026-10-31 00:48
+        # incident: the 429 escaped ``run_turn`` whole and the turn's
+        # receipts evaporated with no thread entry).
+        log.warning(
+            "provider quota/rate limit refused the model call "
+            "(mode=%s, iteration=%d, provider=%s, model=%s); finalizing with partial work",
+            mode_id,
+            state.iteration,
+            exc.provider,
+            exc.model_id,
+        )
+        state.provider_quota_exhausted = True
+        state.provider_quota_detail = (
+            f"{exc.provider}:{exc.model_id} — {exc.message}"
+        )
         return None
 
 
@@ -6162,6 +6194,47 @@ def _build_cap_pause_diagnostic(
     return content
 
 
+def _build_provider_quota_diagnostic(
+    *,
+    state: Any,
+    mode_id: str,
+    log: logging.Logger,
+) -> str:
+    """Build the provider-quota finalization diagnostic.
+
+    The turn broke when the provider refused the iteration's model call
+    with a 429 quota/rate failure (``state.provider_quota_exhausted``), not
+    because the model finished or a budget fired. Same shape as the
+    stream-stall diagnostic: name the real cause plus the partial work the
+    earlier iterations produced, so the operator can redirect and the
+    follow-up turn's model can read in the thread what was already done
+    (the 2026-10-31 00:48 incident: the uncaught 429 erased the turn's
+    receipts and thread entry).
+    """
+    _last_tool_name = ""
+    if state.effect_receipts:
+        _last = state.effect_receipts[-1]
+        _last_tool_name = str(getattr(_last, "capability_id", "") or "")
+    content = (
+        f"The provider hit a quota or rate limit and refused the model call "
+        f"({state.provider_quota_detail or 'provider 429'}) "
+        f"in {mode_id} at iteration {state.iteration}. "
+        f"I did {state.total_tool_calls} tool call(s) before the refusal"
+        + (f"; the last was `{_last_tool_name}`" if _last_tool_name else "")
+        + ". Work up to here is preserved in the thread. "
+        "Reply to resume once the provider has capacity."
+    )
+    log.info(
+        "turn loop: surfacing provider-quota diagnostic (mode=%s, iteration=%d, "
+        "tool_calls=%d, last_tool=%s)",
+        mode_id,
+        state.iteration,
+        state.total_tool_calls,
+        _last_tool_name,
+    )
+    return content
+
+
 def _build_stream_stall_diagnostic(
     *,
     state: Any,
@@ -6239,6 +6312,30 @@ def _yield_fallback_question(
     )
 
 
+def _resolve_provider_failure_diagnostic(
+    *,
+    state: Any,
+    mode_id: str,
+    log: logging.Logger,
+) -> str | None:
+    """Return the provider-failure finalization diagnostic, or ``None``.
+
+    Covers the two graceful-finalize provider failures caught by
+    ``_iteration_completion_or_expiry``: a stream that went silent past
+    ``stream_idle_timeout_s`` (``state.stream_stalled``) and a 429
+    quota/rate refusal (``state.provider_quota_exhausted``). Both end the
+    turn with an honest diagnostic instead of a rescue model call (the
+    provider already failed once) or an escape that would discard the
+    turn's receipts.
+    """
+
+    if getattr(state, "stream_stalled", False):
+        return _build_stream_stall_diagnostic(state=state, mode_id=mode_id, log=log)
+    if getattr(state, "provider_quota_exhausted", False):
+        return _build_provider_quota_diagnostic(state=state, mode_id=mode_id, log=log)
+    return None
+
+
 async def _resolve_empty_turn_content(
     *,
     state: Any,
@@ -6276,20 +6373,11 @@ async def _resolve_empty_turn_content(
     _yielded = False
     if content:
         return content, content_source, _yielded, pending_yield
-    if getattr(state, "stream_stalled", False):
-        # The provider stream went silent past ``stream_idle_timeout_s``
-        # mid-iteration (caught by ``_iteration_completion_or_expiry``, the
-        # same graceful-finalize path as wall-budget expiry). The
-        # diagnostic — not a forced no-tools completion — ends the turn:
-        # the upstream stalled once already; a rescue model call could
-        # hang for another idle window. Name the real cause and the
-        # preserved partial work so the operator can redirect without the
-        # turn's history being erased (the 2026-10-26 14:20 incident: the
-        # uncaught RuntimeError erased 57 iterations of receipts and the
-        # thread entry, so the next turn's model was blind to everything
-        # the lost turn had done).
-        content = _build_stream_stall_diagnostic(state=state, mode_id=mode_id, log=log)
-        return content, content_source, _yielded, pending_yield
+    provider_failure_content = _resolve_provider_failure_diagnostic(
+        state=state, mode_id=mode_id, log=log
+    )
+    if provider_failure_content is not None:
+        return provider_failure_content, content_source, _yielded, pending_yield
     if state.fork_results and any(result.status != "ok" for result in state.fork_results):
         _failed_children = [
             result.target.mode_id for result in state.fork_results if result.status != "ok"
@@ -10533,6 +10621,7 @@ async def _run_turn_inner(  # noqa: PLR0915, C901  # restored dispatch shares th
         and not _yielded
         and not _state.wall_budget_expired
         and not _state.stream_stalled
+        and not _state.provider_quota_exhausted
         and not _has_terminal_dispatch_failure(_state, _max_handoffs_per_turn)
     ):
         _state.iteration += 1
