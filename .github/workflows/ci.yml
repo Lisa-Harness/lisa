@@ -99,7 +99,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     env:
-      COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+      COVERAGE_BASE: ${{ github.event.pull_request.base.sha || (github.ref_type == 'branch' && github.event.before) || '' }}
 
     steps:
       - uses: actions/checkout@v4
