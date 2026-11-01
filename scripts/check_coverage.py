@@ -12,6 +12,7 @@ noise. Raise them as you add tests — never lower them.
 
 Usage:
     uv run python scripts/check_coverage.py --run
+    uv run python scripts/check_coverage.py --run --skip-changed-lines
     uv run python scripts/check_coverage.py --run --base origin/main
 """
 
@@ -74,9 +75,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="Run full suite and all coverage gates")
     parser.add_argument("--base", help="Branch base for changed-line coverage with --run")
+    parser.add_argument(
+        "--skip-changed-lines",
+        action="store_true",
+        help="Skip the changed-line gate when coverage will be combined across CI jobs",
+    )
     args = parser.parse_args(argv)
     if args.base is not None and not args.run:
         parser.error("--base requires --run")
+    if args.skip_changed_lines and not args.run:
+        parser.error("--skip-changed-lines requires --run")
     if args.run:
         tests = subprocess.run(
             [
@@ -102,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             return global_report.returncode
     if _check_package_floors():
         return 1
-    if args.run:
+    if args.run and not args.skip_changed_lines:
         command = [sys.executable, str(Path(__file__).with_name("check_changed_coverage.py"))]
         base = args.base if args.base is not None else os.environ.get("COVERAGE_BASE")
         if base:

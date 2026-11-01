@@ -166,6 +166,11 @@ and package floors, then requires **95% coverage of changed executable lines**.
 It includes quality scripts in measurement. Package floors remain branch-aware;
 the changed-line percentage is line coverage, not proof of every branch.
 
+CI runs the suite and package floors on each supported OS/Python pair, then
+combines their coverage data before enforcing the changed-line threshold once.
+This keeps platform-specific branches in the denominator while counting a line
+as covered when any supported matrix job executes it.
+
 [check_changed_coverage.py](../scripts/check_changed_coverage.py) compares the
 current tree to its branch point, including committed, staged, unstaged, renamed,
 and untracked Python sources. Tests, `conftest.py`, and the Vulture allowlist

@@ -243,6 +243,11 @@ All notable changes to the Lisa Harness will be documented in this file.
   [contributing](CONTRIBUTING.md#commit-conventions), and the README publishing
   section describe the linear-history policy.
 
+- **Changed-line coverage is aggregated across CI platforms.** Each
+  OS/Python job still enforces the package coverage floors; the 95% changed
+  source threshold runs on the combined matrix data so platform-specific
+  branches are measured where they can execute.
+
 - **`lisa-memory --readonly` is now enforced.** The flag was declared but
   ignored, so writes succeeded on a read-only server. `SqliteMemoryStore`
   gains `readonly=True`, which opens the database with SQLite `mode=ro`,
