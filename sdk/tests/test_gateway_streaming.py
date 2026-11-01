@@ -110,9 +110,7 @@ async def test_openai_gateway_stream_yields_chunks() -> None:
     ]
     client = _StubOpenAIClient(events)
     gateway = OpenAICompatibleGateway(client_factory=lambda: client)
-    chunks = []
-    async for chunk in gateway.complete_stream(_request()):
-        chunks.append(chunk)
+    chunks = [chunk async for chunk in gateway.complete_stream(_request())]
     assert len(chunks) == 3
     assert chunks[0].content == "Hello"
     assert chunks[1].content == " world"
@@ -165,9 +163,7 @@ async def test_openai_gateway_stream_parses_tool_call_deltas() -> None:
     ]
     client = _StubOpenAIClient(events)
     gateway = OpenAICompatibleGateway(client_factory=lambda: client)
-    chunks = []
-    async for chunk in gateway.complete_stream(_request()):
-        chunks.append(chunk)
+    chunks = [chunk async for chunk in gateway.complete_stream(_request())]
     assert not any(c.tool_call_deltas for c in chunks[:1])
     assert chunks[1].tool_call_deltas, "the first tool fragment must surface"
     assert chunks[1].tool_call_deltas[0]["id"] == "call_1"
@@ -192,11 +188,12 @@ async def test_openai_gateway_stream_restores_dotted_tool_names() -> None:
     ]
     client = _StubOpenAIClient(events)
     gateway = OpenAICompatibleGateway(client_factory=lambda: client)
-    chunks = []
-    async for chunk in gateway.complete_stream(
-        _request(messages=[{"role": "user", "content": "use a dotted tool"}])
-    ):
-        chunks.append(chunk)
+    chunks = [
+        chunk
+        async for chunk in gateway.complete_stream(
+            _request(messages=[{"role": "user", "content": "use a dotted tool"}])
+        )
+    ]
     wire_name = chunks[0].tool_call_deltas[0]["function"]["name"]
     # The request carries a dotted name only via tools; sanitize maps it to
     # the __ wire form. Whatever the wire form was, the restored delta must
@@ -220,9 +217,7 @@ async def test_openai_gateway_stream_text_only_yields_no_deltas() -> None:
     ]
     client = _StubOpenAIClient(events)
     gateway = OpenAICompatibleGateway(client_factory=lambda: client)
-    chunks = []
-    async for chunk in gateway.complete_stream(_request()):
-        chunks.append(chunk)
+    chunks = [chunk async for chunk in gateway.complete_stream(_request())]
     assert all(not c.tool_call_deltas for c in chunks)
 
 
@@ -302,9 +297,7 @@ async def test_anthropic_gateway_stream_yields_text_deltas() -> None:
     gateway = AnthropicGateway(
         client_factory=lambda: client, api_key="test-key", api_version="2023-06-01"
     )
-    chunks = []
-    async for chunk in gateway.complete_stream(_request()):
-        chunks.append(chunk)
+    chunks = [chunk async for chunk in gateway.complete_stream(_request())]
     # 2 text deltas + 1 message_stop (usage rides it; finish_reason from message_delta).
     assert len(chunks) == 3
     assert chunks[0].content == "Hello"

@@ -217,7 +217,7 @@ def _gateway_override(scripted: ScriptedGatewayProvider | None) -> Iterator[None
         return
     hooks = runtime.turn_hooks_builder
     original = hooks._resolve_gateway_provider_for_runtime
-    hooks._resolve_gateway_provider_for_runtime = lambda _runtime: scripted
+    hooks._resolve_gateway_provider_for_runtime = lambda runtime: scripted
     try:
         yield
     finally:

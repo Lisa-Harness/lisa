@@ -7,7 +7,12 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Any
 
-from kernel.capability_binding import CapabilityBinding, CapabilityBindingProvider, CapabilityRef
+from kernel.capability_binding import (
+    CapabilityBinding,
+    CapabilityBindingProvider,
+    CapabilityKind,
+    CapabilityRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +49,7 @@ class SessionCapabilityBindings(CapabilityBindingProvider):
                 if str(owner_id).strip() and isinstance(values, Mapping)
             }
         )
-        self._bindings: Mapping[tuple[str, str, str], CapabilityBinding] | None = None
+        self._bindings: Mapping[tuple[CapabilityKind, str, str], CapabilityBinding] | None = None
         if capability_list is not None:
             self._bindings = MappingProxyType(
                 {

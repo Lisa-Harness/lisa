@@ -375,29 +375,20 @@ def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
 def _next_step_mode_id(position: _WorkflowPositionLike | None) -> str:
     """Return the mode id of the step following the current one, or "".
 
-    Mirrors the selection in ``kernel.turn_runner._next_remaining_step``: the
-    step immediately after ``current_step_id`` in declaration order, falling
-    back to the first remaining step. Returns "" when there is no next step.
+    Delegates to ``kernel.workflow_position.next_step_after_pointer`` — the
+    single canonical front-aware next-step rule — so a step declared before
+    the current pointer is never named (the naive first-remaining fallback
+    routed backward to an abandoned early step when the pointer sat at the
+    chain's tail — the 2026-10-30 backward-routing loop). Returns ""
+    when there is no next step.
     """
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import WorkflowPosition, remaining_steps
+        from kernel.workflow_position import next_step_after_pointer
 
-        if isinstance(position, WorkflowPosition):
-            remaining = remaining_steps(position)
-        else:
-            completed = set(getattr(position, "completed_steps", ()))
-            remaining = tuple(
-                step for step in position.declared_steps if step.step_id not in completed
-            )
-        if not remaining:
-            return ""
-        current = getattr(position, "current_step_id", "") or ""
-        for step in remaining:
-            if step.step_id != current:
-                return step.mode_id
-        return remaining[0].mode_id
+        forward = next_step_after_pointer(position)
+        return forward.mode_id if forward is not None else ""
     except Exception as exc:  # pylint: disable=broad-except
         _log.debug("workflow_position.remaining_steps raised: %s", exc)
         return ""
@@ -471,32 +462,39 @@ def _resolve_yield_target(
 def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
     """Return the mode id of the first remaining write step, or "".
 
-    Scans ``declared_steps`` for the first step after the current one whose
-    ``write_capability`` is set. This is the "planned writer" — the mode the
-    plan expects to produce the durable artifact. The write-rescue
+    Scans ``declared_steps`` for the first step *after the current pointer*
+    whose ``write_capability`` is set — front-aware, never naming a step
+    declared before the pointer. This is the "planned writer" — the mode
+    the plan expects to produce the durable artifact. The write-rescue
     transition targets this mode before falling back to
-    ``settings.write_rescue_mode``.
+    ``settings.write_rescue_mode``. When no uncompleted step follows the
+    pointer (pointer at the chain's tail), there is no planned writer to
+    rescue into — the fallback mode takes over rather than routing
+    backward to an abandoned earlier write step (the 2026-10-30
+    backward-routing loop). Positions with no pointer or an off-plan
+    pointer scan all remaining steps.
     """
     if position is None:
         return ""
     try:
-        from kernel.workflow_position import WorkflowPosition, remaining_steps
-
-        if isinstance(position, WorkflowPosition):
-            remaining = remaining_steps(position)
-        else:
-            completed = set(getattr(position, "completed_steps", ()))
-            remaining = tuple(
-                step for step in position.declared_steps if step.step_id not in completed
+        # ``str(...)`` converts the ``Any`` that ``getattr`` returns, so the
+        # declared ``-> str`` return never actually returns Any.
+        steps = tuple(getattr(position, "declared_steps", ()) or ())
+        completed = set(getattr(position, "completed_steps", ()) or ())
+        current = str(getattr(position, "current_step_id", "") or "")
+        if current:
+            current_index = next(
+                (idx for idx, step in enumerate(steps) if step.step_id == current),
+                None,
             )
-        if not remaining:
-            return ""
-        current = getattr(position, "current_step_id", "") or ""
-        for step in remaining:
-            if step.step_id == current:
-                continue
-            if getattr(step, "write_capability", None):
-                return step.mode_id
+            if current_index is not None:
+                for step in steps[current_index + 1 :]:
+                    if step.step_id not in completed and getattr(step, "write_capability", None):
+                        return str(step.mode_id)
+                return ""
+        for step in steps:
+            if step.step_id not in completed and getattr(step, "write_capability", None):
+                return str(step.mode_id)
         return ""
     except Exception as exc:  # pylint: disable=broad-except
         _log.debug("planned_writer_mode_id raised: %s", exc)
@@ -630,6 +628,23 @@ def _stall_remediation(
     return YieldRemediation(actions=actions)
 
 
+def handoff_cap_exceeded(handoff_count: int, max_handoffs_per_turn: int) -> bool:
+    """The single handoff-cap predicate (F7).
+
+    True once the turn's mid-turn handoff count exceeds the configured
+    ``max_handoffs_per_turn``. The boundary is exclusive (``>``): a turn at
+    exactly the cap may still hand off — the cap bounds the handoff AFTER
+    the cap-th one, not the cap-th itself. Every consumer of the rule —
+    the resolver's priority-2b backstop (``_handoff_loop_action``), the
+    dispatch-time loop guard (``_track_handoff_and_guard_loops``), and the
+    while-condition terminal-failure check (``_has_terminal_dispatch_failure``)
+    — must call this predicate so the three sites cannot drift apart
+    (e.g. one flipping to ``>=`` would desync the dispatch guard from the
+    resolver and change which handoff gets blocked).
+    """
+    return handoff_count > max_handoffs_per_turn
+
+
 def _handoff_loop_action(
     *,
     mode_id: str,
@@ -643,7 +658,7 @@ def _handoff_loop_action(
     iteration cap so a tight handoff loop (A→B→A→B...) is caught early
     rather than burning the full iteration budget.
     """
-    if state.handoff_count <= settings.max_handoffs_per_turn:
+    if not handoff_cap_exceeded(state.handoff_count, settings.max_handoffs_per_turn):
         return None
     _log.warning(
         "lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)",

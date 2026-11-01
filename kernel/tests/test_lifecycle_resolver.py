@@ -30,6 +30,7 @@ from kernel.turn_phases._lifecycle import (
     TerminateAction,
     TransitionAction,
     _RecoveryRecordLike,
+    handoff_cap_exceeded,
     resolve_lifecycle_action,
 )
 
@@ -531,6 +532,48 @@ def test_handoff_loop_backstop_not_triggered_within_cap() -> None:
         settings=_settings(max_handoffs_per_turn=5),
     )
     assert isinstance(action, ContinueAction)
+
+
+# ── F7: the single handoff-cap predicate ─────────────────────────────
+
+
+def test_handoff_cap_predicate_boundary_is_exclusive() -> None:
+    """At the cap the predicate is False; one past it is True.
+
+    The boundary is the load-bearing part: the dispatch-time guard, the
+    while-condition terminal check, and this resolver's backstop must all
+    agree on it, or a turn at exactly the cap gets different answers from
+    different sites.
+    """
+    assert handoff_cap_exceeded(5, 5) is False
+    assert handoff_cap_exceeded(6, 5) is True
+    assert handoff_cap_exceeded(0, 5) is False
+
+
+def test_handoff_cap_predicate_is_the_only_implementation() -> None:
+    """Source-lock: no independent handoff-count cap comparison survives.
+
+    Every site that applies the max_handoffs_per_turn rule must call
+    ``handoff_cap_exceeded``. A new site writing its own ``handoff_count >
+    max_handoffs_per_turn`` (or ``<=``) comparison reintroduces the drift
+    risk F7 removed, so the textual comparison is pinned out of the
+    source.
+    """
+    import inspect
+
+    from kernel.turn_phases._lifecycle import _handoff_loop_action
+    from kernel.turn_runner import _has_terminal_dispatch_failure, _track_handoff_and_guard_loops
+
+    for func in (
+        _handoff_loop_action,
+        _has_terminal_dispatch_failure,
+        _track_handoff_and_guard_loops,
+    ):
+        source = inspect.getsource(func)
+        assert "handoff_count > max_handoffs_per_turn" not in source, (
+            f"{func.__name__} implements the handoff cap inline; it must call handoff_cap_exceeded"
+        )
+        assert "handoff_cap_exceeded(" in source, f"{func.__name__} must call the shared predicate"
 
 
 # ── Phase 5: Unified forced-action enforcer ────────────────────────────

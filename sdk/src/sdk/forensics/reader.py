@@ -31,6 +31,7 @@ process diagnostics.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -74,6 +75,8 @@ _TURN_FLOOR_SLACK = timedelta(minutes=5)
 _ERROR_LEVELS = frozenset({"error", "warning", "critical"})
 _DECISIONS_FILENAME = "decisions.jsonl"
 _TOKEN_USAGE_FILENAME = "token-usage.jsonl"
+_APPROVALS_FILENAME = "approvals.jsonl"
+_ERRORS_LOG_FILENAME = "errors.jsonl"
 _RUNTIME_LOG_FILENAME = "runtime.jsonl"
 
 
@@ -87,6 +90,14 @@ class ForensicReader:
             the shared decision and token ledgers to this user's records; it
             is never taken from a tool argument, so a caller cannot request
             another user's history. Empty means an unscoped whole-root read.
+        thread_store_slug: The thread store's filename stem when it differs
+            from ``user_slug``. A host that isolates one store per
+            conversation names the store ``<user>--<conversation>``. The same
+            stem scopes the shared ledgers, because turn indices are
+            per-thread: two conversations of one user both count from zero, so
+            the owner alone cannot tell their rows apart. Passing the stem
+            here reads the store the host wrote and only the rows that join
+            onto it.
         redaction: Optional read-time redaction applied to every thread-derived
             string. Threads persist raw prompts and reasoning, so a forensic
             read is exactly the surface that must respect this policy.
@@ -101,6 +112,7 @@ class ForensicReader:
         *,
         thread_dir: Path | str | None = None,
         user_slug: str = "",
+        thread_store_slug: str = "",
         redaction: ThreadRedactionPolicy | None = None,
         resolve_redaction_from_env: bool = True,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
@@ -110,6 +122,13 @@ class ForensicReader:
         self._data_dir = Path(data_dir)
         self._thread_dir = Path(thread_dir) if thread_dir else self._data_dir / DATA_DIR / "threads"
         self._user_slug = user_slug
+        # The thread store stem and the ledger owner are different things.
+        # A host that isolates one thread store per conversation names the
+        # store ``<user>--<conversation>`` while ledger rows stay stamped
+        # with the plain user slug, so the two cannot share one parameter:
+        # scoping the store by the user slug reads a store the host never
+        # wrote, and scoping the ledger by the store stem drops every row.
+        self._thread_store_slug = thread_store_slug
         # An explicit policy always wins. Otherwise resolve the shared
         # environment contract, so a host that configured redaction does not
         # silently lose it simply because the pack constructed the reader.
@@ -139,13 +158,29 @@ class ForensicReader:
         return self._data_dir / LOGS_DIR / _TOKEN_USAGE_FILENAME
 
     @property
+    def approvals_path(self) -> Path:
+        """Return the approval decision ledger path."""
+        return self._data_dir / LOGS_DIR / _APPROVALS_FILENAME
+
+    @property
     def runtime_log_path(self) -> Path:
         """Return the structured runtime log path."""
         return self._data_dir / LOGS_DIR / _RUNTIME_LOG_FILENAME
 
+    @property
+    def errors_log_path(self) -> Path:
+        """Return the sealed errors ledger path."""
+        return self._data_dir / LOGS_DIR / _ERRORS_LOG_FILENAME
+
     def thread_store_path(self) -> Path:
-        """Return the per-user thread store base path."""
-        return self._thread_dir / self._user_slug if self._user_slug else self._thread_dir
+        """Return the thread store base path this reader reads.
+
+        The stem is ``thread_store_slug`` when given, else ``user_slug``.
+        A host that isolates one store per conversation passes the resolved
+        store stem here and keeps ``user_slug`` for ledger scoping.
+        """
+        stem = self._thread_store_slug or self._user_slug
+        return self._thread_dir / stem if stem else self._thread_dir
 
     # ── Public read ────────────────────────────────────────────────────
 
@@ -155,6 +190,7 @@ class ForensicReader:
         turns: str | int = "last",
         max_records: int = DEFAULT_LOG_ERROR_LIMIT,
         focus: str = "all",
+        verify_chain: bool = False,
     ) -> ForensicBundle:
         """Read the evidence for a turn selection.
 
@@ -166,12 +202,19 @@ class ForensicReader:
                 Selects which sections the renderer emphasizes; every value
                 still returns the same evidence (filtering evidence would let a
                 caller miss the finding by asking the wrong question).
+            verify_chain: When ``True``, also verify the thread store's
+                tamper-evidence chain and append a one-line status note.
+                The verification decompresses every sealed segment, so it
+                is an explicit integrity audit — never the default read
+                path.
         """
         notes: list[str] = []
         sources = BundleSources()
         now = datetime.now(UTC)
 
         store = ThreadStore(self.thread_store_path(), redaction=self._redaction)
+        if verify_chain:
+            notes.append(self._chain_note(store))
         start, end = self._resolve_range(store, turns, notes)
         sources.thread_store = start is not None
         entries: list[TurnEvidence] = []
@@ -180,10 +223,11 @@ class ForensicReader:
             start = self._clamp_to_max_turns(start, end, notes)
             entries = self._read_turns(store, start, end, sources, notes)
             floor = self._turn_floor(store, start)
-        wanted = {turn.turn_index for turn in entries}
+        wanted = {turn.telemetry_turn_index for turn in entries}
 
         decisions, dispatches = self._read_decisions(sources, notes, max_records, wanted, floor)
         costs = self._read_costs(sources, notes, wanted, floor)
+        approvals = self._read_approvals(sources, notes, wanted, floor, max_records)
         log_errors = self._read_log_errors(sources, now, notes, max_records)
 
         bundle = build_bundle(
@@ -195,6 +239,7 @@ class ForensicReader:
             log_errors=log_errors,
             sources=sources,
             notes=notes,
+            approvals=approvals,
         )
         if focus not in {"all", "blocked", "receipts", "cost", "latency"}:
             notes.append(f"unknown focus {focus!r}; rendered everything")
@@ -216,6 +261,24 @@ class ForensicReader:
             f"showing the most recent {self._max_turns}. Narrow the range."
         )
         return end - self._max_turns + 1
+
+    def _chain_note(self, store: ThreadStore) -> str:
+        """Render the tamper-evidence chain verification as one read note."""
+        try:
+            verification = store.verify_chain()
+        except Exception as exc:  # pylint: disable=broad-except
+            return f"chain verification could not run: {exc}"
+        if verification.ok:
+            return (
+                f"thread chain verified: {verification.chained_entries} chained "
+                f"entr{'y' if verification.chained_entries == 1 else 'ies'}, "
+                f"{verification.unchained_entries} pre-chain, "
+                f"{verification.verified_seals} seal(s) checked"
+            )
+        return (
+            f"THREAD CHAIN BROKEN: {verification.first_divergence}. "
+            f"{len(verification.divergences)} divergence(s) total"
+        )
 
     def _read_turns(
         self,
@@ -362,6 +425,7 @@ class ForensicReader:
         sources.decisions_log = True
         records = self._owned(_since(tail, floor), _DECISIONS_FILENAME, notes)
         self._note_truncation(tail, _DECISIONS_FILENAME, "the selected turns", notes)
+        self._note_sequence_gaps(records, _DECISIONS_FILENAME, notes)
         decisions = _cap_unattributed(
             [r for r in records if r.get("topic") == "turn.decision"],
             wanted,
@@ -393,16 +457,51 @@ class ForensicReader:
         sources.token_usage_log = True
         self._note_truncation(tail, _TOKEN_USAGE_FILENAME, "the selected turns", notes)
         owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
+        self._note_sequence_gaps(owned, _TOKEN_USAGE_FILENAME, notes)
         return [r for r in owned if r.get("turn_index") in wanted]
+
+    def _read_approvals(
+        self,
+        sources: BundleSources,
+        notes: list[str],
+        wanted: set[int],
+        floor: datetime | None,
+        max_records: int,
+    ) -> list[dict[str, Any]]:
+        """Return the owned approval transitions in the selection's window.
+
+        Rows for requested turns and the newest ``max_records`` strays are
+        returned — the same contract as decision and dispatch rows — and the
+        join routes them: wanted rows onto their turns, strays to the
+        bundle's unattributed list. An absent file is not an error: a host
+        that never requested an approval writes no rows, and one predating
+        the ledger writes none either — both render as no approval
+        evidence, noted so the absence stays distinguishable from
+        "approvals were denied".
+        """
+        tail = read_jsonl_tail(self.approvals_path, max_bytes=self._max_bytes, since=floor)
+        if not tail.records:
+            notes.append(f"{_APPROVALS_FILENAME} has no approval transitions recorded")
+            return []
+        sources.approvals_log = True
+        self._note_truncation(tail, _APPROVALS_FILENAME, "the selected turns", notes)
+        owned = self._owned(_since(tail, floor), _APPROVALS_FILENAME, notes)
+        self._note_sequence_gaps(owned, _APPROVALS_FILENAME, notes)
+        return _cap_unattributed(owned, wanted, max_records, "approval", notes)
 
     def _owned(
         self, records: list[dict[str, Any]], name: str, notes: list[str]
     ) -> list[dict[str, Any]]:
         """Keep this user's ledger records, noting any that predate attribution."""
-        owned = filter_owned(records, self._user_slug)
+        owned = filter_owned(records, self._user_slug, self._thread_store_slug)
         if owned.unowned:
             notes.append(
                 f"{owned.unowned} {name} records predate per-user attribution and were "
+                "excluded; evidence for turns before the upgrade is incomplete"
+            )
+        if owned.unstemmed:
+            notes.append(
+                f"{owned.unstemmed} {name} records predate per-thread attribution and were "
                 "excluded; evidence for turns before the upgrade is incomplete"
             )
         return owned.records
@@ -414,8 +513,36 @@ class ForensicReader:
         notes: list[str],
         max_records: int,
     ) -> list[dict[str, Any]]:
-        """Return warning/error log lines inside the window, newest last."""
+        """Return warning/error log lines inside the window, newest last.
+
+        The dedicated errors ledger (``errors.jsonl``, ERROR+ only, never
+        rotated or rate-limited) is preferred when it exists: the rotating
+        ``runtime.jsonl`` evicts old records and suppresses repeats, so a
+        bundle built from it can understate the error history. The
+        fallback keeps hosts that predate the ledger working, with the
+        source named either way.
+        """
         cutoff = now - timedelta(seconds=self._window_seconds)
+        errors_tail = read_jsonl_tail(self.errors_log_path, max_bytes=self._max_bytes, since=cutoff)
+        if errors_tail.records:
+            sources.errors_log = True
+            self._note_truncation(errors_tail, _ERRORS_LOG_FILENAME, "the log window", notes)
+            windowed = filter_window(
+                errors_tail.records, now=now, window_seconds=self._window_seconds
+            )
+            errors = [
+                record
+                for record in windowed
+                if str(record.get("level") or "").lower() in _ERROR_LEVELS
+            ]
+            if len(errors) > max_records:
+                notes.append(
+                    f"{len(errors)} warning/error lines in the window; "
+                    f"using the most recent {max_records}"
+                )
+                errors = errors[-max_records:]
+            return errors
+
         tail = read_jsonl_tail(self.runtime_log_path, max_bytes=self._max_bytes, since=cutoff)
         if not tail.records:
             notes.append(f"{_RUNTIME_LOG_FILENAME} has no records; log diagnostics are unknown")
@@ -441,6 +568,45 @@ class ForensicReader:
                 f"{name} read stopped at its {self._max_bytes // (1024 * 1024)} MiB budget "
                 f"before covering {span}; older records are missing, so counts from it "
                 "are a lower bound"
+            )
+
+    def _note_sequence_gaps(
+        self, records: list[dict[str, Any]], name: str, notes: list[str]
+    ) -> None:
+        """Report dropped rows detectable in one writer's sequence numbering.
+
+        Both durable ledgers stamp each row with a per-instance ``sequence``
+        and the writer's ``ledger_instance`` (a restart or a second host
+        process starts a new instance at 1, so sequences are compared only
+        within one instance). A jump between consecutive rows of one
+        instance means rows in between were dropped — by a failed publish, a
+        lock timeout, or a crash between the stamp and the append. The count
+        is a lower bound: it proves rows went missing, not which rows.
+
+        Rows predating the instance stamps carry neither field; they are
+        skipped rather than reported, the same honest posture as ledger rows
+        written before per-user attribution.
+        """
+        missing_total = 0
+        by_instance: dict[str, list[int]] = {}
+        for record in records:
+            instance = record.get("ledger_instance")
+            sequence = record.get("sequence")
+            if not instance or not isinstance(sequence, int):
+                continue
+            by_instance.setdefault(str(instance), []).append(sequence)
+        for sequences in by_instance.values():
+            ordered = sorted(sequences)
+            # Only gaps within the observed span count: rows before the
+            # first or after the last observed sequence of an instance may
+            # simply live outside this read window.
+            missing_total += sum(
+                nxt - prev - 1 for prev, nxt in itertools.pairwise(ordered) if nxt - prev > 1
+            )
+        if missing_total:
+            notes.append(
+                f"{name} sequence numbering accounts for {missing_total} dropped row(s) "
+                "across its stamped writers; the ledger is incomplete for that span"
             )
 
 

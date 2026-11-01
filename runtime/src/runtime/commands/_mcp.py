@@ -1,8 +1,12 @@
-"""``/mcp`` command: MCP server introspection readout.
+"""``/mcp`` command: MCP server introspection readout and client-config export.
 
 Renders a per-server summary (status, transport, URL/command, tool count,
 last error) and a per-server tool detail (name, description, required
 schema args) from the host's live :class:`~kernel.tools.mcp_client.MCPToolPool`.
+``/mcp export`` projects the compiled configuration into another agent
+client's ``mcpServers`` document — the interoperability surface: Lisa's
+servers are ordinary stdio MCP servers, so an external agent can attach to
+them without Lisa's turn loop.
 
 Transport-neutral Markdown output — the Rich analogue for the CLI panel
 lives in :mod:`hosts.cli.render`. The dispatcher
@@ -25,6 +29,7 @@ from kernel.tools.mcp_client import MCPToolSpec
 from runtime.commands._lists import escape_markdown_cell
 from runtime.commands._simple import handle_simple_command
 from runtime.introspect import gather_mcp_pool_health
+from runtime.mcp_export import export_runtime_mcp_servers
 from runtime.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -34,25 +39,97 @@ _LAST_ERROR_TRUNC = 200
 
 
 async def handle_mcp_command(runtime: HostRuntime, stripped: str, message: str) -> str:
-    """Handle ``/mcp`` and ``/mcp <server_id>``.
+    """Handle ``/mcp``, ``/mcp export [flags]``, and ``/mcp <server_id>``.
 
-    ``/mcp`` renders the per-server summary table. ``/mcp <server_id>``
-    warms the target server's tools on demand (cold servers lazily
-    connected via ``await pool.list_tools(allowed_server_ids={server_id})``,
-    same pattern as the CLI ``lisa mcp`` subcommand) and renders the
-    per-server tool detail.
+    ``/mcp`` renders the per-server summary table. ``/mcp export`` renders the
+    compiler's view of every server as a paste-ready client config.
+    ``/mcp <server_id>`` warms the target server's tools on demand (cold
+    servers lazily connected via
+    ``await pool.list_tools(allowed_server_ids={server_id})``, same pattern as
+    the CLI ``lisa mcp`` subcommand) and renders the per-server tool detail.
 
-    Async because the detail path warms cold servers; the summary path
-    reads only the already-warmed pool index (the dispatcher awaits
+    Async because the detail path warms cold servers and the export path reads
+    the runtime's compiled configs; the summary path reads only the
+    already-warmed pool index (the dispatcher awaits
     ``runtime.ensure_pool_ready()`` before invoking this handler).
     """
     arg = stripped[4:].strip()
-    if not arg:
+    tokens = arg.split()
+    if tokens and tokens[0] == "export":
+        response_text = _render_export(runtime, tokens[1:])
+    elif not arg:
         response_text = render_mcp_summary(runtime)
     else:
         server_id = arg.split()[0]
         response_text = await render_mcp_server_detail(runtime, server_id)
     return handle_simple_command(runtime, message, "mcp", response_text)
+
+
+def _render_export(runtime: HostRuntime, flags: list[str]) -> str:
+    """Render ``/mcp export``, translating bad operator flags into help text.
+
+    Every flag maps to an explicit export-policy decision, so an unknown flag
+    is an error response rather than a silently ignored argument — an operator
+    who typed ``--include-http`` and got the default export would believe the
+    endpoint was included.
+    """
+    from sdk.mcp_host.export import render_mcp_export_markdown
+
+    include_http = False
+    include_internal = False
+    server_ids: list[str] = []
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        if flag == "--include-http":
+            include_http = True
+        elif flag == "--include-internal":
+            include_internal = True
+        elif flag == "--server":
+            if index + 1 >= len(flags):
+                return _export_usage("`--server` needs a server id.")
+            server_ids.append(flags[index + 1])
+            index += 1
+        else:
+            return _export_usage(f"Unknown `/mcp export` argument: {flag!r}")
+        index += 1
+
+    try:
+        export = export_runtime_mcp_servers(
+            runtime,
+            server_ids=server_ids or None,
+            include_http=include_http,
+            include_internal=include_internal,
+        )
+    except ValueError as exc:
+        return _export_usage(str(exc))
+    return render_mcp_export_markdown(export)
+
+
+def _export_usage(error: str | None = None) -> str:
+    """Return the ``/mcp export`` usage block, optionally prefixed by an error."""
+    lines: list[str] = []
+    if error:
+        lines.extend([error, ""])
+    lines.extend(
+        [
+            "## /mcp export",
+            "Render the compiled MCP servers as another agent client's config.",
+            "",
+            "Usage:",
+            "- `/mcp export` — every server Lisa's own model can use.",
+            "- `/mcp export --server <id>` — one server (repeatable).",
+            "- `/mcp export --include-http` — also emit HTTP endpoints (URL only; "
+            "credential header values are never exported).",
+            "- `/mcp export --include-internal` — also emit servers the host hides "
+            "from its own model (e.g. `lisa-content`).",
+            "",
+            "The output carries the caveats: credentials appear as `${VAR}` "
+            "placeholders and any server that could not be represented is listed "
+            "with the reason.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def render_mcp_summary(runtime: HostRuntime) -> str:

@@ -839,7 +839,7 @@ def _parse_timestamp(value: str, default: datetime | None = None) -> datetime | 
     if not normalized:
         return _as_utc(default) if default is not None else None
     try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise ContextMappingError(f"Invalid context item timestamp '{value}'.") from exc
     return _as_utc(parsed)

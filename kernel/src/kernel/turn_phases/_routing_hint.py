@@ -155,6 +155,13 @@ def emit_transition_hint(
     do-the-work backstop at the post-handoff site is orthogonal to hint
     emission and stays at its call site.
 
+    Backward-step suppression is NOT here: step order cannot be compared by
+    mode id, because plans legitimately re-declare a mode (two ``coding``
+    steps) and a mode-level ``index()`` would misrank the second occurrence.
+    The ordering guard lives where the step identity is known — the
+    front-aware selectors in ``kernel.workflow_position`` and the view
+    pointer in ``kernel.workflow_view.derive_workflow_view``.
+
     Args:
         target_mode_id: The mode to hand off to.
         current_mode_id: The mode the turn is currently running in.

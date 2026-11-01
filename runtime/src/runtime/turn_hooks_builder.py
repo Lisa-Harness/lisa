@@ -24,9 +24,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kernel.capability_binding import CapabilityRef
-from kernel.decision_telemetry import TOOL_TELEMETRY_TOPIC, TURN_DECISION_TOPIC
+from kernel.decision_telemetry import (
+    MODEL_REQUEST_TOPIC,
+    TOOL_TELEMETRY_TOPIC,
+    TURN_DECISION_TOPIC,
+)
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import (
+    ConversationSurface,
+    MemoryScope,
     OperationExecutionContext,
     OperationResult,
     ToolResult,
@@ -43,7 +49,7 @@ from kernel.sandbox_floor import (
     resolve_sandbox_owner,
 )
 from kernel.seams.host_adapter import build_callable_host
-from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder
+from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder, ModelRouter
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.token_usage import TOKEN_USAGE_TOPIC
 from kernel.turn_hooks import (
@@ -75,6 +81,7 @@ from runtime.context_assembly import (
 from runtime.introspect import gather_introspection
 from runtime.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from runtime.provider_endpoints import proxy_route_view
+from runtime.spill_on_arrival import build_persist_tool_result_hook
 from runtime.state_provider import FileBackedStateProvider, build_unified_state
 from runtime.thread import (
     build_open_task_messages,
@@ -259,7 +266,7 @@ def _resolve_factory_arity(factory: Any, default_params: int) -> int:
         return default_params  # assume direct factory if signature fails
 
 
-def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
+def _resolve_router_for_runtime(runtime: HostRuntime) -> ModelRouter | None:
     """Discover pack-registered model routers (lisa.extensions.model_routers).
 
     Wire the first non-None factory result into ``ContextSeams``. When no
@@ -288,11 +295,17 @@ def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
             if _resolve_factory_arity(entry.factory, default_params=2) == 0:
                 # Factory-factory: call with 0 args to get the real
                 # ``(manifest, session_plan) -> ModelRouter | None`` factory.
-                factory = entry.factory()  # type: ignore[call-arg]
-                router = factory(runtime.session.manifest, session_plan)  # type: ignore[misc]
+                factory = entry.factory()
+                if not callable(factory):
+                    raise TypeError("Model router entry point must return a callable factory")
+                candidate: ModelRouter | Callable[..., ModelRouter | None] | None = factory(
+                    runtime.session.manifest, session_plan
+                )
             else:
                 # Direct factory: call with 2 args.
-                router = entry.factory(runtime.session.manifest, session_plan)
+                candidate = entry.factory(runtime.session.manifest, session_plan)
+            if candidate is not None and not isinstance(candidate, ModelRouter):
+                raise TypeError("Model router factory must return a ModelRouter or None")
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning(
                 "model router factory %r failed: %s",
@@ -301,9 +314,9 @@ def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
                 exc_info=True,
             )
             continue
-        if router is not None:
+        if candidate is not None:
             logger.debug("active model router: %s", entry.pack_name)
-            return router
+            return candidate
     return None
 
 
@@ -500,10 +513,12 @@ async def _maybe_auto_capture(
             user_slug=runtime.config.user_slug,
             user_name=runtime.config.user_slug,
             principal_key=runtime.config.user_slug,
+            thread_store_slug=runtime.config.thread_slug,
+            thread_dir=str(runtime.paths.thread_dir),
             conversation_id=runtime.config.surface_id,
-            surface_type=runtime.config.surface_type,
+            surface_type=cast(ConversationSurface, runtime.config.surface_type),
             surface_id=runtime.config.surface_id,
-            memory_scope=runtime.config.memory_scope,
+            memory_scope=cast(MemoryScope, runtime.config.memory_scope),
             mode_id=mode_id,
             query=query,
             response=response_text,
@@ -521,7 +536,7 @@ async def _maybe_auto_capture(
                 gateway_provider_fn=provider_gateways,
                 resolve_model_fn=resolve_model,
                 read_authored_text_fn=getattr(
-                    content_registry() if content_registry else None,
+                    content_registry(),
                     "read_authored_text",
                     None,
                 ),
@@ -540,6 +555,11 @@ async def _maybe_auto_capture(
         raw_turn_index = ctx_dict.get("turn_index")
         if isinstance(raw_turn_index, int):
             capture_ctx.extra["thread_turn"] = raw_turn_index
+        # Durable off-turn recording: the distillation call is a model
+        # call the turn's own ``turn_input.calls`` never captures, so
+        # give the dispatch the same recorder the turn loop uses.
+        capture_ctx.request_recorder = partial(persist_request, runtime.paths.thread_path)
+        capture_ctx.turn_index = raw_turn_index if isinstance(raw_turn_index, int) else None
         capture_result = await execute_operation("synthesize_and_store_learning", capture_ctx)
         # Thread → memory linkage: record the minted memory id(s) on the
         # turn context so ``append_thread_entry`` stamps them into the
@@ -707,6 +727,14 @@ def _wire_runtime_context_seams(
             destination=runtime.paths.decisions_path,
             label="tool.telemetry",
         )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=MODEL_REQUEST_TOPIC,
+            handler=decision_handler,
+            method_name="publish_model_request",
+            destination=runtime.paths.decisions_path,
+            label="model.request",
+        )
     return seams
 
 
@@ -759,6 +787,8 @@ async def _run_self_model_slice_impl(
         ctx = OperationExecutionContext(
             operation_id="self_model",
             user_slug=runtime.config.user_slug,
+            thread_store_slug=runtime.config.thread_slug,
+            thread_dir=str(runtime.paths.thread_dir),
             host=build_callable_host(
                 resolve_model_fn=resolve_model,
                 introspect_fn=introspect_fn,
@@ -885,6 +915,9 @@ def _run_behavioral_signals_slice_impl(
     from runtime.thread import get_thread_redaction_policy
 
     item_id = f"state:behavioural_signals:{runtime.config.user_slug}"
+    if runtime.paths.thread_path is None:
+        _drop_context_item(runtime, item_id)
+        return 0, "", ""
     try:
         store = ThreadStore(runtime.paths.thread_path, redaction=get_thread_redaction_policy())
         signals = compute_behavioral_signals(
@@ -892,6 +925,9 @@ def _run_behavioral_signals_slice_impl(
             decisions_path=runtime.paths.decisions_path,
             token_usage_path=runtime.paths.token_usage_path,
             user_slug=runtime.config.user_slug,
+            # Turn indices are per-thread, so one thread's ledger rows must
+            # not be scanned as another's.
+            thread_store_slug=runtime.config.thread_slug,
         )
     except Exception as exc:  # pylint: disable=broad-except
         # A slice must never break the turn; a failed scan is simply no signal,
@@ -1140,6 +1176,7 @@ def _assemble_turn_hooks(
         user_slug=runtime.config.user_slug,
         user_name=runtime.config.user_slug,
         principal_key=runtime.config.user_slug,
+        thread_store_slug=runtime.config.thread_slug,
         conversation_id=runtime.config.surface_id,
         surface_type=runtime.config.surface_type,
         surface_id=runtime.config.surface_id,
@@ -1163,6 +1200,7 @@ def _assemble_turn_hooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
             post_dispatch_result=runtime.decorate_pack_tool_result,
+            persist_tool_result=build_persist_tool_result_hook(runtime.paths.thread_path),
         ),
         operations=OperationHooks(
             execute_operation=wired.execute_operation,
@@ -1217,6 +1255,7 @@ def _assemble_turn_hooks(
             if artifact_store is not None
             else None,
             data_dir=str(runtime.paths.data_dir),
+            thread_dir=str(runtime.paths.thread_dir),
         ),
         identity=turn_identity,
         recall=RecallHooks(
@@ -1874,8 +1913,8 @@ def build_turn_hooks(
     _slice_provider_hooks_view = _SliceProviderHooksView(
         runtime=runtime,
     )
-    _slice_provider_hooks_view.execute_operation = _execute_operation  # type: ignore[attr-defined]
-    _slice_provider_hooks_view.execute_tool = _execute_tool  # type: ignore[attr-defined]
+    _slice_provider_hooks_view.execute_operation = _execute_operation
+    _slice_provider_hooks_view.execute_tool = _execute_tool
 
     pack_slice_providers = _discover_pack_slice_providers(
         view=_slice_provider_hooks_view,

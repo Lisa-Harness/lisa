@@ -226,9 +226,7 @@ def _looks_like_json(text: str) -> bool:
     if not stripped:
         return False
     # Fenced JSON (```json ... ``` or ``` ... ```) or a bare object/array.
-    if stripped.startswith("```"):
-        return True
-    if stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("```", "{", "[")):
         return True
     # Inner brace after any leading whitespace/prose — a strong JSON signal.
     return bool("{" in stripped and "}" in stripped)

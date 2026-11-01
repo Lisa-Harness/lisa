@@ -45,6 +45,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
 from sdk.identity import execution_scope_key
 
 logger = logging.getLogger(__name__)
@@ -212,7 +213,7 @@ def _cel_activation(
     - ``containment`` — the resolved sandbox state string
       (``contained|degraded|none|unknown``).
     """
-    import celpy  # lazy: hosts without when-rules never pay
+    from celpy.adapter import json_to_cel  # lazy: hosts without when-rules never pay
 
     identity = getattr(invocation, "identity", None)
 
@@ -220,7 +221,7 @@ def _cel_activation(
         return str(getattr(identity, name, "") or "")
 
     return {
-        "action": celpy.json_to_cel(
+        "action": json_to_cel(
             {
                 "tool": str(getattr(invocation, "target_id", "") or ""),
                 "effect": str(getattr(invocation, "effect", "") or ""),
@@ -230,7 +231,7 @@ def _cel_activation(
                 "parameters": dict(getattr(invocation, "parameters", None) or {}),
             }
         ),
-        "identity": celpy.json_to_cel(
+        "identity": json_to_cel(
             {
                 "workspace_id": _field("workspace_id"),
                 "user_slug": _field("user_slug"),
@@ -384,9 +385,11 @@ def _compile_check_when(doc: PolicyDocument, path: Path) -> list[str]:
     error resolves toward prompting, never toward allowing.
     """
     errors: list[str] = []
-    for list_name in ("deny", "ask", "allow"):
-        for detail in validate_rule_expressions(getattr(doc, list_name)):
-            errors.append(f"{path.name}: {list_name} {detail}; using ask-mode defaults")
+    errors.extend(
+        f"{path.name}: {list_name} {detail}; using ask-mode defaults"
+        for list_name in ("deny", "ask", "allow")
+        for detail in validate_rule_expressions(getattr(doc, list_name))
+    )
     return errors
 
 
@@ -468,13 +471,13 @@ def remember_allow_prefix(data_dir: Path, *, tool: str, command_prefix: str) -> 
     path written.
     """
     path = _policy_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = load_policy(data_dir)
-    prefix = command_prefix.strip()
-    rule = PolicyRule(tool=tool, command_prefix=prefix)
-    if not any(r.tool == tool and r.command_prefix == prefix for r in doc.allow):
-        doc.allow.append(rule)
-    _write_policy(path, doc)
+    with file_lock(sidecar_lock_path(path)):
+        doc = load_policy(data_dir)
+        prefix = command_prefix.strip()
+        rule = PolicyRule(tool=tool, command_prefix=prefix)
+        if not any(r.tool == tool and r.command_prefix == prefix for r in doc.allow):
+            doc.allow.append(rule)
+        _write_policy(path, doc)
     logger.info("policy: remembered allow rule %s", rule.describe())
     return path
 
@@ -487,8 +490,8 @@ def write_policy(data_dir: Path, doc: PolicyDocument) -> Path:
     carries. Returns the path written.
     """
     path = _policy_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_policy(path, doc)
+    with file_lock(sidecar_lock_path(path)):
+        _write_policy(path, doc)
     return path
 
 
@@ -513,7 +516,7 @@ def _write_policy(path: Path, doc: PolicyDocument) -> None:
         "# Matchers: tool, effect (read|write|execute|external_write), pack,\n"
         "#   command_prefix, when (CEL expression; see docs/POLICY_GUIDE.md).\n"
     )
-    path.write_text(header + body, encoding="utf-8")
+    atomic_write_text(path, header + body, encoding="utf-8")
 
 
 # ── Containment fact ─────────────────────────────────────────────────────

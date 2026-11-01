@@ -19,7 +19,9 @@ from kernel.workflow_position import (
     WorkflowStep,
     advance_step,
     is_complete,
+    next_step_after_pointer,
     remaining_steps,
+    resumed_step,
 )
 
 
@@ -258,3 +260,147 @@ def test_is_complete_false_when_steps_remain() -> None:
 def test_is_complete_true_for_empty_declared_steps() -> None:
     """An instance with no declared steps is trivially complete."""
     assert is_complete(WorkflowPosition())
+
+
+# ── Front-aware next-step selection ──────────────────────────────────────
+
+
+def test_advance_step_out_of_order_completion_clears_pointer() -> None:
+    """Completing a step when only earlier steps remain open clears the pointer.
+
+    Regression lock for the 2026-10-30 backward-routing loop: completing
+    the tail step while an earlier step was abandoned must not park the
+    pointer on the abandoned step — the old ``remaining[0]`` fallback did
+    exactly that, and every hint then routed a later turn backward to it.
+    """
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="thinker_0", mode_id="thinker"),
+            WorkflowStep(step_id="researcher_1", mode_id="researcher", is_terminal=True),
+        ),
+        current_step_id="researcher_1",
+        mode_id="researcher",
+        completed_steps=(),
+    )
+    advanced = advance_step(position, "researcher_1")
+    assert "researcher_1" in advanced.completed_steps
+    # thinker_0 is open but declared before the completed step: the
+    # pointer clears instead of moving backward.
+    assert advanced.current_step_id == ""
+    assert "thinker_0" not in advanced.completed_steps
+
+
+def test_next_step_after_pointer_skips_abandoned_earlier_step() -> None:
+    """On-plan pointer at the tail yields no next step — never the abandoned one.
+
+    The pointer names the last declared step; the only open step precedes
+    it. Routing must go silent (None) rather than name the abandoned
+    step (the 2026-10-30 t1107/t1108 loop: the hint said `thinker` and
+    the enforcer forced it twice per turn over the model's refusal).
+    """
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="thinker_0", mode_id="thinker"),
+            WorkflowStep(step_id="researcher_1", mode_id="researcher"),
+        ),
+        current_step_id="researcher_1",
+        completed_steps=("researcher_1",),
+    )
+    assert next_step_after_pointer(position) is None
+
+
+def test_next_step_after_pointer_names_first_forward_open_step() -> None:
+    """The step after the pointer wins even when an earlier step is open."""
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="a_0", mode_id="a"),
+            WorkflowStep(step_id="b_1", mode_id="b"),
+            WorkflowStep(step_id="c_2", mode_id="c"),
+        ),
+        current_step_id="a_0",
+        completed_steps=("b_1",),
+    )
+    assert next_step_after_pointer(position) is not None
+    assert next_step_after_pointer(position).step_id == "c_2"
+
+
+def test_next_step_after_pointer_empty_pointer_is_none() -> None:
+    """An absent pointer with open steps means they were abandoned."""
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="a_0", mode_id="a"),
+            WorkflowStep(step_id="b_1", mode_id="b"),
+        ),
+        current_step_id="",
+        completed_steps=("b_1",),
+    )
+    assert next_step_after_pointer(position) is None
+
+
+def test_next_step_after_pointer_off_plan_falls_back_to_first_remaining() -> None:
+    """A pointer naming no declared step has no front — first open step is the guess."""
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="a_0", mode_id="a"),
+            WorkflowStep(step_id="b_1", mode_id="b"),
+        ),
+        current_step_id="other_9",
+        completed_steps=(),
+    )
+    assert next_step_after_pointer(position) is not None
+    assert next_step_after_pointer(position).step_id == "a_0"
+
+
+def test_resumed_step_returns_open_pointer() -> None:
+    """A resume continues the step in flight — the open pointer step itself.
+
+    Routing must never name the pointer step (forward-only), but resuming
+    re-enters the work in flight: the pointer names an open step and that
+    step is the resume target (re-entering the chain's originating mode
+    must not re-run the planner against a continuation query).
+    """
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="search_0", mode_id="search"),
+            WorkflowStep(step_id="markdown_1", mode_id="markdown", is_terminal=True),
+        ),
+        completed_steps=("search_0",),
+        current_step_id="markdown_1",
+    )
+    step = resumed_step(position)
+    assert step is not None
+    assert step.step_id == "markdown_1"
+
+
+def test_resumed_step_completed_pointer_falls_forward() -> None:
+    """A completed pointer resumes at the first forward open step."""
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="search_0", mode_id="search"),
+            WorkflowStep(step_id="coding_1", mode_id="coding"),
+            WorkflowStep(step_id="markdown_2", mode_id="markdown"),
+        ),
+        completed_steps=("search_0", "coding_1"),
+        current_step_id="coding_1",
+    )
+    step = resumed_step(position)
+    assert step is not None
+    assert step.step_id == "markdown_2"
+
+
+def test_resumed_step_spent_chain_is_none() -> None:
+    """An empty pointer with only pre-frontier steps open resumes nothing.
+
+    Regression lock for the 2026-10-30 t1107/t1108 loop's spent position:
+    researcher completed, thinker abandoned, pointer empty. A resume must
+    not re-open the abandoned step.
+    """
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="thinker_0", mode_id="thinker"),
+            WorkflowStep(step_id="researcher_1", mode_id="researcher"),
+        ),
+        completed_steps=("researcher_1",),
+        current_step_id="",
+    )
+    assert resumed_step(position) is None

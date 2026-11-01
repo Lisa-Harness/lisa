@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from kernel.execution_policy import ExecutionPolicy
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
@@ -94,8 +95,14 @@ from runtime.commands import (
 )
 from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
+from runtime.operator_signal import OperatorSignal
 from runtime.provider_endpoints import proxy_route_view
-from runtime.thread import append_thread_entry, load_recent_thread_entries, paused_turn_owner_mode
+from runtime.thread import (
+    TurnReservation,
+    append_thread_entry,
+    load_recent_thread_entries,
+    paused_turn_owner_mode,
+)
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
 from runtime.turn_continuation import (
     load_continuation,
@@ -340,11 +347,10 @@ async def handle_message(
         await tport.on_response(response_text)
         return HostCommandResult(text=response_text, is_error=True)
     except Exception as exc:  # pylint: disable=broad-except
-        logger.error(
+        logger.exception(
             "handle_message: turn failed: %s: %s",
             type(exc).__name__,
             exc,
-            exc_info=True,
         )
         await tport.on_error(f"Turn failed: {type(exc).__name__}: {exc}", exc)
         response_text = f"Turn failed: {type(exc).__name__}: {exc}"
@@ -407,7 +413,7 @@ async def _dispatch_approval_command(
     Returns:
         A ``(response_text, continuation_result)`` tuple; both ``None``
         when the message is not an approval command. ``continuation_result``
-        is set when the approve path ran a post-approval continuation turn
+        is set when an approval handler ran a post-approval continuation turn
         and returned a structured result (preserving ``operator_exit``)
         rather than plain text.
     """
@@ -426,13 +432,17 @@ async def _dispatch_approval_command(
         else:
             response_text = approved
     elif lowered == "/deny" or lowered.startswith("/deny "):
-        response_text = await handle_approval_command(
+        denied = await handle_approval_command(
             runtime,
             stripped,
             approve=False,
             transport=transport,
             route_model_turn=_route_model_turn,
         )
+        if isinstance(denied, HostCommandResult):
+            continuation_result = denied
+        else:
+            response_text = denied
     return response_text, continuation_result
 
 
@@ -1104,6 +1114,7 @@ async def _handle_pending_approval(
     turn_index: int,
     task_id: str,
     transport: TransportCallbacks,
+    reservation: str = "",
 ) -> HostCommandResult | None:
     """Persist a turn paused for approval, then auto-continue or return the approval payload."""
     pending_approval = getattr(result, "pending_approval", None)
@@ -1139,6 +1150,7 @@ async def _handle_pending_approval(
         effect_receipts=_serialize_effect_receipts(result),
         handoff_to=result.handoff_to or "",
         turn=turn_index,
+        reservation=reservation,
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
     )
@@ -1206,13 +1218,14 @@ def _record_operation_error_thread_entry(
     exc: OperationExecutionError,
     response_text: str,
     turn_index: int,
+    reservation: str = "",
 ) -> None:
     """Persist the thread entry for a turn that failed with an operation error."""
     run_context["operation_error"] = {
         "type": type(exc).__name__,
         "message": str(exc),
     }
-    append_thread_entry(
+    committed_turn = append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         segment_turns=runtime.config.thread_segment_turns,
@@ -1225,7 +1238,10 @@ def _record_operation_error_thread_entry(
             "task_id": run_context.get("task_id", ""),
         },
         turn=turn_index,
+        reservation=reservation,
     )
+    if committed_turn is not None:
+        run_context["turn_index"] = committed_turn
 
 
 def _update_completion_context(
@@ -1466,15 +1482,51 @@ async def _execute_mode_turn(
 
     resolved_model = _resolve_model_cmd(runtime, preferred_model_id)
 
-    # Compute the global turn index at turn start (before the turn runs)
-    # so the model can be annotated with its turn number and the
-    # pre-computed value can be threaded through to ``append_thread_entry``.
-    # One source of truth: the number the model sees in the briefing is the
-    # number stamped on the thread entry — no off-by-one between display and
-    # persistence.
-    from runtime.thread import next_turn_index
+    # Reserve the turn's provisional global index at turn start (before the
+    # turn runs) so the model can be annotated with its turn number. Live
+    # reservations keep overlapping turns on one thread from sharing a
+    # number; the committed index is still the entry's log position, and
+    # the entry records the provisional one when they differ. The commit
+    # releases the reservation; leaving the block releases it on every
+    # other exit path.
+    from runtime.thread import reserved_turn
 
-    turn_index = next_turn_index(thread_path=runtime.paths.thread_path)
+    with reserved_turn(thread_path=runtime.paths.thread_path) as reservation:
+        return await _run_reserved_turn(
+            runtime,
+            message,
+            mode,
+            query,
+            transport,
+            reservation=reservation,
+            task_id=task_id,
+            task_goal=task_goal,
+            continuation=continuation,
+            extra_item_builders=extra_item_builders,
+            execution_policy=execution_policy,
+            preferred_model_id=preferred_model_id,
+            resolved_model=resolved_model,
+        )
+
+
+async def _run_reserved_turn(
+    runtime: HostRuntime,
+    message: str,
+    mode: Any,
+    query: str,
+    transport: TransportCallbacks,
+    *,
+    reservation: TurnReservation,
+    task_id: str,
+    task_goal: str,
+    continuation: TurnContinuation | None,
+    extra_item_builders: list[ExtensionItemBuilder] | None,
+    execution_policy: ExecutionPolicy,
+    preferred_model_id: str,
+    resolved_model: Any,
+) -> HostCommandResult | str:
+    """Run one kernel turn under its turn-index reservation and persist it."""
+    turn_index = reservation.turn
     task_id = task_id or _resumable_task_id(runtime.paths.thread_path, message) or uuid4().hex
 
     # Resolve the live approval state for recorded blockers before the
@@ -1530,18 +1582,17 @@ async def _execute_mode_turn(
             exc=exc,
             response_text=response_text,
             turn_index=turn_index,
+            reservation=reservation.token,
         )
         await transport.on_error(f"Operation error: {exc}", exc)
-        runtime.session.operator_signal_value = ""
+        runtime.session.operator_signal_value = OperatorSignal.NONE
         return response_text
 
     # Clear the operator signal after the turn ends so the next turn starts
     # clean (the signal is one-shot; the transport re-sets it on the next
     # key press).
-    runtime.session.operator_signal_value = ""
-
-    if result.transitioned_to:
-        runtime.session.current_stage_id = result.transitioned_to
+    runtime.session.operator_signal_value = OperatorSignal.NONE
+    runtime.session.current_stage_id = result.transitioned_to or runtime.session.current_stage_id
     _apply_turn_usage(
         runtime,
         usage_since_resume(result, continuation),
@@ -1578,6 +1629,7 @@ async def _execute_mode_turn(
         turn_index=turn_index,
         task_id=task_id,
         transport=transport,
+        reservation=reservation.token,
     )
     if pending_approval_result is not None:
         return pending_approval_result
@@ -1598,13 +1650,14 @@ async def _execute_mode_turn(
     # rather than a claim made before persistence.
 
     # Persist the thread entry.
-    provenance: dict[str, Any] = _build_thread_provenance(
-        resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
-    )
-    provenance["task_id"] = task_id
-    provenance.update(_kernel_loop_provenance(runtime, result, continuation))
-    if result.block_origin:
-        provenance["block_origin"] = result.block_origin
+    provenance: dict[str, Any] = {
+        **_build_thread_provenance(
+            resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
+        ),
+        "task_id": task_id,
+        **_kernel_loop_provenance(runtime, result, continuation),
+        **({"block_origin": result.block_origin} if result.block_origin else {}),
+    }
 
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly
@@ -1614,7 +1667,7 @@ async def _execute_mode_turn(
     # duplicating the receipt list.
     receipts = _serialize_effect_receipts(result)
 
-    append_thread_entry(
+    committed_turn = append_thread_entry(
         thread_path=runtime.paths.thread_path,
         user_slug=runtime.config.user_slug,
         segment_turns=runtime.config.thread_segment_turns,
@@ -1627,7 +1680,9 @@ async def _execute_mode_turn(
         effect_receipts=receipts,
         handoff_to=result.handoff_to or "",
         transitioned_to=result.transitioned_to or "",
+        departed_modes=list(result.departed_modes),
         turn=turn_index,
+        reservation=reservation.token,
         yielded=result.yielded is not None,
         yield_question=result.yielded.question if result.yielded else "",
         turn_input={"calls": result.model_requests}
@@ -1642,6 +1697,8 @@ async def _execute_mode_turn(
         else None,
         transcript=result.transcript,
     )
+    turn_index = turn_index if committed_turn is None else committed_turn
+    run_context["turn_index"] = turn_index
 
     # Audit: emit the kernel turn's completion event, now that the entry the
     # event points at exists.
@@ -1688,7 +1745,7 @@ async def _execute_mode_turn(
     )
 
 
-def _with_yield_remediation(result: Any, commands: list[str]) -> str:
+def _with_yield_remediation(result: TurnResult, commands: list[str]) -> str:
     """Return the response text, footnoted with yield escape commands.
 
     Extracted from the turn pipeline to keep that function within its

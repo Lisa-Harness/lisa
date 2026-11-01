@@ -124,7 +124,7 @@ def _quote_key_and_value(result: dict[str, Any]) -> tuple[str, str]:
     can read, so length alone must not let an opaque id crowd it out.
     """
     quote_key, quote_value = "", ""
-    for _key, value in result.items():
+    for value in result.values():
         if not isinstance(value, list) or not value or not isinstance(value[0], dict):
             continue
         nested = [
@@ -142,7 +142,7 @@ def _quote_key_and_value(result: dict[str, Any]) -> tuple[str, str]:
         if isinstance(value, str) and value.strip() and len(value) > len(quote_value)
     ]
     prose = [pair for pair in top_strings if any(c.isspace() for c in pair[1])]
-    pool = prose if prose else top_strings
+    pool = prose or top_strings
     if pool:
         quote_key, quote_value = max(pool, key=lambda pair: len(pair[1]))
     return quote_key, quote_value

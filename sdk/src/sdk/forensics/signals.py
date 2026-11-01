@@ -165,6 +165,7 @@ def compute_behavioral_signals(
     decisions_path: Any = None,
     token_usage_path: Any = None,
     user_slug: str | None = None,
+    thread_store_slug: str | None = None,
     thresholds: SignalThresholds | None = None,
     window_turns: int = DEFAULT_WINDOW_TURNS,
     scan_bytes: int = DEFAULT_SCAN_BYTES,
@@ -173,7 +174,9 @@ def compute_behavioral_signals(
     """Scan a bounded recent window and return the findings that crossed threshold.
 
     ``user_slug`` scopes the shared ledgers to the thread's owner (see
-    :func:`filter_owned`); ``None`` reads them unscoped.
+    :func:`filter_owned`); ``None`` reads them unscoped. ``thread_store_slug``
+    narrows that further to one thread, because turn indices are per-thread
+    and two conversations of one user collide on the same index.
     """
     limits = thresholds or SignalThresholds()
     entries = store.load_recent(limit=max(1, window_turns))
@@ -184,14 +187,33 @@ def compute_behavioral_signals(
     # Ledger rows are scoped to the turns actually examined; a byte budget
     # alone would admit dispatches and cost from turns outside the window.
     window = {turn for entry in entries if isinstance(turn := entry.get("turn"), int)}
-    dispatches = _recent_dispatches(decisions_path, scan_bytes, scan_records, window, user_slug)
+    dispatches, unstemmed = _recent_dispatches(
+        decisions_path,
+        scan_bytes,
+        scan_records,
+        window,
+        user_slug,
+        thread_store_slug=thread_store_slug,
+    )
+    if unstemmed:
+        # Evidence the scan could not read. Reporting it keeps a scan that
+        # found nothing distinguishable from a scan that found no failures.
+        result.counters["unstemmed_records"] = unstemmed
 
     _check_blocked(entries, limits, result)
     _check_dispatches(dispatches, limits, result)
     _check_receipts(entries, dispatches, result)
     _check_mode_dwell(entries, limits, result)
     _check_cost_spike(
-        _recent_token_totals(token_usage_path, scan_bytes, user_slug), window, limits, result
+        _recent_token_totals(
+            token_usage_path,
+            scan_bytes,
+            user_slug,
+            thread_store_slug=thread_store_slug,
+        ),
+        window,
+        limits,
+        result,
     )
     return result
 
@@ -325,27 +347,38 @@ def _recent_dispatches(
     scan_records: int,
     window: set[int],
     user_slug: str | None,
-) -> list[DispatchRecord]:
-    """Return the recent dispatch records for the window's turns, oldest first."""
+    *,
+    thread_store_slug: str | None = None,
+) -> tuple[list[DispatchRecord], int]:
+    """Return the recent dispatch records for the window's turns, oldest first.
+
+    Also returns how many rows were excluded for carrying no thread stem, so
+    the caller can report evidence it could not read.
+    """
     if decisions_path is None:
-        return []
+        return [], 0
     tail = read_jsonl_tail(decisions_path, max_bytes=scan_bytes, backup_count=None)
+    owned = filter_owned(tail.records, user_slug, thread_store_slug)
     raw = [
         record
-        for record in filter_owned(tail.records, user_slug).records
+        for record in owned.records
         if record.get("topic") == "tool.telemetry" and record.get("turn_index") in window
     ]
-    return [dispatch_from_record(record) for record in raw[-scan_records:]]
+    return [dispatch_from_record(record) for record in raw[-scan_records:]], owned.unstemmed
 
 
 def _recent_token_totals(
-    token_usage_path: Any, scan_bytes: int, user_slug: str | None
+    token_usage_path: Any,
+    scan_bytes: int,
+    user_slug: str | None,
+    *,
+    thread_store_slug: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return this user's recent token-usage payloads within the byte budget."""
     if token_usage_path is None:
         return []
     tail = read_jsonl_tail(token_usage_path, max_bytes=scan_bytes)
-    return filter_owned(tail.records, user_slug).records
+    return filter_owned(tail.records, user_slug, thread_store_slug).records
 
 
 def render_signals(signals: BehavioralSignals) -> str:

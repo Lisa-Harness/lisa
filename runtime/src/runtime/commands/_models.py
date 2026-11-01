@@ -49,8 +49,8 @@ def storage_implementation_id(runtime: HostRuntime) -> str:
     (the call then fails loudly with an unknown-server error rather than
     silently misrouting).
     """
-    pool = getattr(runtime.resources, "mcp_tool_pool", None)
-    configs = getattr(pool, "configs", None) or []
+    pool = runtime.resources.mcp_tool_pool
+    configs = pool.configs if pool is not None else []
     for config in configs:
         if getattr(config, "capability", None) == "storage":
             return config.server_id
@@ -328,7 +328,7 @@ async def _handle_models_discover(
     if skipped:
         lines.append(f"- skipped (not configured): {', '.join(skipped)}")
     lines.append("- notes:")
-    lines.extend(notes_lines if notes_lines else ["- none"])
+    lines.extend(notes_lines or ["- none"])
     response_text = "\n".join(lines)
     return handle_simple_command(runtime, message, "models", response_text)
 

@@ -114,6 +114,12 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(temp_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Approval ledger rows are host-internal evidence: the working store owns
+    # the transition; the ledger is the secondary stream (see
+    # ApprovalLedger._append_transition).
+    "runtime/src/runtime/approval_ledger.py": (
+        "self._path.parent.mkdir(parents=True, exist_ok=True)",
+    ),
     "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",
@@ -138,12 +144,9 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
     "runtime/src/runtime/thread/_store.py": (
         "index_path.parent.mkdir(parents=True, exist_ok=True)",
-        "dict_path.parent.mkdir(parents=True, exist_ok=True)",
-        "dict_path.write_bytes(dict_data.as_bytes())",
-        "sealed_path.parent.mkdir(parents=True, exist_ok=True)",
-        "sealed_path.write_bytes(compressed)",
-        "paths.current.unlink()",
+        "paths.current.unlink(missing_ok=True)",
     ),
+    "runtime/src/runtime/thread/_reservations.py": ("path.unlink(missing_ok=True)",),
     "runtime/src/runtime/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
@@ -191,16 +194,16 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     ),
     "mcp_server/src/mcp_server/config/cli.py": ("path.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/content/_fetcher.py": ("cache_dir.mkdir(parents=True, exist_ok=True)",),
+    "sdk/src/sdk/filelock.py": (
+        "resolved.parent.mkdir(parents=True, exist_ok=True)",
+        "path.parent.mkdir(parents=True, exist_ok=True)",
+        "os.replace(tmp_path, path)",
+        "tmp_path.unlink(missing_ok=True)",
+    ),
     "sdk/src/sdk/logging_setup.py": ("log_path.parent.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/memory/store.py": (
         "sqlite3.connect(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
-    ),
-    "sdk/src/sdk/memory/backup.py": (
-        "sqlite3.connect(",
-        "target.write_text(",
-        "path.unlink()",
-        "target_dir.mkdir(parents=True, exist_ok=True)",
     ),
     "sdk/src/sdk/storage/_backend.py": (
         "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
@@ -256,14 +259,13 @@ _EXTERNAL_PACK_DIRS: tuple[str, ...] = ("lisa-packs", "lisa-packs-wip")
 
 def _iter_in_tree_files(root: Path) -> list[Path]:
     """Runtime .py files in kernel/runtime/sdk/mcp_server (excl. tests)."""
-    files: list[Path] = []
-    for top in _IN_TREE_ROOTS:
-        top_dir = root / top
-        if not top_dir.is_dir():
-            continue
-        for path in top_dir.rglob("*.py"):
-            if _is_runtime_python(path):
-                files.append(path)
+    files: list[Path] = [
+        path
+        for top in _IN_TREE_ROOTS
+        if (root / top).is_dir()
+        for path in (root / top).rglob("*.py")
+        if _is_runtime_python(path)
+    ]
     return sorted(files)
 
 
@@ -274,14 +276,13 @@ def _iter_external_pack_files(root: Path) -> list[Path]:
     grep-able across both repos (e.g. ``lisa-packs/okf/operations/...``).
     """
     parent = root.parent
-    files: list[Path] = []
-    for pack_repo in _EXTERNAL_PACK_DIRS:
-        repo_dir = parent / pack_repo
-        if not repo_dir.is_dir():
-            continue
-        for path in repo_dir.rglob("*.py"):
-            if _is_runtime_python(path):
-                files.append(path)
+    files: list[Path] = [
+        path
+        for pack_repo in _EXTERNAL_PACK_DIRS
+        if (parent / pack_repo).is_dir()
+        for path in (parent / pack_repo).rglob("*.py")
+        if _is_runtime_python(path)
+    ]
     return sorted(files)
 
 

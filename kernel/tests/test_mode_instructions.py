@@ -52,7 +52,7 @@ def test_get_required_mode_intro_raises_on_unknown_mode(monkeypatch) -> None:
     monkeypatch.setattr(
         ipsar_fsm,
         "get_workflow_catalog",
-        lambda: {},
+        dict,
     )
 
     with pytest.raises(MissingModeInstructionError, match="not in the workflow catalog"):

@@ -16,6 +16,8 @@ Two structural changes vs. the prior implementation:
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ..classify import apply_known_override, env_any
@@ -122,7 +124,7 @@ def _is_gemini_thinking_model_id(lowered_id: str) -> bool:
     return bool(lowered_id.startswith("gemini-2.5-"))
 
 
-def _is_chat_model(model_id: str, row: dict) -> bool:
+def _is_chat_model(model_id: str, row: dict[str, Any]) -> bool:
     """Return True when ``row`` describes a practical chat-completion model.
 
     Google's ``/v1beta/models`` endpoint lists 50+ models including TTS,
@@ -185,7 +187,7 @@ class GoogleProbe(ProviderProbe):
         return tuple(models) if models else None
 
 
-def _enrich_google_model(model_id: str, row: dict) -> DiscoveredModel:
+def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` enriched from Google's model metadata.
 
     Google's ``/v1beta/models`` response carries rich metadata that we were

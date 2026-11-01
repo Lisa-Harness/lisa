@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ __all__ = [
     "DEFAULT_TTL_DAYS",
     "SCHEMA_VERSION",
     "EmbeddingProvider",
+    "ReadOnlyMemoryStoreError",
     "SqliteMemoryStore",
 ]
 
@@ -58,6 +60,17 @@ class EmbeddingProvider(Protocol):
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class ReadOnlyMemoryStoreError(RuntimeError):
+    """Raised when a write operation is attempted on a read-only store.
+
+    ``SqliteMemoryStore(readonly=True)`` is used by hosts that expose the
+    memory backend to clients which must not mutate it (e.g. an external
+    agent host attaching ``lisa-memory --readonly``). Every mutating method
+    raises this so the caller sees a structured failure instead of a
+    silently accepted write.
+    """
 
 
 def _entry_id() -> str:
@@ -126,17 +139,82 @@ class SqliteMemoryStore:
     embedding_provider: EmbeddingProvider | None = None
     embedding_dimension: int = 1536
     default_ttl_days: dict[str, int | None] = field(default_factory=lambda: dict(DEFAULT_TTL_DAYS))
+    readonly: bool = False
+    """When True, mutating operations raise
+    :class:`ReadOnlyMemoryStoreError`. The store still opens the database and
+    serves reads, including semantic recall when the database already has a
+    ``memory_vec`` table.
+
+    An existing database is opened with ``mode=ro`` so a read-only deployment
+    cannot modify the file; a missing one is served from an empty in-memory
+    schema so reads answer "no records" instead of creating a file."""
 
     _conn: sqlite3.Connection | None = field(default=None, init=False, repr=False)
     _vec_available: bool = field(default=False, init=False, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         path = Path(self.db_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), check_same_thread=False)
+        if self.readonly:
+            if path.exists():
+                conn = sqlite3.connect(
+                    f"file:{path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=5.0,
+                )
+            else:
+                # No database yet: an in-memory empty schema keeps every read
+                # path answering "no records" instead of creating a file.
+                conn = sqlite3.connect(":memory:", check_same_thread=False, timeout=5.0)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(path), check_same_thread=False, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        if not self.readonly:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         self._conn = conn
+        if self.readonly and path.exists():
+            self._init_readonly_schema()
+            return
         self._init_schema()
+
+    def _init_readonly_schema(self) -> None:
+        """Validate an existing database for read-only use.
+
+        DDL on a ``mode=ro`` connection fails and must not be attempted, so
+        this checks the recorded schema version instead of recreating, then
+        enables vector search only when the database already carries the
+        ``memory_vec`` table. A stale schema means the caller is reading a
+        store this code cannot interpret, which is an error rather than a
+        best-effort read.
+        """
+        assert self._conn is not None
+        current = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if current != SCHEMA_VERSION:
+            raise ReadOnlyMemoryStoreError(
+                f"memory store schema version {current} does not match {SCHEMA_VERSION}; "
+                "a read-only store cannot migrate"
+            )
+        if self.embedding_provider is None:
+            return
+        # Loading the extension creates nothing; only the CREATE VIRTUAL TABLE in
+        # ``_init_schema`` would write. Gate on the table already existing so
+        # semantic recall keeps parity with a writable store.
+        current_tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "memory_vec" in current_tables and self._load_vec_extension():
+            self._vec_available = True
+
+    def _require_writable(self) -> None:
+        """Raise :class:`ReadOnlyMemoryStoreError` on a read-only store."""
+        if self.readonly:
+            raise ReadOnlyMemoryStoreError("memory store is read-only")
 
     def _load_vec_extension(self) -> bool:
         """Load the ``sqlite-vec`` extension and return True if available.
@@ -226,48 +304,50 @@ class SqliteMemoryStore:
             else MemoryWriteRequest.model_validate(request)
         )
         assert self._conn is not None
+        self._require_writable()
         entry_id = _entry_id()
         created_at = _now_iso()
         ttl_days = self.default_ttl_days.get(write.memory_tier, DEFAULT_TTL_DAYS["daily"])
         expires_at = _expires_at(ttl_days)
-        self._conn.execute(
-            """
-            INSERT INTO memories (
-                entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
-                operation_id, instruction_id, memory_tier, memory_kind, status,
-                supersedes_id, item_ids, confidence, merge_count, content,
-                content_json, salience, created_at, expires_at, valid_until
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry_id,
-                write.user_slug,
-                write.workspace_id,
-                write.memory_scope,
-                write.surface_id,
-                write.agent_id,
-                write.operation_id,
-                write.instruction_id,
-                write.memory_tier,
-                write.memory_kind,
-                "active",
-                write.supersedes_id,
-                json.dumps([int(eid) for eid in write.item_ids], default=str),
-                float(write.confidence),
-                0,
-                write.content,
-                json.dumps(write.content_json or {}, default=str),
-                write.salience,
-                created_at,
-                expires_at,
-                write.valid_until,
-            ),
-        )
-        self._conn.commit()
-        row = self._conn.execute(
-            "SELECT * FROM memories WHERE entry_id = ?",
-            (entry_id,),
-        ).fetchone()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO memories (
+                    entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
+                    operation_id, instruction_id, memory_tier, memory_kind, status,
+                    supersedes_id, item_ids, confidence, merge_count, content,
+                    content_json, salience, created_at, expires_at, valid_until
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    write.user_slug,
+                    write.workspace_id,
+                    write.memory_scope,
+                    write.surface_id,
+                    write.agent_id,
+                    write.operation_id,
+                    write.instruction_id,
+                    write.memory_tier,
+                    write.memory_kind,
+                    "active",
+                    write.supersedes_id,
+                    json.dumps([int(eid) for eid in write.item_ids], default=str),
+                    float(write.confidence),
+                    0,
+                    write.content,
+                    json.dumps(write.content_json or {}, default=str),
+                    write.salience,
+                    created_at,
+                    expires_at,
+                    write.valid_until,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchone()
         if row is None:
             raise RuntimeError("Failed to persist memory record")
         record = _row_to_record(row)
@@ -294,11 +374,12 @@ class SqliteMemoryStore:
             if not vectors:
                 return
             vec = vectors[0]
-            self._conn.execute(
-                "INSERT OR REPLACE INTO memory_vec (memory_id, embedding) VALUES (?, ?)",
-                (int(memory_id), json.dumps([float(x) for x in vec])),
-            )
-            self._conn.commit()
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO memory_vec (memory_id, embedding) VALUES (?, ?)",
+                    (int(memory_id), json.dumps([float(x) for x in vec])),
+                )
+                self._conn.commit()
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("embedding write failed for memory_id=%s: %s", memory_id, exc)
 
@@ -330,15 +411,16 @@ class SqliteMemoryStore:
             where += " AND status = ?"
             params.append(status)
         params.append(limit)
-        rows = self._conn.execute(
-            f"""
-            SELECT * FROM memories
-            WHERE {where}
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            tuple(params),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM memories
+                WHERE {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
         return [_row_to_record(row) for row in rows]
 
     async def get_memory(
@@ -359,14 +441,15 @@ class SqliteMemoryStore:
         boundaries by guessing an id.
         """
         assert self._conn is not None
-        row = self._conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE id = ? AND user_slug = ? AND workspace_id = ?
-              AND memory_scope = ? AND surface_id = ?
-            """,
-            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                  AND memory_scope = ? AND surface_id = ?
+                """,
+                (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+            ).fetchone()
         return _row_to_record(row) if row is not None else None
 
     async def delete_memory(
@@ -385,16 +468,18 @@ class SqliteMemoryStore:
         prevent cross-user / cross-surface deletion by id guessing.
         """
         assert self._conn is not None
-        cursor = self._conn.execute(
-            """
-            DELETE FROM memories
-            WHERE id = ? AND user_slug = ? AND workspace_id = ?
-              AND memory_scope = ? AND surface_id = ?
-            """,
-            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+        self._require_writable()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM memories
+                WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                  AND memory_scope = ? AND surface_id = ?
+                """,
+                (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     async def retire_memory(
         self,
@@ -414,17 +499,19 @@ class SqliteMemoryStore:
         ``True`` when a row was updated.
         """
         assert self._conn is not None
-        cursor = self._conn.execute(
-            """
-            UPDATE memories
-            SET status = 'retired'
-            WHERE id = ? AND user_slug = ? AND workspace_id = ?
-              AND memory_scope = ? AND surface_id = ? AND status = 'active'
-            """,
-            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+        self._require_writable()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE memories
+                SET status = 'retired'
+                WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                  AND memory_scope = ? AND surface_id = ? AND status = 'active'
+                """,
+                (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     async def update_salience(
         self,
@@ -444,24 +531,26 @@ class SqliteMemoryStore:
         updated.
         """
         assert self._conn is not None
-        cursor = self._conn.execute(
-            """
-            UPDATE memories
-            SET salience = ?
-            WHERE id = ? AND user_slug = ? AND workspace_id = ?
-              AND memory_scope = ? AND surface_id = ?
-            """,
-            (
-                float(max(0.0, min(1.0, salience))),
-                int(memory_id),
-                user_slug,
-                workspace_id,
-                memory_scope,
-                surface_id,
-            ),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+        self._require_writable()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE memories
+                SET salience = ?
+                WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                  AND memory_scope = ? AND surface_id = ?
+                """,
+                (
+                    float(max(0.0, min(1.0, salience))),
+                    int(memory_id),
+                    user_slug,
+                    workspace_id,
+                    memory_scope,
+                    surface_id,
+                ),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     async def count_memories(
         self,
@@ -489,9 +578,10 @@ class SqliteMemoryStore:
         if status is not None:
             where += " AND status = ?"
             params.append(status)
-        row = self._conn.execute(
-            f"SELECT COUNT(*) FROM memories WHERE {where}", tuple(params)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) FROM memories WHERE {where}", tuple(params)
+            ).fetchone()
         return int(row[0]) if row is not None else 0
 
     async def _semantic_pool(
@@ -532,17 +622,18 @@ class SqliteMemoryStore:
             params.append(now_iso)
             params.append(json.dumps([float(x) for x in vectors[0]]))
             params.append(recall_pool)
-            return self._conn.execute(
-                f"""
-                SELECT m.* FROM memories m
-                JOIN memory_vec v ON v.memory_id = m.id
-                WHERE {where}
-                  AND (m.expires_at IS NULL OR m.expires_at >= ?)
-                ORDER BY v.embedding MATCH ? KNN ?
-                LIMIT ?
-                """,
-                tuple(params),
-            ).fetchall()
+            with self._lock:
+                return self._conn.execute(
+                    f"""
+                    SELECT m.* FROM memories m
+                    JOIN memory_vec v ON v.memory_id = m.id
+                    WHERE {where}
+                      AND (m.expires_at IS NULL OR m.expires_at >= ?)
+                    ORDER BY v.embedding MATCH ? KNN ?
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                ).fetchall()
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("semantic recall failed; falling back to lexical: %s", exc)
             return []
@@ -573,15 +664,16 @@ class SqliteMemoryStore:
             where += " AND status = ?"
             params.append(status)
         params.append(recall_pool)
-        return self._conn.execute(
-            f"""
-            SELECT * FROM memories
-            WHERE {where}
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            tuple(params),
-        ).fetchall()
+        with self._lock:
+            return self._conn.execute(
+                f"""
+                SELECT * FROM memories
+                WHERE {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
 
     async def recall(self, query: str, **kwargs: Any) -> str:
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
@@ -633,7 +725,7 @@ class SqliteMemoryStore:
                 f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             ).lower()
             if tokens:
-                haystack_tokens = {tok for tok in haystack_lower.split()}
+                haystack_tokens = set(haystack_lower.split())
                 overlap = len(tokens & haystack_tokens)
                 if not is_semantic and overlap == 0:
                     continue
@@ -659,6 +751,8 @@ class SqliteMemoryStore:
         # — no separate maintenance pass needed. Only positive matches reach
         # this point (zero-overlap candidates are filtered above), so the
         # logged count reflects genuine salience, not recency noise.
+        # Skipped on a read-only store: it is a write, and recall must not
+        # fail just because the caller asked for a read-only view.
         top_ids = [record.id for _, record in top]
         logger.debug(
             "memory recall: query_chars=%d surfaced=%d candidates=%d",
@@ -666,17 +760,18 @@ class SqliteMemoryStore:
             len(top_ids),
             len(ranked),
         )
-        if top_ids:
+        if top_ids and not self.readonly:
             placeholders = ",".join("?" * len(top_ids))
-            self._conn.execute(
-                f"""
-                UPDATE memories
-                SET access_count = access_count + 1, last_accessed_at = ?
-                WHERE id IN ({placeholders})
-                """,
-                (now_iso, *top_ids),
-            )
-            self._conn.commit()
+            with self._lock:
+                self._conn.execute(
+                    f"""
+                    UPDATE memories
+                    SET access_count = access_count + 1, last_accessed_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    (now_iso, *top_ids),
+                )
+                self._conn.commit()
 
         lines = [f"- {record.content}" for _, record in top]
         return "\n".join(lines)
@@ -741,7 +836,7 @@ class SqliteMemoryStore:
                 f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             ).lower()
             if tokens:
-                haystack_tokens = {tok for tok in haystack_lower.split()}
+                haystack_tokens = set(haystack_lower.split())
                 overlap = len(tokens & haystack_tokens)
                 if not is_semantic and overlap == 0:
                     continue
@@ -759,17 +854,18 @@ class SqliteMemoryStore:
         top = ranked[: max(1, min(limit, 8))]
 
         top_ids = [record.id for _, record in top]
-        if top_ids:
+        if top_ids and not self.readonly:
             placeholders = ",".join("?" * len(top_ids))
-            self._conn.execute(
-                f"""
-                UPDATE memories
-                SET access_count = access_count + 1, last_accessed_at = ?
-                WHERE id IN ({placeholders})
-                """,
-                (now_iso, *top_ids),
-            )
-            self._conn.commit()
+            with self._lock:
+                self._conn.execute(
+                    f"""
+                    UPDATE memories
+                    SET access_count = access_count + 1, last_accessed_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    (now_iso, *top_ids),
+                )
+                self._conn.commit()
 
         return [record for _, record in top]
 
@@ -780,6 +876,7 @@ class SqliteMemoryStore:
         connection is released cleanly when the stdio session ends. Safe
         to call when the store was never initialized (no-op).
         """
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None

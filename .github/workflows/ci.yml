@@ -33,7 +33,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
 
       - name: Format check (ruff)
         run: uv run ruff format --check .
@@ -44,19 +44,21 @@ jobs:
       - name: Direct I/O policy (allowlist)
         run: uv run python scripts/check_direct_io_policy.py
 
-      - name: Type check (mypy — all public packages)
-        env:
-          MYPYPATH: typings:kernel/src:sdk/src:mcp_server/src
-        run: uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
+      - name: Type check (mypy — all workspace source packages)
+        run: uv run --no-sync mypy
 
       - name: Dead code (vulture)
-        run: uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
+        run: uv run --no-sync vulture
+
+      - name: Architecture boundaries
+        run: uv run --no-sync lint-imports
 
   test:
     name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     env:
       UV_PYTHON: ${{ matrix.python }}
+      COVERAGE_FILE: .coverage.${{ matrix.os }}.py${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +67,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -75,28 +79,74 @@ jobs:
         run: uv python install ${{ matrix.python }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
 
-      - name: Unit tests (no live)
-        run: uv run pytest -m "not live" --tb=short -v
+      - name: Offline tests and package coverage floors
+        env:
+          COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: uv run --no-sync python scripts/check_coverage.py --run --skip-changed-lines
 
-      - name: Coverage gate (per-package floors)
+      - name: Upload coverage data for matrix aggregation
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ env.COVERAGE_FILE }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  changed-coverage:
+    name: Changed-line coverage
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Download matrix coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-artifacts
+          merge-multiple: true
+
+      - name: Enforce changed-line coverage across the OS matrix
         run: |
-          uv run coverage run -m pytest -m "not live" -q
-          uv run python scripts/check_coverage.py
+          uv run --no-sync coverage combine --keep coverage-artifacts
+          if [ -n "$COVERAGE_BASE" ]; then
+            uv run --no-sync python scripts/check_changed_coverage.py --base "$COVERAGE_BASE"
+          else
+            uv run --no-sync python scripts/check_changed_coverage.py
+          fi
 
   merge-gate:
     name: Merge gate
     if: ${{ always() }}
-    needs: [quality, test, docs]
+    needs: [quality, test, changed-coverage, docs]
     runs-on: ubuntu-latest
     steps:
       - name: Require every gate to pass
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          CHANGED_COVERAGE_RESULT: ${{ needs.changed-coverage.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
         run: |
           test "$QUALITY_RESULT" = success
           test "$TEST_RESULT" = success
+          test "$CHANGED_COVERAGE_RESULT" = success
           test "$DOCS_RESULT" = success

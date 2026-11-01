@@ -620,6 +620,9 @@ class TestHandleMessage:
         runtime = HostRuntime(config)
 
         class _FakeStoragePool:
+            def __init__(self) -> None:
+                self.configs: list[object] = []
+
             async def call_tool(
                 self,
                 tool_id: str,
@@ -713,6 +716,9 @@ class TestHandleMessage:
         runtime = HostRuntime(config)
 
         class _FakeStoragePool:
+            def __init__(self) -> None:
+                self.configs: list[object] = []
+
             async def call_tool(
                 self,
                 tool_id: str,

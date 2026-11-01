@@ -1,6 +1,6 @@
 [project]
 name = "lisa-harness"
-version = "0.4.0"
+version = "0.5.0"
 description = "Workspace for the public Lisa Harness packages and examples"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,6 +28,9 @@ dev = [
     "types-PyYAML>=6.0",
     "vulture>=2.11",
 ]
+mutation = [
+    "mutmut>=3,<4 ; sys_platform == 'linux'",
+]
 
 [tool.uv]
 package = false
@@ -45,6 +48,15 @@ members = [
     "packstest",
     "e2etest",
 ]
+
+[tool.mutmut]
+source_paths = ["scripts"]
+only_mutate = ["scripts/check_changed_coverage.py"]
+also_copy = ["packstest/tests"]
+pytest_add_cli_args_test_selection = ["packstest/tests/test_changed_coverage.py"]
+pytest_add_cli_args = ["-x", "-q"]
+cache_invalidation_files = ["packstest/tests/test_changed_coverage.py"]
+on_dependency_change = "rerun"
 
 [tool.uv.sources]
 lisa-harness-kernel = { workspace = true }
@@ -70,6 +82,9 @@ pythonpath = [
     "sdk/packs/introspect/src",
     "sdk/packs/memory/src",
     "sdk/packs/recovery/src",
+    "kernel/tests",
+    "sdk/tests",
+    "runtime/tests",
 ]
 testpaths = [
     "kernel/tests",
@@ -109,6 +124,7 @@ markers = [
 # as uncovered, which catches the ``if not x: return`` guards line coverage hides.
 branch = true
 relative_files = true
+source = ["scripts"]
 # Omit test code from measurement entirely so reports and fail_under reflect the
 # shipped source, not the suites exercising it (pytest's pythonpath imports test
 # modules as top-level packages, so omit-by-pattern is required — [paths] alone
@@ -153,7 +169,7 @@ skip_covered = true
 # points under the measured branch-coverage baseline so they catch real regressions
 # without flapping on platform noise; ratchet them up over time (see
 # docs/TESTING.md for the source-only, per-package gate contract).
-fail_under = 76
+fail_under = 82
 exclude_also = [
     # Test code is not part of the shipped surface; measuring it inflates totals.
     ".*/tests/.*",
@@ -166,7 +182,25 @@ target-version = "py311"
 extend-exclude = ["vulture_allowlist.py"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "PL",
+    "C90",
+    "RET",
+    "RUF",
+    "W",
+    "YTT",
+    "C4",
+    "PERF",
+    "PIE",
+    "FURB",
+    "G",
+]
 # PLR0913 (too-many-arguments): the kernel's hook seams intentionally
 # take many parameters — a params-object indirection would hide the
 # protocol contract.
@@ -200,6 +234,32 @@ line-ending = "lf"
 
 [tool.mypy]
 python_version = "3.11"
+files = [
+    "kernel/src/kernel",
+    "sdk/src/sdk",
+    "mcp_server/src/mcp_server",
+    "runtime/src/runtime",
+    "sdk/packs/core/src",
+    "sdk/packs/memory/src",
+    "sdk/packs/introspect/src",
+    "sdk/packs/recovery/src",
+    "packstest/src/packstest",
+    "e2etest/src/e2etest",
+]
+mypy_path = [
+    "$MYPY_CONFIG_FILE_DIR/typings",
+    "$MYPY_CONFIG_FILE_DIR/kernel/src",
+    "$MYPY_CONFIG_FILE_DIR/sdk/src",
+    "$MYPY_CONFIG_FILE_DIR/mcp_server/src",
+    "$MYPY_CONFIG_FILE_DIR/runtime/src",
+    "$MYPY_CONFIG_FILE_DIR/sdk/packs/core/src",
+    "$MYPY_CONFIG_FILE_DIR/sdk/packs/memory/src",
+    "$MYPY_CONFIG_FILE_DIR/sdk/packs/introspect/src",
+    "$MYPY_CONFIG_FILE_DIR/sdk/packs/recovery/src",
+    "$MYPY_CONFIG_FILE_DIR/packstest/src",
+    "$MYPY_CONFIG_FILE_DIR/e2etest/src",
+]
+explicit_package_bases = true
 strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
@@ -208,9 +268,22 @@ no_implicit_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
-exclude = ["vulture_allowlist.py"]
+exclude = ["vulture_allowlist.py", '(^|/)(tests|test_[^/]*\.py$)']
 
 [tool.vulture]
+paths = [
+    "kernel/src/kernel",
+    "sdk/src/sdk",
+    "mcp_server/src/mcp_server",
+    "runtime/src/runtime",
+    "sdk/packs/core/src",
+    "sdk/packs/memory/src",
+    "sdk/packs/introspect/src",
+    "sdk/packs/recovery/src",
+    "packstest/src",
+    "e2etest/src",
+    "vulture_allowlist.py",
+]
 min_confidence = 80
 exclude = [
     "**/tests/",
@@ -223,12 +296,6 @@ exclude = [
 ignore_names = [
     "main",
     "mcp",
-    "init_*",
-    "build_*",
-    "get_*",
-    "register_*",
-    "discover_*",
-    "resolve_*",
     "*SignalCollector",
     "*Collector",
     "*ProcessingLoop",
@@ -272,25 +339,34 @@ root_packages = [
     "runtime",
 ]
 
-# Kernel is runtime-neutral — must never import from the host layer.
-# (kernel → sdk and kernel → mcp_server are allowed; sdk/mcp_server depend on
-# kernel, not the other way around.)
+# The kernel defines contracts; integrations depend on it, never the reverse.
 [[tool.importlinter.contracts]]
-name = "Kernel runtime-neutrality (kernel imports nothing from runtime)"
+name = "Kernel imports no integration packages"
 type = "forbidden"
 source_modules = ["kernel"]
 forbidden_modules = [
     "runtime",
+    "sdk",
+    "mcp_server",
 ]
 
-# SDK must not import mcp_server internals.
-# SDK and packs may import runtime (transport-neutral runtime services:
-# thread, model_runtime, state_provider, turn_hooks_builder). See
-# docs/BOUNDARIES.md "Packs have host bindings".
+# SDK and bundled packs use kernel contracts, not runtime or server wiring.
 [[tool.importlinter.contracts]]
-name = "SDK does not import mcp_server"
+name = "SDK imports no runtime or MCP server wiring"
 type = "forbidden"
 source_modules = ["sdk"]
 forbidden_modules = [
     "mcp_server",
+    "runtime",
 ]
+
+[[tool.importlinter.contracts]]
+name = "MCP servers import no runtime wiring"
+type = "forbidden"
+source_modules = ["mcp_server"]
+forbidden_modules = ["runtime"]
+
+[[tool.importlinter.contracts]]
+name = "Bundled packs are independent"
+type = "independence"
+modules = ["sdk.packs.core", "sdk.packs.memory", "sdk.packs.introspect", "sdk.packs.recovery"]

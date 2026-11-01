@@ -38,7 +38,7 @@ _OLLAMA_CAP_TO_LISA: dict[str, str] = {
 
 def _normalize_host(host: str) -> str:
     host = host.strip() or "127.0.0.1:11434"
-    if not (host.startswith("http://") or host.startswith("https://")):
+    if not host.startswith(("http://", "https://")):
         host = f"http://{host}"
     return host.rstrip("/")
 
@@ -48,7 +48,7 @@ async def _fetch_show(
     base: str,
     model_id: str,
     timeout: float,
-) -> tuple[dict | None, bool]:
+) -> tuple[dict[str, Any] | None, bool]:
     """Best-effort per-model ``/api/show`` enrichment.
 
     Returns ``(show_payload, gone)``. ``show_payload`` is ``None`` on
@@ -237,9 +237,9 @@ def _ollama_show_context_window(show_payload: dict[str, Any] | None) -> int:
 
 def _enrich_ollama_model(
     model_id: str,
-    item: dict,
+    item: dict[str, Any],
     *,
-    show_payload: dict | None = None,
+    show_payload: dict[str, Any] | None = None,
 ) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` enriched from Ollama tag metadata.
 
@@ -257,7 +257,8 @@ def _enrich_ollama_model(
     registry in ``known_models.yaml`` is applied last and still wins.
     """
 
-    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    raw_details = item.get("details")
+    details = raw_details if isinstance(raw_details, dict) else {}
     parameter_size = str(details.get("parameter_size") or "").strip()
     family = str(details.get("family") or "").strip()
 

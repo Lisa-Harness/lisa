@@ -299,16 +299,16 @@ def _merge_results(
     evidence: list[Any] = []
 
     # Convert raw signal snapshots from collectors into context items.
-    for result in collections:
-        if result.snapshot is not None:
-            evidence.append(
-                _evidence_from_signal(
-                    collector_id=result.collector_id,
-                    status=result.status,
-                    snapshot=result.snapshot,
-                    collected_at=compiled_at,
-                )
-            )
+    evidence.extend(
+        _evidence_from_signal(
+            collector_id=result.collector_id,
+            status=result.status,
+            snapshot=result.snapshot,
+            collected_at=compiled_at,
+        )
+        for result in collections
+        if result.snapshot is not None
+    )
 
     # Merge processed states: convert their alerts/intel/signals to evidence,
     # and pass through any context_items emitted directly by the loop.
@@ -328,33 +328,32 @@ def _evidence_from_processed_state(
     if ps.context_items:
         out.extend(ps.context_items)
     if ps.signal_snapshots:
-        for connector_id, snapshot in ps.signal_snapshots.items():
-            status = str(snapshot.get("status", "ok")) if isinstance(snapshot, dict) else "ok"
-            out.append(
-                _evidence_from_signal(
-                    collector_id=connector_id,
-                    status=status,
-                    snapshot=snapshot,
-                    collected_at=compiled_at,
-                )
+        out.extend(
+            _evidence_from_signal(
+                collector_id=connector_id,
+                status=str(snapshot.get("status", "ok")) if isinstance(snapshot, dict) else "ok",
+                snapshot=snapshot,
+                collected_at=compiled_at,
             )
+            for connector_id, snapshot in ps.signal_snapshots.items()
+        )
     if ps.intel_collections:
-        for intel_key, intel in ps.intel_collections.items():
-            out.append(
-                _evidence_from_intel(
-                    intel_key=intel_key,
-                    intel=intel,
-                    collected_at=compiled_at,
-                )
+        out.extend(
+            _evidence_from_intel(
+                intel_key=intel_key,
+                intel=intel,
+                collected_at=compiled_at,
             )
+            for intel_key, intel in ps.intel_collections.items()
+        )
     if ps.active_alerts:
-        for alert in ps.active_alerts:
-            out.append(
-                _evidence_from_alert(
-                    alert=alert,
-                    collected_at=compiled_at,
-                )
+        out.extend(
+            _evidence_from_alert(
+                alert=alert,
+                collected_at=compiled_at,
             )
+            for alert in ps.active_alerts
+        )
     return out
 
 
@@ -399,11 +398,12 @@ async def run_intake(*, data_dir: Path) -> UnifiedState:
     state = _merge_results(collections, processed)
 
     # 4. Write to disk
+    from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
     from sdk.layout import STATE_DIR
 
     state_path = data_dir / STATE_DIR / _DEFAULT_STATE_FILE
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+    with file_lock(sidecar_lock_path(state_path)):
+        atomic_write_text(state_path, state.model_dump_json(indent=2), encoding="utf-8")
     logger.info("State written to %s", state_path)
 
     return state

@@ -348,9 +348,7 @@ def _write(workspace: Path, rel: str, content: str = "") -> Path:
     """Write a file relative to ``workspace`` and return the full path."""
     full = workspace / rel
     full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(
-        content if content else f"---\nname: {full.stem}\n---\nbody\n", encoding="utf-8"
-    )
+    full.write_text(content or f"---\nname: {full.stem}\n---\nbody\n", encoding="utf-8")
     return full
 
 

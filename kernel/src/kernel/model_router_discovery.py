@@ -1,7 +1,8 @@
 """Discovery for pack-registered model routers.
 
-Loads ``lisa.extensions.model_routers`` entry points, each of which returns
-a callable factory ``(manifest, session_plan) -> ModelRouter | None``.
+Loads ``lisa.extensions.model_routers`` entry points: either a direct callable
+``(manifest, session_plan) -> ModelRouter | None`` or a zero-argument provider
+of that callable. The host resolves the entry point's arity before invoking it.
 Hosts consult the discovered factories at ``TurnHooks`` assembly time and
 wire the first non-``None`` router into ``ContextSeams.model_router``.
 
@@ -53,7 +54,7 @@ class PackModelRouterEntry:
     """One discovered model-router factory attributed to its source pack."""
 
     pack_name: str
-    factory: ModelRouterFactory
+    factory: Callable[..., ModelRouter | ModelRouterFactory | None]
 
 
 def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:

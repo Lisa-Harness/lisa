@@ -2,7 +2,31 @@
 
 Lisa separates orchestration from capability content, reusable domain logic,
 and application transport. The [project README](../README.md#architecture)
-shows the dependency diagram.
+shows the runtime components and turn flow.
+
+## Package dependencies
+
+```mermaid
+flowchart BT
+    Kernel["kernel"]
+    SDK["sdk"] --> Kernel
+    MCP["mcp_server"] --> SDK
+    MCP --> Kernel
+    Packs["packs"] --> SDK
+    Packs --> Kernel
+    Runtime["runtime"] --> MCP
+    Runtime --> SDK
+    Runtime --> Kernel
+    Runtime -- "bundled reference packs only" --> Packs
+    Host["host, such as lisa-cli"] --> Runtime
+    Packs -. "entry points, no import" .-> Runtime
+```
+
+Solid arrows are declared package dependencies. The kernel depends on no
+in-repository package. The runtime installs the bundled reference packs, but it
+discovers every pack, bundled or external, through entry points. It never
+imports pack internals. Test packages are omitted: `packstest` depends on
+kernel and SDK, and `e2etest` adds runtime.
 
 ## Package ownership
 
@@ -18,9 +42,9 @@ shows the dependency diagram.
 | [e2etest](../e2etest/README.md) | Whole-runtime scenarios and evidence-based oracles | Product behavior or a substitute for unit tests |
 
 Packs should import kernel/SDK and package-local code, not runtime internals
-or another pack. Shared contracts belong on neutral ground. Some existing
-bundled integrations contain legacy lazy runtime coupling; that is not an
-extension API to copy.
+or another pack. Shared contracts belong on neutral ground. Import-linter
+enforces these boundaries for bundled packs; their thread reads use the SDK
+store rather than runtime imports.
 
 Runtime wires callbacks across layers; callback/MCP communication does not
 reverse import ownership. First-party servers can run in-process or as

@@ -7,7 +7,12 @@ that makes the record joinable to the thread and the cost log.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import threading
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -216,3 +221,121 @@ def test_token_usage_event_carries_turn_index() -> None:
     )
     assert event.turn_index == 88
     assert event.mode_id == "coding_design"
+
+
+# ── Cross-process lock seam ────────────────────────────────────────────
+
+
+class _CountingLock:
+    """A lock_factory double that records acquisitions and serializes writers."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._acquired = 0
+        self._active = 0
+        self._max_concurrent = 0
+        self._lock_factory = self._make
+        # Bind eagerly so the handler can be reconstructed per seal iteration.
+        self.handlers: list[DecisionTelemetryHandler] = []
+
+    def _make(self) -> AbstractContextManager[None]:
+        @contextlib.contextmanager
+        def _guard() -> Iterator[None]:
+            with self._lock:
+                self._acquired += 1
+                self._active += 1
+                self._max_concurrent = max(self._max_concurrent, self._active)
+                try:
+                    yield
+                finally:
+                    self._active -= 1
+
+        return _guard()
+
+
+@pytest.mark.asyncio
+async def test_lock_factory_serializes_append_and_seal() -> None:
+    """The injected lock wraps the whole append + seal-decision critical section."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "decisions.jsonl"
+        double = _CountingLock()
+        handler = DecisionTelemetryHandler(path, segment_max_bytes=200, lock_factory=double._make)
+
+        for i in range(30):
+            await handler.publish_turn_decision({"mode_id": "m", "turn_index": i, "pad": "x" * 30})
+
+        # One acquisition per record, and never two holders at once.
+        assert double._acquired >= 30
+        assert double._max_concurrent == 1
+
+        # Sealing happened and every record survived it.
+        sealed = sorted(p for p in Path(td).glob("decisions.jsonl.*"))
+        assert sealed, "seal threshold crossed but no segment sidecar was written"
+        total = 0
+        for seg in [*sealed, path]:
+            for line in seg.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    assert json.loads(line)
+                    total += 1
+        assert total == 30
+
+
+def test_seal_number_is_recomputed_from_directory_not_cache() -> None:
+    """Two handler instances (two processes' views of one file) never overwrite a sidecar.
+
+    The pre-fix behavior served the next segment number from a per-instance
+    cache seeded on first seal, so a second instance that had seen fewer
+    segments renamed over the first's sidecar. The number must always be
+    derived from the directory listing at seal time: a fresh instance
+    continues past every sidecar the first one wrote.
+    """
+    with TemporaryDirectory() as td:
+        path = Path(td) / "decisions.jsonl"
+        first = DecisionTelemetryHandler(path, segment_max_bytes=200)
+        second = DecisionTelemetryHandler(path, segment_max_bytes=200)
+
+        written_first = 12
+        for i in range(written_first):
+            asyncio.run(first.publish_turn_decision({"turn_index": i, "pad": "x" * 40}))
+        first_sidecars = {p.name for p in Path(td).glob("decisions.jsonl.*")}
+        assert len(first_sidecars) >= 2, "seal threshold crossed but fewer than 2 segments exist"
+
+        # Second instance (a different process that never observed the file)
+        # seals next, then the first seals AGAIN: the first's cached counter
+        # must not have gone stale relative to sidecars the second wrote
+        # (the pre-fix failure overwrote a sealed segment).
+        written_second = 12
+        for i in range(written_second):
+            asyncio.run(second.publish_turn_decision({"turn_index": i, "pad": "y" * 40}))
+        for i in range(written_first):
+            asyncio.run(first.publish_turn_decision({"turn_index": i, "pad": "z" * 40}))
+
+        after = {p.name for p in Path(td).glob("decisions.jsonl.*")}
+        assert first_sidecars <= after, "the second instance deleted or overwrote a sealed segment"
+        numbers = sorted(int(n.rsplit(".", 1)[1]) for n in after)
+        assert numbers == list(range(1, len(numbers) + 1)), (
+            f"segment numbers must be contiguous: {numbers}"
+        )
+        total = 0
+        for seg in Path(td).glob("decisions.jsonl.*"):
+            total += sum(1 for line in seg.read_text(encoding="utf-8").splitlines() if line.strip())
+        total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        assert total == written_first * 2 + written_second
+
+
+@pytest.mark.asyncio
+async def test_lock_timeout_drops_the_line_instead_of_raising() -> None:
+    """A host lock that times out swallows the failure; telemetry never breaks a turn."""
+
+    @contextlib.contextmanager
+    def _never_acquires() -> Iterator[None]:
+        raise TimeoutError("lock contention")
+        yield  # pragma: no cover
+
+    with TemporaryDirectory() as td:
+        handler = DecisionTelemetryHandler(
+            Path(td) / "decisions.jsonl", lock_factory=_never_acquires
+        )
+        # Must not raise despite the lock factory exploding.
+        await handler.publish_turn_decision({"mode_id": "m", "turn_index": 1})
+        assert not (Path(td) / "decisions.jsonl").exists()

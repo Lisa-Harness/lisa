@@ -276,6 +276,12 @@ class HostServiceHandles:
     #: wiring tools that need a data dir must inject it.
     data_dir: str = ""
 
+    #: Canonical thread-store directory, injected by the host alongside
+    #: ``data_dir``. The host resolves it once (a CLI argument wins over the
+    #: environment), so an operation that must open the host's own thread
+    #: store uses this rather than re-deriving a path the host never used.
+    thread_dir: str = ""
+
 
 # ── TurnIdentity ────────────────────────────────────────────────────────
 @dataclass
@@ -285,6 +291,15 @@ class TurnIdentity:
     Bare/test hosts that never wire identity get coherent personal-DM
     addresses; production hosts (the CLI host builder) override every field
     from their own config.
+
+    Equality is the dataclass default, so every field counts. That is the
+    right rule for the fields that identify *whose* turn this is, but not
+    for ``thread_store_slug``: that names where the turn's evidence lives,
+    not who owns it, and it did not exist before the stem was introduced. A
+    continuation persisted by an older kernel carries no stem, so comparing
+    whole objects would reject every pre-upgrade resume — on any host, not
+    just conversation-isolated ones. Compare with :meth:`same_turn` instead
+    of ``==`` when the question is "is this the same turn?".
     """
 
     workspace_id: str = "default"
@@ -292,14 +307,21 @@ class TurnIdentity:
     user_slug: str = "default"
     user_name: str = ""
     principal_key: str = "default"
+    #: Filename stem of the thread store this turn writes to. Hosts that
+    #: isolate one store per conversation name it ``<user>--<conversation>``,
+    #: so it is not the user slug. Empty means the store is named by the
+    #: user slug alone. Carried on the operation context so a reader that
+    #: must open the turn's own store can find it without guessing.
+    thread_store_slug: str = ""
     conversation_id: str = "default"
     surface_type: str = "personal_dm"
     surface_id: str = "default"
     memory_scope: str = "personal"
     session_plan_digest: str = ""
     task_id: str = ""
-    #: Global thread turn index this turn will occupy, computed at turn start
-    #: (``runtime.thread.next_turn_index``) and stamped on the thread entry.
+    #: Global thread turn index this turn runs under, reserved at turn start
+    #: by the host; the thread entry records it (as ``provisional_turn`` when
+    #: overlapping turns committed out of start order and moved the entry).
     #: Threaded into every dispatch/token/decision payload so forensic readers
     #: can join the thread, the dispatch ledger, and the cost log by one key.
     #: ``None`` means the work is not attributable to a thread turn (off-turn
@@ -316,6 +338,39 @@ class TurnIdentity:
     #: would silently false-pass every implementation task in that mode.
     #: Fail-closed default: an undeclared task is an implementation task.
     task_goal: Literal["implementation", "diagnostic"] = "implementation"
+
+    def same_turn(self, other: TurnIdentity) -> bool:
+        """Return whether ``other`` identifies the same turn as this one.
+
+        Compares the fields that say *whose* turn this is — the owner, the
+        conversation, the surface, the workspace, the session plan, and the
+        task. ``thread_store_slug`` is excluded: it names where the turn's
+        evidence lives, and a continuation saved before that field existed
+        carries none. Two identities that disagree about it are still the
+        same turn, and rejecting them would strand every paused turn across
+        an upgrade.
+
+        Args:
+            other: The identity to compare against.
+
+        Returns:
+            True when both identities describe the same turn.
+        """
+        return (
+            self.workspace_id == other.workspace_id
+            and self.user_id == other.user_id
+            and self.user_slug == other.user_slug
+            and self.user_name == other.user_name
+            and self.principal_key == other.principal_key
+            and self.conversation_id == other.conversation_id
+            and self.surface_type == other.surface_type
+            and self.surface_id == other.surface_id
+            and self.memory_scope == other.memory_scope
+            and self.session_plan_digest == other.session_plan_digest
+            and self.task_id == other.task_id
+            and self.turn_index == other.turn_index
+            and self.task_goal == other.task_goal
+        )
 
 
 # ── RecallHooks ─────────────────────────────────────────────────────────
@@ -379,6 +434,16 @@ class ToolHooks:
     #: branch). MCP-server tools render into ``output_text`` and operations
     #: return typed results; neither is decorated.
     post_dispatch_result: Callable[[str, dict[str, Any], str, str], str] | None = None
+
+    #: Optional persistence closure for spill-on-arrival (the cache-aware
+    #: default for large tool results, ``kernel.turn_phases._spill``).
+    #: ``persist_tool_result(record) -> ref`` persists one tool-result
+    #: payload and returns a dereferenceable ``r<sha256>`` ref. The record
+    #: shape and store MUST match the host's result projector so the ref
+    #: dereferences via both the projector's loader and the thread tools.
+    #: When ``None``, large results stay inline and only the governor's
+    #: epoch (which drives the projector) can evict them.
+    persist_tool_result: Callable[[dict[str, Any]], str] | None = None
 
 
 # ── TurnHooks — the composed container ──────────────────────────────────

@@ -433,7 +433,7 @@ class ThreadReader:
         text = value if isinstance(value, str) else _encode(value)
         if offset_chars > len(text):
             raise ValueError("offset_chars exceeds content length")
-        pattern = re.compile(re.escape(query), re.I)
+        pattern = re.compile(re.escape(query), re.IGNORECASE)
         page: dict[str, Any] = {
             "ref": ref,
             "source": source,

@@ -34,10 +34,14 @@ file extension). All derived file paths are computed from this base.
 | `<base>.current.jsonl` | Active segment — plain JSONL, append-only |
 | `<base>.<seg_id>.jsonl.zst` | Sealed segment — zstd-compressed JSONL |
 | `<base>.index.jsonl` | Sparse segment index — one JSON line per sealed segment |
-| `<base>.dict.zstd` | Trained zstd dictionary (optional) |
-| `<base>.results/r<sha256>.json` | Tool results, model request snapshots, continuation objects |
+| `<base>.dict.zstd` | Trained zstd dictionary (optional, immutable once created) |
+| `<base>.lock` | Cross-process advisory lock coordinating reads, appends, and segment seals |
+| `<base>.reservations.json` | In-flight turn reservations (`{token, pid, turn}`); present only while turns are running |
+| `<base>.results/r<sha256>.json` | Tool results, model request snapshots (turn loop **and** operation-dispatch calls — the latter addressed by `model.request` ledger rows), continuation objects |
 
-Where `<base> = <thread_dir>/<user_slug>` and `<seg_id>` is a zero-padded
+Where `<base> = <thread_dir>/<user_slug>` (or
+`<thread_dir>/<user_slug>--<conversation_id>` when `LISA_CONVERSATION_ID` is
+set) and `<seg_id>` is a zero-padded
 4-digit counter (`0001`, `0002`, ...).
 
 The legacy lossy digest sidecar (`<base>.digest.md` +
@@ -79,15 +83,18 @@ One JSON object per line in the active and sealed segments:
 | `query` | string | yes | User's input |
 | `response_text` | string | yes | Model/system response |
 | `provenance` | object | no | Optional metadata (`source`, `finish_reason`, `model_id`) |
-| `turn` | int | yes | 0-based global turn index |
+| `turn` | int | yes | 0-based global turn index — the entry's log position, assigned at commit |
+| `provisional_turn` | int | no | Index the turn ran under (briefing, telemetry) when it differs from `turn` because overlapping turns committed out of start order |
 | `effect_receipts` | list[object] | no | Each: `{capability_id, effect, artifact_id}` |
 | `handoff_to` | string | no | Mode handoff target |
 | `transitioned_to` | string | no | Stage transition target |
+| `departed_modes` | list[string] | no | Modes the turn handed off *out of*, in order, before it ended in `handoff_to`; lets the workflow view credit a plan step completed by an in-turn handoff chain |
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
 | `turn_input` | object | no | Model request archive: runtime calls use `{"calls": [{"iteration": 1, "ref": "r<sha256>"}]}`; expand the result object to recover the exact request and `context_budget`. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
 | `transcript` | list[object] | no | Verbatim non-system messages the turn added: its user message, every assistant tool call (with arguments), and every tool result. Replayed messages from earlier turns are excluded. The latest turn and its unfinished task (paused, awaiting approval, host-approved) are replayed at full fidelity; `thread_read_range(include_transcript=true)` returns older ones. Redaction applies on read. |
 | `memory_ids` | list[int] | no | Memory records minted from this turn (auto-capture or `synthesize_and_store_learning`). The thread → memory provenance link. |
+| `prev_entry_sha256` | string | no | SHA-256 of the previous stored entry's raw line (UTF-8, no newline): the tamper-evidence chain link. Absent on the first chained entry (the chain head) and on entries written before the chain existed. See [hash chain](#hash-chain). |
 
 ### Segment index record
 
@@ -114,6 +121,55 @@ One JSON line per sealed segment in `<base>.index.jsonl`:
 | `ts_hi` | string | Timestamp of the last entry |
 | `bytes_raw` | int | Uncompressed segment size |
 | `bytes_zst` | int | Compressed segment size |
+| `tail_sha256` | string | SHA-256 of the segment's terminal raw entry line (UTF-8, no newline); the chain link the first post-seal entry commits to, so the chain continues across seal boundaries without decompressing anything at append time. Empty/absent on index lines written before the chain existed. |
+
+## Hash chain
+
+Every appended entry carries `prev_entry_sha256` — the SHA-256 of the
+previous stored entry's **raw line** — and every seal records its terminal
+line's hash in the index, so the chain spans seal boundaries. Editing or
+removing any stored entry breaks the link its successor committed to;
+hiding that edit means rewriting every later entry *and* every later
+index line.
+
+Verification (`sdk.thread.verify_chain(base)` / `ThreadStore.verify_chain()`)
+walks the whole store — every sealed segment is decompressed — so it is an
+on-demand integrity audit, never part of a per-read path. It reports:
+
+- `ok`, `head_sha256` (the newest entry's raw-line hash — the value to
+  notarize externally), `chained_entries`, `verified_seals`;
+- `unchained_entries` / `unchained_seals`: history predating the chain,
+  reported honestly rather than pretended to be checked;
+- `first_divergence` plus every `divergences` entry (verification continues
+  past the first so one audit reports the full damage).
+
+Chain-link identity is the **whole raw line**, `\n`-delimited. Two
+implementation rules follow from that — violations forge links to line
+fragments and surface as false divergences:
+
+- The append-time tail read streams from EOF in 64 KiB blocks and must
+  assemble the terminal line across block windows before hashing; the last
+  `\n`-bounded fragment inside one window is not the line when the line
+  exceeds the window.
+- All readers and sealers split raw bytes on `\n` only (JSONL line
+  identity). `str.splitlines()` also splits on raw NEL/LS/PS characters
+  that `json.dumps(ensure_ascii=False)` writes unescaped inside strings,
+  shearing one stored entry into fragments.
+
+Honest threat model — what this does and does not prove:
+
+- **Detects**: any edit, deletion, or truncation of a stored entry or
+  index line after the fact, unless the attacker coherently rewrites
+  everything from the edit point onward.
+- **Does not detect**: a full-store rewrite including the index; tampering
+  with the newest entry (nothing links to it yet — periodic external
+  notarization of `head_sha256` closes that window); an attacker who
+  controls the writer before evidence exists.
+- Forensic reads surface the audit on explicit request only:
+  `/forensics <selection> --verify-chain` and
+  `turn_forensics(verify_chain=true)` append a one-line status note.
+
+## Removed sidecars
 
 ### Digest marker
 
@@ -127,13 +183,44 @@ not an on-disk digest sidecar.
 
 ### Append
 
-1. Compute `current_path = <base>.current.jsonl`.
-2. One-time rename guard: if `current_path` does not exist but the
+All appends and segment seals execute under the cross-process advisory lock
+`<base>.lock` ([filelock.py](../../sdk/src/sdk/filelock.py)). Readers also
+acquire `<base>.lock` when present so reads never observe a half-sealed
+segment or unindexed rotation.
+
+1. Acquire `<base>.lock` and resolve the authoritative `turn` index — the
+   entry count from `<base>.index.jsonl` + `<base>.current.jsonl`. The
+   caller's provisional index is never honoured (it would duplicate or skip
+   a turn when overlapping turns commit out of order); when it differs it is
+   recorded as `provisional_turn`.
+2. Compute `current_path = <base>.current.jsonl`.
+3. One-time rename guard: if `current_path` does not exist but the
    legacy `<base>.jsonl` does, rename it to `current_path`.
-3. Count lines in `current_path`. If the count is >= `segment_turns`,
+4. Count lines in `current_path`. If the count is >= `segment_turns`,
    seal the active segment first.
-4. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
-   fresh) active segment.
+5. Resolve the chain link: the SHA-256 of the previous stored entry's raw
+   line — the active file's tail (one 64 KiB block read, assembling the
+   terminal line across windows so a line longer than the window is hashed
+   whole), or the newest seal's `tail_sha256` from the index after a seal,
+   or absent for the first chained entry. Append cost stays O(tail): no
+   sealed segment is ever decompressed at append time.
+6. Append the new entry as JSON (`ensure_ascii=False`) to the (possibly
+   fresh) active segment, release the turn's reservation (still under the
+   lock), and return the committed `turn` index.
+
+### Turn reservations
+
+A turn needs its index at start — for the briefing's "Turn N", the banner,
+and the `turn_index` on every telemetry record — but the committed index is
+only fixed at append. `reserved_turn` takes `<base>.lock` and records
+`{token, pid, turn}` in `<base>.reservations.json` with
+`turn = max(entry count, highest live reservation + 1)`, so overlapping turns
+(several processes on one data dir) run under distinct indices. The commit
+releases the reservation atomically with the append; leaving the turn by any
+other path (error, cancellation) releases it too. Reservations whose `pid` is
+no longer alive are pruned on every read, so a crashed turn's index is
+reused by the next turn. Forensic joins match a turn's telemetry by
+`provisional_turn` when present.
 
 ### Sealing
 
@@ -156,10 +243,10 @@ is no latency guarantee based only on the entry count.
 
 - The **first seal** uses raw zstd (no dictionary).
 - After the first seal, a zstd dictionary is trained from the sealed
-  segment and stored as `<base>.dict.zstd`.
-- The dictionary is **retrained every 10 seals** from the most recent 10
-  sealed segments. This exploits the repeated JSON keys and similar turn
-  vocabulary for 4–6× compression.
+  segment and stored atomically as `<base>.dict.zstd`.
+- Once `<base>.dict.zstd` exists, it is **never overwritten in place** so
+  earlier sealed segments compressed with that dictionary remain
+  decompressable across the lifetime of the thread.
 
 ## Read paths
 
@@ -240,6 +327,7 @@ thread realignment (hard cutover, no compat shims).
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `LISA_THREAD_DIR` | `<data_dir>/data/threads` | Thread directory |
+| `LISA_CONVERSATION_ID` | `""` | Optional conversation identifier; when set, isolates the thread base path as `<thread_dir>/<user_slug>--<conversation_id>` |
 | `LISA_THREAD_SEGMENT_TURNS` | `256` | Seal threshold — active segment is sealed when it reaches this many entries |
 
 `LISA_THREAD_SEGMENT_TURNS` (256) controls how often the active segment

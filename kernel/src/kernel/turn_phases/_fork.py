@@ -466,6 +466,7 @@ def _build_minimal_context(
     user_slug: str | None = None,
     user_name: str | None = None,
     principal_key: str | None = None,
+    thread_store_slug: str | None = None,
     conversation_id: str | None = None,
     surface_type: str | None = None,
     surface_id: str | None = None,
@@ -473,6 +474,7 @@ def _build_minimal_context(
     task_id: str = "",
     session_plan_digest: str = "",
     data_dir: str = "",
+    thread_dir: str = "",
     turn_index: int | None = None,
     delegate_fn: Any = None,
     fork_fn: Any = None,
@@ -481,6 +483,7 @@ def _build_minimal_context(
     gateway_provider_fn: Any = None,
     model_router: Any = None,
     event_bus: Any = None,
+    request_recorder: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -488,6 +491,11 @@ def _build_minimal_context(
     host's ``complete`` dispatches through the provider gateway (the live
     completion path) instead of the removed legacy callable. Callers pass a
     zero-arg callable that resolves ``hooks.context_seams.provider_gateways``.
+
+    ``request_recorder`` is the durable model-request recorder
+    (``persist_request`` shape). When supplied, operations dispatched from
+    this context archive their off-turn completions; when omitted the
+    dispatches stay unrecorded (tests, bare hosts).
     """
     host = build_callable_host(
         complete_fn=complete_fn,
@@ -507,6 +515,7 @@ def _build_minimal_context(
     _u_slug = user_slug if user_slug is not None else "default"
     _u_name = user_name if user_name is not None else ""
     _pk = principal_key if principal_key is not None else "default"
+    _store_slug = thread_store_slug if thread_store_slug is not None else ""
     _conv_id = conversation_id if conversation_id is not None else "default"
     _surf_type = surface_type if surface_type is not None else "personal_dm"
     _surf_id = surface_id if surface_id is not None else "default"
@@ -517,6 +526,7 @@ def _build_minimal_context(
         user_slug=_u_slug,
         user_name=_u_name,
         principal_key=_pk,
+        thread_store_slug=_store_slug,
         conversation_id=_conv_id,
         surface_type=cast(ConversationSurface, _surf_type),
         surface_id=_surf_id,
@@ -533,8 +543,10 @@ def _build_minimal_context(
         session_plan_digest=session_plan_digest,
         code_change_artifact_store=code_change_artifact_store,
         data_dir=data_dir,
+        thread_dir=thread_dir,
         turn_index=turn_index,
         host=host,
         model_router=model_router,
         event_bus=event_bus,
+        request_recorder=request_recorder,
     )

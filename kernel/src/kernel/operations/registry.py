@@ -37,17 +37,17 @@ from kernel.models import (
     ToolExecutionTelemetry,
     resolve_turn_index,
 )
-from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
+from kernel.telemetry import (
+    get_tracer,
+    mark_span_failed,
+    schedule_telemetry_publish,
+    set_span_attributes,
+)
 from kernel.tools.mcp_client import MCPClientConfig
 from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
-
-#: Strong references to in-flight telemetry publish tasks (RUF006). Tasks are
-#: fire-and-forget telemetry; the set keeps them garbage-collectable only
-#: after completion and is pruned on each publish.
-_PENDING_TELEMETRY_TASKS: set[asyncio.Task[None]] = set()
 
 __all__ = [
     "build_operation_tool_schemas",
@@ -280,9 +280,7 @@ def _provider_slug(raw: str) -> str:
     carries the full package name.
     """
     value = (raw or "").strip().lower().replace("_", "-")
-    if value.startswith(_PROVIDER_PREFIX):
-        value = value[len(_PROVIDER_PREFIX) :]
-    return value
+    return value.removeprefix(_PROVIDER_PREFIX)
 
 
 def validate_export_boundaries(
@@ -718,6 +716,34 @@ def _mode_allowlist_write_tools(
     return result
 
 
+def _build_completion_audit(
+    operation_id: str,
+    ctx: OperationExecutionContext,
+) -> Any | None:
+    """Derive the host adapter's completion-audit context for one dispatch.
+
+    Returns ``None`` when the host stamped no ``request_recorder`` — the
+    host never wired durable recording, so the dispatch keeps the previous
+    unrecorded behavior rather than raising at dispatch time. Recording
+    without telemetry (no event bus) still archives the request; telemetry
+    without recording (bus but no recorder) publishes no ``model.request``
+    row, because the row's ``request_ref`` would point at nothing.
+    """
+    recorder = ctx.request_recorder
+    if recorder is None:
+        return None
+    from kernel.seams.host_adapter import CompletionAuditContext
+
+    return CompletionAuditContext(
+        record_request=recorder,
+        event_bus=ctx.event_bus,
+        operation_id=operation_id,
+        turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        user_slug=str(getattr(ctx, "user_slug", "") or ""),
+        thread_store_slug=str(getattr(ctx, "thread_store_slug", "") or ""),
+    )
+
+
 def _rebuild_host_with_tool_wrapper(
     definition: OperationDefinition,
     ctx: OperationExecutionContext,
@@ -759,6 +785,11 @@ def _rebuild_host_with_tool_wrapper(
         gateway_provider_fn=(
             _existing_host._gateway_provider_fn if _existing_host is not None else None
         ),
+        # Durable off-turn request recording: every operation dispatch
+        # rebuilds its host here, so this is where the audit wiring attaches.
+        # A host that stamps no ``request_recorder`` keeps the previous
+        # unrecorded behavior (audit=None).
+        audit=_build_completion_audit(definition.operation_id, ctx),
     )
 
 
@@ -798,16 +829,14 @@ def _emit_operation_telemetry(
             error_message=err_msg,
             turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
             user_slug=ctx.user_slug,
+            thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         )
-        try:
-            task = asyncio.create_task(
-                ctx.event_bus.publish("tool.telemetry", event.model_dump(mode="json"))
-            )
-        except Exception:  # pylint: disable=broad-except
-            logger.debug("operation telemetry publish failed for %s", operation_id, exc_info=True)
-        else:
-            _PENDING_TELEMETRY_TASKS.add(task)
-            task.add_done_callback(_PENDING_TELEMETRY_TASKS.discard)
+        schedule_telemetry_publish(
+            ctx.event_bus,
+            "tool.telemetry",
+            event.model_dump(mode="json"),
+            source=f"operation:{operation_id}",
+        )
 
 
 def _normalize_operation_result(
@@ -1074,6 +1103,12 @@ async def _require_approval(
         identity=identity,
         pack_config=ctx.pack_config,
         safe_preview=definition.approval_preview,
+    )
+    invocation = invocation.model_copy(
+        update={
+            "turn_index": resolve_turn_index(ctx.turn_index),
+            "thread_store_slug": getattr(ctx, "thread_store_slug", "") or "",
+        }
     )
     if ctx.approval_request_id:
         receipt = await service.consume(ctx.approval_request_id, invocation)

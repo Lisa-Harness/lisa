@@ -33,8 +33,14 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record) + "\n")
 
 
-def _seed(data_dir: Path, *, user: str = "u", turns: int = 2) -> None:
-    thread = data_dir / "data" / "threads" / user
+def _seed(
+    data_dir: Path,
+    *,
+    user: str = "u",
+    turns: int = 2,
+    thread_store_slug: str = "",
+) -> None:
+    thread = data_dir / "data" / "threads" / (thread_store_slug or user)
     now = datetime.now(UTC).isoformat()
     for turn in range(turns):
         _write_thread_entry(
@@ -57,16 +63,20 @@ def _seed(data_dir: Path, *, user: str = "u", turns: int = 2) -> None:
                     "topic": "turn.decision",
                     "turn_index": turn,
                     "user_slug": user,
+                    "thread_store_slug": thread_store_slug,
                     "action_type": "ContinueAction",
                     "iteration": 1,
+                    "emitted_at": now,
                 },
                 {
                     "topic": "tool.telemetry",
                     "turn_index": turn,
                     "user_slug": user,
+                    "thread_store_slug": thread_store_slug,
                     "target_id": "read_file",
                     "target_type": "tool",
                     "status": "success",
+                    "emitted_at": now,
                 },
             )
         ],
@@ -85,12 +95,19 @@ def _authored_loader(relative_path: str) -> str:
     return (_PACK_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def _ctx(data_dir: Path | None, *, user: str = "u", **params: object) -> OperationExecutionContext:
+def _ctx(
+    data_dir: Path | None,
+    *,
+    user: str = "u",
+    thread_store_slug: str = "",
+    **params: object,
+) -> OperationExecutionContext:
     from kernel.seams.host_adapter import build_callable_host
 
     return OperationExecutionContext(
         operation_id="turn_forensics",
         user_slug=user,
+        thread_store_slug=thread_store_slug,
         data_dir=str(data_dir) if data_dir is not None else "",
         params=dict(params),
         host=build_callable_host(read_authored_text_fn=_authored_loader),
@@ -156,11 +173,98 @@ async def test_scope_comes_from_context_not_parameters(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_scope_cannot_be_redirected_by_parameters(tmp_path: Path) -> None:
+    """No parameter can open a store other than the host-resolved one.
+
+    The thread store stem is part of the host-resolved scope, so a parameter
+    naming another store must be ignored rather than honoured.
+    """
+    from kernel.seams.host_adapter import build_callable_host
+
+    _seed(tmp_path, turns=1, thread_store_slug="u--conv-alpha")
+    threads = tmp_path / "data" / "threads"
+    # Another user's store, which must stay out of reach.
+    _write_thread_entry(
+        threads / "other--conv",
+        {"mode_id": "default", "query": "other secret", "turn": 0},
+    )
+
+    result = await execute(
+        OperationExecutionContext(
+            operation_id="turn_forensics",
+            user_slug="u",
+            thread_store_slug="u--conv-alpha",
+            data_dir=str(tmp_path),
+            # A hostile caller names another store as a parameter.
+            params={"turns": "last", "thread_store_slug": "other--conv"},
+            host=build_callable_host(read_authored_text_fn=_authored_loader),
+        )
+    )
+
+    assert "query 0" in result.output_text
+    assert "other secret" not in result.output_text
+
+
+@pytest.mark.asyncio
 async def test_max_records_is_clamped_by_the_schema(tmp_path: Path) -> None:
     """An out-of-range cap is rejected at the parameter boundary."""
     _seed(tmp_path)
     with pytest.raises(ValidationError):
         Parameters.model_validate({"max_records": 10_000})
+
+
+@pytest.mark.asyncio
+async def test_execute_uses_the_host_resolved_thread_dir(tmp_path: Path) -> None:
+    """The model reads the host's thread directory, not a re-derived one.
+
+    The host resolves the thread directory once, and a CLI argument wins
+    over the environment. Re-deriving it from the environment would leave
+    the model reading an empty store where the operator reads the real one.
+    """
+    from kernel.seams.host_adapter import build_callable_host
+
+    custom = tmp_path / "custom-threads"
+    _seed(tmp_path, turns=1, thread_store_slug="u--conv-alpha")
+    # Move the seeded store into the host's directory.
+    custom.mkdir()
+    for segment in (tmp_path / "data" / "threads").glob("u--conv-alpha.*"):
+        segment.rename(custom / segment.name)
+
+    result = await execute(
+        OperationExecutionContext(
+            operation_id="turn_forensics",
+            user_slug="u",
+            thread_store_slug="u--conv-alpha",
+            thread_dir=str(custom),
+            data_dir=str(tmp_path),
+            params={"turns": "last"},
+            host=build_callable_host(read_authored_text_fn=_authored_loader),
+        )
+    )
+
+    assert result.status == "success"
+    assert "query 0" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_execute_reads_the_conversation_scoped_thread_store(tmp_path: Path) -> None:
+    """The model reads the store the host writes, not one named by the user.
+
+    A host that isolates one thread store per conversation names the store
+    ``<user>--<conversation>`` while the shared ledgers stay stamped with the
+    plain user slug. Resolving the store by the user slug alone opens a store
+    the host never wrote, so the model sees an empty thread where the
+    operator sees the turn.
+    """
+    _seed(tmp_path, turns=1, thread_store_slug="u--conv-alpha")
+
+    result = await execute(_ctx(tmp_path, thread_store_slug="u--conv-alpha"))
+
+    assert result.status == "success"
+    assert "query 0" in result.output_text
+    # The ledger is still scoped by the plain user slug, so it joins.
+    assert "ContinueAction" in result.output_text
+    assert "read_file" in result.output_text
 
 
 @pytest.mark.asyncio

@@ -3285,7 +3285,7 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
             )
         # The coding child inspects via read-only ambient storage tools
         # and never reaches its write tools before the iteration cap
-        # forces a yield. It keeps calling a read-only tool every turn
+        # forces a yield. It keeps reading a different file every turn
         # so the loop never produces final content and the cap fires.
         return _StubCompletion(
             content="",
@@ -3294,7 +3294,7 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
                     "id": f"call_{call_count['n']}",
                     "function": {
                         "name": "lisa-storage.read_file",
-                        "arguments": '{"path": "src/main.py"}',
+                        "arguments": json.dumps({"path": f"src/main_{call_count['n']}.py"}),
                     },
                 }
             ],
@@ -5389,6 +5389,519 @@ def _manifest_with_search() -> CapabilityManifest:
             )
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_plan_failure_renders_the_shared_recovery_prompt() -> None:
+    """A mid-turn plan failure renders the ONE recovery renderer's text.
+
+    F1-completion regression: the handoff origin previously carried a second,
+    inline copy of the plan-failure recovery f-string in
+    ``_intercept_mode_handoff`` — the incident-2 drift class, one edit away
+    from the two origins showing users different failure text. Both origins
+    now render through ``build_plan_failure_recovery``; this test exercises
+    the full mid-turn path (gate stamps ``state.plan_failed`` → loop stops →
+    the handoff intercept renders the recovery prompt) and pins the text.
+    """
+    from unittest.mock import patch
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {
+        "default": _mode_config(mode_id="default"),
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "`search`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Found sources.")
+        if "`plan`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Planning...")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def failing_entry_ops(_mode_id, _ctx, **_kwargs):
+        # The planner returned prose but no ``target_stage_id`` —
+        # a mid-turn plan failure.
+        return OperationResult(
+            output_text="I could not produce a plan.",
+            output_json={"rationale": "provider returned unparsable output"},
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=failing_entry_ops),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="default", query="do the thing", hooks=hooks)
+
+    assert "I attempted to plan this request in `plan` mode but could" in result.response_text
+    assert "(reason: provider returned unparsable output)" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_handoff_plan_contract_saves_the_route_decision_via_the_shared_builder() -> None:
+    """The handoff origin persists the resume hint through ``save_route_decision``.
+
+    F1-completion regression: the handoff gate built the coordinator metadata
+    dict inline while the turn-start origin used ``save_route_decision`` —
+    two implementations of one persistence concern. The inline copy is gone;
+    this test proves the mid-turn contract still saves a next-target decision
+    whose metadata identity matches the turn's routing context (the shared
+    builder's shape), with the shared fallback reason.
+    """
+    from unittest.mock import patch
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {
+        "default": _mode_config(mode_id="default"),
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    plan_text = (
+        "## Plan\n\n"
+        "1. **search** — Find sources\n   _reads_\n"
+        "2. **markdown** — Write the summary\n   _writes: markdown_generate_\n"
+    )
+
+    saved: list[tuple[CoordinatorRouteDecision, dict[str, Any]]] = []
+
+    class _RecordingCoordinator:
+        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
+            return None
+
+        def save(self, decision: CoordinatorRouteDecision, metadata: dict[str, Any]) -> None:
+            saved.append((decision, dict(metadata)))
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "`markdown`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Summary written.")
+        if "`search`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Found sources.")
+        if "`plan`" in sys_content and "## Handoff Context" in sys_content:
+            return _StubCompletion(content="Planning...")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text=plan_text,
+            output_json={
+                "target_stage_id": "search",
+                "steps": [
+                    {
+                        "mode_id": "search",
+                        "description": "Find sources",
+                        "rationale": "research",
+                        "write_capability": None,
+                    },
+                    {
+                        "mode_id": "markdown",
+                        "description": "Write the summary",
+                        "rationale": "write",
+                        "write_capability": "markdown_generate",
+                    },
+                ],
+            },
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow.route_coordinator = _RecordingCoordinator()
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.get_plan_steps_to_workflow_steps", create=True),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="default", query="search for rust news", hooks=hooks)
+
+    # The handoff gate's save is the turn's FIRST coordinator save and goes
+    # through the shared builder — same metadata shape and fallback reason
+    # the turn-start origin produces. (``apply_routing`` persists the
+    # model-driven decision later in the same handoff; that save belongs to
+    # the routing applier, not the entry contract.)
+    decision, metadata = saved[0]
+    assert decision.next_target == "search"
+    assert decision.reason == "planned handoff from plan"
+    assert set(metadata) == {
+        "mode_id",
+        "query",
+        "surface_id",
+        "conversation_id",
+        "user_id",
+        "session_plan_digest",
+    }
+    assert metadata["mode_id"] == "search"
+    assert metadata["query"] == "search for rust news"
+    assert result.response_text.startswith("## Plan")
+
+
+@pytest.mark.asyncio
+async def test_turn_start_and_handoff_run_the_one_pre_turn_runner() -> None:
+    """Prewarm targets run at both entry origins through one runner.
+
+    F1-completion regression: turn start called ``run_mode_pre_turn_operations``
+    inline while the handoff path kept a private wrapper that duplicated the
+    runner's error posture. Both origins now route through
+    ``_run_mode_pre_turn_operations``: this scenario turns on a mode whose
+    prewarm fires at turn start, then hands off to a target mode whose own
+    prewarm fires mid-turn — exactly the gap that caused the 2026-09-10
+    scratch-dir approval prompt.
+    """
+    from unittest.mock import patch
+
+    worker_cfg = WorkflowModeConfig(
+        mode_id="worker",
+        mode_kind="chat",
+        routable=True,
+        pre_turn_operation_ids=["prewarm_worker"],
+    )
+    patched_catalog = {
+        "default": _mode_config(mode_id="default"),
+        "worker": worker_cfg,
+    }
+
+    prewarmed_modes: list[str] = []
+
+    async def fake_pre_turn(mode_id, _ctx, **_kwargs):
+        prewarmed_modes.append(mode_id)
+        return OperationResult()
+
+    calls = 0
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            # Post-handoff iteration in ``worker``: finish the turn.
+            return _StubCompletion(content="Worker done.")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_worker",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "worker", "rationale": "delegate the work"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_pre_turn_operations", side_effect=fake_pre_turn),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="default", query="do the thing", hooks=hooks)
+
+    # The runner was invoked for BOTH origins — turn start (default) and
+    # the mid-turn handoff (worker) — in that order.
+    assert prewarmed_modes == ["default", "worker"]
+    assert "Worker done." in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_runner_error_posture_is_owned_once() -> None:
+    """The one runner owns the error posture; the wrapper adds only the origin.
+
+    F1-completion regression: the handoff wrapper duplicated the posture —
+    ``ApprovalRequired`` passthrough plus a warning swallow — that already
+    lived inside ``run_mode_pre_turn_operations``. The runner now owns it
+    once: a flaky target is swallowed with a warning (the caller gets an
+    empty result), and an ``ApprovalRequired`` propagates to the turn
+    wrapper's existing handler.
+    """
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
+
+    from kernel.approval import (
+        ApprovalIdentity,
+        ApprovalInvocation,
+        ApprovalRequired,
+    )
+    from kernel.turn_runner import _run_mode_pre_turn_operations
+
+    # Relative timestamps only — no absolute-date seeds (the
+    # ``test_errors_ledger`` time-bomb class).
+    _invocation = ApprovalInvocation(
+        request_id="req-prewarm",
+        target_kind="operation",
+        target_id="prewarm_worker",
+        effect="read",
+        identity=ApprovalIdentity(),
+        pack_config_fingerprint="fp",
+        session_plan_digest="",
+        action_digest="digest",
+        safe_preview="prewarm worker",
+        created_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    async def _flaky(_mode_id, _ctx, **_kwargs):
+        raise RuntimeError("prewarm exploded")
+
+    async def _needs_approval(_mode_id, _ctx, **_kwargs):
+        raise ApprovalRequired(_invocation)
+
+    def _identity_build_entry_ctx(**_overrides: Any) -> SimpleNamespace:
+        return SimpleNamespace()
+
+    log = logging.getLogger(__name__)
+
+    with patch("kernel.turn_runner.run_mode_pre_turn_operations", side_effect=_flaky):
+        result = await _run_mode_pre_turn_operations(
+            mode_id="worker",
+            build_entry_ctx=_identity_build_entry_ctx,
+            ledger=None,
+            execution_policy=None,
+            log=log,
+        )
+    assert result.output_text == ""
+
+    with (
+        patch("kernel.turn_runner.run_mode_pre_turn_operations", side_effect=_needs_approval),
+        pytest.raises(ApprovalRequired),
+    ):
+        await _run_mode_pre_turn_operations(
+            mode_id="worker",
+            build_entry_ctx=_identity_build_entry_ctx,
+            ledger=None,
+            execution_policy=None,
+            log=log,
+        )
+
+
+@pytest.mark.asyncio
+async def test_handoff_pre_turn_wrapper_delegates_to_the_one_runner() -> None:
+    """The handoff origin calls the same runner; the wrapper owns nothing else.
+
+    F1-completion regression: proves the mid-turn handoff wrapper forwards
+    the target mode into ``_run_mode_pre_turn_operations`` so prewarms run
+    mid-turn through the same code path as turn start.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _run_handoff_pre_turn_operations
+
+    seen: list[str] = []
+
+    async def _fake_runner(*, mode_id: str, **_kwargs: Any) -> None:
+        seen.append(mode_id)
+
+    with patch("kernel.turn_runner._run_mode_pre_turn_operations", side_effect=_fake_runner):
+        await _run_handoff_pre_turn_operations(
+            mode_id="worker",
+            build_entry_ctx=lambda **_overrides: SimpleNamespace(),
+            ledger=None,
+            execution_policy=None,
+            log=logging.getLogger(__name__),
+        )
+
+    assert seen == ["worker"]
+
+
+def test_plan_failure_recovery_text_is_the_single_renderer() -> None:
+    """One renderer owns the user-visible plan-failure prompt.
+
+    F1-completion regression: the handoff intercept previously carried a
+    second, inline copy of the recovery f-string (the incident-2 drift
+    class). Both origins now render through ``build_plan_failure_recovery``;
+    this pins the shared text — byte-identical to what the deleted inline
+    handoff copy produced — plus the turn-start partial-step block on the
+    same renderer.
+    """
+    from kernel.turn_phases._entry import build_plan_failure_recovery
+
+    text = build_plan_failure_recovery(
+        mode_id="plan",
+        plan_reason="provider returned unparsable output",
+        partial_step_dicts=[],
+    )
+    assert text == (
+        "I attempted to plan this request in `plan` mode but could "
+        "not produce a routing decision (reason: provider returned "
+        "unparsable output). This is often a sign of a complex or "
+        "ambiguous multi-step request.\n\n"
+        "You can:\n"
+        "  1. Rephrase the request with explicit sequential steps "
+        '(e.g. "search for X, then write a markdown report").\n'
+        "  2. Name the target mode directly (e.g. `/markdown ...`, "
+        "`/ponder ...`) to bypass planning.\n"
+        "  3. Ask me to discuss it first (`/discuss ...`) so I can "
+        "clarify what you want before committing to a workflow."
+    )
+
+    partial = build_plan_failure_recovery(
+        mode_id="plan",
+        plan_reason="r",
+        partial_step_dicts=[{"mode_id": "search", "description": "Find sources"}],
+    )
+    assert "The planner partially identified these steps before failing:" in partial
+    assert "1. search — Find sources" in partial
+
+
+def test_handoff_entry_routing_gate_origin_boundary() -> None:
+    """The contract gate's origin role is explicit: stamp-and-stop, not early-return.
+
+    Unit-level boundary on the contract's origin gate (mirror of the plan
+    recorder's): the handoff origin stamps ``state.plan_failed`` for a
+    target-less routing plan (the loop's ``StopLoop`` guard then surfaces
+    the shared recovery prompt), while the turn-start origin implements the
+    same rules by returning an ``early_return`` TurnResult from
+    ``execute_entry_phase``. A planned target persists the resume hint
+    through the shared ``save_route_decision`` builder; a work op with no
+    routing contract triggers neither effect.
+    """
+    from kernel.turn_phases._routing import RoutingContext
+    from kernel.turn_runner import _apply_handoff_entry_routing_gate
+
+    class _State:
+        def __init__(self) -> None:
+            self.pending_planned_handoff = ""
+            self.plan_failed = False
+            self.plan_failed_mode = ""
+            self.plan_failed_reason = ""
+
+    class _Coordinator:
+        def __init__(self) -> None:
+            self.saved: list[tuple[CoordinatorRouteDecision, dict[str, Any]]] = []
+
+        def save(self, decision: CoordinatorRouteDecision, metadata: dict[str, Any]) -> None:
+            self.saved.append((decision, dict(metadata)))
+
+    class _WorkflowHooks:
+        def __init__(self) -> None:
+            self.route_coordinator = _Coordinator()
+            self.workflow_position = None
+            self.workflow_position_updater = None
+
+    class _Hooks:
+        def __init__(self) -> None:
+            self.workflow = _WorkflowHooks()
+
+    log = logging.getLogger(__name__)
+    routing_ctx = RoutingContext(
+        query="q",
+        surface_id="s",
+        conversation_id="c",
+        user_id="u",
+        session_plan_digest="d",
+    )
+
+    # Planned target: the pending handoff is staged and the resume hint is
+    # saved through the shared builder.
+    state = _State()
+    hooks = _Hooks()
+    _apply_handoff_entry_routing_gate(
+        state=state,
+        hooks=hooks,
+        query="q",
+        target_stage="plan",
+        entry_result=OperationResult(output_json={"target_stage_id": "search"}),
+        routing_ctx=routing_ctx,
+        promises_routing=True,
+        preferred_model_id="m",
+        log=log,
+    )
+    assert state.pending_planned_handoff == "search"
+    [(decision, metadata)] = hooks.workflow.route_coordinator.saved
+    assert decision.next_target == "search"
+    assert metadata["query"] == "q"
+    assert metadata["surface_id"] == "s"
+
+    # Target-less routing plan: the handoff origin stamps plan failure
+    # (the turn-start origin instead returns an early_return TurnResult).
+    state2 = _State()
+    _apply_handoff_entry_routing_gate(
+        state=state2,
+        hooks=hooks,
+        query="q",
+        target_stage="plan",
+        entry_result=OperationResult(output_json={}),
+        routing_ctx=routing_ctx,
+        promises_routing=True,
+        preferred_model_id="m",
+        log=log,
+    )
+    assert state2.plan_failed is True
+    assert state2.plan_failed_mode == "plan"
+    assert state2.plan_failed_reason == "the planner returned no routing target"
+
+    # Work op (no routing contract): neither effect — not a plan failure.
+    state3 = _State()
+    _apply_handoff_entry_routing_gate(
+        state=state3,
+        hooks=hooks,
+        query="q",
+        target_stage="search",
+        entry_result=OperationResult(output_json={}),
+        routing_ctx=routing_ctx,
+        promises_routing=False,
+        preferred_model_id="m",
+        log=log,
+    )
+    assert state3.plan_failed is False
+    assert state3.pending_planned_handoff == ""
 
 
 def _mode_config(
@@ -8043,3 +8556,173 @@ async def test_mid_turn_single_step_plan_is_not_rendered() -> None:
     assert not result.response_text.startswith("## Plan"), (
         f"a single-step plan must not be prefixed; got: {result.response_text[:120]!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_turn_start_plan_prefix_and_position_route_through_one_recorder() -> None:
+    """The turn-start plan staging uses the same recorder as the handoff path.
+
+    F1 consolidation regression: the turn-start path previously staged the
+    prefix and seeded the host position inline while the handoff path called
+    ``_record_turn_plan_position`` — two implementations of one concern. Both
+    origins now route through the one recorder, with the origin-gated rules
+    preserved: turn-start stages the prefix whenever the entry phase produced
+    one (including single-step plans) and seeds the host position from the
+    compiled workflow steps; it does not set ``turn_plan_position``.
+
+    Scenario: the turn *starts* in ``plan`` mode (the turn-start origin), so
+    the entry phase runs ``plan_workflow`` before any model call. The planner
+    returns a single-step plan; the kernel synthesizes the planned handoff to
+    ``search`` deterministically, and the search iteration answers. The
+    single-step prefix must still be staged — the any-steps rule is the
+    turn-start contract.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {"plan": plan_cfg, "search": search_cfg}
+
+    plan_text = "## Plan\n\n1. **search** — Find sources\n   _reads_\n"
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        # Only the search-mode iteration reaches a model call: the planned
+        # handoff is synthesized deterministically from the entry result.
+        return _StubCompletion(content="Found sources.")
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text=plan_text,
+            output_json={
+                "target_stage_id": "search",
+                "steps": [
+                    {
+                        "mode_id": "search",
+                        "description": "Find sources",
+                        "rationale": "research",
+                        "write_capability": None,
+                    }
+                ],
+            },
+        )
+
+    seeded_positions: list[Any] = []
+
+    def position_updater(position: Any) -> None:
+        seeded_positions.append(position)
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow.workflow_position_updater = position_updater
+    hooks.workflow.workflow_position = lambda: None
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+        patch("kernel.turn_runner.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+        patch("kernel.ipsar_fsm.get_mode_system_intro", lambda mid, _c=patched_catalog: mid),
+    ):
+        result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
+
+    # The turn-start origin stages the prefix even for a single-step plan
+    # (the any-steps rule) and seeds the host position from the compiled
+    # steps — both through the one recorder.
+    assert result.response_text.startswith("## Plan"), (
+        "turn-start staging must keep the any-steps prefix rule; "
+        f"got: {result.response_text[:120]!r}"
+    )
+    assert len(seeded_positions) == 1, (
+        "the turn-start origin must seed the host position exactly once "
+        f"through the shared recorder; got {len(seeded_positions)}"
+    )
+    seeded = seeded_positions[0]
+    assert seeded.mode_id == "search"
+    # The staged prefix is the stripped plan block — the same value the
+    # old inline turn-start staging stored (``execute_entry_phase`` strips
+    # the plan text when computing ``plan_prefix``).
+    assert seeded.plan_text == plan_text.strip()
+    assert len(seeded.declared_steps) == 1
+
+
+def test_plan_recorder_origin_gate_boundary() -> None:
+    """The recorder's origin gate is explicit: turn_start vs handoff rules.
+
+    Unit-level boundary on the origin-gated rules: the handoff origin sets
+    ``turn_plan_position`` and stages the prefix only for multi-step plans;
+    the turn-start origin stages the prefix whenever the entry phase produced
+    one and does not set ``turn_plan_position``.
+    """
+    from kernel.turn_phases._entry import EntryPhaseResult
+    from kernel.turn_runner import _record_turn_plan_position
+    from kernel.workflow_position import WorkflowStep
+
+    class _State:
+        def __init__(self) -> None:
+            self.plan_prefix = ""
+            self.turn_plan_position = None
+
+    class _WorkflowHooks:
+        def __init__(self) -> None:
+            self.updates: list[Any] = []
+            self.workflow_position_updater = None
+            self.workflow_position = None
+
+    class _Hooks:
+        def __init__(self) -> None:
+            self.workflow = _WorkflowHooks()
+
+    entry_result = EntryPhaseResult(
+        plan_prefix="## Plan\n\n1. **search** — Find sources\n",
+        workflow_steps=(WorkflowStep(step_id="s1", mode_id="search", step_query="find sources"),),
+    )
+
+    state = _State()
+    hooks = _Hooks()
+    _record_turn_plan_position(
+        state=state,
+        hooks=hooks,
+        target_stage="plan",
+        entry_result=entry_result,
+        origin="turn_start",
+        log=logging.getLogger(__name__),
+    )
+    assert state.plan_prefix.startswith("## Plan")
+    assert state.turn_plan_position is None, (
+        "turn-start staging must not set turn_plan_position (entry-phase semantics)"
+    )
+
+    handoff_result = OperationResult(
+        output_text="## Plan\n\n1. **search** — Find sources\n",
+        output_json={
+            "target_stage_id": "search",
+            "steps": [
+                {
+                    "mode_id": "search",
+                    "description": "Find sources",
+                    "rationale": "research",
+                    "write_capability": None,
+                }
+            ],
+        },
+    )
+    state2 = _State()
+    _record_turn_plan_position(
+        state=state2,
+        hooks=hooks,
+        target_stage="plan",
+        entry_result=handoff_result,
+        origin="handoff",
+        log=logging.getLogger(__name__),
+    )
+    assert state2.turn_plan_position is not None
+    assert state2.plan_prefix == "", "handoff staging must keep the multi-step-only prefix rule"

@@ -4,6 +4,382 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
+### Added
+
+- **`next_loop_action`: the while-precondition as one ordered pure function
+  (F8).** The turn loop's guard sequence is load-bearing but only
+  half-uniform: the while-precondition was an anonymous six-way `and`
+  conjunction in the `while` header, and the dispatch-tail decision
+  (`_resolve_dispatch_loop_action`) still returned a bool break-flag
+  instead of the `LoopControl` union F2 established. `_next_loop_action`
+  now owns the precondition — one if-chain returning
+  `ContinueIteration`/`StopLoop(reason)`, branch order mirroring the
+  original conjunction so the first matching condition is the same one
+  that would have short-circuited the `and` chain — and the dispatch-tail
+  returns `BreakIteration`/`ContinueIteration` in the union vocabulary.
+  The full six-point sequence (precondition, lifecycle break,
+  completion-`None` break, empty-completion, repeated-batch,
+  dispatch-tail) is documented as one list in `_next_loop_action`'s
+  docstring and pinned by `test_loop_control_ordering.py`. The lifecycle
+  applicator keeps its bool break-flag deliberately: its `False` means
+  "proceed with this iteration", a meaning the union has no variant for
+  (`ContinueIteration` means skip the model call — a different action).
+  No behavior change: the conjunction maps to the if-chain exactly.
+
+- **One handoff-cap predicate (`handoff_cap_exceeded`).** The
+  `max_handoffs_per_turn` rule was implemented three times independently —
+  the dispatch-time loop guard (`_track_handoff_and_guard_loops`), the
+  while-condition terminal-failure check (`_has_terminal_dispatch_failure`),
+  and the lifecycle resolver's priority-2b backstop
+  (`_handoff_loop_action`) — all agreeing today, but one site drifting to
+  `>=` would desync the dispatch guard from the resolver and change which
+  handoff gets blocked. One predicate in
+  `kernel.turn_phases._lifecycle.handoff_cap_exceeded` now owns the rule;
+  all three sites call it, and the exclusive (`>`) boundary is pinned by
+  unit tests plus a source-lock test asserting no independent
+  `handoff_count > max_handoffs_per_turn` comparison survives. No behavior
+  change: the `>` semantics are preserved exactly.
+
+- **One turn state, passed by reference (`_TurnState` mode surface).** The
+  turn loop's 13 mode-scoped values (`mode_id`, `mode_config`, `ctx`,
+  `tool_schemas`, `capability_manifest`, `routing_hint`,
+  `chain_advance_guidance`, `pending_yield`, `handoff_to`,
+  `transitioned_to`, `content`, `pre_handoff_text`, `yielded`) lived as
+  loop locals packed into and unpacked out of a per-dispatch
+  `_ToolDispatchLoopState` round-trip — an out-parameter disguised as a
+  dataclass, with the same fact maintained in three places. They now live
+  on `_TurnState` (`kernel.turn_phases._turn_state`), written in place by
+  the loop and its interceptors; `_ToolDispatchLoopState` and both
+  pack/unpack sites are deleted. Mode identity is unified: the loop-local
+  `mode_id` is gone in favor of `state.active_mode_id` (the documented
+  single writer, `_apply_mode_routing_context`). The suspension snapshot
+  (`capture_state`) excludes the new live-object fields — the
+  continuation already carries them in its own fields — and the
+  deliberate `pending_yield=None` / `yielded=False` resume reset is
+  preserved. No behavior change: data-flow only. Tests:
+  `kernel/tests/test_turn_loop_strip_tools_resume.py` (attribute-based
+  reads, field-order independence).
+
+- **Loop-control tagged union (`kernel.turn_phases._loop_control`).** "What
+  does the loop do next" was five incompatible encodings — a
+  `Literal["continue", "break", "dispatch"]` on `_PreparedToolCall`, a bare
+  `"break"/"continue"` return from the executor, `"dispatch"/"refuse"/"stop"`
+  from the repeated-batch guard, and `"break"/"continue"/""` from the
+  empty-completion resolver — so reading the loop meant holding five control
+  conventions in working memory, and a new guard author picked one by
+  imitation. One frozen-dataclass union (`ContinueIteration`,
+  `BreakIteration`, `DispatchToolBatch`, `RefuseToolBatch(refusal)`,
+  `StopLoop(reason)`) now covers every in-loop guard; consumers dispatch
+  with `isinstance`, so an unhandled variant fails statically instead of
+  silently falling through a string comparison. The application-side sibling
+  of the lifecycle resolver's `LifecycleAction` union. No behavior change:
+  every conversion is a mechanical string-to-variant mapping. Tests:
+  `kernel/tests/test_loop_control_ordering.py` (variant set, guard order,
+  payload variants).
+
+- **Intra-turn context compaction with cache-aware policy.** The mid-turn
+  governor (`kernel.turn_phases._compaction`) bounds the live provider
+  message array inside a single turn — the accumulation surface behind the
+  2026-10-31 turn-1116 failure (61 dispatches full-text resident, ~144K-token
+  average calls, output headroom collapse, truncation-and-hallucination
+  spiral). An incremental, over-count-biased live-array estimator anchors on
+  the kernel's own per-request token count; crossing
+  `intra_turn_soft_trigger_share` (default 0.5) of the model window runs ONE
+  batched ref-out epoch per crossing by driving the existing
+  `fit_request_context` host-projector path (newest-first near-tail eviction,
+  previews + `r<sha256>` refs, projection bookkeeping resynced). Large tool
+  results are spilled at delivery (`ToolHooks.persist_tool_result` wired by
+  the host to the same thread store the projector uses) before they ever
+  enter the cached prefix, so normal operation stays append-only and
+  dispatches keep prefix-cache hits; eviction is one-way and recovery is a
+  dereference. At `intra_turn_hard_ceiling_share` (default 0.65) large
+  dispatches are refused with a model-visible message and the loop is
+  pointed at a clean finish at the next dispatch boundary — deliberately not
+  dependent on the in-flight loop-control adapter. The first mid-turn
+  `finish_reason='length'` trips a one-way output circuit-breaker for the
+  rest of the turn. Cache economics constants (`intra_turn_cache_read_share`,
+  `intra_turn_cache_write_share`) support bust-cost accounting and logging.
+  Off-switch: `INTRA_TURN_COMPACTION_ENABLED=false`.
+- **Tests:** `kernel/tests/test_intra_turn_compaction.py`
+
+- **Thread-store hash chain — tamper evidence for the primary record.**
+  "Append-only" described the writer, not the files: an operator could edit
+  or delete any stored entry and nothing could detect it. Every appended
+  entry now carries `prev_entry_sha256` (SHA-256 of the previous stored
+  entry's raw line), and each seal's index line records the segment's
+  terminal-line hash so the chain continues across seal boundaries. Cost is
+  one 64 KiB tail-block read per append (the index serves post-seal links —
+  no sealed segment is ever decompressed at append time) plus one SHA-256;
+  nothing touches the request path or the prompt. New
+  `sdk.thread.verify_chain` / `ThreadStore.verify_chain()` walks the whole
+  store on demand: it reports `ok`, the notarizable `head_sha256`,
+  chained/pre-chain counts, and every divergence with the first named —
+  detecting edits, deletions, and index tampering after the fact. The
+  honest threat model is documented: it cannot catch a coherent full-store
+  rewrite or tampering of the newest entry (nothing links to it yet —
+  periodic external notarization of the head closes that window), and
+  pre-chain history is reported as unchained rather than pretended to be
+  checked. Surfaces: `/forensics <selection> --verify-chain` and
+  `turn_forensics(verify_chain=true)`, each appending a one-line status
+  note; the ordinary read carries none. Tests:
+  `runtime/tests/test_thread_chain_writes.py`,
+  `sdk/tests/test_thread_chain_verify.py`,
+  `sdk/tests/test_forensics_chain_note.py`.
+
+- **Append-only approval decision ledger — "who authorized what, when."**
+  The approval *outcome* was already durable (`approvals.json` holds each
+  request's latest state), but the authorizing decisions themselves were
+  state-overwrites: a denied-then-expired request left no ordered record of
+  who decided what. `FileApprovalService` now appends one row per state
+  transition (requested / approved / denied / consumed / expired) to
+  `logs/approvals.jsonl` — sealed-never-deleted, sidecar-locked, stamped
+  with `sequence`/`ledger_instance` for loss detection — inside the same
+  critical section that commits the working store (the working store
+  remains authoritative; a ledger append failure warns and never blocks).
+  Rows carry the join keys (`turn_index` at request time — `null` for
+  off-turn, never `0` — plus `user_slug`/`thread_store_slug`) and the
+  decision's provenance: `decision_by` names the operator,
+  `decision_source` distinguishes `"operator"` from `"policy"` so a policy
+  auto-allow is never misattributed, and deny reasons ride the row.
+  `ApprovalInvocation` gained the stamp fields (excluded from
+  `action_digest` — turn position is evidence, not action identity, so
+  pending-request dedup still works), and `/forensics` +
+  `turn_forensics` render each turn's approvals grouped by request
+  lifecycle and surface other turns' transitions as unattributed
+  findings. Tests: `kernel/tests/test_approval_invocation_stamping.py`,
+  `runtime/tests/test_approval_ledger.py`,
+  `sdk/tests/test_forensics_approvals.py`.
+
+- **Telemetry loss observability — dropped ledger rows are never silent.**
+  Every fire-and-forget ledger publish (tool/operation telemetry, token
+  usage, off-turn `model.request` rows) now goes through
+  `kernel.telemetry.schedule_telemetry_publish`, which logs a WARNING
+  naming the source when the publish fails — including the previously
+  invisible failure shape: an exception raised *inside* the scheduled
+  task was never retrieved and vanished, and the old per-site `try`
+  blocks logged at DEBUG at best. Both durable handlers additionally
+  stamp each row with a per-instance `sequence` and the writer's
+  `ledger_instance` (a restart or a second host process starts a new
+  instance at 1), and `ForensicReader` detects sequence gaps within one
+  instance, reporting the dropped count as a read note
+  (`accounts for N dropped row(s)`) — a lower bound proving rows went
+  missing, not which rows. Tests:
+  `kernel/tests/test_telemetry_loss_observability.py`.
+
+- **Durable recording of off-turn model calls.** Model calls made by
+  operation dispatches outside the turn loop (memory-mining distills,
+  consolidation, self-model enrichment) previously left no durable record
+  of the exact request they sent — the thread entry's `turn_input.calls`
+  covers only the turn loop's own calls, so an off-turn distillation was
+  invisible to every forensic read. The `OperationHost` adapter now accepts
+  a `CompletionAuditContext` (built by the operation registry from the
+  dispatch's own context, the single choke point every dispatch flows
+  through): each gateway completion archives the verbatim request as an
+  `r<sha256>` result object via the same `persist_request` seam the turn
+  loop uses, appends a `model.request` row to `decisions.jsonl`
+  (`operation_id`, `request_ref`, `turn_index` — `null` when the dispatch
+  belongs to no turn — `user_slug`, `thread_store_slug`), and publishes its
+  token usage on `lisa.token_usage` with `call_site: "operation"` so
+  off-turn spend is attributable for the first time. Recording and
+  telemetry are strictly best-effort: neither can fail the completion.
+  Hosts that stamp no `request_recorder` keep the previous unrecorded
+  behavior. Tests: `kernel/tests/test_operation_request_audit.py`.
+
+- **MCP client-config export — Lisa's servers usable without the turn loop.**
+  `/mcp export` renders the runtime's compiled MCP servers as an `mcpServers`
+  document another agent client (Claude Desktop, VS Code, Cursor, another
+  harness) can paste, plus the warnings, omissions, and per-entry shell
+  invocation. The pure projection lives in
+  `sdk.mcp_host.export.export_mcp_servers`; `runtime.mcp_export`
+  supplies the resolved data dir and the console-script path for
+  in-process configs. The export never starts the pool, so it works before
+  startup and after shutdown. Flags: `--server <id>` (repeatable),
+  `--include-http`, `--include-internal`. Three properties are enforced and
+  tested: only an allowlist of behavioral env vars is exported (credential
+  values become `${NAME}` placeholders, and inherited `PATH`/`HOME`/tokens
+  never appear); servers whose host tool policy hides all their tools
+  (`lisa-content`) are omitted by default because exporting them would expose
+  a surface the host never exposed; and a restrictive `tool_policy` is
+  reported as widened rather than presented as equivalent. Unrepresentable
+  servers (in-process without an installed console script, download-only
+  binaries, HTTP endpoints without a resolved URL) are reported with a reason
+  instead of dropped.
+- **Docs:** [MCP interoperability](docs/MCP_INTEROP.md) covers the deployment
+  scenario, which servers to expose, the identity-is-a-host-responsibility
+  limit, and the export contract.
+- **Tests:** `sdk/tests/test_mcp_host_export.py`,
+  `runtime/tests/test_mcp_export.py`, and the `/mcp export` cases in
+  `runtime/tests/test_commands_mcp.py`.
+
+- **Concurrent multi-process executions.** Overlapping turns on one data dir
+  no longer collide on the thread store. A new `sdk.filelock` module provides
+  cross-process advisory locking (`file_lock` / `async_file_lock`), atomic
+  temp-file replacement (`atomic_write_text` / `atomic_write_bytes`), and
+  owner-PID liveness checks (`is_process_alive`). The thread store, the
+  approval store, the code-artifact store, the installed-packs lock, and the
+  intake state file all serialize on a sidecar `.lock` and write atomically.
+  Pack installs and activation updates serialize on `.packs-venv.lock`.
+- **Isolated conversations.** `conversation_id` (or `LISA_CONVERSATION_ID`)
+  isolates a conversation's thread store under
+  `<thread_dir>/<user_slug>--<conversation_id>` and scopes `surface_id` for
+  approvals, recovery items, and work products, while packs, policy, and
+  models stay shared under `data_dir`.
+- **Tests:** `runtime/tests/test_concurrent_executions.py`.
+
+### Changed
+
+- **Linear history: rebase and squash, never merge commits.** `main` receives
+  changes only by rebase (fast-forward) or squash merge. Repository protection
+  enables required linear history and disables merge commits, so GitHub rejects
+  a merge at the server; the release checklist records those settings and no
+  workflow check duplicates them. The release sequence now rebases the release
+  branch instead of merging `main` into it. `.github/instructions/commit-workflow.md`
+  states the rule for agents: integrate with `git rebase origin/main`, fold
+  corrections with `fixup!` plus `--autosquash`, and never merge or force-push
+  `main`.
+- **Docs:** [Release checklist](docs/RELEASE_CHECKLIST.md#pr-based-releases-and-protected-main),
+  [contributing](CONTRIBUTING.md#commit-conventions), and the README publishing
+  section describe the linear-history policy.
+
+- **Changed-line coverage is aggregated across CI platforms.** Each
+  OS/Python job still enforces the package coverage floors; the 95% changed
+  source threshold runs on the combined matrix data so platform-specific
+  branches are measured where they can execute.
+
+- **`lisa-memory --readonly` is now enforced.** The flag was declared but
+  ignored, so writes succeeded on a read-only server. `SqliteMemoryStore`
+  gains `readonly=True`, which opens the database with SQLite `mode=ro`,
+  creates no file when the database is absent, refuses to migrate a stale
+  schema, and raises `ReadOnlyMemoryStoreError` from `record_memory`,
+  `delete_memory`, `retire_memory`, and `update_salience`. The three mutating
+  MCP tools translate that into a tool error. Recall keeps working: its
+  access-tracking update is skipped rather than turning a read into a failure.
+- **Tests:** `sdk/src/sdk/memory/tests/test_store.py`,
+  `mcp_server/tests/test_mcp_servers.py`.
+
+- **Overlapping turns get distinct turn indices.** A turn's index is now
+  reserved at start from `<base>.reservations.json`
+  (`max(committed entries, highest live reservation + 1)`) and released at
+  commit — atomically, under the same store lock — or on any other exit path.
+  Two concurrent turns previously both claimed the same index. The committed
+  index remains the log position, so the log stays contiguous; when a turn
+  commits under a different number the entry records `provisional_turn`, and
+  the forensic reader joins telemetry through it. Reservations owned by dead
+  processes are pruned on read, so a crashed turn's index is reusable.
+- **The zstd thread dictionary is no longer retrained in place.** Once
+  `<base>.dict.zstd` exists it is never overwritten, so segments compressed
+  with it stay decompressable for the lifetime of the thread.
+- **Tests:** `runtime/tests/test_thread.py`,
+  `sdk/src/sdk/forensics/tests/test_join_render.py`.
+
+### Fixed
+
+- **Windows thread-store hash chains handle CRLF line endings.** CRLF
+  terminators are excluded from entry and seal hashes, matching the
+  newline-independent line identity used by the verifier.
+- **Concurrent token-usage writers retain distinct event identities.**
+  Generated idempotency keys now include the handler instance and sequence,
+  so simultaneous writers cannot collide when the system clock has coarse
+  resolution.
+- **Packs-venv seeding no longer breaks on Windows drive-letter URLs.** A
+  `--source local` install on Windows records each framework package's PEP 610
+  `direct_url.json` as a drive-letter URL (`file:///C:/Code/lisa/kernel`).
+  First-boot seeding of the packs venv decoded that record textually
+  (`removeprefix("file://")`), producing `/C:/Code/lisa/kernel` — a malformed
+  path `uv pip install` rejects with *"path could not be converted to a
+  URL"*. Every required-pack auto-install then failed
+  (`Install failed for 'git+…lisa-pack-serper@main'` / `Failed to seed packs
+  venv with framework packages`), surfacing as the startup error panel on
+  both installer steps that launch `lisa`. The decode now strips the stray
+  leading slash from drive-letter paths (uv accepts forward slashes) and
+  percent-decodes via `urlparse`; `file://` URLs with a non-`localhost`
+  host (UNC shares) are skipped rather than producing an unshippable
+  requirement. POSIX shapes (`file:///opt/lisa/kernel`) are unchanged.
+  Tests: `runtime/tests/test_paths_framework_root.py`.
+
+- **Forensics reads the conversation-scoped thread store.** A host that
+  isolates one thread store per conversation names the store
+  `<user_slug>--<conversation_id>`, but `/forensics` resolved the store from
+  `config.user_slug` alone. The operator's view therefore read a different
+  (usually empty) store than the one the turn wrote, and the model's
+  `turn_forensics` operation read the same wrong store — so the two views
+  diverged exactly where they are supposed to agree. `ForensicReader` now
+  takes a `thread_store_slug` separate from `user_slug`: the store stem
+  selects the thread, while `user_slug` still scopes the shared ledgers,
+  whose rows are stamped with the plain user slug. The two must not be
+  conflated — scoping the ledgers by the store stem would silently join no
+  evidence at all, with no note to say so. The store stem rides on the
+  operation context (`OperationExecutionContext.thread_store_slug`,
+  `TurnIdentity.thread_store_slug`) so the pack layer reads the store the
+  host wrote without guessing it.
+- **Tests:** `runtime/tests/test_forensics_command.py`,
+  `sdk/packs/introspect/tests/test_turn_forensics.py`.
+- **Forensics keeps one conversation's telemetry off another's turns.** Turn
+  indices are per-thread, so two conversations of one user both count from
+  zero and their ledger rows collide on the same index. Scoping the shared
+  ledgers by owner alone therefore presented one conversation's decisions and
+  dispatches as another's — which is worse than an empty thread, because it
+  looks correct. `turn.decision` and `tool.telemetry` rows now carry the
+  thread's store stem, and `sdk.forensics.filter_owned` scopes by it beside
+  the owner. The stem is the same value that names the thread store, so the
+  store and the rows that join onto it are scoped by one identifier.
+  The stem rides on every writer: `turn.decision`, `tool.telemetry` (tool and
+  operation dispatch), and the token-usage cost rows, so a turn's decisions,
+  its dispatches, and its cost are all attributable to one thread. The host's
+  resolved thread directory rides on the operation context too, so the model
+  view reads the directory the host writes to rather than re-deriving one
+  from the environment (a `--thread-dir` argument was invisible to it).
+  **Migration:** ledger rows written before this change carry no stem and are
+  excluded from a scoped read, so pre-upgrade turns show no dispatch or
+  decision evidence (the bundle states the count). A turn paused before this
+  change still resumes: the stem is not part of a turn's identity, so it does
+  not affect the resume guard.
+- **Identical tool-call batches no longer loop.** The model could re-issue
+  the exact same tool-call batch (same tools, same arguments) until the turn
+  was killed — the 2026-10-28 researcher loop repeated one
+  `thread_read_recent` + `thread_search` pair 33 times. The new
+  `max_identical_tool_batch_repeats` setting (default 3) refuses the next
+  repeat with tool messages telling the model to answer from the results it
+  already holds, and one further repeat forces a no-tools final synthesis.
+  The signature is the sorted (name, sorted-key arguments) pairs, so call
+  ids, argument key order, and spacing cannot hide a repeat; kernel-
+  synthesized batches never count, and `0` disables the guard.
+- **Tests:** `kernel/tests/test_repeated_tool_batch_guard.py`.
+
+- **Abandoned workflow plans retire instead of decorating every later turn.**
+  A plan's steps could only be completed by a write-receipt match, so a read
+  step never completed and an abandoned plan kept re-attaching its progress
+  footer and in-flight handoff to every later turn, re-routing unrelated
+  work. A plan now retires after `workflow_plan_idle_turn_limit` (default 2)
+  consecutive *idle* turns — turns that neither complete a step nor run in
+  any open step's mode. Completion evidence is rebuilt as per-unit
+  `(kind, mode_id, capability_id)` units: write receipts for write steps,
+  and for read steps the step's mode handing off, recorded per entry in the
+  new `departed_modes` field so multi-hop turns (planner → thinker →
+  researcher) credit every departed mode rather than only the last
+  `handoff_to` hop.
+- **Tests:** `kernel/tests/test_workflow_view.py`.
+
+### Removed
+
+- **Automatic memory backup on server boot.** `lisa-memory` dumped `memory.db`
+  to `<data_dir>/data/backups/` and pruned old dumps every time it started —
+  a write on a read path, and repeated churn for a client that spawns the
+  server per call. The whole feature is gone: `sdk.memory.backup`, the
+  `--backup-keep` flag, `LISA_MEMORY_BACKUP_KEEP`, `DEFAULT_KEEP_BACKUPS`, its
+  tests, and its direct-I/O allowlist entry. Point-in-time copies belong to
+  the deployment's own SQLite-aware backup process; `docs/STORAGE.md` now says
+  so.
+- **BREAKING for SDK consumers: `sdk.memory`'s public surface changed.**
+  `sdk.memory` previously re-exported only `DEFAULT_KEEP_BACKUPS` and
+  `backup_memory_db`; it now exports the store's real public API —
+  `SqliteMemoryStore`, `ReadOnlyMemoryStoreError`, `EmbeddingProvider`,
+  `SCHEMA_VERSION`, and `DEFAULT_TTL_DAYS`. The two removed names are gone
+  with the backup feature, so a consumer importing them from `sdk.memory`
+  must move to its own backup process.
+
 ## [0.4.0] - 2026-10-28
 
 ### Added

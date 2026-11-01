@@ -15,7 +15,11 @@ from pathlib import Path
 
 import pytest
 from kernel.models import MemoryRecord, MemoryWriteRequest
-from sdk.memory.store import DEFAULT_TTL_DAYS, SqliteMemoryStore
+from sdk.memory.store import (
+    DEFAULT_TTL_DAYS,
+    ReadOnlyMemoryStoreError,
+    SqliteMemoryStore,
+)
 
 
 def _write(
@@ -765,3 +769,134 @@ async def test_embedding_failure_does_not_block_write(tmp_path: Path) -> None:
     # Lexical recall still works.
     result = await store.recall("survives", user_slug="adam", limit=1)
     assert "survives embedding failure" in result
+
+
+# ---------------------------------------------------------------------------
+# Read-only stores
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_readonly_store_rejects_mutations(tmp_path: Path) -> None:
+    db_path = tmp_path / "memory.db"
+    writable = SqliteMemoryStore(db_path=db_path)
+    record = await writable.record_memory(_write(content="kept"))
+    writable.close()
+
+    readonly = SqliteMemoryStore(db_path=db_path, readonly=True)
+    try:
+        with pytest.raises(ReadOnlyMemoryStoreError, match="read-only"):
+            await readonly.record_memory(_write(content="rejected"))
+        with pytest.raises(ReadOnlyMemoryStoreError, match="read-only"):
+            await readonly.delete_memory(memory_id=record.id, user_slug="adam")
+        with pytest.raises(ReadOnlyMemoryStoreError, match="read-only"):
+            await readonly.retire_memory(memory_id=record.id, user_slug="adam")
+        with pytest.raises(ReadOnlyMemoryStoreError, match="read-only"):
+            await readonly.update_salience(memory_id=record.id, salience=0.9, user_slug="adam")
+    finally:
+        readonly.close()
+
+
+@pytest.mark.asyncio
+async def test_readonly_store_reads_without_touching_access_tracking(tmp_path: Path) -> None:
+    db_path = tmp_path / "memory.db"
+    writable = SqliteMemoryStore(db_path=db_path)
+    record = await writable.record_memory(_write(content="the quick brown fox"))
+    writable.close()
+
+    readonly = SqliteMemoryStore(db_path=db_path, readonly=True)
+    try:
+        records = await readonly.recall_records("quick fox", user_slug="adam", limit=1)
+        assert [r.id for r in records] == [record.id]
+        assert records[0].access_count == 0
+
+        listed = await readonly.list_memories(user_slug="adam")
+        assert [r.id for r in listed] == [record.id]
+        assert await readonly.count_memories(user_slug="adam") == 1
+        assert await readonly.get_memory(memory_id=record.id, user_slug="adam") is not None
+    finally:
+        readonly.close()
+
+    # The read path must not have written access tracking even though the
+    # file is writable by the test process.
+    verify = SqliteMemoryStore(db_path=db_path)
+    try:
+        assert (
+            verify._conn.execute(
+                "SELECT access_count FROM memories WHERE id = ?", (record.id,)
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        verify.close()
+
+
+def test_readonly_store_missing_database_creates_no_file(tmp_path: Path) -> None:
+    db_path = tmp_path / "nested" / "memory.db"
+
+    store = SqliteMemoryStore(db_path=db_path, readonly=True)
+    try:
+        assert not db_path.exists()
+        assert not db_path.parent.exists()
+    finally:
+        store.close()
+
+
+def test_readonly_store_rejects_stale_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "memory.db"
+    writable = SqliteMemoryStore(db_path=db_path)
+    writable._conn.execute("PRAGMA user_version = 1")
+    writable._conn.commit()
+    writable.close()
+
+    with pytest.raises(ReadOnlyMemoryStoreError, match="cannot migrate"):
+        SqliteMemoryStore(db_path=db_path, readonly=True)
+
+
+@pytest.mark.asyncio
+async def test_readonly_store_keeps_semantic_recall_when_vec_table_exists(
+    tmp_path: Path,
+) -> None:
+    """Read-only must not silently degrade recall to lexical-only.
+
+    A writable store creates ``memory_vec``; a read-only store may not create
+    it, but it must still *use* it when the database already has it.
+    """
+    db_path = tmp_path / "memory.db"
+    provider = _StubEmbeddingProvider()
+    writable = SqliteMemoryStore(
+        db_path=db_path,
+        embedding_provider=provider,  # type: ignore[arg-type]
+        embedding_dimension=4,
+    )
+    if not writable._vec_available:
+        writable.close()
+        pytest.skip("sqlite-vec not available in this environment")
+    await writable.record_memory(_write(content="we chose postgres for analytics"))
+    writable.close()
+
+    readonly = SqliteMemoryStore(
+        db_path=db_path,
+        embedding_provider=provider,  # type: ignore[arg-type]
+        embedding_dimension=4,
+        readonly=True,
+    )
+    try:
+        assert readonly._vec_available
+        result = await readonly.recall("postgres analytics", user_slug="adam", limit=1)
+        assert "we chose postgres for analytics" in result
+    finally:
+        readonly.close()
+
+
+def test_readonly_store_without_embedding_provider_stays_lexical(tmp_path: Path) -> None:
+    """No provider means no semantic recall, table or no table."""
+    db_path = tmp_path / "memory.db"
+    writable = SqliteMemoryStore(db_path=db_path)
+    writable.close()
+
+    readonly = SqliteMemoryStore(db_path=db_path, readonly=True)
+    try:
+        assert readonly._vec_available is False
+    finally:
+        readonly.close()

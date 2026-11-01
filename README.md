@@ -40,24 +40,120 @@ uv sync --frozen --extra dev
 uv run pytest packstest/tests -m "not live" -q
 ```
 
+### Develop Lisa with Lisa
+
+Use Lisa's coding workflow to develop the harness itself: point a coding
+session at your checkout, let Lisa create an owned feature-branch worktree,
+and require named checks before it commits. Follow the
+[Lisa-on-Lisa setup](docs/CODING_WORKFLOW.md#develop-lisa-with-lisa) for the
+separate CLI installation, session configuration, and sandbox prerequisites.
+Pushing or opening a PR is a separate request, not automatic.
+
+You can also use any IDE or editor. Select the checkout's `.venv` interpreter
+and follow [contributing](CONTRIBUTING.md) and [testing](docs/TESTING.md).
+For an AI-assisted IDE, start with the
+[project instructions](.github/copilot-instructions.md), load the applicable
+[scoped instructions](.github/instructions), and see the
+[customization guide](docs/COPILOT_CUSTOMIZATION_GUIDE.md). Editor support for
+automatic instruction loading varies; the same quality gates apply either way.
+
 ## Architecture
 
+A host owns the conversation with the operator. The runtime composes
+everything else around the kernel's turn loop. Installed packs supply
+everything the agent can do.
+
+### What runs where
+
 ```mermaid
-flowchart TD
-    Host["Host: CLI, chat, headless"] --> Runtime["runtime: lifecycle and dispatch"]
-    Runtime --> Kernel["kernel: turn loop and typed contracts"]
-    Runtime --> SDK["sdk: catalogs, providers, router, primitives"]
-    Runtime --> MCP["mcp_server: tool adapters"]
-    MCP --> SDK
-    SDK --> Kernel
-    Packs["Packs: modes, operations, tools, content"] --> SDK
-    Packs --> Kernel
+flowchart LR
+    Operator(["Operator"]) <--> Host
+
+    subgraph HostApp["Host application, such as lisa-cli"]
+        Host["Transport, identity, credentials"]
+    end
+
+    subgraph Process["Lisa runtime process"]
+        Runtime["runtime<br/>commands, active mode, context,<br/>MCP and proxy lifecycle"]
+        Kernel["kernel<br/>turn loop, allowlists,<br/>approvals, receipts"]
+        Catalog["Catalog<br/>modes, operations, tools"]
+        Local["Operations and pack tools"]
+        Pool["MCP pool"]
+        Gateway["sdk<br/>model router, provider gateway"]
+    end
+
+    Packs[["Installed packs"]] -. "entry points, at startup" .-> Catalog
+    Host -- "message or /approve id" --> Runtime
+    Runtime -- "stage, text, response callbacks" --> Host
+    Runtime --> Kernel
+    Kernel --> Catalog
+    Kernel --> Gateway --> Provider(["Model provider"])
+    Kernel --> Local
+    Kernel --> Pool --> Servers(["MCP servers<br/>in-process or stdio"])
+    Runtime --> Store[("Thread, memory,<br/>approvals, recovery")]
 ```
 
-Arrows show package dependencies, not every callback or MCP connection.
-The kernel has no in-repository package dependency; runtime composes the
-engine. Transports implement callbacks without putting UI imports in runtime.
-Packs use kernel/SDK contracts, not runtime internals or cross-pack imports.
+- Only the host talks to the operator. It reaches Lisa through
+  `handle_message` and receives transport callbacks; it never calls the kernel
+  or the tools directly.
+- Packs are discovered, not imported. The active mode decides which catalog
+  entries the model can see, and the kernel enforces that allowlist when it
+  dispatches.
+- Every effectful call goes through approval policy. A call can run, pause for
+  `/approve <id>`, or be denied, and each dispatch leaves an effect receipt.
+- The runtime owns durable state. The kernel returns a typed result rather
+  than writing the thread itself.
+
+### How a turn works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Host
+    participant R as runtime
+    participant K as kernel
+    participant M as Model
+    participant T as Tools
+    H->>R: handle_message(text)
+    alt host command, such as /help
+        R-->>H: command result, no model call
+    else conversational input
+        R->>R: resolve mode, assemble instructions, evidence, history, tools
+        R->>K: run_turn
+        loop until complete, transition, yield, pause, or budget exit
+            K->>M: fitted request, model chosen per iteration
+            M-->>K: text and tool calls
+            K->>K: check mode allowlist and approval policy
+            alt allowed
+                K->>T: dispatch operation, pack tool, or MCP tool
+                T-->>K: result and effect receipt
+            else needs approval
+                K-->>R: pause and save the exact invocation
+            end
+            R-->>H: on_stage, on_text_chunk
+        end
+        K-->>R: TurnResult
+        R->>R: persist thread and evidence, run housekeeping slices
+        R-->>H: on_response
+    end
+```
+
+The diagram leaves out a few things:
+
+- `transition_stage` can advance a workflow, hand off to another mode, or fork
+  independent child work.
+- Completion is judged from receipts, not from the model claiming success.
+  Checked-commit tasks also verify their owned artifact and checks.
+- `/approve <id>` resumes exactly the paused invocation.
+- The CEL model router is optional.
+
+Read [terminology](docs/BOUNDARIES.md), [routing](docs/ROUTER_DESIGN.md),
+[context lifecycle](docs/CONTEXT_LIFECYCLE.md), and [memory](docs/MEMORY_ARCHITECTURE.md).
+
+### Packages
+
+Each layer is a separate distribution. Import rules and the dependency graph
+are in [boundaries](docs/BOUNDARIES.md#package-dependencies).
 
 | Directory | Distribution | Responsibility |
 | --- | --- | --- |
@@ -68,21 +164,6 @@ Packs use kernel/SDK contracts, not runtime internals or cross-pack imports.
 | [sdk/packs](sdk/packs/README.md) | `lisa-pack-*` | Core, memory, introspect, and recovery reference packs |
 | [packstest](packstest/README.md) | `lisa-harness-packstest` | Offline testing and deterministic pack evaluation |
 | [e2etest](e2etest/README.md) | `lisa-harness-e2e` | Full-runtime testing with live and scripted models; `lisa-e2e` runner |
-
-### How a turn works
-
-1. Runtime handles control commands and resolves the active mode.
-2. It assembles instructions, scoped evidence, history, and allowed capabilities.
-3. Kernel iterates model completions and authorized dispatch. `transition_stage`
-   can advance a workflow, hand off, or fork independent work. Model selection
-   is a separate optional CEL router.
-4. Effectful actions follow approval policy. Completion uses receipts;
-   checked-commit tasks have additional artifact/check gates.
-5. Runtime records outcomes and lossless evidence. Bounded slices perform
-   opportunistic housekeeping.
-
-Read [terminology](docs/BOUNDARIES.md), [routing](docs/ROUTER_DESIGN.md),
-[context lifecycle](docs/CONTEXT_LIFECYCLE.md), and [memory](docs/MEMORY_ARCHITECTURE.md).
 
 ## Extending Lisa
 
@@ -122,7 +203,8 @@ Read [storage](docs/STORAGE.md) and the [security policy](SECURITY.md).
 Prepare releases in a PR, not with direct pushes to `main`. Follow the
 [release checklist](docs/RELEASE_CHECKLIST.md#pr-based-releases-and-protected-main):
 update versions and release notes, pass the required **Merge gate** and a manual
-`Publish` validation, merge, then tag the verified main commit.
+`Publish` validation, then land the PR by rebase or squash and tag the verified
+main commit. `main` keeps a linear history: merge commits are rejected.
 
 The `Publish` workflow validates CI, builds wheels and source distributions for
 all ten workspace packages, checks distribution metadata, and retains the build

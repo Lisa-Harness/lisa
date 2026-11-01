@@ -52,7 +52,7 @@ AUTO_CAPTURE_TIERS: tuple[str, ...] = ("daily", "weekly", "long_term")
 def should_auto_capture(  # noqa: C901,PLR0912
     query: str,
     response_text: str,  # required by the calling signature
-    messages: list[dict[str, object]],
+    messages: list[dict[str, Any]],
     *,
     effect_receipts: list[Any] | None = None,
 ) -> tuple[bool, float]:

@@ -8,9 +8,9 @@ process restarts.
 Design notes:
     - Runtime-neutral: the handler takes a ``Path`` and an optional event
       filter. It does not import app-layer config or Azure exporters.
-    - Idempotency: the ``TokenUsageEvent.idempotency_key`` is set to a
-      timestamp + nanosecond suffix when empty, so retries and stream-final
-      events always append without collapsing (per the event docstring).
+    - Idempotency: the ``TokenUsageEvent.idempotency_key`` includes the
+      handler instance and sequence as well as a timestamp suffix, so
+      separate writers cannot collapse events on coarse-grained clocks.
     - Atomic appends: each line is written with ``"a"`` mode under a
       ``mkdir(parents=True, exist_ok=True)`` so the file appears lazily.
     - Failures are swallowed: telemetry must never break the turn loop.
@@ -19,10 +19,12 @@ Design notes:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import time
+import uuid
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +36,6 @@ logger = logging.getLogger(__name__)
 #: subscribes its durable ``TokenUsageTelemetryHandler`` to this topic;
 #: headless contexts (no bus, no subscriber) drop the events silently.
 TOKEN_USAGE_TOPIC = "lisa.token_usage"
-
-#: Strong references to in-flight token-usage publish tasks (RUF006). Tasks
-#: are fire-and-forget telemetry; the set keeps them garbage-collectable
-#: only after completion and is pruned on each publish.
-_PENDING_PUBLISH_TASKS: set[asyncio.Task[None]] = set()
 
 __all__ = [
     "TOKEN_USAGE_TOPIC",
@@ -70,16 +67,22 @@ def publish_token_usage(bus: Any, event: TokenUsageEvent) -> None:
     survives process restarts; headless contexts (no bus) drop the event.
 
     Strictly best-effort per the telemetry contract: a publish failure is
-    swallowed and must never break the model-call path. When no event loop
-    is running (sync test contexts) the publish is dropped rather than
-    blocking.
+    never allowed to break the model-call path, but it is no longer silent —
+    :func:`schedule_telemetry_publish` logs a WARNING so a lost durable
+    token row is visible in ``runtime.jsonl`` instead of vanishing. When no
+    event loop is running (sync test contexts) the publish is dropped with
+    the same warning rather than blocking.
     """
+    from kernel.telemetry import schedule_telemetry_publish
+
     if bus is None or not hasattr(bus, "publish"):
         return
-    with contextlib.suppress(Exception):
-        task = asyncio.create_task(bus.publish(TOKEN_USAGE_TOPIC, event.model_dump(mode="json")))
-        _PENDING_PUBLISH_TASKS.add(task)
-        task.add_done_callback(_PENDING_PUBLISH_TASKS.discard)
+    schedule_telemetry_publish(
+        bus,
+        TOKEN_USAGE_TOPIC,
+        event.model_dump(mode="json"),
+        source=f"token_usage:{event.call_site or 'unknown'}",
+    )
 
 
 def coerce_non_negative_float(value: Any) -> float:
@@ -120,10 +123,10 @@ class TokenUsageTelemetryHandler:
 
     Idempotency key:
         When the incoming event has an empty ``idempotency_key``, the
-        handler stamps it with ``emitted_at`` plus a nanosecond suffix
-        derived from ``time.time_ns()``. This guarantees uniqueness
-        across retries and stream-final events without collapsing
-        legitimate duplicate calls.
+        handler stamps it with ``emitted_at``, this handler's instance and
+        sequence, and a monotonic nanosecond suffix. The instance and
+        sequence keep separate processes from colliding when their clocks
+        return the same timestamp.
 
     Args:
         path: Absolute path to the ``token-usage.jsonl`` file. Parent
@@ -132,6 +135,10 @@ class TokenUsageTelemetryHandler:
             returns ``True`` to persist, ``False`` to skip. Hosts use
             this to drop events below a severity threshold or to
             redact sensitive fields before persistence.
+        lock_factory: Optional callable returning a context manager that
+            serializes the append across processes sharing one file (the
+            runtime injects ``sdk.filelock.file_lock`` over a sidecar
+            ``.lock``). ``None`` keeps appends unsynchronized, as before.
     """
 
     def __init__(
@@ -139,14 +146,29 @@ class TokenUsageTelemetryHandler:
         path: Path,
         *,
         filter_fn: Any | None = None,
+        lock_factory: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn
+        self._lock_factory = lock_factory or contextlib.nullcontext
+        # Per-instance sequence + identity: the token ledger is shared by
+        # every process writing one data dir, so a global counter is not
+        # comparable across writers. ``sequence`` orders this instance's
+        # rows and ``ledger_instance`` names this instance, letting a
+        # forensic reader detect dropped rows *within* one writer's run
+        # (a restart or a second process starts a new instance at 1).
+        self._sequence = 0
+        self._instance = uuid.uuid4().hex[:12]
 
     @property
     def path(self) -> Path:
         """Return the resolved JSONL path."""
         return self._path
+
+    @property
+    def instance(self) -> str:
+        """Return this handler's instance id (stamped on every row)."""
+        return self._instance
 
     async def publish(self, event: Any) -> None:
         """Persist one ``TokenUsageEvent`` as a single JSONL line.
@@ -180,13 +202,25 @@ class TokenUsageTelemetryHandler:
         self._append(event)
 
     def _append(self, event: TokenUsageEvent) -> None:
+        self._sequence += 1
         if not event.idempotency_key:
-            event.idempotency_key = f"{event.emitted_at}:{_time_ns_suffix()}"
+            event.idempotency_key = (
+                f"{event.emitted_at}:{self._instance}:{self._sequence}:{_time_ns_suffix()}"
+            )
+        # Handler-stamped loss-detection fields, same posture as the
+        # idempotency key: publishers never set them. A reader detects
+        # dropped rows by finding sequence gaps within one
+        # ``ledger_instance``.
+        event.sequence = self._sequence
+        event.ledger_instance = self._instance
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(event.model_dump_json() + "\n")
-        except OSError as exc:
+            with self._lock_factory():
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                with self._path.open("a", encoding="utf-8") as handle:
+                    handle.write(event.model_dump_json() + "\n")
+        except (OSError, TimeoutError) as exc:
+            # TimeoutError covers the host-injected lock timing out (dropping
+            # one line is better than stalling the turn).
             logger.warning("token-usage append failed for %s: %s", self._path, exc)
 
 
@@ -233,6 +267,7 @@ def build_token_usage_event(
     call_site: str = "",
     conversation_id: str = "",
     user_slug: str = "default",
+    thread_store_slug: str = "",
     surface_id: str = "",
     extra: dict[str, Any] | None = None,
 ) -> TokenUsageEvent:
@@ -275,6 +310,7 @@ def build_token_usage_event(
         call_site=str(call_site or ""),
         conversation_id=str(conversation_id or ""),
         user_slug=str(user_slug or "default"),
+        thread_store_slug=str(thread_store_slug or ""),
         surface_id=str(surface_id or ""),
         extra=dict(extra) if extra else {},
     )

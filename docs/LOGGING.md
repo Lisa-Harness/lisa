@@ -12,7 +12,11 @@ Hosts own presentation; first-party MCP adapters use their shared CLI setup.
 - Runtime events normally live in `<data-dir>/logs/runtime.jsonl`;
   token usage lives in `<data-dir>/logs/token-usage.jsonl`.
 - Turn decisions and dispatches live in `<data-dir>/logs/decisions.jsonl`
-  (see [decision telemetry](#decision-telemetry)).
+  (see [decision telemetry](#decision-telemetry)). Approval decisions — the
+  authorizing operator or policy action for every write/execute effect — live
+  in `<data-dir>/logs/approvals.jsonl`, one append-only row per state
+  transition (requested, approved, denied, consumed, expired), joining on
+  `turn_index` like the other ledgers.
 - First-party servers accept `--log-level` and `--data-dir`; their parser
   uses `LOG_LEVEL` when no log-level argument is supplied.
 
@@ -92,6 +96,7 @@ its `topic`:
 | --- | --- | --- | --- |
 | `turn.decision` | [`_resolve_lifecycle`](../kernel/src/kernel/turn_runner/__init__.py) | iteration | `mode_id`, `turn_index`, `user_slug`, `iteration`, `turns_in_stage`, `action_type`, `action_reason`, `total_tool_calls`, `write_receipts`, `read_receipts` |
 | `tool.telemetry` | [tools](../kernel/src/kernel/tools/registry.py) / [operations](../kernel/src/kernel/operations/registry.py) registry | dispatch | `target_id`, `target_type`, `status`, `duration_ms`, `error_message`, `turn_index`, `user_slug` |
+| `model.request` | [host adapter](../kernel/src/kernel/seams/host_adapter.py) | off-turn model call | `operation_id`, `request_ref`, `turn_index`, `user_slug`, `thread_store_slug` |
 
 Why a separate file rather than `runtime.jsonl`:
 
@@ -105,10 +110,55 @@ Why a separate file rather than `runtime.jsonl`:
   segments are never deleted, so verbose runtime logging cannot evict the
   decision ledger and the ledger cannot consume the log's rotation budget.
 
-`turn_index` is the join key. It is computed once at turn start
-(`runtime.thread.next_turn_index`), stamped on the thread entry, and carried on
-`TurnIdentity` into every operation/tool context, so a decision row, a dispatch
-row, a token row, and a thread entry for the same turn address each other.
+Operation completions also publish `model.request`: one row per model call
+an operation dispatch makes outside the turn loop (memory mining,
+consolidation, distills), carrying the content-addressed `request_ref` for
+the archived request. The turn loop's own calls are already archived on the
+thread entry's `turn_input.calls`, so this row covers precisely the calls
+the thread entry never sees; its token usage rides the same
+`lisa.token_usage` topic with `call_site: "operation"`. `turn_index` is
+`null` when the dispatch belongs to no thread turn.
+
+## Concurrent-ledger safety
+
+Both telemetry ledgers are shared across host processes: overlapping Lisa
+turns on one data dir append to the same `decisions.jsonl` and
+`token-usage.jsonl`. The runtime serializes those appends (and the
+decisions seal decision) under sidecar advisory locks
+(`<file>.lock`), so every process's lines land whole and no process's
+sealed segment can overwrite another's. The kernel handlers stay
+runtime-neutral: they accept a `lock_factory` and the host injects the
+lock ([`HostServices.build`](../runtime/src/runtime/services.py)). The
+locks are best-effort with a short timeout — a stuck holder drops one
+telemetry line rather than stalling a live turn.
+
+## Loss observability
+
+Dropping a ledger row is a real loss of evidence, not a debug curiosity,
+so every fire-and-forget ledger publish goes through
+[`schedule_telemetry_publish`](../kernel/src/kernel/telemetry.py): a
+failure — scheduling the task *or* an exception raised inside it — logs a
+WARNING naming the source (`tool:<id>`, `operation:<id>`,
+`token_usage:<call_site>`, `model_request:<operation>`), so a lost row is
+visible in `runtime.jsonl` instead of vanishing. The no-bus headless path
+remains a silent no-op.
+
+Rows carry two handler-stamped fields that make the loss *countable* after
+the fact: `sequence` (per-instance monotonic counter) and
+`ledger_instance` (identity of the writing handler). A reader detects
+dropped rows by finding sequence gaps within one instance — a restart or a
+second host process starts a new instance at 1, so gaps never span
+instances. `/forensics` and `turn_forensics` report the count as a read
+note (`accounts for N dropped row(s)`); it is a lower bound, proving rows
+went missing, not which rows.
+
+`turn_index` is the join key. It is reserved once at turn start
+(`runtime.thread.reserved_turn`), carried on `TurnIdentity` into every
+operation/tool context, and matched against the thread entry, so a decision
+row, a dispatch row, a token row, and a thread entry for the same turn address
+each other. When overlapping turns commit out of start order the entry's `turn`
+is its log position and the index the turn ran under is kept as
+`provisional_turn`; the forensics reader joins on that.
 Without it, per-turn cost is attributable only to a *mode*, not a turn.
 
 `turn_index` is `null` for work that belongs to no thread turn — off-turn slice

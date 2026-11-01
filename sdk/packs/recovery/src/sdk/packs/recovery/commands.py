@@ -36,6 +36,7 @@ from typing import Any, cast
 from kernel.host_commands import HostCommandSpec
 from kernel.models import ConversationSurface, MemoryScope
 from kernel.recovery import RecoveryIdentity
+from sdk.thread import ThreadStore
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +151,7 @@ async def handle_stalls(runtime: Any, stripped: str, message: str) -> str:
     if not records:
         return "No stalled or indeterminate work items."
 
-    lines = ["Open recovery work items:"]
-    for record in records:
-        lines.append(_render_record_summary(record))
+    lines = ["Open recovery work items:", *(_render_record_summary(record) for record in records)]
     return "\n".join(lines)
 
 
@@ -452,9 +451,8 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     operator can resolve them with ``/retry``, ``/skip``, or ``/cancel``.
     """
     del message
-    from runtime.thread import load_recent_thread_entries
-
-    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
+    thread_path = runtime.paths.thread_path
+    entries = ThreadStore(thread_path).load_recent(limit=30) if thread_path is not None else []
     yielded_entry: dict[str, Any] | None = None
     for entry in reversed(entries):
         if entry.get("yielded"):
@@ -480,12 +478,14 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
                 and getattr(r, "retry_policy", "") == "confirm"
             ]
             if stalled:
-                lines = ["Stalled work items needing your decision:"]
-                for r in stalled:
-                    lines.append(
+                lines = [
+                    "Stalled work items needing your decision:",
+                    *(
                         f"  • {r.target_id} ({r.target_kind}): {r.last_error or 'unknown'}"
-                    )
-                lines.append("Use /retry, /skip, or /cancel to resolve.")
+                        for r in stalled
+                    ),
+                    "Use /retry, /skip, or /cancel to resolve.",
+                ]
                 stall_summary = "\n\n" + "\n".join(lines)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("resume: recovery list_open failed: %s", exc)

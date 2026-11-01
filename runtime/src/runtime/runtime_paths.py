@@ -94,8 +94,8 @@ class HostPaths:
         config's ``resolved_models_path`` is used.
         """
         thread_path: Path | None = None
-        if not config.no_thread and config.user_slug:
-            thread_path = config.resolved_thread_dir / config.user_slug
+        if not config.no_thread and config.thread_slug:
+            thread_path = config.resolved_thread_dir / config.thread_slug
         return cls(
             data_dir=config.data_dir,
             overlays_dir=config.resolved_overlays_dir,

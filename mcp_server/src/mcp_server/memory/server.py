@@ -1,7 +1,7 @@
 """Lisa Memory MCP server — the minimal built-in memory backend.
 
 Owns the SQLite-backed memory store (extracted from the former
-``lisa_context`` server). Exposes five tools:
+``lisa_context`` server). Exposes seven tools:
 
 - ``add_memory`` — store a scoped memory snippet
 - ``search_memory`` — keyword recall for one user
@@ -17,13 +17,17 @@ This is the default backend behind the generic ``memory.add`` /
 HTTP/stdio memory server) serves the
 same five operations and more via the MCP tool pool; modes that want Mem0's
 full surface declare the server's tools directly.
+
+``--readonly`` opens the database read-only and rejects the three mutating
+tools (``add_memory``, ``delete_memory``, ``retire_memory``). Recall still
+works: the access-tracking update it normally performs is skipped rather
+than failing the read.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -36,9 +40,8 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from sdk.layout import DATA_DIR
-from sdk.memory.backup import DEFAULT_KEEP_BACKUPS, backup_memory_db
 from sdk.memory.embeddings import OpenAIEmbeddingProvider
-from sdk.memory.store import SqliteMemoryStore
+from sdk.memory.store import ReadOnlyMemoryStoreError, SqliteMemoryStore
 
 from mcp_server.memory.embeddings import resolve_embedding_config
 
@@ -88,6 +91,11 @@ def _resolve_deps(ctx: Context[Any, Any] | None) -> MemoryDeps:
     return _deps
 
 
+def _reject_readonly(exc: ReadOnlyMemoryStoreError) -> ToolError:
+    """Translate a store-level read-only rejection into a tool error."""
+    return ToolError(str(exc))
+
+
 # ── CLI config holder (populated by _init before run()) ────────────────────
 
 
@@ -96,7 +104,7 @@ class _MemoryConfig:
     data_dir: Path = Path()
     embedding_provider: OpenAIEmbeddingProvider | None = None
     embedding_dimension: int = 1536
-    backup_keep: int = DEFAULT_KEEP_BACKUPS
+    readonly: bool = False
 
 
 _cfg = _MemoryConfig()
@@ -120,6 +128,7 @@ async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
             db_path=_cfg.data_dir / DATA_DIR / "memory.db",
             embedding_provider=_cfg.embedding_provider,
             embedding_dimension=_cfg.embedding_dimension,
+            readonly=_cfg.readonly,
         )
     )
     try:
@@ -131,7 +140,7 @@ async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
 mcp = MCPServer("Lisa Memory Server", lifespan=_lifespan)
 
 
-def init_store(data_dir: Path) -> None:
+def init_store(data_dir: Path, *, readonly: bool = False) -> None:
     """Initialize the memory store from a resolved data directory.
 
     Kept as a thin back-compat shim for tests that call ``init_store``
@@ -144,6 +153,7 @@ def init_store(data_dir: Path) -> None:
                 db_path=data_dir / DATA_DIR / "memory.db",
                 embedding_provider=_cfg.embedding_provider,
                 embedding_dimension=_cfg.embedding_dimension,
+                readonly=readonly,
             )
         )
     )
@@ -210,25 +220,28 @@ async def add_memory(
             the tier TTL when set.
     """
     store = _resolve_deps(ctx).store
-    record = await store.record_memory(
-        MemoryWriteRequest(
-            user_slug=user_slug,
-            content=content,
-            memory_scope=memory_scope,  # type: ignore[arg-type]
-            workspace_id=workspace_id,
-            surface_id=surface_id,
-            operation_id=operation_id,
-            instruction_id=instruction_id,
-            memory_tier=memory_tier,  # type: ignore[arg-type]
-            memory_kind=memory_kind,  # type: ignore[arg-type]
-            content_json=content_json or {"source": "mcp_tool"},
-            salience=salience,
-            supersedes_id=supersedes_id,
-            item_ids=item_ids or [],
-            confidence=confidence,
-            valid_until=valid_until,
+    try:
+        record = await store.record_memory(
+            MemoryWriteRequest(
+                user_slug=user_slug,
+                content=content,
+                memory_scope=memory_scope,  # type: ignore[arg-type]
+                workspace_id=workspace_id,
+                surface_id=surface_id,
+                operation_id=operation_id,
+                instruction_id=instruction_id,
+                memory_tier=memory_tier,  # type: ignore[arg-type]
+                memory_kind=memory_kind,  # type: ignore[arg-type]
+                content_json=content_json or {"source": "mcp_tool"},
+                salience=salience,
+                supersedes_id=supersedes_id,
+                item_ids=item_ids or [],
+                confidence=confidence,
+                valid_until=valid_until,
+            )
         )
-    )
+    except ReadOnlyMemoryStoreError as exc:
+        raise _reject_readonly(exc) from exc
     return f"Memory stored with ID {record.id}"
 
 
@@ -324,13 +337,16 @@ async def delete_memory(
     server-side.
     """
     store = _resolve_deps(ctx).store
-    deleted = await store.delete_memory(
-        memory_id=memory_id,
-        user_slug=user_slug,
-        workspace_id=workspace_id,
-        memory_scope=memory_scope,
-        surface_id=surface_id,
-    )
+    try:
+        deleted = await store.delete_memory(
+            memory_id=memory_id,
+            user_slug=user_slug,
+            workspace_id=workspace_id,
+            memory_scope=memory_scope,
+            surface_id=surface_id,
+        )
+    except ReadOnlyMemoryStoreError as exc:
+        raise _reject_readonly(exc) from exc
     if not deleted:
         raise ToolError("No memory found.")
     return f"Deleted memory {memory_id}."
@@ -389,13 +405,16 @@ async def retire_memory(
     caller's surface scope.
     """
     store = _resolve_deps(ctx).store
-    retired = await store.retire_memory(
-        memory_id=memory_id,
-        user_slug=user_slug,
-        workspace_id=workspace_id,
-        memory_scope=memory_scope,
-        surface_id=surface_id,
-    )
+    try:
+        retired = await store.retire_memory(
+            memory_id=memory_id,
+            user_slug=user_slug,
+            workspace_id=workspace_id,
+            memory_scope=memory_scope,
+            surface_id=surface_id,
+        )
+    except ReadOnlyMemoryStoreError as exc:
+        raise _reject_readonly(exc) from exc
     if not retired:
         raise ToolError("No active memory found.")
     return f"Retired memory {memory_id}."
@@ -437,11 +456,7 @@ def _init(args: Any) -> None:
     _cfg.embedding_provider = provider
     _cfg.embedding_dimension = dimension
     # In-process hosts build a generic Namespace without server-specific flags.
-    backup_keep = getattr(args, "backup_keep", None)
-    _cfg.backup_keep = backup_keep if backup_keep is not None else _backup_keep_default()
-    # Point-in-time backup before the store opens the DB: dump memory.db to a
-    # timestamped SQL file under <data_dir>/backups/ and prune beyond keep.
-    backup_memory_db(data_dir=_cfg.data_dir, keep=_cfg.backup_keep)
+    _cfg.readonly = bool(getattr(args, "readonly", False))
     # Also populate the test seam so the server is usable immediately after
     # init (the lifespan only runs during a real stdio session).
     set_deps_for_test(
@@ -450,6 +465,7 @@ def _init(args: Any) -> None:
                 db_path=_cfg.data_dir / DATA_DIR / "memory.db",
                 embedding_provider=_cfg.embedding_provider,
                 embedding_dimension=_cfg.embedding_dimension,
+                readonly=_cfg.readonly,
             )
         )
     )
@@ -477,28 +493,6 @@ def _add_memory_args(parser: Any) -> None:
             "is set. Also settable via LISA_EMBEDDING_ENDPOINT."
         ),
     )
-    parser.add_argument(
-        "--backup-keep",
-        type=int,
-        default=_backup_keep_default(),
-        help=(
-            "Number of timestamped memory.db dumps to retain under "
-            "<data-dir>/backups/ (default 10). Also settable via "
-            "LISA_MEMORY_BACKUP_KEEP."
-        ),
-    )
-
-
-def _backup_keep_default() -> int:
-    """Resolve the backup retention count from env, defaulting to 10."""
-    raw = os.getenv("LISA_MEMORY_BACKUP_KEEP", "").strip()
-    if not raw:
-        return DEFAULT_KEEP_BACKUPS
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        logger.warning("invalid LISA_MEMORY_BACKUP_KEEP %r; using %d", raw, DEFAULT_KEEP_BACKUPS)
-        return DEFAULT_KEEP_BACKUPS
 
 
 def main() -> None:

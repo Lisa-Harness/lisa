@@ -8,7 +8,7 @@ kernel database or the same thing as conversation history.
 | Layer | Responsibility |
 | --- | --- |
 | Kernel contracts | Scoped contexts, typed memory results, execution/slice seams |
-| [SDK memory](../sdk/src/sdk/memory/) | SQLite store, retrieval, embeddings integration, backup primitives |
+| [SDK memory](../sdk/src/sdk/memory/) | SQLite store, retrieval, embeddings integration, read-only mode |
 | [Memory MCP adapter](../mcp_server/src/mcp_server/memory/) | Transport, resolved configuration, backend access |
 | [Memory pack](../sdk/packs/memory/) | Learning/recall operations, capability manifest, consolidation slice |
 | Runtime | Capability selection, MCP lifecycle, ambient identity, pre/post-turn wiring |
@@ -82,7 +82,20 @@ storage and retrieval. Shared surfaces must not receive personal learning
 without explicit host-enforced sharing semantics. Prompt instructions alone
 cannot enforce this.
 
-Use SQLite-aware backups and include the associated configuration and thread
-provenance when needed. A thread backup is not a memory backup, and deleting
-a thread entry does not erase derived memories or provider copies.
-See [storage and data handling](STORAGE.md) for retention and restore guidance.
+The framework does not dump memory backups: neither the server nor the SDK
+writes point-in-time copies on boot. Use SQLite-aware backups and include the
+associated configuration and thread provenance when needed. A thread backup is
+not a memory backup, and deleting a thread entry does not erase derived
+memories or provider copies. See [storage and data handling](STORAGE.md) for
+retention and restore guidance.
+
+## Read-only stores
+
+`SqliteMemoryStore(readonly=True)` opens the database with SQLite `mode=ro`,
+refuses to create one when absent, and raises `ReadOnlyMemoryStoreError` from
+`record_memory`, `delete_memory`, `retire_memory`, and `update_salience`.
+Recall still works; its access-tracking update is skipped rather than turning a
+read into a failure. `lisa-memory --readonly` wires this through, so a host can
+hand scoped recall to a client that must not mutate the store. Read-only is a
+store-level guarantee, not a substitute for identity enforcement: the caller
+still supplies the scope fields.

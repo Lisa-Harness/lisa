@@ -4,6 +4,111 @@ This guide describes the **coding/GitHub packs' agent workflow**, not the
 framework contributor loop. Contributors should start with
 [CONTRIBUTING.md](../CONTRIBUTING.md) and [testing](TESTING.md).
 
+## Develop Lisa with Lisa
+
+The framework checkout and the running agent have **separate environments**.
+`uv sync` prepares the checkout for development; it does not install the `lisa`
+command. A released CLI also does not automatically run your local changes.
+
+1. Clone the framework and CLI into sibling directories, then prepare the
+   framework:
+
+   ```sh
+   git clone https://github.com/Lisa-Harness/lisa.git
+   git clone https://github.com/Lisa-Harness/lisa-cli.git
+   cd lisa
+   uv sync --frozen --extra dev
+   uv run pytest packstest/tests -m "not live" -q
+   ```
+
+2. Install the CLI against this local framework using its
+   [local-source installer](https://github.com/Lisa-Harness/lisa-cli#install).
+   For example, on Linux:
+
+   ```sh
+   bash ../lisa-cli/install.sh --source local --lisa-repo "$PWD" \
+     --cli-repo "$PWD/../lisa-cli" --provider openrouter
+   ```
+
+   Choose your provider and configure credentials outside Git. This installs
+   a snapshot, not editable framework packages: after integrating framework
+   changes, reinstall against the checkout to make the running agent use them.
+   Never assume a check in an owned worktree also updates the CLI environment.
+
+3. Follow [getting started](GETTING_STARTED.md) to discover/apply models and
+   verify the host. Coding checks require the bwrap pack and working Linux
+   bubblewrap containment; an IDE can be used on other platforms without
+   weakening that requirement or substituting host execution.
+
+4. Add the following configuration to a Markdown session plan, preserving its
+   model/provider and identity settings. Replace `/absolute/path/to/...` with
+   your own resolved paths. The worktree parent must be outside the checkout,
+   and the sandbox must grant that same parent writable:
+
+   ```yaml
+   resources:
+     packs:
+       include: [lisa-pack-coding, lisa-pack-bwrap]
+       configuration:
+         lisa-pack-coding:
+           workspace_root: /absolute/path/to/lisa
+           worktree_dir: /absolute/path/to/lisa-worktrees
+           preparation_recipes:
+             - id: uv-dev
+               prepare_argv: [uv, sync, --frozen, --extra, dev]
+               manifest_paths: [pyproject.toml, uv.lock]
+               project_modules: [kernel, sdk, runtime]
+               baseline_check_ids: [lint, format, types, dead, architecture, policy, coverage]
+           checks:
+             - id: lint
+               argv: [uv, run, --no-sync, ruff, check, "."]
+             - id: format
+               argv: [uv, run, --no-sync, ruff, format, --check, "."]
+             - id: types
+               argv: [uv, run, --no-sync, mypy]
+             - id: dead
+               argv: [uv, run, --no-sync, vulture]
+             - id: architecture
+               argv: [uv, run, --no-sync, lint-imports]
+             - id: policy
+               argv: ["{workspace_python}", scripts/check_direct_io_policy.py]
+             - id: coverage
+               argv: ["{workspace_python}", scripts/check_coverage.py, --run]
+               timeout_seconds: 1800
+           required_check_ids: [lint, format, types, dead, architecture, policy, coverage]
+         lisa-pack-bwrap:
+           sandbox:
+             floor:
+               execution: sandbox
+               persistence: direct-write
+               network: allow
+               paths:
+                 /absolute/path/to/lisa-worktrees: rw
+   ```
+
+   Dependency preparation may require network access and writable uv caches;
+   configure those explicit allowances using the
+   [sandbox guide](SANDBOX_TRUST_WORKBOOK.md), rather than bypassing containment.
+   Reduce network permissions if dependencies are already available. Keep
+   `required_check_ids` nonempty and aligned with the current
+   [quality gates](TESTING.md#ci-gates). Formatting/autofix commands that mutate
+   files must be separate `kind: fix` checks, not verification checks.
+
+5. Launch with the CLI's `--session-context` option (consult `lisa prompt --help`
+   for placement) and ask Lisa to implement a bounded change with regression
+   tests. It prepares the owned worktree, records a baseline, checks the
+   candidate tree, and commits there. Review the diff and check evidence before
+   integrating by rebase/squash or exported patches. Ask separately to push or
+   create a PR; add the GitHub pack only when publication is needed.
+
+The coding pack loads repository guidance from
+[project instructions](../.github/copilot-instructions.md) and
+[scoped instructions](../.github/instructions); see
+[customization loading](COPILOT_CUSTOMIZATION_GUIDE.md).
+An IDE of your choice is equally supported: use the checkout's `.venv`, run
+the same gates, and supply the applicable guidance manually if your editor
+does not discover it.
+
 `lisa-pack-coding` owns local workspace inspection and Git changes. The
 separate `lisa-pack-github` owns credentials, repository reads, and pull
 request creation. They share the host-owned `WorkProduct` contract.
@@ -58,7 +163,7 @@ resources:
             timeout_seconds: 600
         required_check_ids: [focused-tests]
         branch_prefix: "lisa/"
-        protected_branches: [main, master, develop, prod, production]
+        protected_branches: [main, master]
         push_remote: origin
       lisa-pack-bwrap:
         sandbox:
@@ -67,10 +172,7 @@ resources:
             persistence: direct-write
             network: deny
             paths:
-              # Worktree parent: the coding pack defaults worktrees to
-              # <data-dir>/git-worktrees/<workspace-name> (set worktree_dir in
-              # the coding pack configuration to override).
-              <data-dir>/git-worktrees/<workspace-name>: rw
+              /absolute/path/to/lisa-worktrees: rw
       lisa-pack-github:
         base_branch: main
         allowed_base_branches: [main]

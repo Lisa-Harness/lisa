@@ -14,8 +14,19 @@ previous scope of knowledge, and the full suite remains the pre-push gate.
 | Tier | Command | When |
 | --- | --- | --- |
 | Unit | `uv run pytest <test module(s)> -m "not live" -q` | After each edit; the test module(s) mirroring the changed source file |
-| Package | `uv run pytest <owning package testpaths> -m "not live" -q` | Before commit; every package whose testpaths the change can reach |
+| Package | `uv run python scripts/check_tests.py` | Before commit; selects the owning package testpaths from the worktree's changed paths |
 | Full | `uv run pytest -m "not live" -q` | Before push/PR; the required CI scope |
+
+[check_tests.py](../scripts/check_tests.py) computes the package tier from
+Git state, so selection cannot be narrowed by declaring less work. It runs
+the testpaths of every package the changed paths reach and escalates to the
+full suite for `kernel` (the shared contract layer every package imports),
+`pyproject.toml`, `uv.lock`, `scripts/`, `.github/`, `typings/`, any
+`conftest.py`, and any path outside a known package. `--dry-run` prints the
+command without running it; `--paths` selects explicitly. Its package table
+is asserted against the configured `testpaths` by
+`packstest/tests/test_check_tests.py`, so a new suite cannot silently fall
+outside selection.
 
 Map a changed file to its owning package's testpaths (all of them — a
 package's tests are split between its top-level `tests/` and colocated
@@ -112,38 +123,99 @@ test module).
 Quality jobs run on Ubuntu/Python 3.12. Tests and per-package coverage gates
 run on Python 3.11/3.12 across Linux, macOS, and Windows.
 
+Linear history is a repository setting, not a CI job: `main` requires linear
+history and disallows merge commits, so GitHub rejects a non-linear merge at
+the server. There is no redundant workflow check for it.
+
+Ruff also enforces whitespace, Python-version pitfalls, comprehensions,
+performance patterns, redundant code, modernization, and logging formatting
+(`W`, `YTT`, `C4`, `PERF`, `PIE`, `FURB`, `G`). These rules apply to source and
+tests; the existing complexity limits and scoped exceptions remain in
+[pyproject.toml](../pyproject.toml).
+
 ```sh
 uv run ruff format --check .
 uv run ruff check .
 uv run python scripts/check_direct_io_policy.py
-MYPYPATH="typings:kernel/src:sdk/src:mcp_server/src" \
-  uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' \
-  kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
-uv run vulture kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server runtime/src/runtime vulture_allowlist.py
-uv run pytest -m "not live" --tb=short -v
-uv run coverage run -m pytest -m "not live" -q
-uv run python scripts/check_coverage.py
+uv run mypy
+uv run vulture
+uv run lint-imports
+uv run python scripts/check_coverage.py --run
 ```
 
-For the mypy step in PowerShell, set the path using the platform separator:
+Mypy checks shipped sources in all ten workspace packages, including runtime,
+bundled packs, and both harnesses. Tests and the Vulture allowlist are excluded;
+this is source-wide enforcement, not strict typing of every test or script.
+Source roots and namespace-package search paths are centralized in
+[pyproject.toml](../pyproject.toml), so the same command works in PowerShell
+without a separately maintained `MYPYPATH`. Vulture's roots live there too;
+entry-point name prefixes are not blanket exemptions.
 
-```powershell
-$env:MYPYPATH = @("typings", "kernel/src", "sdk/src", "mcp_server/src") -join [IO.Path]::PathSeparator
-uv run mypy --explicit-package-bases --exclude '(^|/)(tests|test_[^/]*\.py$)' kernel/src/kernel sdk/src/sdk mcp_server/src/mcp_server
-```
-
-The mypy gate currently selects kernel, SDK, and MCP sources, not every
-workspace package. The runtime is included in lint/dead-code/tests/coverage.
-Do not describe the current type-check selection as workspace-wide.
+Import-linter enforces kernel/integration separation, SDK/runtime/server
+separation, and bundled-pack independence. Pack thread reads use the SDK,
+not lazy runtime imports.
 
 Coverage is branch-based and excludes test source. The root global floor
-is 76%; [check_coverage.py](../scripts/check_coverage.py) enforces separate
+is 82%; [check_coverage.py](../scripts/check_coverage.py) enforces separate
 package floors. Consult that script for current numbers rather than copying
 a dated coverage report. Ratchet floors with evidence; do not lower them
 to hide a regression. `xfail_strict = true` makes unexpected passes fail.
 
+The combined command runs the full offline suite **once**, checks the global
+and package floors, then requires **95% coverage of changed executable lines**.
+It includes quality scripts in measurement. Package floors remain branch-aware;
+the changed-line percentage is line coverage, not proof of every branch.
+
+CI runs the suite and package floors on each supported OS/Python pair, then
+combines their coverage data before enforcing the changed-line threshold once.
+This keeps platform-specific branches in the denominator while counting a line
+as covered when any supported matrix job executes it.
+
+[check_changed_coverage.py](../scripts/check_changed_coverage.py) compares the
+current tree to its branch point, including committed, staged, unstaged, renamed,
+and untracked Python sources. Tests, `conftest.py`, and the Vulture allowlist
+are excluded. Comments and non-executable lines do not enter the denominator.
+New source absent from coverage counts as uncovered; missing data, line-only
+data, unresolved bases, and invalid source fail explicitly. Existing coverage
+exclusion pragmas apply, so additions require review rather than using pragmas
+to evade the gate.
+
+Use `--base <ref>` with the combined command to name the comparison base
+explicitly; the script resolves its merge-base with `HEAD`. CI supplies the PR
+base SHA (or the previous main SHA on a push) and fetches full history. Locally,
+the default is the newest merge-base with `origin/main` or `main`; unresolved
+bases fail instead of checking only uncommitted work. The standalone changed
+gate can inspect an existing report, but run the combined command to certify
+fresh coverage of the current revision.
+
 The `lisa verify` CLI smoke check is separate: the framework workspace does
 not install `lisa`, and the current framework CI does not run that command.
+
+### Targeted mutation testing
+
+The optional Linux-only mutation extra checks the changed-coverage gate itself,
+including missing/unmeasured data, Git deltas, and the exact 95% boundary:
+
+```sh
+uv sync --frozen --extra dev --extra mutation
+uv run --no-sync mutmut run --max-children 2
+uv run --no-sync mutmut results --all true
+uv run --no-sync mutmut show scripts.check_changed_coverage.x_check_coverage__mutmut_1
+```
+
+Mutmut works in an ignored `mutants/` copy, not the shared source checkout.
+The selected suite and cache-invalidation inputs live in
+[pyproject.toml](../pyproject.toml). Expand the target only with a focused,
+fast suite. Inspect survivors: they can expose missing assertions, harmless
+message changes, or equivalent behavior. A successful `mutmut run` is **not**
+a zero-survivor gate or proof of complete testing. The manually triggered
+[mutation workflow](../.github/workflows/mutation.yml) publishes results for
+review; it is advisory, separate from required PR gates.
+
+Branch coverage grows through tests for real alternative outcomes, not a
+blanket 95% branch requirement. SDK integrity tests now cover unreadable seals,
+malformed entries, and missing mid-chain links; file-lock tests cover timeout,
+cancellation, failed atomic replacement, and OS-error distinctions.
 
 ## Documentation gate
 

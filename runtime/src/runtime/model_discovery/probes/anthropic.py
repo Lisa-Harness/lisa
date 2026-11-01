@@ -9,6 +9,8 @@ the UI can distinguish "live list" from "conservative defaults".
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ..classify import apply_known_override, env_any
@@ -110,7 +112,7 @@ class AnthropicProbe(ProviderProbe):
         return result
 
 
-def _enrich_anthropic_model(model_id: str, row: dict) -> DiscoveredModel:
+def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` enriched from Anthropic's model metadata.
 
     Anthropic's ``/v1/models`` response carries ``display_name`` and

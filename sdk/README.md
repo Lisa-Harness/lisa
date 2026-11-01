@@ -33,7 +33,7 @@ for cross-package contracts.
 
 | Module | Responsibility |
 | --- | --- |
-| `memory/` | SQLite-backed memory store library (vec0 embeddings, backups). The `lisa-memory` MCP server wraps it. |
+| `memory/` | SQLite-backed memory store library (vec0 embeddings, read-only mode). The `lisa-memory` MCP server wraps it. |
 | `thread/` | Lossless, segmented conversation-thread store (`ThreadStore`): three-tier layout (active/sealed segments + sparse index) with zstd sidecars and redaction policy. Owns the read path; the write path stays in `runtime.thread`. |
 | `storage/` | Sandboxed file I/O: `StorageBackend` owns the files sandbox, deny-glob policy, and model-manifest read/write. The `lisa-storage` MCP server wraps it. |
 | `forensics/` | Read-only forensic evidence assembly. `ForensicReader` joins the thread store with the decision, dispatch, and token-usage logs on `turn_index`; `render_bundle` is the single formatter both the introspect pack and the host's `/forensics` command use. Rotation-aware and byte-bounded, and it reports missing sources explicitly instead of presenting them as empty evidence. |
@@ -44,7 +44,7 @@ for cross-package contracts.
 | Module | Responsibility |
 | --- | --- |
 | `guard/` | Content-safety validation backends: `GuardBackend` protocol, default `PassthroughGuardBackend`, result formatting, blocked-check audit logging. The `lisa-guard` MCP server owns transport. |
-| `mcp_host/` | Pure config construction for first-party MCP servers (`build_content_mcp_config`, `build_catalog_mcp_config`). Pool lifecycle is deliberately host-owned because anyio cancel scopes bind to the host's event loop. |
+| `mcp_host/` | Pure config construction for first-party MCP servers (`build_content_mcp_config`, `build_catalog_mcp_config`) and the reverse projection (`export_mcp_servers`) that renders compiled configs as another agent client's config. Pool lifecycle is deliberately host-owned because anyio cancel scopes bind to the host's event loop. |
 
 ### Pluggable Runtime Backends
 

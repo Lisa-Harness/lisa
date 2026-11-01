@@ -88,6 +88,10 @@ class ToolExecutionContext(BaseModel):
     workspace_id: str = "default"
     user_id: str = ""
     user_slug: str = "default"
+    #: Thread the tool runs in, named by its store stem. Turn indices are
+    #: per-thread and two conversations of one user both count from zero, so
+    #: a shared ledger needs this to keep their rows apart.
+    thread_store_slug: str = ""
     surface_type: ConversationSurface = "personal_dm"
     surface_id: str = ""
     memory_scope: MemoryScope = "personal"
@@ -137,6 +141,10 @@ class ToolExecutionContext(BaseModel):
     # a relative path against the process CWD. There is deliberately NO
     # fallback — the host always injects a resolved, absolute data dir.
     data_dir: str = Field(default="", exclude=True)
+    # Canonical thread-store directory, injected by the host alongside
+    # ``data_dir``. The host resolves it once, so a tool that must open the
+    # host's own thread store uses this rather than re-deriving it.
+    thread_dir: str = Field(default="", exclude=True)
     # Global thread turn index of the turn this dispatch belongs to. Carried
     # on the context so the telemetry publisher can stamp it without the
     # registry reaching back into turn state. ``None`` means the dispatch is
@@ -248,6 +256,11 @@ class OperationExecutionContext(BaseModel):
     user_name: str = ""
     principal_key: str = ""
     thread_user_id: str = ""
+    #: Filename stem of the thread store this turn writes to. A host that
+    #: isolates one store per conversation names it ``<user>--<conversation>``,
+    #: so it differs from ``user_slug``. A reader that must open the turn's
+    #: own store uses this; ledger scoping still uses ``user_slug``.
+    thread_store_slug: str = ""
     conversation_id: str = ""
     surface_type: ConversationSurface = "personal_dm"
     surface_id: str = ""
@@ -292,6 +305,11 @@ class OperationExecutionContext(BaseModel):
     # same no-fallback contract applies to operations that write/persist
     # caches (e.g. ``fetch_page``) or need the host data root.
     data_dir: str = Field(default="", exclude=True)
+    # Canonical thread-store directory. The host resolves it once (a CLI
+    # argument wins over the environment), so an operation that must open
+    # the host's own thread store uses this rather than re-deriving it and
+    # reading a directory the host never wrote.
+    thread_dir: str = Field(default="", exclude=True)
     # The invoking operation's wall-clock ceiling in seconds (from
     # ``OperationDefinition.timeout_seconds``), set by ``execute_operation``
     # before dispatch. Operations that recurse into sub-turns (delegate /
@@ -303,6 +321,14 @@ class OperationExecutionContext(BaseModel):
     # ``ToolExecutionContext.turn_index`` — same contract, and propagated
     # through ``_to_tool_context`` so nested tool calls keep the attribution.
     turn_index: int | None = Field(default=None, exclude=True)
+    # Durable recorder for model requests made by this dispatch's
+    # completions (``runtime.turn_continuation.persist_request`` shape:
+    # persist one snapshot dict, return its content-addressed ref). Wired by
+    # the host; ``None`` leaves operation completions unrecorded (the
+    # previous behavior). The registry derives the host adapter's
+    # ``CompletionAuditContext`` from this seam so every operation dispatch
+    # archives its off-turn model calls next to the turn loop's own.
+    request_recorder: Any = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -2609,9 +2635,9 @@ class TokenUsageEvent(BusEvent):
 
     Consumed by the host's `TokenUsageTelemetryHandler` which appends every
     payload to the durable `token-usage.jsonl` blob under the host's data
-    directory. The handler uses a timestamp + nanosecond suffix as the
-    idempotency key so retries and stream-final events always append without
-    collapsing.
+    directory. The handler uses the event timestamp, handler instance,
+    sequence, and nanosecond suffix as the idempotency key so events from
+    separate writers cannot collide on coarse-grained clocks.
     """
 
     event_type: BusEventType = "token_used"
@@ -2627,6 +2653,10 @@ class TokenUsageEvent(BusEvent):
     #: attributable. ``None`` = not attributable to a turn (off-turn slice
     #: work); ``0`` is the thread's first real turn.
     turn_index: int | None = None
+    #: Thread this model call belongs to, named by its store stem. Turn indices
+    #: are per-thread and two conversations of one user both count from zero,
+    #: so the owner alone cannot separate their cost rows.
+    thread_store_slug: str = ""
     call_site: str = ""
     provider: str = ""
     model_id: str = ""
@@ -2658,6 +2688,14 @@ class TokenUsageEvent(BusEvent):
     latency_ms: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
     extra_context_appended: bool = False
+    #: Per-instance monotonic counter the durable handler stamps at append
+    #: time (publishers never set it). A reader detects dropped rows by
+    #: finding sequence gaps within one ``ledger_instance``.
+    sequence: int | None = None
+    #: Identity of the handler instance that appended this row. Sequences
+    #: are per-instance — a restart or a second host process starts a new
+    #: instance at 1 — so gap detection partitions on this field.
+    ledger_instance: str = ""
 
 
 class ToolExecutionTelemetry(BusEvent):
@@ -2676,6 +2714,12 @@ class ToolExecutionTelemetry(BusEvent):
     #: Owner of the dispatch. The ledger is shared by every user of a data
     #: root and turn indices are per-thread, so readers scope by this.
     user_slug: str | None = None
+    #: Thread the dispatch belongs to, named by its store stem. Turn indices
+    #: are per-thread and two conversations of one user both count from zero,
+    #: so the owner alone cannot separate them. The stem is the same value
+    #: that names the thread store, so a reader scopes the store and the
+    #: ledger rows that join onto it by one identifier.
+    thread_store_slug: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

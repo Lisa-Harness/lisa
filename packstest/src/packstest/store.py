@@ -94,4 +94,4 @@ class MemoryWorkProductStore:
             "source_root": "",
         }
         fields.update(overrides)
-        return WorkProduct(**fields)
+        return WorkProduct.model_validate(fields)

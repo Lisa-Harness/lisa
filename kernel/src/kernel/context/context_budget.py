@@ -75,7 +75,7 @@ class ContextBudgetAllocator:
         self.token_char_ratio = max(1, token_char_ratio)
         self.lane_limits = {lane: max(0, limit) for lane, limit in lane_limits.items()}
         self.total_used_tokens = 0
-        self.lane_used_tokens: dict[ContextLane, int] = {lane: 0 for lane in self.lane_limits}
+        self.lane_used_tokens: dict[ContextLane, int] = dict.fromkeys(self.lane_limits, 0)
         self.records: dict[str, ContextBudgetRecord] = {}
 
     @classmethod

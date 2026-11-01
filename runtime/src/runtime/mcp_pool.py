@@ -543,12 +543,9 @@ def setup_framework(
     )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
     if default_mcp_tool_ids:
-        # build_catalog_mcp_config always returns a populated env dict, but
-        # MCPClientConfig.env is typed dict|None, so normalize defensively
-        # before mutating (the empty-default case is skipped above).
-        if catalog_config.env is None:
-            catalog_config = dataclasses.replace(catalog_config, env={})
-        catalog_config.env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
+        catalog_env = dict(catalog_config.env or {})
+        catalog_env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
+        catalog_config = dataclasses.replace(catalog_config, env=catalog_env)
 
     # Start the shared lisa-catalog and lisa-content subprocesses together so
     # their interpreter startups overlap; every catalog/content adapter below
@@ -682,8 +679,8 @@ def _mcp_environment(runtime: HostRuntime, workspace_root: str) -> dict[str, str
     }
     if not config.no_thread:
         exported["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
-    if config.user_slug:
-        exported["LISA_USER_SLUG"] = config.user_slug
+    if config.thread_slug:
+        exported["LISA_USER_SLUG"] = config.thread_slug
     # Thread-read redaction: the same env contract ``runtime.config`` resolves
     # for the host's in-process excerpt/manifest/search reads. The read-only
     # lisa-thread subprocess applies the same policy to ``thread_read_range``
@@ -957,17 +954,14 @@ def _skipped_selection_reasons(
     skipped_candidates: list[_SkippedCandidate],
 ) -> list[str]:
     """Explain explicit selections that name a server skipped before selection."""
-    reasons: list[str] = []
-    for capability, provider in sorted(selected_capability_providers.items()):
-        selected = provider.strip().lower()
-        if not selected:
-            continue
-        for skipped in skipped_candidates:
-            if skipped.candidate.capability == capability and selected in candidate_identifiers(
-                skipped.candidate
-            ):
-                reasons.append(f"{skipped.candidate.spec.server_id} was skipped: {skipped.reason}.")
-    return reasons
+    return [
+        f"{skipped.candidate.spec.server_id} was skipped: {skipped.reason}."
+        for capability, provider in sorted(selected_capability_providers.items())
+        if (selected := provider.strip().lower())
+        for skipped in skipped_candidates
+        if skipped.candidate.capability == capability
+        and selected in candidate_identifiers(skipped.candidate)
+    ]
 
 
 def _pack_binary_release(root: Path, package_name: str) -> tuple[str | None, str | None]:
@@ -1502,7 +1496,10 @@ def _proxy_protocol_resolver(runtime: HostRuntime) -> Callable[[str], str | None
 
     def _resolver(name: str) -> str | None:
         try:
-            return protocol_for(name)
+            protocol = protocol_for(name)
+            if protocol is not None and not isinstance(protocol, str):
+                raise TypeError(f"Invalid proxy protocol from gateway provider: {protocol!r}")
+            return protocol
         except Exception:  # pylint: disable=broad-except
             logger.warning(
                 "provider gateway seam failed to report a proxy protocol for %r; "

@@ -263,6 +263,7 @@ async def _execute_declarative_tool_call(
                     workspace_id=ctx.workspace_id,
                     user_id=ctx.user_id,
                     user_slug=ctx.user_slug,
+                    thread_store_slug=ctx.thread_store_slug,
                     surface_type=ctx.surface_type,
                     surface_id=ctx.surface_id,
                     memory_scope=ctx.memory_scope,
@@ -278,6 +279,7 @@ async def _execute_declarative_tool_call(
                     event_bus=ctx.event_bus,
                     state_provider=ctx.state_provider,
                     data_dir=ctx.data_dir,
+                    thread_dir=ctx.thread_dir,
                     turn_index=ctx.turn_index,
                 ),
             )

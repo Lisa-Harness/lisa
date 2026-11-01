@@ -260,7 +260,7 @@ def build_approval_data(runtime: HostRuntime, invocation: ApprovalInvocation) ->
         "parameters": redacted,
         "containment": containment,
         "containment_reasons": reasons,
-        "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else str(expires or ""),
+        "expires_at": expires.isoformat() if isinstance(expires, datetime) else str(expires or ""),
         "expires_in_seconds": expires_in_seconds,
         "policy_verdict": policy_verdict,
         "policy_reason": policy_reason,
@@ -383,6 +383,7 @@ def _thread_entries(runtime: HostRuntime) -> list[dict[str, Any]]:
 
 def _paused_approval_entry(runtime: HostRuntime, request_id: str) -> dict[str, Any] | None:
     """Return the persisted turn that paused for this approval request."""
+    entry: dict[str, Any]
     for entry in reversed(_thread_entries(runtime)):
         provenance = entry.get("provenance") or {}
         if provenance.get("pending_approval_request_id") == request_id:
@@ -667,8 +668,7 @@ def _resolve_approval_identity(
     """
     identity = approval_identity(runtime)
     recorded = getattr(record.invocation, "identity", None)
-    identity_fallback_used = recorded is not None and identity != recorded
-    if identity_fallback_used:
+    if recorded is not None and identity != recorded:
         if not same_session_scope(identity, recorded):
             return identity, (
                 f"Approval request {request_id} belongs to a different session "
@@ -1045,7 +1045,7 @@ async def settle_paired_recovery_record(
         await recovery_service.settle(
             work_item_id,
             recovery_identity,
-            state=state,  # type: ignore[arg-type]
+            state=state,
             last_error=last_error,
             result_preview=result_preview,
         )

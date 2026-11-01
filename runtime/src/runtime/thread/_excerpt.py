@@ -9,17 +9,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sdk.thread import ThreadStore
+
 from runtime.host_commands import is_host_command_query as _is_host_command_query
 
 
-def _store_from_package(thread_path: Path | None):
+def _store_from_package(thread_path: Path | None) -> ThreadStore | None:
     """Resolve the store through the package namespace (``runtime.thread``).
 
     The redaction policy is a module-level global owned by ``runtime.thread``;
     importing the factory lazily keeps ``_store`` and the excerpt module
     import-cycle-free.
     """
-    from runtime.thread import _thread_store
+    from runtime.thread import _thread_store  # lazy: breaks cycle with runtime.thread
 
     return _thread_store(thread_path)
 

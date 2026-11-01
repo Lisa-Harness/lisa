@@ -232,8 +232,7 @@ def matches_apply_to(apply_to: list[str] | tuple[str, ...], file_path: str) -> b
     if not apply_to:
         return False
     normalized = file_path.replace("\\", "/")
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
+    normalized = normalized.removeprefix("./")
     try:
         from wcmatch import glob as _wcmatch_glob
     except ImportError:  # pragma: no cover - wcmatch is a declared dep
@@ -494,8 +493,7 @@ def _default_name_from_path(path: str) -> str:
     stem = PurePosixPath(path.replace("\\", "/")).stem
     # Strip common suffixes like .instructions, .agent, .prompt.
     for suffix in (".instructions", ".agent", ".prompt"):
-        if stem.endswith(suffix):
-            stem = stem[: -len(suffix)]
+        stem = stem.removesuffix(suffix)
     return stem or path
 
 

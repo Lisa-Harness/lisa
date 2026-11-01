@@ -3,7 +3,8 @@
 `lisa-harness-mcp-servers` (`mcp_server`) contains Lisa's first-party MCP (Model Context Protocol) servers — the external tool-facing integrations and transport concerns of the framework.
 
 See [configuration](../docs/CONFIGURATION.md), [storage](../docs/STORAGE.md),
-and the [documentation index](../docs/README.md).
+[MCP interoperability](../docs/MCP_INTEROP.md), and the
+[documentation index](../docs/README.md).
 
 ## Design Philosophy
 

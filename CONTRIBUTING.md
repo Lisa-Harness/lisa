@@ -100,8 +100,9 @@ Use concise subjects with a type and optional scope:
 - `docs:` documentation; `test:` tests; `infra:` build/CI/tooling.
 - `copilot:` agent customization.
 
-Describe compatibility breaks in the body and changelog. Keep already shared
-history intact; prefer a follow-up or `fixup!` commit over rewriting it.
+Describe compatibility breaks in the body and changelog. Land on `main` by
+rebase (fast-forward) or squash, never by a merge commit; keep already shared
+history intact and consider using a `fixup!` commit but never rewrite it.
 
 ## Licensing and review
 

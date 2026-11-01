@@ -12,8 +12,26 @@ When an agent completes an implementation change (code, docs, or config) and the
 
 - "Implementation is complete" means the intended behavior is in place, docstrings/tests required by `python-development.md` are added, and the full verification loop is green for the touched files: `ruff format --check`, `ruff check`, `mypy` (strict, all public packages), and `pytest -m "not live"`. There is no warn-only stage — any violation blocks the commit. Pre-existing failures in untouched files are noted in the commit message but do not block.
 - **Avoid using `git stash` to isolate pre-existing failures.** Only use it when you know there are no other changes happening. Otherwise, run verification directly against the current tree. If you need to distinguish a pre-existing failure from one introduced by your change, read the command output: failures in files you did not touch are pre-existing by definition and do not block the commit. Failures in files you touched must be fixed before committing.
-- Use one normal commit per shippable slice. Do not amend or rewrite history after pushing.
+- Use one normal commit per shippable slice.
 - If later review or verification finds issues after the commit exists, create `fixup!` commits targeting the affected commit instead of amending.
+
+## Linear history: no merge commits
+
+`main` only ever receives commits by rebase or squash. Repository protection
+requires linear history and disables merge commits, so GitHub rejects a merge
+at the server; there is no separate CI check for it.
+
+- **Never** run `git merge` on a branch that will be reviewed or pushed.
+  Integrate base-branch changes with `git fetch origin && git rebase origin/main`.
+- Land changes with **rebase and merge** (fast-forward) or **squash and
+  merge**. Do not create a merge commit to bring a branch into `main`.
+- Fold correction commits with autosquash rather than adding a merge:
+  `git commit --fixup=<sha>`, then
+  `git rebase --autosquash --interactive origin/main`.
+- Rewriting an **unpushed** branch is expected and preferred. Once a branch
+  is pushed and reviewed, do not force-push it to hide review history; add
+  `fixup!` commits and squash them at merge time instead.
+- Never rewrite or force-push `main`.
 
 ## Commit scope and hygiene
 

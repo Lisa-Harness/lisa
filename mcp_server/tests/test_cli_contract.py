@@ -92,8 +92,6 @@ def test_no_env_var_path_fallback_in_source() -> None:
         source = py_file.read_text(encoding="utf-8")
         # Simple string search is sufficient — these are env var names
         # that should never appear in source.
-        for var in forbidden:
-            if var in source:
-                violations.append(f"{py_file}: contains '{var}'")
+        violations.extend(f"{py_file}: contains '{var}'" for var in forbidden if var in source)
 
     assert not violations, "Removed env vars found in server source:\n" + "\n".join(violations)

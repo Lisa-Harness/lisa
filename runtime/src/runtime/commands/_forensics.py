@@ -43,13 +43,29 @@ def render_forensics(runtime: HostRuntime, arg: str) -> str:
         runtime.paths.data_dir,
         thread_dir=runtime.paths.thread_dir,
         user_slug=runtime.config.user_slug,
+        # The thread store is isolated per conversation, so its stem is not
+        # the user slug. ``user_slug`` still scopes the shared ledgers,
+        # whose rows are stamped with the plain user slug.
+        thread_store_slug=runtime.config.thread_slug,
+        # One conversation of one user shares the ledgers with the others,
+        # and turn indices are per-thread, so the conversation keeps one
+        # conversation's rows off another's turns.
         # The host resolved the deployment's policy at startup; pass it
         # explicitly so the operator view is redacted exactly like every other
         # projection, regardless of ambient environment at command time.
         redaction=get_thread_redaction_policy(),
     )
     selection = arg.strip() or "last"
-    return render_bundle(reader.bundle(turns=selection))
+    verify = False
+    if "--verify-chain" in selection:
+        # The full-store integrity audit (every sealed segment is
+        # decompressed) is an explicit opt-in, never the default read.
+        verify = True
+        selection = (
+            " ".join(part for part in selection.split() if part != "--verify-chain").strip()
+            or "last"
+        )
+    return render_bundle(reader.bundle(turns=selection, verify_chain=verify))
 
 
 def handle_forensics_command(

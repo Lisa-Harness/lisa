@@ -6,9 +6,10 @@ from the thread tail at turn start. The view is never persisted; it is
 rebuilt every turn from the append-only thread log.
 
 The plan lives as a ``## Plan`` block in a turn's ``response_text``.
-Completion is inferred from ``effect_receipts`` in later thread entries
-matching each step's ``write_capability`` (for write steps) or the first
-handoff (for read steps). When a match is found, the completing entry's
+Completion is inferred from the plan turn and later thread entries:
+``effect_receipts`` matching each step's ``write_capability`` (for write
+steps) or the step's mode handing off (for read steps, via
+``departed_modes``). When a match is found, the completing entry's
 global turn index is recorded on the step as ``completing_turn`` — the
 completion is turn-addressed and verifiable via ``thread_read_range`` or
 the markdown render operation. The string match is the *discovery*; the
@@ -29,6 +30,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kernel.config import settings
 from kernel.workflow_position import WorkflowStep
 
 __all__ = [
@@ -221,22 +223,28 @@ def _step_id_for(mode_id: str, index: int) -> str:
     return f"{slug}_{index}"
 
 
-def _write_receipt_pairs(entry: dict[str, Any]) -> set[tuple[str, str]]:
-    """Return ``(mode_id, capability_id)`` pairs from the entry's write receipts.
+#: One unit of completion evidence inside a thread entry:
+#: ``(kind, mode_id, capability_id)``. ``kind`` is ``"write"`` for a write
+#: receipt (capability set) or ``"handoff"`` for a mode departing (capability
+#: empty).
+_Evidence = tuple[str, str, str]
+
+
+def _write_evidence(entry: dict[str, Any]) -> list[_Evidence]:
+    """Return one ``write`` evidence unit per write receipt in the entry.
 
     Mode and capability are paired per receipt: one thread entry can span
     several modes (a turn may enter in one mode and hand off mid-turn), so
     matching them independently would let one mode's receipt and another
-    mode's capability combine into false completion evidence. Each capability
-    is emitted in raw and bare form (``storage.save`` and ``save``). Receipts
+    mode's capability combine into false completion evidence. Receipts
     persisted before ``EffectReceipt.mode_id`` existed carry an empty id, so
     the entry's own ``mode_id`` is used as their fallback.
     """
     receipts = entry.get("effect_receipts")
     if not receipts or not isinstance(receipts, list):
-        return set()
+        return []
     entry_mode = str(entry.get("mode_id") or "")
-    pairs: set[tuple[str, str]] = set()
+    units: list[_Evidence] = []
     for r in receipts:
         if not isinstance(r, dict):
             continue
@@ -245,36 +253,139 @@ def _write_receipt_pairs(entry: dict[str, Any]) -> set[tuple[str, str]]:
         cap = str(r.get("capability_id") or "")
         if not cap:
             continue
-        mode = str(r.get("mode_id") or "") or entry_mode
-        pairs.add((mode, cap))
-        if "." in cap:
-            pairs.add((mode, cap.rsplit(".", 1)[-1]))
-    return pairs
+        units.append(("write", str(r.get("mode_id") or "") or entry_mode, cap))
+    return units
 
 
-def _entry_satisfies_step(entry: dict[str, Any], step: WorkflowStep) -> bool:
-    """Return True when ``entry`` is the completion evidence for ``step``.
+def _handoff_evidence(entry: dict[str, Any]) -> list[_Evidence]:
+    """Return one ``handoff`` evidence unit per mode that finished in the entry.
 
-    - **Write step** (``step.write_capability`` set): one of the entry's
-      write receipts must match the capability (raw or bare form) *and* have
-      been dispatched in the step's mode. No dense-content fallback — the
-      receipt is the honest signal.
-    - **Read step** (``step.write_capability`` is None): a non-empty
-      ``handoff_to`` or ``transitioned_to`` in an entry whose mode is the
-      step's mode. The reads and prose are already in the lossless thread;
-      the handoff is the completion signal.
-
-    Mode scoping prevents one mode's work from completing another's step.
-    It is evaluated per receipt, not per entry, because an entry that spans
-    several modes carries all of their receipts.
+    ``departed_modes`` lists every mode that handed off mid-turn, so a turn
+    that ran ``planner → thinker → researcher`` credits ``thinker`` even
+    though ``handoff_to`` only keeps the last hop. A stage transition
+    (``transitioned_to``) credits the mode the turn ended in. Entries
+    written before ``departed_modes`` existed fall back to the entry's own
+    ``mode_id`` when it handed off or transitioned.
     """
-    if step.write_capability is not None:
-        return (step.mode_id, step.write_capability) in _write_receipt_pairs(entry)
-    if entry.get("mode_id") != step.mode_id:
-        return False
     handoff = str(entry.get("handoff_to") or "")
     transitioned = str(entry.get("transitioned_to") or "")
-    return bool(handoff or transitioned)
+    entry_mode = str(entry.get("mode_id") or "")
+    departed = entry.get("departed_modes")
+    if not isinstance(departed, list):
+        return [("handoff", entry_mode, "")] if handoff or transitioned else []
+    units: list[_Evidence] = [("handoff", str(m), "") for m in departed if m]
+    if transitioned:
+        units.append(("handoff", handoff or entry_mode, ""))
+    return units
+
+
+def _entry_modes(entry: dict[str, Any]) -> set[str]:
+    """Return every mode a thread entry ran in.
+
+    The entry's own ``mode_id`` is the mode the turn entered in. A turn that
+    hands off mid-turn also runs in the mode it left, recorded in
+    ``departed_modes``, and ends in the mode it handed off to.
+    """
+    modes: set[str] = set()
+    entry_mode = str(entry.get("mode_id") or "")
+    if entry_mode:
+        modes.add(entry_mode)
+    departed = entry.get("departed_modes")
+    if isinstance(departed, list):
+        modes.update(str(mode) for mode in departed if mode)
+    handoff = str(entry.get("handoff_to") or "")
+    if handoff:
+        modes.add(handoff)
+    return modes
+
+
+def _count_idle_turns(
+    thread_entries: list[dict[str, Any]],
+    *,
+    last_progress: int,
+    open_step_modes: set[str],
+) -> int:
+    """Return the length of the trailing run of turns that are idle for the plan.
+
+    A turn is idle when it neither completes a step nor runs in any open
+    step's mode. The run is counted backwards from the newest entry and
+    stops at the first turn that is not idle, so a turn that did the open
+    step's work resets the count. Only a stretch of turns that ignore the
+    plan entirely retires it — a plan whose step is still being worked on
+    is not abandoned, however long the step takes.
+
+    Entries at or before ``last_progress`` completed a step, so they are
+    never idle and are excluded from the scan.
+    """
+    idle = 0
+    for entry in reversed(thread_entries[last_progress + 1 :]):
+        if open_step_modes & _entry_modes(entry):
+            break
+        idle += 1
+    return idle
+
+
+def _evidence_satisfies_step(unit: _Evidence, step: WorkflowStep) -> bool:
+    """Return True when one evidence unit completes ``step``.
+
+    - **Write step** (``step.write_capability`` set): a write receipt
+      dispatched in the step's mode whose capability matches in raw or bare
+      form (``storage.save`` or ``save``). No dense-content fallback — the
+      receipt is the honest signal.
+    - **Read step** (``step.write_capability`` is None): the step's mode
+      handing off (or transitioning stage). The reads and prose are already
+      in the lossless thread; the handoff is the completion signal.
+
+    Mode scoping prevents one mode's work from completing another's step.
+    """
+    kind, mode_id, capability = unit
+    if mode_id != step.mode_id:
+        return False
+    if step.write_capability is None:
+        return kind == "handoff"
+    if kind != "write":
+        return False
+    return step.write_capability in (capability, capability.rsplit(".", 1)[-1])
+
+
+#: Maximum length of a completed step's one-line result preview.
+_PREVIEW_MAX_CHARS = 300
+
+
+def _strip_plan_lines(block_text: str) -> str:
+    """Drop the header, step, and deliverable/rationale lines from a plan block."""
+    plan_line_res = (_PLAN_HEADER_RE, _PLAN_STEP_RE, _RATIONALE_RE, _WRITES_RE, _READS_RE)
+    return "\n".join(
+        line
+        for line in block_text.splitlines()
+        if not any(pattern.match(line) for pattern in plan_line_res)
+    )
+
+
+def _result_preview(entry: dict[str, Any]) -> str:
+    """Return a one-line preview of the completing entry's response.
+
+    The preview is rendered inside a checklist line, so it must not carry
+    the response's own structure: the plan block a plan-emitting turn opens
+    with and any ``## Workflow progress`` footer are dropped, and the rest is
+    collapsed to single spaces — a raw multi-line slice would spill headings
+    and list items into the footer.
+    """
+    text = str(entry.get("response_text") or "")
+    plan = _parse_plan_block(text)
+    if plan is not None:
+        # The block runs to the next heading, so a plan turn whose answer
+        # has no heading of its own keeps it inside the block; fall back to
+        # the block's non-plan lines then.
+        after = text.strip()[len(plan[0]) :]
+        text = after if after.strip() else _strip_plan_lines(plan[0])
+    footer = re.search(r"^##[ \t]+Workflow progress[ \t]*$", text, re.MULTILINE)
+    if footer:
+        text = text[: footer.start()]
+    flat = " ".join(text.split())
+    if len(flat) <= _PREVIEW_MAX_CHARS:
+        return flat
+    return flat[: _PREVIEW_MAX_CHARS - 1].rstrip() + "…"
 
 
 def _workflow_concluded_after(thread_entries: list[dict[str, Any]], plan_entry_index: int) -> bool:
@@ -336,14 +447,21 @@ def _match_step_completions(
     steps: list[WorkflowStep],
     thread_entries: list[dict[str, Any]],
     plan_entry_index: int,
-) -> tuple[list[str], dict[str, str], list[WorkflowStep]]:
-    """Determine step completion by consuming thread entries monotonically.
+) -> tuple[list[str], dict[str, str], list[WorkflowStep], int]:
+    """Determine step completion by consuming evidence units monotonically.
 
-    Steps are matched in declared order, and each thread entry can complete at
-    most one step (``used`` tracks claimed entries). That makes
-    double-counting unrepresentable: a per-step search window let one receipt
-    satisfy several steps that share a ``mode_id`` (two ``coding`` steps, one
-    commit → both ticked).
+    Steps are matched in declared order, and each evidence unit — one write
+    receipt or one mode departure — can complete at most one step (``used``
+    tracks claimed units). That makes double-counting unrepresentable: one
+    commit receipt cannot tick two ``coding`` steps. Claiming units rather
+    than whole entries matters because one turn can run several plan steps
+    back to back (``thinker`` hands off to ``researcher``, which writes).
+
+    The scan starts at the plan entry itself: the planner opens the turn
+    and the turn goes on to execute steps, so work done in the
+    plan-emitting turn is genuine completion evidence (the 2026-10-28 turn
+    1094 ran both of its steps in-turn, was never credited, and its plan
+    stayed live for every later turn).
 
     Every step scans from the plan onwards, so a step can be satisfied by work
     that ran *before* an earlier step finished. A strict forward cursor would
@@ -353,36 +471,50 @@ def _match_step_completions(
     what the declared order predicted, and the per-mode handoff/receipt test
     still prevents a step from claiming another mode's work.
 
-    Returns ``(completed_ids, step_results, updated_steps)`` with
-    ``completing_turn`` stamped on completed steps.
+    Returns ``(completed_ids, step_results, updated_steps, last_progress)``
+    with ``completing_turn`` stamped on completed steps; ``last_progress`` is
+    the index of the latest entry that completed a step, or the plan entry
+    when none did.
     """
     completed: list[str] = []
     step_results: dict[str, str] = {}
     updated_steps = list(steps)
+    evidence = [
+        _write_evidence(entry) + _handoff_evidence(entry)
+        for entry in thread_entries[plan_entry_index:]
+    ]
 
-    used: set[int] = set()
+    used: set[tuple[int, int]] = set()
+    last_progress = plan_entry_index
     for idx, step in enumerate(updated_steps):
-        for entry_index in range(plan_entry_index + 1, len(thread_entries)):
-            if entry_index in used:
-                continue
-            entry = thread_entries[entry_index]
-            if not _entry_satisfies_step(entry, step):
-                continue
-            used.add(entry_index)
-            completed.append(step.step_id)
-            preview = str(entry.get("response_text") or "").strip()[:300]
-            if preview:
-                step_results[step.step_id] = preview
-            # Record the completing turn index so the completion is
-            # turn-addressed and verifiable via ``thread_read_range``. The
-            # entry's ``turn`` field is the global 0-based turn index
-            # stamped at append time.
-            completing_turn = entry.get("turn")
-            if isinstance(completing_turn, int):
-                updated_steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
-            break
+        match = next(
+            (
+                (offset, unit_index)
+                for offset, units in enumerate(evidence)
+                for unit_index, unit in enumerate(units)
+                if (offset, unit_index) not in used and _evidence_satisfies_step(unit, step)
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        used.add(match)
+        entry_index = plan_entry_index + match[0]
+        last_progress = max(last_progress, entry_index)
+        entry = thread_entries[entry_index]
+        completed.append(step.step_id)
+        preview = _result_preview(entry)
+        if preview:
+            step_results[step.step_id] = preview
+        # Record the completing turn index so the completion is
+        # turn-addressed and verifiable via ``thread_read_range``. The
+        # entry's ``turn`` field is the global 0-based turn index
+        # stamped at append time.
+        completing_turn = entry.get("turn")
+        if isinstance(completing_turn, int):
+            updated_steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
 
-    return completed, step_results, updated_steps
+    return completed, step_results, updated_steps, last_progress
 
 
 def _count_consecutive_same_mode_turns(
@@ -407,19 +539,26 @@ def _count_consecutive_same_mode_turns(
 def derive_workflow_view(
     thread_entries: list[dict[str, Any]],
     catalog: dict[str, Any] | None = None,
+    *,
+    idle_turn_limit: int | None = None,
 ) -> WorkflowView | None:
     """Derive the active workflow view from the thread tail.
 
     Scans the thread entries (chronological order) for the most recent
     ``## Plan`` block, parses its steps, and determines completion by
-    matching ``effect_receipts`` in later entries against each step's
-    ``mode_id``.
+    matching ``effect_receipts`` and mode departures in the plan entry and
+    later entries against each step's ``mode_id``.
 
     Returns ``None`` when:
     - No ``## Plan`` block is found in any entry (no active workflow).
     - The plan is found but all steps are complete (the workflow is done;
       the view should not be injected — "if I finished a plan then quit,
       there shouldn't be a plan").
+    - The plan was concluded by the operator (``/workflow conclude``).
+    - ``idle_turn_limit`` consecutive *idle* turns followed the plan's latest
+      progress — turns that neither completed a step nor ran in any open
+      step's mode (the plan went stale). Defaults to
+      ``Settings.workflow_plan_idle_turn_limit``; ``0`` disables the rule.
 
     The ``catalog`` parameter is optional and currently unused — it's
     reserved for future enrichment (e.g. resolving ``satisfies_intents``
@@ -446,9 +585,48 @@ def derive_workflow_view(
     # Build WorkflowStep objects from the parsed plan.
     steps = _build_view_steps(parsed_steps)
 
-    completed, step_results, steps = _match_step_completions(
+    completed, step_results, steps, last_progress = _match_step_completions(
         steps, thread_entries, plan_entry_index
     )
+
+    # Completion frontier: the declaration index of the latest completed
+    # step. Steps complete by *evidence* (receipts and mode departures),
+    # not in declared order — step 2 can run while step 1 is abandoned —
+    # so the frontier, not the naive "first open step", decides what the
+    # plan still routes to. Both the idle retirement and the current-step
+    # pointer below read it.
+    completed_indexes = [idx for idx, s in enumerate(steps) if s.step_id in completed]
+    high_water = max(completed_indexes, default=-1)
+
+    # A plan that stopped making progress is retired: without this, an
+    # abandoned plan re-attaches its footer and chain-in-flight handoff to
+    # every later turn, re-routing work that has nothing to do with it.
+    #
+    # The rule is "idle turns" — consecutive turns that neither complete a
+    # step nor run in an open step's mode. Counting every turn since the
+    # last completion would retire a plan whose step is still being worked
+    # on (the step's own turns are not idle), which is the difference
+    # between an abandoned plan and a slow one.
+    #
+    # Front-awareness matters here too: only open steps at or after the
+    # completion frontier keep the plan alive. A turn that runs in an
+    # abandoned pre-frontier step's mode (exactly what a backward routing
+    # hint produces) must not reset the idle count and immortalize the
+    # zombie plan — the t1107/t1108 loop sustained itself precisely
+    # because each hijacked turn ended in `thinker`, the abandoned step's
+    # mode, resetting the retirement clock.
+    limit = settings.workflow_plan_idle_turn_limit if idle_turn_limit is None else idle_turn_limit
+    if limit > 0:
+        open_step_modes = {
+            step.mode_id for step in steps[high_water + 1 :] if step.step_id not in completed
+        }
+        idle_turns = _count_idle_turns(
+            thread_entries,
+            last_progress=last_progress,
+            open_step_modes=open_step_modes,
+        )
+        if idle_turns >= limit:
+            return None
 
     # Derive mode/stage pointer from the most recent entry.
     last_entry = thread_entries[-1]
@@ -458,7 +636,16 @@ def derive_workflow_view(
     # Derive turn_count: consecutive entries with same mode_id + stage_id.
     turn_count = _count_consecutive_same_mode_turns(thread_entries, current_mode, current_stage)
 
-    # Determine current step: first non-completed step.
+    # Determine current step: the first non-completed step at or after the
+    # completion frontier computed above. The naive ``remaining[0]`` pinned
+    # the pointer on an abandoned pre-frontier step forever, so every
+    # post-handoff routing hint pointed backward at it and the
+    # forced-action enforcer dragged a compliant model back on each
+    # handoff (the 2026-10-30 t1107/t1108 loop: the view said `thinker`
+    # while the turn was in `coding_review`). When no open step sits after
+    # the frontier, the pointer is *empty* — the chain has no forward step
+    # to name — but the view stays alive: the checklist still renders, and
+    # only the routing (hint, resume, budget transition) goes silent.
     current_step_id = ""
     remaining = [s for s in steps if s.step_id not in completed]
     if not remaining:
@@ -466,7 +653,10 @@ def derive_workflow_view(
         # caller doesn't inject a stale plan ("if I finished a plan then
         # quit, there shouldn't be a plan").
         return None
-    current_step_id = remaining[0].step_id
+    current_step_id = next(
+        (s.step_id for s in steps[high_water + 1 :] if s.step_id not in completed),
+        "",
+    )
 
     # Deterministic position_id from plan_text hash (stable across turns
     # for the same plan, so recovery record correlation works).

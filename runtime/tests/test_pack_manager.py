@@ -1695,7 +1695,7 @@ def test_seed_bundled_packs_lock_empty_discovery_writes_nothing(
     tmp_path: Path,
 ) -> None:
     """No discovered packs → no write, no lock file created."""
-    monkeypatch.setattr(content_roots, "discover_installed_content_roots", lambda: [])
+    monkeypatch.setattr(content_roots, "discover_installed_content_roots", list)
 
     written = content_roots.seed_bundled_packs_lock(tmp_path)
 

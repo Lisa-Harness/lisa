@@ -24,10 +24,17 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import EffectReceipt, ForkChildResult, OperationResult, ToolResult
+from kernel.models import (
+    EffectReceipt,
+    ForkChildResult,
+    OperationResult,
+    ToolResult,
+    YieldAction,
+)
 from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
+from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 if TYPE_CHECKING:
@@ -209,6 +216,21 @@ class _TurnState:
     stream_stall_detail: str = ""
     """The ``StreamIdleTimeout`` message (window seconds), carried so the
     finalization diagnostic can state how long the provider was silent."""
+    provider_quota_exhausted: bool = False
+    """Set when the provider rejected the iteration's model call with an
+    HTTP 429 quota/rate failure (``ProviderGatewayError`` caught by
+    ``_iteration_completion_or_expiry``). Same graceful-finalize family as
+    ``stream_stalled``: the loop breaks to finalization, which surfaces the
+    partial-work diagnostic instead of the error escaping and the whole
+    turn being discarded (the 2026-10-31 00:48 incident: a session-quota
+    429 escaped ``run_turn``, the turn failed whole, and the receipts
+    evaporated). Quota failures are not retried in-turn — the provider
+    already retried (429 is in ``_TRANSIENT_STATUS_CODES``), and a session
+    quota stays exhausted for the rest of the turn."""
+    provider_quota_detail: str = ""
+    """The ``ProviderGatewayError`` message (provider, model, quota text),
+    carried so the finalization diagnostic can state which provider refused
+    and why."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
@@ -257,6 +279,19 @@ class _TurnState:
     backstop against routing-hint loops that the ``chain_satisfied``
     accumulator fails to break (e.g. when a pack omits
     ``routing_intent_tags`` or ``_detect_query_intents`` over-detects)."""
+    departed_modes: list[str] = field(default_factory=list)
+    """The departing mode of every executed mid-turn handoff, in order.
+    Surfaced on ``TurnResult.departed_modes`` for the workflow view."""
+    last_tool_batch_signature: str = ""
+    """Canonical signature (tool names + arguments) of the previous
+    model-issued tool-call batch, for the identical-batch breaker."""
+    identical_tool_batch_repeats: int = 0
+    """How many consecutive times the model re-issued the batch recorded in
+    ``last_tool_batch_signature``. Bounded by
+    ``max_identical_tool_batch_repeats`` (``kernel.config.Settings``)."""
+    repeated_tool_batch_tripped: bool = False
+    """True once the breaker stopped the loop; the empty-content resolver
+    then forces a no-tools synthesis instead of asking a yield question."""
     last_hint_text: str = ""
     """The most recently injected routing-hint text. Used by the
     duplicate-hint dedup guard: when the recomputed post-handoff hint is
@@ -460,6 +495,68 @@ class _TurnState:
     genuine answer to the user's question, and the guard's own contract
     is "surfacing model prose". A turn that dispatched real tools never
     sets this (failed writes still block strictly)."""
+
+    # ── Mode surface (F4: one state object, passed by reference) ──────
+    # The turn loop's mode-scoped values. Before F4 these lived as ~13
+    # loop locals packed into and unpacked out of a per-dispatch
+    # ``_ToolDispatchLoopState`` round-trip — an out-parameter disguised
+    # as a dataclass, with the same fact maintained in three places
+    # (loop local, loop-state field, and here for content/handoff_to/
+    # transitioned_to). They now live here, written in place by the loop
+    # and its helpers. Live objects (ctx, mode_config, tool_schemas,
+    # capability_manifest) are excluded from ``capture_state`` — the
+    # continuation carries them in its own fields (context_json,
+    # mode_config_json, routing_hint, chain_guidance, pre_handoff_text).
+    mode_config: Any = None
+    """The active mode's config. Rebound on every successful mid-turn
+    handoff by the transition intercept."""
+    ctx: Any = None
+    """The turn's routing context object. Rebound on every successful
+    mid-turn handoff."""
+    tool_schemas: list[dict[str, Any]] = field(default_factory=list)
+    """The active mode's tool schemas. Rebuilt on every successful
+    mid-turn handoff."""
+    capability_manifest: Any = None
+    """The active mode's capability manifest. Rebound on every successful
+    mid-turn handoff."""
+    routing_hint: str = ""
+    """The most recently computed routing hint for the active mode.
+    Recomputed on handoffs and consumed by the briefing."""
+    chain_advance_guidance: str = ""
+    """One-shot chain-advance directive riding the next iteration's
+    lifecycle briefing after a handoff leaves a residual intent gap."""
+    pre_handoff_text: str = ""
+    """Model text captured just before a mid-turn handoff, surfaced in the
+    final result so the pre-handoff answer is not lost."""
+    pending_yield: YieldAction | None = None
+    """A forced yield armed by the lifecycle resolver (stuck-in-stage
+    cap, iteration cap, recovery stall). Applied after the model's next
+    completion: the loop breaks with the yield's question as content.
+    Deliberately reset to ``None`` on suspension — the pause consumed it."""
+    yielded: bool = False
+    """True once the turn broke via a forced or model-emitted yield. The
+    thread entry records it for durable resume. Deliberately reset to
+    ``False`` on suspension."""
+
+    # ── Intra-turn compaction (turn-1116) ────────────────────────────
+    # The mid-turn context governor's per-turn state. ``cfg`` mirrors
+    # kernel settings once per turn so the governor's decisions are
+    # consistent even if the process-wide settings object is reloaded
+    # mid-turn; ``estimator`` anchors on the kernel's counted request
+    # tokens and advances with byte deltas; ``epoch_done_for_crossing``
+    # implements the hysteresis (at most ONE batched ref-out epoch per
+    # soft-trigger crossing); ``truncation_tripped`` is the one-way
+    # output circuit-breaker (first finish_reason=length mid-turn).
+    intra_turn_compaction: IntraTurnCompactionState = field(
+        default_factory=IntraTurnCompactionState
+    )
+    intra_turn_compaction_estimator: LiveArrayEstimator = field(default_factory=LiveArrayEstimator)
+    truncation_tripped: bool = False
+    """One-way output circuit-breaker: set at the FIRST mid-turn
+    finish_reason=length. Further large emissions are kernel-blocked
+    for the rest of the turn — a context-starved model cannot keep a
+    behavioral rule (turn 1116 made ~90 hallucinated calls after its
+    first truncation)."""
 
     # ── Within-turn read cache (Level C) ─────────────────────────────
     # Per-turn cache of read-tool call signatures → one-line abbreviations.

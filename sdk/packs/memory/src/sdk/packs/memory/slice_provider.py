@@ -45,6 +45,7 @@ from typing import Any
 
 from kernel.slice import SliceOutcome, SlicePolicy
 from kernel.slice_provider_discovery import SliceProviderFactory
+from sdk.thread import ThreadStore
 
 logger = logging.getLogger(__name__)
 
@@ -383,11 +384,8 @@ class MemoryConsolidationSlice:
         Uses the thread store's ``load_range`` with the segment's exact
         turn span from the index — only that segment is decompressed.
         """
-        from runtime.thread import load_thread_range
-
         try:
-            return load_thread_range(
-                thread_path=base,
+            return ThreadStore(base).load_range(
                 start_turn=turn_lo,
                 end_turn=turn_hi,
             )

@@ -471,3 +471,94 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
         "ad-hoc chain must not be committed when plan escalation fires "
         f"(got {len(adhoc_chains)} ad-hoc chain(s))"
     )
+
+
+@pytest.mark.asyncio
+async def test_off_plan_handoff_gets_no_backward_routing_hint() -> None:
+    """An off-plan handoff must not be routed back to an abandoned step.
+
+    Regression lock for the 2026-10-30 t1107/t1108 loop. The position's
+    pointer is empty — its tail step (`researcher`) completed while the
+    first step (`thinker`) was abandoned — and the turn hands off to an
+    off-plan mode (`coding_review`). The old plan-driven hint read the
+    view's stale ``remaining[0]`` pointer, named the abandoned step's mode
+    on every handoff, and the forced-action enforcer synthesized that
+    backward transition over the model's refusal twice per turn. The
+    front-aware pointer plus the off-plan guard keep the hint silent, so
+    the turn finishes in the mode the model chose.
+    """
+    # The spent position: researcher_1 completed, thinker_0 abandoned
+    # before the frontier, pointer empty (front-aware derivation).
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="thinker_0", mode_id="thinker"),
+            WorkflowStep(step_id="researcher_1", mode_id="researcher"),
+        ),
+        completed_steps=("researcher_1",),
+        current_step_id="",
+        mode_id="default",
+        spawned_from="plan_workflow_op",
+    )
+
+    call_count = 0
+    system_prompts: list[str] = []
+
+    async def handoff_then_finish(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        msgs = kwargs.get("messages", [])
+        if msgs and isinstance(msgs[0], dict):
+            system_prompts.append(str(msgs[0].get("content", "")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": (
+                                '{"target_stage_id": "coding_review", '
+                                '"rationale": "user asked for a review"}'
+                            ),
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Review done.")
+
+    hooks = _build_minimal_hooks(handoff_then_finish)
+    hooks.workflow.workflow_position = lambda: position
+
+    catalog = {
+        **_catalog_with_chain(),
+        "thinker": _mode_config(mode_id="thinker", satisfies_intents=["clarify"]),
+        "coding_review": _mode_config(mode_id="coding_review", satisfies_intents=["review"]),
+    }
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="review the most recent changes for correctness",
+            hooks=hooks,
+        )
+
+    assert result.handoff_to == "coding_review"
+    # The progress checklist may render on the response (the view stays
+    # alive); the assertion is the hint surface, not the footer.
+    assert result.response_text.startswith("Review done.")
+    joined = "\n".join(system_prompts)
+    backward_hint = (
+        "This is the next step in the planned workflow. "
+        "Call `transition_stage` with target_stage_id `thinker`"
+    )
+    assert backward_hint not in joined, (
+        "the plan-driven hint must not name the abandoned earlier step "
+        "for a handoff off the plan's current step"
+    )
+    assert "`thinker`" not in joined, (
+        "no hint surface may route the turn back to the abandoned step"
+    )

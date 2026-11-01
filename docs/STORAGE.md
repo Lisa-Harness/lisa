@@ -17,7 +17,7 @@ Hosts and sessions can override some locations.
 | `data/memory.db` | Scoped learning and recall data | Use SQLite-aware backup methods; see [memory](MEMORY_ARCHITECTURE.md) |
 | `data/files/` | Files exposed through the storage sandbox | Treat as user artifacts, not disposable scratch |
 | `cache/` | Regenerable fetch/cache data | Confirm ownership and stop dependent work before cleanup |
-| `logs/` | Runtime, MCP, and token-usage records | Apply access controls and a deployment-specific retention policy |
+| `logs/` | Runtime, MCP, token-usage, decision, and approval-ledger records | Apply access controls and a deployment-specific retention policy; the approval and decision ledgers are audit evidence — prefer export-and-archive over deletion |
 | `run/` | Session scratch, sandbox facts, jobs, execution files | Check for active jobs and recoverable work before cleanup |
 
 The [layout constants](../sdk/src/sdk/layout.py) define categories, not a
@@ -145,8 +145,11 @@ derived facts; logs and scenario bundles may expose additional details.
 1. Resolve the actual data root, thread overrides, session-selected roster,
    and packs environment. Record the framework/host/pack versions.
 2. Stop new work and close the runtime through its owner task. For an online
-   memory backup, use the backend's SQLite-aware backup path rather than
-   copying a live database file without its journal/WAL.
+   memory backup, use SQLite's own backup mechanism (`sqlite3 memory.db
+   ".backup copy.db"`) or a filesystem snapshot rather than copying a live
+   database file without its journal/WAL. Memory retention dumps are not
+   produced by the framework; if you need point-in-time copies, create them
+   in the deployment's own backup pipeline.
 3. Copy configuration, durable data, and related state together. Include
    all thread segments, indexes, dictionaries, and `.results` directories.
    Do not publish the archive.

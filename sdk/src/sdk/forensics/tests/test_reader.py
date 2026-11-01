@@ -32,11 +32,21 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record) + "\n")
 
 
-def _seed(tmp_path: Path, *, user: str = "u", turns: int = 3) -> tuple[Path, Path]:
-    """Create a data root with a thread store and telemetry for ``turns`` turns."""
+def _seed(
+    tmp_path: Path,
+    *,
+    user: str = "u",
+    turns: int = 3,
+    thread_store_slug: str = "",
+) -> tuple[Path, Path]:
+    """Create a data root with a thread store and telemetry for ``turns`` turns.
+
+    ``thread_store_slug`` stamps the ledger rows with the thread's store stem
+    when given, as the writers do. Left empty, the rows carry no stem.
+    """
     data_dir = tmp_path / "data"
     thread_dir = data_dir / "data" / "threads"
-    thread = thread_dir / user
+    thread = thread_dir / (thread_store_slug or user)
     now = datetime.now(UTC).isoformat()
 
     for turn in range(turns):
@@ -63,6 +73,7 @@ def _seed(tmp_path: Path, *, user: str = "u", turns: int = 3) -> tuple[Path, Pat
                     "topic": "turn.decision",
                     "turn_index": turn,
                     "user_slug": user,
+                    "thread_store_slug": thread_store_slug,
                     "action_type": "ContinueAction",
                     "iteration": 1,
                 },
@@ -70,6 +81,7 @@ def _seed(tmp_path: Path, *, user: str = "u", turns: int = 3) -> tuple[Path, Pat
                     "topic": "tool.telemetry",
                     "turn_index": turn,
                     "user_slug": user,
+                    "thread_store_slug": thread_store_slug,
                     "target_id": "read_file",
                     "target_type": "tool",
                     "status": "success",
@@ -494,4 +506,54 @@ def test_unowned_legacy_records_are_excluded_with_a_note(tmp_path: Path) -> None
     assert [d.target_id for d in bundle.turns[0].dispatches] == ["read_file"]
     assert any(
         "1 decisions.jsonl records predate per-user attribution" in note for note in bundle.notes
+    )
+
+
+def test_a_stem_scopes_an_unscoped_owner_read(tmp_path: Path) -> None:
+    """A stem narrows the read even when the owner is not scoped.
+
+    A stem names one thread, so honouring it is what the caller asked for.
+    Ignoring it would join every user's rows onto one thread's turns.
+    """
+    from sdk.forensics import filter_owned
+
+    records = [
+        {"user_slug": "u", "thread_store_slug": "u--a"},
+        {"user_slug": "v", "thread_store_slug": "v--b"},
+    ]
+
+    owned = filter_owned(records, None, "u--a")
+
+    assert [r["user_slug"] for r in owned.records] == ["u"]
+
+
+def test_unstemmed_records_are_excluded_with_a_note(tmp_path: Path) -> None:
+    """Owned records written before thread attribution are dropped, and said.
+
+    A row can name its owner but carry no thread stem, written before the
+    stem existed. Dropping it silently would make the bundle look complete
+    while evidence is missing, so the count is reported.
+    """
+    data_dir, thread_dir = _seed(tmp_path, turns=1, thread_store_slug="u--conv")
+    ledger = data_dir / "logs" / "decisions.jsonl"
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "topic": "tool.telemetry",
+                    "turn_index": 0,
+                    "user_slug": "u",
+                    "target_id": "legacy_tool",
+                }
+            )
+            + "\n"
+        )
+
+    bundle = ForensicReader(
+        data_dir, thread_dir=thread_dir, user_slug="u", thread_store_slug="u--conv"
+    ).bundle()
+
+    assert [d.target_id for d in bundle.turns[0].dispatches] == ["read_file"]
+    assert any(
+        "1 decisions.jsonl records predate per-thread attribution" in note for note in bundle.notes
     )

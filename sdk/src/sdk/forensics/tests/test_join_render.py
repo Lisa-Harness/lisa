@@ -313,3 +313,35 @@ def test_render_always_points_back_to_the_evidence() -> None:
     """Every bundle ends by telling the reader how to verify a claim."""
     rendered = render_bundle(_bundle())
     assert "thread_read_range" in rendered
+
+
+def test_join_matches_telemetry_by_the_index_the_turn_ran_under() -> None:
+    """Overlapping turns that commit out of start order keep their telemetry.
+
+    Turn A ran as 7 but committed second (8); turn B ran as 8 but committed
+    first (7). Mid-turn records carry the provisional index, so joining by
+    the committed index would swap the two turns' evidence.
+    """
+    bundle = _bundle(
+        turns=[
+            _entry(7, provisional_turn=8, mode_id="b_mode"),
+            _entry(8, provisional_turn=7, mode_id="a_mode"),
+        ],
+        decisions=[
+            {"turn_index": 7, "mode_id": "a_mode", "action_type": "finish"},
+            {"turn_index": 8, "mode_id": "b_mode", "action_type": "finish"},
+        ],
+        costs=[{"turn_index": 7, "mode_id": "a_mode", "total_tokens": 10}],
+    )
+    by_index = {turn.turn_index: turn for turn in bundle.turns}
+    assert [d.mode_id for d in by_index[7].decisions] == ["b_mode"]
+    assert [d.mode_id for d in by_index[8].decisions] == ["a_mode"]
+    assert by_index[8].total_tokens == 10
+    assert not bundle.unattributed_decisions
+    assert "ran as turn 8" in render_bundle(bundle)
+
+
+def test_join_keys_by_committed_index_without_provisional_turn() -> None:
+    turn = turn_from_entry(*_entry(3))
+    assert turn.provisional_turn is None
+    assert turn.telemetry_turn_index == 3

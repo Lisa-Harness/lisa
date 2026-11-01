@@ -713,15 +713,23 @@ def _mcp_command_help_text() -> str:
     return "\n".join(
         [
             "## /mcp",
-            "MCP server introspection readout from the live tool pool.",
+            "MCP server introspection readout from the live tool pool, plus a",
+            "client-config export for other agents.",
             "",
             "Usage:",
             "- /mcp — per-server summary (status, transport, endpoint, tool count, last error).",
             "- /mcp <server_id> — warm a cold server on demand and list its tools with "
             "required schema args.",
+            "- /mcp export — render the compiled servers as an `mcpServers` document "
+            "another agent client can paste.",
+            "- /mcp export --server <id> — export one server (repeatable).",
+            "- /mcp export --include-http — also emit HTTP endpoints (URL only).",
+            "- /mcp export --include-internal — also emit servers Lisa hides from its own model.",
             "",
             "The summary reads the already-warmed pool index; the detail path lazily "
-            "connects cold servers. Configure servers via the MCP manifest "
+            "connects cold servers. The export reads the compiled configuration rather "
+            "than the live pool, so warm-but-unconnected servers still appear. Configure "
+            "servers via the MCP manifest "
             "(`lisa mcp` on the CLI exposes the same data through `--with-mcp`).",
         ]
     )

@@ -149,7 +149,7 @@ def _looks_like_json(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
-    if stripped.startswith("```") or stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("```", "{", "[")):
         return True
     return bool("{" in stripped and "}" in stripped)
 

@@ -109,7 +109,10 @@ class HostGatewayProvider:
         resolve = getattr(self._discovered, "direct_base_url_for", None)
         if not callable(resolve):
             return None
-        return resolve(provider)
+        endpoint = resolve(provider)
+        if endpoint is not None and not isinstance(endpoint, str):
+            raise TypeError(f"Invalid direct base URL from gateway provider: {endpoint!r}")
+        return endpoint
 
     # ── Construction ────────────────────────────────────────────────
     def _build(self, provider: str) -> Any | None:  # noqa: PLR0911

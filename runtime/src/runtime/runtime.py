@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from kernel.session_plan import SessionPlan
+from kernel.tools.mcp_client import InProcessResolver, MCPToolPool
 from sdk.content import (
     render_scoped_instruction,
     render_unconditional_blocks,
@@ -61,7 +62,7 @@ logger = logging.getLogger(__name__)
 _MAX_TRACKED_TURNS = 8
 
 
-def _make_in_process_resolver():
+def _make_in_process_resolver() -> InProcessResolver:
     """Build an ``InProcessResolver`` backed by ``mcp_server.registry``.
 
     Imported lazily so the kernel never imports from ``mcp_server`` at
@@ -244,7 +245,7 @@ class RuntimeResources:
     def __init__(self, runtime: HostRuntime) -> None:
         self._runtime = runtime
         self._in_process_mcp: bool = runtime._in_process_mcp
-        self._mcp_tool_pool: Any = None
+        self._mcp_tool_pool: MCPToolPool | None = None
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
         self._proxy_configs: list[Any] = []
@@ -273,7 +274,7 @@ class RuntimeResources:
     # ── Accessors ─────────────────────────────────────────────────────
 
     @property
-    def mcp_tool_pool(self) -> Any:
+    def mcp_tool_pool(self) -> MCPToolPool | None:
         return self._mcp_tool_pool
 
     @property
@@ -419,10 +420,10 @@ class RuntimeResources:
                 and self._mcp_start_task.done()
                 and not self._mcp_started
             ):
-                exc = self._mcp_start_task.exception()
-                if exc is not None:
-                    self._mcp_start_exc = exc
-                    raise exc
+                start_error = self._mcp_start_task.exception()
+                if start_error is not None:
+                    self._mcp_start_exc = start_error
+                    raise start_error
             return
         if self._mcp_start_task is not None:
             # Sync-start fallback path: the task is a completed no-op or
@@ -726,12 +727,18 @@ class HostRuntime:
             else self.session_plan.manifest.name
         )
         surface = self.session_plan.manifest.surface
+        resolved_conversation_id = config.conversation_id.strip()
         self.config = replace(
             config,
             user_slug=effective_user_slug,
+            conversation_id=resolved_conversation_id,
             session_context=self.session_plan.source_uri,
             surface_type=config.surface_type or surface.type,
-            surface_id=config.surface_id or surface.id,
+            surface_id=config.surface_id or resolved_conversation_id or surface.id,
+            identity_conversation_id=(resolved_conversation_id or config.identity_conversation_id),
+            identity_surface_id=(
+                config.surface_id or resolved_conversation_id or config.identity_surface_id
+            ),
             memory_scope=config.memory_scope or surface.memory_scope,
         )
         self.execution_policy = resolve_execution_policy(

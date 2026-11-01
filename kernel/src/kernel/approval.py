@@ -74,6 +74,22 @@ class ApprovalInvocation(_FrozenApprovalModel):
     safe_preview: str
     created_at: datetime
     expires_at: datetime
+    #: Global thread turn the invoking dispatch belonged to, stamped by the
+    #: execution registries so the durable approval evidence joins to the
+    #: thread entry, decision rows, and cost rows by the shared key. ``None``
+    #: means the request came from no thread turn (off-turn work) and is
+    #: distinct from ``0`` — see ``kernel.models.resolve_turn_index``.
+    #: Deliberately excluded from ``action_digest``: the digest is over the
+    #: canonical *action*, and turn position is not part of the action
+    #: identity (re-approving the same action in a later turn must produce
+    #: the same digest so pending-request dedup still works).
+    turn_index: int | None = None
+    #: Store stem of the thread the invoking dispatch belonged to — the same
+    #: scoping value the decision and token ledgers stamp, because turn
+    #: indices are per-thread and the owner alone cannot separate two
+    #: conversations' rows. Excluded from ``action_digest`` for the same
+    #: reason as ``turn_index``.
+    thread_store_slug: str = ""
 
 
 class ApprovalReceipt(_FrozenApprovalModel):

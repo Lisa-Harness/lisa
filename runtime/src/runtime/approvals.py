@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,33 +17,55 @@ from kernel.approval import (
     _find_pending_for_action,
     is_expired,
 )
+from sdk.filelock import async_file_lock, atomic_write_text, sidecar_lock_path
+
+from runtime.approval_ledger import ApprovalLedger
 
 __all__ = ["FileApprovalService"]
 
+logger = logging.getLogger(__name__)
+
 
 class FileApprovalService:
-    """Atomically persist approval state beneath the host's data directory."""
+    """Atomically persist approval state beneath the host's data directory.
 
-    def __init__(self, path: Path) -> None:
+    ``approvals.json`` (the *working store*) holds each request's latest
+    state for recovery and receipt validation. When a ledger path is
+    supplied, every state transition also appends one row to the
+    append-only approval ledger — the evidence stream that answers "who
+    authorized what, when" — inside the same critical section that
+    committed the working store. The working store stays authoritative: a
+    ledger append failure logs a WARNING and never blocks the transition.
+    """
+
+    def __init__(self, path: Path, *, ledger_path: Path | None = None) -> None:
         self._path = path
         self._lock = asyncio.Lock()
+        self._lock_path = sidecar_lock_path(path)
+        self._ledger = ApprovalLedger(ledger_path) if ledger_path is not None else None
 
     async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             existing = _find_pending_for_action(records, invocation, now=datetime.now(UTC))
             if existing is not None:
                 return existing.invocation
             records.setdefault(invocation.request_id, ApprovalRecord(invocation=invocation))
             self._store_records(records)
+            # Only a genuinely new request is evidence: the dedup path
+            # returns the pending record the operator already saw.
+            if self._ledger is not None:
+                self._ledger.record_transition(invocation=invocation, state="requested")
             return records[invocation.request_id].invocation
 
     async def approve(
         self,
         request_id: str,
         identity: ApprovalIdentity,
+        *,
+        decision_source: str = "operator",
     ) -> ApprovalReceipt | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if record is None or record.invocation.identity != identity:
@@ -51,6 +73,12 @@ class FileApprovalService:
             if is_expired(record.invocation):
                 record.state = "expired"
                 self._store_records(records)
+                if self._ledger is not None:
+                    self._ledger.record_transition(
+                        invocation=record.invocation,
+                        state="expired",
+                        decision_source="expiry",
+                    )
                 return None
             if record.state != "pending":
                 return None
@@ -71,6 +99,13 @@ class FileApprovalService:
                 identity=identity,
             )
             self._store_records(records)
+            if self._ledger is not None:
+                self._ledger.record_transition(
+                    invocation=record.invocation,
+                    state="approved",
+                    decision_by=identity.user_slug,
+                    decision_source=decision_source,
+                )
             return receipt
 
     async def deny(
@@ -80,7 +115,7 @@ class FileApprovalService:
         *,
         reason: str = "",
     ) -> bool:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if (
@@ -99,6 +134,14 @@ class FileApprovalService:
                 reason=reason.strip(),
             )
             self._store_records(records)
+            if self._ledger is not None:
+                self._ledger.record_transition(
+                    invocation=record.invocation,
+                    state="denied",
+                    decision_by=identity.user_slug,
+                    decision_source="operator",
+                    reason=reason.strip(),
+                )
             return True
 
     async def consume(
@@ -106,7 +149,7 @@ class FileApprovalService:
         request_id: str,
         invocation: ApprovalInvocation,
     ) -> ApprovalReceipt | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             records = self._load_records()
             record = records.get(request_id)
             if record is None:
@@ -114,6 +157,12 @@ class FileApprovalService:
             if is_expired(record.invocation):
                 record.state = "expired"
                 self._store_records(records)
+                if self._ledger is not None:
+                    self._ledger.record_transition(
+                        invocation=record.invocation,
+                        state="expired",
+                        decision_source="expiry",
+                    )
                 return None
             if (
                 record.state != "approved"
@@ -132,14 +181,21 @@ class FileApprovalService:
                 identity=invocation.identity,
             )
             self._store_records(records)
+            if self._ledger is not None:
+                self._ledger.record_transition(
+                    invocation=record.invocation,
+                    state="consumed",
+                    decision_by=invocation.identity.user_slug,
+                    decision_source="operator",
+                )
             return receipt
 
     async def get(self, request_id: str) -> ApprovalRecord | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             return self._load_records().get(request_id)
 
     async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             now = datetime.now(UTC)
             return [
                 record
@@ -155,6 +211,7 @@ class FileApprovalService:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            logger.warning("approvals: failed to load %s", self._path, exc_info=True)
             return {}
         if not isinstance(raw, dict):
             return {}
@@ -167,13 +224,10 @@ class FileApprovalService:
         return records
 
     def _store_records(self, records: dict[str, ApprovalRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             request_id: record.model_dump(mode="json") for request_id, record in records.items()
         }
-        temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
-        temp_path.write_text(
+        atomic_write_text(
+            self._path,
             json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
         )
-        os.replace(temp_path, self._path)

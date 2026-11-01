@@ -12,6 +12,7 @@ Complements ``test_resume.py`` with:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -63,7 +64,7 @@ class _FakeRuntime:
     """Minimal runtime stub mirroring the grouped HostRuntime surface."""
 
     def __init__(self, service: Any) -> None:
-        self.paths = type("Paths", (), {"thread_path": "thread"})()
+        self.paths = type("Paths", (), {"thread_path": Path("thread")})()
         self.services = type("Services", (), {"recovery_service": service})()
         self.session = type("Session", (), {"pending_resume_message": None})()
         self.session_plan = type(
@@ -93,13 +94,11 @@ def _entry(
 
 
 def _patched_resume(monkeypatch: pytest.MonkeyPatch, entries: list[dict[str, Any]]) -> None:
-    def _fake_load(**_kwargs: Any) -> list[dict[str, Any]]:
+    def _fake_load(self: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return list(entries)
 
-    # handle_resume imports load_recent_thread_entries lazily from
-    # runtime.thread; patch it there so the in-function import sees the stub.
     monkeypatch.setattr(
-        "runtime.thread.load_recent_thread_entries",
+        "sdk.packs.recovery.commands.ThreadStore.load_recent",
         _fake_load,
         raising=False,
     )

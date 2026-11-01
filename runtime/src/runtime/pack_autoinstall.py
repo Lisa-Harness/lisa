@@ -167,11 +167,7 @@ def _resolve_local_source(source: str, session_source_dir: Path | None) -> str:
     if not raw:
         return source
     lowered = raw.lower()
-    if (
-        lowered.startswith("git+")
-        or lowered.startswith("https://")
-        or lowered.startswith("http://")
-    ):
+    if lowered.startswith(("git+", "https://", "http://")):
         return source
     # Bare package names (no path separators, no version operators) are left
     # for _normalize_pack_install_spec to expand via LISA_PACK_GIT_ROOT.

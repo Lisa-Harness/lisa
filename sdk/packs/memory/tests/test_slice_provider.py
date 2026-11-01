@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import zstandard
 from kernel.slice import SliceMode, SlicePolicy
 from sdk.packs.memory.slice_provider import (
     _LAST_CONSOLIDATION_FILE_NAME,
@@ -20,6 +21,7 @@ from sdk.packs.memory.slice_provider import (
     MemoryConsolidationSliceConfig,
     get_slice_provider_factory,
 )
+from sdk.thread import SegmentRecord
 
 
 def _config(
@@ -55,6 +57,27 @@ def _policy(budget_ms: int = 500) -> SlicePolicy:
         base_budget_ms=10,
         max_deferred_ms=200,
         hard_cap_ms=500,
+    )
+
+
+def _write_segment_fixture(base: Path) -> None:
+    entries = [
+        {
+            "turn": i,
+            "user_slug": "adam",
+            "mode_id": "default",
+            "query": f"q{i}",
+            "response_text": f"response {i}",
+        }
+        for i in range(5)
+    ]
+    raw = "".join(json.dumps(entry) + "\n" for entry in entries[:3]).encode()
+    compressed = zstandard.ZstdCompressor().compress(raw)
+    Path(f"{base}.0001.jsonl.zst").write_bytes(compressed)
+    record = SegmentRecord("0001", 0, 2, "", "", len(raw), len(compressed))
+    Path(f"{base}.index.jsonl").write_text(json.dumps(record.to_dict()) + "\n", encoding="utf-8")
+    Path(f"{base}.current.jsonl").write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries[3:]), encoding="utf-8"
     )
 
 
@@ -292,21 +315,10 @@ async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_mines_new_sealed_segments(tmp_path: Path) -> None:
     """A newly sealed thread segment is mined into semantic memories exactly once."""
-    # Build a real sealed thread segment.
-    from runtime.thread import append_thread_entry
-
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir(parents=True)
     thread_path = threads_dir / "adam"
-    for i in range(5):
-        append_thread_entry(
-            thread_path=thread_path,
-            user_slug="adam",
-            mode_id="default",
-            query=f"q{i}",
-            response_text=f"response {i}",
-            segment_turns=3,  # seal at 3 → one sealed segment + 2 active
-        )
+    _write_segment_fixture(thread_path)
 
     hooks = _FakeHooks(episodic_records=[])
     slc = MemoryConsolidationSlice(
@@ -342,17 +354,7 @@ async def test_mining_disabled_when_mine_on_segment_seal_false(tmp_path: Path) -
     threads_dir = tmp_path / "threads"
     threads_dir.mkdir(parents=True)
     thread_path = threads_dir / "adam"
-    from runtime.thread import append_thread_entry
-
-    for i in range(5):
-        append_thread_entry(
-            thread_path=thread_path,
-            user_slug="adam",
-            mode_id="default",
-            query=f"q{i}",
-            response_text=f"response {i}",
-            segment_turns=3,
-        )
+    _write_segment_fixture(thread_path)
 
     hooks = _FakeHooks(episodic_records=[])
     slc = MemoryConsolidationSlice(

@@ -94,14 +94,38 @@ class CostRecord(_Record):
         return max(0, self.total_tokens - self.cached_tokens)
 
 
+class ApprovalEvidence(_Record):
+    """One approval-ledger transition, reduced to what a forensic read needs.
+
+    ``decision_source`` distinguishes an explicit operator decision from a
+    policy auto-allow or an expiry transition; ``decision_by`` names the
+    operator only when there was one.
+    """
+
+    turn_index: int | None = None
+    request_id: str = ""
+    target_id: str = ""
+    target_kind: str = ""
+    effect: str = ""
+    state: str = ""
+    decision_by: str = ""
+    decision_source: str = ""
+    reason: str = ""
+    logged_at: str = ""
+
+
 class TurnEvidence(_Record):
     """One thread turn plus every record that joins to it.
 
     ``turn_index`` is the thread's own key and is never ``None`` for an entry
     read out of the store; the optional sub-records are what may be missing.
+    ``provisional_turn`` is the index the turn ran under when it differs
+    from the committed one (overlapping turns commit in completion order);
+    the turn's in-flight telemetry carries that index.
     """
 
     turn_index: int
+    provisional_turn: int | None = None
     timestamp_utc: str = ""
     mode_id: str = ""
     query_preview: str = ""
@@ -117,6 +141,12 @@ class TurnEvidence(_Record):
     decisions: list[DecisionRecord] = Field(default_factory=list)
     dispatches: list[DispatchRecord] = Field(default_factory=list)
     costs: list[CostRecord] = Field(default_factory=list)
+    approvals: list[ApprovalEvidence] = Field(default_factory=list)
+
+    @property
+    def telemetry_turn_index(self) -> int:
+        """Return the index the turn's in-flight telemetry was stamped with."""
+        return self.turn_index if self.provisional_turn is None else self.provisional_turn
 
     @property
     def total_tokens(self) -> int:
@@ -156,7 +186,9 @@ class BundleSources(BaseModel):
     thread_store: bool = False
     decisions_log: bool = False
     token_usage_log: bool = False
+    approvals_log: bool = False
     runtime_log: bool = False
+    errors_log: bool = False
     missing: list[str] = Field(default_factory=list)
 
 
@@ -170,6 +202,7 @@ class ForensicBundle(_Record):
     #: than dropped: an unattributable record is itself a finding.
     unattributed_decisions: list[DecisionRecord] = Field(default_factory=list)
     unattributed_dispatches: list[DispatchRecord] = Field(default_factory=list)
+    unattributed_approvals: list[ApprovalEvidence] = Field(default_factory=list)
     #: Log lines at warning/error level inside the window, newest last.
     log_errors: list[dict[str, Any]] = Field(default_factory=list)
     #: Human-readable notes about bounded or degraded reads (truncation,

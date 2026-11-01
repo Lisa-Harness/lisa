@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest
+from sdk.filelock import async_file_lock, atomic_write_text, sidecar_lock_path
 from sdk.workproducts import WorkProduct
 
 __all__ = ["FileCodeChangeArtifactStore", "verify_checked_commit"]
+
+logger = logging.getLogger(__name__)
 
 
 async def _task_artifact_ids(
@@ -183,9 +186,10 @@ class FileCodeChangeArtifactStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = asyncio.Lock()
+        self._lock_path = sidecar_lock_path(path)
 
     async def create(self, artifact: WorkProduct) -> WorkProduct:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             artifacts = self._load()
             if artifact.artifact_id in artifacts:
                 raise ValueError(f"Artifact '{artifact.artifact_id}' already exists.")
@@ -195,15 +199,15 @@ class FileCodeChangeArtifactStore:
             return artifact
 
     async def get(self, artifact_id: str) -> WorkProduct | None:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             return self._load().get(artifact_id)
 
     async def list_owned(self, ctx: object) -> list[WorkProduct]:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             return [artifact for artifact in self._load().values() if artifact.belongs_to(ctx)]
 
     async def save(self, artifact: WorkProduct) -> WorkProduct:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             artifacts = self._load()
             if artifact.artifact_id not in artifacts:
                 raise KeyError(f"Unknown artifact '{artifact.artifact_id}'.")
@@ -213,7 +217,7 @@ class FileCodeChangeArtifactStore:
             return artifact
 
     async def delete(self, artifact_id: str) -> bool:
-        async with self._lock:
+        async with self._lock, async_file_lock(self._lock_path):
             artifacts = self._load()
             if artifact_id not in artifacts:
                 return False
@@ -227,6 +231,7 @@ class FileCodeChangeArtifactStore:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            logger.warning("code_artifacts: failed to load %s", self._path, exc_info=True)
             return {}
         if not isinstance(raw, dict):
             return {}
@@ -239,14 +244,11 @@ class FileCodeChangeArtifactStore:
         return artifacts
 
     def _store(self, artifacts: dict[str, WorkProduct]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             artifact_id: artifact.model_dump(mode="json")
             for artifact_id, artifact in artifacts.items()
         }
-        temporary_path = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary_path.write_text(
+        atomic_write_text(
+            self._path,
             json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
         )
-        os.replace(temporary_path, self._path)

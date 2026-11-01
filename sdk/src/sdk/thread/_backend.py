@@ -15,6 +15,7 @@ truth for workflow state.
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import io
 import json
@@ -23,9 +24,13 @@ import sys
 from collections import deque
 from collections.abc import Collection, Iterator
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
+from sdk.filelock import file_lock
 from sdk.thread.redaction import ThreadRedactionPolicy
+
+if TYPE_CHECKING:
+    from sdk.thread._verify import ChainVerification
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,7 @@ class _SegmentPaths(NamedTuple):
     marker: Path  # <base>.digest.marker
     dictionary: Path  # <base>.dict.zstd
     legacy: Path  # <base>.jsonl (pre-segmentation, for the rename guard)
+    lock: Path  # <base>.lock (cross-process advisory lock)
 
 
 def _segment_paths(base: Path) -> _SegmentPaths:
@@ -68,7 +74,20 @@ def _segment_paths(base: Path) -> _SegmentPaths:
         marker=Path(f"{base}.digest.marker"),
         dictionary=Path(f"{base}.dict.zstd"),
         legacy=Path(f"{base}.jsonl"),
+        lock=Path(f"{base}.lock"),
     )
+
+
+def _read_lock_context(paths: _SegmentPaths) -> contextlib.AbstractContextManager[None]:
+    """Acquire ``paths.lock`` when any thread-store artifact exists on disk."""
+    if (
+        paths.lock.exists()
+        or paths.current.exists()
+        or paths.index_path.exists()
+        or paths.legacy.exists()
+    ):
+        return file_lock(paths.lock)
+    return contextlib.nullcontext()
 
 
 def _sealed_segment_path(base: Path, seg_id: str) -> Path:
@@ -88,9 +107,13 @@ class SegmentRecord(NamedTuple):
     ts_hi: str
     bytes_raw: int
     bytes_zst: int
+    #: SHA-256 of the segment's terminal raw entry line (no newline); the
+    #: hash chain continues across the seal boundary through this value.
+    #: Empty on index lines written before the chain existed.
+    tail_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "seg_id": self.seg_id,
             "turn_lo": self.turn_lo,
             "turn_hi": self.turn_hi,
@@ -99,6 +122,9 @@ class SegmentRecord(NamedTuple):
             "bytes_raw": self.bytes_raw,
             "bytes_zst": self.bytes_zst,
         }
+        if self.tail_sha256:
+            record["tail_sha256"] = self.tail_sha256
+        return record
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> SegmentRecord:
@@ -110,6 +136,7 @@ class SegmentRecord(NamedTuple):
             ts_hi=str(raw["ts_hi"]),
             bytes_raw=int(raw["bytes_raw"]),
             bytes_zst=int(raw["bytes_zst"]),
+            tail_sha256=str(raw.get("tail_sha256") or ""),
         )
 
 
@@ -392,6 +419,18 @@ class ThreadStore:
     def paths(self) -> _SegmentPaths:
         return self._paths
 
+    def verify_chain(self) -> ChainVerification:
+        """Verify this store's tamper-evidence chain (on-demand integrity audit).
+
+        Walks the whole store — every sealed segment is decompressed — so
+        it is never part of a per-read path. See
+        :func:`sdk.thread.verify_chain` for the result contract and the
+        honest threat model.
+        """
+        from sdk.thread._verify import verify_chain as _verify
+
+        return _verify(self._base)
+
     def load_recent(self, *, limit: int = 30) -> list[dict[str, Any]]:
         """Load up to ``limit`` recent thread entries (oldest-first in the tail).
 
@@ -402,16 +441,17 @@ class ThreadStore:
         ``limit <= 0`` returns every active entry. Returns ``[]`` when no
         store exists.
         """
-        if limit <= 0:
-            return _read_active_entries(self._paths.current)
-        active = _newest_entries(_reverse_active_lines(self._paths.current), limit)
-        if len(active) >= limit:
-            return active
-        records = _read_index(self._paths.index_path)
-        if not records:
-            return active
-        sealed_path = _sealed_segment_path(self._paths.base, records[-1].seg_id)
-        return self._sealed_tail(sealed_path, limit - len(active)) + active
+        with _read_lock_context(self._paths):
+            if limit <= 0:
+                return _read_active_entries(self._paths.current)
+            active = _newest_entries(_reverse_active_lines(self._paths.current), limit)
+            if len(active) >= limit:
+                return active
+            records = _read_index(self._paths.index_path)
+            if not records:
+                return active
+            sealed_path = _sealed_segment_path(self._paths.base, records[-1].seg_id)
+            return self._sealed_tail(sealed_path, limit - len(active)) + active
 
     def _sealed_tail(self, sealed_path: Path, needed: int) -> list[dict[str, Any]]:
         """Return the newest ``needed`` valid entries of one sealed segment, oldest-first."""
@@ -439,9 +479,10 @@ class ThreadStore:
         stamped on the entry are one source of truth — no off-by-one.
         The active segment is counted by streaming lines, never parsed.
         """
-        records = _read_index(self._paths.index_path)
-        sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        return sealed_spans + _count_active_entries(self._paths.current)
+        with _read_lock_context(self._paths):
+            records = _read_index(self._paths.index_path)
+            sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+            return sealed_spans + _count_active_entries(self._paths.current)
 
     def load_range(self, *, start_turn: int, end_turn: int) -> list[dict[str, Any]]:
         """Load entries whose global turn index falls in ``[start_turn, end_turn]``.
@@ -479,13 +520,14 @@ class ThreadStore:
         """
         if start_turn > end_turn:
             return
-        records = _read_index(self._paths.index_path)
-        for record in records:
-            if record.turn_hi < start_turn or record.turn_lo > end_turn:
-                continue
-            yield from self._iter_sealed(record, start_turn, end_turn, wanted)
-        active_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-        yield from self._iter_active(active_lo, start_turn, end_turn, wanted)
+        with _read_lock_context(self._paths):
+            records = _read_index(self._paths.index_path)
+            for record in records:
+                if record.turn_hi < start_turn or record.turn_lo > end_turn:
+                    continue
+                yield from self._iter_sealed(record, start_turn, end_turn, wanted)
+            active_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+            yield from self._iter_active(active_lo, start_turn, end_turn, wanted)
 
     def _iter_sealed(
         self,
@@ -728,7 +770,7 @@ class ThreadStore:
 
         mode_id = str(entry.get("mode_id") or "")
         haystack = f"{query_text} {response_text} {mode_id}".lower()
-        haystack_tokens = {tok for tok in haystack.split()}
+        haystack_tokens = set(haystack.split())
         content_word_count = max(len(haystack_tokens), 1)
 
         if tokens:

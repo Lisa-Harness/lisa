@@ -85,7 +85,7 @@ def _represent_block_list(dumper: yaml.Dumper, data: list[object]) -> yaml.Node:
     return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=False)
 
 
-class _CompactList(list):
+class _CompactList(list[str]):
     """List subclass rendered inline (flow style) by the emitter.
 
     Used for ``capabilities`` only. ``designations`` and any other list stay

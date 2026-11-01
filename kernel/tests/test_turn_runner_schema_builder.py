@@ -476,8 +476,8 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
     # No operations or pack tools; transition_stage comes only from the
     # rebuild's explicit append.
     monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
-    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
-    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_operation_catalog", dict)
+    monkeypatch.setattr(_ts, "get_tool_catalog", dict)
 
     schemas = await _rebuild_tool_schemas_for_mode(
         "okf",
@@ -515,8 +515,8 @@ async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_t
 
     monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: [])
     monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
-    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
-    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_operation_catalog", dict)
+    monkeypatch.setattr(_ts, "get_tool_catalog", dict)
 
     schemas = await _rebuild_tool_schemas_for_mode(
         "discuss",
@@ -547,8 +547,8 @@ def _isolate_surface(monkeypatch: pytest.MonkeyPatch, routing: dict[str, list[st
 
     monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: routing.get(mode_id, []))
     monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
-    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
-    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_operation_catalog", dict)
+    monkeypatch.setattr(_ts, "get_tool_catalog", dict)
 
 
 @pytest.mark.asyncio
