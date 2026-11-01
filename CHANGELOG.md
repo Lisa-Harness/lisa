@@ -4,6 +4,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
 ### Added
 
 - **`next_loop_action`: the while-precondition as one ordered pure function
