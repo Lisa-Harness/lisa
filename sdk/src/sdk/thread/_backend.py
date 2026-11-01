@@ -770,7 +770,7 @@ class ThreadStore:
 
         mode_id = str(entry.get("mode_id") or "")
         haystack = f"{query_text} {response_text} {mode_id}".lower()
-        haystack_tokens = {tok for tok in haystack.split()}
+        haystack_tokens = set(haystack.split())
         content_word_count = max(len(haystack_tokens), 1)
 
         if tokens:

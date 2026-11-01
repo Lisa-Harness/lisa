@@ -97,7 +97,7 @@ def _enrich_openai_model(model_id: str) -> DiscoveredModel:
     latency_tier = ""
     display_name = model_id
 
-    if lowered.startswith("o1") or lowered.startswith("o3") or lowered.startswith("o4"):
+    if lowered.startswith(("o1", "o3", "o4")):
         capabilities = ["text", "reasoning", "structured_output"]
         thinking_model = True
         cost_tier = "premium" if "pro" in lowered else "standard"

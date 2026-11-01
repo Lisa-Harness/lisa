@@ -127,6 +127,12 @@ Linear history is a repository setting, not a CI job: `main` requires linear
 history and disallows merge commits, so GitHub rejects a non-linear merge at
 the server. There is no redundant workflow check for it.
 
+Ruff also enforces whitespace, Python-version pitfalls, comprehensions,
+performance patterns, redundant code, modernization, and logging formatting
+(`W`, `YTT`, `C4`, `PERF`, `PIE`, `FURB`, `G`). These rules apply to source and
+tests; the existing complexity limits and scoped exceptions remain in
+[pyproject.toml](../pyproject.toml).
+
 ```sh
 uv run ruff format --check .
 uv run ruff check .

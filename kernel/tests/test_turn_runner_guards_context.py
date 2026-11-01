@@ -133,9 +133,9 @@ async def test_input_guard_sanitizes_query() -> None:
 
     async def complete(**kwargs: Any) -> _StubCompletion:
         messages = kwargs.get("messages", [])
-        for msg in messages:
-            if msg.get("role") == "user":
-                captured_queries.append(str(msg.get("content", "")))
+        captured_queries.extend(
+            str(msg.get("content", "")) for msg in messages if msg.get("role") == "user"
+        )
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(complete)

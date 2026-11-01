@@ -109,10 +109,10 @@ def _match(text: str, query: str, ref: str, tool: str) -> dict[str, Any] | None:
     if not text:
         return None
     terms = tuple(dict.fromkeys(query.split()))
-    hits = [found for term in terms if (found := re.search(re.escape(term), text, re.I))]
+    hits = [found for term in terms if (found := re.search(re.escape(term), text, re.IGNORECASE))]
     if terms and not hits:
         return None
-    phrase = re.search(re.escape(query), text, re.I) if query else None
+    phrase = re.search(re.escape(query), text, re.IGNORECASE) if query else None
     position = phrase.start() if phrase is not None else hits[0].start() if hits else 0
     offset = max(0, position - _CONTEXT_CHARS)
     return {

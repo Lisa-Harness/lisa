@@ -353,11 +353,9 @@ def _iter_claude_md_files(root: Path) -> list[Path]:
 
 def _rglob_suffix(directory: Path, suffixes: tuple[str, ...]) -> list[Path]:
     """Recursively list files ending with any of ``suffixes`` under ``directory``."""
-    matches: list[Path] = []
-    for path in directory.rglob("*"):
-        if path.is_file() and path.name.endswith(suffixes):
-            matches.append(path)
-    return matches
+    return [
+        path for path in directory.rglob("*") if path.is_file() and path.name.endswith(suffixes)
+    ]
 
 
 # --------------------------------------------------------------------------- #

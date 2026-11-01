@@ -37,9 +37,7 @@ def normalize_azure_endpoint(endpoint: str) -> str:
     """
 
     endpoint = endpoint.strip().rstrip("/")
-    if endpoint.endswith("/openai"):
-        endpoint = endpoint[: -len("/openai")]
-    return endpoint
+    return endpoint.removesuffix("/openai")
 
 
 class AzureOpenAIProbe(ProviderProbe):
@@ -165,7 +163,7 @@ def _azure_family_tiers(
     thinking_model = False
     cost_tier = ""
     latency_tier = ""
-    if lowered.startswith("o1") or lowered.startswith("o3") or lowered.startswith("o4"):
+    if lowered.startswith(("o1", "o3", "o4")):
         thinking_model = True
         capabilities_list = sorted(set(capabilities_list) | {"reasoning"})
         cost_tier = "premium" if "pro" in lowered else "standard"
@@ -190,7 +188,7 @@ def _azure_family_tiers(
     return thinking_model, capabilities_list, cost_tier, latency_tier
 
 
-def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
+def _enrich_azure_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` enriched from Azure OpenAI metadata.
 
     Azure's deployments list carries ``model`` (underlying model family) and

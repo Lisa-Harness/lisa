@@ -169,7 +169,25 @@ target-version = "py311"
 extend-exclude = ["vulture_allowlist.py"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "PL",
+    "C90",
+    "RET",
+    "RUF",
+    "W",
+    "YTT",
+    "C4",
+    "PERF",
+    "PIE",
+    "FURB",
+    "G",
+]
 # PLR0913 (too-many-arguments): the kernel's hook seams intentionally
 # take many parameters — a params-object indirection would hide the
 # protocol contract.

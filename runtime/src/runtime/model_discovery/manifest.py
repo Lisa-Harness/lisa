@@ -491,8 +491,7 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
         out.append(f"  backend: {router_block['backend']}")
     if rules:
         out.append("  rules:")
-        for rule in rules:
-            out.append(f"  - {_rule_yaml_line(rule)}")
+        out.extend(f"  - {_rule_yaml_line(rule)}" for rule in rules)
     return "\n".join(out)
 
 

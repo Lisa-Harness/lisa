@@ -1840,7 +1840,7 @@ def _merge_lifecycle_json_results(
     """
     if len(json_results) == 1:
         return json_results[0][1]
-    return {target_id: payload for target_id, payload in json_results}
+    return dict(json_results)
 
 
 async def _execute_mode_target_ids(

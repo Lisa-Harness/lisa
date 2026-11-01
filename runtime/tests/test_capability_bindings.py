@@ -55,3 +55,27 @@ def test_bindings_accept_declared_provider_without_catalog_capabilities() -> Non
     )
 
     assert bindings.binding_for(CapabilityRef("tool", "missing", "lisa-pack-memory")) is None
+
+
+def test_bindings_without_capability_catalog_use_owner_configuration() -> None:
+    bindings = SessionCapabilityBindings({"lisa-pack-owner": {"enabled": True}})
+
+    configured = bindings.binding_for(CapabilityRef("tool", "owner_tool", "lisa-pack-owner"))
+    assert configured is not None
+    assert configured.configuration["enabled"] is True
+    with pytest.raises(TypeError):
+        configured.configuration["enabled"] = False
+
+    unconfigured = bindings.binding_for(CapabilityRef("operation", "other", "lisa-pack-other"))
+    assert unconfigured is not None
+    assert unconfigured.owner_id == "lisa-pack-other"
+    assert not unconfigured.configuration
+
+
+def test_bindings_with_explicit_empty_capability_catalog_reject_all() -> None:
+    bindings = SessionCapabilityBindings(
+        {"lisa-pack-owner": {"enabled": True}},
+        capabilities=[],
+    )
+
+    assert bindings.binding_for(CapabilityRef("tool", "owner_tool", "lisa-pack-owner")) is None

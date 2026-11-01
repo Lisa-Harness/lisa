@@ -24,6 +24,7 @@ turn loop cannot drive them.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import httpx
 
@@ -122,14 +123,14 @@ class OpenRouterProbe(ProviderProbe):
         return tuple(models) if models else None
 
 
-def _is_chat_capable(row: dict) -> bool:
+def _is_chat_capable(row: dict[str, Any]) -> bool:
     """Return True for models the host can drive as chat completions.
 
     Accepts models whose output modalities include ``text`` and whose input
     includes ``text``. Excludes embedding- / image- / audio-primary models.
     """
 
-    architecture = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
+    architecture = _mapping(row.get("architecture"))
     input_modalities = architecture.get("input_modalities") or []
     output_modalities = architecture.get("output_modalities") or []
     if "text" not in _as_str_set(input_modalities):
@@ -142,6 +143,11 @@ def _is_chat_capable(row: dict) -> bool:
     return ("text" in out) or modality.endswith("->text")
 
 
+def _mapping(value: object) -> dict[str, Any]:
+    """Return ``value`` as a dict, or ``{}`` for any non-dict payload."""
+    return value if isinstance(value, dict) else {}
+
+
 def _as_str_set(value: object) -> set[str]:
     """Coerce a list of strings into a set, tolerating non-list input."""
 
@@ -151,7 +157,7 @@ def _as_str_set(value: object) -> set[str]:
 
 
 def _enrich_openrouter_model(
-    model_id: str, row: dict, *, expires_at: date | None = None
+    model_id: str, row: dict[str, Any], *, expires_at: date | None = None
 ) -> DiscoveredModel:
     """Build a :class:`DiscoveredModel` from one OpenRouter model row.
 
@@ -164,12 +170,12 @@ def _enrich_openrouter_model(
 
     display_name = str(row.get("name") or "").strip() or model_id
     context_window = _int_or_zero(row.get("context_length"))
-    top_provider = row.get("top_provider") if isinstance(row.get("top_provider"), dict) else {}
+    top_provider = _mapping(row.get("top_provider"))
     if not context_window:
         context_window = _int_or_zero(top_provider.get("context_length"))
 
     # ── Pricing ──
-    pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    pricing = _mapping(row.get("pricing"))
     prompt_price = _price(pricing.get("prompt"))
     completion_price = _price(pricing.get("completion"))
     cache_read_price = _price(pricing.get("input_cache_read"))
@@ -177,7 +183,7 @@ def _enrich_openrouter_model(
 
     # ── Capabilities ──
     supported_params = _as_str_set(row.get("supported_parameters"))
-    architecture = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
+    architecture = _mapping(row.get("architecture"))
     input_modalities = _as_str_set(architecture.get("input_modalities"))
     capabilities: list[str] = ["text"]
     if "tools" in supported_params:

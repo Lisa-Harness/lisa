@@ -328,7 +328,7 @@ async def _handle_models_discover(
     if skipped:
         lines.append(f"- skipped (not configured): {', '.join(skipped)}")
     lines.append("- notes:")
-    lines.extend(notes_lines if notes_lines else ["- none"])
+    lines.extend(notes_lines or ["- none"])
     response_text = "\n".join(lines)
     return handle_simple_command(runtime, message, "models", response_text)
 

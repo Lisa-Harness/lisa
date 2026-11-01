@@ -28,7 +28,7 @@ def _stub_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
     def _effects(mode_id: str, **_kwargs: Any) -> set[str]:
         return {_ACTION_TOOL} if mode_id in _ACTION_MODES else set()
 
-    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: {})
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", dict)
     monkeypatch.setattr("kernel.turn_runner._defaults.mode_completion_effects", _effects)
 
 

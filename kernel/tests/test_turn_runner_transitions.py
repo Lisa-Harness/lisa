@@ -234,9 +234,11 @@ async def test_fork_transition_invalid_mode_returns_error_in_tool_output() -> No
                 ],
             )
         # Capture the tool result message from the messages list
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered from bad fork.")
 
     hooks = _build_hooks(two_step)
@@ -263,9 +265,11 @@ async def test_fork_transition_empty_target_string_returns_error() -> None:
                     _transition_call("call_1", "fork:"),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -302,9 +306,11 @@ async def test_handoff_to_non_routable_target_rejected() -> None:
                     _transition_call("call_1", "nonexistent_mode_xyz"),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -339,9 +345,11 @@ async def test_self_transition_to_default_rejected() -> None:
                 content="",
                 tool_calls=[_transition_call("call_1", "default")],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -428,9 +436,11 @@ async def test_self_transition_to_non_default_mode_rejected() -> None:
                 content="",
                 tool_calls=[_transition_call("call_1", "markdown")],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -463,9 +473,11 @@ async def test_handoff_to_default_from_another_mode_allowed() -> None:
                 content="",
                 tool_calls=[_transition_call("call_1", "default")],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -500,9 +512,11 @@ async def test_handoff_includes_rationale_in_tool_output() -> None:
                     ),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(two_step)
@@ -544,9 +558,11 @@ async def test_handoff_rationale_is_labelled_model_supplied() -> None:
                     ),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(two_step)
@@ -740,9 +756,11 @@ async def test_workflow_transition_invalid_target_produces_error_output() -> Non
                     _transition_call("call_1", "exit"),  # exit is not next from inquire
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -989,9 +1007,11 @@ async def test_transition_missing_target_stage_id_returns_error() -> None:
                     _make_tool_call("call_1", "transition_stage", {"rationale": "no target"}),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -1023,9 +1043,11 @@ async def test_transition_unknown_target_returns_error() -> None:
                     _transition_call("call_1", "totally_unknown_stage"),
                 ],
             )
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured_tool_outputs.append(str(msg.get("content", "")))
+        captured_tool_outputs.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Recovered.")
 
     hooks = _build_hooks(two_step)
@@ -1371,9 +1393,11 @@ async def test_forced_transition_echoes_its_rationale_as_kernel_supplied() -> No
             # No tool calls while a forced action is pending -> the kernel
             # synthesizes the transition after the non-compliance cap.
             return _StubCompletion(content="Thinking about it.")
-        for msg in kwargs.get("messages", []):
-            if msg.get("role") == "tool":
-                captured.append(str(msg.get("content", "")))
+        captured.extend(
+            str(msg.get("content", ""))
+            for msg in kwargs.get("messages", [])
+            if msg.get("role") == "tool"
+        )
         return _StubCompletion(content="Done.")
 
     hooks = _build_hooks(refuses_then_finishes)

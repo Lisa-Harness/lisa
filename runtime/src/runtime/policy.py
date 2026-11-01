@@ -213,7 +213,7 @@ def _cel_activation(
     - ``containment`` — the resolved sandbox state string
       (``contained|degraded|none|unknown``).
     """
-    import celpy  # lazy: hosts without when-rules never pay
+    from celpy.adapter import json_to_cel  # lazy: hosts without when-rules never pay
 
     identity = getattr(invocation, "identity", None)
 
@@ -221,7 +221,7 @@ def _cel_activation(
         return str(getattr(identity, name, "") or "")
 
     return {
-        "action": celpy.json_to_cel(
+        "action": json_to_cel(
             {
                 "tool": str(getattr(invocation, "target_id", "") or ""),
                 "effect": str(getattr(invocation, "effect", "") or ""),
@@ -231,7 +231,7 @@ def _cel_activation(
                 "parameters": dict(getattr(invocation, "parameters", None) or {}),
             }
         ),
-        "identity": celpy.json_to_cel(
+        "identity": json_to_cel(
             {
                 "workspace_id": _field("workspace_id"),
                 "user_slug": _field("user_slug"),
@@ -385,9 +385,11 @@ def _compile_check_when(doc: PolicyDocument, path: Path) -> list[str]:
     error resolves toward prompting, never toward allowing.
     """
     errors: list[str] = []
-    for list_name in ("deny", "ask", "allow"):
-        for detail in validate_rule_expressions(getattr(doc, list_name)):
-            errors.append(f"{path.name}: {list_name} {detail}; using ask-mode defaults")
+    errors.extend(
+        f"{path.name}: {list_name} {detail}; using ask-mode defaults"
+        for list_name in ("deny", "ask", "allow")
+        for detail in validate_rule_expressions(getattr(doc, list_name))
+    )
     return errors
 
 

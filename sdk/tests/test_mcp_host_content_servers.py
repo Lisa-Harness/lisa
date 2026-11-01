@@ -163,7 +163,7 @@ def test_build_content_mcp_config_prepends_overlays_dir(tmp_path: Path) -> None:
 
     assert config.env is not None
     roots = config.env.get("SDK_CONTENT_ROOTS", "")
-    assert roots.startswith(str(overlays) + os.sep) or roots.startswith(str(overlays) + os.pathsep)
+    assert roots.startswith((str(overlays) + os.sep, str(overlays) + os.pathsep))
     assert config.env.get("LISA_OVERLAY_ROOT") == str(overlays)
 
 

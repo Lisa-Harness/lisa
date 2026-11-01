@@ -48,11 +48,7 @@ for repo in REPOS:
         print(f"\n===== {pack_dir.name}  ({repo.name}) rc={proc.returncode}")
         out = (proc.stdout + proc.stderr).strip()
         for line in out.splitlines():
-            if (
-                line.startswith("ISSUE")
-                or line.startswith("CRASH")
-                or line.startswith("provider_id")
-            ):
+            if line.startswith(("ISSUE", "CRASH", "provider_id")):
                 print(f"  {line}")
         if proc.returncode != 0:
             all_ok = False

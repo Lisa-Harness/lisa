@@ -73,7 +73,7 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
     from sdk.packs.introspect.operations.self_model import self_model as self_model_module
     from sdk.packs.introspect.operations.self_model.self_model import execute
 
-    monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
+    monkeypatch.setattr(self_model_module, "get_workflow_catalog", dict)
 
     async def _mock_introspect() -> IntrospectSnapshot:
         return IntrospectSnapshot(
@@ -123,7 +123,7 @@ async def test_self_model_execute_without_introspect_fn(monkeypatch: pytest.Monk
     from sdk.packs.introspect.operations.self_model import self_model as self_model_module
     from sdk.packs.introspect.operations.self_model.self_model import execute
 
-    monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
+    monkeypatch.setattr(self_model_module, "get_workflow_catalog", dict)
 
     ctx = OperationExecutionContext(
         operation_id="self_model",
@@ -155,7 +155,7 @@ async def test_self_model_tool_count_from_registry_not_ctx(
     from sdk.packs.introspect.operations.self_model import self_model as self_model_module
     from sdk.packs.introspect.operations.self_model.self_model import execute
 
-    monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
+    monkeypatch.setattr(self_model_module, "get_workflow_catalog", dict)
 
     # Simulate a runtime with one tool registered.
     fake_catalog = {"web_search": object()}

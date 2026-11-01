@@ -679,9 +679,7 @@ async def test_mcp_tool_error_continues_turn() -> None:
 
 def _capture_tool_role_messages(messages: list[dict[str, Any]], captured: list[str]) -> None:
     """Append the contents of tool-role messages from one request into ``captured``."""
-    for msg in messages:
-        if msg.get("role") == "tool":
-            captured.append(str(msg.get("content", "")))
+    captured.extend(str(msg.get("content", "")) for msg in messages if msg.get("role") == "tool")
 
 
 @pytest.mark.asyncio
@@ -1244,7 +1242,7 @@ def test_extract_completion_usage_defaults_to_zero() -> None:
         usage=None,
     )
     result = _extract_completion_usage(completion)
-    assert all(v in {0} for v in result)
+    assert all(v == 0 for v in result)
 
 
 # ── StreamedCompletionAdapter ─────────────────────────────────────────

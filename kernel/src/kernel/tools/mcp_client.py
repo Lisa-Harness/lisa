@@ -931,7 +931,7 @@ class MCPToolPool:
         Called by :meth:`_refresh_tool_index` so host-owned synthetic tools
         survive catalog refreshes (they are not rediscovered from MCP servers).
         """
-        for name, _handler in self._synthetic_handlers.items():
+        for name in self._synthetic_handlers:
             # Reconstruct the MCPToolSpec and re-insert. Synthetic handlers are
             # never dropped by a refresh — only by aclose().
             if name in self._tool_index:
@@ -1952,8 +1952,8 @@ class MCPToolPool:
                 f"MCP server '{config.server_id}' declares optional capability tools "
                 f"that are missing: {', '.join(missing_optional)}"
             )
-        published_prefix = capability if capability else config.server_id
-        native_to_published = {native: published for native, published in native_contract.items()}
+        published_prefix = capability or config.server_id
+        native_to_published = dict(native_contract.items())
         for spec in catalog_tools:
             if capability and spec.name not in native_to_published:
                 continue

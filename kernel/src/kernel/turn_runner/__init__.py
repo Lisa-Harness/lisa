@@ -7951,44 +7951,44 @@ def _wire_build_entry_ctx(
     """
 
     def _build_entry_ctx(**overrides: Any) -> Any:
-        base_ctx_kwargs = dict(
-            mode_id=mode_id,
-            query=query,
-            resolve_model_fn=resolve_model,
-            complete_fn=complete,
-            read_authored_text_fn=getattr(
+        base_ctx_kwargs: dict[str, Any] = {
+            "mode_id": mode_id,
+            "query": query,
+            "resolve_model_fn": resolve_model,
+            "complete_fn": complete,
+            "read_authored_text_fn": getattr(
                 hooks.context_seams.content_registry,
                 "read_authored_text",
                 None,
             ),
-            execute_tool_fn=mcp_tool_executor,
-            execute_operation_fn=exec_op,
-            state_provider=hooks.services.state_provider,
-            capability_binding_provider=hooks.services.capability_binding_provider,
-            approval_service=hooks.services.approval_service,
-            code_change_artifact_store=hooks.services.code_change_artifact_store,
-            gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
-            workspace_id=hooks.identity.workspace_id,
-            user_id=hooks.identity.user_id,
-            user_slug=hooks.identity.user_slug,
-            user_name=hooks.identity.user_name,
-            principal_key=hooks.identity.principal_key,
-            thread_store_slug=hooks.identity.thread_store_slug,
-            conversation_id=hooks.identity.conversation_id,
-            surface_type=hooks.identity.surface_type,
-            surface_id=hooks.identity.surface_id,
-            memory_scope=hooks.identity.memory_scope,
-            task_id=hooks.identity.task_id,
-            session_plan_digest=hooks.identity.session_plan_digest,
-            data_dir=hooks.services.data_dir,
-            thread_dir=hooks.services.thread_dir,
-            turn_index=hooks.identity.turn_index,
-            delegate_fn=delegate_fn,
-            fork_fn=fork_fn,
-            model_router=hooks.context_seams.model_router,
-            event_bus=tool_output_bus,
-            request_recorder=hooks.models.record_request,
-        )
+            "execute_tool_fn": mcp_tool_executor,
+            "execute_operation_fn": exec_op,
+            "state_provider": hooks.services.state_provider,
+            "capability_binding_provider": hooks.services.capability_binding_provider,
+            "approval_service": hooks.services.approval_service,
+            "code_change_artifact_store": hooks.services.code_change_artifact_store,
+            "gateway_provider_fn": lambda: hooks.context_seams.provider_gateways,
+            "workspace_id": hooks.identity.workspace_id,
+            "user_id": hooks.identity.user_id,
+            "user_slug": hooks.identity.user_slug,
+            "user_name": hooks.identity.user_name,
+            "principal_key": hooks.identity.principal_key,
+            "thread_store_slug": hooks.identity.thread_store_slug,
+            "conversation_id": hooks.identity.conversation_id,
+            "surface_type": hooks.identity.surface_type,
+            "surface_id": hooks.identity.surface_id,
+            "memory_scope": hooks.identity.memory_scope,
+            "task_id": hooks.identity.task_id,
+            "session_plan_digest": hooks.identity.session_plan_digest,
+            "data_dir": hooks.services.data_dir,
+            "thread_dir": hooks.services.thread_dir,
+            "turn_index": hooks.identity.turn_index,
+            "delegate_fn": delegate_fn,
+            "fork_fn": fork_fn,
+            "model_router": hooks.context_seams.model_router,
+            "event_bus": tool_output_bus,
+            "request_recorder": hooks.models.record_request,
+        }
         base_ctx_kwargs.update(overrides)
         return _build_minimal_context(**base_ctx_kwargs)
 
@@ -10307,7 +10307,7 @@ async def _finalize_turn_result(
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
         departed_modes=list(state.departed_modes),
-        fork_results=state.fork_results if state.fork_results else fork_results,
+        fork_results=state.fork_results or fork_results,
         workflow_terminated=workflow_terminated,
         operator_exit=pending_operator_exit,
         yielded=pending_yield if yielded else None,
@@ -10931,7 +10931,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         if _pending_yield is not None or lifecycle_strip_tools:
             effective_tools = None
         else:
-            effective_tools = tool_schemas if tool_schemas else None
+            effective_tools = tool_schemas or None
 
         # Derive budget_exhausted for the budget-briefing block below.
         budget_exhausted = _pending_yield is not None

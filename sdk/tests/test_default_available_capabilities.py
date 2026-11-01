@@ -449,7 +449,7 @@ def test_validate_export_boundaries_rejects_non_exported_cross_pack_reference(
     )
     monkeypatch.setattr(
         "kernel.tools.registry.get_tool_catalog",
-        lambda: {},
+        dict,
     )
     monkeypatch.setattr(
         "kernel.ipsar_fsm.get_workflow_catalog",
@@ -487,7 +487,7 @@ def test_validate_export_boundaries_allows_exported_cross_pack_reference(
     )
     monkeypatch.setattr(
         "kernel.tools.registry.get_tool_catalog",
-        lambda: {},
+        dict,
     )
     monkeypatch.setattr(
         "kernel.ipsar_fsm.get_workflow_catalog",
@@ -525,7 +525,7 @@ def test_validate_export_boundaries_allows_same_pack_reference(
     )
     monkeypatch.setattr(
         "kernel.tools.registry.get_tool_catalog",
-        lambda: {},
+        dict,
     )
     monkeypatch.setattr(
         "kernel.ipsar_fsm.get_workflow_catalog",
@@ -566,7 +566,7 @@ def test_validate_export_boundaries_allows_same_pack_with_prefix_mismatch(
     )
     monkeypatch.setattr(
         "kernel.tools.registry.get_tool_catalog",
-        lambda: {},
+        dict,
     )
     monkeypatch.setattr(
         "kernel.ipsar_fsm.get_workflow_catalog",

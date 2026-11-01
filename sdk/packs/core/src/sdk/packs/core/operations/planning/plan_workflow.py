@@ -617,7 +617,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # (what the user sees). When steps is empty (no-match or fallback),
     # output_text is the rationale (the missing-capability message or
     # the single-target rationale) — same as the pre-steps behavior.
-    output_text = plan_block if plan_block else parsed.rationale
+    output_text = plan_block or parsed.rationale
 
     return OperationResult(
         output_text=output_text,

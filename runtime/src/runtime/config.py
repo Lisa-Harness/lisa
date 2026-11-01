@@ -110,7 +110,7 @@ _PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 def _resolve_env(name: str, default: str = "") -> str:
     """Read an env var and return the stripped value or default."""
     value = os.getenv(name, "").strip()
-    return value if value else default
+    return value or default
 
 
 def _resolve_env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -299,7 +299,7 @@ def _log_level_override(explicit_log_level: str) -> str:
     if raw_log_level:
         return raw_log_level
     env_log = _resolve_env(LISA_LOG_LEVEL_ENV)
-    return env_log if env_log else ""
+    return env_log or ""
 
 
 def _thread_redaction_env() -> tuple[bool, tuple[str, ...]]:

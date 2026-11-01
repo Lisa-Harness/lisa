@@ -957,17 +957,14 @@ def _skipped_selection_reasons(
     skipped_candidates: list[_SkippedCandidate],
 ) -> list[str]:
     """Explain explicit selections that name a server skipped before selection."""
-    reasons: list[str] = []
-    for capability, provider in sorted(selected_capability_providers.items()):
-        selected = provider.strip().lower()
-        if not selected:
-            continue
-        for skipped in skipped_candidates:
-            if skipped.candidate.capability == capability and selected in candidate_identifiers(
-                skipped.candidate
-            ):
-                reasons.append(f"{skipped.candidate.spec.server_id} was skipped: {skipped.reason}.")
-    return reasons
+    return [
+        f"{skipped.candidate.spec.server_id} was skipped: {skipped.reason}."
+        for capability, provider in sorted(selected_capability_providers.items())
+        if (selected := provider.strip().lower())
+        for skipped in skipped_candidates
+        if skipped.candidate.capability == capability
+        and selected in candidate_identifiers(skipped.candidate)
+    ]
 
 
 def _pack_binary_release(root: Path, package_name: str) -> tuple[str | None, str | None]:

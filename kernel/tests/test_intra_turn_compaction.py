@@ -138,16 +138,16 @@ def test_soft_epoch_fires_once_per_crossing_and_rewrites_array() -> None:
 
 def test_soft_epoch_hysteresis_blocks_second_run() -> None:
     state, hooks, messages = _epoch_fixture(window=1000, estimate=900)
-    common = dict(
-        hooks=hooks,
-        messages=messages,
-        model_def=SimpleNamespace(context_window=1000),
-        tools=None,
-        max_tokens=100,
-        mode_id="m",
-        prompt_cache_key="k",
-        log=_quiet_log(),
-    )
+    common: dict[str, Any] = {
+        "hooks": hooks,
+        "messages": messages,
+        "model_def": SimpleNamespace(context_window=1000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "m",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
     assert maybe_run_soft_epoch(state=state, **common) is True
     assert maybe_run_soft_epoch(state=state, **common) is False
 
@@ -156,16 +156,16 @@ def test_soft_epoch_inert_when_disabled_or_unobserved() -> None:
     cfg = IntraTurnCompactionState(enabled=False)
     state, hooks, messages = _epoch_fixture(window=1000, estimate=900)
     state.intra_turn_compaction = cfg
-    common = dict(
-        hooks=hooks,
-        messages=messages,
-        model_def=SimpleNamespace(context_window=1000),
-        tools=None,
-        max_tokens=100,
-        mode_id="m",
-        prompt_cache_key="k",
-        log=_quiet_log(),
-    )
+    common: dict[str, Any] = {
+        "hooks": hooks,
+        "messages": messages,
+        "model_def": SimpleNamespace(context_window=1000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "m",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
     # Disabled config: inert.
     assert maybe_run_soft_epoch(state=state, **common) is False
     # Unobserved estimator: inert.

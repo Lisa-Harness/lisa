@@ -341,9 +341,11 @@ def framework_seed_requirements() -> list[str]:
         ]
         packs_root = fw_root / "sdk" / "packs"
         if packs_root.is_dir():
-            for child in sorted(packs_root.iterdir()):
-                if child.is_dir() and (child / "pyproject.toml").is_file():
-                    dirs.append(str(child))
+            dirs.extend(
+                str(child)
+                for child in sorted(packs_root.iterdir())
+                if child.is_dir() and (child / "pyproject.toml").is_file()
+            )
         return dirs
 
     # Tool mode: reconstruct install requirements from PEP 610 direct_url.json

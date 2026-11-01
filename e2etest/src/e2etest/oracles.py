@@ -39,9 +39,11 @@ class Evidence:
     def thread_entries(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         for path in sorted((self.paths.data_dir / "data" / "threads").glob("*.current.jsonl")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    entries.append(json.loads(line))
+            entries.extend(
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
         return entries
 
     @cached_property

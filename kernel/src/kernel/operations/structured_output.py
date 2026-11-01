@@ -193,8 +193,7 @@ def extract_json_object(text: str) -> str:
         normalized = normalized[7:]
     elif normalized.startswith("```"):
         normalized = normalized[3:]
-    if normalized.endswith("```"):
-        normalized = normalized[:-3]
+    normalized = normalized.removesuffix("```")
     normalized = normalized.strip()
 
     if normalized.startswith("{") and normalized.endswith("}"):

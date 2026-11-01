@@ -650,7 +650,7 @@ def _is_bare_pack_name(spec: str) -> bool:
     if _is_git_pack_spec(raw) or _is_local_pack_spec(raw):
         return False
     lowered = raw.lower()
-    if lowered.startswith("https://") or lowered.startswith("http://"):
+    if lowered.startswith(("https://", "http://")):
         return False
     # Version operators, extras brackets, or spaces disqualify.
     return not re.search(r"[<>=!~\[\s]", raw)
@@ -695,7 +695,7 @@ def _normalize_pack_install_spec(spec: str) -> str:
     if not raw:
         return spec
     lowered = raw.lower()
-    if lowered.startswith("https://") or lowered.startswith("http://"):
+    if lowered.startswith(("https://", "http://")):
         return "git+" + raw
     if _is_bare_pack_name(raw):
         expanded = _expand_bare_pack_name(raw)

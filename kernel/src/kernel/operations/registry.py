@@ -280,9 +280,7 @@ def _provider_slug(raw: str) -> str:
     carries the full package name.
     """
     value = (raw or "").strip().lower().replace("_", "-")
-    if value.startswith(_PROVIDER_PREFIX):
-        value = value[len(_PROVIDER_PREFIX) :]
-    return value
+    return value.removeprefix(_PROVIDER_PREFIX)
 
 
 def validate_export_boundaries(

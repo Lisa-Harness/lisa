@@ -725,7 +725,7 @@ class SqliteMemoryStore:
                 f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             ).lower()
             if tokens:
-                haystack_tokens = {tok for tok in haystack_lower.split()}
+                haystack_tokens = set(haystack_lower.split())
                 overlap = len(tokens & haystack_tokens)
                 if not is_semantic and overlap == 0:
                     continue
@@ -836,7 +836,7 @@ class SqliteMemoryStore:
                 f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             ).lower()
             if tokens:
-                haystack_tokens = {tok for tok in haystack_lower.split()}
+                haystack_tokens = set(haystack_lower.split())
                 overlap = len(tokens & haystack_tokens)
                 if not is_semantic and overlap == 0:
                     continue

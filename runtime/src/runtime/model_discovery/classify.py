@@ -154,7 +154,7 @@ def parse_expiry_date(raw: object) -> date | None:
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        return datetime.fromisoformat(text).date()
     except ValueError:
         return None
 
