@@ -74,8 +74,10 @@ _MAX_TCP_PORT = 65_535
 
 logger = logging.getLogger(__name__)
 
-#: Pack versions that map onto a ``vX.Y.Z`` binary release tag.
-_PACK_RELEASE_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+#: Pack versions that map onto a ``vX.Y.Z`` binary release tag. Each
+#: component rejects leading zeros so zero-padded dist metadata does not
+#: map onto a GitHub release tag that does not exist.
+_PACK_RELEASE_VERSION_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 #: VCS refs that name a ``vX.Y.Z`` binary release tag.
 _PACK_RELEASE_TAG_RE = re.compile(r"v?(\d+\.\d+\.\d+)")
 

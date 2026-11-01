@@ -1271,6 +1271,24 @@ def test_compile_mcp_configs_user_manifest_collision_raises(
         mcp_pool.compile_mcp_configs(runtime)
 
 
+def test_discover_framework_skips_invalid_user_manifest_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    user_manifest = tmp_path / "config" / "mcp_servers.yaml"
+    user_manifest.parent.mkdir(parents=True, exist_ok=True)
+    user_manifest.write_text("servers: [not, a, valid, mapping\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [])
+
+    with caplog.at_level("WARNING"):
+        discovery = mcp_pool.discover_framework(runtime, seed_lock=False)
+
+    assert discovery.user_specs == []
+    assert "Skipping invalid user MCP manifest" in caplog.text
+
+
 def test_set_pack_enabled_rejects_disabling_always_on_pack(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

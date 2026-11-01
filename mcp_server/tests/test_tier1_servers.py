@@ -428,9 +428,7 @@ async def test_catalog_diagnostics_detects_missing_tool_metadata(
     assert any("broken_tool.py" in issue["path"] for issue in tool_issues)
 
 
-def _stub_content_root_entry_points(
-    monkeypatch, eps: list[importlib.metadata.EntryPoint]
-) -> None:
+def _stub_content_root_entry_points(monkeypatch, eps: list[importlib.metadata.EntryPoint]) -> None:
     """Replace ambient entry-point discovery with a fixed list.
 
     ``list_catalog_diagnostics`` re-scans the installed
@@ -439,9 +437,7 @@ def _stub_content_root_entry_points(
     against an otherwise-clean root. These tests assert on the roots they
     create, not on the ambient install, so discovery is stubbed out.
     """
-    monkeypatch.setattr(
-        importlib.metadata, "entry_points", lambda *, group=None: list(eps)
-    )
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda *, group=None: list(eps))
 
 
 @pytest.mark.asyncio
