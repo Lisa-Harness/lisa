@@ -127,7 +127,7 @@ jobs:
       - name: Enforce changed-line coverage across the OS matrix
         run: |
           uv run --no-sync coverage combine --keep coverage-artifacts
-          if [ -n "$COVERAGE_BASE" ]; then
+          if [[ -n "$COVERAGE_BASE" && ! "$COVERAGE_BASE" =~ ^0+$ ]]; then
             uv run --no-sync python scripts/check_changed_coverage.py --base "$COVERAGE_BASE"
           else
             uv run --no-sync python scripts/check_changed_coverage.py
