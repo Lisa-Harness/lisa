@@ -364,9 +364,8 @@ async def test_catalog_diagnostics_returns_report(catalog_setup: None) -> None:
 @pytest.mark.asyncio
 async def test_catalog_diagnostics_detects_missing_mode_config(tmp_path: Path, monkeypatch) -> None:
     """A mode directory without _mode.md should be reported as an issue."""
-    from mcp_server.catalog.server import init_catalog, mcp
-
     from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     mode_dir = root / "modes" / "broken_mode"
@@ -387,9 +386,8 @@ async def test_catalog_diagnostics_detects_missing_operation_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A .py operation module without a .yml sibling should be reported."""
-    from mcp_server.catalog.server import init_catalog, mcp
-
     from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     ops_dir = root / "operations" / "research"
@@ -410,9 +408,8 @@ async def test_catalog_diagnostics_detects_missing_tool_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A .py tool module without a .tool.yml sibling should be reported."""
-    from mcp_server.catalog.server import init_catalog, mcp
-
     from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     tools_dir = root / "tools" / "broken_tool"
@@ -443,9 +440,8 @@ def _stub_content_root_entry_points(monkeypatch, eps: list[importlib.metadata.En
 @pytest.mark.asyncio
 async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> None:
     """A valid content root with proper files should produce zero issues."""
-    from mcp_server.catalog.server import init_catalog, mcp
-
     from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     mode_dir = root / "modes" / "good_mode"
@@ -475,9 +471,8 @@ async def test_catalog_diagnostics_reports_broken_content_root_entry_point(
 ) -> None:
     """An installed pack whose content-root loader raises is surfaced,
     not silently swallowed."""
-    from mcp_server.catalog.server import init_catalog, mcp
-
     from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     broken = importlib.metadata.EntryPoint(
         "broken_pack", "no.such.module:get_content_root", "lisa.extensions.content_roots"
