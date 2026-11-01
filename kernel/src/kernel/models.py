@@ -2635,9 +2635,9 @@ class TokenUsageEvent(BusEvent):
 
     Consumed by the host's `TokenUsageTelemetryHandler` which appends every
     payload to the durable `token-usage.jsonl` blob under the host's data
-    directory. The handler uses a timestamp + nanosecond suffix as the
-    idempotency key so retries and stream-final events always append without
-    collapsing.
+    directory. The handler uses the event timestamp, handler instance,
+    sequence, and nanosecond suffix as the idempotency key so events from
+    separate writers cannot collide on coarse-grained clocks.
     """
 
     event_type: BusEventType = "token_used"

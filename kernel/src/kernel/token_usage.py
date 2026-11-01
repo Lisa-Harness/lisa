@@ -8,9 +8,9 @@ process restarts.
 Design notes:
     - Runtime-neutral: the handler takes a ``Path`` and an optional event
       filter. It does not import app-layer config or Azure exporters.
-    - Idempotency: the ``TokenUsageEvent.idempotency_key`` is set to a
-      timestamp + nanosecond suffix when empty, so retries and stream-final
-      events always append without collapsing (per the event docstring).
+    - Idempotency: the ``TokenUsageEvent.idempotency_key`` includes the
+      handler instance and sequence as well as a timestamp suffix, so
+      separate writers cannot collapse events on coarse-grained clocks.
     - Atomic appends: each line is written with ``"a"`` mode under a
       ``mkdir(parents=True, exist_ok=True)`` so the file appears lazily.
     - Failures are swallowed: telemetry must never break the turn loop.
@@ -123,10 +123,10 @@ class TokenUsageTelemetryHandler:
 
     Idempotency key:
         When the incoming event has an empty ``idempotency_key``, the
-        handler stamps it with ``emitted_at`` plus a nanosecond suffix
-        derived from ``time.time_ns()``. This guarantees uniqueness
-        across retries and stream-final events without collapsing
-        legitimate duplicate calls.
+        handler stamps it with ``emitted_at``, this handler's instance and
+        sequence, and a monotonic nanosecond suffix. The instance and
+        sequence keep separate processes from colliding when their clocks
+        return the same timestamp.
 
     Args:
         path: Absolute path to the ``token-usage.jsonl`` file. Parent
@@ -202,13 +202,15 @@ class TokenUsageTelemetryHandler:
         self._append(event)
 
     def _append(self, event: TokenUsageEvent) -> None:
+        self._sequence += 1
         if not event.idempotency_key:
-            event.idempotency_key = f"{event.emitted_at}:{_time_ns_suffix()}"
+            event.idempotency_key = (
+                f"{event.emitted_at}:{self._instance}:{self._sequence}:{_time_ns_suffix()}"
+            )
         # Handler-stamped loss-detection fields, same posture as the
         # idempotency key: publishers never set them. A reader detects
         # dropped rows by finding sequence gaps within one
         # ``ledger_instance``.
-        self._sequence += 1
         event.sequence = self._sequence
         event.ledger_instance = self._instance
         try:

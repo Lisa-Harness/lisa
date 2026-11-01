@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import runpy
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -75,7 +76,7 @@ def test_git_delta_includes_all_states_and_unusual_names(gate: ModuleType, repo:
     (repo / "seed.py").write_text("VALUE = 2\nMORE = 3\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "seed.py"], check=True)
     (repo / "seed.py").write_text("VALUE = 2\nMORE = 3\nLAST = 4\n", encoding="utf-8")
-    unusual = "new name\twith space.py"
+    unusual = "new name\twith space.py" if sys.platform != "win32" else "new name with space.py"
     (repo / unusual).write_text("# comment\nVALUE = 1\n", encoding="utf-8")
     assert gate.changed_lines(repo, "HEAD~1") == {
         unusual: {1, 2},

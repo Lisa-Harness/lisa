@@ -8,6 +8,7 @@ the pool.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,12 @@ def _config(server_id: str, **overrides: Any) -> MCPClientConfig:
     return MCPClientConfig(**values)
 
 
+def _installed_script(venv_root: Path, server_id: str) -> Path:
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return venv_root / scripts_dir / f"{server_id}{suffix}"
+
+
 def _runtime(warm: list[MCPClientConfig], cold: list[MCPClientConfig] | None = None):
     return SimpleNamespace(
         resources=SimpleNamespace(
@@ -43,7 +50,7 @@ def _runtime(warm: list[MCPClientConfig], cold: list[MCPClientConfig] | None = N
 
 
 def test_resolve_in_process_command_finds_installed_script(tmp_path: Path) -> None:
-    script = tmp_path / "bin" / "lisa-memory"
+    script = _installed_script(tmp_path, "lisa-memory")
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n")
 
@@ -76,7 +83,7 @@ def test_export_reads_warm_and_cold_configs() -> None:
         "lisa-memory",
         "lisa-storage",
     ]
-    assert export.data_dir == "/home/u/.lisa"
+    assert export.data_dir == str(Path("/home/u/.lisa"))
 
 
 def test_export_empty_when_no_configs_compiled() -> None:
@@ -89,13 +96,13 @@ def test_export_empty_when_no_configs_compiled() -> None:
 
     assert export.is_empty
     assert export.skipped == ()
-    assert export.data_dir == "/home/u/.lisa"
+    assert export.data_dir == str(Path("/home/u/.lisa"))
 
 
 def test_export_resolves_in_process_command_from_installed_script(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    script = tmp_path / "bin" / "lisa-memory"
+    script = _installed_script(tmp_path, "lisa-memory")
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n")
     monkeypatch.setattr(
@@ -113,7 +120,7 @@ def test_export_resolves_in_process_command_from_installed_script(
 def test_export_skips_in_process_when_script_is_not_installed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "bin").mkdir()
+    (tmp_path / ("Scripts" if sys.platform == "win32" else "bin")).mkdir()
     monkeypatch.setattr("runtime.paths.venv_root", lambda: tmp_path)
 
     export = export_runtime_mcp_servers(

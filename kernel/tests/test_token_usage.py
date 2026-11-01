@@ -71,6 +71,30 @@ async def test_handler_appends_multiple_events_without_collapsing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idempotency_keys_are_unique_across_handlers_with_same_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kernel import token_usage
+
+    monkeypatch.setattr(token_usage, "_time_ns_suffix", lambda: "500000000")
+
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handlers = [TokenUsageTelemetryHandler(path), TokenUsageTelemetryHandler(path)]
+        events = [
+            build_token_usage_event(provider="openai", model_id="gpt-4o"),
+            build_token_usage_event(provider="openai", model_id="gpt-4o"),
+        ]
+        events[1].emitted_at = events[0].emitted_at
+
+        for handler, event in zip(handlers, events, strict=True):
+            await handler.publish(event)
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert len({json.loads(line)["idempotency_key"] for line in lines}) == 2
+
+
+@pytest.mark.asyncio
 async def test_idempotency_keys_survive_a_frozen_wall_clock(monkeypatch) -> None:
     """Uniqueness must not depend on wall-clock tick granularity.
 

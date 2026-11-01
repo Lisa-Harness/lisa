@@ -103,6 +103,14 @@ def test_tail_hash_covers_a_line_spanning_the_read_window(tmp_path: Path) -> Non
     assert _tail_line_sha(path) == _sha(big_line)
 
 
+def test_tail_hash_excludes_crlf_terminator(tmp_path: Path) -> None:
+    path = tmp_path / "thread.current.jsonl"
+    line = '{"turn": 0}'
+    path.write_bytes(f"{line}\r\n".encode())
+
+    assert _tail_line_sha(path) == _sha(line)
+
+
 def test_chain_link_after_a_window_spanning_predecessor(tmp_path: Path) -> None:
     base = tmp_path / "u"
     _append_big(base, 0, tail_chars=4096)

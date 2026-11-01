@@ -71,7 +71,7 @@ def _sealed_segment_path(base: Path, seg_id: str) -> Path:
 #: value is stable across the newline conventions of any transport and
 #: identical for the active JSONL and the sealed (compressed) copy.
 def _entry_sha256(raw_line: str) -> str:
-    return hashlib.sha256(raw_line.encode("utf-8")).hexdigest()
+    return hashlib.sha256(raw_line.removesuffix("\r").encode("utf-8")).hexdigest()
 
 
 def _tail_line_sha(path: Path, *, block_bytes: int = 65536) -> str | None:

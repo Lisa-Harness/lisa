@@ -271,6 +271,13 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- **Windows thread-store hash chains handle CRLF line endings.** CRLF
+  terminators are excluded from entry and seal hashes, matching the
+  newline-independent line identity used by the verifier.
+- **Concurrent token-usage writers retain distinct event identities.**
+  Generated idempotency keys now include the handler instance and sequence,
+  so simultaneous writers cannot collide when the system clock has coarse
+  resolution.
 - **Packs-venv seeding no longer breaks on Windows drive-letter URLs.** A
   `--source local` install on Windows records each framework package's PEP 610
   `direct_url.json` as a drive-letter URL (`file:///C:/Code/lisa/kernel`).

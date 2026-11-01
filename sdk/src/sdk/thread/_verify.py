@@ -66,7 +66,7 @@ class ChainVerification:
 
 
 def _entry_sha256(raw_line: str) -> str:
-    return hashlib.sha256(raw_line.encode("utf-8")).hexdigest()
+    return hashlib.sha256(raw_line.removesuffix("\r").encode("utf-8")).hexdigest()
 
 
 def _iter_sealed_lines(base: Path, seg_id: str) -> list[str]:
