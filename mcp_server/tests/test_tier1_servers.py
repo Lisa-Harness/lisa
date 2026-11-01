@@ -6,6 +6,7 @@ in-process ``call_tool`` API.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 from pathlib import Path
 from typing import Any
@@ -424,6 +425,18 @@ async def test_catalog_diagnostics_detects_missing_tool_metadata(
     assert any("broken_tool.py" in issue["path"] for issue in tool_issues)
 
 
+def _stub_content_root_entry_points(monkeypatch, eps: list[importlib.metadata.EntryPoint]) -> None:
+    """Replace ambient entry-point discovery with a fixed list.
+
+    ``list_catalog_diagnostics`` re-scans the installed
+    ``lisa.extensions.content_roots`` entry-point group, so a test run in
+    an environment with a stale or broken pack would report its failure
+    against an otherwise-clean root. These tests assert on the roots they
+    create, not on the ambient install, so discovery is stubbed out.
+    """
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda *, group=None: list(eps))
+
+
 @pytest.mark.asyncio
 async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> None:
     """A valid content root with proper files should produce zero issues."""
@@ -443,9 +456,36 @@ async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
 
     init_catalog(extra_roots=[root])
     monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [root])
+    _stub_content_root_entry_points(monkeypatch, [])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
     assert data["mode_issues"] == []
     assert data["operation_issues"] == []
     assert data["tool_issues"] == []
     assert data["summary"]["total_issues"] == 0
+
+
+@pytest.mark.asyncio
+async def test_catalog_diagnostics_reports_broken_content_root_entry_point(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An installed pack whose content-root loader raises is surfaced,
+    not silently swallowed."""
+    from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
+
+    broken = importlib.metadata.EntryPoint(
+        "broken_pack", "no.such.module:get_content_root", "lisa.extensions.content_roots"
+    )
+
+    init_catalog(extra_roots=[tmp_path])
+    monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [tmp_path])
+    _stub_content_root_entry_points(monkeypatch, [broken])
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    failures = data["root_discovery_failures"]
+    assert any(
+        failure["source"] == "entry_point_load" and failure["entry_point"] == "broken_pack"
+        for failure in failures
+    )
+    assert data["summary"]["total_issues"] == len(failures) >= 1

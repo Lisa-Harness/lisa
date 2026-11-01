@@ -13,6 +13,8 @@ from runtime.mcp_binary_cache import (
     resolve_mcp_binary_configs,
 )
 
+from runtime import mcp_binary_cache
+
 
 def _config(cache_dir: Path) -> MCPClientConfig:
     return MCPClientConfig(
@@ -262,3 +264,185 @@ async def test_legacy_digest_sidecar_migrates_to_stat_record(
 
     assert hash_calls == []
     assert Path(again[0].command) == destination
+
+
+_BINARY = b"pinned Go executable"
+_DIGEST = hashlib.sha256(_BINARY).hexdigest()
+_ASSET = "lisa-storage-v0.1.0-linux-amd64"
+
+
+def _linux_amd64(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.system", lambda: "Linux")
+    monkeypatch.setattr("runtime.mcp_binary_cache.platform.machine", lambda: "x86_64")
+
+
+def _mock_client(
+    checksums_body: bytes | int, binary_body: bytes | int = _BINARY
+) -> httpx.AsyncClient:
+    def handle(request: httpx.Request) -> httpx.Response:
+        name = request.url.path.rsplit("/", maxsplit=1)[-1]
+        if name == "checksums.txt":
+            if isinstance(checksums_body, int):
+                return httpx.Response(checksums_body, request=request)
+            return httpx.Response(200, content=checksums_body, request=request)
+        if name == _ASSET:
+            if isinstance(binary_body, int):
+                return httpx.Response(binary_body, request=request)
+            return httpx.Response(200, content=binary_body, request=request)
+        return httpx.Response(404, request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handle))
+
+
+@pytest.mark.asyncio
+async def test_checksums_http_error_raises_download_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _linux_amd64(monkeypatch)
+    async with _mock_client(503) as client:
+        with pytest.raises(MCPBinaryDownloadError, match="failed to fetch checksums"):
+            await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+
+
+@pytest.mark.asyncio
+async def test_binary_http_error_raises_download_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _linux_amd64(monkeypatch)
+    checksums = f"{_DIGEST}  {_ASSET}\n".encode()
+    async with _mock_client(checksums, 404) as client:
+        with pytest.raises(MCPBinaryDownloadError, match="failed to download"):
+            await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+    assert not list((tmp_path / "cache").rglob("*.download"))
+
+
+@pytest.mark.parametrize(
+    "checksums",
+    [
+        pytest.param(b"\xff\xfe binary garbage", id="non-utf8"),
+        pytest.param(b"0" * (1024 * 1024 + 1), id="oversized"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_checksums_asset_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checksums: bytes,
+) -> None:
+    _linux_amd64(monkeypatch)
+    expected_error = "not valid UTF-8" if checksums.startswith(b"\xff") else "exceeds"
+    async with _mock_client(checksums) as client:
+        with pytest.raises(MCPBinaryDownloadError, match=expected_error):
+            await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+
+
+@pytest.mark.parametrize(
+    "checksums",
+    [
+        pytest.param(
+            b"0" * 64 + b"  lisa-storage-v0.1.0-darwin-arm64\n",
+            id="missing-asset",
+        ),
+        pytest.param(
+            f"{_DIGEST}  {_ASSET}\n{_DIGEST}  {_ASSET}\n".encode(),
+            id="duplicate-asset",
+        ),
+        pytest.param(b"not-a-sha  " + _ASSET.encode() + b"\n", id="invalid-digest"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_checksum_entries_are_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checksums: bytes,
+) -> None:
+    _linux_amd64(monkeypatch)
+    expected_error = (
+        "invalid checksum" if checksums.startswith(b"not-a-sha") else "exactly one checksum"
+    )
+    async with _mock_client(checksums) as client:
+        with pytest.raises(MCPBinaryDownloadError, match=expected_error):
+            await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+
+
+@pytest.mark.asyncio
+async def test_oversized_binary_is_rejected_and_temp_file_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _linux_amd64(monkeypatch)
+    monkeypatch.setattr(mcp_binary_cache, "_MAX_BINARY_BYTES", 4)
+    async with _mock_client(f"{_DIGEST}  {_ASSET}\n".encode()) as client:
+        with pytest.raises(MCPBinaryDownloadError, match="exceeds"):
+            await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+    assert not list((tmp_path / "cache").rglob("*.download"))
+
+
+def _stage_valid_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    _linux_amd64(monkeypatch)
+    destination = tmp_path / "cache" / "Lisa-Harness" / "lisa-go" / "v0.1.0" / _ASSET
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(_BINARY)
+    destination.with_name(f"{_ASSET}.sha256").write_text(_DIGEST, encoding="ascii")
+    return destination
+
+
+@pytest.mark.asyncio
+async def test_cached_checksum_garbage_triggers_redownload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = _stage_valid_cache(tmp_path, monkeypatch)
+    checksum_path = destination.with_name(f"{_ASSET}.sha256")
+    checksum_path.write_text("garbage-not-a-sha", encoding="ascii")
+
+    async with _mock_client(f"{_DIGEST}  {_ASSET}\n".encode()) as client:
+        resolved = await resolve_mcp_binary_configs([_config(tmp_path / "cache")], client=client)
+
+    assert Path(resolved[0].command).read_bytes() == _BINARY
+    assert checksum_path.read_text(encoding="ascii").strip().split()[0] == _DIGEST
+
+
+@pytest.mark.asyncio
+async def test_cached_checksum_is_normalized_without_network_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = _stage_valid_cache(tmp_path, monkeypatch)
+    destination.with_name(f"{_ASSET}.sha256").write_text(f"  {_DIGEST.upper()}\n", encoding="ascii")
+
+    async def fail_if_fetched(*_args, **_kwargs):
+        raise AssertionError("a valid cached binary should not require a fetch")
+
+    monkeypatch.setattr("runtime.mcp_binary_cache._read_checksums", fail_if_fetched)
+
+    resolved = await resolve_mcp_binary_configs([_config(tmp_path / "cache")])
+
+    assert Path(resolved[0].command) == destination
+    assert destination.read_bytes() == _BINARY
+
+
+@pytest.mark.asyncio
+async def test_symlinked_cached_binary_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = _stage_valid_cache(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "elsewhere.bin"
+    elsewhere.write_bytes(_BINARY)
+    destination.unlink()
+    try:
+        destination.symlink_to(elsewhere)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(MCPBinaryDownloadError, match="refusing symlink"):
+        await resolve_mcp_binary_configs([_config(tmp_path / "cache")])
+
+
+@pytest.mark.asyncio
+async def test_directory_at_cache_destination_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = _stage_valid_cache(tmp_path, monkeypatch)
+    destination.unlink()
+    destination.mkdir()
+
+    with pytest.raises(MCPBinaryDownloadError, match="not a regular file"):
+        await resolve_mcp_binary_configs([_config(tmp_path / "cache")])

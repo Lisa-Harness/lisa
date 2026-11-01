@@ -48,6 +48,7 @@ def _candidate(
     capability: str,
     source: str = "pack",
     pack_slug: str | None = None,
+    package_name: str | None = None,
     **kw,
 ) -> capability_servers.CapabilityCandidate:
     return capability_servers.CapabilityCandidate(
@@ -55,6 +56,7 @@ def _candidate(
         spec=_spec(server_id, capability, **kw),
         source=source,
         pack_slug=pack_slug,
+        package_name=package_name,
         manifest_path="/nowhere",
     )
 
@@ -124,6 +126,80 @@ def test_winning_spec_keeps_real_server_id() -> None:
     spec = capability_servers.winning_spec_as_capability(go)
     assert spec.server_id == "lisa-storage-go"
     assert spec.capability == "storage"
+
+
+def test_explicit_selection_ambiguous_match_raises() -> None:
+    """A selection matching two candidates is a config error, not first-wins."""
+    a = _candidate("a-server", "storage", pack_slug="go-servers")
+    b = _candidate(
+        "b-server",
+        "storage",
+        pack_slug="go-servers",
+        package_name="other-dist",
+    )
+    with pytest.raises(capability_servers.CapabilitySelectionError, match="multiple"):
+        capability_servers.select_capability_owner(
+            "storage", [a, b], selected_provider="go-servers"
+        )
+
+
+def test_explicit_selection_is_case_and_whitespace_insensitive() -> None:
+    go = _candidate("lisa-storage-go", "storage", pack_slug="go-servers")
+    builtin = _candidate("lisa-storage", "storage", source="builtin")
+
+    selection = capability_servers.select_capability_owner(
+        "storage", [builtin, go], selected_provider="  Go-Servers  "
+    )
+
+    assert selection.winner is go
+
+
+@pytest.mark.parametrize(
+    "package_name,provider",
+    [
+        ("lisa-pack-go-servers", "lisa-pack-go-servers"),
+        ("lisa-pack-go-servers", "go-servers"),
+    ],
+)
+def test_explicit_selection_matches_pack_distribution(package_name: str, provider: str) -> None:
+    go = _candidate(
+        "lisa-storage-go",
+        "storage",
+        package_name=package_name,
+    )
+    builtin = _candidate("lisa-storage", "storage", source="builtin")
+
+    selection = capability_servers.select_capability_owner(
+        "storage", [builtin, go], selected_provider=provider
+    )
+
+    assert selection.winner is go
+
+
+def test_no_candidates_resolves_to_no_owner() -> None:
+    selection = capability_servers.select_capability_owner("storage", [])
+
+    assert selection.winner is None
+    assert selection.losers == ()
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("storage", True),
+        ("memory-v2", True),
+        ("thread_store", True),
+        ("Storage", False),
+        ("", False),
+        ("2storage", False),
+        ("stora ge", False),
+        ("storage.core", False),
+        ("storage/core", False),
+        ("-storage", False),
+    ],
+)
+def test_valid_capability_name_boundaries(name: str, expected: bool) -> None:
+    assert capability_servers.valid_capability_name(name) is expected
 
 
 # ── _resolve_capability_owners (registry integration) ──────────────

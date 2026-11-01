@@ -94,6 +94,49 @@ def test_unversioned_binary_download_uses_pack_release(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "version",
+    [
+        "0.2.0rc1",
+        "0.2.0-rc.1",
+        "0.2.0a3",
+        "0.2.0b1",
+        "0.02.0",
+        "0.2.0.4",
+        "v0.2.0",
+    ],
+)
+def test_non_release_pack_versions_do_not_resolve_binary_tags(tmp_path: Path, version: str) -> None:
+    root = _install_pack(tmp_path / "site-packages", version)
+
+    resolved = _with_pack_binary_versions([_spec()], root, "lisa-pack-demo")
+
+    assert resolved.specs == []
+    assert [spec.server_id for spec in resolved.skipped] == ["demo-go"]
+
+
+def test_valid_multi_digit_release_version_resolves_verbatim(tmp_path: Path) -> None:
+    root = _install_pack(tmp_path / "site-packages", "1.2.10")
+
+    resolved = _with_pack_binary_versions([_spec()], root, "lisa-pack-demo")
+
+    assert resolved.specs[0].binary_download.version == "v1.2.10"
+    assert resolved.skipped == []
+
+
+def test_only_unversioned_specs_are_rewritten(tmp_path: Path) -> None:
+    root = _install_pack(tmp_path / "site-packages", "0.4.0")
+    explicit = _spec("v9.9.9")
+
+    resolved = _with_pack_binary_versions([_spec(), explicit, _spec()], root, "lisa-pack-demo")
+
+    assert [spec.binary_download.version for spec in resolved.specs] == [
+        "v0.4.0",
+        "v9.9.9",
+        "v0.4.0",
+    ]
+
+
+@pytest.mark.parametrize(
+    "version",
     ["0.2.1.dev3+g1234abc", "0.2.0.post1.dev3+gd492fe7f8", "0.2.1rc1", "0.2.0.post1"],
 )
 def test_untagged_pack_skips_unversioned_binary_servers(
