@@ -58,7 +58,7 @@ def _append_tail(base: Path, n: int, *, segment_turns: int = 2) -> int | None:
 
 
 def _sha(line: str) -> str:
-    return hashlib.sha256(line.encode("utf-8")).hexdigest()
+    return hashlib.sha256(line.removesuffix("\r").encode("utf-8")).hexdigest()
 
 
 def _active_lines(base: Path) -> list[str]:
