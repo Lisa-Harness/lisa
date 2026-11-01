@@ -543,12 +543,9 @@ def setup_framework(
     )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
     if default_mcp_tool_ids:
-        # build_catalog_mcp_config always returns a populated env dict, but
-        # MCPClientConfig.env is typed dict|None, so normalize defensively
-        # before mutating (the empty-default case is skipped above).
-        if catalog_config.env is None:
-            catalog_config = dataclasses.replace(catalog_config, env={})
-        catalog_config.env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
+        catalog_env = dict(catalog_config.env or {})
+        catalog_env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
+        catalog_config = dataclasses.replace(catalog_config, env=catalog_env)
 
     # Start the shared lisa-catalog and lisa-content subprocesses together so
     # their interpreter startups overlap; every catalog/content adapter below
@@ -1499,7 +1496,10 @@ def _proxy_protocol_resolver(runtime: HostRuntime) -> Callable[[str], str | None
 
     def _resolver(name: str) -> str | None:
         try:
-            return protocol_for(name)
+            protocol = protocol_for(name)
+            if protocol is not None and not isinstance(protocol, str):
+                raise TypeError(f"Invalid proxy protocol from gateway provider: {protocol!r}")
+            return protocol
         except Exception:  # pylint: disable=broad-except
             logger.warning(
                 "provider gateway seam failed to report a proxy protocol for %r; "

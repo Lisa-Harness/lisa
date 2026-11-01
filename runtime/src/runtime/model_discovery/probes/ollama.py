@@ -257,7 +257,8 @@ def _enrich_ollama_model(
     registry in ``known_models.yaml`` is applied last and still wins.
     """
 
-    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    raw_details = item.get("details")
+    details = raw_details if isinstance(raw_details, dict) else {}
     parameter_size = str(details.get("parameter_size") or "").strip()
     family = str(details.get("family") or "").strip()
 

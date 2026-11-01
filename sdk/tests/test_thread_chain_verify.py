@@ -242,3 +242,55 @@ def test_clean_store_notarizable_head(tmp_path: Path) -> None:
     _write_active(base, [line0, line1])
     result = verify_chain(base)
     assert result.head_sha256 == _active_sha(line1)
+
+
+@pytest.mark.parametrize("content", [None, b"not zstd", b""])
+def test_unreadable_seal_is_a_divergence(tmp_path: Path, content: bytes | None) -> None:
+    base = tmp_path / "u"
+    _seal(base, "0001", [_entry_line(0)])
+    sealed = Path(f"{base}.0001.jsonl.zst")
+    if content is None:
+        sealed.unlink()
+    else:
+        sealed.write_bytes(content)
+    result = verify_chain(base)
+    assert not result.ok
+    assert result.first_divergence == "sealed segment 0001: unreadable or empty"
+    assert result.verified_seals == 0
+    assert result.chained_entries == 0
+
+
+@pytest.mark.parametrize("malformed", ["{", "[]", "null"])
+def test_malformed_entry_is_not_skipped(tmp_path: Path, malformed: str) -> None:
+    base = tmp_path / "u"
+    successor = _entry_line(1, prev=_active_sha(malformed))
+    _write_active(base, [malformed, successor])
+    result = verify_chain(base)
+    assert not result.ok
+    assert "active segment line 1: malformed entry" in result.first_divergence
+    assert len(result.divergences) == 1
+    assert result.chained_entries == 1
+    assert result.head_sha256 == _active_sha(successor)
+
+
+def test_missing_link_after_chain_started_is_not_legacy(tmp_path: Path) -> None:
+    base = tmp_path / "u"
+    head = _entry_line(0)
+    _write_active(base, [head, _entry_line(1, prev=_active_sha(head)), _entry_line(2)])
+    result = verify_chain(base)
+    assert not result.ok
+    assert "chain link missing mid-history" in result.first_divergence
+    assert result.unchained_entries == 1
+
+
+def test_legacy_seal_without_hash_is_reported(tmp_path: Path) -> None:
+    base = tmp_path / "u"
+    _seal(base, "0001", [_entry_line(0)])
+    index = Path(f"{base}.index.jsonl")
+    record = json.loads(index.read_text(encoding="utf-8"))
+    del record["tail_sha256"]
+    index.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    result = verify_chain(base)
+    assert result.ok
+    assert result.unchained_seals == 1
+    assert result.verified_seals == 0

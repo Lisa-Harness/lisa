@@ -8,6 +8,7 @@ Covers ``handle_resume``:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,7 +30,7 @@ class _FakeRuntime:
             "Paths",
             (),
             # value is irrelevant; loader is mocked
-            {"thread_path": "thread"},
+            {"thread_path": Path("thread")},
         )()
         self.services = type(
             "Services",
@@ -81,13 +82,11 @@ async def test_resume_surfaces_yield_question_when_present(
         _entry(turn=2, yielded=True, yield_question="Which option do you prefer?"),
     ]
 
-    def _fake_load(**_kwargs: Any) -> list[dict[str, Any]]:
+    def _fake_load(self: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return list(entries)
 
-    # handle_resume imports load_recent_thread_entries lazily from
-    # runtime.thread; patch it there so the in-function import sees the stub.
     monkeypatch.setattr(
-        "runtime.thread.load_recent_thread_entries",
+        "sdk.packs.recovery.commands.ThreadStore.load_recent",
         _fake_load,
         raising=False,
     )
@@ -111,11 +110,11 @@ async def test_resume_returns_no_yield_message_when_absent(
     there is nothing to resume."""
     entries = [_entry(turn=1), _entry(turn=2)]
 
-    def _fake_load(**_kwargs: Any) -> list[dict[str, Any]]:
+    def _fake_load(self: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return list(entries)
 
     monkeypatch.setattr(
-        "runtime.thread.load_recent_thread_entries",
+        "sdk.packs.recovery.commands.ThreadStore.load_recent",
         _fake_load,
         raising=False,
     )
@@ -140,11 +139,11 @@ async def test_resume_with_reply_sets_pending_resume_message(
         _entry(turn=1, yielded=True, yield_question="Pick A or B?"),
     ]
 
-    def _fake_load(**_kwargs: Any) -> list[dict[str, Any]]:
+    def _fake_load(self: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return list(entries)
 
     monkeypatch.setattr(
-        "runtime.thread.load_recent_thread_entries",
+        "sdk.packs.recovery.commands.ThreadStore.load_recent",
         _fake_load,
         raising=False,
     )

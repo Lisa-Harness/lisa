@@ -21,7 +21,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
+from kernel.models import (
+    MemoryScope,
+    OperationExecutionContext,
+    OperationResult,
+    ToolExecutionContext,
+)
 from kernel.operations.structured_output import (
     completion_content,
     json_only_retry_messages,
@@ -107,7 +112,9 @@ class Parameters(BaseModel):
         "at least id, content, and created_at.",
         min_length=1,
     )
-    memory_scope: str = Field("personal", description="Privacy scope for the semantic record.")
+    memory_scope: MemoryScope = Field(
+        "personal", description="Privacy scope for the semantic record."
+    )
     surface_id: str = Field("", description="Surface isolation key.")
     user_slug: str = Field("default", description="The user identity to scope to.")
     workspace_id: str = Field("default", description="Workspace isolation key.")
@@ -200,7 +207,7 @@ async def _distill_batch(
         (first_messages, json_only_retry_messages(first_messages, ConsolidatedSemantic))
     ):
         try:
-            raw = await ctx.host.complete(  # type: ignore[union-attr]
+            raw = await ctx.host.complete(
                 messages=attempt_messages,
                 model_def=model_def,
                 max_tokens=max_tokens,
@@ -240,7 +247,7 @@ async def _persist_semantic(
             user_id=ctx.user_id,
             user_slug=parsed.user_slug,
             surface_id=parsed.surface_id,
-            memory_scope=parsed.memory_scope,  # type: ignore[arg-type]
+            memory_scope=parsed.memory_scope,
             mode_id=ctx.mode_id,
             parameters={
                 "content": consolidated.summary,
@@ -330,7 +337,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     # Validate item_ids are a subset of the input ids (guard against
     # the model hallucinating ids that were not in the batch).
-    input_ids = {int(rec.get("id")) for rec in records if rec.get("id") is not None}
+    input_ids = {int(record_id) for rec in records if (record_id := rec.get("id")) is not None}
     item_ids = [eid for eid in consolidated.item_ids if eid in input_ids]
     if not item_ids:
         # Fall back to the full input set if the model returned no valid ids.

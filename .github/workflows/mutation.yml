@@ -1,0 +1,36 @@
+name: Targeted mutation testing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changed-coverage:
+    name: Changed-coverage correctness (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen --extra dev --extra mutation
+      - name: Mutate in an isolated copy
+        run: uv run --no-sync mutmut run --max-children 2
+      - name: Export results (survivors require review)
+        run: |
+          uv run --no-sync mutmut results --all true > mutation-results.txt
+          uv run --no-sync mutmut export-cicd-stats
+          cat mutation-results.txt
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: mutation-results
+          path: |
+            mutation-results.txt
+            mutants/mutmut-cicd-stats.json

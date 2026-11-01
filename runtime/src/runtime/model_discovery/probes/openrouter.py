@@ -86,11 +86,8 @@ class OpenRouterProbe(ProviderProbe):
             response = await client.get(url, headers=headers, timeout=timeout)
             response.raise_for_status()
             payload = response.json() if response.content else {}
-            rows = (
-                payload.get("data")
-                if isinstance(payload, dict) and isinstance(payload.get("data"), list)
-                else []
-            )
+            data = payload.get("data") if isinstance(payload, dict) else None
+            rows = data if isinstance(data, list) else []
             for row in rows:
                 if not isinstance(row, dict):
                     continue

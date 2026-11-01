@@ -31,6 +31,8 @@ from kernel.decision_telemetry import (
 )
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import (
+    ConversationSurface,
+    MemoryScope,
     OperationExecutionContext,
     OperationResult,
     ToolResult,
@@ -47,7 +49,7 @@ from kernel.sandbox_floor import (
     resolve_sandbox_owner,
 )
 from kernel.seams.host_adapter import build_callable_host
-from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder
+from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder, ModelRouter
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.token_usage import TOKEN_USAGE_TOPIC
 from kernel.turn_hooks import (
@@ -264,7 +266,7 @@ def _resolve_factory_arity(factory: Any, default_params: int) -> int:
         return default_params  # assume direct factory if signature fails
 
 
-def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
+def _resolve_router_for_runtime(runtime: HostRuntime) -> ModelRouter | None:
     """Discover pack-registered model routers (lisa.extensions.model_routers).
 
     Wire the first non-None factory result into ``ContextSeams``. When no
@@ -293,11 +295,17 @@ def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
             if _resolve_factory_arity(entry.factory, default_params=2) == 0:
                 # Factory-factory: call with 0 args to get the real
                 # ``(manifest, session_plan) -> ModelRouter | None`` factory.
-                factory = entry.factory()  # type: ignore[call-arg]
-                router = factory(runtime.session.manifest, session_plan)  # type: ignore[misc]
+                factory = entry.factory()
+                if not callable(factory):
+                    raise TypeError("Model router entry point must return a callable factory")
+                candidate: ModelRouter | Callable[..., ModelRouter | None] | None = factory(
+                    runtime.session.manifest, session_plan
+                )
             else:
                 # Direct factory: call with 2 args.
-                router = entry.factory(runtime.session.manifest, session_plan)
+                candidate = entry.factory(runtime.session.manifest, session_plan)
+            if candidate is not None and not isinstance(candidate, ModelRouter):
+                raise TypeError("Model router factory must return a ModelRouter or None")
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning(
                 "model router factory %r failed: %s",
@@ -306,9 +314,9 @@ def _resolve_router_for_runtime(runtime: HostRuntime) -> Any:
                 exc_info=True,
             )
             continue
-        if router is not None:
+        if candidate is not None:
             logger.debug("active model router: %s", entry.pack_name)
-            return router
+            return candidate
     return None
 
 
@@ -508,9 +516,9 @@ async def _maybe_auto_capture(
             thread_store_slug=runtime.config.thread_slug,
             thread_dir=str(runtime.paths.thread_dir),
             conversation_id=runtime.config.surface_id,
-            surface_type=runtime.config.surface_type,
+            surface_type=cast(ConversationSurface, runtime.config.surface_type),
             surface_id=runtime.config.surface_id,
-            memory_scope=runtime.config.memory_scope,
+            memory_scope=cast(MemoryScope, runtime.config.memory_scope),
             mode_id=mode_id,
             query=query,
             response=response_text,
@@ -528,7 +536,7 @@ async def _maybe_auto_capture(
                 gateway_provider_fn=provider_gateways,
                 resolve_model_fn=resolve_model,
                 read_authored_text_fn=getattr(
-                    content_registry() if content_registry else None,
+                    content_registry(),
                     "read_authored_text",
                     None,
                 ),
@@ -907,6 +915,9 @@ def _run_behavioral_signals_slice_impl(
     from runtime.thread import get_thread_redaction_policy
 
     item_id = f"state:behavioural_signals:{runtime.config.user_slug}"
+    if runtime.paths.thread_path is None:
+        _drop_context_item(runtime, item_id)
+        return 0, "", ""
     try:
         store = ThreadStore(runtime.paths.thread_path, redaction=get_thread_redaction_policy())
         signals = compute_behavioral_signals(
@@ -1902,8 +1913,8 @@ def build_turn_hooks(
     _slice_provider_hooks_view = _SliceProviderHooksView(
         runtime=runtime,
     )
-    _slice_provider_hooks_view.execute_operation = _execute_operation  # type: ignore[attr-defined]
-    _slice_provider_hooks_view.execute_tool = _execute_tool  # type: ignore[attr-defined]
+    _slice_provider_hooks_view.execute_operation = _execute_operation
+    _slice_provider_hooks_view.execute_tool = _execute_tool
 
     pack_slice_providers = _discover_pack_slice_providers(
         view=_slice_provider_hooks_view,

@@ -36,6 +36,7 @@ from typing import Any, cast
 from kernel.host_commands import HostCommandSpec
 from kernel.models import ConversationSurface, MemoryScope
 from kernel.recovery import RecoveryIdentity
+from sdk.thread import ThreadStore
 
 logger = logging.getLogger(__name__)
 
@@ -450,9 +451,8 @@ async def handle_resume(runtime: Any, stripped: str, message: str) -> str:
     operator can resolve them with ``/retry``, ``/skip``, or ``/cancel``.
     """
     del message
-    from runtime.thread import load_recent_thread_entries
-
-    entries = load_recent_thread_entries(thread_path=runtime.paths.thread_path, limit=30)
+    thread_path = runtime.paths.thread_path
+    entries = ThreadStore(thread_path).load_recent(limit=30) if thread_path is not None else []
     yielded_entry: dict[str, Any] | None = None
     for entry in reversed(entries):
         if entry.get("yielded"):

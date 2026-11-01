@@ -49,8 +49,8 @@ def storage_implementation_id(runtime: HostRuntime) -> str:
     (the call then fails loudly with an unknown-server error rather than
     silently misrouting).
     """
-    pool = getattr(runtime.resources, "mcp_tool_pool", None)
-    configs = getattr(pool, "configs", None) or []
+    pool = runtime.resources.mcp_tool_pool
+    configs = pool.configs if pool is not None else []
     for config in configs:
         if getattr(config, "capability", None) == "storage":
             return config.server_id

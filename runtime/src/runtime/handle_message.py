@@ -95,6 +95,7 @@ from runtime.commands import (
 )
 from runtime.context_assembly import build_turn_context
 from runtime.execution_policy import resolve_execution_policy
+from runtime.operator_signal import OperatorSignal
 from runtime.provider_endpoints import proxy_route_view
 from runtime.thread import (
     TurnReservation,
@@ -412,7 +413,7 @@ async def _dispatch_approval_command(
     Returns:
         A ``(response_text, continuation_result)`` tuple; both ``None``
         when the message is not an approval command. ``continuation_result``
-        is set when the approve path ran a post-approval continuation turn
+        is set when an approval handler ran a post-approval continuation turn
         and returned a structured result (preserving ``operator_exit``)
         rather than plain text.
     """
@@ -431,13 +432,17 @@ async def _dispatch_approval_command(
         else:
             response_text = approved
     elif lowered == "/deny" or lowered.startswith("/deny "):
-        response_text = await handle_approval_command(
+        denied = await handle_approval_command(
             runtime,
             stripped,
             approve=False,
             transport=transport,
             route_model_turn=_route_model_turn,
         )
+        if isinstance(denied, HostCommandResult):
+            continuation_result = denied
+        else:
+            response_text = denied
     return response_text, continuation_result
 
 
@@ -1580,13 +1585,13 @@ async def _run_reserved_turn(
             reservation=reservation.token,
         )
         await transport.on_error(f"Operation error: {exc}", exc)
-        runtime.session.operator_signal_value = ""
+        runtime.session.operator_signal_value = OperatorSignal.NONE
         return response_text
 
     # Clear the operator signal after the turn ends so the next turn starts
     # clean (the signal is one-shot; the transport re-sets it on the next
     # key press).
-    runtime.session.operator_signal_value = ""
+    runtime.session.operator_signal_value = OperatorSignal.NONE
     runtime.session.current_stage_id = result.transitioned_to or runtime.session.current_stage_id
     _apply_turn_usage(
         runtime,
@@ -1740,7 +1745,7 @@ async def _run_reserved_turn(
     )
 
 
-def _with_yield_remediation(result: Any, commands: list[str]) -> str:
+def _with_yield_remediation(result: TurnResult, commands: list[str]) -> str:
     """Return the response text, footnoted with yield escape commands.
 
     Extracted from the turn pipeline to keep that function within its

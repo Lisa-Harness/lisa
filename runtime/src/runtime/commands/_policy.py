@@ -219,7 +219,7 @@ def _parse_rule_add_flags(raw: str) -> tuple[PolicyRule | None, str]:
             i += 2
             continue
         return None, f"Unknown or incomplete flag {flag!r}."
-    rule = PolicyRule(**fields)  # type: ignore[arg-type]
+    rule = PolicyRule(**fields)
     if not any((rule.tool, rule.effect, rule.pack, rule.command_prefix, rule.when)):
         return None, "A rule needs at least one matcher (--tool/--effect/--pack/--prefix/--when)."
     return rule, ""
@@ -310,7 +310,7 @@ def add_policy_rule(
     ):
         if value.strip():
             fields[key] = value.strip()
-    rule = PolicyRule(**fields)  # type: ignore[arg-type]
+    rule = PolicyRule(**fields)
     if not any((rule.tool, rule.effect, rule.pack, rule.command_prefix, rule.when)):
         return "A rule needs at least one matcher (--tool/--effect/--pack/--prefix/--when)."
     if rule.when:

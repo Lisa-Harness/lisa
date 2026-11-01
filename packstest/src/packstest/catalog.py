@@ -146,7 +146,12 @@ def build_tool_catalog(
     tool_roots = resolve_tool_roots([root])
     if not tool_roots:
         return {}
-    return json.loads(build_tool_catalog_json(tool_roots))
+    catalog: object = json.loads(build_tool_catalog_json(tool_roots))
+    if not isinstance(catalog, dict) or any(
+        not isinstance(key, str) or not isinstance(value, dict) for key, value in catalog.items()
+    ):
+        raise ValueError("Tool catalog must be an object mapping tool IDs to objects")
+    return catalog
 
 
 def _importable(module_path: str) -> bool:
