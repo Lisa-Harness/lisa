@@ -183,11 +183,11 @@ to evade the gate.
 Use `--base <ref>` with the combined command to name the comparison base
 explicitly; the script resolves its merge-base with `HEAD`. CI supplies the PR
 base SHA (or the previous main SHA on a branch push) and fetches full history.
-Events without a valid previous commit, such as a new tag push, use the default
-merge-base with `origin/main` or `main`. Locally, the same default is used;
-unresolved bases fail instead of checking only uncommitted work. The standalone
-changed gate can inspect an existing report, but run the combined command to
-certify fresh coverage of the current revision.
+Tag pushes use the default merge-base with `origin/main` or `main`, since their
+previous ref may be a tag object rather than a commit. Locally, the same default
+is used; unresolved bases fail instead of checking only uncommitted work. The
+standalone changed gate can inspect an existing report, but run the combined
+command to certify fresh coverage of the current revision.
 
 The `lisa verify` CLI smoke check is separate: the framework workspace does
 not install `lisa`, and the current framework CI does not run that command.
