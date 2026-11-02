@@ -43,8 +43,32 @@ def test_bindings_warn_and_ignore_unknown_configured_owner(
         )
 
     assert "lisa-pack-unknown" in caplog.text
+    assert "will fail at dispatch" not in caplog.text
     assert bindings.binding_for(CapabilityRef("tool", "known", "lisa-pack-known")) is not None
     assert bindings.binding_for(CapabilityRef("tool", "gone", "lisa-pack-unknown")) is None
+
+
+def test_bindings_warn_names_failing_catalog_capabilities(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A configured owner naming a pack whose catalog owner id differs (e.g.
+    the bare directory slug before authoritative pack_id authoring) gets the
+    dispatch-warning listing the live capabilities that will fail (2026-11-02
+    WiDWebsite memory-write loss)."""
+    with caplog.at_level(logging.WARNING, logger="runtime.capability_bindings"):
+        SessionCapabilityBindings(
+            {"lisa-pack-memory": {"memory_distill_max_tokens": 5000}},
+            capabilities=[
+                CapabilityRef("tool", "known", "lisa-pack-known"),
+                CapabilityRef("operation", "recall_memory", "memory"),
+                CapabilityRef("operation", "synthesize_and_store_learning", "memory"),
+            ],
+        )
+
+    assert "lisa-pack-memory" in caplog.text
+    assert "operation:recall_memory" in caplog.text
+    assert "operation:synthesize_and_store_learning" in caplog.text
+    assert "will fail at dispatch" in caplog.text
 
 
 def test_bindings_accept_declared_provider_without_catalog_capabilities() -> None:

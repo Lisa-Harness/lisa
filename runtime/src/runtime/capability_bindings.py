@@ -32,16 +32,54 @@ class SessionCapabilityBindings(CapabilityBindingProvider):
         capability_list = tuple(capabilities) if capabilities is not None else None
         known_owners = {capability.owner_id for capability in capability_list or ()}
         known_owners.update(declared_owners)
+        # Exact-set semantics: bindings resolve configuration by the catalog
+        # owner id, so a config key without an exact owner match binds as
+        # EMPTY even when a slug alias would look equivalent. Keep the
+        # missing-owner set exact (2026-11-02 WiDWebsite incident).
         unknown_owners = set(raw) - known_owners if capability_list else set()
         if unknown_owners:
             # Session plans configure optional packs (the shipped default sets a
             # sandbox floor for lisa-pack-bwrap), so an absent owner is inert,
             # not fatal — same contract as an uninstalled `include` entry.
-            logger.warning(
-                "Session configuration names capability owners absent from the catalog: %s "
-                "— their configuration is inert this session.",
-                ", ".join(sorted(unknown_owners)),
+            # Name the catalog capabilities the absent owner still claims: when
+            # the owner's ops/tools are live in the catalog while the pack is
+            # not active, every dispatch of them fails with "not registered on
+            # any MCP server" or a missing backend mid-turn (2026-11-02
+            # WiDWebsite profile: memory writes lost, no receipt, warning
+            # buried in runtime.jsonl).
+            def _aliases(owner: str) -> bool:
+                # The catalog can carry the bare directory slug ('memory') while
+                # the configuration key is the distribution name
+                # ('lisa-pack-memory') — one pack, two id forms.
+                normal_owner = owner.strip().lower().replace("_", "-")
+                for unknown in unknown_owners:
+                    normal_unknown = unknown.strip().lower().replace("_", "-")
+                    if normal_unknown == normal_owner:
+                        return True
+                    if normal_unknown.removeprefix("lisa-pack-") == normal_owner:
+                        return True
+                return False
+
+            failing = sorted(
+                f"{capability.kind}:{capability.capability_id}"
+                for capability in capability_list or ()
+                if _aliases(capability.owner_id)
             )
+            if failing:
+                logger.warning(
+                    "Session configuration names capability owners absent from the catalog: %s "
+                    "— their configuration is inert this session. The catalog still lists "
+                    "their capabilities (%s), which will fail at dispatch; activate the pack "
+                    "(include/required) or select the owner (providers.capabilities).",
+                    ", ".join(sorted(unknown_owners)),
+                    ", ".join(failing),
+                )
+            else:
+                logger.warning(
+                    "Session configuration names capability owners absent from the catalog: %s "
+                    "— their configuration is inert this session.",
+                    ", ".join(sorted(unknown_owners)),
+                )
         owner_bindings: Mapping[str, CapabilityBinding] = MappingProxyType(
             {
                 str(owner_id): CapabilityBinding(owner_id=str(owner_id), configuration=values)

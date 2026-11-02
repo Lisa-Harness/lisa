@@ -402,9 +402,45 @@ def merge_sandbox_floor(
         _check_against_authored(pack, live[pack], authored)
 
     final = _merge_two_floors(dict(authored), merged)
+    _warn_missing_bind_paths(final, path_attribution)
     if validator is not None:
         validator(final)
     return SandboxFloorMerge(floor=final, contributing_packs=tuple(contributing))
+
+
+def _warn_missing_bind_paths(
+    final: Mapping[str, Any],
+    path_attribution: Mapping[str, str],
+) -> None:
+    """Warn when a merged floor binds a ``paths`` entry that does not exist.
+
+    Floor ``rw`` binds have no existence filter — bwrap aborts every
+    sandboxed run with "Can't find source path" when the source directory
+    is absent (2026-11-02 WiDWebsite profile: a typo'd harness bind plus a
+    not-yet-created worktree parent failed every ``bash_run`` until the
+    model hid the paths per-call). Attribution maps each contributed path
+    to its owning pack so the warning names the block to fix; harness paths
+    attribute to ``the harness``.
+    """
+    paths = final.get("paths")
+    if not isinstance(paths, Mapping) or not paths:
+        return
+    missing = sorted(
+        str(path)
+        for path, access in paths.items()
+        if access != "hidden" and not Path(str(path)).expanduser().exists()
+    )
+    if not missing:
+        return
+    attributed = ", ".join(
+        f"{path} ({path_attribution.get(path, 'the harness')})" for path in missing
+    )
+    logger.warning(
+        "Sandbox floor binds paths that do not exist on the host: %s. Every "
+        "sandboxed command will fail with 'Can't find source path' until the "
+        "paths are created, fixed, or set to hidden.",
+        attributed,
+    )
 
 
 def _check_against_authored(
