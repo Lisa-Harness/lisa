@@ -186,6 +186,13 @@ class SessionState:
         if self.tokens.session_started_utc is None:
             self.tokens.session_started_utc = datetime.now(UTC)
 
+        # ── Provider-gateway override seam ─────────────────────────────
+        # When set, the resolver in ``turn_hooks_builder`` wires this object
+        # (a ``ProviderGatewayProvider``) instead of consulting pack entry
+        # points. Test harnesses (``e2etest`` scripted-model scenarios) and
+        # hosts that own gateway construction set it before the first turn.
+        self.provider_gateways_override: Any = None
+
         # ── Manifest cache ──────────────────────────────────────────────
         # Mutable: setup_framework seeds it, /models reload swaps it.
         self.manifest: Any = None

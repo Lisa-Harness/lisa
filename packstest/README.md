@@ -7,8 +7,10 @@ runtime dependencies.
 
 The framework development environment must already be installed.
 See [testing](../docs/TESTING.md) and [pack authoring](../docs/PACK_AUTHORING_GUIDE.md).
-The `packstest` workspace member is not currently a target in the framework's
-PyPI publish workflow; source installation does not prove registry availability.
+The framework's publish workflow ships the `lisa-harness-packstest`
+distribution to PyPI under the `pypi-lisa-harness-packstest` environment;
+pack repos that consume it from the registry should verify availability
+during their first dependency-managed install.
 
 ## Why
 
@@ -50,29 +52,17 @@ configuration expects, and every `lisa.extensions.*` entry point loads.
 
 ### Source-layout packs
 
-`validate_pack` recognizes a flat `lisa_packs/<name>` checkout, but its
-content-root locator does not currently infer all `src/` layouts, including
-bundled `src/sdk/packs/<name>` trees. It can return `ok=True` with a
-`content-root` warning and no tool scan. Inspect warnings and expected catalog
-contents; `report.ok` alone is not coverage.
+The content-root locator resolves every layout from the pack's *declared*
+entry point — a flat `lisa_packs/<name>` checkout, `src/lisa_packs/<name>`
+(two-pack repos), and bundled `src/sdk/packs/<name>` trees all resolve to the
+real content root, so `report.ok` implies a real tool scan whenever the pack
+declares tools. When the entry point does not resolve (and no `src/` walk
+matches), the checkout itself is used and a `content-root` warning reports
+the empty scan — inspect warnings; a warning is the only way `ok=True`
+carries no tool scan.
 
-For bundled core, explicitly resolve its exported root and use the harness
-catalog/activation helpers (run from the framework workspace root):
-
-```python
-from pathlib import Path
-
-from packstest.catalog import activate_tool, build_tool_catalog, load_pack_entry_points
-
-entries = load_pack_entry_points(Path("sdk/packs/core"))
-root = entries["lisa.extensions.content_roots"]["core"]
-catalog = build_tool_catalog(root)
-assert "fetch_page" in catalog
-assert callable(activate_tool(catalog["fetch_page"]))
-```
-
-For operations and modes, assert the real SDK catalogs at that root as
-part of the pack's tests; `validate_pack` focuses on tool schemas/imports,
+For operations and modes, assert the real SDK catalogs at the resolved root
+as part of the pack's tests; `validate_pack` focuses on tool schemas/imports,
 not every operation behavior.
 
 ## Quick start: drive tools

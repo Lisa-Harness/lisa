@@ -266,3 +266,150 @@ async def test_git_repo_fixture_offline(tmp_path: Path) -> None:
     assert len(sha) == 40
     fixture.write("next.txt", "more\n")
     assert (fixture.root / "next.txt").read_text(encoding="utf-8") == "more\n"
+
+
+# ── content-root locator: src/ layouts resolve, not warn ──────────────
+
+
+def _write_src_layout_pack(root: Path, *, package: str, slug: str) -> Path:
+    """A pack checkout whose package lives under ``src/`` (bundled-style).
+
+    The bundled packages (``sdk.*``) share one namespace across the
+    workspace; writing a stub ``sdk`` package whose ``src/`` dir later lands
+    on ``sys.path`` would shadow the real ``sdk`` for the whole process. The
+    helper therefore rewrites the top-level segment to a never-installed
+    probe name (``e2e_probe_sdk``) — same layout shape, no shadowing.
+    """
+    parts = package.split(".")
+    if parts and (parts[0] in {"sdk", "kernel", "runtime", "mcp_server"}):
+        parts[0] = f"e2e_probe_{parts[0]}"
+        package = ".".join(parts)
+    pkg = root / "src" / package.replace(".", "/")
+    pkg.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                f'name = "lisa-pack-{slug}"',
+                "",
+                '[project.entry-points."lisa.extensions.content_roots"]',
+                f'{slug} = "{package}:get_content_root"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def get_content_root() -> Path:\n"
+        "    return Path(__file__).parent\n",
+        encoding="utf-8",
+    )
+    tools = pkg / "tools" / f"{slug}_hello"
+    tools.mkdir(parents=True)
+    (tools / f"{slug}_hello.py").write_text(
+        "from kernel.models import ToolExecutionContext, ToolResult\n"
+        "async def execute(ctx: ToolExecutionContext) -> ToolResult:\n"
+        "    return ToolResult(tool_id=ctx.tool_id)\n",
+        encoding="utf-8",
+    )
+    (tools / f"{slug}_hello.tool.yml").write_text(
+        f"tool_id: {slug}_hello\ntool_provider_id: lisa-pack-{slug}\n"
+        "description: src-layout probe\neffect: read\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_content_root_resolves_bundled_src_layout(tmp_path: Path) -> None:
+    """``src/sdk/packs/<slug>`` resolves from the declared entry point.
+
+    The helper renames the top-level segment (``e2e_probe_sdk``) so the test
+    tree cannot shadow the real ``sdk`` namespace on ``sys.path``; the layout
+    shape the locator must handle is unchanged.
+    """
+
+    pack = _write_src_layout_pack(tmp_path / "core-like", package="sdk.packs.core", slug="core")
+    from packstest.catalog import load_pack_content_root
+
+    root = load_pack_content_root(pack)
+    assert root == pack / "src" / "e2e_probe_sdk" / "packs" / "core"
+    assert (root / "tools" / "core_hello").is_dir()
+
+
+def test_content_root_resolves_nested_lisa_packs_src_layout(tmp_path: Path) -> None:
+    """``src/lisa_packs/<slug>`` (external src-layout packs) resolves."""
+
+    pkg = tmp_path / "ext" / "src" / "lisa_packs" / "widgets"
+    pkg.mkdir(parents=True)
+    (tmp_path / "ext" / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-widgets"',
+                "",
+                '[project.entry-points."lisa.extensions.content_roots"]',
+                'widgets = "lisa_packs.widgets:get_content_root"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def get_content_root() -> Path:\n"
+        "    return Path(__file__).parent\n",
+        encoding="utf-8",
+    )
+    (pkg / "tools").mkdir()
+    from packstest.catalog import _ensure_source_importable, load_pack_content_root
+
+    _ensure_source_importable(tmp_path / "ext")
+    root = load_pack_content_root(tmp_path / "ext")
+    assert root == pkg
+
+
+def test_validate_pack_src_layout_scans_tools(tmp_path: Path) -> None:
+    """A src-layout pack validates with a real tool scan (no empty warning)."""
+
+    pack = _write_src_layout_pack(
+        tmp_path / "widgets-like", package="lisa_packs.widgets", slug="widgets"
+    )
+    report = validate_pack(pack)
+    assert report.ok, report.summary()
+    assert "widgets_hello" in report.tools
+    assert not report.warnings
+
+
+def test_pack_slug_handles_missing_or_unprefixed_names(tmp_path: Path) -> None:
+    """The slug helper degrades to '' without pyproject/unprefixed names."""
+
+    from packstest.catalog import _pack_slug
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _pack_slug(empty) == ""
+    (empty / "pyproject.toml").write_text('[project]\nname = "bare-toolkit"\n', encoding="utf-8")
+    assert _pack_slug(empty) == "bare-toolkit"
+    (empty / "pyproject.toml").write_text("not = valid [[", encoding="utf-8")
+    assert _pack_slug(empty) == ""
+
+
+def test_content_root_src_fallback_without_entry_point(tmp_path: Path) -> None:
+    """A src/ checkout with no entry-point group falls back to the bounded walk."""
+
+    from packstest.catalog import load_pack_content_root
+
+    src_pkg = tmp_path / "src" / "widgets"
+    (src_pkg / "tools").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "lisa-pack-widgets"\n')
+    assert load_pack_content_root(tmp_path) == src_pkg
+
+
+def test_content_root_falls_back_to_checkout_for_flat_layout(tmp_path: Path) -> None:
+    """Flat content-root checkouts and non-pack dirs resolve to themselves."""
+
+    from packstest.catalog import load_pack_content_root
+
+    flat = tmp_path / "flat"
+    (flat / "tools").mkdir(parents=True)
+    assert load_pack_content_root(flat) == flat

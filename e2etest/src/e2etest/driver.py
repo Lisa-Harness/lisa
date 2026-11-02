@@ -5,13 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import runtime.turn_hooks_builder
 from runtime.bootstrap import build_runtime
 from runtime.handle_message import handle_message
 from runtime.paths import inject_packs_venv_site_packages
@@ -209,21 +206,6 @@ async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> No
             outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
 
 
-@contextmanager
-def _gateway_override(scripted: ScriptedGatewayProvider | None) -> Iterator[None]:
-    """Bind every provider gateway to the model script while the runtime is wired."""
-    if scripted is None:
-        yield
-        return
-    hooks = runtime.turn_hooks_builder
-    original = hooks._resolve_gateway_provider_for_runtime
-    hooks._resolve_gateway_provider_for_runtime = lambda runtime: scripted
-    try:
-        yield
-    finally:
-        hooks._resolve_gateway_provider_for_runtime = original
-
-
 def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> DriverOutcome:
     """Boot a runtime against ``paths`` and play the scenario's turns."""
     outcome = DriverOutcome()
@@ -234,18 +216,29 @@ def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> D
     if scenario.model_script is not None:
         scripted = load_script(scenario.model_script)
         outcome.model_calls = scripted.log
-    with _gateway_override(scripted):
-        runtime = build_runtime(
-            host_kind="e2e",
-            data_dir=str(paths.data_dir),
-            session_context=str(paths.session_context),
-            streaming="none",
-            surface_type=scenario.surface.type,
-            surface_id=scenario.surface.id,
-            in_process_mcp=True,
-        )
-        if runtime.session.restart_required:
-            outcome.aborted = "runtime flagged a pending reload during boot (pack auto-install?)"
-            return outcome
+    runtime = build_runtime(
+        host_kind="e2e",
+        data_dir=str(paths.data_dir),
+        session_context=str(paths.session_context),
+        streaming="none",
+        surface_type=scenario.surface.type,
+        surface_id=scenario.surface.id,
+        in_process_mcp=True,
+    )
+    # Supported seam: the runtime's gateway override field, not a monkeypatch
+    # of the private resolver. Setting it means entry-point discovery is never
+    # consulted while the script plays the model; clearing it restores the
+    # pack-discovered gateways.
+    if scripted is not None:
+        runtime.session.provider_gateways_override = scripted
+    if runtime.session.restart_required:
+        outcome.aborted = "runtime flagged a pending reload during boot (pack auto-install?)"
+        return outcome
+    try:
         asyncio.run(_drive(runtime, scenario, outcome))
+    finally:
+        # The override object belongs to this one run; a reused process-global
+        # session must not inherit it (scenarios run one per process, but the
+        # runtime object can outlive the run in in-process callers).
+        runtime.session.provider_gateways_override = None
     return outcome

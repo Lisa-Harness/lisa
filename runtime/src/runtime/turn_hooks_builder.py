@@ -328,7 +328,15 @@ def _resolve_gateway_provider_for_runtime(runtime: HostRuntime) -> Any:
     Azure, Anthropic, Google, Bedrock) under this group; third-party packs
     can register their own. When no provider is discovered,
     provider_gateways stays None.
+
+    ``runtime.session.provider_gateways_override`` takes precedence when set:
+    the owner of the runtime (a host or test harness) declares gateways
+    directly and entry-point discovery is not consulted.
     """
+    override = runtime.session.provider_gateways_override
+    if override is not None:
+        return override
+
     from runtime.gateway_provider import HostGatewayProvider
 
     for entry in discover_provider_gateway_factories():

@@ -14,8 +14,9 @@ question is whether routing, handoffs, approvals, policy, memory, sandboxing,
 and the pack's tools work together for a real model.
 
 See the [documentation index](../docs/README.md) and [testing](../docs/TESTING.md).
-The workspace installs `lisa-e2e`; the framework's current publish workflow
-does not publish the `lisa-harness-e2e` distribution.
+The workspace installs `lisa-e2e`; the framework's publish workflow ships the
+`lisa-harness-e2e` distribution to PyPI under the
+`pypi-lisa-harness-e2e` environment.
 
 ## How a run works
 
@@ -65,12 +66,19 @@ external bash/bwrap/markdown/personas sources named in its `packs` list.
 Inspect the scenario and `packs.yml` before running; a scenario located
 in this checkout is not necessarily self-contained.
 
-| Scenario | Workflow |
-| --- | --- |
-| `coding/review-fix-commit` | knowledge-capturing review → worktree → patch → required check → commit, verified by re-running the tests outside Lisa |
-| `coding/feature-design-implement` | product review → feature design doc → multi-file implementation in a worktree → required check → commit, judged by hidden acceptance tests |
-| `coding/roadmap-chunk-implement` | open-ended product review → roadmap → model-proposed design overridden by operator pushback → terse "start the first chunk" that must recover the agreed design → checked commit, same hidden acceptance tests |
-| `finances/categorize-and-close` | import bank + card exports → survey + proposed categories → user decisions (incl. a new category) → final ledger, verified by re-reading the ledger outside Lisa |
+The bundled offline smoke scenario needs neither credentials nor external
+checkouts — its `model.script` stands in for the LLM, and the base-data
+fixture ships a minimal manifest plus the `web_search` overlay:
+
+```bash
+uv run --frozen lisa-e2e run e2etest/tests/e2e/harness_smoke.scenario.yml
+```
+
+Scripted scenarios resolve their base data dir as follows:
+`LISA_E2E_BASE_DATA_DIR` wins when set; otherwise a scripted scenario uses
+the bundled fixture ([`base_data/`](base_data/README.md)); a live scenario
+uses the operator's `~/.lisa`. CI runs the smoke scenario as the
+`e2e-smoke` merge-gate job — zero credentials, no operator state.
 
 Options:
 
@@ -78,11 +86,33 @@ Options:
   pack's dependencies; source edits do not need it).
 - `--runs-dir DIR` — write bundles elsewhere.
 
+Repeat runs (live-scenario reliability):
+
+```bash
+uv run --frozen lisa-e2e repeat <scenario> --runs 5 --min-pass 5
+```
+
+Each run is an isolated subprocess (the runtime keeps process-global
+registries); the verdict is `pass` only when at least `--min-pass` runs pass.
+Every run prints and stores a usage roll-up (model calls, prompt/completion
+tokens, cost) aggregated from the run's durable `token-usage.jsonl`; the
+verdict bundle includes it under `usage`.
+
 Exit codes: `0` pass, `1` an oracle failed, `2` setup error (bad scenario,
 missing base `models.yaml`, venv build failure).
 
-A run takes minutes and costs real tokens. Live runs vary between attempts, so
-confirm a fix with more than one passing run before calling it done.
+Live scenarios and their workflow shape:
+
+| Scenario | Workflow |
+| --- | --- |
+| `coding/review-fix-commit` | knowledge-capturing review → worktree → patch → required check → commit, verified by re-running the tests outside Lisa |
+| `coding/feature-design-implement` | product review → feature design doc → multi-file implementation in a worktree → required check → commit, judged by hidden acceptance tests |
+| `coding/roadmap-chunk-implement` | open-ended product review → roadmap → model-proposed design overridden by operator pushback → terse "start the first chunk" that must recover the agreed design → checked commit, same hidden acceptance tests |
+| `finances/categorize-and-close` | import bank + card exports → survey + proposed categories → user decisions (incl. a new category) → final ledger, verified by re-reading the ledger outside Lisa |
+
+A run takes minutes and costs real tokens. Confirm a fix with more than one
+passing run before calling it done — `lisa-e2e repeat` automates exactly
+that.
 
 ## Debugging a failed run
 
@@ -172,7 +202,9 @@ live policy rules keyed on a workspace id do not apply.
 scenario replays a fixed tool sequence in seconds at zero token cost.
 Everything below the model (routing, policy, approvals, packs, sandbox,
 persistence) is production code. Use it to pin down a bug a live run
-surfaced, not to judge model behavior.
+surfaced, not to judge model behavior. The driver binds the script through
+the runtime's supported gateway-override seam
+(``session.provider_gateways_override``) and clears it when the run ends.
 
 The module defines `respond(turn: ScriptTurn) -> Reply` and, optionally,
 `auxiliary(turn)` for tool-less requests (distillers, classifiers, titles).

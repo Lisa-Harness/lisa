@@ -12,6 +12,29 @@ All notable changes to the Lisa Harness will be documented in this file.
   private authority records, and bounded binary-artifact fingerprints.
 - Producer-bound WorkProduct completion proofs that recheck the committed
   revision and referenced input files before accepting completion.
+- `lisa-e2e` runs scripted-model scenarios with zero credentials: a bundled
+  offline base-data fixture (minimal `models.yaml` + the `web_search` ambient
+  overlay) backs hermetic runs, and CI gains an `e2e-smoke` merge-gate job
+  that runs the offline smoke scenario on every PR.
+- `lisa-e2e repeat` and per-run token/cost roll-ups aggregated from the
+  run's durable `token-usage.jsonl` (model calls, prompt/completion tokens,
+  cost, per-model totals), included in the verdict bundle.
+- `HostRuntime.session.provider_gateways_override`: the supported seam for
+  hosts and harnesses to declare provider gateways directly; e2etest's
+  scripted model binds through it instead of monkeypatching the private
+  gateway resolver.
+- `packstest` content-root resolution for all pack layouts (flat,
+  `src/lisa_packs/<slug>`, bundled `src/sdk/packs/<slug>`), read from the
+  pack's declared entry point with stale-module eviction between checkouts.
+
+### Changed
+
+- Harness test coverage floors raised (packstest 59→68, e2etest 57→73)
+  with new driver, CLI, usage-rollup, locator, and runner tests.
+- The pack repos' eval suite now ships a `validate_pack` eval per pack
+  (bash, markdown, bwrap, serper, personas, finances), with
+  `lisa-harness-packstest` as their dev dependency and installed by the
+  packs CI gate.
 
 ### Fixed
 

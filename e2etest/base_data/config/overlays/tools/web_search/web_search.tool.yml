@@ -1,0 +1,16 @@
+tool_id: web_search
+# The overlay tool re-exports the core stub's module, so both roots yield
+# the same implementation; the session still needs an unambiguous provider
+# selection between the two catalog entries. The smoke session_context
+# pins providers.tools.web_search to the overlay (e2etest-offline).
+tool_provider_id: e2etest-offline
+# Offline flip: the core contract stub becomes the ambient web_search so the
+# scripted smoke scenario can dispatch it without a provider pack. The
+# overlay only sets the ambient flag; the .py re-exports the core stub so
+# import and dispatch are the production module.
+module_path: sdk.packs.core.tools.web_search.web_search
+description: "Search the web and return grounded results. A provider pack supplies the live implementation."
+effect: read
+exportable: true
+default_available: true
+max_calls_per_turn: 6

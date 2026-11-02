@@ -59,9 +59,45 @@ class RunPaths:
 
 
 def base_data_dir() -> Path:
-    """The operator's real data dir; only models.yaml and .env are read from it."""
+    """The run's base data dir; only models.yaml, overlays, and .env are read.
+
+    ``LISA_E2E_BASE_DATA_DIR`` wins when set. Live scenarios read the
+    operator's data dir (``~/.lisa``) for the roster and credentials; a
+    scripted-model scenario does not need either — its caller passes the
+    harness's bundled fixture (``bundled_base_data_dir()``) so zero-credential
+    runs (CI) work out of the box.
+    """
     override = os.getenv("LISA_E2E_BASE_DATA_DIR", "").strip()
-    return Path(override).expanduser() if override else Path.home() / ".lisa"
+    if override:
+        return Path(override).expanduser()
+    return default_live_base_data_dir()
+
+
+def bundled_base_data_dir() -> Path:
+    """The in-repo minimal base-data dir (offline models.yaml + no .env)."""
+    return Path(__file__).resolve().parents[2] / "base_data"
+
+
+def default_live_base_data_dir() -> Path:
+    """The operator's live data dir for real-model runs."""
+    return Path.home() / ".lisa"
+
+
+def _copy_base_data(base: Path, config_dir: Path) -> None:
+    """Seed one run's config from the base data dir.
+
+    Only the run-safe surface is copied: ``models.yaml``, the overlays tree
+    (pack-authored mode/tool overlays ship there), and optionally ``policy.yaml``
+    overrides. ``.env`` is loaded into the process env, never copied, so
+    credentials cannot leak into the bundle.
+    """
+    models = base / "config" / "models.yaml"
+    if not models.is_file():
+        raise FileNotFoundError(f"base models.yaml not found: {models}")
+    shutil.copy2(models, config_dir / "models.yaml")
+    overlays = base / "config" / "overlays"
+    if overlays.is_dir():
+        shutil.copytree(overlays, config_dir / "overlays")
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -95,16 +131,20 @@ def _seed_fixture(scenario: Scenario, run_dir: Path) -> tuple[Path | None, Path 
     return workspace, remote, git(workspace, "rev-parse", "HEAD")
 
 
-def prepare_run(scenario: Scenario, run_dir: Path, packs_venv: Path) -> RunPaths:
-    """Create the run dir, seed config + fixture, and point the process env at it."""
+def prepare_run(
+    scenario: Scenario, run_dir: Path, packs_venv: Path, *, base: Path | None = None
+) -> RunPaths:
+    """Create the run dir, seed config + fixture, and point the process env at it.
+
+    ``base`` names the base data dir supplying ``config/models.yaml`` and
+    ``.env``; ``None`` resolves it from the scenario (scripted scenarios use
+    the bundled offline fixture, live ones the operator's data dir).
+    """
     data_dir = run_dir / "data"
     config_dir = data_dir / "config"
     config_dir.mkdir(parents=True)
-    base = base_data_dir()
-    models = base / "config" / "models.yaml"
-    if not models.is_file():
-        raise FileNotFoundError(f"base models.yaml not found: {models}")
-    shutil.copy2(models, config_dir / "models.yaml")
+    base = base or base_data_dir()
+    _copy_base_data(base, config_dir)
     policy_text = (
         scenario.policy.read_text(encoding="utf-8") if scenario.policy else _DEFAULT_POLICY
     )

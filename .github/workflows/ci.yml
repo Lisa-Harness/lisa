@@ -94,6 +94,33 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  e2e-smoke:
+    name: Offline e2e smoke (scripted, zero-credential)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run the offline scripted smoke scenario
+        env:
+          # Isolate the run from any operator data dir (none exists on the
+          # runner; the fixture path makes the intent explicit).
+          LISA_E2E_BASE_DATA_DIR: ${{ github.workspace }}/e2etest/base_data
+        run: uv run --no-sync lisa-e2e run e2etest/tests/e2e/harness_smoke.scenario.yml
+
   changed-coverage:
     name: Changed-line coverage
     needs: test
@@ -136,17 +163,19 @@ jobs:
   merge-gate:
     name: Merge gate
     if: ${{ always() }}
-    needs: [quality, test, changed-coverage, docs]
+    needs: [quality, test, e2e-smoke, changed-coverage, docs]
     runs-on: ubuntu-latest
     steps:
       - name: Require every gate to pass
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          E2E_SMOKE_RESULT: ${{ needs.e2e-smoke.result }}
           CHANGED_COVERAGE_RESULT: ${{ needs.changed-coverage.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
         run: |
           test "$QUALITY_RESULT" = success
           test "$TEST_RESULT" = success
+          test "$E2E_SMOKE_RESULT" = success
           test "$CHANGED_COVERAGE_RESULT" = success
           test "$DOCS_RESULT" = success
