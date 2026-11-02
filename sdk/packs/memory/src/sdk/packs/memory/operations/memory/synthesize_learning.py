@@ -409,7 +409,17 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         ),
     )
     if getattr(tool_result, "error", None):
-        return OperationResult(output_text=f"⛔ Learning storage failed: {tool_result.error}")
+        # status="error" is the typed "operation failed" contract: the
+        # registry warns, effect receipts are skipped, and the dispatch
+        # layer counts a consecutive failure. A bare success envelope with
+        # a ⛔ message hid memory-persistence outages from telemetry and
+        # recovery (2026-11-02 WiDWebsite profile: two "success" records,
+        # zero receipts, memory.db untouched).
+        return OperationResult(
+            output_text=f"⛔ Learning storage failed: {tool_result.error}",
+            status="error",
+            error_detail=str(tool_result.error),
+        )
 
     # Thread → memory linkage: surface the minted record id so the host can
     # stamp it onto the thread entry's provenance. The lisa-memory backend

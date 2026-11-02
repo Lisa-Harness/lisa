@@ -5,5 +5,7 @@ tags: [memory, mining, semantic, thread]
 status: stable
 generated: { by: human:adam, at: 2026-08-28T00:00:00Z }
 operation_id: mine_thread_segment
+# Authoritative owner claim: see consolidate_semantic.yml.
+pack_id: lisa-pack-memory
 exportable: true
 effect: write

@@ -5,6 +5,9 @@ tags: [introspection, forensics, diagnostics, evidence]
 status: stable
 generated: { by: human:adam, at: 2026-10-27T00:00:00Z }
 operation_id: turn_forensics
+# Authoritative owner claim (site-packages installs lack the root pyproject
+# the catalog would otherwise infer from).
+pack_id: lisa-pack-introspect
 exportable: true
 default_available: true
 effect: read
