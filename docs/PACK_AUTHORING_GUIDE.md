@@ -228,6 +228,13 @@ Operation/tool visibility has two independent flags:
 - `default_available: true` contributes an ambient capability to effective
   mode allowlists.
 
+Author `pack_id` on every operation and tool YAML that belongs to the pack
+(e.g. `pack_id: lisa-pack-memory`). The catalog infers the owner from a
+content-root `pyproject.toml`, but installed wheels have no `pyproject`
+beside the operations tree — without an authored `pack_id` the owner falls
+back to the bare directory slug (`memory`), and session configuration keys
+(`lisa-pack-memory`) then bind nothing at dispatch.
+
 Modes can opt out with `accept_default_capabilities: false` or subtract
 `excluded_operation_ids` / `excluded_tool_ids`. Ambient defaults are not
 automatically part of a mode's authored completion contract.

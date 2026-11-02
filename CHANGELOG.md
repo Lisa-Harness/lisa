@@ -40,6 +40,22 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 - Preserve session capability bindings when runtime operations compose tools,
   while retaining prompt-operation tool allowlists.
+- Memory learning persistence failures report `status: error` with a
+  diagnostic instead of a success envelope carrying a ⛔ message, so
+  telemetry, effect receipts, and recovery see the outage.
+- Bundled operations and tools author `pack_id` so the catalog owner stays
+  the distribution name under site-packages installs; configuration keys
+  bind at dispatch instead of silently resolving empty.
+- The capability-bindings warning names the catalog capabilities that will
+  fail at dispatch when a configured owner is absent from the catalog, and
+  compile warns when the operation catalog lists operations of packs the
+  session did not activate.
+- A declared-but-unclaimed capability's not-registered dispatch error names
+  the activation fix (`include/required` or `providers.capabilities`) instead
+  of a bare server message.
+- `merge_sandbox_floor` warns when a merged floor binds a host path that
+  does not exist, with per-path attribution (pack or harness); the coding
+  pack creates the worktree parent so its floor bind always has a source.
 
 ### Known Issues
 
