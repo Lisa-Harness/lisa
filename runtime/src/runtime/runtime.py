@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -255,6 +255,7 @@ class RuntimeResources:
         self._mcp_tool_pool: MCPToolPool | None = None
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
+        self._declared_capability_prefixes: frozenset[str] = frozenset()
         self._proxy_configs: list[Any] = []
         self._proxy_pool: Any = None
         self._proxy_routes: dict[str, Any] = {}
@@ -310,6 +311,25 @@ class RuntimeResources:
         """Set compiled MCP server configs (sync — no pool creation)."""
         self._mcp_warm_configs = warm
         self._mcp_cold_configs = cold
+
+    def set_declared_capability_prefixes(self, prefixes: Iterable[str]) -> None:
+        """Record the session's declared capability id universe (sync).
+
+        The compiled configs carry only winners; a capability whose owning
+        pack was never activated has no config, yet tool ids under its
+        prefix can still reach the dispatch seam (the catalog serves the
+        pack's operations regardless). Recorded at compile time so the
+        dispatch error path can tell "no server for a declared capability"
+        (an activation problem) apart from "no server for a bare server id"
+        (an ordinary unknown tool).
+        """
+        self._declared_capability_prefixes = frozenset(
+            prefix.strip().lower() for prefix in prefixes if prefix and prefix.strip()
+        )
+
+    @property
+    def declared_capability_prefixes(self) -> frozenset[str]:
+        return self._declared_capability_prefixes
 
     def set_proxy_configs(self, configs: list[Any]) -> None:
         """Set compiled provider proxy configs (sync — no process creation)."""

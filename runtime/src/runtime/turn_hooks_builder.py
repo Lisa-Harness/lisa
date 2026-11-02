@@ -616,6 +616,35 @@ async def _maybe_auto_capture(
         )
 
 
+def _capability_missing_error(runtime: HostRuntime, tool_id: str, error_text: str) -> str:
+    """Append the activation hint to a not-registered namespaced tool error.
+
+    Only for prefixes in the session's declared capability universe that no
+    winner claimed: that is an activation failure (owning pack not active).
+    Bare server-id prefixes and claimed capabilities keep the plain error.
+    """
+    if "not registered on any MCP server" not in error_text or "." not in tool_id:
+        return error_text
+    declared: frozenset[str] = getattr(
+        runtime.resources, "declared_capability_prefixes", frozenset()
+    )
+    if not declared:
+        return error_text
+    prefix, _rest = tool_id.split(".", 1)
+    if prefix not in declared:
+        return error_text
+    pool = runtime.resources.mcp_tool_pool
+    configs = list(getattr(pool, "configs", []) or []) if pool is not None else []
+    capabilities = {str(getattr(config, "capability", "") or "") for config in configs}
+    if prefix in capabilities:
+        return error_text
+    return (
+        f"{error_text} (capability '{prefix}' has no registered server this "
+        "session — activate the owning pack or select it via "
+        "providers.capabilities)"
+    )
+
+
 async def _execute_mcp_tool(runtime: HostRuntime, tool_id: str, tool_ctx: Any) -> ToolResult:
     """Dispatch one MCP tool call through the runtime's tool pool.
 
@@ -663,6 +692,14 @@ async def _execute_mcp_tool(runtime: HostRuntime, tool_id: str, tool_ctx: Any) -
                 if isinstance(input_request, dict):
                     extra["input_request"] = input_request
             if is_error:
+                # A missing <capability>.<tool> with an unclaimed capability
+                # prefix is a session-activation failure, not a transient
+                # tool error — name the fix on the model-visible error so
+                # the operator sees it in the reply, not only runtime.jsonl
+                # (2026-11-02 WiDWebsite: memory ops live, backend never
+                # compiled, every call failed with a bare not-registered
+                # line).
+                output_text = _capability_missing_error(runtime, tool_id, output_text)
                 return ToolResult(
                     tool_id=tool_id,
                     error=output_text or "tool error",

@@ -232,3 +232,63 @@ async def test_execute_mcp_tool_plain_result_has_no_input_required_extra(
     assert result.output_text == "Transfer complete."
     assert result.error == ""
     assert "input_required" not in result.extra
+
+
+@pytest.mark.asyncio
+async def test_execute_mcp_tool_unclaimed_capability_error_names_owner(
+    tmp_path: Path,
+) -> None:
+    """A not-registered capability-prefixed error names the activation fix.
+
+    The incident: memory ops stayed in the model-facing catalog while the
+    memory pack was never activated, so every memory.* call failed with a
+    bare "not registered" line and the operator saw only the model's prose
+    afterward. The runtime layer — which holds the compiled configs — knows
+    the prefix is an unclaimed capability and appends the fix.
+    """
+    from dataclasses import dataclass
+    from dataclasses import field as dc_field
+    from types import SimpleNamespace
+
+    from kernel.tools.mcp_client import MCPToolResult
+    from runtime.turn_hooks_builder import _execute_mcp_tool
+
+    runtime = _make_runtime(tmp_path)
+    # Declared capability universe recorded at compile time: thread won,
+    # memory was declared by a pack that the session never activated.
+    runtime.resources.set_declared_capability_prefixes({"thread", "memory"})
+
+    @dataclass
+    class _FakePool:
+        configs: list[Any] = dc_field(default_factory=list)
+
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text=(f"Tool '{tool_id}' is not registered on any MCP server."),
+                is_error=True,
+            )
+
+    # Thread capability claimed by a compiled winner; memory unclaimed.
+    runtime.resources._mcp_tool_pool = _FakePool(
+        configs=[SimpleNamespace(server_id="lisa-thread", capability="thread")]
+    )
+
+    result = await _execute_mcp_tool(runtime, "memory.add", {})
+
+    assert result.error is not None
+    assert "not registered on any MCP server." in result.error
+    assert "capability 'memory' has no registered server" in result.error
+    assert "providers.capabilities" in result.error
+
+    # A claimed capability or plain server id keeps the bare error.
+    result = await _execute_mcp_tool(runtime, "thread.thread_search", {})
+    assert result.error == "Tool 'thread.thread_search' is not registered on any MCP server."
+    result = await _execute_mcp_tool(runtime, "lisa-storage.read_file", {})
+    assert result.error == "Tool 'lisa-storage.read_file' is not registered on any MCP server."
+
+    # A pool with no compiled winners: memory is still declared-and-unclaimed,
+    # so the activation hint is exactly what the operator needs.
+    runtime.resources._mcp_tool_pool = _FakePool(configs=[])
+    result = await _execute_mcp_tool(runtime, "memory.add", {})
+    assert "capability 'memory' has no registered server" in result.error
