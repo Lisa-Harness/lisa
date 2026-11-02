@@ -334,3 +334,50 @@ def test_collect_pack_floor_raises_on_non_mapping_result() -> None:
     entries = [SandboxFloorContributionEntry(pack_name="lisa-pack-coding", factory=factory)]
     with pytest.raises(ValueError, match="expected a mapping"):
         collect_pack_floor(entries, {"lisa-pack-coding": {}}, SandboxFloorContext())
+
+
+def test_merge_warns_on_missing_bind_paths(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    """A floor binding a non-existent path fails every sandboxed command
+    (bwrap 'Can't find source path') — warn naming the attribution so the
+    operator sees the block to fix instead of discovering it per-call."""
+    with caplog.at_level("WARNING", logger="kernel.sandbox_floor"):
+        merge = merge_sandbox_floor(
+            {"execution": "sandbox", "paths": {str(tmp_path / "authored-missing"): "rw"}},
+            {
+                "lisa-pack-coding": {
+                    "execution": "sandbox",
+                    "persistence": "direct-write",
+                    "paths": {str(tmp_path / "pack-missing"): "rw"},
+                },
+            },
+        )
+
+    assert "authored-missing" in caplog.text
+    assert "pack-missing" in caplog.text
+    assert "the harness" in caplog.text
+    assert "lisa-pack-coding" in caplog.text
+    assert merge.contributing_packs == ("lisa-pack-coding",)
+
+
+def test_merge_does_not_warn_when_all_bind_paths_exist(tmp_path: Path) -> None:
+    existing = tmp_path / "exists"
+    existing.mkdir()
+    merge = merge_sandbox_floor(
+        {"execution": "sandbox", "paths": {str(existing): "rw"}},
+        {"lisa-pack-coding": {"paths": {str(existing / "also-existing"): "ro"}}},
+    )
+    assert merge.floor["paths"] == {str(existing): "rw", str(existing / "also-existing"): "ro"}
+
+
+def test_merge_skips_missing_path_warning_for_hidden_paths(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    with caplog.at_level("WARNING", logger="kernel.sandbox_floor"):
+        merge_sandbox_floor(
+            {"execution": "sandbox"},
+            {"lisa-pack-coding": {"paths": {str(tmp_path / "never-there"): "hidden"}}},
+        )
+
+    assert "never-there" not in caplog.text
