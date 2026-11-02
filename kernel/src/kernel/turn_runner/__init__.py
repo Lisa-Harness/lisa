@@ -5606,7 +5606,8 @@ async def _run_mode_pre_turn_operations(
         Both entry origins route through this function: turn start calls it
     directly (its briefing feeds prompt assembly) and the mid-turn handoff
     calls it through ``_run_handoff_pre_turn_operations``. The error posture
-    is owned once here, mirroring ``run_mode_pre_turn_operations``: an
+    mirrors ``run_mode_pre_turn_operations``: an explicit abort policy propagates
+    preparation failures. Otherwise an
     ``ApprovalRequired`` propagates to the turn wrapper's existing handler
     (the host must see the approval gate), while any other failure stays
     isolated — a flaky prewarm target logs a warning and the turn continues
@@ -5626,6 +5627,9 @@ async def _run_mode_pre_turn_operations(
     except ApprovalRequired:
         raise
     except Exception as pre_exc:  # pylint: disable=broad-except
+        configured_mode = get_workflow_catalog().get(mode_id)
+        if configured_mode is not None and configured_mode.pre_turn_failure_policy == "abort":
+            raise
         log.warning(
             "pre_turn targets failed for mode '%s': %s",
             mode_id,

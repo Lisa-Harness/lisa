@@ -4,6 +4,31 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in fail-closed mode preparation with `pre_turn_failure_policy: abort`.
+  The default continues to isolate enrichment failures.
+- Transactional SDK workspace documents with guarded paths, revision checks,
+  private authority records, and bounded binary-artifact fingerprints.
+- Producer-bound WorkProduct completion proofs that recheck the committed
+  revision and referenced input files before accepting completion.
+
+### Fixed
+
+- Preserve session capability bindings when runtime operations compose tools,
+  while retaining prompt-operation tool allowlists.
+
+### Known Issues
+
+- Follow-up from post-commit review: aborting preparation must reject missing
+  lifecycle targets. The current dispatcher skips unresolved targets even when
+  `pre_turn_failure_policy` is `abort`.
+- Follow-up from post-commit review: aborting preparation must propagate
+  `ToolResult.error` as a failed prerequisite. The current lifecycle adapter
+  stores tool errors as result metadata rather than raising. Add regression
+  coverage through the actual dispatcher for both cases and retain default
+  enrichment isolation.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

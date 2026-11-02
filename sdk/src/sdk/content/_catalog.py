@@ -386,6 +386,7 @@ def _load_one_mode(
         "pre_turn_operation_ids": [
             str(o) for o in (front_matter.get("pre_turn_operation_ids") or [])
         ],
+        "pre_turn_failure_policy": str(front_matter.get("pre_turn_failure_policy", "skip")),
         "post_turn_operation_ids": [
             str(o) for o in (front_matter.get("post_turn_operation_ids") or [])
         ],

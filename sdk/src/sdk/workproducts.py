@@ -38,6 +38,7 @@ __all__ = [
     "WorkProduct",
     "WorkProductCheck",
     "WorkProductCheckStatus",
+    "WorkProductInput",
     "WorkProductPreparation",
     "WorkProductPreparationStatus",
     "WorkProductStatus",
@@ -87,6 +88,14 @@ class WorkProductPreparation(BaseModel):
     completed_at: datetime | None = None
 
 
+class WorkProductInput(BaseModel):
+    """One content-addressed file required by a producer's completion proof."""
+
+    root: str
+    path: str
+    sha256: str
+
+
 class WorkProduct(BaseModel):
     """Durable state shared between a producing pack and a publishing pack."""
 
@@ -109,6 +118,10 @@ class WorkProduct(BaseModel):
     checks: dict[str, WorkProductCheck] = Field(default_factory=dict)
     preparation: WorkProductPreparation | None = None
     required_check_ids: list[str] = Field(default_factory=list)
+    completion_producer_id: str = ""
+    completion_revision: int = -1
+    completion_commit_sha: str = ""
+    completion_inputs: list[WorkProductInput] = Field(default_factory=list)
     commit_sha: str = ""
     pushed_sha: str = ""
     pr_url: str = ""

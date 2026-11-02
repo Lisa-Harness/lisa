@@ -1460,6 +1460,7 @@ class WorkflowModeConfig(BaseModel):
     # only meaningful for ``action`` modes (validated at catalog load).
     entry_op_kind: Literal["work", "routing"] = "work"
     pre_turn_operation_ids: list[str] = Field(default_factory=list)
+    pre_turn_failure_policy: Literal["skip", "abort"] = "skip"
     post_turn_operation_ids: list[str] = Field(default_factory=list)
     allowed_operation_ids: list[str] = Field(default_factory=list)
     allowed_tool_ids: list[str] = Field(default_factory=list)
