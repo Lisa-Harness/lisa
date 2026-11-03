@@ -7,7 +7,9 @@ packs so no real pack is required.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from packstest.catalog import (
@@ -342,6 +344,7 @@ def test_content_root_resolves_nested_lisa_packs_src_layout(tmp_path: Path) -> N
 
     pkg = tmp_path / "ext" / "src" / "lisa_packs" / "widgets"
     pkg.mkdir(parents=True)
+    (tmp_path / "ext" / "src" / "__pycache__").mkdir()
     (tmp_path / "ext" / "pyproject.toml").write_text(
         "\n".join(
             [
@@ -366,6 +369,61 @@ def test_content_root_resolves_nested_lisa_packs_src_layout(tmp_path: Path) -> N
     _ensure_source_importable(tmp_path / "ext")
     root = load_pack_content_root(tmp_path / "ext")
     assert root == pkg
+
+
+def test_stale_lisa_packs_modules_classifies_outside_and_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eviction candidates: outside-checkout modules are stale; inside ones stay."""
+
+    from packstest.catalog import _stale_lisa_packs_modules
+
+    inside = ModuleType("lisa_packs.inside")
+    inside.__file__ = str(tmp_path / "checkout" / "lisa_packs" / "inside" / "__init__.py")
+    outside_tool = ModuleType("lisa_packs.tool")
+    outside_tool.__file__ = str(tmp_path / "elsewhere" / "tool.py")
+    monkeypatch.setitem(sys.modules, "lisa_packs", None)
+    monkeypatch.setitem(sys.modules, "lisa_packs.inside", inside)
+    monkeypatch.setitem(sys.modules, "lisa_packs.tool", outside_tool)
+
+    stale = _stale_lisa_packs_modules((tmp_path / "checkout").resolve())
+    assert "lisa_packs.tool" in stale
+    assert "lisa_packs.inside" not in stale
+
+
+def test_stale_lisa_packs_modules_returns_all_on_unusable_namespace_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A namespace module whose __path__ was already invalidated is unusable:
+    the walk gives up and returns every candidate for unconditional eviction."""
+
+    from packstest.catalog import _stale_lisa_packs_modules
+
+    class BrokenPath:
+        def __iter__(self):
+            raise KeyError("parent evicted")
+
+        def __len__(self):
+            raise KeyError("parent evicted")
+
+    broken = ModuleType("lisa_packs.broken")
+    broken.__path__ = BrokenPath()  # type: ignore[assignment]
+    monkeypatch.setitem(sys.modules, "lisa_packs.broken", broken)
+
+    assert _stale_lisa_packs_modules((tmp_path / "checkout").resolve()) == ["lisa_packs.broken"]
+
+
+def test_stale_lisa_packs_modules_skips_module_without_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module with neither __file__ nor __path__ has nothing to classify."""
+
+    from packstest.catalog import _stale_lisa_packs_modules
+
+    bare = ModuleType("lisa_packs.bare")
+    monkeypatch.setitem(sys.modules, "lisa_packs.bare", bare)
+
+    assert _stale_lisa_packs_modules((tmp_path / "checkout").resolve()) == []
 
 
 def test_validate_pack_src_layout_scans_tools(tmp_path: Path) -> None:

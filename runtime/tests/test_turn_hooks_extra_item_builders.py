@@ -292,3 +292,53 @@ async def test_execute_mcp_tool_unclaimed_capability_error_names_owner(
     runtime.resources._mcp_tool_pool = _FakePool(configs=[])
     result = await _execute_mcp_tool(runtime, "memory.add", {})
     assert "capability 'memory' has no registered server" in result.error
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_error_paths_keep_plain_runtime_errors(
+    tmp_path: Path,
+) -> None:
+    """Non-capability errors and empty declared universes keep the bare error."""
+    from dataclasses import dataclass
+    from dataclasses import field as dc_field
+
+    from kernel.tools.mcp_client import MCPToolResult
+    from runtime.turn_hooks_builder import _execute_mcp_tool
+
+    runtime = _make_runtime(tmp_path)
+
+    @dataclass
+    class _FakePool:
+        configs: list[Any] = dc_field(default_factory=list)
+
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text="backend 'memory' is unavailable",
+                is_error=True,
+            )
+
+    @dataclass
+    class _EmptyErrorPool:
+        configs: list[Any] = dc_field(default_factory=list)
+
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text="Tool 'memory.add' is not registered on any MCP server.",
+                is_error=True,
+            )
+
+    runtime.resources._mcp_tool_pool = _FakePool(configs=[])
+    # An error without the not-registered marker takes the plain-error
+    # return (the helper is never consulted).
+    assert not runtime.resources.declared_capability_prefixes
+    result = await _execute_mcp_tool(runtime, "memory.add", {})
+    assert result.error == "backend 'memory' is unavailable"
+
+    # With the marker but an empty declared universe (nothing claimed at
+    # compile time), the capability prefix tells us nothing actionable:
+    # the bare error stands.
+    runtime.resources._mcp_tool_pool = _EmptyErrorPool()
+    result = await _execute_mcp_tool(runtime, "memory.add", {})
+    assert result.error == "Tool 'memory.add' is not registered on any MCP server."

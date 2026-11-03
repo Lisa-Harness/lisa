@@ -168,6 +168,36 @@ def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.Mo
     assert captured["surface_id"] == "chan-42"
 
 
+def test_driver_aborts_when_runtime_flags_pending_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime demanding restart aborts the run before driving turns."""
+    import e2etest.driver as driver_mod
+
+    monkeypatch.setattr(
+        driver_mod,
+        "build_runtime",
+        lambda **_kwargs: SimpleNamespace(session=SimpleNamespace(restart_required=True)),
+    )
+    monkeypatch.setattr(driver_mod, "inject_packs_venv_site_packages", lambda _p: Path("/x"))
+    monkeypatch.setattr(driver_mod, "load_script", lambda _p: SimpleNamespace(log=[]))
+
+    path = _write_scenario(
+        tmp_path,
+        "session_context: ctx.md\nturns: [x]\n"
+        "surface: {type: teams_channel, id: chan-42}\n"
+        "model: {script: m.py}\n",
+    )
+    (tmp_path / "m.py").write_text("def respond(*a, **k): ...\n", encoding="utf-8")
+    scenario = load_scenario(path)
+    paths = RunPaths(tmp_path, tmp_path / "data", None, None, "", tmp_path)
+
+    outcome = driver_mod.run_conversation(scenario, paths, tmp_path / "venv")
+
+    assert outcome.aborted is not None
+    assert "pending reload" in outcome.aborted
+
+
 def test_memory_scope_oracle_matches_scenario_surface(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_memory_db(
@@ -553,6 +583,148 @@ def test_usage_summary_tolerates_torn_lines(tmp_path: Path) -> None:
     summary = usage_summary(log)
     assert summary["calls"] == 1
     assert summary["prompt_tokens"] == 5
+
+
+def test_usage_summary_skips_blank_lines_and_unidentified_models(tmp_path: Path) -> None:
+    """Blank JSONL lines and rows without a model id contribute no calls."""
+    from e2etest.usage import usage_summary
+
+    log = tmp_path / "token-usage.jsonl"
+    log.write_text(
+        "\n"
+        + json.dumps({"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10})
+        + "\n"
+        + json.dumps(
+            {
+                "model_id": "m2",
+                "prompt_tokens": 3,
+                "completion_tokens": 1,
+                "total_tokens": 4,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary = usage_summary(log)
+    # Both rows parse (no model id on the first): each is a call; only the
+    # identified row is attributed in by_model.
+    assert summary["calls"] == 2
+    assert summary["prompt_tokens"] == 12
+    assert list(summary["by_model"]) == ["m2"]
+
+
+def test_resolve_base_data_dir_env_override_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI base-data resolver honors the env override over everything."""
+    from e2etest.cli import _resolve_base_data_dir
+
+    monkeypatch.setenv("LISA_E2E_BASE_DATA_DIR", "/tmp/custom-roster")
+    assert _resolve_base_data_dir(scenario_scripted=True) == Path("/tmp/custom-roster")
+    assert _resolve_base_data_dir(scenario_scripted=False) == Path("/tmp/custom-roster")
+
+
+def test_run_reports_setup_error_for_missing_scenario(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A bad scenario path exits with the setup code and names the error."""
+    from e2etest import cli
+
+    assert (
+        cli._run(
+            SimpleNamespace(
+                scenario=Path("/no/such/scenario.yml"),
+                runs_dir=Path("/tmp/runs"),
+                rebuild_venv=False,
+            )
+        )
+        == 2
+    )
+    assert "setup error" in capfd.readouterr().err
+
+
+def test_main_routes_run_command_to_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default command routes to _run with the parsed scenario."""
+    from e2etest import cli
+
+    seen: list[Any] = []
+    monkeypatch.setattr(cli, "_run", lambda args: seen.append(args) or 7)
+    assert cli.main(["run", "s.yml"]) == 7
+    assert len(seen) == 1 and seen[0].scenario == Path("s.yml")
+
+
+def test_main_reports_repeat_setup_error(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """A repeat whose subprocess cannot start exits with the setup code."""
+    from e2etest import cli
+
+    def explode(args: Any) -> int:
+        raise OSError("venv bootstrap failed")
+
+    monkeypatch.setattr(cli, "_repeat", explode)
+    code = cli.main(["repeat", "s.yml", "--runs", "2"])
+    assert code == 2
+    assert "setup error" in capfd.readouterr().err
+
+
+def test_run_scenario_once_writes_verdict_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """One scenario run in-process: bundle written, oracles printed, PASS exit."""
+    from e2etest.environment import RunPaths
+
+    from e2etest import cli
+
+    run_paths = RunPaths(tmp_path, tmp_path / "data", None, None, "", tmp_path)
+    (tmp_path / "data" / "logs").mkdir(parents=True)
+    (tmp_path / "data" / "logs" / "token-usage.jsonl").write_text(
+        json.dumps(
+            {
+                "model_id": "m",
+                "prompt_tokens": 4,
+                "completion_tokens": 2,
+                "total_tokens": 6,
+                "cost_usd": 0.01,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    import types
+
+    scenario = types.SimpleNamespace(
+        scenario_id="probe/one", packs=[], model_script=None, oracles=[], surface=None
+    )
+    outcome: Any = types.SimpleNamespace(aborted=None)
+    bundle: dict[str, Any] = {
+        "passed": True,
+        "results": [{"passed": True, "phase": "oracle", "name": "probe", "detail": "ok"}],
+    }
+    written: list[Path] = []
+
+    monkeypatch.setattr(cli, "load_scenario", lambda _p: scenario)
+    monkeypatch.setattr(cli, "ensure_packs_venv", lambda _packs, _cache, rebuild: tmp_path / "venv")
+    monkeypatch.setattr(cli, "prepare_run", lambda _s, _d, _v, base=None: run_paths)
+    monkeypatch.setattr(cli, "run_conversation", lambda _s, _paths, _v: outcome)
+    monkeypatch.setattr(cli, "verdict", lambda _s, _e, _r: bundle)
+    monkeypatch.setattr(
+        cli, "write_bundle", lambda _d, payload, _e: written.append(_d / "bundle.json")
+    )
+
+    scenarios = tmp_path / "s.yml"
+    scenarios.write_text("scenario_id: probe/one\n", encoding="utf-8")
+    code = cli._run_scenario_once(
+        scenarios, runs_dir=tmp_path / "runs", rebuild_venv=False, tag_suffix="-tag"
+    )
+
+    assert code == 0
+    out = capfd.readouterr().out
+    assert "run dir:" in out and "PASS oracle.probe: ok" in out
+    assert "usage: 1 model call(s)" in out and "verdict: PASS" in out
+    assert written and written[0].name == "bundle.json"
+    assert "-tag" in written[0].parent.as_posix()
+    assert bundle["usage"]["calls"] == 1 and bundle["usage"]["total_tokens"] == 6
 
 
 # ── CLI: base-data resolution and repeat validation ──────────────────

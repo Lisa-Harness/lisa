@@ -31,8 +31,13 @@ def _source(path: str) -> bool:
         candidate.suffix == ".py"
         and "tests" not in candidate.parts
         and not candidate.name.startswith("test_")
-        and candidate.name != "conftest.py"
-        and path != "vulture_allowlist.py"
+        and candidate.name not in {"conftest.py", "vulture_allowlist.py"}
+        # Operator tooling and data fixtures that ship nowhere and are never
+        # imported by the pytest suites: changing them cannot regress shipped
+        # source. (The e2e fixture overlay tool still executes — inside the
+        # e2e-smoke host process, whose coverage is not part of this gate.)
+        and path != "packstest/run_all_validations.py"
+        and "base_data" not in candidate.parts
     )
 
 

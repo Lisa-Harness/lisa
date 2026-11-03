@@ -5732,6 +5732,44 @@ async def test_pre_turn_runner_error_posture_is_owned_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pre_turn_runner_abort_policy_propagates_runner_failures() -> None:
+    """An explicitly aborting mode re-raises a preparation failure here too.
+
+    The runner mirrors ``run_mode_pre_turn_operations``'s error posture: only
+    an ``ApprovalRequired`` always propagates; every other failure propagates
+    only when the configured mode says ``pre_turn_failure_policy: abort``.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import WorkflowModeConfig
+    from kernel.turn_runner import _run_mode_pre_turn_operations
+
+    mode = WorkflowModeConfig.model_validate(
+        {
+            "mode_id": "aborting",
+            "pre_turn_operation_ids": ["prepare"],
+            "pre_turn_failure_policy": "abort",
+        }
+    )
+
+    async def _flaky(_mode_id, _ctx, **_kwargs):
+        raise RuntimeError("preparation failed")
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", lambda: {"aborting": mode}),
+        patch("kernel.turn_runner.run_mode_pre_turn_operations", side_effect=_flaky),
+        pytest.raises(RuntimeError, match="preparation failed"),
+    ):
+        await _run_mode_pre_turn_operations(
+            mode_id="aborting",
+            build_entry_ctx=lambda **_overrides: SimpleNamespace(),
+            ledger=None,
+            execution_policy=None,
+            log=logging.getLogger(__name__),
+        )
+
+
+@pytest.mark.asyncio
 async def test_handoff_pre_turn_wrapper_delegates_to_the_one_runner() -> None:
     """The handoff origin calls the same runner; the wrapper owns nothing else.
 

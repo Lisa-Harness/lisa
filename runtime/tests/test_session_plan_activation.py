@@ -297,3 +297,28 @@ def test_warn_inactive_pack_owners_tolerates_unloaded_catalog(
         mcp_pool._warn_inactive_pack_owners(runtime, discovery)
 
     assert "fail at dispatch" not in caplog.text
+
+
+def test_warn_inactive_pack_owners_tolerates_broken_catalog_import(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The catalog import itself failing keeps the check best-effort."""
+    from types import SimpleNamespace
+
+    from runtime import mcp_pool
+
+    runtime = SimpleNamespace(
+        session_plan=SimpleNamespace(manifest=SimpleNamespace()),
+        paths=SimpleNamespace(data_dir=tmp_path),
+    )
+    discovery = SimpleNamespace(pack_specs=[])
+
+    def explode() -> dict[str, object]:
+        raise RuntimeError("registry not initialized")
+
+    monkeypatch.setattr("kernel.operations.registry.get_operation_catalog", explode, raising=False)
+
+    with caplog.at_level("WARNING", logger="runtime.mcp_pool"):
+        mcp_pool._warn_inactive_pack_owners(runtime, discovery)
+
+    assert "fail at dispatch" not in caplog.text

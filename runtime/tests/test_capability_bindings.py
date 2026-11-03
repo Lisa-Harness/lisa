@@ -103,3 +103,22 @@ def test_bindings_with_explicit_empty_capability_catalog_reject_all() -> None:
     )
 
     assert bindings.binding_for(CapabilityRef("tool", "owner_tool", "lisa-pack-owner")) is None
+
+
+def test_bindings_warn_matches_normalized_owner_alias(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A configured key matching the catalog owner after case/underscore
+    normalization (but not via the lisa-pack- prefix) names the failing
+    capabilities too (bare-slug alias, second id form)."""
+    with caplog.at_level(logging.WARNING, logger="runtime.capability_bindings"):
+        SessionCapabilityBindings(
+            {"Memory_pack": {"enabled": True}},
+            capabilities=[
+                CapabilityRef("operation", "recall", "memory-pack"),
+                CapabilityRef("tool", "unrelated", "other"),
+            ],
+        )
+
+    assert "will fail at dispatch" in caplog.text
+    assert "operation:recall" in caplog.text

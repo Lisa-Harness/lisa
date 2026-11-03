@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from kernel.turn_hooks import TaskCompletionRequest
@@ -67,6 +68,28 @@ async def test_file_store_round_trips_updated_artifact(tmp_path: Path) -> None:
     assert loaded.preparation.python_path.endswith("python.exe")
     assert await store.delete(artifact.artifact_id) is True
     assert await store.get(artifact.artifact_id) is None
+
+
+@pytest.mark.asyncio
+async def _verify_failing_completion_proof(artifact: Any, store: Any, verify: Any) -> Any:
+    """A declared producer without a reconciled proof fails before the tree read."""
+    artifact.completion_producer_id = "reconcile"
+    await store.save(artifact)
+    failing = await verify("task-one")
+    artifact.completion_producer_id = ""
+    await store.save(artifact)
+    return failing
+
+
+@pytest.mark.asyncio
+async def _verify_after_commit_amendment(
+    repo: Any, worktree: Any, artifact: Any, verify: Any
+) -> Any:
+    """Amend the committed history, verify, and restore the recorded commit."""
+    await repo._run("commit", "--amend", "-m", "amended", cwd=worktree)
+    moved = await verify("task-two")
+    await repo._run("reset", "--hard", artifact.commit_sha, cwd=worktree)
+    return moved
 
 
 @pytest.mark.asyncio
@@ -175,6 +198,11 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
     artifact.required_check_ids = []
     artifact.checks = {}
     await store.save(artifact)
+
+    failing = await _verify_failing_completion_proof(artifact, store, verify)
+    assert failing.verified is False
+    assert "reconciled" in failing.reason
+
     assert (await verify("task-one")).verified is True
 
     # A later task that advances the same worktree takes over its completion.
@@ -182,6 +210,11 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
     await store.save(artifact)
     assert (await verify("task-two")).verified is True
     assert (await verify("task-one")).verified is False
+
+    # A moved HEAD (amended history) fails the committed-tree read itself.
+    moved = await _verify_after_commit_amendment(repo, worktree, artifact, verify)
+    assert moved.verified is False
+    assert moved.reason is not None and "does not match its recorded commit" in moved.reason
 
 
 @pytest.mark.asyncio
