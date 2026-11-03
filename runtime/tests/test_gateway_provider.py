@@ -398,3 +398,55 @@ async def test_turn_boundary_survives_a_failing_restart(
     monkeypatch.setattr(pool, "respawn", _exploding_respawn)
 
     await _respawn_dead_proxy_for_provider(runtime, "ollama")  # must not raise
+
+
+class _OverrideGatewayProvider:
+    """Minimal ``ProviderGatewayProvider`` double for the override seam."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def gateway_for(self, provider: str) -> object | None:
+        self.asked.append(provider)
+        return {"gateway": provider}
+
+    def proxy_protocol_for(self, provider: str) -> str | None:
+        return None
+
+    def direct_base_url_for(self, provider: str) -> str | None:
+        return None
+
+
+def test_gateway_resolver_prefers_session_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """``session.provider_gateways_override`` wins over entry-point discovery.
+
+    The resolver is the supported harness/host seam: when the runtime owner
+    declares a gateway provider, discovery is not consulted at all — so a
+    scripted-model scenario can run with no gateway pack installed.
+    """
+    from runtime.turn_hooks_builder import _resolve_gateway_provider_for_runtime
+
+    def _exploding_discovery() -> list[Any]:
+        raise AssertionError("entry-point discovery must not be consulted")
+
+    monkeypatch.setattr(
+        "runtime.turn_hooks_builder.discover_provider_gateway_factories",
+        lambda *a, **k: _exploding_discovery(),
+    )
+
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+    # No override: discovery would run (it raises here), proving the resolver
+    # reaches discovery when the seam is unset.
+    with pytest.raises(AssertionError, match="not be consulted"):
+        _resolve_gateway_provider_for_runtime(runtime)
+
+    override = _OverrideGatewayProvider()
+    runtime.session.provider_gateways_override = override
+    assert _resolve_gateway_provider_for_runtime(runtime) is override
+    assert override.gateway_for("openai") == {"gateway": "openai"}
+
+    runtime.session.provider_gateways_override = None
+    with pytest.raises(AssertionError, match="not be consulted"):
+        _resolve_gateway_provider_for_runtime(runtime)

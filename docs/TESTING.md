@@ -100,13 +100,18 @@ Root test discovery includes package `tests/` directories and several
 colocated `src/**/tests` suites. Explicitly selecting only a package's
 top-level `tests/` does not cover all its colocated tests.
 
-| Marker/layer | Meaning |
-| --- | --- |
-| `live` | Calls real external APIs; opt in with credentials and cost awareness |
-| `integration` | Multi-module tests; some require local services |
-| `eval` | Deterministic agent regressions; no model calls, only isolated test data |
-| `packstest` | Source-based catalog/tool/scenario tests with real SDK contracts |
-| `lisa-e2e` | Whole-runtime scenarios, live by default or explicitly scripted |
+| Marker/layer | Meaning | Registered |
+| --- | --- | --- |
+| `live` | Calls real external APIs; opt in with credentials and cost awareness | yes |
+| `integration` | Multi-module tests; some require local services | yes |
+| `eval` | Deterministic agent regressions; no model calls, only isolated test data | yes |
+| `packstest` | Source-based catalog/tool/scenario tests with real SDK contracts; harness layer, not a pytest marker | no |
+| `lisa-e2e` | Whole-runtime scenarios, live by default or explicitly scripted; the `lisa-e2e` CLI, not a pytest marker | no |
+
+The `packstest` and `lisa-e2e` rows name **layers**, not pytest markers: they
+are not registered in `[tool.pytest.ini_options].markers`. Pack tests under
+`tests/evals/` opt into the deterministic harness layer with the registered
+`eval` marker; the e2e scenarios run through the `lisa-e2e` CLI, not pytest.
 
 Always specify `-m "not live"` for the offline suite. The root pytest
 configuration defines markers but does not itself deselect live tests.
@@ -267,10 +272,10 @@ build is validated regardless of which files the release commit touched.
 Use [packstest](../packstest/README.md) before any installed-package route:
 
 Follow the [source validation examples](../packstest/README.md#quick-start-validate-a-pack).
-For `src/`-layout packs, explicitly inspect the resolved-root catalogs;
-the current `validate_pack` locator can emit a warning-only empty scan.
-Do not treat `report.ok` without expected catalog assertions as complete
-validation.
+`validate_pack` resolves every layout (flat, `src/lisa_packs/`, bundled
+`src/sdk/packs/`) from the pack's declared content-root entry point; a
+`content-root` warning means the scan found nothing, so assert the expected
+catalog contents in the pack's evals rather than trusting `report.ok` alone.
 
 Drive behavior with `run_tool` / `run_scenario`, isolated data, and offline
 fixtures. New pack workflows also need an opt-in

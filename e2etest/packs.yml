@@ -6,11 +6,12 @@ framework:
   - ../sdk
   - ../mcp_server
 packs:
+  lisa-pack-core: ../sdk/packs/core
+  lisa-pack-recovery: ../sdk/packs/recovery
   lisa-pack-bash: ../../lisa-packs/bash
   lisa-pack-bwrap: ../../lisa-packs/bwrap
   lisa-pack-coding: ../../packs-wip/coding
   lisa-pack-finances: ../../packs-wip/finances
   lisa-pack-markdown: ../../lisa-packs/markdown
   lisa-pack-personas: ../../lisa-packs/personas
-  lisa-pack-recovery: ../sdk/packs/recovery
   lisa-pack-serper: ../../lisa-packs/serper

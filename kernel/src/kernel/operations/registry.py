@@ -147,14 +147,14 @@ def _wrap_declarative_tool_executor(
     execute_tool_fn: Any,
     capability_binding_provider: Any = None,
 ) -> Any:
-    """Return a tool executor that only allows declared tools for prompt operations."""
-    if definition.execution_kind != "prompt" or execute_tool_fn is None:
+    """Preserve child bindings and enforce declared tools for prompt operations."""
+    if execute_tool_fn is None:
         return execute_tool_fn
 
     allowed_tool_ids = set(definition.tool_ids)
 
     async def _execute_allowed_tool(tool_id: str, ctx: Any) -> Any:
-        if tool_id not in allowed_tool_ids:
+        if definition.execution_kind == "prompt" and tool_id not in allowed_tool_ids:
             raise OperationExecutionError(
                 f"Declarative operation '{definition.operation_id}' cannot call "
                 f"undeclared tool '{tool_id}'."

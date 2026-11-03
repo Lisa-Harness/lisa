@@ -1,0 +1,18 @@
+# Minimal offline model manifest for scripted-model e2e scenarios.
+#
+# A scenario with `model: {script: ...}` replaces every provider gateway, so
+# nothing here is ever contacted: the manifest only has to satisfy the
+# kernel's schema (>=1 model from an allowed provider + non-empty
+# `mode_models`). Real runs copy this file into the run dir but never call
+# through it. Set LISA_E2E_BASE_DATA_DIR to a dir with your own models.yaml
+# (and .env) to run live scenarios.
+version: 1
+# The stub's YAML carries no `default_available`, so the smoke scenario's
+# turn gets it through an explicit mode binding (see tests/e2e/harness_smoke
+# mode override in the scenario session-context).
+mode_models: {default: offline-stub-model}
+models:
+- model_id: offline-stub-model
+  provider: openai
+  display_name: Offline stub (never called)
+  capabilities: [text, tools]

@@ -1,0 +1,31 @@
+# Offline smoke: the whole runtime runs on the bundled base-data manifest
+# with the scripted model standing in for the LLM. Zero credentials, no
+# external pack checkouts — this is what the CI gate runs.
+#
+# The model script calls the core pack's web_search contract stub, which
+# deterministically errors with the provider-unavailable message. The
+# error path is the assertion target: tools dispatch, errors reach the
+# model, and the turn completes within budget.
+id: harness/smoke-scripted
+session_context: session_context.md
+model:
+  script: model/harness_smoke.py
+packs:
+  - lisa-pack-core
+turns:
+  - Search the web for the harness smoke probe and summarize the outcome.
+budgets:
+  max_messages: 4
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 300
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_runtime_errors: {}
+    - max_exchanges: {n: 4}
+  dispatch:
+    # The turn really dispatched the tool (thread-entry provenance + the
+    # exchange text carries the stub's deterministic error).
+    - exchange_contains: {text: "unavailable"}

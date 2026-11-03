@@ -16,6 +16,7 @@ from typing import Any
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest
 from sdk.filelock import async_file_lock, atomic_write_text, sidecar_lock_path
 from sdk.workproducts import WorkProduct
+from sdk.workspace_documents import WorkspaceDocuments
 
 __all__ = ["FileCodeChangeArtifactStore", "verify_checked_commit"]
 
@@ -136,6 +137,27 @@ def _unchecked_required(artifact: WorkProduct, *, tree: str) -> str:
     return ""
 
 
+def _completion_proof_problem(artifact: WorkProduct, *, producer: str, authority_root: Path) -> str:
+    """Require opt-in producer reconciliation and fresh referenced inputs."""
+    if not artifact.completion_producer_id:
+        return ""
+    if (
+        artifact.completion_producer_id != producer
+        or artifact.completion_revision != artifact.revision
+        or artifact.completion_commit_sha != artifact.commit_sha
+        or not artifact.completion_inputs
+    ):
+        return "The artifact's required completion producer has not reconciled this revision."
+    try:
+        for entry in artifact.completion_inputs:
+            documents = WorkspaceDocuments(Path(entry.root), authority_root)
+            if not entry.sha256 or documents.digest(entry.path) != entry.sha256:
+                return "A required completion input has changed since verification."
+    except (OSError, ValueError):
+        return "A required completion input cannot be verified."
+    return ""
+
+
 async def verify_checked_commit(
     request: TaskCompletionRequest,
     *,
@@ -163,6 +185,13 @@ async def verify_checked_commit(
     if reason or artifact is None:
         return TaskCompletionEvidence(verified=False, reason=reason)
 
+    reason = _completion_proof_problem(
+        artifact,
+        producer=request.origin_tool_id,
+        authority_root=store._path.parent,
+    )
+    if reason:
+        return TaskCompletionEvidence(verified=False, reason=reason)
     tree = await _committed_tree(artifact)
     if tree is None:
         reason = (

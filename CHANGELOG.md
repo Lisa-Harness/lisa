@@ -4,6 +4,72 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
+### Added
+
+- Opt-in fail-closed mode preparation with `pre_turn_failure_policy: abort`.
+  The default continues to isolate enrichment failures.
+- Transactional SDK workspace documents with guarded paths, revision checks,
+  private authority records, and bounded binary-artifact fingerprints.
+- Producer-bound WorkProduct completion proofs that recheck the committed
+  revision and referenced input files before accepting completion.
+- `lisa-e2e` runs scripted-model scenarios with zero credentials: a bundled
+  offline base-data fixture (minimal `models.yaml` + the `web_search` ambient
+  overlay) backs hermetic runs, and CI gains an `e2e-smoke` merge-gate job
+  that runs the offline smoke scenario on every PR.
+- `lisa-e2e repeat` and per-run token/cost roll-ups aggregated from the
+  run's durable `token-usage.jsonl` (model calls, prompt/completion tokens,
+  cost, per-model totals), included in the verdict bundle.
+- `HostRuntime.session.provider_gateways_override`: the supported seam for
+  hosts and harnesses to declare provider gateways directly; e2etest's
+  scripted model binds through it instead of monkeypatching the private
+  gateway resolver.
+- `packstest` content-root resolution for all pack layouts (flat,
+  `src/lisa_packs/<slug>`, bundled `src/sdk/packs/<slug>`), read from the
+  pack's declared entry point with stale-module eviction between checkouts.
+
+### Changed
+
+- Harness test coverage floors raised (packstest 59→68, e2etest 57→73)
+  with new driver, CLI, usage-rollup, locator, and runner tests.
+- The pack repos' eval suite now ships a `validate_pack` eval per pack
+  (bash, markdown, bwrap, serper, personas, finances), with
+  `lisa-harness-packstest` as their dev dependency and installed by the
+  packs CI gate.
+
+### Fixed
+
+- Preserve session capability bindings when runtime operations compose tools,
+  while retaining prompt-operation tool allowlists.
+- Memory learning persistence failures report `status: error` with a
+  diagnostic instead of a success envelope carrying a ⛔ message, so
+  telemetry, effect receipts, and recovery see the outage.
+- Bundled operations and tools author `pack_id` so the catalog owner stays
+  the distribution name under site-packages installs; configuration keys
+  bind at dispatch instead of silently resolving empty.
+- The capability-bindings warning names the catalog capabilities that will
+  fail at dispatch when a configured owner is absent from the catalog, and
+  compile warns when the operation catalog lists operations of packs the
+  session did not activate.
+- A declared-but-unclaimed capability's not-registered dispatch error names
+  the activation fix (`include/required` or `providers.capabilities`) instead
+  of a bare server message.
+- `merge_sandbox_floor` warns when a merged floor binds a host path that
+  does not exist, with per-path attribution (pack or harness); the coding
+  pack creates the worktree parent so its floor bind always has a source.
+
+### Known Issues
+
+- Follow-up from post-commit review: aborting preparation must reject missing
+  lifecycle targets. The current dispatcher skips unresolved targets even when
+  `pre_turn_failure_policy` is `abort`.
+- Follow-up from post-commit review: aborting preparation must propagate
+  `ToolResult.error` as a failed prerequisite. The current lifecycle adapter
+  stores tool errors as result metadata rather than raising. Add regression
+  coverage through the actual dispatcher for both cases and retain default
+  enrichment isolation.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

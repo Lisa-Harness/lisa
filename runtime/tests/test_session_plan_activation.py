@@ -184,3 +184,141 @@ def test_infer_pack_package_name_sdk_packs_keep_canonical_name(tmp_path: Path) -
     sdk_root = tmp_path / "sdk" / "packs" / "memory"
     sdk_root.mkdir(parents=True)
     assert content_roots.infer_pack_package_name(sdk_root) == "lisa-pack-memory"
+
+
+def test_warn_inactive_pack_owners_names_inactive_operations(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operations of a pack that was never activated (configuration-only
+    owner) still reach the model-facing catalog — the mismatch must be
+    named at startup, not first failure (2026-11-02 WiDWebsite memory-loss
+    incident)."""
+    from types import SimpleNamespace
+
+    from kernel.models import OperationDefinition
+
+    from runtime import mcp_pool
+
+    active_root = tmp_path / "site-packages" / "lisa_packs" / "coding"
+    (active_root / "pyproject.toml").parent.mkdir(parents=True)
+    (active_root / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-coding"\n', encoding="utf-8"
+    )
+
+    runtime = SimpleNamespace(
+        session_plan=SimpleNamespace(manifest=SimpleNamespace()),
+        paths=SimpleNamespace(data_dir=tmp_path),
+    )
+    # The memory root was dropped by the include allowlist, so pack_specs
+    # carries only the activated packs — exactly the incident shape.
+    discovery = SimpleNamespace(
+        pack_specs=[SimpleNamespace(root=active_root)],
+    )
+
+    monkeypatch.setattr(
+        "kernel.operations.registry.get_operation_catalog",
+        lambda: {
+            # Bare-slug owner id: the site-packages content root has no
+            # pyproject, so the child infers the directory slug.
+            "recall_memory": OperationDefinition(operation_id="recall_memory", owner_id="memory"),
+            # Canonical owner: the repo-tree root infers the distribution
+            # name (or the yaml authors pack_id).
+            "plan_workflow": OperationDefinition(
+                operation_id="plan_workflow", owner_id="lisa-pack-core"
+            ),
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="runtime.mcp_pool"):
+        mcp_pool._warn_inactive_pack_owners(runtime, discovery)
+
+    # Both inactive owners are named; the memory op (this incident) is what
+    # the warning must carry.
+    assert "recall_memory" in caplog.text
+    assert "plan_workflow" in caplog.text
+    assert "include/required" in caplog.text
+
+
+def test_warn_inactive_pack_owners_stays_silent_when_all_owners_active(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from kernel.models import OperationDefinition
+
+    from runtime import mcp_pool
+
+    pack_root = tmp_path / "site-packages" / "lisa_packs" / "memory"
+    (pack_root / "pyproject.toml").parent.mkdir(parents=True)
+    (pack_root / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-memory"\n', encoding="utf-8"
+    )
+
+    runtime = SimpleNamespace(
+        session_plan=SimpleNamespace(manifest=SimpleNamespace()),
+        paths=SimpleNamespace(data_dir=tmp_path),
+    )
+    discovery = SimpleNamespace(
+        pack_specs=[SimpleNamespace(root=pack_root)],
+    )
+
+    monkeypatch.setattr(
+        "kernel.operations.registry.get_operation_catalog",
+        lambda: {
+            # Bare-slug form must match the full-name active entry too.
+            "recall_memory": OperationDefinition(operation_id="recall_memory", owner_id="memory"),
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="runtime.mcp_pool"):
+        mcp_pool._warn_inactive_pack_owners(runtime, discovery)
+
+    assert "fail at dispatch" not in caplog.text
+
+
+def test_warn_inactive_pack_owners_tolerates_unloaded_catalog(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Standalone compile calls (no setup_framework) have no registered
+    operation catalog — the check must stay silent, not crash compile."""
+    from types import SimpleNamespace
+
+    from runtime import mcp_pool
+
+    runtime = SimpleNamespace(
+        session_plan=SimpleNamespace(manifest=SimpleNamespace()),
+        paths=SimpleNamespace(data_dir=tmp_path),
+    )
+    discovery = SimpleNamespace(pack_specs=[])
+
+    monkeypatch.setattr("kernel.operations.registry.get_operation_catalog", dict, raising=False)
+
+    with caplog.at_level("WARNING", logger="runtime.mcp_pool"):
+        mcp_pool._warn_inactive_pack_owners(runtime, discovery)
+
+    assert "fail at dispatch" not in caplog.text
+
+
+def test_warn_inactive_pack_owners_tolerates_broken_catalog_import(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The catalog import itself failing keeps the check best-effort."""
+    from types import SimpleNamespace
+
+    from runtime import mcp_pool
+
+    runtime = SimpleNamespace(
+        session_plan=SimpleNamespace(manifest=SimpleNamespace()),
+        paths=SimpleNamespace(data_dir=tmp_path),
+    )
+    discovery = SimpleNamespace(pack_specs=[])
+
+    def explode() -> dict[str, object]:
+        raise RuntimeError("registry not initialized")
+
+    monkeypatch.setattr("kernel.operations.registry.get_operation_catalog", explode, raising=False)
+
+    with caplog.at_level("WARNING", logger="runtime.mcp_pool"):
+        mcp_pool._warn_inactive_pack_owners(runtime, discovery)
+
+    assert "fail at dispatch" not in caplog.text

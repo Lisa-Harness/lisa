@@ -407,6 +407,12 @@ async def test_execute_storage_error_returns_failure_result() -> None:
     result = await op.execute(ctx)
 
     assert result.output_text == "⛔ Learning storage failed: backend offline"
+    # Honest failure contract: telemetry/receipts must see the failure
+    # (2026-11-02 WiDWebsite: ⛔ text hid the outage behind a success
+    # envelope, so the decisions ledger recorded two "success" operations
+    # with zero write receipts while memory.db stayed empty).
+    assert result.status == "error"
+    assert result.error_detail == "backend offline"
 
 
 @pytest.mark.asyncio

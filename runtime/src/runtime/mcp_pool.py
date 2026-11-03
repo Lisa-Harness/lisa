@@ -729,6 +729,71 @@ def _resolved_mcp_env(runtime: HostRuntime, workspace_root: str) -> dict[str, st
     return resolved
 
 
+def _warn_inactive_pack_owners(
+    runtime: HostRuntime,
+    discovery: _FrameworkDiscovery,
+) -> None:
+    """Warn when the operation catalog lists operations of inactive packs.
+
+    The content/catalog child discovers pack operations from its own
+    entry-point scan, so operations of a pack the session did not activate
+    (present only under ``resources.packs.configuration``) still appear in
+    the model-facing tool list — then fail at dispatch with a "not
+    registered" backend error (2026-11-02 WiDWebsite profile: memory
+    operations live, ``lisa-memory`` never compiled, writes lost). Name
+    the operations and the activation fix at startup instead of first
+    failure.
+
+    Best-effort: when the operation catalog was not loaded yet (standalone
+    compile calls) this stays silent.
+    """
+    try:
+        # lazy: defers kernel catalog registration (setup_framework populates
+        # it); standalone compile_mcp_configs callers have an empty catalog.
+        from kernel.operations.registry import get_operation_catalog
+
+        catalog = get_operation_catalog()
+    except Exception:  # pylint: disable=broad-except
+        return
+    if not catalog:
+        return
+
+    active_packages: set[str] = set()
+    for entry in discovery.pack_specs:
+        package_name = infer_pack_package_name(entry.root)
+        if package_name:
+            normalized = normalize_pack_name(package_name)
+            # Catalog owner ids can be the full distribution name or the bare
+            # directory slug (site-packages content roots lack the root
+            # pyproject the inference prefers) — treat both forms as active.
+            active_packages.add(normalized)
+            active_packages.add(normalized.removeprefix("lisa-pack-"))
+
+    inactive_ops: dict[str, list[str]] = {}
+    for definition in catalog.values():
+
+        def _inactive(owner: str) -> bool:
+            normalized = normalize_pack_name(owner)
+            return bool(normalized) and normalized not in active_packages
+
+        owner = getattr(definition, "owner_id", "") or getattr(definition, "pack_id", "")
+        if _inactive(owner):
+            inactive_ops.setdefault(normalize_pack_name(owner), []).append(definition.operation_id)
+
+    if not inactive_ops:
+        return
+    details = "; ".join(
+        f"{pack}: {', '.join(sorted(op_ids))}" for pack, op_ids in sorted(inactive_ops.items())
+    )
+    logger.warning(
+        "Operation catalog lists operations owned by packs the session did not "
+        "activate: %s. Their backends never compiled, so these operations will "
+        "fail at dispatch — activate the pack (include/required) or select its "
+        "capability owner (providers.capabilities).",
+        details,
+    )
+
+
 def _resolve_session_capability_preferences(
     runtime: HostRuntime,
 ) -> tuple[set[str], dict[str, str]]:
@@ -1256,6 +1321,18 @@ def compile_mcp_configs(
         selected_capability_providers,
         skipped_candidates=skipped_candidates,
     )
+
+    # Declared capability universe for the dispatch-error seam: winners AND
+    # unactivated claimants. A memory.* dispatch with no compiled memory
+    # server is an activation failure; without this record the dispatch can
+    # only emit a bare not-registered line (2026-11-02 WiDWebsite).
+    declared_capabilities = {candidate.capability for candidate in capability_candidates}
+    declared_capabilities.update(
+        str(spec.capability) for spec in discovery.host_specs if getattr(spec, "capability", None)
+    )
+    runtime.resources.set_declared_capability_prefixes(declared_capabilities)
+
+    _warn_inactive_pack_owners(runtime, discovery)
 
     compiled = compile_registry(
         registry, data_dir=data_dir, workspace_root=workspace_root, base_env=resolved_env

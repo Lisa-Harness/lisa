@@ -8,7 +8,7 @@ average up, so this script enforces each package at its own measured floor.
 
 Floors are set ~2 points under the baselines measured on 2026-10-31 (branch
 coverage) so they catch real regressions without flapping on platform timing
-noise. Raise them as you add tests — never lower them.
+noise. Raise them as coverage improves — never lower them.
 
 Usage:
     uv run python scripts/check_coverage.py --run
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 # (coverage --include glob, minimum branch-aware %, measured-baseline %)
-# Baselines measured 2026-10-31 with the full offline suite;
+# Baselines measured with the full offline suite;
 # floors sit ~2 pts below their baseline so they catch real regressions without
 # flapping on platform timing noise. Raise them as coverage improves — never lower.
 FLOORS: list[tuple[str, int, int]] = [
@@ -34,8 +34,8 @@ FLOORS: list[tuple[str, int, int]] = [
     ("sdk/packs/*/src/*", 87, 89),
     ("mcp_server/src/*", 77, 79),
     ("runtime/src/*", 82, 84),
-    ("packstest/src/*", 59, 61),
-    ("e2etest/src/*", 57, 59),
+    ("packstest/src/*", 68, 70),
+    ("e2etest/src/*", 73, 75),
     ("scripts/*", 65, 67),
 ]
 

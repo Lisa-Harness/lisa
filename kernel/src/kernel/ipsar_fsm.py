@@ -266,6 +266,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "entry_operation_ids",
         "entry_op_kind",
         "pre_turn_operation_ids",
+        "pre_turn_failure_policy",
         "post_turn_operation_ids",
         "allowed_operation_ids",
         "allowed_tool_ids",
@@ -993,6 +994,9 @@ def _load_mode_from_dir(
         entry_operation_ids=operation_bindings.entry_operation_ids,
         entry_op_kind=operation_bindings.entry_op_kind,
         pre_turn_operation_ids=operation_bindings.pre_turn_operation_ids,
+        pre_turn_failure_policy=cast(
+            Literal["skip", "abort"], mode_front_matter.get("pre_turn_failure_policy", "skip")
+        ),
         post_turn_operation_ids=operation_bindings.post_turn_operation_ids,
         allowed_operation_ids=operation_bindings.allowed_operation_ids,
         allowed_tool_ids=operation_bindings.allowed_tool_ids,
@@ -1960,8 +1964,8 @@ async def run_mode_pre_turn_operations(
 ) -> OperationResult:
     """Execute pre-turn targets for one workflow or chat mode.
 
-    Resolves each ID polymorphically (operation or tool). Failures are always
-    isolated: a flaky enrichment target logs a warning and the turn continues.
+    Resolve each ID polymorphically. Enrichment failures default to isolation;
+    modes declaring an abort policy require successful preparation.
     """
     mode = get_workflow_catalog().get(mode_id)
     if mode is None:
@@ -1971,13 +1975,15 @@ async def run_mode_pre_turn_operations(
             return await _execute_mode_target_ids(
                 mode.pre_turn_operation_ids,
                 ctx,
-                failure_policy="skip",
+                failure_policy=mode.pre_turn_failure_policy,
                 ledger=ledger,
                 execution_policy=execution_policy,
             )
         except ApprovalRequired:
             raise
         except Exception as exc:  # pylint: disable=broad-except
+            if mode.pre_turn_failure_policy == "abort":
+                raise
             logger.warning("pre_turn targets failed for mode '%s': %s", mode_id, exc)
     return OperationResult()
 

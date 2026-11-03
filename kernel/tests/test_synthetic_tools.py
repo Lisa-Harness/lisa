@@ -646,3 +646,70 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
     assert result.output_text == "server:list_memories"
 
     await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_missing_capability_tool_error_keeps_bare_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pool's not-registered error stays bare: only the runtime layer
+    (which knows the session's capability universe) can append the
+    owner-fix hint without misattributing unknown server ids."""
+    _patch_connect(monkeypatch)
+
+    async def empty_refresh(self: MCPToolPool) -> None:
+        self._tools = []
+        self._tool_index = {}
+        self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
+
+    monkeypatch.setattr(MCPToolPool, "_refresh_tool_index", empty_refresh)
+
+    config = MCPClientConfig(
+        server_id="lisa-memory",
+        command="python",
+        args=["-m", "nonexistent"],
+        capability="memory",
+        capability_tools=("add", "search", "list"),
+        tool_map={"add": "add_memory", "search": "search_memory", "list": "list_memories"},
+    )
+    pool = MCPToolPool([config])
+    await pool.start()
+    result = await pool.call_tool("memory.add", {})
+    assert result.is_error is True
+    assert result.output_text == "Tool 'memory.add' is not registered on any MCP server."
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_missing_capability_tool_hint_only_when_capability_claimed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a server owns the capability but its tool is absent (server down
+    with denied/filtered surface), the error text is unchanged."""
+    _patch_connect(monkeypatch)
+
+    async def empty_refresh(self: MCPToolPool) -> None:
+        self._tools = []
+        self._tool_index = {}
+        self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
+
+    monkeypatch.setattr(MCPToolPool, "_refresh_tool_index", empty_refresh)
+
+    config = MCPClientConfig(
+        server_id="lisa-memory",
+        command="python",
+        args=["-m", "nonexistent"],
+        capability="memory",
+        capability_tools=("add", "search", "list"),
+        tool_map={"add": "add_memory", "search": "search_memory", "list": "list_memories"},
+    )
+    pool = MCPToolPool([config])
+    await pool.start()
+    result = await pool.call_tool("memory.add", {})
+    assert result.is_error is True
+    assert result.output_text == "Tool 'memory.add' is not registered on any MCP server."
+
+    await pool.aclose()

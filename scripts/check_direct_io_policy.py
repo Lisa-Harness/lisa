@@ -200,6 +200,10 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(tmp_path, path)",
         "tmp_path.unlink(missing_ok=True)",
     ),
+    # Bounded approved lifecycle moves use the SDK document backend.
+    "sdk/src/sdk/workspace_documents.py": (
+        "destination.parent.mkdir(parents=True, exist_ok=True)",
+    ),
     "sdk/src/sdk/logging_setup.py": ("log_path.parent.mkdir(parents=True, exist_ok=True)",),
     "sdk/src/sdk/memory/store.py": (
         "sqlite3.connect(",

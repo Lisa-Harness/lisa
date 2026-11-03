@@ -167,12 +167,23 @@ The following are optional `_mode.md` fields:
 | `completion_budget_tokens` | Per-call completion ceiling |
 | `turn_completion_budget_tokens` | Cumulative per-turn completion rail |
 | `task_completion`, `task_artifact_tool_id` | Checked-commit gate and its exposed artifact producer |
+| `pre_turn_failure_policy` | `skip` (default) or `abort` preparation errors |
 
 Usually align `satisfies_intents` with `routing_intent_tags`. A routable
 mode that omits in-place coverage can keep handing off needlessly.
 `task_completion: checked_commit` requires a real task-owned artifact;
 pair it with an artifact producer the mode actually exposes. A flag does
 not create a worktree or authorize completion by prose.
+
+Use `pre_turn_failure_policy: abort` only for mandatory preparation. It applies
+at turn start and mid-turn handoff; errors propagate rather than allowing a
+model call with missing prerequisites. Work-style entry operations still end the
+turn with their own result and are not a substitute for pre-turn preparation.
+
+Producing packs may opt WorkProducts into producer-bound completion proof using
+`completion_producer_id`, revision/commit identity, and content-addressed
+`completion_inputs`. The host checks those inputs again at completion. A raw
+checked commit cannot replace required producer reconciliation.
 
 See [routing](ROUTER_DESIGN.md), [token budgets](TOKEN_BUDGET.md), and
 [coding workflow](CODING_WORKFLOW.md). Keep domain vocabulary in the pack/session,
@@ -216,6 +227,13 @@ Operation/tool visibility has two independent flags:
   Private foreign references fail boundary validation.
 - `default_available: true` contributes an ambient capability to effective
   mode allowlists.
+
+Author `pack_id` on every operation and tool YAML that belongs to the pack
+(e.g. `pack_id: lisa-pack-memory`). The catalog infers the owner from a
+content-root `pyproject.toml`, but installed wheels have no `pyproject`
+beside the operations tree — without an authored `pack_id` the owner falls
+back to the bare directory slug (`memory`), and session configuration keys
+(`lisa-pack-memory`) then bind nothing at dispatch.
 
 Modes can opt out with `accept_default_capabilities: false` or subtract
 `excluded_operation_ids` / `excluded_tool_ids`. Ambient defaults are not

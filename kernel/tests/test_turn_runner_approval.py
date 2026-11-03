@@ -366,7 +366,14 @@ async def test_pre_and_post_lifecycle_tools_rethrow_approval(
     monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", {"write_file": tool_definition})
     monkeypatch.setattr(
         "kernel.ipsar_fsm.get_workflow_catalog",
-        lambda: {"approval_chat": SimpleNamespace(**{target_field: ["write_file"]})},
+        lambda: {
+            "approval_chat": SimpleNamespace(
+                **{
+                    target_field: ["write_file"],
+                    "pre_turn_failure_policy": "skip",
+                }
+            )
+        },
     )
     context = OperationExecutionContext(
         workspace_id="workspace",

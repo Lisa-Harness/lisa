@@ -91,34 +91,138 @@ class PackValidationReport:
         return "\n".join(lines)
 
 
+def _pack_slug(pack_path: Path) -> str:
+    """Return the distribution slug (``lisa-pack-markdown`` → ``markdown``)."""
+    import tomllib  # stdlib, no cycle risk
+
+    pyproject = pack_path / "pyproject.toml"
+    if not pyproject.is_file():
+        return ""
+    try:
+        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    name = str(payload.get("project", {}).get("name", "")).strip()
+    if name.startswith("lisa-pack-"):
+        return name.removeprefix("lisa-pack-")
+    return name
+
+
+def _namespace_children(pack_path: Path) -> list[Path]:
+    """Pack packages under a shared ``lisa_packs/`` namespace at the root."""
+    namespace = pack_path / "lisa_packs"
+    if not namespace.is_dir():
+        return []
+    return [d for d in namespace.iterdir() if d.is_dir() and d.name != "__pycache__"]
+
+
+def _resolve_namespace_child(children: list[Path], slug: str) -> Path:
+    """Pick the namespace child matching the distribution slug."""
+    if len(children) == 1:
+        return children[0]
+    for child in children:
+        if child.name == slug:
+            return child
+    return children[0]
+
+
+def _src_fallback_root(pack_path: Path, slug: str) -> Path | None:
+    """Bounded ``src/*/`` walk for checkouts with no readable entry point."""
+    src = pack_path / "src"
+    if not src.is_dir():
+        return None
+    for parent in sorted(src.glob("*")):
+        if not parent.is_dir() or parent.name in ("__pycache__", "tests"):
+            continue
+        nested = parent / "lisa_packs" / slug
+        if nested.is_dir():
+            return nested
+        if _has_content_subdirs(parent):
+            return parent
+    return None
+
+
 def load_pack_content_root(pack_path: Path) -> Path:
     """Return the pack's content root (the directory holding content subdirs).
 
     The pack path is the distribution checkout (``pyproject.toml`` at top).
-    Content roots registered via entry points point at the package directory
-    (``lisa_packs/<name>``) which hosts ``tools/``/``modes/``/``operations/``.
+    Resolution order:
+
+    1. A shared ``lisa_packs/`` namespace at the checkout root (standard
+       external-pack layout): the child matching the distribution slug.
+    2. The ``lisa.extensions.content_roots`` entry point's module: converted
+       from a dotted module path to its package directory. This handles every
+       ``src/`` layout (``src/lisa_packs/<slug>``, bundled
+       ``src/sdk/packs/<slug>``, nested ``lisa_packs/<slug>/lisa_packs/<slug>``)
+       using the same declaration the production router consumes, so the
+       locator cannot drift from what the runtime resolves.
+    3. A bounded ``src/*/`` walk for checkouts without a readable entry point.
+    4. The checkout itself (flat content-root checkouts, synthetic packs).
     """
 
-    pyproject = pack_path / "pyproject.toml"
-    if pyproject.is_file():
-        candidate = pack_path / "lisa_packs"
-        if candidate.is_dir():
-            children = [d for d in candidate.iterdir() if d.is_dir() and d.name != "__pycache__"]
-            if len(children) == 1:
-                return children[0]
-            if len(children) > 1:
-                # Multiple pack packages under the shared namespace: pick the
-                # one whose name matches the distribution slug.
-                import tomllib  # stdlib, no cycle risk
+    children = _namespace_children(pack_path)
+    if children:
+        return _resolve_namespace_child(children, _pack_slug(pack_path))
+    entry_root = _content_root_from_entry_point(pack_path)
+    if entry_root is not None:
+        return entry_root
+    return _src_fallback_root(pack_path, _pack_slug(pack_path)) or pack_path
 
-                payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-                dist_name = str(payload.get("project", {}).get("name", ""))
-                slug = dist_name.removeprefix("lisa-pack-")
-                for child in children:
-                    if child.name == slug:
-                        return child
-                return children[0]
-    return pack_path
+
+def _read_content_root_entries(pack_path: Path) -> list[tuple[str, str]]:
+    """Return ``(name, module-path)`` content-root entry-point targets."""
+    import tomllib  # stdlib, no cycle risk
+
+    pyproject = pack_path / "pyproject.toml"
+    try:
+        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        groups = payload.get("project", {}).get("entry-points", {})
+        group = groups.get("lisa.extensions.content_roots", {})
+    except (OSError, ValueError):
+        return []
+    if not isinstance(group, dict):
+        return []
+    return [(str(k), str(v)) for k, v in group.items()]
+
+
+_CONTENT_SUBDIRS = ("tools", "modes", "operations", "content")
+
+
+def _has_content_subdirs(candidate: Path) -> bool:
+    return any((candidate / d).is_dir() for d in _CONTENT_SUBDIRS)
+
+
+def _content_root_from_entry_point(pack_path: Path) -> Path | None:
+    """Resolve the content root from the pack's declared entry point, or None.
+
+    Reads ``[project.entry-points."lisa.extensions.content_roots"]`` from
+    ``pyproject.toml`` and converts the declared dotted module path to its
+    package directory *relative to the pack checkout* — never through
+    ``sys.modules``, because a same-named package from another checkout may
+    already be cached in this process (two external packs in one interpreter)
+    and importlib would return the wrong one. Returns the first root that
+    exists and holds a content subdir; ``None`` when nothing resolves, leaving
+    ``load_pack_entry_points`` to report entry-point load issues.
+    """
+    # Directories a dotted module path could resolve against, in order: the
+    # checkout, its ``src/`` tree, and the namespace leaf (bundled packs host
+    # ``sdk.packs.core`` under ``src/sdk``, so the leaf name applies too).
+    search_roots = [pack_path]
+    src = pack_path / "src"
+    if src.is_dir():
+        search_roots.insert(1, src)
+    for _, target in _read_content_root_entries(pack_path):
+        module_name = target.partition(":")[0]
+        if not module_name:
+            continue
+        parts = module_name.split(".")
+        candidates = [base.joinpath(*parts) for base in search_roots]
+        if len(parts) > 1:
+            candidates.extend(base / parts[-1] for base in search_roots)
+        resolved = next((c for c in candidates if c.is_dir() and _has_content_subdirs(c)), None)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 def build_tool_catalog(
@@ -233,11 +337,52 @@ def _probe_entry_callable(callable_obj: Any) -> Any:
     return callable_obj()
 
 
+def _stale_lisa_packs_modules(checkout: Path) -> list[str]:
+    """Cached ``lisa_packs*`` modules that live outside ``checkout``.
+
+    Two source checkouts in one interpreter collide on the same module name:
+    once ``lisa_packs.widgets`` is imported from pack A, importlib returns
+    pack A's module for pack B. A module whose own file (or namespace search
+    path) resolves outside the current checkout is stale and must be evicted
+    before the pack's modules import from the right source.
+    """
+    stale: list[str] = []
+    names_lisa = [m for m in list(sys.modules) if m == "lisa_packs" or m.startswith("lisa_packs.")]
+    for name in names_lisa:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        files: list[Path] = []
+        module_file = getattr(module, "__file__", None)
+        if module_file:
+            files.append(Path(module_file))
+        try:
+            module_path = getattr(module, "__path__", None)
+            if module_path:
+                files.extend(Path(p) for p in list(module_path))
+        except KeyError:
+            # A namespace path whose parent was already evicted: unusable.
+            return names_lisa
+        if not files:
+            continue
+        outside = all(checkout not in f.resolve().parents for f in files)
+        if outside:
+            stale.append(name)
+        if name == "lisa_packs" and outside:
+            # Evicting the parent invalidates every child unconditionally.
+            return names_lisa
+    return stale
+
+
 def _ensure_source_importable(pack_path: Path) -> list[Path]:
     """Make the pack's importable packages reachable from ``sys.path``.
 
     Standard src-less layout (``lisa_packs/`` at the checkout root) adds the
     checkout; a ``src/`` layout adds ``src/``. Returns the paths added.
+
+    Same-named modules from another checkout (a previous ``validate_pack``
+    call in this process) are evicted first: a regular package's ``__path__``
+    is pinned at first import and ``extend_path`` cannot widen a stale child.
     """
 
     added: list[Path] = []
@@ -246,6 +391,9 @@ def _ensure_source_importable(pack_path: Path) -> list[Path]:
         if candidate.is_dir() and resolved not in sys.path:
             sys.path.insert(0, resolved)
             added.append(candidate)
+    importlib.invalidate_caches()
+    for name in _stale_lisa_packs_modules(pack_path.resolve()):
+        sys.modules.pop(name, None)
     importlib.invalidate_caches()
     namespace = sys.modules.get("lisa_packs")
     if namespace is not None and hasattr(namespace, "__path__"):
