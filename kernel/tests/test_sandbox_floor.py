@@ -368,7 +368,10 @@ def test_merge_does_not_warn_when_all_bind_paths_exist(tmp_path: Path) -> None:
         {"execution": "sandbox", "paths": {str(existing): "rw"}},
         {"lisa-pack-coding": {"paths": {str(existing / "also-existing"): "ro"}}},
     )
-    assert merge.floor["paths"] == {str(existing): "rw", str(existing / "also-existing"): "ro"}
+    assert merge.floor["paths"] == {
+        existing.as_posix(): "rw",
+        (existing / "also-existing").as_posix(): "ro",
+    }
 
 
 def test_merge_skips_missing_path_warning_for_hidden_paths(

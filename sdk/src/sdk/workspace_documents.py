@@ -123,7 +123,7 @@ class WorkspaceDocuments:
             return ()
         return tuple(
             sorted(
-                str(path.relative_to(self.root))
+                path.relative_to(self.root).as_posix()
                 for path in root.iterdir()
                 if path.is_file() and not path.is_symlink()
             )
