@@ -4,6 +4,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-02
+
 ### Added
 
 - Opt-in fail-closed mode preparation with `pre_turn_failure_policy: abort`.
