@@ -109,6 +109,8 @@ async def test_execute_by_id_writes_superseding_record_with_boosted_salience() -
             )
         if tool_id == "memory.add":
             return _tool_result(tool_id, output_text="Memory stored with ID 9")
+        if tool_id == "memory.retire":
+            return _tool_result(tool_id, output_text="Retired memory 5.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _ctx(
@@ -127,16 +129,22 @@ async def test_execute_by_id_writes_superseding_record_with_boosted_salience() -
     assert "Reason: outdated" in result.output_text
     assert result.output_json == {
         "superseded_id": "5",
+        "retired": True,
         "correction": "We chose Postgres for both OLTP and analytics.",
         "reason": "outdated",
         "salience": 0.8,
     }
     assert calls[0][0] == "memory.get"
     assert calls[1][0] == "memory.add"
+    # Real supersession: the correction carries the supersedes_id column link…
     add_params = calls[1][1]
-    assert add_params["content_json"]["supersedes_id"] == "5"
+    assert add_params["supersedes_id"] == 5
+    assert add_params["memory_kind"] == _memory_record().memory_kind
     assert add_params["content_json"]["dispute_reason"] == "outdated"
     assert add_params["content_json"]["original_content"] == _memory_record().content
+    # …and the original is retired so it drops out of the active recall pool.
+    assert calls[2][0] == "memory.retire"
+    assert calls[2][1]["memory_id"] == 5
 
 
 @pytest.mark.asyncio
@@ -149,6 +157,8 @@ async def test_execute_by_search_finds_first_hit_and_supersedes() -> None:
             )
         if tool_id == "memory.add":
             return _tool_result(tool_id, output_text="Memory stored with ID 10")
+        if tool_id == "memory.retire":
+            return _tool_result(tool_id, output_text="Retired memory 7.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _ctx(
@@ -161,6 +171,7 @@ async def test_execute_by_search_finds_first_hit_and_supersedes() -> None:
     assert "✅ Memory record 7 disputed and superseded." in result.output_text
     assert result.output_json is not None
     assert result.output_json["superseded_id"] == "7"
+    assert result.output_json["retired"] is True
     assert result.output_json["reason"] == "user_correction"
 
 
@@ -178,6 +189,8 @@ async def test_execute_by_search_unwraps_results_envelope() -> None:
             )
         if tool_id == "memory.add":
             return _tool_result(tool_id, output_text="Memory stored with ID 12")
+        if tool_id == "memory.retire":
+            return _tool_result(tool_id, output_text="Retired memory 11.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _ctx(
@@ -188,6 +201,32 @@ async def test_execute_by_search_unwraps_results_envelope() -> None:
     result = await op.execute(ctx)
 
     assert "✅ Memory record 11 disputed and superseded." in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_execute_retire_failure_keeps_correction_and_warns() -> None:
+    """A retire failure is non-fatal: the correction stays, the note surfaces."""
+
+    async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.get":
+            return _tool_result(
+                tool_id, output_text=json.dumps(_memory_record().model_dump(mode="json"))
+            )
+        if tool_id == "memory.add":
+            return _tool_result(tool_id, output_text="Memory stored with ID 9")
+        return _tool_result(tool_id, error="retire unavailable")
+
+    ctx = _ctx(
+        params={"memory_id": "5", "correction": "corrected"},
+        execute_tool_fn=execute_tool,
+    )
+
+    result = await op.execute(ctx)
+
+    assert "✅ Memory record 5 disputed and superseded." in result.output_text
+    assert "original could not be retired" in result.output_text
+    assert result.output_json is not None
+    assert result.output_json["retired"] is False
 
 
 # ── execute: lookup misses and errors ─────────────────────────────────

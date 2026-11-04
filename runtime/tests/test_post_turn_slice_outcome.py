@@ -6,7 +6,7 @@ composer is a plain synchronous function returning a ``SliceOutcome`` -- the
 ``await`` raised ``TypeError: object SliceOutcome can't be used in 'await'
 expression`` on every post-turn slice, so the kernel's ``_fire_slice``
 swallowed the failure and discarded the self-model outcome and the chained
-memory consolidation results every turn.
+memory-mining results every turn.
 
 The composer is now shared by every context-lane contributor (the
 deterministic self-model and the behavioural-signal scan), so the same

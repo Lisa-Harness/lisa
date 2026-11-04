@@ -304,28 +304,24 @@ def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
     assert plan.manifest.providers.tools == {}
 
 
-# ── MemoryConsolidationTuning ──────────────────────────────────────────
+# ── MemoryMiningTuning ─────────────────────────────────────────────────
 
 
-def test_memory_consolidation_defaults_enabled_and_post_turn() -> None:
-    """MemoryConsolidationTuning defaults to enabled, post_turn, safe thresholds.
+def test_memory_mining_defaults_enabled_and_post_turn() -> None:
+    """MemoryMiningTuning defaults to enabled, post_turn, bounded segments.
 
-    Consolidation is on by default (per the "all work items on by default"
-    preference); the pressure/budget gates are conservative enough that it
-    only fires when episodic pressure crosses the threshold.
+    Mining is on by default (per the "all work items on by default"
+    preference); the per-slice segment cap keeps one pass inside the
+    slice pressure budget.
     """
-    from kernel.session_plan import MemoryConsolidationTuning
+    from kernel.session_plan import MemoryMiningTuning
 
-    tuning = MemoryConsolidationTuning()
+    tuning = MemoryMiningTuning()
     assert tuning.enabled is True
     assert tuning.trigger == "post_turn"
-    assert tuning.pressure_threshold == 0.6
-    assert tuning.hard_threshold == 0.85
-    assert tuning.min_interval_turns == 8
-    assert tuning.batch_size == 10
-    assert tuning.min_episodic_count == 5
-    assert tuning.max_records == 200
-    assert tuning.consolidate_operation == "consolidate_semantic"
+    assert tuning.mine_operation == "mine_thread_segment"
+    assert tuning.max_segments_per_slice == 2
+    assert tuning.preferred_model_id == "default"
 
 
 # ── PackSelection.auto_install ────────────────────────────────────────

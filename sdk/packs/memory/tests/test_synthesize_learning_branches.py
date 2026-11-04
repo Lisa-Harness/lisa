@@ -149,13 +149,15 @@ def test_parse_distilled_learning_rejects_json_shaped_invalid_output() -> None:
 def test_parse_distilled_learning_falls_back_to_bullets() -> None:
     parsed = op._parse_distilled_learning("- we chose Postgres\n- analytics ships Friday")
 
-    assert parsed.facts == ["we chose Postgres", "analytics ships Friday"]
+    assert [f.fact for f in parsed.facts] == ["we chose Postgres", "analytics ships Friday"]
+    assert all(f.action == "create" for f in parsed.facts)
 
 
 def test_parse_distilled_learning_falls_back_to_sentences() -> None:
     parsed = op._parse_distilled_learning("We chose Postgres. Analytics ships Friday.")
 
-    assert parsed.facts == ["We chose Postgres.", "Analytics ships Friday."]
+    assert [f.fact for f in parsed.facts] == ["We chose Postgres.", "Analytics ships Friday."]
+    assert all(f.action == "create" for f in parsed.facts)
 
 
 def test_parse_distilled_learning_unshapeable_content_reraises() -> None:
@@ -213,6 +215,7 @@ async def test_distill_facts_raises_when_host_is_none() -> None:
             model_def=_model_def(),
             system_prompt="prompt",
             raw_content="content",
+            candidates=[],
             distill_max_tokens=100,
         )
 
@@ -226,19 +229,21 @@ async def test_distill_facts_retry_doubles_budget_and_clears_response_format() -
         calls.append(kwargs)
         if len(calls) == 1:
             raise RuntimeError("empty content from provider")
-        return "Facts are:\n- recovered durable fact"
+        return json.dumps({"facts": [{"action": "create", "fact": "recovered durable fact"}]})
 
     ctx = _ctx(params={}, host=_host(complete_fn=complete_fn))
 
-    text = await op._distill_facts(
+    distilled = await op._distill_facts(
         ctx,
         model_def=_model_def(),
         system_prompt="prompt",
         raw_content="content",
+        candidates=[],
         distill_max_tokens=111,
     )
 
-    assert text == "recovered durable fact"
+    assert distilled.facts[0].fact == "recovered durable fact"
+    assert distilled.facts[0].action == "create"
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 111
     assert calls[1]["max_tokens"] == 222
@@ -259,6 +264,7 @@ async def test_distill_facts_raises_after_both_attempts_fail() -> None:
             model_def=_model_def(),
             system_prompt="prompt",
             raw_content="content",
+            candidates=[],
             distill_max_tokens=100,
         )
 
@@ -315,9 +321,13 @@ async def test_execute_defaults_content_from_query_and_response() -> None:
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
         distilled.append(str(messages[-1].get("content", "")))
-        return json.dumps({"facts": ["one durable fact"]})
+        return json.dumps(
+            {"facts": [{"action": "create", "fact": "one durable fact"}]}
+        )
 
     async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 3")
 
     ctx = _ctx(
@@ -335,7 +345,10 @@ async def test_execute_defaults_content_from_query_and_response() -> None:
     result = await op.execute(ctx)
 
     assert "✅ Learning stored" in result.output_text
-    assert distilled == ["User asked:\nwhy postgres\n\nLisa answered:\nbecause durability"]
+    assert distilled == [
+        "User asked:\nwhy postgres\n\nLisa answered:\nbecause durability"
+        "\n\nExisting memories: (none)"
+    ]
     assert result.extra is not None
     assert result.extra["memory_ids"] == [3]
 
@@ -346,9 +359,11 @@ async def test_execute_defaults_content_with_query_only_and_silences_model_id() 
     the add reply parses the trailing-period form."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({"facts": ["solo fact"]})
+        return json.dumps({"facts": [{"action": "create", "fact": "solo fact"}]})
 
     async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 5.")
 
     ctx = _ctx(
@@ -389,9 +404,11 @@ async def test_execute_raises_when_no_model_resolves() -> None:
 @pytest.mark.asyncio
 async def test_execute_storage_error_returns_failure_result() -> None:
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({"facts": ["a fact"]})
+        return json.dumps({"facts": [{"action": "create", "fact": "a fact"}]})
 
     async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         return ToolResult(tool_id=tool_id, error="backend offline")
 
     ctx = _ctx(
@@ -420,9 +437,11 @@ async def test_execute_unparseable_memory_id_omits_memory_ids_extra() -> None:
     """An add reply without a parseable "ID <n>" leaves memory_ids absent."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({"facts": ["a fact"]})
+        return json.dumps({"facts": [{"action": "create", "fact": "a fact"}]})
 
     async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         return ToolResult(tool_id=tool_id, output_text="stored, no id marker")
 
     ctx = _ctx(
