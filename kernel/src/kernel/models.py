@@ -1184,9 +1184,10 @@ class MemoryRecallEvidence(BaseModel):
     memory_tier: MemoryTier = "daily"
     salience: float = 0.0
     combined_score: float = 0.0
-    semantic_score: float = 0.0
+    # Lexical-overlap share of ``combined_score`` (0.0-1.0); the remainder
+    # is the salience tiebreak. Zero means the record surfaced on the
+    # backend's semantic/candidate vouch alone.
     lexical_score: float = 0.0
-    recency_score: float = 0.0
     # Global thread-turn index the learning was distilled from (memory →
     # thread provenance). ``None`` for records minted before cross-linking
     # or from surfaces without a thread store. Lets recall output render a
@@ -1196,30 +1197,13 @@ class MemoryRecallEvidence(BaseModel):
     match_reasons: list[str] = Field(default_factory=list)
 
 
-class MemoryRecallContext(BaseModel):
-    """Structured retrieval context used before recall answer synthesis."""
-
-    query: str
-    memory_scope: MemoryScope = "personal"
-    surface_id: str = ""
-    confidence: float = 0.0
-    deep_hint: bool = False
-    used_semantic_search: bool = False
-    semantic_backfill_count: int = 0
-    candidate_pool_size: int = 0
-    candidates: list[MemoryRecallEvidence] = Field(default_factory=list)
-
-
 class MemoryRecallAnswer(BaseModel):
-    """Final synthesized answer returned from the supercharged recall flow."""
+    """Final synthesized answer returned from the memory recall flow."""
 
     query: str
     found: bool = False
     answer: str = ""
     confidence: float = 0.0
-    used_semantic_search: bool = False
-    auto_deep_used: bool = False
-    uncertainty_note: str = ""
     evidence: list[MemoryRecallEvidence] = Field(default_factory=list)
 
 

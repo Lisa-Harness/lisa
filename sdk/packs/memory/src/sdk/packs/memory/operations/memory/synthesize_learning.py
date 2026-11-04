@@ -1,15 +1,22 @@
 """Synthesize and store learning operation.
 
 Distills raw conversation content into 1-3 durable facts using the operation's
-preferred model, then persists those facts to the memory store.
+preferred model, then persists those facts to the memory store — with
+write-time dedup: before distilling, the operation searches the scoped store
+for similar existing records and hands them to the distiller, which must
+decide per fact whether to ``create`` a new record, ``update`` an existing
+one (supersede + retire), or ``skip`` because the knowledge is already
+stored. Unconditional inserts are the failure mode this replaces: repeated
+captures of the same preference accumulate near-duplicates that later
+outnumber and outvote each other in recall.
 
-This replaces the old pattern of recording raw conversation text verbatim.
-The LLM distillation step ensures each memory record is compact, self-contained,
-and useful in future recall without needing the original conversation context.
+Captures are stored as ``memory_kind="semantic"`` — they are distilled,
+self-contained facts by construction, not raw conversation events.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -28,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 #: Facts kept per distilled learning (bullet/sentence fallback cap).
 _MAX_DISTILLED_FACTS = 3
-#: Characters of a stored learning shown in the confirmation message.
-_STORED_LEARNING_PREVIEW_CHARS = 80
+#: Existing records fetched for the dedup decision, per distillation call.
+_DEDUP_CANDIDATE_LIMIT = 8
 
 # Authored-text path — loaded via ctx.host.read_authored_text (SDK loader).
 _SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
@@ -134,13 +141,42 @@ class Parameters(BaseModel):
     )
 
 
+class DistilledFact(BaseModel):
+    """One dedup-decided fact from the distillation call."""
+
+    action: str = Field(
+        ...,
+        description="'create' (new durable knowledge), 'update' (refines or corrects "
+        "the existing record with id ``supersedes_id``), or 'skip' (already stored).",
+        pattern="^(create|update|skip)$",
+    )
+    fact: str = Field(
+        ...,
+        description="The concise, self-contained durable fact. Empty only when "
+        "action is 'skip'.",
+        min_length=0,
+        max_length=400,
+    )
+    supersedes_id: int | str | None = Field(
+        default=None,
+        description="Required when action is 'update': the id of the existing record "
+        "this fact supersedes. Must be one of the ids listed in the input.",
+    )
+    reason: str = Field(
+        default="",
+        description="One short clause: why create/update/skip (e.g. 'new preference', "
+        "'refines existing', 'duplicate of existing').",
+        max_length=200,
+    )
+
+
 class DistilledLearning(BaseModel):
     """Strict bounded output from the distillation LLM call."""
 
-    facts: list[str] = Field(
+    facts: list[DistilledFact] = Field(
         ...,
-        description="1 to 3 concise, durable facts distilled from the raw content.",
-        min_length=1,
+        description="1 to 3 dedup-decided facts distilled from the raw content.",
+        min_length=0,
         max_length=3,
     )
 
@@ -174,6 +210,30 @@ def _parse_sentence_facts(normalized: str) -> list[str]:
     return sentence_facts
 
 
+def _fallback_learning(normalized: str, source: str) -> DistilledLearning:
+    """Wrap prose-parsed facts as creates when the provider cannot emit JSON.
+
+    Dedup is impossible on this path — the provider returned prose even
+    after the JSON-only retry — so every fallback fact becomes a
+    ``create``. That is the honest degradation: the knowledge is kept (the
+    capture still succeeds) at the cost of one duplicate-creation
+    opportunity, and the warning makes the degradation visible.
+    """
+    facts = _parse_bullet_facts(normalized) or _parse_sentence_facts(normalized)
+    logger.warning(
+        "synthesize_and_store_learning: provider returned %s after the JSON-only "
+        "retry; storing %d fact(s) without a dedup decision",
+        source,
+        len(facts),
+    )
+    return DistilledLearning(
+        facts=[
+            DistilledFact(action="create", fact=fact, reason=f"prose fallback ({source})")
+            for fact in facts
+        ]
+    )
+
+
 def _parse_distilled_learning(content: str) -> DistilledLearning:
     """Parse structured output with a bullet-list fallback for non-JSON providers."""
     normalized = (content or "").strip()
@@ -198,12 +258,12 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             ) from direct_exc
         bullet_facts = _parse_bullet_facts(normalized)
         if bullet_facts:
-            return DistilledLearning(facts=bullet_facts)
+            return _fallback_learning(normalized, "bullet-list prose")
 
         # Fallback for providers that return plain prose instead of JSON or bullets.
         sentence_facts = _parse_sentence_facts(normalized)
         if sentence_facts:
-            return DistilledLearning(facts=sentence_facts)
+            return _fallback_learning(normalized, "plain prose")
 
         raise direct_exc
 
@@ -241,15 +301,84 @@ def _default_learning_content(ctx: OperationExecutionContext) -> str:
     return query or response
 
 
+async def _dedup_candidates(
+    ctx: OperationExecutionContext, raw_content: str
+) -> list[dict[str, Any]]:
+    """Fetch scoped existing records similar to ``raw_content`` for dedup.
+
+    Uses ``memory.search`` (semantic/lexical with the raw content as the
+    query). A search failure is logged and degraded to an empty candidate
+    list — the distillation then has nothing to dedup against and creates
+    new records (the capture never fails because dedup candidates could
+    not be loaded).
+    """
+    assert ctx.host is not None
+    search_ctx = ToolExecutionContext(
+        tool_id="memory.search",
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        query=raw_content,
+        parameters={
+            "query": raw_content,
+            "user_slug": ctx.user_slug,
+            "workspace_id": ctx.workspace_id,
+            "surface_id": ctx.surface_id,
+            "memory_scope": ctx.memory_scope,
+            "limit": _DEDUP_CANDIDATE_LIMIT,
+        },
+    )
+    try:
+        result = await ctx.host.execute_tool("memory.search", search_ctx)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "synthesize_and_store_learning: dedup candidate search failed (%s); "
+            "distilling without existing records",
+            exc,
+        )
+        return []
+    if getattr(result, "error", None):
+        logger.warning(
+            "synthesize_and_store_learning: dedup candidate search error: %s; "
+            "distilling without existing records",
+            result.error,
+        )
+        return []
+    try:
+        data = json.loads(getattr(result, "output_text", "") or "[]")
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, dict) and isinstance(data.get("results"), list):
+        data = data["results"]
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _render_dedup_candidates(candidates: list[dict[str, Any]]) -> str:
+    """Render existing records for the distiller's user message."""
+    if not candidates:
+        return "Existing memories: (none)"
+    lines = ["Existing memories that may already cover this content:"]
+    for rec in candidates:
+        rid = rec.get("id", "?")
+        content = str(rec.get("content", "")).strip()
+        created = str(rec.get("created_at", ""))[:10]
+        lines.append(f"- [id={rid}, created={created}] {content}")
+    return "\n".join(lines)
+
+
 async def _distill_facts(
     ctx: OperationExecutionContext,
     *,
     model_def: Any,
     system_prompt: str,
     raw_content: str,
+    candidates: list[dict[str, Any]],
     distill_max_tokens: int,
-) -> str:
-    """Run the distillation loop and return the joined durable facts.
+) -> DistilledLearning:
+    """Run the distillation loop and return the dedup-decided facts.
 
     The distillation loop. Local OpenAI-compatible models (Ollama) frequently
     ignore ``response_format`` and return empty content, or emit JSON that
@@ -262,11 +391,12 @@ async def _distill_facts(
     """
     if ctx.host is None:
         raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
+    user_content = f"{raw_content}\n\n{_render_dedup_candidates(candidates)}"
     first_messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": raw_content},
+        {"role": "user", "content": user_content},
     ]
-    distilled_text: str | None = None
+    distilled: DistilledLearning | None = None
     last_exc: Exception | None = None
     for attempt_idx, attempt_messages in enumerate(
         (first_messages, json_only_retry_messages(first_messages, DistilledLearning))
@@ -291,18 +421,17 @@ async def _distill_facts(
                 response_format=DistilledLearning if attempt_idx == 0 else None,
             )
             distilled = _parse_distilled_learning(completion_content(raw))
-            distilled_text = " | ".join(distilled.facts)
             break
         except Exception as exc:  # pylint: disable=broad-exception-caught
             last_exc = exc
             if attempt_idx == 0:
                 continue
             break
-    if distilled_text is None:
+    if distilled is None:
         raise RuntimeError(
             f"synthesize_and_store_learning distillation failed: {last_exc}"
         ) from last_exc
-    return distilled_text
+    return distilled
 
 
 def _build_store_content_json(ctx: OperationExecutionContext) -> dict[str, object]:
@@ -331,58 +460,114 @@ def _parse_memory_id(add_text: str) -> int | None:
         return None
 
 
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    """Distill raw content into durable facts, then persist to memory."""
-    params = ctx.params or {}
-    raw_content = str(params.get("content", "") or "").strip() or _default_learning_content(ctx)
-    if not raw_content:
-        return OperationResult(output_text="⛔ No content provided to store.")
-
-    salience = float(params.get("salience", 0.5))
-    # Default to 'daily' so model-called captures that omit the tier land as
-    # short-lived workflow state. The auto-capture path always supplies an
-    # explicit, salience-graded tier, so this default only binds the
-    # model-invoked path (see Parameters.memory_tier).
-    memory_tier = params.get("memory_tier", "daily")
-    # Keep learning records under one canonical operation id so recall queries stay stable.
-    memory_operation_id = "save_learning"
-
-    # Step 1: Distill with the LLM. Distillation is required (not optional) —
-    # a missing completion function, unresolved model, or authored prompt
-    # raises rather than silently persisting the raw conversation text.
-    if ctx.host is None:
-        raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
-    model_id = ctx.preferred_model_id
-    model_def = ctx.host.resolve_model(model_id)
-    if model_def is None:
-        model_def = ctx.host.resolve_model("default")
-    if model_def is None:
-        raise RuntimeError("synthesize_and_store_learning could not resolve a model")
-
-    system_prompt = _load_system_prompt(ctx)
-    # Token budget for the distillation call, resolved from ``ctx.pack_config``
-    # (key ``memory_distill_max_tokens`` under
-    # ``resources.packs.configuration.lisa-pack-memory``) with a module
-    # fallback of 512. 512 leaves headroom for the JSON envelope + 3 durable
-    # facts; 300 truncated the array mid-fact on 2026-07-18, producing invalid
-    # JSON that the _looks_like_json guard correctly refused to fall back to
-    # prose.
-    distill_max_tokens = _resolve_settings(ctx).distill_max_tokens
-    distilled_text = await _distill_facts(
-        ctx,
-        model_def=model_def,
-        system_prompt=system_prompt,
-        raw_content=raw_content,
-        distill_max_tokens=distill_max_tokens,
+async def _retire_record(ctx: OperationExecutionContext, record_id: int | str) -> bool:
+    """Retire one superseded record; returns True when the backend confirmed."""
+    assert ctx.host is not None
+    retire_ctx = ToolExecutionContext(
+        tool_id="memory.retire",
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        parameters={
+            "memory_id": record_id,
+            "user_slug": ctx.user_slug,
+            "workspace_id": ctx.workspace_id,
+            "surface_id": ctx.surface_id,
+            "memory_scope": ctx.memory_scope,
+        },
     )
-
-    # Step 2: Persist via the memory.add MCP tool (default memory backend).
-    content_json = _build_store_content_json(ctx)
-
-    if ctx.host is None:
-        return OperationResult(
-            output_text="Learning storage unavailable: tool execution not injected."
+    try:
+        result = await ctx.host.execute_tool("memory.retire", retire_ctx)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "synthesize_and_store_learning: retire of superseded record %s failed: %s "
+            "(superseding record was written; the original stays active)",
+            record_id,
+            exc,
         )
+        return False
+    if getattr(result, "error", None):
+        logger.warning(
+            "synthesize_and_store_learning: retire of superseded record %s errored: %s "
+            "(superseding record was written; the original stays active)",
+            record_id,
+            result.error,
+        )
+        return False
+    return True
+
+
+@dataclass(slots=True)
+class _UpsertOutcome:
+    """Accounting of one distillation's applied fact decisions."""
+
+    created_ids: list[int]
+    updated_ids: list[int]
+    retired_ids: list[int | str]
+    #: Adds that succeeded but whose id the backend did not echo — stored
+    #: work without thread linkage.
+    stored_unparsed: int
+    skipped: int
+    error: str = ""
+
+
+class _FactStorageFailure(RuntimeError):
+    """A memory.add call errored while persisting one fact's decision."""
+
+
+async def _apply_one_fact(
+    ctx: OperationExecutionContext,
+    *,
+    item: DistilledFact,
+    candidate_ids: set[int | str],
+    content_json_base: dict[str, object],
+    memory_tier: str,
+    salience: float,
+    memory_operation_id: str,
+) -> tuple[str, int | None, int | str | None]:
+    """Persist one fact's decision; return ``(kind, minted_id, supersedes_id)``.
+
+    ``kind`` is ``"create"``, ``"update"``, or ``"skip"``. Raises
+    ``_FactStorageFailure`` when the storage call errors (the caller turns
+    it into the typed error result).
+    """
+    assert ctx.host is not None
+    if item.action == "skip" or not item.fact.strip():
+        return "skip", None, None
+
+    supersedes = item.supersedes_id if item.supersedes_id in candidate_ids else None
+    if item.action == "update" and supersedes is None:
+        # Update without a valid target id degrades to a create — the
+        # knowledge is real, only the dedup linkage failed.
+        logger.warning(
+            "synthesize_and_store_learning: update without a valid supersedes_id "
+            "(got %r); storing as a new record",
+            item.supersedes_id,
+        )
+
+    content_json: dict[str, object] = dict(content_json_base)
+    # Captures are distilled, self-contained facts — semantic, not episodic.
+    # Raw conversation events never reach this path (the distiller refuses
+    # to persist them), so episodic had no honest writer left.
+    parameters: dict[str, Any] = {
+        "content": item.fact.strip(),
+        "user_slug": ctx.user_slug,
+        "workspace_id": ctx.workspace_id,
+        "surface_id": ctx.surface_id,
+        "memory_scope": ctx.memory_scope,
+        "memory_tier": memory_tier,
+        "memory_kind": "semantic",
+        "salience": salience,
+        "operation_id": memory_operation_id,
+        "confidence": 1.0,
+        "content_json": content_json,
+    }
+    if supersedes is not None:
+        content_json["supersedes_id"] = supersedes
+        parameters["supersedes_id"] = supersedes
 
     tool_result = await ctx.host.execute_tool(
         "memory.add",
@@ -394,21 +579,155 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             surface_id=ctx.surface_id,
             memory_scope=ctx.memory_scope,
             mode_id=ctx.mode_id,
-            parameters={
-                "content": distilled_text,
-                "user_slug": ctx.user_slug,
-                "workspace_id": ctx.workspace_id,
-                "surface_id": ctx.surface_id,
-                "memory_scope": ctx.memory_scope,
-                "memory_tier": memory_tier,
-                "salience": salience,
-                "operation_id": memory_operation_id,
-                "confidence": 1.0,
-                "content_json": content_json,
-            },
+            parameters=parameters,
         ),
     )
     if getattr(tool_result, "error", None):
+        raise _FactStorageFailure(str(tool_result.error))
+
+    minted = _parse_memory_id(getattr(tool_result, "output_text", "") or "")
+    return ("update" if supersedes is not None else "create"), minted, supersedes
+
+
+async def _apply_fact_decisions(
+    ctx: OperationExecutionContext,
+    *,
+    distilled: DistilledLearning,
+    candidate_ids: set[int | str],
+    content_json_base: dict[str, object],
+    memory_tier: str,
+    salience: float,
+    memory_operation_id: str,
+) -> _UpsertOutcome:
+    """Apply each fact's dedup decision, retiring superseded originals."""
+    outcome = _UpsertOutcome(
+        created_ids=[], updated_ids=[], retired_ids=[], stored_unparsed=0, skipped=0
+    )
+    for item in distilled.facts:
+        kind, minted, supersedes = await _apply_one_fact(
+            ctx,
+            item=item,
+            candidate_ids=candidate_ids,
+            content_json_base=content_json_base,
+            memory_tier=memory_tier,
+            salience=salience,
+            memory_operation_id=memory_operation_id,
+        )
+        if kind == "skip":
+            outcome.skipped += 1
+            continue
+        if kind == "update":
+            if minted is not None:
+                outcome.updated_ids.append(minted)
+            else:
+                outcome.stored_unparsed += 1
+            assert supersedes is not None
+            if await _retire_record(ctx, supersedes):
+                outcome.retired_ids.append(supersedes)
+        elif minted is not None:
+            outcome.created_ids.append(minted)
+        else:
+            outcome.stored_unparsed += 1
+    return outcome
+
+
+@dataclass(frozen=True)
+class _CaptureRequest:
+    """One capture's resolved inputs: content, tier, salience, model."""
+
+    raw_content: str
+    memory_tier: str
+    salience: float
+    model_def: Any
+
+
+def _resolve_capture_request(ctx: OperationExecutionContext) -> _CaptureRequest | OperationResult:
+    """Resolve the capture's inputs; an OperationResult short-circuits execute.
+
+    Content defaults to the completed exchange when params omit it. The tier
+    defaults to 'daily' so model-called captures that omit the tier land as
+    short-lived workflow state; the auto-capture path always supplies an
+    explicit, salience-graded tier, so this default only binds the
+    model-invoked path (see Parameters.memory_tier).
+    """
+    params = ctx.params or {}
+    raw_content = str(params.get("content", "") or "").strip() or _default_learning_content(ctx)
+    if not raw_content:
+        return OperationResult(output_text="⛔ No content provided to store.")
+
+    if ctx.host is None:
+        raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
+    model_id = ctx.preferred_model_id
+    model_def = ctx.host.resolve_model(model_id)
+    if model_def is None:
+        model_def = ctx.host.resolve_model("default")
+    if model_def is None:
+        raise RuntimeError("synthesize_and_store_learning could not resolve a model")
+
+    return _CaptureRequest(
+        raw_content=raw_content,
+        memory_tier=params.get("memory_tier", "daily"),
+        salience=float(params.get("salience", 0.5)),
+        model_def=model_def,
+    )
+
+
+async def execute(ctx: OperationExecutionContext) -> OperationResult:
+    """Distill raw content into dedup-decided facts, then upsert to memory."""
+    # Keep learning records under one canonical operation id so recall queries stay stable.
+    memory_operation_id = "save_learning"
+
+    resolved = _resolve_capture_request(ctx)
+    if isinstance(resolved, OperationResult):
+        return resolved
+    raw_content = resolved.raw_content
+    memory_tier = resolved.memory_tier
+    salience = resolved.salience
+    model_def = resolved.model_def
+
+    # Step 1: Distill with the LLM. Distillation is required (not optional) —
+    # a missing completion function, unresolved model, or authored prompt
+    # raises rather than silently persisting the raw conversation text.
+
+    system_prompt = _load_system_prompt(ctx)
+    # Token budget for the distillation call, resolved from ``ctx.pack_config``
+    # (key ``memory_distill_max_tokens`` under
+    # ``resources.packs.configuration.lisa-pack-memory``) with a module
+    # fallback. See ``_DISTILL_MAX_TOKENS`` for the truncation history.
+    distill_max_tokens = _resolve_settings(ctx).distill_max_tokens
+
+    # Write-time dedup: fetch similar existing records so the distiller can
+    # decide create/update/skip per fact.
+    candidates = await _dedup_candidates(ctx, raw_content)
+    candidate_ids = {rec.get("id") for rec in candidates if rec.get("id") is not None}
+
+    distilled = await _distill_facts(
+        ctx,
+        model_def=model_def,
+        system_prompt=system_prompt,
+        raw_content=raw_content,
+        candidates=candidates,
+        distill_max_tokens=distill_max_tokens,
+    )
+
+    # Step 2: Apply each fact's decision.
+    if ctx.host is None:
+        return OperationResult(
+            output_text="Learning storage unavailable: tool execution not injected."
+        )
+
+    content_json_base = _build_store_content_json(ctx)
+    try:
+        applied = await _apply_fact_decisions(
+            ctx,
+            distilled=distilled,
+            candidate_ids=candidate_ids,
+            content_json_base=content_json_base,
+            memory_tier=memory_tier,
+            salience=salience,
+            memory_operation_id=memory_operation_id,
+        )
+    except _FactStorageFailure as exc:
         # status="error" is the typed "operation failed" contract: the
         # registry warns, effect receipts are skipped, and the dispatch
         # layer counts a consecutive failure. A bare success envelope with
@@ -416,23 +735,45 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         # recovery (2026-11-02 WiDWebsite profile: two "success" records,
         # zero receipts, memory.db untouched).
         return OperationResult(
-            output_text=f"⛔ Learning storage failed: {tool_result.error}",
+            output_text=f"⛔ Learning storage failed: {exc}",
             status="error",
-            error_detail=str(tool_result.error),
+            error_detail=str(exc),
         )
 
-    # Thread → memory linkage: surface the minted record id so the host can
-    # stamp it onto the thread entry's provenance. The lisa-memory backend
-    # replies "Memory stored with ID <n>".
-    add_text = getattr(tool_result, "output_text", "") or ""
-    memory_id = _parse_memory_id(add_text)
+    stored_any = (
+        applied.created_ids or applied.updated_ids or applied.retired_ids or applied.stored_unparsed
+    )
+    if not stored_any:
+        return OperationResult(
+            output_text="Nothing new to store: the durable knowledge is already in memory.",
+            extra={"recorded": False, "created_ids": [], "updated_ids": [], "retired_ids": []},
+        )
 
-    preview = distilled_text[:_STORED_LEARNING_PREVIEW_CHARS]
-    extra: dict[str, object] = {"recorded": True, "distilled": distilled_text}
-    if memory_id is not None:
-        extra["memory_ids"] = [memory_id]
-    suffix = "..." if len(distilled_text) > _STORED_LEARNING_PREVIEW_CHARS else ""
+    actions: list[str] = []
+    if applied.created_ids or applied.stored_unparsed:
+        created_count = len(applied.created_ids) + max(
+            0, applied.stored_unparsed - len(applied.updated_ids)
+        )
+        actions.append(f"created {created_count}")
+    if applied.updated_ids:
+        actions.append(f"updated {len(applied.updated_ids)}")
+    if applied.skipped:
+        actions.append(f"skipped {applied.skipped} duplicate(s)")
+
+    # Thread → memory linkage: surface the minted record ids so the host can
+    # stamp them onto the thread entry's provenance. The lisa-memory backend
+    # replies "Memory stored with ID <n>" per record.
+    minted_ids = applied.created_ids + applied.updated_ids
+    extra: dict[str, object] = {
+        "recorded": True,
+        "created_ids": applied.created_ids,
+        "updated_ids": applied.updated_ids,
+        "retired_ids": applied.retired_ids,
+        "skipped": applied.skipped,
+    }
+    if minted_ids:
+        extra["memory_ids"] = minted_ids
     return OperationResult(
-        output_text=f"✅ Learning stored: '{preview}{suffix}'",
+        output_text=f"✅ Learning stored: {', '.join(actions)}.",
         extra=extra,
     )

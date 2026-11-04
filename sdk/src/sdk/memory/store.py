@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import MemoryRecord, MemoryWriteRequest
+from sdk.memory.lexical import tokenize
 
 try:  # optional: semantic recall via sqlite-vec. Absent → lexical-only.
     import sqlite_vec as _sqlite_vec
@@ -525,7 +526,7 @@ class SqliteMemoryStore:
     ) -> bool:
         """Update a record's salience, scoped to the caller's surface.
 
-        Hook for decay-aware dynamic salience (the consolidation slice
+        Hook for decay-aware dynamic salience (the mining slice
         boosts the semantic successor's salience; a future enhancement
         can decay on recall access). Returns ``True`` when a row was
         updated.
@@ -564,10 +565,9 @@ class SqliteMemoryStore:
     ) -> int:
         """Count memories for a surface, optionally filtered by kind and status.
 
-        Used by the consolidation slice to compute episodic pressure
-        (episodic-active count / the consolidation tuning's
-        ``max_records``) without pulling rows. Defaults to
-        ``status='active'`` to match ``list_memories``.
+        Counts by kind/status — admin views and retention audits —
+        without pulling rows. Defaults to ``status='active'`` to match
+        ``list_memories``.
         """
         assert self._conn is not None
         where = "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
@@ -687,7 +687,7 @@ class SqliteMemoryStore:
 
         assert self._conn is not None
 
-        tokens = {token.strip().lower() for token in query.split() if token.strip()}
+        tokens = tokenize(query)
         now_iso = _now_iso()
 
         is_semantic = False
@@ -721,17 +721,14 @@ class SqliteMemoryStore:
         ranked: list[tuple[float, MemoryRecord]] = []
         for row in rows:
             record = _row_to_record(row)
-            haystack_lower = (
-                f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
-            ).lower()
+            haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             if tokens:
-                haystack_tokens = set(haystack_lower.split())
-                overlap = len(tokens & haystack_tokens)
+                overlap = len(tokens & tokenize(haystack))
                 if not is_semantic and overlap == 0:
                     continue
                 # Normalize by both query size and content length to avoid
                 # rewarding short content with a single matching keyword.
-                content_word_count = max(len(haystack_tokens), 1)
+                content_word_count = max(len(tokenize(haystack)), 1)
                 lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
             else:
                 lexical = 1.0
@@ -786,6 +783,12 @@ class SqliteMemoryStore:
         tool result) can validate the records — :meth:`recall`'s prose
         output is not JSON-parseable and left ``recall_memory`` reporting
         "No memory matches found" against a full store.
+
+        The returned list is not truncated to ``limit`` beyond the
+        ``min(limit*2, 8)`` recall-window bound: the pack-level ranker
+        (which scores relevance differently) re-orders these candidates
+        and truncates to its own final limit, so truncating here would
+        drop records a better ranker would keep.
         """
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
         workspace_id = str(kwargs.get("workspace_id") or "default").strip() or "default"
@@ -798,7 +801,7 @@ class SqliteMemoryStore:
 
         assert self._conn is not None
 
-        tokens = {token.strip().lower() for token in query.split() if token.strip()}
+        tokens = tokenize(query)
         now_iso = _now_iso()
 
         is_semantic = False
@@ -832,15 +835,12 @@ class SqliteMemoryStore:
         ranked: list[tuple[float, MemoryRecord]] = []
         for row in rows:
             record = _row_to_record(row)
-            haystack_lower = (
-                f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
-            ).lower()
+            haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             if tokens:
-                haystack_tokens = set(haystack_lower.split())
-                overlap = len(tokens & haystack_tokens)
+                overlap = len(tokens & tokenize(haystack))
                 if not is_semantic and overlap == 0:
                     continue
-                content_word_count = max(len(haystack_tokens), 1)
+                content_word_count = max(len(tokenize(haystack)), 1)
                 lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
             else:
                 lexical = 1.0
@@ -851,7 +851,11 @@ class SqliteMemoryStore:
             return []
 
         ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
-        top = ranked[: max(1, min(limit, 8))]
+        # Candidate headroom, not the caller's final limit: the pack ranker
+        # re-orders these with a relevance-first policy and truncates to its
+        # own limit, so cutting to ``limit`` here would discard records the
+        # better ranker would have kept.
+        top = ranked[: max(1, min(limit * 2, 8))]
 
         top_ids = [record.id for _, record in top]
         if top_ids and not self.readonly:

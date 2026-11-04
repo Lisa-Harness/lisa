@@ -136,16 +136,26 @@ def content_registry() -> ContentRegistry | None:
 class _SliceProviderHooksView:
     """Minimal read-only view passed to a pack slice-provider factory.
 
-    Exposes only the seams a utilization-aware slice needs:
-    ``last_context_snapshot`` (read from the runtime; the snapshot sink
-    keeps it current each turn), ``execute_operation`` (the kernel operation
-    dispatcher), and ``execute_tool`` (the MCP tool dispatcher). This
-    avoids handing the factory the full ``TurnHooks`` before it is fully
-    constructed. ``execute_tool`` is wired so the memory-consolidation
-    slice can call ``memory.list`` to count and load episodic records.
+    Exposes only the seams a pack slice needs: ``last_context_snapshot``
+    (read from the runtime; the snapshot sink keeps it current each turn),
+    ``execute_operation`` (the kernel operation dispatcher),
+    ``execute_tool`` (the MCP tool dispatcher), ``resolve_model`` /
+    ``complete`` (model seams for slice-owned operations such as thread
+    mining), ``read_authored_text`` (the content registry loader), and the
+    resolved identity/path fields (``memory_data_dir`` is the host's
+    durable data root; ``user_slug`` the active user) so a slice can locate
+    sidecar state. This avoids handing the factory the full ``TurnHooks``
+    before it is fully constructed. ``execute_tool``/``execute_operation``
+    are wired before any factory invocation.
     """
 
-    __slots__ = ("_runtime", "execute_operation", "execute_tool")
+    __slots__ = (
+        "_runtime",
+        "complete",
+        "execute_operation",
+        "execute_tool",
+        "resolve_model",
+    )
 
     def __init__(
         self,
@@ -155,13 +165,41 @@ class _SliceProviderHooksView:
         self._runtime = runtime
         self.execute_operation: Any = None
         self.execute_tool: Any = None
-        # ``build_turn_hooks`` assigns both dispatchers before any factory
-        # invocation; the slots make the surface explicit rather than a
-        # monkey-patch fallback (the previous ``__getattr__`` always raised).
+        self.resolve_model: Any = None
+        self.complete: Any = None
+        # ``build_turn_hooks`` assigns the dispatchers and model seams
+        # before any factory invocation; the slots make the surface
+        # explicit rather than a monkey-patch fallback (the previous
+        # ``__getattr__`` always raised).
 
     @property
     def last_context_snapshot(self) -> Any:
         return self._runtime.session.last_context_snapshot
+
+    @property
+    def memory_data_dir(self) -> Path:
+        """Host durable data root (``memory.db``, ``threads/`` live here)."""
+        return self._runtime.paths.durable_dir
+
+    @property
+    def user_slug(self) -> str:
+        return self._runtime.config.user_slug
+
+    @property
+    def workspace_id(self) -> str:
+        return self._runtime.session_plan.manifest.name
+
+    @property
+    def memory_scope(self) -> str:
+        return self._runtime.config.memory_scope
+
+    @property
+    def surface_id(self) -> str:
+        return self._runtime.config.surface_id
+
+    def read_authored_text(self, path: str) -> str:
+        """Load authored pack content through the content registry."""
+        return str(content_registry().read_authored_text(path) or "")
 
 
 _VIEW_CHUNK_TURNS = 256
@@ -366,6 +404,47 @@ def _resolve_gateway_provider_for_runtime(runtime: HostRuntime) -> Any:
             )
             continue
     return None
+
+
+async def _complete_via_provider_gateways(
+    gateways: Any,
+    *,
+    messages: list[dict[str, Any]],
+    model_def: Any,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: type[Any] | None = None,
+) -> Any:
+    """Run one completion through the hook-build-time gateway snapshot.
+
+    The slice-provider complete seam and the auto-capture path share the
+    same resolved gateways: a slice's model call runs on the turn's own
+    gateway state, not a re-discovery that could resolve empty after the
+    turn ends.
+    """
+    if gateways is None:
+        raise NotImplementedError(
+            "slice provider complete: no provider gateway wired for this host."
+        )
+    gateway = gateways.gateway_for(str(getattr(model_def, "provider", "") or ""))
+    if gateway is None:
+        raise NotImplementedError(
+            "slice provider complete: no provider gateway registered for "
+            f"provider {getattr(model_def, 'provider', '')!r}."
+        )
+    from kernel.provider_contracts import CompletionRequest
+
+    return await gateway.complete(
+        CompletionRequest(
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+        )
+    )
 
 
 def _discover_pack_slice_providers(
@@ -650,7 +729,7 @@ async def _execute_mcp_tool(runtime: HostRuntime, tool_id: str, tool_ctx: Any) -
 
     ``tool_ctx`` is either a ``ToolExecutionContext`` (from operation-host
     calls, which carry ``.parameters``) or a plain ``dict`` of arguments
-    (from pack slice providers like the memory-consolidation slice, which
+    (from pack slice providers like the memory-mining slice, which
     call ``execute_tool("memory.list", {…})`` directly). The argument dict is
     resolved from both shapes so the MCP server receives the caller's
     parameters instead of an empty dict.
@@ -668,7 +747,7 @@ async def _execute_mcp_tool(runtime: HostRuntime, tool_id: str, tool_ctx: Any) -
             # joined text content blocks); a defensive dict branch
             # covers any alternative seam. Do NOT stringify the whole
             # result object — that yields a non-JSON repr that breaks
-            # callers (e.g. the memory-consolidation slice) which parse
+            # callers (e.g. the memory-mining slice) which parse
             # ``output_text`` as JSON.
             if isinstance(result, dict):
                 return ToolResult(
@@ -1773,7 +1852,7 @@ def build_turn_hooks(
     # ── State provider (FileBackedStateProvider) ──────────────────
     # Post-realignment this provider is a no-op slot: history is never
     # compacted (the thread is lossless; sealing is storage management) and
-    # distillation is owned by the memory pack's consolidation slice.
+    # distillation is owned by the memory pack's mining slice.
     file_state_provider = FileBackedStateProvider(
         thread_path=runtime.paths.thread_path,
     )
@@ -1853,6 +1932,7 @@ def build_turn_hooks(
     async def _execute_tool(tool_id: str, tool_ctx: Any) -> ToolResult:
         return await _execute_mcp_tool(runtime, tool_id, tool_ctx)
 
+
     # ── Turn-complete hook ─────────────────────────────────────────
 
     # ── Auto-capture trigger detection (extracted to turn_hooks._auto_capture) ─
@@ -1873,6 +1953,26 @@ def build_turn_hooks(
     # failure observed 2026-08-25. The turn's own gateways are the correct
     # completion path for a learning distilled from that turn.
     _auto_capture_provider_gateways = _discover_active_provider_gateways()
+
+    async def _slice_provider_complete(
+        *,
+        messages: list[dict[str, Any]],
+        model_def: Any,
+        max_tokens: int,
+        temperature: float,
+        tools: list[dict[str, Any]] | None = None,
+        response_format: type[Any] | None = None,
+    ) -> Any:
+        """Completion seam for pack slice providers (thread mining distills)."""
+        return await _complete_via_provider_gateways(
+            _auto_capture_provider_gateways,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+        )
     # Same snapshot discipline for the model router: resolve once at hook-build
     # time so the post-turn auto-capture context sees the same operation-scoped
     # routing rules the turn loop itself used. ``_wire_context_seams`` resolves
@@ -1960,6 +2060,11 @@ def build_turn_hooks(
     )
     _slice_provider_hooks_view.execute_operation = _execute_operation
     _slice_provider_hooks_view.execute_tool = _execute_tool
+    # Model seams for slice-owned operations (thread mining distills via
+    # ctx.host.complete). Same closures the turn loop and auto-capture use,
+    # resolved once here so every slice sees the turn's own gateway state.
+    _slice_provider_hooks_view.resolve_model = _resolve_model
+    _slice_provider_hooks_view.complete = _slice_provider_complete
 
     pack_slice_providers = _discover_pack_slice_providers(
         view=_slice_provider_hooks_view,

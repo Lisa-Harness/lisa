@@ -2,7 +2,7 @@
 
 Regression tests for the audit seam added to close the recording gap: the
 turn loop's own calls ride the thread entry's ``turn_input.calls``, but
-completions made by operation dispatches (memory mining, consolidation,
+completions made by operation dispatches (memory mining, learning capture,
 distills) previously left no durable record of the exact request. The
 ``CompletionAuditContext`` archives each gateway completion content-addressed
 and publishes a ``model.request`` decision-ledger row plus a token-usage
@@ -151,7 +151,7 @@ async def test_recording_failure_never_fails_the_completion() -> None:
 async def test_structured_output_response_format_is_serializable() -> None:
     """A Pydantic model class in ``response_format`` records by name.
 
-    Structured-output operations (memory mining, consolidation) pass
+    Structured-output operations (memory mining, learning capture) pass
     ``response_format=MinedFacts`` — a class object, not JSON. The snapshot
     records its name; the schema itself is authored pack content.
     """

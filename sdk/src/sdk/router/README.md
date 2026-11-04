@@ -258,16 +258,16 @@ turn loop). This lets you pin a model for a specific operation in
 ```yaml
 router:
   rules:
-    - when: 'route.operation_id == "consolidate_semantic"'
+    - when: 'route.operation_id == "recall_memory"'
       use: gpt-5.2-codex
-    - when: 'route.operation_id in ["mine_thread_segment", "synthesize_learning"]'
+    - when: 'route.operation_id in ["mine_thread_segment", "synthesize_and_store_learning"]'
       use: gpt-5.4-mini
 ```
 
  CEL bindings for operation-scoped requests:
 
 - ``route.operation_id`` — the operation's catalog id (e.g.
-  ``"consolidate_semantic"``). Empty for turn-loop iterations.
+  ``"recall_memory"``). Empty for turn-loop iterations.
 - ``route.mode_id`` — the mode that dispatched the operation.
 - ``route.query`` — the operation's query text.
 

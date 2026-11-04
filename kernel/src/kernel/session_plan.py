@@ -516,55 +516,33 @@ class ModelManifestRef(_StrictSessionModel):
     path: str = Field(min_length=1)
 
 
-class MemoryConsolidationTuning(_StrictSessionModel):
-    """Episodic-pressure-triggered, slice-driven memory consolidation knobs.
+class MemoryMiningTuning(_StrictSessionModel):
+    """Thread-mining slice tuning knobs.
 
-    When ``enabled`` is ``True`` (the default), a host that wires the
-    memory-consolidation slice provider counts active episodic records each
-    turn and fires the configured ``consolidate_operation`` (default:
-    ``consolidate_semantic``) when the episodic-count pressure (count /
-    ``max_records``) crosses a threshold, paid for out of the post-turn
-    slice pressure budget rather than the user's turn latency. Set
-    ``enabled`` to ``False`` to disable automatic consolidation and let
-    episodic records accumulate until TTL expiry.
+    The memory pack's slice provider mines each newly sealed thread
+    segment into durable semantic records (the ``mine_thread_segment``
+    operation) during the configured slice slot. Dedup is decided at write
+    time — the mining distiller sees similar existing records and chooses
+    create/update/skip per fact — so mining is idempotent per segment
+    even when the sidecar marker is lost.
 
-    Thresholds are fractions of ``max_records`` (``0.0``-``1.0``). The
-    pressure curve (``kernel.slice``) decides whether a between-thresholds
-    turn actually runs the consolidation; the ``hard_threshold`` overrides
-    the curve when episodic pressure is critical.
+    Set ``enabled`` to ``False`` to stop automatic mining; explicit memory
+    operations (recall, capture, dispute) are unaffected.
     """
 
     enabled: bool = True
     trigger: Literal["post_turn", "pre_turn", "explicit", "never"] = "post_turn"
-    pressure_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
-    hard_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
-    min_interval_turns: int = Field(default=8, ge=0)
-    batch_size: int = Field(default=10, ge=1)
-    min_episodic_count: int = Field(default=5, ge=1)
-    max_records: int = Field(default=200, ge=1)
     preferred_model_id: str = "default"
-    consolidate_operation: str = "consolidate_semantic"
-    #: Mine newly sealed thread segments into durable semantic memories
-    #: (the ``mine_thread_segment`` operation) whenever the consolidation
-    #: slice runs. Sealed segments are the cross-session evidence pool;
-    #: mining is idempotent per segment (``mine.marker`` sidecar). Defaults
-    #: on — sensible defaults first, externalize later.
-    mine_on_segment_seal: bool = True
-
-    @model_validator(mode="after")
-    def _validate_thresholds(self) -> MemoryConsolidationTuning:
-        if self.hard_threshold < self.pressure_threshold:
-            raise ValueError(
-                "memory.consolidation.hard_threshold must be >= "
-                "memory.consolidation.pressure_threshold"
-            )
-        return self
+    mine_operation: str = "mine_thread_segment"
+    #: Maximum sealed segments mined per slice pass. Bounded so one slice
+    #: stays inside its pressure budget.
+    max_segments_per_slice: int = Field(default=2, ge=1)
 
 
 class MemoryContextPlan(_StrictSessionModel):
     """Memory-store policy on the session context plan."""
 
-    consolidation: MemoryConsolidationTuning = Field(default_factory=MemoryConsolidationTuning)
+    mining: MemoryMiningTuning = Field(default_factory=MemoryMiningTuning)
 
 
 class ContextPlan(_StrictSessionModel):

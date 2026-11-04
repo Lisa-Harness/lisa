@@ -28,7 +28,7 @@ reference implementations are:
 
 - ``host/state_provider.py`` → :class:`FileBackedStateProvider`: no-op
   state-provider slot (history is never compacted; the thread is lossless).
-- ``sdk/packs/memory/slice_provider.py`` → memory-consolidation slice
+- ``sdk/packs/memory/mining_slice.py`` → memory-mining slice
   provider (episodic-pressure + sealed-segment mining).
 """
 

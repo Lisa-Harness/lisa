@@ -68,14 +68,19 @@ async def test_execute_retries_then_succeeds_when_first_attempt_empty() -> None:
         if kwargs.get("response_format") is not None:
             return _completion("")
         # Retry (response_format=None, JSON-only instruction appended) returns valid JSON.
-        return _completion('{"facts": ["fact one", "fact two"]}')
+        return _completion(
+            '{"facts": [{"action": "create", "fact": "fact one"}, '
+            '{"action": "create", "fact": "fact two"}]}'
+        )
 
     # execute_tool_fn is required to persist; stub it so we isolate the distillation loop.
-    persisted: dict[str, Any] = {}
+    persisted: list[str] = []
 
     async def _execute_tool(_tool_id: str, tool_ctx: Any) -> OperationResult:
-        persisted["content"] = tool_ctx.parameters.get("content")
-        return OperationResult(output_text='{"ok": true}')
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        persisted.append(str(tool_ctx.parameters.get("content")))
+        return OperationResult(output_text="Memory stored with ID 1")
 
     ctx = _ctx(
         complete_fn=complete_fn,
@@ -89,7 +94,8 @@ async def test_execute_retries_then_succeeds_when_first_attempt_empty() -> None:
     assert calls[0]["response_format"] is not None, "first attempt uses response_format"
     assert calls[1]["response_format"] is None, "retry clears response_format"
     assert "Learning stored" in result.output_text
-    assert persisted["content"] == "fact one | fact two"
+    # Each decided fact is persisted as its own record.
+    assert persisted == ["fact one", "fact two"]
 
 
 @pytest.mark.asyncio
@@ -104,10 +110,12 @@ async def test_execute_retries_then_succeeds_when_first_attempt_truncated_json()
     async def complete_fn(**kwargs: Any) -> SimpleNamespace:
         if kwargs.get("response_format") is not None:
             return _completion(truncated)
-        return _completion('{"facts": ["fact one"]}')
+        return _completion('{"facts": [{"action": "create", "fact": "fact one"}]}')
 
     async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
-        return OperationResult(output_text='{"ok": true}')
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        return OperationResult(output_text="Memory stored with ID 1")
 
     ctx = _ctx(
         complete_fn=complete_fn,
@@ -137,10 +145,15 @@ async def test_execute_escalates_max_tokens_on_retry() -> None:
         # First attempt truncates; retry (with the raised budget) succeeds.
         if kwargs.get("response_format") is not None:
             return _completion('{"facts": ["fact that got cut')
-        return _completion('{"facts": ["fact one", "fact two"]}')
+        return _completion(
+            '{"facts": [{"action": "create", "fact": "fact one"}, '
+            '{"action": "create", "fact": "fact two"}]}'
+        )
 
     async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
-        return OperationResult(output_text='{"ok": true}')
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        return OperationResult(output_text="Memory stored with ID 1")
 
     ctx = _ctx(
         complete_fn=complete_fn,
@@ -168,7 +181,9 @@ async def test_execute_raises_when_both_attempts_fail() -> None:
         return _completion("")
 
     async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
-        return OperationResult(output_text='{"ok": true}')
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        return OperationResult(output_text="Memory stored with ID 1")
 
     ctx = _ctx(
         complete_fn=complete_fn,

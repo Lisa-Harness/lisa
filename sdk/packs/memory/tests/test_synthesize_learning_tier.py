@@ -29,7 +29,7 @@ def _make_ctx(
     execute_tool_fn: Any,
 ) -> OperationExecutionContext:
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({"facts": ["a distilled fact"]})
+        return json.dumps({"facts": [{"action": "create", "fact": "a distilled fact"}]})
 
     def resolve_model_fn(model_id: str | None) -> dict[str, Any]:
         return _model_def()
@@ -59,6 +59,8 @@ async def test_model_called_without_tier_defaults_to_daily() -> None:
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         params = getattr(ctx, "parameters", {}) or {}
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         if tool_id == "memory.add":
             captured.append(dict(params))
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 7")
@@ -76,6 +78,8 @@ async def test_model_called_without_tier_defaults_to_daily() -> None:
     assert captured[0]["salience"] == 0.75
     assert captured[0]["operation_id"] == "save_learning"
     assert captured[0]["confidence"] == 1.0
+    # Captures are distilled facts — semantic, not episodic.
+    assert captured[0]["memory_kind"] == "semantic"
     assert "content_json" in captured[0]
 
 
@@ -86,6 +90,8 @@ async def test_explicit_tier_param_is_preserved() -> None:
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         params = getattr(ctx, "parameters", {}) or {}
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         if tool_id == "memory.add":
             captured.append(dict(params))
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 8")

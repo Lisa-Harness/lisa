@@ -415,7 +415,7 @@ class ToolHooks:
     #: returns the output the model should see. The kernel stringifies the
     #: tool's result first and passes that string in, so a host can append
     #: context without re-implementing rendering and without mutating a
-    #: tool's own ``output_text`` — callers such as the memory-consolidation
+    #: tool's own ``output_text`` — callers such as the memory-mining
     #: slice parse that field as JSON. Returning the argument unchanged is a
     #: no-op.
     #:
