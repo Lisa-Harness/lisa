@@ -312,13 +312,10 @@ context:
       task_view_budget_bytes: 4096
       max_open_objective_lines: 3
   memory:
-    consolidation:
+    mining:
       enabled: true
-      pressure_threshold: 0.6
-      hard_threshold: 0.85
-      min_interval_turns: 8
-      batch_size: 10
-      max_records: 200
+      trigger: post_turn
+      max_segments_per_slice: 2
   ranking:
     relevance: 0.40
     mode_affinity: 0.15
@@ -350,7 +347,7 @@ answer when the user asks for a deliverable.
 | `providers.operations.*` | Declares the owner for each research and document operation. Harmless when uncontested, but it makes ownership explicit and survives a future pack that ships a same-ID operation. |
 | `providers.capabilities.memory` | Selects the owner of the required `memory.add`, `memory.search`, and `memory.list` contract. Provider-specific optional tools may vary. |
 | `context.sources` | Authoring it **replaces** the default rule set, so the thread-digest rules are re-declared explicitly. The `catch_all` fallback preserves the operational lane. |
-| `context.memory.consolidation` | Wired through the memory pack's slice provider: when active episodic records cross `pressure_threshold` of `max_records`, the slice fires `consolidate_semantic` outside the turn's latency budget. Set `enabled: false` to let records accumulate until TTL expiry. |
+| `context.memory.mining` | Wired through the memory pack's slice provider: each newly sealed thread segment is distilled into durable semantic records (write-time dedup decides create/update/skip per fact) inside the slice budget. Set `enabled: false` to stop automatic mining. |
 
 ### Adding Tavily to a session that already has a search provider
 
@@ -902,106 +899,50 @@ rules route as follows:
 
 #### `context.memory`
 
-Memory-store consolidation policy is pressure-driven and paid from the
-configured slice slot/budget. It can make auxiliary model calls and add
-latency; it does not compact the lossless thread in place.
+Memory mining policy: the memory pack's slice provider mines each newly
+sealed thread segment into durable semantic records during the configured
+slice slot, paid from the slice pressure budget. It can make auxiliary
+model calls; it never mutates the lossless thread.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `consolidation` | `MemoryConsolidationTuning` | (see below) | Episodic-pressure-triggered memory consolidation. |
+| `mining` | `MemoryMiningTuning` | (see below) | Thread-segment mining. |
 
 The block only takes effect when the **memory pack is active** — it is
 implemented by the memory pack's slice provider, which the host wires through
 the `lisa.extensions.slice_providers` entry point. A session that does not
 include `lisa-pack-memory` can set these knobs, but nothing will read them.
 
-Two record kinds are involved:
+Capture (auto-capture and `synthesize_and_store_learning`), recall
+(`recall_memory`), and dispute (`dispute_memory`) are **not** controlled by
+this block — they are operation dispatches, not slice work. Dedup is decided
+at write time inside the capture and mining operations: the distiller sees
+similar existing records and chooses create / update / skip per fact.
 
-- **Episodic** records are the active, accumulating source records. They are
-  counted for pressure and loaded in batches for consolidation.
-- **Semantic** records are durable distilled facts, produced either by
-  `consolidate_semantic` (which also *retires* the episodic sources it
-  distilled) or by `mine_thread_segment` (which does not retire anything).
-
-Neither path rewrites or compacts the lossless thread store.
-
-##### `context.memory.consolidation`
-
-When `enabled` is `true` (the default), a host that wires the memory-consolidation slice provider counts active episodic records each turn and fires the configured `consolidate_operation` (default: `consolidate_semantic`) when episodic pressure crosses a threshold. Set `enabled` to `false` to let episodic records accumulate until TTL expiry.
-
-Thresholds are fractions of `max_records` (`0.0`-`1.0`). The slice pressure curve decides whether a between-thresholds turn actually runs the consolidation; `hard_threshold` overrides the curve when episodic pressure is critical.
+##### `context.memory.mining`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `true` | Master switch. Set `false` to disable automatic consolidation. |
-| `trigger` | `post_turn` \| `pre_turn` \| `explicit` \| `never` | `post_turn` | Which slice slot fires consolidation. |
-| `pressure_threshold` | `float 0.0-1.0` | `0.6` | Fire when `episodic_count / max_records` reaches this fraction. |
-| `hard_threshold` | `float 0.0-1.0` | `0.85` | Guardrail: fire regardless of pressure budget or interval. Must be `>= pressure_threshold`. |
-| `min_interval_turns` | `int >= 0` | `8` | Don't re-consolidate more often than every N turns (ignored when `hard_threshold` overrides). |
-| `batch_size` | `int >= 1` | `10` | Records consolidated per invocation. |
-| `min_episodic_count` | `int >= 1` | `5` | Don't fire below this many active episodic records. |
-| `max_records` | `int >= 1` | `200` | Denominator for the pressure fraction. |
-| `preferred_model_id` | `string` | `default` | Model ID used for the consolidate operation. **Not implemented — the value is carried into the slice config but the slice does not pass it when invoking the operation.** |
-| `consolidate_operation` | `string` | `consolidate_semantic` | Operation ID invoked to consolidate. |
-| `mine_on_segment_seal` | `bool` | `true` | Mine newly sealed thread segments on every slice pass. Independent of the consolidation fire decision. |
+| `enabled` | `bool` | `true` | Master switch. Set `false` to stop automatic mining of newly sealed segments. |
+| `trigger` | `post_turn` \| `pre_turn` \| `explicit` \| `never` | `post_turn` | Which slice slot runs mining. |
+| `preferred_model_id` | `string` | `default` | Model ID used for the mining operation's distillation call. |
+| `mine_operation` | `string` | `mine_thread_segment` | Operation ID invoked per segment. |
+| `max_segments_per_slice` | `int >= 1` | `2` | Max sealed segments mined per slice pass (budget-bounded). |
 
-##### The fire decision
-
-Pressure is `episodic_count / max_records`. The active count comes from
-`memory.count` (filtered to `memory_kind: episodic`, `status: active`), with
-a bounded `memory.list` fallback when `memory.count` is unavailable.
-
-| Condition | Behavior |
-| --- | --- |
-| pressure below `pressure_threshold` | No fire. |
-| pressure at or above `hard_threshold` | Fires immediately — the pressure budget and `min_interval_turns` are both overridden. |
-| between the thresholds | Fires only if **all** hold: the count is at least `min_episodic_count`, the slice's pressure-derived `budget_ms` is at least 150 ms, and `min_interval_turns` turns have elapsed since the last fire. |
-
-The "slice pressure curve" is the kernel's pressure-derived slice budget
-(`SlicePolicy.budget_ms`) — the time the host is willing to spend on
-post-turn work. The between-thresholds branch defers to a less-pressured
-turn when the budget is too small to start an LLM distillation call.
-
-`min_interval_turns` is tracked by a turn counter kept in a
-`last_consolidation.json` sidecar beside the memory database, so the
-interval survives restarts.
-
-##### What a slice pass does
-
-The slice runs **two independent jobs** every time it is invoked, in this
-order. Only the second one is gated by the fire decision.
-
-1. **Mine newly sealed thread segments.** If `mine_on_segment_seal` is on,
-   the slice scans the thread segment index for sealed segments not yet
-   mined, distills each into 1–3 semantic records carrying
-   `thread_turn_lo`/`thread_turn_hi` provenance via `mine_thread_segment`,
-   and advances a `mine.marker` sidecar. Mining is idempotent per segment
-   and at most 2 segments are mined per pass. The lossless segment is
-   retained — mining adds records, it does not replace them. **This job
-   runs on every slice pass, whether or not consolidation fires.**
-2. **Consolidate under memory pressure.** Only when the fire decision says
-   so: load up to `batch_size` active episodic records, then invoke
-   `consolidate_operation` (default `consolidate_semantic`) with the batch
-   and the scope identifiers (`user_slug`, `workspace_id`, `memory_scope`,
-   `surface_id`). The operation distills the batch into one durable semantic
-   record and retires the episodic sources.
-
-Every failure along the way — count, list, mining, the operation itself, or
-the sidecar write — is caught, logged, and turned into a diagnostic outcome.
-A consolidation failure never breaks the turn.
-
-Example:
+Mining is idempotent per segment: a `mine.marker` sidecar beside the durable
+data root tracks the last mined segment, and the marker is positional — a
+rebuilt store cannot strand it mid-scan, and a full re-mine is non-destructive
+because the write-time dedup skips records that already exist. A failed
+distillation leaves the segment pending for the next pass; an unreadable
+segment advances the marker so it is not retried forever.
 
 ```yaml
 context:
   memory:
-    consolidation:
+    mining:
       enabled: true
-      pressure_threshold: 0.6
-      hard_threshold: 0.85
-      min_interval_turns: 8
-      batch_size: 10
-      max_records: 200
+      trigger: post_turn
+      max_segments_per_slice: 2
 ```
 
 #### `context.conflict_policy`
@@ -1165,7 +1106,7 @@ The compiler (`compile_session_plan`) enforces:
 - `context.lanes` `min_tokens <= max_tokens` and `min_items <= max_items`.
 - Every `resources.packs.auto_install` key must also appear in `resources.packs.required`.
 - `execution` numeric limits must be `>= 1`; `execution.capabilities` and `execution.scopes` keys must be non-empty, and each nested numeric value must be `>= 1`.
-- `context.memory.consolidation.hard_threshold` must be `>= pressure_threshold`.
+- `context.memory.mining.max_segments_per_slice` must be `>= 1`.
 - `context.history.replay_max_bytes` must be `1`-`1048576`; `context.history.digest` fields are bounded (`recent_entries` 1–40, `recent_body_chars` 200–8000, `task_view_budget_bytes` 1024–16384, `max_open_objective_lines` 1–10).
 - `context.sources[].min_freshness` must be `0.0`-`1.0`; `context.budget.output_reserve_tokens` must be `>= 1` and `safety_margin_tokens` `>= 0`; `max_materialized_candidates` must be `>= 1`.
 

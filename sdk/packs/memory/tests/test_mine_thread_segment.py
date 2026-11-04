@@ -60,11 +60,20 @@ async def test_mine_stores_semantic_records_with_provenance() -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps({"facts": ["GCP start-vm requires project_id", "User prefers Claude"]})
+        return json.dumps(
+            {
+                "facts": [
+                    {"action": "create", "fact": "GCP start-vm requires project_id"},
+                    {"action": "create", "fact": "User prefers Claude"},
+                ]
+            }
+        )
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         params = getattr(ctx, "parameters", {}) or {}
         captured.append((tool_id, dict(params)))
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         if tool_id == "memory.add":
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 42")
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
@@ -97,6 +106,8 @@ async def test_mining_nothing_durable_stores_nothing() -> None:
         return json.dumps({"facts": []})
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
         return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
 
     ctx = _make_ctx(
@@ -118,3 +129,142 @@ async def test_invalid_params_reports_error() -> None:
     )
     result = await op.execute(ctx)
     assert "Invalid mining parameters" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_mine_update_supersedes_and_retires_candidate() -> None:
+    """An update decision writes a superseding record and retires the old one."""
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {
+                "facts": [
+                    {
+                        "action": "update",
+                        "fact": "User prefers Claude for distillation work",
+                        "supersedes_id": 7,
+                        "reason": "refines existing preference",
+                    }
+                ]
+            }
+        )
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        params = getattr(ctx, "parameters", {}) or {}
+        captured.append((tool_id, dict(params)))
+        if tool_id == "memory.search":
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps(
+                    [
+                        {
+                            "id": 7,
+                            "content": "User prefers Claude",
+                            "created_at": "2026-07-10T00:00:00Z",
+                        }
+                    ]
+                ),
+            )
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
+        if tool_id == "memory.retire":
+            return ToolResult(tool_id=tool_id, output_text="Retired memory 7.")
+        return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns(), "user_slug": "adam"},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.extra.get("mined") is True
+    assert result.extra.get("updated_ids") == [9]
+    assert result.extra.get("retired_ids") == [7]
+    add_calls = [c for c in captured if c[0] == "memory.add"]
+    assert add_calls[0][1]["supersedes_id"] == 7
+    retire_calls = [c for c in captured if c[0] == "memory.retire"]
+    assert retire_calls[0][1]["memory_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_mine_skip_only_facts_stores_nothing() -> None:
+    """Every fact marked skip → nothing stored, mined=False with the count."""
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {"facts": [{"action": "skip", "fact": "", "reason": "already stored"}]}
+        )
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps(
+                    [
+                        {
+                            "id": 7,
+                            "content": "User prefers Claude",
+                            "created_at": "2026-07-10T00:00:00Z",
+                        }
+                    ]
+                ),
+            )
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns()},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.extra.get("mined") is False
+    assert result.extra.get("skipped") == 1
+
+
+@pytest.mark.asyncio
+async def test_mine_update_with_hallucinated_id_degrades_to_create() -> None:
+    """A supersedes_id not in the candidate list must not link — the fact is
+    stored as a new record instead of superseding an invented target."""
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {
+                "facts": [
+                    {"action": "update", "fact": "refined fact", "supersedes_id": 999}
+                ]
+            }
+        )
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps(
+                    [
+                        {
+                            "id": 7,
+                            "content": "an existing fact",
+                            "created_at": "2026-07-10T00:00:00Z",
+                        }
+                    ]
+                ),
+            )
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 11")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns()},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.extra.get("created_ids") == [11]
+    assert result.extra.get("retired_ids") == []

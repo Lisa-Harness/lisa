@@ -8,7 +8,7 @@ This module owns:
 - :class:`FileBackedStateProvider` — the host's state-provider slot. The
   legacy lossy thread-digest pipeline was removed in the memory × thread
   realignment: the thread store is the lossless ground truth (manifest +
-  ``thread_read_range`` address it), and the memory pack's consolidation
+  ``thread_read_range`` address it), and the memory pack's mining
   slice owns distillation. Sealing (in ``runtime.thread``) is storage
   management, not compaction — no slice truncates history.
 - :func:`_slice_budget_expired` — a private helper used by slice providers
@@ -223,8 +223,8 @@ class FileBackedStateProvider:
     ``<base>.digest.marker``) is removed. Under the memory × thread split
     the thread store is the lossless record of what happened — addressed by
     the thread manifest and ``thread_read_range`` — and cross-session
-    distillation is owned by the memory pack's consolidation slice
-    (``sdk/packs/memory/slice_provider.py``), which mines sealed segments
+    distillation is owned by the memory pack's mining slice
+    (``sdk/packs/memory/mining_slice.py``), which mines sealed segments
     opportunistically inside the post-turn slice budget.
 
     This class remains because the host slice wiring and the ``/slice``

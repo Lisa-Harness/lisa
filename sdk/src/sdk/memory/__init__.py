@@ -17,6 +17,7 @@ directly without spawning the server.
 
 from __future__ import annotations
 
+from sdk.memory.lexical import lexical_score, tokenize
 from sdk.memory.store import (
     DEFAULT_TTL_DAYS,
     SCHEMA_VERSION,
@@ -31,4 +32,6 @@ __all__ = [
     "EmbeddingProvider",
     "ReadOnlyMemoryStoreError",
     "SqliteMemoryStore",
+    "lexical_score",
+    "tokenize",
 ]

@@ -78,7 +78,6 @@ def test_build_memory_recall_answer_deep_ranks_relevant_over_salient_disjoint() 
             ),
         ],
         limit=2,
-        deep=True,
     )
 
     assert recall.found is True
@@ -108,7 +107,6 @@ def test_build_memory_recall_answer_deep_all_disjoint_falls_back_to_salience() -
             ),
         ],
         limit=5,
-        deep=True,
     )
 
     assert recall.found is True
@@ -116,7 +114,12 @@ def test_build_memory_recall_answer_deep_all_disjoint_falls_back_to_salience() -
     assert recall.evidence[0].memory_id == 1
 
 
-def test_build_memory_recall_answer_zero_overlap_returns_not_found() -> None:
+def test_build_memory_recall_answer_zero_overlap_zero_salience_still_surfaces() -> None:
+    """A backend-vouched record with zero lexical overlap and zero salience
+    still surfaces (with honest near-zero confidence) instead of flipping to
+    "No memory matches found". The backend filtered candidates for a reason —
+    a semantic paraphrase can share no tokens with the query — and the old
+    zero-confidence flip hid real candidates behind a not-found answer."""
     recall = build_memory_recall_answer(
         query="completely unrelated query",
         records=[
@@ -125,8 +128,9 @@ def test_build_memory_recall_answer_zero_overlap_returns_not_found() -> None:
         limit=2,
     )
 
-    assert recall.found is False
-    assert "No memory matches found" in recall.answer
+    assert recall.found is True
+    assert recall.evidence[0].memory_id == 1
+    assert recall.evidence[0].match_reasons == ["salience match"]
     assert recall.confidence == 0.0
 
 
@@ -216,7 +220,10 @@ async def test_recall_operation_forwards_scope_fields_in_parameters() -> None:
     assert params["workspace_id"] == "testing"
     assert params["surface_id"] == "host-console"
     assert params["memory_scope"] == "personal"
-    assert params["limit"] == 5
+    # Candidate headroom: the operation asks the backend for 2× the final
+    # evidence limit because the pack ranker re-orders candidates
+    # relevance-first before truncating to the caller's limit.
+    assert params["limit"] == 10
     # No records returned -> found is False.
     assert result.output_json["found"] is False
     ctx = OperationExecutionContext(
@@ -321,7 +328,6 @@ def test_build_memory_recall_answer_deep_keeps_zero_overlap_records() -> None:
             ),
         ],
         limit=5,
-        deep=True,
     )
 
     assert recall.found is True
