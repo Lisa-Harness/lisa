@@ -105,7 +105,7 @@ _TRUST_AUTO_EFFECTS: frozenset[str] = frozenset({"write", "execute"})
 #: pre-empting the prompt. A runaway loop should surface as a prompt, not a
 #: burn through the ledger. (Enforced by the caller; the constant lives here.)
 #: See ``runtime.policy_service`` / ``handle_message``.
-AUTO_APPROVE_TURN_CAP = 10
+MAX_AUTO_APPROVED_ACTIONS = 10
 
 #: Only these effects may be downgraded by sandbox containment. ``write`` and
 #: below never gate in ``ask`` mode anyway, and ``external_write`` escapes the

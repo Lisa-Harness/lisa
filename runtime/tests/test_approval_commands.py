@@ -1226,7 +1226,7 @@ async def test_failed_auto_approvals_share_one_user_message_budget(
     )
     monkeypatch.setattr(turn_module, "get_workflow_catalog", lambda: {"default": mode})
     monkeypatch.setattr(approval_module, "get_workflow_catalog", lambda: {"default": mode})
-    monkeypatch.setattr(approval_module, "AUTO_APPROVE_TURN_CAP", 2)
+    monkeypatch.setattr(approval_module, "MAX_AUTO_APPROVED_ACTIONS", 2)
     task_ids: list[str] = []
     executed: list[str] = []
 

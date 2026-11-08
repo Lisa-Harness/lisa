@@ -1216,7 +1216,7 @@ deliberate safety valves rather than gaps in the config:
 | # | Residual prompt source | Why it survives | Can you eliminate it? |
 |---|---|---|---|
 | 1 | An `external_write` action (cloud API, ticket system, anything outside the host) | Trust mode never auto-allows `external_write` — the sandbox boundary cannot contain it by definition | Yes, deliberately: add an `allow` rule scoped to that tool (`lisa policy rule add allow --tool <id>`). Do it per external tool, never blanket |
-| 2 | **More than 10 policy-approved actions in one turn** | `AUTO_APPROVE_TURN_CAP = 10` is hard-coded in the runtime (`runtime/policy.py`) and is *not* a `policy.yaml` key — it applies to *every* policy-approved action on every host | No — and you should not want to. It exists so a runaway loop surfaces as a prompt instead of burning through your system. A turn that needs >10 unattended writes is a turn worth watching |
+| 2 | **More than 10 policy-approved actions in one turn** | `MAX_AUTO_APPROVED_ACTIONS = 10` is hard-coded in the runtime (`runtime/policy.py`) and is *not* a `policy.yaml` key — it applies to *every* policy-approved action on every host | No — and you should not want to. It exists so a runaway loop surfaces as a prompt instead of burning through your system. A turn that needs >10 unattended writes is a turn worth watching |
 | 3 | A `deny` rule you added yourself | That is the point of adding one | Don't add one, or narrow it |
 
 **Consider whether to keep a narrow `deny` list.** A common, defensible
@@ -1554,7 +1554,7 @@ so you know exactly what "one-and-done" does and does not mean:
 | # | Residual prompt source | Why it survives | What to do |
 |---|---|---|---|
 | 1 | An `external_write` action (cloud API, PR, email, ticket) | Never auto-approved by the sandbox downgrade — the sandbox is a filesystem/process boundary and `external_write` escapes it by definition | Add an explicit `allow` rule per external tool if you genuinely want it unattended |
-| 2 | **More than 10 policy-approved actions in one turn** | `AUTO_APPROVE_TURN_CAP = 10` is a hard-coded runaway-loop backstop; it is *not* configurable in `policy.yaml` | Nothing to configure. If you hit it, the model is looping — that is the cap doing its job |
+| 2 | **More than 10 policy-approved actions in one turn** | `MAX_AUTO_APPROVED_ACTIONS = 10` is a hard-coded runaway-loop backstop; it is *not* configurable in `policy.yaml` | Nothing to configure. If you hit it, the model is looping — that is the cap doing its job |
 | 3 | Containment `degraded` (sandbox broken) | **Fail closed** — the sandbox stopped being true, so stop and check | Fix the host prerequisites |
 | 4 | A `deny` rule match | Deliberate — that is the loud error, not a prompt you approve | Review the rule if it is a false positive |
 
