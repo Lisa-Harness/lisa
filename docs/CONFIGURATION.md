@@ -18,7 +18,7 @@ for provider credentials, host launch policy, or authorization.
 
 1. Explicit `data_dir` argument supplied by the host.
 2. `LISA_DATA_DIR`.
-3. `LISA_PROFILE`, resolving to `~/.lisa/profiles/<name>`.
+3. `LISA_PROFILE`, resolving to `<profiles-root>/<name>`.
 4. `~/.lisa`.
 
 A repository checkout does **not** change this default to `artifacts/`.
@@ -38,6 +38,26 @@ Use either `LISA_DATA_DIR` or `LISA_PROFILE`, not both. Profile names must
 be single path-safe segments. Profiles isolate data-root-derived state;
 the packs environment remains shared with the base directory. They are
 not an OS-level or multi-tenant security boundary.
+
+### Relocating the profiles root
+
+The profiles root is `~/.lisa/profiles` by default. `LISA_PROFILES_DIR`
+relocates it, keeping the same `<root>/<name>` layout:
+
+```sh
+export LISA_PROFILES_DIR="$HOME/OneDrive/Lisa.Profiles"
+```
+
+In PowerShell:
+
+```powershell
+$env:LISA_PROFILES_DIR = Join-Path $HOME "OneDrive\Lisa.Profiles"
+```
+
+A relocated root does not change where the packs venv lives: profiles
+still share the base data dir's venv (`LISA_DATA_DIR` or `~/.lisa`), not a
+venv inside the relocated folder. This keeps a synced folder free of
+machine-local environment state.
 
 The canonical categories are defined by [sdk.layout](../sdk/src/sdk/layout.py):
 

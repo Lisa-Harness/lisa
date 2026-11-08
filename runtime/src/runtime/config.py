@@ -32,6 +32,7 @@ LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
 LISA_LOG_DEBUG_ENV = "LISA_LOG_DEBUG"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
 LISA_PROFILE_ENV = "LISA_PROFILE"
+LISA_PROFILES_DIR_ENV = "LISA_PROFILES_DIR"
 LISA_CONVERSATION_ID_ENV = "LISA_CONVERSATION_ID"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
@@ -74,20 +75,60 @@ def default_data_dir() -> Path:
     return Path.home() / _DEFAULT_DATA_DIR_NAME
 
 
+def profiles_dir(base_dir: Path | None = None) -> Path:
+    """Return the directory that holds the named profiles.
+
+    By default a profile lives at ``<base_dir>/profiles/<name>`` where
+    ``base_dir`` defaults to :func:`default_data_dir` (``~/.lisa``), so the
+    default profiles root is ``~/.lisa/profiles``.
+
+    ``LISA_PROFILES_DIR`` relocates the whole root — e.g. to a synced
+    folder on OneDrive — while keeping the same ``<root>/<name>`` layout.
+    When it is set, the value is used verbatim (after ``~`` expansion) and
+    ``base_dir`` is ignored: the root no longer lives under the data dir.
+
+    The returned path is resolved but not created; hosts create it lazily
+    like any other data dir.
+    """
+    override = _resolve_env(LISA_PROFILES_DIR_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    base = base_dir if base_dir is not None else default_data_dir()
+    return (base / _PROFILES_SUBDIR_NAME).resolve()
+
+
+def base_data_dir() -> Path:
+    """Return the base (non-profile) data dir that owns the packs venv.
+
+    This is ``LISA_DATA_DIR`` when set, otherwise the platform default
+    (``~/.lisa``). It is the anchor for a profile whose own directory
+    lives outside the data dir — a profile relocated by
+    ``LISA_PROFILES_DIR`` still shares the base data dir's packs venv
+    rather than the relocated root's parent (which may be a synced folder
+    with no venv of its own).
+    """
+    override = _resolve_env(LISA_DATA_DIR_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    return default_data_dir()
+
+
 def profile_data_dir(profile: str, *, base_dir: Path | None = None) -> Path:
     """Return the data directory for a named profile.
 
     A profile is a named sub-workspace rooted at
-    ``<base_dir>/profiles/<name>`` (default base: ``~/.lisa``). It isolates
-    everything derived from ``data_dir`` — threads, memory, models.yaml,
-    policy, approvals, session context, files — while the packs venv stays
-    shared with the base data dir (see :func:`runtime.paths.packs_venv_for`).
+    ``<profiles_dir>/<name>`` — ``<base_dir>/profiles/<name>`` by default,
+    or ``<LISA_PROFILES_DIR>/<name>`` when that variable relocates the
+    profiles root (see :func:`profiles_dir`). It isolates everything
+    derived from ``data_dir`` — threads, memory, models.yaml, policy,
+    approvals, session context, files — while the packs venv stays shared
+    with the base data dir (see :func:`runtime.paths.packs_venv_for`).
 
     ``LISA_DATA_DIR`` (explicit) still wins over ``LISA_PROFILE``; use the
     profile when the user did not pin an explicit data dir. The name must
     be a single path-safe segment (letters, digits, ``-``, ``_``, ``.``) —
     ``..`` and separators are rejected so a profile name can never escape
-    the profiles/ root.
+    the profiles root.
 
     The directory is not created here; hosts create it lazily like any
     other data dir (``ensure_data_dir`` MCP specs, ``resolve_data_dir``).
@@ -100,8 +141,7 @@ def profile_data_dir(profile: str, *, base_dir: Path | None = None) -> Path:
             f"Invalid profile name {name!r}: use letters, digits, '-', '_', '.' "
             "(single path segment, no separators)"
         )
-    base = base_dir if base_dir is not None else default_data_dir()
-    return (base / _PROFILES_SUBDIR_NAME / name).resolve()
+    return (profiles_dir(base_dir) / name).resolve()
 
 
 _PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -635,7 +675,8 @@ class HostConfig:
         # ── Data dir ──────────────────────────────────────────────────
         # Precedence: explicit CLI arg > LISA_DATA_DIR > LISA_PROFILE >
         # platform default (~/.lisa). A profile resolves to
-        # <default_data_dir>/profiles/<name> and isolates all data-dir
+        # <profiles_root>/<name> (default <default_data_dir>/profiles,
+        # relocated by LISA_PROFILES_DIR) and isolates all data-dir
         # derived state while sharing the base packs venv.
         raw_data_dir = data_dir.strip()
         if not raw_data_dir:
