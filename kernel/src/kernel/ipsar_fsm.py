@@ -1740,6 +1740,7 @@ async def _dispatch_lifecycle_target(
     target_ctx: OperationExecutionContext,
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
+    failure_policy: Literal["abort", "skip"] = "abort",
 ) -> OperationResult | None:
     """Dispatch one lifecycle target polymorphically (operation or tool).
 
@@ -1748,10 +1749,21 @@ async def _dispatch_lifecycle_target(
         target_ctx: Execution context for the dispatch.
         operation_catalog: The operation catalog for resolution.
         tool_catalog: The tool catalog for resolution.
+        failure_policy: ``abort`` (default) raises when the target resolves to
+            no catalog entry or when a dispatched tool returned an error;
+            ``skip`` keeps the historical isolation (warn on an unknown id,
+            carry a tool error as result metadata).
 
     Returns:
-        The result, or ``None`` when the target is neither a known
-        operation nor a known tool (logged and skipped by the caller).
+        The result, or ``None`` when the target is neither a known operation
+        nor a known tool under the ``skip`` policy (logged and skipped by the
+        caller). Under ``abort`` an unresolvable target raises instead.
+
+    Raises:
+        RuntimeError: Under ``abort``, when the target is neither a known
+            operation nor a known tool, or when a dispatched tool returned
+            ``ToolResult.error`` (a failed prerequisite must not surface as
+            a successful lifecycle result).
     """
     if target_id in operation_catalog:
         return await _execute_operation(target_id, target_ctx)
@@ -1760,10 +1772,18 @@ async def _dispatch_lifecycle_target(
 
         tool_ctx = _build_tool_execution_context(target_id, target_ctx)
         tool_result = await execute_tool(target_id, tool_ctx)
+        if tool_result.error and failure_policy == "abort":
+            raise RuntimeError(
+                f"lifecycle target '{target_id}' tool dispatch failed: {tool_result.error}"
+            )
         return OperationResult(
             output_text=tool_result.output_text,
             output_json=dict(tool_result.output_json) if tool_result.output_json else {},
             extra={"tool_error": tool_result.error} if tool_result.error else {},
+        )
+    if failure_policy == "abort":
+        raise RuntimeError(
+            f"lifecycle target '{target_id}' is neither a known operation nor a known tool"
         )
     logger.warning(
         "lifecycle target '%s' is neither a known operation nor a known tool; skipping",
@@ -1899,7 +1919,11 @@ async def _execute_mode_target_ids(
         target_ctx = ctx.model_copy(update={"operation_id": target_id, "extra": extra})
         try:
             result = await _dispatch_lifecycle_target(
-                target_id, target_ctx, operation_catalog, tool_catalog
+                target_id,
+                target_ctx,
+                operation_catalog,
+                tool_catalog,
+                failure_policy=failure_policy,
             )
             if result is None:
                 continue
