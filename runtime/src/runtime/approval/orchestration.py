@@ -48,7 +48,7 @@ from runtime.approval.presentation import (
     same_session_scope,
     unresolved_approval_text,
 )
-from runtime.policy import AUTO_APPROVE_TURN_CAP, read_containment, remember_allow_prefix
+from runtime.policy import MAX_AUTO_APPROVED_ACTIONS, read_containment, remember_allow_prefix
 from runtime.turn_continuation import load_continuation
 from runtime.turn_hooks_builder import build_turn_hooks
 
@@ -299,10 +299,10 @@ async def maybe_auto_continue_approval(
     # Per-turn cap on unattended auto-approvals. Exceeding it falls back to the
     # prompt so the operator re-engages with a runaway approval loop.
     used = runtime.session.auto_approved_this_turn
-    if used >= AUTO_APPROVE_TURN_CAP:
+    if used >= MAX_AUTO_APPROVED_ACTIONS:
         logger.warning(
             "auto-approve cap (%d) reached; prompting for %s",
-            AUTO_APPROVE_TURN_CAP,
+            MAX_AUTO_APPROVED_ACTIONS,
             invocation.target_id,
         )
         return None
