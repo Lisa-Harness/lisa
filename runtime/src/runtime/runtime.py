@@ -206,6 +206,15 @@ class SessionState:
         # on this turn. Read by utilization-aware slice providers via
         # ``TurnHooks.last_context_snapshot``.
         self.last_context_snapshot: Any = None
+        # The telemetry bus of the most recent hook build, with the durable
+        # ledger handlers already subscribed. Off-turn slice work (thread
+        # mining) reads it so its operation dispatches — including
+        # failures — reach ``decisions.jsonl`` (2026-11-08..09 mining
+        # crash-loop: 21 logged failures, zero ledger rows). A fresh bus is
+        # created per hook build, so this is refreshed every turn; the
+        # pre-first-turn value is ``None`` and slice telemetry silently
+        # no-ops, the previous behavior.
+        self.event_bus: Any = None
 
         # ── Last-turn diagnostics ─────────────────────────────────────
         self.last_turn_context: TurnContext | None = None

@@ -72,6 +72,7 @@ def _render_sources(bundle: ForensicBundle) -> list[str]:
     lines.append(f"- decisions log: {'read' if sources.decisions_log else 'unavailable'}")
     lines.append(f"- token usage log: {'read' if sources.token_usage_log else 'unavailable'}")
     lines.append(f"- approvals log: {'read' if sources.approvals_log else 'unavailable'}")
+    lines.append(f"- errors ledger: {'read' if sources.errors_log else 'unavailable'}")
     lines.append(f"- runtime log: {'read' if sources.runtime_log else 'unavailable'}")
     if sources.missing:
         lines.append(f"- **missing:** {', '.join(sources.missing)}")

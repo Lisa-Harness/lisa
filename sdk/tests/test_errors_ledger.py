@@ -258,4 +258,9 @@ def test_forensics_names_missing_log_sources(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path)
     assert bundle.sources.errors_log is False
     assert bundle.sources.runtime_log is False
-    assert any("runtime.jsonl" in note for note in bundle.notes)
+    # Both sources are named as missing (the reader merges both and must
+    # not present an unreadable log as an empty one), and the read says
+    # diagnostics are unknown rather than clean.
+    assert "errors.jsonl" in bundle.sources.missing
+    assert "runtime.jsonl" in bundle.sources.missing
+    assert any("log diagnostics are unknown" in note for note in bundle.notes)

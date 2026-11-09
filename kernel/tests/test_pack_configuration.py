@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
@@ -206,3 +207,130 @@ async def test_operation_receives_its_owner_pack_configuration(
                 capability_binding_provider=resolver,
             ),
         )
+
+
+class _RecordingBus:
+    """Minimal async bus capturing published telemetry payloads."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict[str, Any]]] = []
+
+    async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+        self.published.append((topic, payload))
+
+
+async def _drain() -> None:
+    """Let fire-and-forget telemetry publishes land before asserting."""
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_tool_parameter_rejection_publishes_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-execution rejection is ledger evidence like any other failure.
+
+    The 2026-11-09 turn-1185 incident: 19 parameter rejections recorded
+    nothing in the decisions ledger, so the forensic read reported "0
+    failed" over a turn that could not run a single read tool.
+    """
+
+    async def execute(_ctx: ToolExecutionContext) -> ToolResult:
+        raise AssertionError("must not execute")
+
+    definition = ToolDefinition(
+        tool_id="guarded_tool",
+        description="Guarded test tool.",
+        parameters_schema=_ToolParameters,
+        mode_allowlist=["coding"],
+        implementation_module=SimpleNamespace(execute=execute),
+    )
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", {"guarded_tool": definition})
+    bus = _RecordingBus()
+
+    with pytest.raises(ToolExecutionError, match="invalid parameters"):
+        await execute_tool(
+            "guarded_tool",
+            ToolExecutionContext(
+                mode_id="coding",
+                parameters={"path": ""},
+                event_bus=bus,
+                turn_index=3,
+            ),
+        )
+
+    await _drain()
+
+    assert len(bus.published) == 1
+    topic, payload = bus.published[0]
+    assert topic == "tool.telemetry"
+    assert payload["target_id"] == "guarded_tool"
+    assert payload["status"] == "error"
+    assert "invalid parameters" in (payload["error_message"] or "")
+    assert payload["turn_index"] == 3
+
+
+@pytest.mark.asyncio
+async def test_operation_parameter_rejection_publishes_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operation registry's rejections publish the same evidence rows."""
+
+    async def execute(_ctx: OperationExecutionContext) -> OperationResult:
+        raise AssertionError("must not execute")
+
+    definition = OperationDefinition(
+        operation_id="owner_operation",
+        description="Test owner operation.",
+        parameters_schema=_OperationParameters,
+        mode_allowlist=["coding"],
+        implementation_module=SimpleNamespace(execute=execute),
+    )
+    monkeypatch.setattr(
+        "kernel.operations.registry._OPERATION_CATALOG",
+        {"owner_operation": definition},
+    )
+    bus = _RecordingBus()
+
+    with pytest.raises(OperationExecutionError, match="invalid parameters"):
+        await execute_operation(
+            "owner_operation",
+            OperationExecutionContext(
+                mode_id="coding",
+                params={"count": 0},
+                event_bus=bus,
+            ),
+        )
+
+    await _drain()
+
+    assert len(bus.published) == 1
+    topic, payload = bus.published[0]
+    assert topic == "tool.telemetry"
+    assert payload["target_id"] == "owner_operation"
+    assert payload["status"] == "error"
+    assert "invalid parameters" in (payload["error_message"] or "")
+
+
+@pytest.mark.asyncio
+async def test_unknown_capability_rejection_publishes_telemetry() -> None:
+    """Unknown-tool and mode-allowlist rejections publish evidence too."""
+    bus = _RecordingBus()
+
+    with pytest.raises(ToolExecutionError, match="Unknown tool"):
+        await execute_tool(
+            "no_such_tool",
+            ToolExecutionContext(mode_id="coding", event_bus=bus),
+        )
+
+    await _drain()
+
+    assert len(bus.published) == 1
+    assert bus.published[0][1]["target_id"] == "no_such_tool"
+
+
+@pytest.mark.asyncio
+async def test_rejection_without_a_bus_stays_silent() -> None:
+    """The headless no-bus contract is unchanged: no telemetry, same raise."""
+    with pytest.raises(ToolExecutionError, match="Unknown tool"):
+        await execute_tool("no_such_tool", ToolExecutionContext(mode_id="coding"))

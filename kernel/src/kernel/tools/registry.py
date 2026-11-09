@@ -424,11 +424,22 @@ async def execute_tool(
     Dispatches to the tool's ``implementation_module.execute(ctx)`` under a
     timeout, mirroring ``registry.execute_operation``. Tools are
     runtime-only; there is no declarative tool path.
+
+    Pre-execution rejections (unknown tool, mode allowlist, invalid
+    parameters) publish a ``tool.telemetry`` row before raising, so a
+    rejected dispatch is ledger evidence like any other failure (the
+    2026-11-09 turn-1185 incident: 19 parameter rejections recorded nothing
+    in the decisions ledger and the forensic read reported "0 failed" over a
+    turn that could not run a single read tool).
     """
     definition = _TOOL_CATALOG.get(tool_id)
     if definition is None:
+        _publish_rejection_telemetry(ctx, tool_id, f"Unknown tool '{tool_id}'.")
         raise ToolExecutionError(f"Unknown tool '{tool_id}'.")
     if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
+        _publish_rejection_telemetry(
+            ctx, tool_id, f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'."
+        )
         raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
     ctx.tool_id = tool_id
     provider = ctx.capability_binding_provider
@@ -534,10 +545,50 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
     try:
         parsed = definition.parameters_schema.model_validate(ctx.parameters)
     except Exception as exc:  # pylint: disable=broad-except
+        _publish_rejection_telemetry(
+            ctx,
+            definition.tool_id,
+            f"Tool '{definition.tool_id}' received invalid parameters: {exc}",
+        )
         raise ToolExecutionError(
             f"Tool '{definition.tool_id}' received invalid parameters: {exc}"
         ) from exc
     ctx.parameters = parsed.model_dump(mode="json")
+
+
+def _publish_rejection_telemetry(
+    ctx: ToolExecutionContext,
+    tool_id: str,
+    error_message: str,
+) -> None:
+    """Publish one ``tool.telemetry`` row for a pre-execution rejection.
+
+    These raises happen before the tracer wrapper installs its telemetry,
+    so without this publish the decisions ledger records nothing for a
+    rejected dispatch — a turn full of parameter rejections rendered as
+    "0 failed" in forensics (2026-11-09 turns 1185-1186: the model
+    repeated a mistyped ``artifact_id`` 19 times and its own audit could
+    not see a single one). Fire-and-forget, same contract as the
+    post-execution publishes.
+    """
+    if not ctx.event_bus:
+        return
+    event = ToolExecutionTelemetry(
+        target_id=tool_id,
+        target_type="tool",
+        status="error",
+        duration_ms=0,
+        error_message=error_message,
+        turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        user_slug=ctx.user_slug,
+        thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+    )
+    schedule_telemetry_publish(
+        ctx.event_bus,
+        "tool.telemetry",
+        event.model_dump(mode="json"),
+        source=f"tool:{tool_id}",
+    )
 
 
 async def _preflight_before_approval(
