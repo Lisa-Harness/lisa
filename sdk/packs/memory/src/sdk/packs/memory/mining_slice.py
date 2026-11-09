@@ -14,19 +14,26 @@ the user has seen the answer, the provider:
    ``OperationExecutionContext``, which distills the turns into durable
    semantic records with write-time dedup (create/update/skip per fact).
 
-Mining is bounded (``max_segments_per_slice`` per pass) and idempotent: the
-marker advances only after a confirmed success (or a segment proven
-unreadable, or an intentional all-skip result), and the write-time dedup in
-the operation makes even a re-mined segment non-destructive. A returned
-``status="error"`` result — the operation's retryable storage-failure
-outcome — leaves the segment pending and stops the pass: the next slice
-retries it, and dedup keeps the re-mine safe even after a partial write.
+Mining is bounded (``max_segments_per_slice`` per pass,
+``_MAX_SEGMENT_ATTEMPTS`` per segment) and idempotent: the marker advances
+after a confirmed success, a segment proven unreadable, an intentional
+all-skip result, or a segment that exhausted its attempt budget — the
+write-time dedup in the operation makes even a re-mined segment
+non-destructive, so advancing past a failed segment cannot corrupt
+anything and a lost marker re-mines safely. The attempt cap is deliberate:
+stopping the pass on the first failure let one poisoned segment (or a
+regressed distiller model) starve every later segment forever — the
+2026-11-08..09 incident logged 21 consecutive failures with zero segments
+ever mined. A returned ``status="error"`` result — the operation's
+retryable storage-failure outcome — ends that segment's attempts early (a
+failing backend fails retries identically) but no longer stops the pass.
 The marker matches by *position* in the index, not exact id, so a rebuilt or
 re-sealed store cannot strand the marker mid-scan — a lost marker re-mines
 from the start and the dedup skips what is already stored.
 
 All failures are caught and logged; they never break the turn. Every
-branch returns a ``SliceOutcome`` with a diagnostic rationale note.
+branch returns a ``SliceOutcome``; failures surface in its notes so a
+background crash-loop is visible in state, not only in the log.
 """
 
 from __future__ import annotations
@@ -59,6 +66,12 @@ _LAST_MINED_SEGMENT_FILE_NAME = "mine.marker"
 #: Fallback when the view exposes no segments-per-slice bound.
 _MAX_SEGMENTS_PER_SLICE = 2
 
+#: Per-segment mining attempts in one pass before the marker advances past
+#: the segment. Starvation cap: one persistently failing segment must not
+#: block every later segment forever (the 2026-11-08..09 incident — 21
+#: consecutive failures, zero segments ever mined).
+_MAX_SEGMENT_ATTEMPTS = 2
+
 
 @dataclass(slots=True)
 class MemoryMiningSliceConfig:
@@ -68,7 +81,10 @@ class MemoryMiningSliceConfig:
     ``memory_data_dir`` is the host's durable data root and ``user_slug``
     the active user; the thread store lives at
     ``<data_dir>/threads/<user_slug>`` (its segment index at
-    ``<base>.index.jsonl``).
+    ``<base>.index.jsonl``). ``event_bus`` is the subscribed telemetry bus
+    of the current hook build; mining dispatches stamp their
+    ``tool.telemetry`` rows onto it so off-turn failures are ledger
+    evidence (``None`` keeps the previous unrecorded behavior).
     """
 
     enabled: bool
@@ -80,6 +96,7 @@ class MemoryMiningSliceConfig:
     workspace_id: str = "default"
     memory_scope: str = "personal"
     surface_id: str = ""
+    event_bus: Any = None
 
 
 class MemoryMiningSlice:
@@ -234,37 +251,54 @@ class MemoryMiningSlice:
             principal_key=self._config.user_slug,
             surface_id=self._config.surface_id,
             memory_scope=self._config.memory_scope,  # type: ignore[arg-type]
+            # Off-turn dispatch telemetry: the operation registry publishes
+            # its ``tool.telemetry`` row only when the context carries a
+            # bus, and mining is otherwise invisible to forensics (the
+            # 2026-11-08..09 incident: 21 logged failures, zero ledger
+            # rows). ``turn_index`` stays ``None`` — mining belongs to no
+            # turn and the join contract must not guess one.
+            event_bus=self._config.event_bus,
             host=host,
         )
 
     # ── Slice entrypoint ─────────────────────────────────────────────
 
-    async def _mine_new_segments(self, policy: SlicePolicy, started: float) -> tuple[int, str]:
+    async def _mine_new_segments(
+        self, policy: SlicePolicy, started: float
+    ) -> tuple[int, str, int, int]:
         """Mine newly sealed thread segments into semantic memories.
 
-        Returns ``(work_items, last_item)``. The budget bounds the pass:
-        each segment's operation call is checked against the remaining
-        slice budget before it starts.
+        Returns ``(work_items, last_item, mined_count, failed_count)``.
+        The budget bounds the pass: each segment's operation call is checked
+        against the remaining slice budget before it starts.
 
-        The marker advances only on a confirmed success or an intentional
-        all-skip result. An exception or ``status="error"`` result leaves the
-        segment pending and stops the pass so a later success cannot advance
-        the marker past it. Its retry cost is bounded by the per-pass budget,
-        and write-time dedup makes each retry harmless.
+        The marker advances on a confirmed success, an intentional all-skip
+        result, or a segment whose per-segment attempt budget is exhausted.
+        The attempt cap is the starvation fix: the previous stop-the-pass
+        contract meant one persistently failing segment (a distiller-model
+        regression, a poisoned segment) blocked every later segment
+        forever — the 2026-11-08..09 incident logged 21 consecutive
+        ``mine_thread_segment`` failures with zero segments ever mined and
+        every later segment waiting behind the first. Each segment now gets
+        ``_MAX_SEGMENT_ATTEMPTS`` tries in one pass (write-time dedup makes
+        a retry harmless even after a partial write); when the cap is
+        exhausted the marker advances past it with a warning so mining
+        continues with the rest of the queue.
         """
         exec_op = getattr(self._hooks, "execute_operation", None)
         if not callable(exec_op):
-            return 0, ""
+            return 0, "", 0, 0
         segments = self._sealed_segments_to_mine()
         if not segments:
-            return 0, ""
+            return 0, "", 0, 0
         base = self._thread_base()
         if base is None:
-            return 0, ""
+            return 0, "", 0, 0
 
         op_ctx = self._build_mining_context()
         work_items = 0
         last_item = ""
+        failed = 0
         for seg_id, turn_lo, turn_hi in segments:
             if policy.budget_ms > 0 and (time.monotonic() - started) * 1000.0 >= float(
                 policy.budget_ms
@@ -282,51 +316,101 @@ class MemoryMiningSlice:
                 "memory_scope": self._config.memory_scope,
                 "surface_id": self._config.surface_id,
             }
+            outcome_ok, outcome_item = await self._mine_one_segment(
+                exec_op, op_ctx, seg_id=seg_id, turn_lo=turn_lo, turn_hi=turn_hi
+            )
+            self._persist_mine_marker(seg_id)
+            if outcome_ok:
+                work_items += 1
+                last_item = outcome_item
+                continue
+            failed += 1
+            last_item = outcome_item
+        return work_items, last_item, work_items, failed
+
+    async def _mine_one_segment(
+        self,
+        exec_op: Any,
+        op_ctx: OperationExecutionContext,
+        *,
+        seg_id: str,
+        turn_lo: int,
+        turn_hi: int,
+    ) -> tuple[bool, str]:
+        """Attempt one segment up to the per-segment attempt cap.
+
+        Returns ``(True, "mined:…")`` on success (stored or intentionally
+        all-skip), or ``(False, failure_text)`` when the attempt cap was
+        exhausted — the caller advances the marker past the segment so
+        later segments are not starved. A storage failure
+        (``status="error"``, the operation's documented retryable outcome)
+        also exhausts the cap early: a failing backend fails retries
+        identically.
+        """
+        last_error = ""
+        for _attempt in range(_MAX_SEGMENT_ATTEMPTS):
             try:
                 result = await exec_op(self._config.mine_operation, op_ctx)
             except Exception as exc:  # pylint: disable=broad-except
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
-                    "memory_mining: %s failed for segment %s; leaving it pending: %s",
+                    "memory_mining: %s failed for segment %s (attempt %d/%d): %s",
                     self._config.mine_operation,
                     seg_id,
+                    _attempt + 1,
+                    _MAX_SEGMENT_ATTEMPTS,
                     exc,
                 )
-                break
+                continue
             if getattr(result, "status", "") == "error":
                 # Retryable storage failure (the operation's documented
-                # outcome contract): leave the segment pending and stop the
-                # pass — a failing backend would fail the remaining segments
-                # too, and the next slice retries from here. Write-time
-                # dedup makes the re-mine safe, including after a partial
-                # write.
+                # outcome contract): stop this segment's attempts — a
+                # failing backend fails retries identically — but let the
+                # pass continue with later segments.
+                last_error = "storage failure"
                 logger.warning(
-                    "memory_mining: %s reported storage failure for segment %s; leaving it pending",
+                    "memory_mining: %s reported storage failure for segment %s; advancing past it",
                     self._config.mine_operation,
                     seg_id,
                 )
                 break
             extra = getattr(result, "extra", {}) or {}
             stored_ids = extra.get("memory_ids") or []
-            self._persist_mine_marker(seg_id)
-            work_items += 1
-            last_item = f"mined:{seg_id}({turn_lo}-{turn_hi})->{len(stored_ids)}"
-        return work_items, last_item
+            return True, f"mined:{seg_id}({turn_lo}-{turn_hi})->{len(stored_ids)}"
+        logger.warning(
+            "memory_mining: segment %s failed %d attempt(s); advancing the marker "
+            "past it (write-time dedup makes a later re-mine safe)",
+            seg_id,
+            _MAX_SEGMENT_ATTEMPTS,
+        )
+        return False, last_error or f"segment {seg_id} failed"
 
     async def slice(self, ctx: Any, policy: SlicePolicy) -> SliceOutcome:
         """Mine new sealed segments; empty outcome when there is nothing to do."""
         del ctx  # explicit: the slice is stateless w.r.t. ctx
         started = time.monotonic()
+        work_items, last_item, mined, failed = 0, "", 0, 0
         try:
-            work_items, last_item = await self._mine_new_segments(policy, started)
+            work_items, last_item, mined, failed = await self._mine_new_segments(policy, started)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("memory_mining: mining pass failed: %s", exc)
-            work_items, last_item = 0, ""
-        notes: tuple[str, ...] = (f"mined {work_items} sealed segment(s)",) if work_items else ()
+        notes: list[str] = []
+        if mined:
+            notes.append(f"mined {mined} sealed segment(s)")
+        if failed:
+            # Surface the failure in the slice outcome — a background
+            # crash-loop is otherwise invisible to every state view
+            # (fix-3 observability: the 2026-11-08..09 incident logged 21
+            # failures with nothing in the outcome to show for them).
+            notes.append(
+                f"memory mining: {failed} segment(s) failed after "
+                f"{_MAX_SEGMENT_ATTEMPTS} attempt(s) and were skipped"
+            )
         return SliceOutcome(
             work_items_completed=work_items,
             elapsed_ms=(time.monotonic() - started) * 1000.0,
             last_item=last_item,
-            notes=notes,
+            notes=tuple(notes),
         )
 
 
@@ -371,6 +455,7 @@ def get_slice_provider_factory() -> SliceProviderFactory:
             workspace_id=str(getattr(turn_hooks, "workspace_id", "") or "default"),
             memory_scope=str(getattr(turn_hooks, "memory_scope", "") or "personal"),
             surface_id=str(getattr(turn_hooks, "surface_id", "") or ""),
+            event_bus=getattr(turn_hooks, "event_bus", None),
         )
         return MemoryMiningSlice(config=config, turn_hooks=turn_hooks)
 

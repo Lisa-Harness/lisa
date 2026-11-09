@@ -12,3 +12,7 @@ operation_id: mine_thread_segment
 pack_id: lisa-pack-memory
 exportable: true
 effect: write
+# Covers the distill call plus a 2x-budget retry for reasoning models; the 60s
+# default timed out glm-5.3 mining distills (2026-11-08..09 crash-loop,
+# mirroring synthesize_learning's 2026-10-01 e2e run-9 lesson).
+timeout_seconds: 300

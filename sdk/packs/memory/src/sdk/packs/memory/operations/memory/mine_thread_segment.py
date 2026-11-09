@@ -62,7 +62,15 @@ _SYSTEM_PROMPT_PATH = "operations/memory/prompts/mine_thread_segment_system.md"
 # is the session manifest's ``resources.packs.configuration.lisa-pack-memory``
 # block (key ``memory_mine_max_tokens``), surfaced at runtime as
 # ``ctx.pack_config``.
-_MINE_MAX_TOKENS = 640
+#
+# Mirrors synthesize_learning's 16384 default (its documented lesson: local
+# OpenAI-compatible providers truncate the JSON envelope mid-array when the
+# budget is too small, and reasoning models — glm-5.3 — spend the completion
+# budget thinking first). The 2026-11-08..09 crash-loop was exactly that
+# shape: 21 consecutive ``mine_thread_segment distillation failed`` errors
+# with the model's reasoning text ('Let me analyze this conv…') failing
+# JSON validation, and one ``facts.0.fact: string_too_long`` truncation.
+_MINE_MAX_TOKENS = 16384
 
 #: Salience floor for mined semantic records (sealed-segment evidence is
 #: cross-session verified by construction).
@@ -329,7 +337,15 @@ async def _distill_facts(
             raw = await ctx.host.complete(
                 messages=attempt_messages,
                 model_def=model_def,
-                max_tokens=mine_max_tokens,
+                # Escalate the budget on the retry, mirroring
+                # synthesize_learning (the kernel's truncation-rescue
+                # pattern): on reasoning models the visible JSON shares the
+                # completion budget with reasoning tokens, so re-issuing the
+                # SAME budget with a JSON-only nudge just reproduces the
+                # truncation (the 2026-11-08..09 mining crash-loop: 21 failed
+                # segments, zero mined, because a 640-token budget starved
+                # both attempts identically).
+                max_tokens=mine_max_tokens * (2 if attempt_idx else 1),
                 temperature=0.1,
                 response_format=MinedFacts if attempt_idx == 0 else None,
             )

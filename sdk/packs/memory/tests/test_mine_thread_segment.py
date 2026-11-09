@@ -431,3 +431,46 @@ async def test_mine_partial_storage_failure_stops_and_reports_error() -> None:
     assert result.status == "error"
     assert "backend flaked" in (result.error_detail or "")
     assert "✅" not in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_mine_distill_escalates_max_tokens_on_retry() -> None:
+    """The mining distiller's JSON-only retry re-issues the completion at 2x
+    the first attempt's budget.
+
+    The 2026-11-08..09 mining crash-loop: 21 consecutive segments failed with
+    the model's reasoning text ('Let me analyze this conv…') failing JSON
+    validation. On reasoning models the visible JSON shares the completion
+    budget with reasoning tokens, so re-issuing the SAME budget with a
+    JSON-only nudge reproduces the truncation — the escalation mirrors
+    synthesize_learning's documented 2026-09-23 lesson.
+    """
+    calls: list[dict[str, Any]] = []
+
+    async def complete_fn(messages: list[dict[str, Any]], **kwargs: Any) -> str:
+        calls.append(dict(kwargs))
+        if kwargs.get("response_format") is not None:
+            return "Let me analyze this conversation segment. The user discussed"
+        return json.dumps({"facts": [{"action": "create", "fact": "fact one"}]})
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 7")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns(), "user_slug": "adam"},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert len(calls) == 2, "mining distillation must retry exactly once"
+    assert calls[1]["max_tokens"] == calls[0]["max_tokens"] * 2, (
+        "retry must escalate the token budget (2x), not reuse the truncated attempt's"
+    )
+    assert result.extra.get("mined") is True
+    assert result.extra.get("memory_ids") == [7]
