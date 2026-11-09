@@ -229,6 +229,8 @@ async def test_execute_add_failure_is_reported_and_no_success_claim() -> None:
     assert "failed to write correction" in result.output_text
     assert "superseded" not in result.output_text
     assert result.output_json == {}
+    assert result.status == "error"
+    assert result.error_detail == "backend offline"
 
 
 # ── execute: lookup misses and errors ─────────────────────────────────

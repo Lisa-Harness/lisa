@@ -305,7 +305,7 @@ class SqliteMemoryStore:
         retired by the same transaction that inserts the successor —
         supersession is one atomic write, never two best-effort calls. A
         predecessor that is missing or already inactive does not fail the
-        insert; the successor's ``supersedes_id`` link records the intent.
+        insert unless its id would make the successor self-referential.
         """
         write = (
             request
@@ -318,8 +318,8 @@ class SqliteMemoryStore:
         created_at = _now_iso()
         ttl_days = self.default_ttl_days.get(write.memory_tier, DEFAULT_TTL_DAYS["daily"])
         expires_at = _expires_at(ttl_days)
-        with self._lock:
-            self._conn.execute(
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
                 """
                 INSERT INTO memories (
                     entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
@@ -353,12 +353,8 @@ class SqliteMemoryStore:
                 ),
             )
             if write.supersedes_id is not None:
-                # Atomic supersession: retire the scoped predecessor inside
-                # the same transaction that inserts the successor, so a
-                # failed write can never half-supersede (old and new both
-                # active). A missing or already-inactive original matches
-                # zero rows — idempotent, and the successor's supersedes_id
-                # link still records the supersession.
+                if cursor.lastrowid == write.supersedes_id:
+                    raise ValueError("A memory cannot supersede itself")
                 self._conn.execute(
                     """
                     UPDATE memories
@@ -374,7 +370,6 @@ class SqliteMemoryStore:
                         write.surface_id,
                     ),
                 )
-            self._conn.commit()
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE entry_id = ?",
                 (entry_id,),

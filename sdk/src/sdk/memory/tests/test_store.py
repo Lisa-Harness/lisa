@@ -11,6 +11,7 @@ observable semantics.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -161,11 +162,33 @@ async def test_record_memory_supersedes_atomically(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_memory_supersede_is_idempotent_on_inactive_original(
+async def test_failed_supersession_is_rolled_back_before_later_writes(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    original = await store.record_memory(_write(content="original"))
+    assert store._conn is not None
+    store._conn.execute(
+        """
+        CREATE TRIGGER reject_retirement BEFORE UPDATE OF status ON memories
+        WHEN NEW.status = 'retired'
+        BEGIN
+            SELECT RAISE(ABORT, 'retirement failed');
+        END
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="retirement failed"):
+        await store.record_memory(_write(content="failed successor", supersedes_id=original.id))
+
+    await store.record_memory(_write(content="later write"))
+    active = await store.list_memories(user_slug="adam")
+    assert {record.content for record in active} == {"original", "later write"}
+
+
+@pytest.mark.asyncio
+async def test_record_memory_supersede_allows_inactive_original(
     tmp_path: Path,
 ) -> None:
-    """Re-superseding an already-retired or missing original still stores
-    the successor — dedup retries must not fail on the retire half."""
+    """Re-superseding an already-retired original still stores the successor."""
     store = _store(tmp_path)
     original = await store.record_memory(_write(content="v1"))
     first = await store.record_memory(_write(content="v2", supersedes_id=original.id))
@@ -180,28 +203,58 @@ async def test_record_memory_supersede_is_idempotent_on_inactive_original(
 
 
 @pytest.mark.asyncio
-async def test_record_memory_supersede_respects_surface_scope(tmp_path: Path) -> None:
-    """A supersedes_id pointing outside the writer's surface scope retires
-    nothing — isolation holds even through supersession."""
+async def test_missing_supersession_target_retains_link(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    other_surface = await store.record_memory(
-        _write(content="surface-a note", surface_id="surface-a")
-    )
+
+    successor = await store.record_memory(_write(content="correction", supersedes_id=99))
+
+    assert successor.status == "active"
+    assert successor.supersedes_id == 99
+
+
+@pytest.mark.asyncio
+async def test_missing_supersession_target_cannot_reference_new_record(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot supersede itself"):
+        await store.record_memory(_write(content="correction", supersedes_id=1))
+
+    assert await store.list_memories(user_slug="adam", status=None) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_slug", "workspace_id", "memory_scope", "surface_id"),
+    [
+        ("other-user", "default", "personal", "surface-a"),
+        ("adam", "other-workspace", "personal", "surface-a"),
+        ("adam", "default", "shared", "surface-a"),
+        ("adam", "default", "personal", "surface-b"),
+    ],
+)
+async def test_record_memory_supersede_respects_scope(
+    tmp_path: Path, user_slug: str, workspace_id: str, memory_scope: str, surface_id: str
+) -> None:
+    store = _store(tmp_path)
+    original = await store.record_memory(_write(content="original", surface_id="surface-a"))
 
     successor = await store.record_memory(
         _write(
-            content="surface-b correction",
-            surface_id="surface-b",
-            supersedes_id=other_surface.id,
+            content="out-of-scope correction",
+            user_slug=user_slug,
+            workspace_id=workspace_id,
+            memory_scope=memory_scope,
+            surface_id=surface_id,
+            supersedes_id=original.id,
         )
     )
 
     untouched = await store.get_memory(
-        memory_id=other_surface.id, user_slug="adam", surface_id="surface-a"
+        memory_id=original.id, user_slug="adam", surface_id="surface-a"
     )
     assert untouched is not None
     assert untouched.status == "active"
-    assert successor.supersedes_id == other_surface.id
+    assert successor.supersedes_id == original.id
 
 
 @pytest.mark.asyncio

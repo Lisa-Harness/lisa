@@ -255,7 +255,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     if getattr(add_result, "error", None):
         return OperationResult(
-            output_text=f"Memory dispute: failed to write correction: {add_result.error}"
+            output_text=f"Memory dispute: failed to write correction: {add_result.error}",
+            status="error",
+            error_detail=str(add_result.error),
         )
 
     return OperationResult(

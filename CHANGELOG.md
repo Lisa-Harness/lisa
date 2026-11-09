@@ -4,14 +4,30 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-08
+
+### Added
+
+- Relocatable profiles root: `LISA_PROFILES_DIR` moves the profiles root
+  (`<profiles-dir>/<name>` layout unchanged), so profiles can live in a
+  synced folder while the packs venv stays machine-local. A relocated
+  profile shares the base data dir's packs venv. Kernel fail-closed
+  hardening: missing lifecycle targets and tool errors under an abort
+  `pre_turn_failure_policy` fail the turn instead of proceeding.
+- Memory pack evals (`tests/evals/test_pack_validity.py`, `eval` marker) and
+  an offline scripted e2e scenario (`tests/e2e/dedup_recall.scenario.yml`,
+  registered in `e2etest/packs.yml`) that proves the store-then-recall flow
+  end to end with surface-scoped records.
+
 ### Changed
 
 - **Memory capture is now a write-time upsert (breaking).** The memory pack's
   `synthesize_and_store_learning` and `mine_thread_segment` operations search
   the scoped store for similar existing records before distilling and persist
   a per-fact create/update/skip decision: updates write a superseding record
-  (`supersedes_id`) and retire the original; duplicates are skipped. Captures
-  are stored as `memory_kind="semantic"` — distilled facts, not raw
+  (`supersedes_id`) and retire the scoped active original in one transaction;
+  duplicates are skipped. Captures are stored as `memory_kind="semantic"` —
+  distilled facts, not raw
   conversation events. This replaces the batch
   consolidate-episodic-pressure pipeline (the removed
   `consolidate_semantic` operation), aligning the write path with the
@@ -40,6 +56,20 @@ All notable changes to the Lisa Harness will be documented in this file.
   stopping forever — non-destructive because write-time dedup skips records
   that already exist.
 
+### Fixed
+
+- Thread mining leaves a segment pending after an operation exception or
+  memory-write failure, stopping the pass before a later segment can advance
+  the marker past it. A partial write is retried using write-time dedup.
+- Slice-provider content reads report an uninitialized content registry with
+  setup guidance instead of an attribute error.
+- Memory capture and mining log malformed dedup-search responses before
+  proceeding without candidates.
+- A failed supersession transaction rolls back its successor and retirement;
+  failed dispute writes report an error status instead of a successful result.
+- Supersession rejects a missing target ID that would make the successor
+  reference and retire itself.
+
 ### Removed
 
 - `MemoryRecallContext` (unused) and the vestigial
@@ -48,12 +78,17 @@ All notable changes to the Lisa Harness will be documented in this file.
   `_store_mined_facts` helper; the `deep` recall parameter (the deep-synthesis
   flow it described never existed).
 
-### Added
+### Migration
 
-- Memory pack evals (`tests/evals/test_pack_validity.py`, `eval` marker) and
-  an offline scripted e2e scenario (`tests/e2e/dedup_recall.scenario.yml`,
-  registered in `e2etest/packs.yml`) that proves the store-then-recall flow
-  end to end with surface-scoped records.
+- Replace `context.memory.consolidation` with `context.memory.mining` in
+  session configuration. Remove calls to `consolidate_semantic` and the
+  `deep` recall parameter. See
+  [memory mining configuration](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining).
+- External `memory.add` providers must atomically retire the scoped active
+  predecessor when `supersedes_id` is supplied; capture, mining, and dispute
+  no longer issue a separate `memory.retire` call.
+- Capture results no longer expose `retired_ids`; inspect the stored
+  successors' `supersedes_id` links when the prior IDs are needed.
 
 ## [0.5.1] - 2026-11-02
 

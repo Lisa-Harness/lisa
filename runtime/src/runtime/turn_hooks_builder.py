@@ -199,7 +199,7 @@ class _SliceProviderHooksView:
 
     def read_authored_text(self, path: str) -> str:
         """Load authored pack content through the content registry."""
-        return str(content_registry().read_authored_text(path) or "")
+        return content_loader(self._runtime)(path)
 
 
 _VIEW_CHUNK_TURNS = 256
