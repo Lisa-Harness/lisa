@@ -5,6 +5,16 @@ Run commands from the framework workspace root after
 defines pytest paths, markers, Ruff, mypy, and coverage settings;
 [CI](../.github/workflows/ci.yml) is authoritative for required jobs.
 
+Documentation-only changes — paths matching the
+[CI](../.github/workflows/ci.yml) `paths-ignore` filter (`docs/**`, `*.md`,
+`**/README.md`, `**/AUTHORING.md`) — skip the quality, test, and coverage
+matrix by design. On such a pull request the only job that runs is
+[docs.yml](../.github/workflows/docs.yml)'s "Documentation quality" gate
+([check_docs.py](../scripts/check_docs.py)); the CI `merge-gate` aggregate
+does not report, so branch protection must key to the Docs job, not the
+aggregate. Markdown under a package source tree is runtime input, not
+documentation, and runs the full matrix.
+
 ## Test-selection tiers
 
 Select tests by what changed; escalate only when the targeted tier is green.
