@@ -10,6 +10,7 @@ observable semantics.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def _write(
     workspace_id: str = "default",
     memory_tier: str = "long_term",
     salience: float = 0.0,
+    supersedes_id: int | None = None,
     content_json: dict[str, object] | None = None,
     operation_id: str = "test",
 ) -> MemoryWriteRequest:
@@ -44,6 +46,7 @@ def _write(
         salience=salience,
         content_json=content_json or {},
         operation_id=operation_id,
+        supersedes_id=supersedes_id,
     )
 
 
@@ -134,6 +137,92 @@ async def test_record_memory_accepts_raw_dict_request(tmp_path: Path) -> None:
 
     assert record.content == "Stripe integration ships Friday."
     assert record.user_slug == "nadia"
+
+
+@pytest.mark.asyncio
+async def test_record_memory_supersedes_atomically(tmp_path: Path) -> None:
+    """A write with supersedes_id inserts the successor and retires the
+    scoped active predecessor in the same transaction — after the call
+    returns, the correction is the only active claim (review finding 2:
+    supersession must never be two best-effort writes)."""
+    store = _store(tmp_path)
+    original = await store.record_memory(_write(content="We chose MySQL."))
+
+    successor = await store.record_memory(
+        _write(content="We chose PostgreSQL.", supersedes_id=original.id)
+    )
+
+    assert successor.supersedes_id == original.id
+    retired = await store.get_memory(memory_id=original.id, user_slug="adam")
+    assert retired is not None
+    assert retired.status == "retired"
+    active = await store.list_memories(user_slug="adam")
+    assert [r.id for r in active] == [successor.id]
+
+
+@pytest.mark.asyncio
+async def test_record_memory_supersede_is_idempotent_on_inactive_original(
+    tmp_path: Path,
+) -> None:
+    """Re-superseding an already-retired or missing original still stores
+    the successor — dedup retries must not fail on the retire half."""
+    store = _store(tmp_path)
+    original = await store.record_memory(_write(content="v1"))
+    first = await store.record_memory(_write(content="v2", supersedes_id=original.id))
+
+    second = await store.record_memory(_write(content="v3", supersedes_id=original.id))
+
+    assert second.supersedes_id == original.id
+    still_retired = await store.get_memory(memory_id=original.id, user_slug="adam")
+    assert still_retired is not None
+    assert still_retired.status == "retired"
+    assert await store.get_memory(memory_id=first.id, user_slug="adam") is not None
+
+
+@pytest.mark.asyncio
+async def test_record_memory_supersede_respects_surface_scope(tmp_path: Path) -> None:
+    """A supersedes_id pointing outside the writer's surface scope retires
+    nothing — isolation holds even through supersession."""
+    store = _store(tmp_path)
+    other_surface = await store.record_memory(
+        _write(content="surface-a note", surface_id="surface-a")
+    )
+
+    successor = await store.record_memory(
+        _write(
+            content="surface-b correction",
+            surface_id="surface-b",
+            supersedes_id=other_surface.id,
+        )
+    )
+
+    untouched = await store.get_memory(
+        memory_id=other_surface.id, user_slug="adam", surface_id="surface-a"
+    )
+    assert untouched is not None
+    assert untouched.status == "active"
+    assert successor.supersedes_id == other_surface.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_captures_produce_two_active_records(
+    tmp_path: Path,
+) -> None:
+    """The search-then-write dedup is not a concurrency guarantee: two
+    simultaneous captures race past the search and both store. Atomic
+    supersession keeps neither capture half-written; the duplicate stays
+    visible for a later dedup pass instead of being silently lost."""
+    store = _store(tmp_path)
+    request = _write(content="The deploy window is Tuesday 09:00 UTC.")
+
+    first, second = await asyncio.gather(
+        store.record_memory(request),
+        store.record_memory(request),
+    )
+
+    assert first.id != second.id
+    active = await store.list_memories(user_slug="adam")
+    assert sorted(r.id for r in active) == sorted([first.id, second.id])
 
 
 @pytest.mark.asyncio
@@ -615,6 +704,7 @@ def test_schema_version_is_set_and_recreates_on_bump(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_record_memory_persists_memory_kind_and_status(tmp_path: Path) -> None:
     store = _store(tmp_path)
+    original = await store.record_memory(_write(content="earlier fact"))
     record = await store.record_memory(
         MemoryWriteRequest(
             user_slug="adam",
@@ -622,14 +712,16 @@ async def test_record_memory_persists_memory_kind_and_status(tmp_path: Path) -> 
             memory_kind="semantic",
             confidence=0.8,
             item_ids=[1, 2, 3],
-            supersedes_id=1,
+            supersedes_id=original.id,
         )
     )
     assert record.memory_kind == "semantic"
     assert record.status == "active"
     assert record.confidence == 0.8
     assert record.item_ids == [1, 2, 3]
-    assert record.supersedes_id == 1
+    assert record.supersedes_id == original.id
+    # The supersession retired the scoped original in the same transaction.
+    assert (await store.get_memory(memory_id=original.id, user_slug="adam")).status == "retired"
 
 
 @pytest.mark.asyncio

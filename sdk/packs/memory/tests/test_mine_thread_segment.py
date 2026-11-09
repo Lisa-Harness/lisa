@@ -168,8 +168,6 @@ async def test_mine_update_supersedes_and_retires_candidate() -> None:
             )
         if tool_id == "memory.add":
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
-        if tool_id == "memory.retire":
-            return ToolResult(tool_id=tool_id, output_text="Retired memory 7.")
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _make_ctx(
@@ -185,8 +183,9 @@ async def test_mine_update_supersedes_and_retires_candidate() -> None:
     assert result.extra.get("retired_ids") == [7]
     add_calls = [c for c in captured if c[0] == "memory.add"]
     assert add_calls[0][1]["supersedes_id"] == 7
-    retire_calls = [c for c in captured if c[0] == "memory.retire"]
-    assert retire_calls[0][1]["memory_id"] == 7
+    # The store retires the original inside the add's transaction — the
+    # operation itself must not issue any separate memory.retire call.
+    assert not [c for c in captured if c[0] == "memory.retire"]
 
 
 @pytest.mark.asyncio
