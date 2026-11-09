@@ -17,6 +17,14 @@ All notable changes to the Lisa Harness will be documented in this file.
   marker advances past it with a warning so one poisoned segment cannot
   starve every later segment forever. Failed segments are surfaced in the
   slice outcome notes.
+- The mining distiller gained a third retry rung —
+  `kernel.operations.structured_output.assistant_bootstrap_messages`
+  prefills the assistant turn with the schema's opening envelope
+  (`{"facts": [`), so a reasoning-first model continues inside the JSON
+  object instead of answering the re-ask with analysis prose (the poison
+  shape the two-rung ladder reproduced). The bootstrap attempt parses the
+  concatenation of prefix and continuation; all three rungs failing still
+  raises so the slice's quarantine contract holds.
 - Forensic reads merge `errors.jsonl` (ERROR+ evidence) with
   `runtime.jsonl` (WARNING+ diagnostics) instead of reading the runtime log
   only when the errors ledger is empty; duplicate rows are deduplicated and
