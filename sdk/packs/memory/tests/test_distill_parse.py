@@ -39,13 +39,10 @@ def test_parse_valid_json_object() -> None:
     assert result.facts[1].action == "skip"
 
 
-
 def test_parse_fenced_json_object_strips_fence() -> None:
     """Fenced JSON (```json ... ```) is extracted and validated."""
     payload = (
-        "```json\n"
-        + json.dumps({"facts": [{"action": "create", "fact": "one fact"}]})
-        + "\n```"
+        "```json\n" + json.dumps({"facts": [{"action": "create", "fact": "one fact"}]}) + "\n```"
     )
     result = _parse_distilled_learning(payload)
     assert result.facts[0].fact == "one fact"

@@ -15,8 +15,12 @@ the user has seen the answer, the provider:
    semantic records with write-time dedup (create/update/skip per fact).
 
 Mining is bounded (``max_segments_per_slice`` per pass) and idempotent: the
-marker advances only after a segment is mined (or proven unreadable), and the
-write-time dedup in the operation makes even a re-mined segment non-destructive.
+marker advances only after a confirmed success (or a segment proven
+unreadable, or an intentional all-skip result), and the write-time dedup in
+the operation makes even a re-mined segment non-destructive. A returned
+``status="error"`` result — the operation's retryable storage-failure
+outcome — leaves the segment pending and stops the pass: the next slice
+retries it, and dedup keeps the re-mine safe even after a partial write.
 The marker matches by *position* in the index, not exact id, so a rebuilt or
 re-sealed store cannot strand the marker mid-scan — a lost marker re-mines
 from the start and the dedup skips what is already stored.
@@ -241,6 +245,14 @@ class MemoryMiningSlice:
         Returns ``(work_items, last_item)``. The budget bounds the pass:
         each segment's operation call is checked against the remaining
         slice budget before it starts.
+
+        The marker advances only on a confirmed success or an intentional
+        all-skip result. A ``status="error"`` result (the operation's
+        retryable storage-failure outcome) leaves the segment pending and
+        stops the pass — a failing backend would fail the remaining
+        segments too, and a permanently broken segment cannot loop within
+        one pass. Its retry cost is bounded by the per-pass budget, and
+        write-time dedup makes each retry harmless.
         """
         exec_op = getattr(self._hooks, "execute_operation", None)
         if not callable(exec_op):
@@ -277,6 +289,19 @@ class MemoryMiningSlice:
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("memory_mining: %s failed: %s", self._config.mine_operation, exc)
                 continue
+            if getattr(result, "status", "") == "error":
+                # Retryable storage failure (the operation's documented
+                # outcome contract): leave the segment pending and stop the
+                # pass — a failing backend would fail the remaining segments
+                # too, and the next slice retries from here. Write-time
+                # dedup makes the re-mine safe, including after a partial
+                # write.
+                logger.warning(
+                    "memory_mining: %s reported storage failure for segment %s; leaving it pending",
+                    self._config.mine_operation,
+                    seg_id,
+                )
+                break
             extra = getattr(result, "extra", {}) or {}
             stored_ids = extra.get("memory_ids") or []
             self._persist_mine_marker(seg_id)

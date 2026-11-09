@@ -82,11 +82,17 @@ def _thread_base(tmp_path: Path, user_slug: str = "adam") -> Path:
 class _FakeHooks:
     """Minimal hooks view with execute_tool + execute_operation + model seams."""
 
-    def __init__(self, operation_extra: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        operation_extra: dict[str, Any] | None = None,
+        *,
+        operation_status: str = "success",
+    ) -> None:
         self._operation_extra = operation_extra or {
             "mined": True,
             "memory_ids": [4, 5],
         }
+        self._operation_status = operation_status
         self.op_calls: list[tuple[str, dict[str, Any]]] = []
         self.user_slug = "adam"
         self.memory_data_dir = None
@@ -102,7 +108,15 @@ class _FakeHooks:
 
     async def execute_operation(self, op_id: str, ctx: Any) -> Any:
         self.op_calls.append((op_id, dict(getattr(ctx, "params", {}) or {})))
-        return type("_OpResult", (), {"output_text": "mined", "extra": self._operation_extra})()
+        return type(
+            "_OpResult",
+            (),
+            {
+                "output_text": "mined",
+                "extra": self._operation_extra,
+                "status": self._operation_status,
+            },
+        )()
 
 
 @pytest.mark.asyncio
@@ -209,6 +223,120 @@ async def test_operation_failure_does_not_advance_marker(tmp_path: Path) -> None
 
     assert outcome.work_items_completed == 0
     assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+
+class _StatusSwitchHooks(_FakeHooks):
+    """First call succeeds, later calls report storage failures."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._calls = 0
+
+    async def execute_operation(self, op_id: str, ctx: Any) -> Any:
+        self._calls += 1
+        if self._calls > 1:
+            self.op_calls.append((op_id, dict(getattr(ctx, "params", {}) or {})))
+            return type(
+                "_OpResult",
+                (),
+                {
+                    "output_text": "mining failed",
+                    "extra": {"mined": False, "memory_ids": []},
+                    "status": "error",
+                },
+            )()
+        return await super().execute_operation(op_id, ctx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation_extra", "operation_status"),
+    [
+        ({"mined": False, "memory_ids": [], "error": "backend offline"}, "error"),
+        ({"mined": False, "memory_ids": [4]}, "error"),
+    ],
+    ids=["zero_storage", "partial_storage"],
+)
+async def test_error_result_leaves_segment_pending(
+    tmp_path: Path,
+    operation_extra: dict[str, Any],
+    operation_status: str,
+) -> None:
+    """A returned status='error' result is a retryable storage failure:
+    the marker stays un-advanced so the next pass retries the segment."""
+    hooks = _FakeHooks(operation_extra=operation_extra, operation_status=operation_status)
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base)
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
+
+    outcome = await slc.slice(None, _policy())
+
+    assert outcome.work_items_completed == 0
+    assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_error_result_retries_next_pass(tmp_path: Path) -> None:
+    """After a storage-failure pass the pending segment mines on retry."""
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base)
+    failing = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"),
+        turn_hooks=_FakeHooks(
+            operation_extra={"mined": False, "memory_ids": []},
+            operation_status="error",
+        ),
+    )
+    failed = await failing.slice(None, _policy())
+
+    assert failed.work_items_completed == 0
+    assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+    success = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=_FakeHooks()
+    )
+    outcome = await success.slice(None, _policy())
+
+    assert outcome.work_items_completed == 1
+    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+
+
+@pytest.mark.asyncio
+async def test_all_skip_result_advances_marker(tmp_path: Path) -> None:
+    """An intentional all-skip result (mined False, no error) is not a
+    failure: the segment is done, so the marker advances."""
+    hooks = _FakeHooks(operation_extra={"mined": False, "memory_ids": [], "skipped": 1})
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base)
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
+
+    outcome = await slc.slice(None, _policy())
+
+    assert outcome.work_items_completed == 1
+    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+
+
+@pytest.mark.asyncio
+async def test_storage_failure_stops_the_pass_after_prior_success(tmp_path: Path) -> None:
+    """Partial-pass failure: earlier segments stay mined, the failing one
+    stays pending, and later segments wait for the next pass."""
+    hooks = _StatusSwitchHooks()
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base, seg_id="0001", turns=(0, 1))
+    _write_segment_fixture(base, seg_id="0002", turns=(2, 3))
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
+
+    outcome = await slc.slice(None, _policy())
+
+    assert outcome.work_items_completed == 1
+    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+    assert len(hooks.op_calls) == 2
 
 
 @pytest.mark.asyncio

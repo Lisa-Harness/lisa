@@ -321,9 +321,7 @@ async def test_execute_defaults_content_from_query_and_response() -> None:
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
         distilled.append(str(messages[-1].get("content", "")))
-        return json.dumps(
-            {"facts": [{"action": "create", "fact": "one durable fact"}]}
-        )
+        return json.dumps({"facts": [{"action": "create", "fact": "one durable fact"}]})
 
     async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
         if tool_id == "memory.search":
