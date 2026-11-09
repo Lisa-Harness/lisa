@@ -53,6 +53,40 @@ def test_identity_same_turn_ignores_the_store_stem() -> None:
     assert live.same_turn(saved)
 
 
+def test_identity_same_turn_ignores_the_turn_index() -> None:
+    """A resumed turn takes a fresh reservation and is still the same turn.
+
+    ``turn_index`` is a forensic join key reserved at turn start, not turn
+    identity: the resume path reserves a fresh index
+    (``runtime.thread.reserved_turn``) so overlapping turns never share a
+    number. Comparing indexes rejected every in-place resume with
+    "Continuation belongs to a different turn identity or session plan"
+    (the 2026-10-22 23:31 incident; zero successful cap-pause resumes after
+    the index joined the comparison).
+    """
+    saved = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+        turn_index=41,
+    )
+    live = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+        turn_index=42,
+    )
+
+    assert saved.same_turn(live)
+    assert live.same_turn(saved)
+
+
 @pytest.mark.asyncio
 async def test_a_pre_upgrade_continuation_still_validates() -> None:
     """The resume guard accepts a continuation saved before the stem existed.
@@ -97,6 +131,57 @@ async def test_a_pre_upgrade_continuation_still_validates() -> None:
         context=ContextHooks(),
         services=HostServiceHandles(),
         identity=replace(identity, thread_store_slug="u--c"),
+    )
+
+    await _validate_turn_continuation(saved, hooks)
+
+
+@pytest.mark.asyncio
+async def test_a_reindexed_continuation_still_validates() -> None:
+    """The resume guard accepts a continuation saved under another turn index.
+
+    A resumed turn reserves a fresh index (``reserved_turn``), so the live
+    identity's index never equals the saved one. This exercises the guard
+    itself: comparing indexes rejects the resume, and the error escapes the
+    turn as a ``ValueError``.
+    """
+    from dataclasses import replace
+
+    from kernel.turn_runner import _validate_turn_continuation
+
+    identity = TurnIdentity(
+        workspace_id="w",
+        user_id="u",
+        user_slug="u",
+        conversation_id="c",
+        surface_id="c",
+        task_id="t",
+        turn_index=41,
+    )
+    saved = TurnContinuation(
+        identity=identity,
+        mode_id="default",
+        query="q",
+        state_json="{}",
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="{}",
+        preferred_model_id=None,
+        max_iterations=1,
+        per_step_max_iterations=1,
+        per_step_max_tool_calls=1,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        reason="cap",
+    )
+    hooks = TurnHooks(
+        models=ModelHooks(),
+        context=ContextHooks(),
+        services=HostServiceHandles(),
+        identity=replace(identity, turn_index=42),
     )
 
     await _validate_turn_continuation(saved, hooks)

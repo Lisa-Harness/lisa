@@ -1123,7 +1123,11 @@ def _scale_iteration_ceiling(
 
 async def _validate_turn_continuation(saved: TurnContinuation, hooks: TurnHooks) -> None:
     if not saved.identity.same_turn(hooks.identity):
-        raise ValueError("Continuation belongs to a different turn identity or session plan.")
+        raise ValueError(
+            "Continuation belongs to a different turn identity or session plan "
+            f"(saved digest {saved.identity.session_plan_digest[:12] or 'none'}"
+            f" != live digest {hooks.identity.session_plan_digest[:12] or 'none'})."
+        )
     if not saved.requires_approval:
         return
     service = hooks.services.approval_service
