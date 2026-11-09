@@ -69,16 +69,20 @@ persist a per-fact decision:
 - **create** — new durable knowledge; a new semantic record.
 - **update** — an existing record covers the knowledge but the new content
   refines or corrects it; a superseding record is written with
-  `supersedes_id`, and the backend retires the scoped original in the same
-  transaction — supersession is atomic, so a successful add means the
-  correction is the only active claim. The retired original stays
-  queryable with `status=None`, out of the active recall pool.
+  `supersedes_id`, and the backend retires the scoped active original in the
+  same transaction. The retired original stays queryable with `status=None`,
+  out of the active recall pool.
 - **skip** — already stored; nothing is written.
 
 The store's `retire` (not `delete`) preserves the audit trail, so
 supersession is temporal: the thread and the retired records remain the
 evidence, the active pool carries the current claim. `dispute_memory` uses
-the same atomic supersession seam for corrections. The search-then-write
+the same atomic supersession seam for corrections. A missing, inactive, or
+out-of-scope predecessor does not prevent storing the linked successor, unless
+the requested ID would make the successor refer to itself.
+Search-then-write dedup is not a concurrency guarantee: simultaneous captures
+can both store a similar fact. External `memory.add` providers must implement
+the same atomic, scoped supersession behavior.
 
 Captures are stored as `memory_kind="semantic"` — they are distilled,
 self-contained facts by construction. The store has no remaining episodic
@@ -105,6 +109,9 @@ data root; the marker is positional, so a rebuilt or re-sealed store cannot
 strand it mid-scan, and the write-time dedup makes even a full re-mine
 non-destructive. Mining is bounded (`max_segments_per_slice`) and never
 mutates the thread — the sealed segment is the archive.
+
+An operation exception or storage failure leaves the segment pending and
+stops that pass, so a later segment cannot advance the marker past it.
 
 Tune `context.memory.mining` in the
 [session schema](SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining):

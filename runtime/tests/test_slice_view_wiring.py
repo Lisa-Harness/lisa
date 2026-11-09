@@ -11,9 +11,15 @@ no-op'd on every turn.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from runtime.turn_hooks_builder import _SliceProviderHooksView, build_turn_hooks
+import pytest
+from runtime.turn_hooks_builder import (
+    _complete_via_provider_gateways,
+    _SliceProviderHooksView,
+    build_turn_hooks,
+)
 
 from runtime import HostRuntime
 
@@ -53,6 +59,85 @@ def test_view_exposes_identity_and_path_fields(tmp_path: Path) -> None:
     assert view.workspace_id == runtime.session_plan.manifest.name
     assert view.surface_id == runtime.config.surface_id
     assert callable(view.read_authored_text)
+
+
+@pytest.mark.parametrize(("path", "expected"), [("prompt.md", "prompt"), ("missing.md", "")])
+def test_view_reads_authored_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, expected: str
+) -> None:
+    class Registry:
+        def read_authored_text(self, relative_path: str) -> str:
+            return {"prompt.md": "prompt"}.get(relative_path, "")
+
+    monkeypatch.setattr("runtime.turn_hooks_builder.content_registry", Registry)
+    view = _SliceProviderHooksView(runtime=_make_runtime(tmp_path))
+
+    assert view.read_authored_text(path) == expected
+
+
+def test_view_reports_missing_content_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("runtime.turn_hooks_builder.content_registry", lambda: None)
+    view = _SliceProviderHooksView(runtime=_make_runtime(tmp_path))
+
+    with pytest.raises(RuntimeError, match="Content registry not set"):
+        view.read_authored_text("prompt.md")
+
+
+@pytest.mark.asyncio
+async def test_slice_completion_requires_a_matching_gateway() -> None:
+    model = SimpleNamespace(provider="example")
+    kwargs = {"messages": [], "model_def": model, "max_tokens": 64, "temperature": 0.1}
+
+    with pytest.raises(NotImplementedError, match="no provider gateway wired"):
+        await _complete_via_provider_gateways(None, **kwargs)
+
+    class Gateways:
+        def gateway_for(self, provider: str) -> None:
+            assert provider == "example"
+
+    with pytest.raises(NotImplementedError, match="no provider gateway registered"):
+        await _complete_via_provider_gateways(Gateways(), **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_slice_completion_forwards_request_to_gateway() -> None:
+    requests: list[Any] = []
+    model = SimpleNamespace(provider="example")
+    messages = [{"role": "user", "content": "hello"}]
+    tools = [{"type": "function"}]
+
+    class Gateway:
+        async def complete(self, request: Any) -> str:
+            requests.append(request)
+            return "completed"
+
+    gateway = Gateway()
+
+    class Gateways:
+        def gateway_for(self, provider: str) -> Gateway:
+            assert provider == "example"
+            return gateway
+
+    result = await _complete_via_provider_gateways(
+        Gateways(),
+        messages=messages,
+        model_def=model,
+        max_tokens=64,
+        temperature=0.1,
+        tools=tools,
+        response_format=dict,
+    )
+
+    assert result == "completed"
+    request = requests[0]
+    assert request.model_def is model
+    assert request.messages == messages
+    assert request.max_tokens == 64
+    assert request.temperature == 0.1
+    assert request.tools == tools
+    assert request.response_format is dict
 
 
 def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:

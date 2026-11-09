@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp_server.memory.server import mcp as memory_mcp
 
 
 def _tool_text(result: Any) -> str:
@@ -139,6 +140,26 @@ async def test_memory_add(memory_env: Path) -> None:
         {"user_slug": "alice", "content": "hello from test"},
     )
     assert "Memory stored with ID" in _tool_text(result)
+
+
+@pytest.mark.asyncio
+async def test_memory_add_supersedes_scoped_original(memory_env: Path) -> None:
+    scope = {"user_slug": "alice", "workspace_id": "project", "surface_id": "surface-a"}
+    original_result = await memory_mcp.call_tool("add_memory", {**scope, "content": "original"})
+    original_id = int(_tool_text(original_result).rsplit("ID ", 1)[-1])
+
+    successor_result = await memory_mcp.call_tool(
+        "add_memory",
+        {**scope, "content": "corrected", "supersedes_id": original_id},
+    )
+    successor_id = int(_tool_text(successor_result).rsplit("ID ", 1)[-1])
+
+    original = await memory_mcp.call_tool("get_memory", {**scope, "memory_id": original_id})
+    successor = await memory_mcp.call_tool("get_memory", {**scope, "memory_id": successor_id})
+    active = await memory_mcp.call_tool("list_memories", scope)
+    assert json.loads(_tool_text(original))["status"] == "retired"
+    assert json.loads(_tool_text(successor))["supersedes_id"] == original_id
+    assert [record["id"] for record in json.loads(_tool_text(active))] == [successor_id]
 
 
 @pytest.mark.asyncio

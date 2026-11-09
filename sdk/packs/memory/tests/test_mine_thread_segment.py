@@ -132,7 +132,8 @@ async def test_invalid_params_reports_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mine_update_supersedes_and_retires_candidate() -> None:
+@pytest.mark.parametrize("candidate_id", [7, "memory-7"])
+async def test_mine_update_supersedes_and_retires_candidate(candidate_id: int | str) -> None:
     """An update decision writes a superseding record and retires the old one."""
     captured: list[tuple[str, dict[str, Any]]] = []
 
@@ -143,7 +144,7 @@ async def test_mine_update_supersedes_and_retires_candidate() -> None:
                     {
                         "action": "update",
                         "fact": "User prefers Claude for distillation work",
-                        "supersedes_id": 7,
+                        "supersedes_id": candidate_id,
                         "reason": "refines existing preference",
                     }
                 ]
@@ -158,11 +159,13 @@ async def test_mine_update_supersedes_and_retires_candidate() -> None:
                 tool_id=tool_id,
                 output_text=json.dumps(
                     [
+                        {"id": None, "content": "Record without an id"},
+                        {"content": "Record missing an id"},
                         {
-                            "id": 7,
+                            "id": candidate_id,
                             "content": "User prefers Claude",
                             "created_at": "2026-07-10T00:00:00Z",
-                        }
+                        },
                     ]
                 ),
             )
@@ -180,11 +183,9 @@ async def test_mine_update_supersedes_and_retires_candidate() -> None:
 
     assert result.extra.get("mined") is True
     assert result.extra.get("updated_ids") == [9]
-    assert result.extra.get("retired_ids") == [7]
+    assert result.extra.get("retired_ids") == [candidate_id]
     add_calls = [c for c in captured if c[0] == "memory.add"]
-    assert add_calls[0][1]["supersedes_id"] == 7
-    # The store retires the original inside the add's transaction — the
-    # operation itself must not issue any separate memory.retire call.
+    assert add_calls[0][1]["supersedes_id"] == candidate_id
     assert not [c for c in captured if c[0] == "memory.retire"]
 
 

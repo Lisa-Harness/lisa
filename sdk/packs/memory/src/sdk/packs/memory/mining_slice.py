@@ -247,12 +247,10 @@ class MemoryMiningSlice:
         slice budget before it starts.
 
         The marker advances only on a confirmed success or an intentional
-        all-skip result. A ``status="error"`` result (the operation's
-        retryable storage-failure outcome) leaves the segment pending and
-        stops the pass — a failing backend would fail the remaining
-        segments too, and a permanently broken segment cannot loop within
-        one pass. Its retry cost is bounded by the per-pass budget, and
-        write-time dedup makes each retry harmless.
+        all-skip result. An exception or ``status="error"`` result leaves the
+        segment pending and stops the pass so a later success cannot advance
+        the marker past it. Its retry cost is bounded by the per-pass budget,
+        and write-time dedup makes each retry harmless.
         """
         exec_op = getattr(self._hooks, "execute_operation", None)
         if not callable(exec_op):
@@ -287,8 +285,13 @@ class MemoryMiningSlice:
             try:
                 result = await exec_op(self._config.mine_operation, op_ctx)
             except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("memory_mining: %s failed: %s", self._config.mine_operation, exc)
-                continue
+                logger.warning(
+                    "memory_mining: %s failed for segment %s; leaving it pending: %s",
+                    self._config.mine_operation,
+                    seg_id,
+                    exc,
+                )
+                break
             if getattr(result, "status", "") == "error":
                 # Retryable storage failure (the operation's documented
                 # outcome contract): leave the segment pending and stop the

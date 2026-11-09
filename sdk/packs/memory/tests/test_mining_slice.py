@@ -9,7 +9,9 @@ tuning resolution — no live model or SQLite store involved.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -77,6 +79,47 @@ def _thread_base(tmp_path: Path, user_slug: str = "adam") -> Path:
     base = tmp_path / "threads" / user_slug
     base.parent.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def test_missing_marker_root_is_a_noop() -> None:
+    slc = MemoryMiningSlice(config=_config(), turn_hooks=_FakeHooks())
+
+    assert slc._mine_marker_path() is None
+    assert slc._load_last_mined_seg_id() == ""
+    slc._persist_mine_marker("0001")
+
+
+def test_marker_io_failures_are_reported(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).mkdir()
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=_FakeHooks())
+
+    assert slc._load_last_mined_seg_id() == ""
+    slc._persist_mine_marker("0001")
+
+    assert "failed to read mine.marker" in caplog.text
+    assert "failed to persist mine.marker" in caplog.text
+
+
+def test_segment_index_reports_read_errors(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    base = _thread_base(tmp_path)
+    Path(f"{base}.index.jsonl").mkdir()
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=_FakeHooks())
+
+    assert slc._segment_index(base) == []
+    assert "failed to read segment index" in caplog.text
+
+
+def test_segment_index_ignores_invalid_records(tmp_path: Path) -> None:
+    base = _thread_base(tmp_path)
+    record = {"seg_id": "0001", "turn_lo": 0, "turn_hi": 2}
+    Path(f"{base}.index.jsonl").write_text(
+        "\n{bad json}\n[]\n{}\n" + json.dumps(record) + "\n", encoding="utf-8"
+    )
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=_FakeHooks())
+
+    assert slc._segment_index(base) == [record]
 
 
 class _FakeHooks:
@@ -223,6 +266,36 @@ async def test_operation_failure_does_not_advance_marker(tmp_path: Path) -> None
 
     assert outcome.work_items_completed == 0
     assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_operation_exception_stops_pass_and_retries_in_order(tmp_path: Path) -> None:
+    class _FailOnceHooks(_FakeHooks):
+        attempts = 0
+
+        async def execute_operation(self, op_id: str, ctx: Any) -> Any:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("distillation down")
+            return await super().execute_operation(op_id, ctx)
+
+    hooks = _FailOnceHooks()
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base, seg_id="0001", turns=(0, 1))
+    _write_segment_fixture(base, seg_id="0002", turns=(2, 3))
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=hooks)
+
+    failed = await slc.slice(None, _policy())
+
+    assert failed.work_items_completed == 0
+    assert hooks.attempts == 1
+    assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+    retried = await slc.slice(None, _policy())
+
+    assert retried.work_items_completed == 2
+    assert [params["turns"][0]["turn"] for _, params in hooks.op_calls] == [0, 2]
+    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0002"
 
 
 class _StatusSwitchHooks(_FakeHooks):
@@ -375,6 +448,26 @@ async def test_budget_zero_means_unlimited_mines_segment(tmp_path: Path) -> None
     assert outcome.work_items_completed == 1
 
 
+@pytest.mark.asyncio
+async def test_expired_budget_does_not_advance_the_marker(tmp_path: Path) -> None:
+    hooks = _FakeHooks()
+    _write_segment_fixture(_thread_base(tmp_path))
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=hooks)
+
+    completed, last_item = await slc._mine_new_segments(_policy(budget_ms=1), time.monotonic() - 1)
+
+    assert (completed, last_item) == (0, "")
+    assert hooks.op_calls == []
+    assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_operation_dispatcher_does_no_work(tmp_path: Path) -> None:
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=object())
+
+    assert (await slc.slice(None, _policy())).work_items_completed == 0
+
+
 # ── Factory ───────────────────────────────────────────────────────────
 
 
@@ -391,6 +484,18 @@ class _Plan:
 async def test_factory_returns_none_when_tuning_missing() -> None:
     factory = get_slice_provider_factory()
     assert factory(_FakeHooks(), _Plan(None)) is None
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        None,
+        SimpleNamespace(manifest=SimpleNamespace(context=None)),
+        SimpleNamespace(manifest=SimpleNamespace(context=SimpleNamespace(memory=None))),
+    ],
+)
+def test_factory_returns_none_for_incomplete_plan(plan: Any) -> None:
+    assert get_slice_provider_factory()(_FakeHooks(), plan) is None
 
 
 def test_factory_builds_slice_from_view() -> None:
