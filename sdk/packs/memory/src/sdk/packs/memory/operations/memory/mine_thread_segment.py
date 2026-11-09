@@ -14,6 +14,22 @@ turn range.
 The thread itself is never mutated — mining is a pure read over the
 lossless store. The segment IS the archive; updates retire only the
 derived memory record they supersede.
+
+Per-segment outcomes — the mining slice keys its durable ``mine.marker``
+checkpoint on these:
+
+- **success** — at least one fact stored: a normal result with
+  ``extra["mined"] = True``.
+- **intentional no-durable-knowledge** — the distiller skipped every fact
+  as already stored: ``extra["mined"] = False`` plus a ``skipped`` count.
+- **retryable storage failure** — any ``memory.add`` error:
+  ``status="error"`` with ``error_detail``. The slice leaves the segment
+  pending so the next pass retries it.
+
+A partial storage failure (some facts stored, then an error) is retryable:
+the operation stops at the first storage error and its error result does
+not enumerate partial writes — the store's write-time dedup makes the
+re-mine idempotent, so the retry only fills what is missing.
 """
 
 from __future__ import annotations
@@ -122,8 +138,7 @@ class MinedFact(BaseModel):
     )
     fact: str = Field(
         ...,
-        description="The concise, self-contained durable fact. Empty only when "
-        "action is 'skip'.",
+        description="The concise, self-contained durable fact. Empty only when action is 'skip'.",
         min_length=0,
         max_length=400,
     )
@@ -411,6 +426,10 @@ def _validate_mining_params(
     return parsed, turns_text, None
 
 
+class _MiningStorageFailure(RuntimeError):
+    """A memory.add call errored while persisting one mined fact."""
+
+
 async def _persist_mined_fact(
     ctx: OperationExecutionContext,
     parsed: Parameters,
@@ -419,11 +438,12 @@ async def _persist_mined_fact(
     candidate_ids: set[int | str],
     turn_lo: int | None,
     turn_hi: int | None,
-) -> tuple[str, int | None, int | str | None] | None:
-    """Persist one mined fact; return ``(kind, minted_id, supersedes_id)`` or None.
+) -> tuple[str, int | None, int | str | None]:
+    """Persist one mined fact; return ``(kind, minted_id, supersedes_id)``.
 
-    ``None`` means the storage call errored (logged and skipped — the other
-    facts in the segment still store).
+    Raises :class:`_MiningStorageFailure` when the storage call errors —
+    the caller surfaces a typed retryable failure instead of skipping the
+    fact silently.
     """
     fact = item.fact.strip()
     supersedes = item.supersedes_id if item.supersedes_id in candidate_ids else None
@@ -470,8 +490,7 @@ async def _persist_mined_fact(
         ),
     )
     if getattr(add_result, "error", None):
-        logger.warning("mine_thread_segment: fact storage failed: %s", add_result.error)
-        return None
+        raise _MiningStorageFailure(str(add_result.error))
     minted = _parse_memory_id(getattr(add_result, "output_text", "") or "")
     return ("update" if supersedes is not None else "create"), minted, supersedes
 
@@ -485,7 +504,11 @@ async def _apply_mining_decisions(
     turn_lo: int | None,
     turn_hi: int | None,
 ) -> tuple[list[int], list[int], list[int | str]]:
-    """Persist each mined fact's decision; returns (created, updated, retired)."""
+    """Persist each mined fact's decision; returns (created, updated, retired).
+
+    Raises :class:`_MiningStorageFailure` on the first storage error —
+    facts after it are not attempted this pass.
+    """
     created_ids: list[int] = []
     updated_ids: list[int] = []
     retired_ids: list[int | str] = []
@@ -498,8 +521,6 @@ async def _apply_mining_decisions(
             turn_lo=turn_lo,
             turn_hi=turn_hi,
         )
-        if result is None:
-            continue
         kind, minted, supersedes = result
         if kind == "update":
             if minted is not None:
@@ -546,14 +567,28 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             extra={"mined": False, "memory_ids": [], "skipped": len(mined.facts)},
         )
 
-    created_ids, updated_ids, retired_ids = await _apply_mining_decisions(
-        ctx,
-        parsed,
-        facts=actionable,
-        candidate_ids=candidate_ids,
-        turn_lo=turn_lo,
-        turn_hi=turn_hi,
-    )
+    try:
+        created_ids, updated_ids, retired_ids = await _apply_mining_decisions(
+            ctx,
+            parsed,
+            facts=actionable,
+            candidate_ids=candidate_ids,
+            turn_lo=turn_lo,
+            turn_hi=turn_hi,
+        )
+    except _MiningStorageFailure as exc:
+        # Typed retryable failure: the mining slice keys its checkpoint on
+        # status="error" and leaves this segment pending. extra keeps the
+        # public shape (mined False, no ids) — the store's write-time dedup
+        # makes the re-mine idempotent rather than this result enumerating
+        # partial writes.
+        logger.warning("mine_thread_segment: segment storage failed: %s", exc)
+        return OperationResult(
+            output_text=f"⛔ Mining storage failed: {exc}",
+            status="error",
+            error_detail=str(exc),
+            extra={"mined": False, "memory_ids": []},
+        )
 
     stored_count = len(created_ids) + len(updated_ids)
     return OperationResult(

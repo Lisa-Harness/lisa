@@ -194,9 +194,7 @@ async def test_mine_skip_only_facts_stores_nothing() -> None:
     """Every fact marked skip → nothing stored, mined=False with the count."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
-        return json.dumps(
-            {"facts": [{"action": "skip", "fact": "", "reason": "already stored"}]}
-        )
+        return json.dumps({"facts": [{"action": "skip", "fact": "", "reason": "already stored"}]})
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         if tool_id == "memory.search":
@@ -233,11 +231,7 @@ async def test_mine_update_with_hallucinated_id_degrades_to_create() -> None:
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
         return json.dumps(
-            {
-                "facts": [
-                    {"action": "update", "fact": "refined fact", "supersedes_id": 999}
-                ]
-            }
+            {"facts": [{"action": "update", "fact": "refined fact", "supersedes_id": 999}]}
         )
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
@@ -268,3 +262,70 @@ async def test_mine_update_with_hallucinated_id_degrades_to_create() -> None:
 
     assert result.extra.get("created_ids") == [11]
     assert result.extra.get("retired_ids") == []
+
+
+@pytest.mark.asyncio
+async def test_mine_all_adds_failing_returns_retryable_error() -> None:
+    """Every memory.add erroring → typed status='error' result, never a
+    success envelope: the mining slice keys its checkpoint on this."""
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps({"facts": [{"action": "create", "fact": "a durable fact"}]})
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, error="backend offline")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns()},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.status == "error"
+    assert "backend offline" in (result.error_detail or "")
+    assert result.extra.get("mined") is False
+    assert result.extra.get("memory_ids") == []
+    assert "✅" not in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_mine_partial_storage_failure_stops_and_reports_error() -> None:
+    """First fact stores, second errors → the operation stops (fail-fast)
+    and reports a retryable error; dedup makes the re-mine idempotent."""
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {
+                "facts": [
+                    {"action": "create", "fact": "fact one"},
+                    {"action": "create", "fact": "fact two"},
+                ]
+            }
+        )
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        if tool_id == "memory.add":
+            if "fact two" in (getattr(ctx, "parameters", {}) or {}).get("content", ""):
+                return ToolResult(tool_id=tool_id, error="backend flaked")
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 31")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns()},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.status == "error"
+    assert "backend flaked" in (result.error_detail or "")
+    assert "✅" not in result.output_text

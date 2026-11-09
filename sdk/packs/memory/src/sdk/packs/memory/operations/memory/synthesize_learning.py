@@ -152,8 +152,7 @@ class DistilledFact(BaseModel):
     )
     fact: str = Field(
         ...,
-        description="The concise, self-contained durable fact. Empty only when "
-        "action is 'skip'.",
+        description="The concise, self-contained durable fact. Empty only when action is 'skip'.",
         min_length=0,
         max_length=400,
     )

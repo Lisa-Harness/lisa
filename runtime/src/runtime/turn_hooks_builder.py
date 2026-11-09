@@ -1932,7 +1932,6 @@ def build_turn_hooks(
     async def _execute_tool(tool_id: str, tool_ctx: Any) -> ToolResult:
         return await _execute_mcp_tool(runtime, tool_id, tool_ctx)
 
-
     # ── Turn-complete hook ─────────────────────────────────────────
 
     # ── Auto-capture trigger detection (extracted to turn_hooks._auto_capture) ─
@@ -1973,6 +1972,7 @@ def build_turn_hooks(
             tools=tools,
             response_format=response_format,
         )
+
     # Same snapshot discipline for the model router: resolve once at hook-build
     # time so the post-turn auto-capture context sees the same operation-scoped
     # routing rules the turn loop itself used. ``_wire_context_seams`` resolves
