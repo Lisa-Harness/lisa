@@ -21,9 +21,19 @@ from sdk.filelock import async_file_lock, atomic_write_text, sidecar_lock_path
 
 from runtime.approval_ledger import ApprovalLedger
 
-__all__ = ["FileApprovalService"]
+__all__ = ["ApprovalStoreCorruptError", "FileApprovalService"]
 
 logger = logging.getLogger(__name__)
+
+
+class ApprovalStoreCorruptError(RuntimeError):
+    """The approvals working store exists but cannot be read.
+
+    Raised instead of treating corruption as an empty store: mutating on
+    top of a misread would write the subset back and erase pending
+    approvals. The original file is never rewritten by this path — an
+    operator must repair or remove the file explicitly.
+    """
 
 
 class FileApprovalService:
@@ -206,21 +216,33 @@ class FileApprovalService:
             ]
 
     def _load_records(self) -> dict[str, ApprovalRecord]:
+        """Load the working store, failing closed on corruption.
+
+        File-absent is the clean-slate case and returns ``{}``. A file
+        that exists but is unreadable, is not a JSON object, or contains
+        an unparsable record raises :class:`ApprovalStoreCorruptError` —
+        proceeding on a partial view would let the next ``_store_records``
+        persist that subset and erase the dropped records (the 2026-11-08
+        review, finding 3). The original bytes stay untouched.
+        """
         if not self._path.is_file():
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("approvals: failed to load %s", self._path, exc_info=True)
-            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ApprovalStoreCorruptError(
+                f"approvals store {self._path} is unreadable: {exc}"
+            ) from exc
         if not isinstance(raw, dict):
-            return {}
+            raise ApprovalStoreCorruptError(f"approvals store {self._path} is not a JSON object")
         records: dict[str, ApprovalRecord] = {}
         for request_id, value in raw.items():
             try:
                 records[str(request_id)] = ApprovalRecord.model_validate(value)
-            except Exception:  # pylint: disable=broad-except
-                continue
+            except Exception as exc:  # pylint: disable=broad-except
+                raise ApprovalStoreCorruptError(
+                    f"approvals store {self._path} has an invalid record {request_id!r}: {exc}"
+                ) from exc
         return records
 
     def _store_records(self, records: dict[str, ApprovalRecord]) -> None:

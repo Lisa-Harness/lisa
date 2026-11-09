@@ -2644,7 +2644,11 @@ async def _resolve_iteration_lifecycle(
             _open_records = await hooks.services.recovery_service.list_open(
                 _build_recovery_identity(hooks)
             )
-        except Exception:  # pylint: disable=broad-except
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "recovery store unreadable; resolver sees no open records (fail closed): %s",
+                exc,
+            )
             _open_records = []
 
     # Historical workflow turns are not iterations in this turn's budget.

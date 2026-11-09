@@ -181,7 +181,10 @@ async def try_affirmative_approval_resume(
     try:
         pending = await service.list_pending(approval_identity(runtime))
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("approval decision list_pending failed: %s", exc)
+        logger.warning(
+            "approval decision path could not read pending approvals (fail closed): %s",
+            exc,
+        )
         return None
     if len(pending) != 1:
         return None

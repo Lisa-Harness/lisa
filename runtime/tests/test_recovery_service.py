@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from kernel.recovery import RecoveryIdentity, RecoveryRecord
 from runtime.handle_message import handle_message
-from runtime.recovery import FileRecoveryService
+from runtime.recovery import FileRecoveryService, RecoveryStoreCorruptError
 
 from runtime import HostConfig, HostRuntime, NullTransport
 
@@ -99,6 +99,59 @@ async def test_mark_running_indeterminate_promotes_orphans(tmp_path: Path) -> No
     assert promoted is not None
     assert promoted.state == "indeterminate"
     assert promoted.retry_policy == "confirm"
+
+
+# ---------------------------------------------------------------------------
+# Corruption fail-closed (review 2026-11-08, finding 3): the store must
+# distinguish file-absent from file-unreadable, and must never let a
+# mutation persist a misread (empty/subset) view over the original bytes.
+# ---------------------------------------------------------------------------
+
+
+async def _write_corrupt_store(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("{not json", id="malformed-json"),
+        pytest.param("[]", id="not-an-object"),
+        pytest.param('{"wi-1": {"identity": {"workspace_id": 4}}}', id="invalid-record"),
+    ],
+)
+async def test_read_corrupt_recovery_store_fails_closed(tmp_path: Path, payload: str) -> None:
+    path = tmp_path / "state" / "recovery-items.json"
+    await _write_corrupt_store(path, payload)
+    service = FileRecoveryService(path)
+
+    with pytest.raises(RecoveryStoreCorruptError):
+        await service.list_open(_identity())
+
+
+@pytest.mark.asyncio
+async def test_recovery_mutation_on_corrupt_store_preserves_original(
+    tmp_path: Path,
+) -> None:
+    """A mutation over a corrupt store raises and never rewrites the file."""
+    path = tmp_path / "state" / "recovery-items.json"
+    original = '{"wi-1": {"identity": {"workspace_id": 4}}}'
+    await _write_corrupt_store(path, original)
+    service = FileRecoveryService(path)
+
+    with pytest.raises(RecoveryStoreCorruptError):
+        await service.begin(_record(target_id="op_d"))
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_missing_recovery_store_is_clean_slate(tmp_path: Path) -> None:
+    service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
+
+    assert await service.list_open(_identity()) == []
 
 
 @pytest.mark.asyncio
