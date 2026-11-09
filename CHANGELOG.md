@@ -4,6 +4,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-09
+
 ### Changed
 
 - The two memory distillers' retry ladders are one shared kernel escalation:
@@ -78,6 +80,13 @@ All notable changes to the Lisa Harness will be documented in this file.
   failing 5+ times in the window (including off-turn slice work) is
   surfaced as a pattern instead of counting on a per-turn view that never
   sees it.
+
+### Fixed
+
+- The shared distillation ladder's payload type is now generic
+  (`run_distillation_ladder` returns the ladder's schema model, not
+  `BaseModel`), so the memory distillers' typed returns type-check without
+  casts.
 
 ## [0.5.2] - 2026-11-08
 

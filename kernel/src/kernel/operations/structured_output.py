@@ -40,9 +40,11 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
+PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +510,7 @@ FACT_CAP_CHARS = 400
 
 
 @dataclass(frozen=True, slots=True)
-class DistillationLadder:
+class DistillationLadder(Generic[PayloadT]):
     """Policy object for the shared model-distillation retry ladder.
 
     Every Python-authored operation that distills content into a strict
@@ -524,12 +526,12 @@ class DistillationLadder:
     prose-fallback synthesize) and the failure message.
     """
 
-    response_format_model: type[BaseModel]
+    response_format_model: type[PayloadT]
     #: Extracts the model's text from one completion. Raising here marks the
     #: rung failed and advances the ladder: a ``ValidationError`` naming a
     #: schema bound triggers the validation-feedback rung, anything else
     #: (prose refusal, empty output) advances without it.
-    parse_content: Callable[[str], BaseModel]
+    parse_content: Callable[[str], PayloadT]
     #: Constraint note the validation-feedback rung states (e.g. the per-fact
     #: character cap) — the re-ask that names what failed must also name what
     #: to fix.
@@ -572,14 +574,14 @@ def _bootstrap_prefix_for(response_format_model: type[BaseModel], override: str)
 
 async def run_distillation_ladder(
     *,
-    ladder: DistillationLadder,
+    ladder: DistillationLadder[PayloadT],
     complete_fn: Callable[..., Awaitable[Any]],
     messages: list[dict[str, Any]],
     model_def: Any,
     max_tokens: int,
     temperature: float = 0.1,
     operation_label: str,
-) -> BaseModel:
+) -> PayloadT:
     """Run the shared distillation retry ladder and return the parsed payload.
 
     Rungs, in order (each re-issued at ``retry_budget_multiplier``× the base
@@ -615,7 +617,7 @@ async def run_distillation_ladder(
     final_rung_index = len(rungs) - 1
     for rung_index, rung_budget in rungs:
         rung_messages: list[dict[str, Any]]
-        native_format: type[BaseModel] | None
+        native_format: type[PayloadT] | None
         is_bootstrap = rung_index == final_rung_index
         if rung_index == 0:
             rung_messages = messages
