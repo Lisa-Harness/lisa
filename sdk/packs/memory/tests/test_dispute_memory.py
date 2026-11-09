@@ -97,6 +97,48 @@ async def test_execute_without_host_reports_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_outcome", "expected_retired", "expected_message"),
+    [
+        (True, True, "disputed and superseded"),
+        (False, False, "Retired by this write: false"),
+        (None, None, "Retired by this write: unknown"),
+    ],
+)
+async def test_execute_reports_provider_retirement_outcome(
+    provider_outcome: bool | None,
+    expected_retired: bool | None,
+    expected_message: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.get":
+            return _tool_result(
+                tool_id, output_text=json.dumps(_memory_record().model_dump(mode="json"))
+            )
+        if tool_id == "memory.add":
+            metadata = (
+                {"supersession_retired": provider_outcome} if provider_outcome is not None else {}
+            )
+            return ToolResult(
+                tool_id=tool_id, output_text="Memory stored with ID 9", output_json=metadata
+            )
+        return _tool_result(tool_id, error=f"unknown tool {tool_id}")
+
+    result = await op.execute(
+        _ctx(params={"memory_id": "5", "correction": "corrected"}, execute_tool_fn=execute_tool)
+    )
+
+    assert result.status == "success"
+    assert result.output_json is not None
+    assert result.output_json["retired"] is expected_retired
+    assert expected_message in result.output_text
+    assert ("provider did not report retirement outcome" in caplog.text) is (
+        provider_outcome is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_by_id_writes_superseding_record_with_boosted_salience() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -108,7 +150,11 @@ async def test_execute_by_id_writes_superseding_record_with_boosted_salience() -
                 tool_id, output_text=json.dumps(_memory_record().model_dump(mode="json"))
             )
         if tool_id == "memory.add":
-            return _tool_result(tool_id, output_text="Memory stored with ID 9")
+            return ToolResult(
+                tool_id=tool_id,
+                output_text="Memory stored with ID 9",
+                output_json={"supersession_retired": True},
+            )
         if tool_id == "memory.retire":
             return _tool_result(tool_id, output_text="Retired memory 5.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")
@@ -157,7 +203,11 @@ async def test_execute_by_search_finds_first_hit_and_supersedes() -> None:
                 output_text=json.dumps([_memory_record(record_id=7).model_dump(mode="json")]),
             )
         if tool_id == "memory.add":
-            return _tool_result(tool_id, output_text="Memory stored with ID 10")
+            return ToolResult(
+                tool_id=tool_id,
+                output_text="Memory stored with ID 10",
+                output_json={"supersession_retired": True},
+            )
         if tool_id == "memory.retire":
             return _tool_result(tool_id, output_text="Retired memory 7.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")
@@ -189,7 +239,11 @@ async def test_execute_by_search_unwraps_results_envelope() -> None:
                 ),
             )
         if tool_id == "memory.add":
-            return _tool_result(tool_id, output_text="Memory stored with ID 12")
+            return ToolResult(
+                tool_id=tool_id,
+                output_text="Memory stored with ID 12",
+                output_json={"supersession_retired": True},
+            )
         if tool_id == "memory.retire":
             return _tool_result(tool_id, output_text="Retired memory 11.")
         return _tool_result(tool_id, error=f"unknown tool {tool_id}")

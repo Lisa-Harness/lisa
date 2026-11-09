@@ -42,6 +42,7 @@ from mcp_types import ToolAnnotations
 from sdk.layout import DATA_DIR
 from sdk.memory.embeddings import OpenAIEmbeddingProvider
 from sdk.memory.store import ReadOnlyMemoryStoreError, SqliteMemoryStore
+from sdk.memory.write_result import format_memory_add_result
 
 from mcp_server.memory.embeddings import resolve_embedding_config
 
@@ -214,15 +215,19 @@ async def add_memory(
         content_json: Structured metadata dict stored alongside content.
         salience: Ranking weight (0.0-1.0) for recall ordering.
         supersedes_id: Id of the record this one supersedes; the scoped
-            original is retired in the same transaction (supersession).
+            active original is retired in the same transaction. The result
+            reports whether this write retired it.
         item_ids: Ids of the records this one was derived from.
         confidence: Confidence in the memory (0.0-1.0).
         valid_until: Optional semantic-validity bound (ISO 8601); overrides
             the tier TTL when set.
+
+    A superseding write returns a JSON metadata line with ``memory_id`` and
+    ``supersession_retired`` before the human-readable storage receipt.
     """
     store = _resolve_deps(ctx).store
     try:
-        record = await store.record_memory(
+        outcome = await store.record_memory_with_outcome(
             MemoryWriteRequest(
                 user_slug=user_slug,
                 content=content,
@@ -243,7 +248,7 @@ async def add_memory(
         )
     except ReadOnlyMemoryStoreError as exc:
         raise _reject_readonly(exc) from exc
-    return f"Memory stored with ID {record.id}"
+    return format_memory_add_result(outcome)
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
