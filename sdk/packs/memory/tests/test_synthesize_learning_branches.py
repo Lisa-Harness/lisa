@@ -315,6 +315,55 @@ def test_parse_memory_id(text: str, expected: int | None) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_id", [7, "memory-7"])
+async def test_execute_update_supersedes_and_retires_candidate(candidate_id: int | str) -> None:
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {"facts": [{"action": "update", "fact": "refined fact", "supersedes_id": candidate_id}]}
+        )
+
+    async def execute_tool_fn(tool_id: str, tool_ctx: Any) -> ToolResult:
+        captured.append((tool_id, dict(tool_ctx.parameters or {})))
+        if tool_id == "memory.search":
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps(
+                    [
+                        {"id": None, "content": "Record without an id"},
+                        {"content": "Record missing an id"},
+                        {"id": candidate_id, "content": "Existing fact"},
+                    ]
+                ),
+            )
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
+        if tool_id == "memory.retire":
+            return ToolResult(tool_id=tool_id, output_text="Retired")
+        return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
+
+    ctx = _ctx(
+        params={"content": "refined fact"},
+        host=_host(
+            complete_fn=complete_fn,
+            resolve_model_fn=lambda _mid: _model_def(),
+            read_authored_text_fn=lambda _path: "stub prompt",
+            execute_tool_fn=execute_tool_fn,
+        ),
+    )
+
+    result = await op.execute(ctx)
+
+    assert result.extra["updated_ids"] == [9]
+    assert result.extra["retired_ids"] == [candidate_id]
+    add_calls = [params for tool, params in captured if tool == "memory.add"]
+    retire_calls = [params for tool, params in captured if tool == "memory.retire"]
+    assert add_calls[0]["supersedes_id"] == candidate_id
+    assert retire_calls[0]["memory_id"] == candidate_id
+
+
+@pytest.mark.asyncio
 async def test_execute_defaults_content_from_query_and_response() -> None:
     """No ``content`` param → the completed exchange is distilled instead."""
     distilled: list[str] = []

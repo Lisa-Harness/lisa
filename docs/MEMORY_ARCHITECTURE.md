@@ -103,6 +103,9 @@ strand it mid-scan, and the write-time dedup makes even a full re-mine
 non-destructive. Mining is bounded (`max_segments_per_slice`) and never
 mutates the thread — the sealed segment is the archive.
 
+An operation exception or storage failure leaves the segment pending and
+stops that pass, so a later segment cannot advance the marker past it.
+
 Tune `context.memory.mining` in the
 [session schema](SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining):
 enablement, trigger slot, preferred model, operation, and the per-slice

@@ -4,6 +4,21 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-08
+
+### Added
+
+- Relocatable profiles root: `LISA_PROFILES_DIR` moves the profiles root
+  (`<profiles-dir>/<name>` layout unchanged), so profiles can live in a
+  synced folder while the packs venv stays machine-local. A relocated
+  profile shares the base data dir's packs venv. Kernel fail-closed
+  hardening: missing lifecycle targets and tool errors under an abort
+  `pre_turn_failure_policy` fail the turn instead of proceeding.
+- Memory pack evals (`tests/evals/test_pack_validity.py`, `eval` marker) and
+  an offline scripted e2e scenario (`tests/e2e/dedup_recall.scenario.yml`,
+  registered in `e2etest/packs.yml`) that proves the store-then-recall flow
+  end to end with surface-scoped records.
+
 ### Changed
 
 - **Memory capture is now a write-time upsert (breaking).** The memory pack's
@@ -40,6 +55,16 @@ All notable changes to the Lisa Harness will be documented in this file.
   stopping forever — non-destructive because write-time dedup skips records
   that already exist.
 
+### Fixed
+
+- Thread mining leaves a segment pending after an operation exception or
+  memory-write failure, stopping the pass before a later segment can advance
+  the marker past it. A partial write is retried using write-time dedup.
+- Slice-provider content reads report an uninitialized content registry with
+  setup guidance instead of an attribute error.
+- Memory capture and mining log malformed dedup-search responses before
+  proceeding without candidates.
+
 ### Removed
 
 - `MemoryRecallContext` (unused) and the vestigial
@@ -48,12 +73,12 @@ All notable changes to the Lisa Harness will be documented in this file.
   `_store_mined_facts` helper; the `deep` recall parameter (the deep-synthesis
   flow it described never existed).
 
-### Added
+### Migration
 
-- Memory pack evals (`tests/evals/test_pack_validity.py`, `eval` marker) and
-  an offline scripted e2e scenario (`tests/e2e/dedup_recall.scenario.yml`,
-  registered in `e2etest/packs.yml`) that proves the store-then-recall flow
-  end to end with surface-scoped records.
+- Replace `context.memory.consolidation` with `context.memory.mining` in
+  session configuration. Remove calls to `consolidate_semantic` and the
+  `deep` recall parameter. See
+  [memory mining configuration](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining).
 
 ## [0.5.1] - 2026-11-02
 

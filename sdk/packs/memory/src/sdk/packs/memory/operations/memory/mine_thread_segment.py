@@ -265,7 +265,12 @@ async def _dedup_candidates(
         return []
     try:
         data = json.loads(getattr(result, "output_text", "") or "[]")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "mine_thread_segment: dedup candidate search returned invalid JSON (%s); "
+            "mining without existing records",
+            exc,
+        )
         return []
     if isinstance(data, dict) and isinstance(data.get("results"), list):
         data = data["results"]
@@ -549,7 +554,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     # Write-time dedup: fetch similar existing records for the distiller.
     candidates = await _dedup_candidates(ctx, parsed, _dedup_query(turns))
-    candidate_ids = {rec.get("id") for rec in candidates if rec.get("id") is not None}
+    candidate_ids: set[int | str] = {
+        rec_id for rec in candidates if (rec_id := rec.get("id")) is not None
+    }
 
     # Distillation loop: 2 attempts (structured first, JSON-only retry).
     mined = await _distill_facts(

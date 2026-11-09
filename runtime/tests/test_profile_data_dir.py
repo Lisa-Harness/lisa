@@ -160,6 +160,13 @@ def test_profile_base_data_dir_detects_and_rejects(tmp_path) -> None:
     assert profile_base_data_dir(profile / "profiles" / "nested") == profile
 
 
+def test_default_profile_root_shares_default_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    base = default_data_dir().resolve()
+
+    assert profile_base_data_dir(base / "profiles" / "survey") == base
+
+
 # ── LISA_PROFILES_DIR — relocatable profiles root ───────────────────
 
 

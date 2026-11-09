@@ -348,7 +348,12 @@ async def _dedup_candidates(
         return []
     try:
         data = json.loads(getattr(result, "output_text", "") or "[]")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "synthesize_and_store_learning: dedup candidate search returned invalid JSON (%s); "
+            "distilling without existing records",
+            exc,
+        )
         return []
     if isinstance(data, dict) and isinstance(data.get("results"), list):
         data = data["results"]
@@ -698,7 +703,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # Write-time dedup: fetch similar existing records so the distiller can
     # decide create/update/skip per fact.
     candidates = await _dedup_candidates(ctx, raw_content)
-    candidate_ids = {rec.get("id") for rec in candidates if rec.get("id") is not None}
+    candidate_ids: set[int | str] = {
+        rec_id for rec in candidates if (rec_id := rec.get("id")) is not None
+    }
 
     distilled = await _distill_facts(
         ctx,
