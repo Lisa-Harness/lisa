@@ -72,6 +72,11 @@ All notable changes to the Lisa Harness will be documented in this file.
 - Dispute and mining report the retirement performed by each superseding
   write rather than assuming a predecessor was still active. Providers that
   do not report the outcome leave it explicitly unknown.
+- File-backed approval and recovery stores fail closed on corruption. An
+  unreadable, malformed, or non-object store file, or an invalid record,
+  raises `ApprovalStoreCorruptError` or `RecoveryStoreCorruptError` instead of
+  loading as empty, so the next mutation can no longer overwrite pending
+  approvals or open recovery records.
 
 ### Removed
 
@@ -101,6 +106,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   with its predecessor and successor.
 - Capture results no longer expose `retired_ids`; inspect the stored
   successors' `supersedes_id` links when the prior IDs are needed.
+- A corrupt approval or recovery store file is no longer silently reset.
+  Repair or remove the file explicitly when
+  `ApprovalStoreCorruptError` or `RecoveryStoreCorruptError` is reported;
+  a missing file is still treated as empty.
 
 ## [0.5.1] - 2026-11-02
 
