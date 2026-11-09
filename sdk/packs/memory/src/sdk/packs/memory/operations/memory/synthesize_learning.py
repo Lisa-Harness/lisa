@@ -24,11 +24,10 @@ from typing import Any, cast
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
-    assistant_bootstrap_messages,
-    completion_content,
-    json_only_retry_messages,
+    FACT_CAP_CHARS,
+    DistillationLadder,
     parse_structured_payload,
-    validation_feedback_retry_messages,
+    run_distillation_ladder,
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
@@ -172,6 +171,12 @@ class DistilledFact(BaseModel):
     )
 
 
+#: The DistilledLearning array property the ladder's bootstrap rung opens,
+#: kept in one place with the schema so a schema rename cannot silently
+#: desync the prefill from the payload the parsers expect.
+DISTILLED_FACTS_KEY = "facts"
+
+
 class DistilledLearning(BaseModel):
     """Strict bounded output from the distillation LLM call."""
 
@@ -266,13 +271,6 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             return _fallback_learning(normalized, "plain prose")
 
         raise direct_exc
-
-
-def _validation_summary(exc: ValidationError) -> str:
-    """One-line ``loc: type`` list, e.g. ``facts: too_long`` or ``json_invalid``."""
-    return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}" for err in exc.errors()
-    )
 
 
 def _looks_like_json(text: str) -> bool:
@@ -383,23 +381,17 @@ async def _distill_facts(
     candidates: list[dict[str, Any]],
     distill_max_tokens: int,
 ) -> DistilledLearning:
-    """Run the distillation ladder and return the dedup-decided facts.
+    """Run the shared kernel distillation ladder and return the dedup-decided facts.
 
-    Local OpenAI-compatible models (Ollama) frequently ignore
-    ``response_format`` and return empty content, or emit JSON that truncates
-    mid-array (``max_tokens`` too small for the envelope + 3 facts). Per the
-    structured-output contract (/memories/repo/structured-output-contract.md),
-    re-issue with an explicit instruction before surfacing the failure. The
-    ladder escalates: structured output → JSON-only re-ask → a
-    validation-feedback re-ask naming what failed plus the 400-char per-fact
-    cap (the 2026-11-09 incidents: three consecutive
-    ``facts.0.fact: string_too_long`` rejections because the re-ask never
-    said the cap) → an assistant-bootstrap prefill that continues inside the
-    JSON envelope. Non-JSON-shaped prose still falls back to the prose
-    parsers inside ``_parse_distilled_learning`` (this op is not mining:
-    a durable-fact capture that degrades to a create without dedup is the
-    documented honest degradation), but JSON-shaped output that fails
-    validation never falls back.
+    Structured output → JSON-only re-ask → a validation-feedback re-ask
+    naming what failed plus the per-fact cap → an assistant-bootstrap
+    prefill. Synthesize's parse hook is the documented honest-degradation
+    contract: non-JSON-shaped prose still falls back to the prose parsers
+    (a durable-fact capture that degrades to a create without dedup beats a
+    failed capture), but JSON-shaped output that fails validation never
+    falls back — the ladder's feedback rung re-aims it instead (the
+    2026-11-09 incidents: three consecutive ``facts.0.fact:
+    string_too_long`` rejections because the re-ask never said the cap).
     """
     if ctx.host is None:
         raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
@@ -408,76 +400,20 @@ async def _distill_facts(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    FACT_CAP = 400
-    distilled: DistilledLearning | None = None
-    last_exc: Exception | None = None
-    bootstrapped = assistant_bootstrap_messages(first_messages, DistilledLearning, top_key="facts")
-    bootstrap_prefix = str(bootstrapped[-1]["content"])
-    attempts: tuple[tuple[int, list[dict[str, Any]], bool], ...] = (
-        (1, first_messages, False),
-        (2, json_only_retry_messages(first_messages, DistilledLearning), False),
-        (2, bootstrapped, True),
+    return await run_distillation_ladder(
+        ladder=DistillationLadder(
+            response_format_model=DistilledLearning,
+            parse_content=_parse_distilled_learning,
+            validation_note=f"Each 'fact' must be at most {FACT_CAP_CHARS} characters.",
+            bootstrap_prefix=f'{{"{DISTILLED_FACTS_KEY}": [',
+        ),
+        complete_fn=ctx.host.complete,
+        messages=first_messages,
+        model_def=model_def,
+        max_tokens=distill_max_tokens,
+        temperature=0.1,
+        operation_label="synthesize_and_store_learning",
     )
-    for multiplier, attempt_messages, is_bootstrap in attempts:
-        try:
-            raw = await ctx.host.complete(
-                messages=attempt_messages,
-                model_def=model_def,
-                # Escalate the budget on the retries, mirroring the kernel's
-                # truncation-rescue pattern (finish_reason=length → one retry
-                # at 2×): on reasoning models served via Ollama the visible
-                # JSON shares the completion budget with reasoning tokens,
-                # so the first attempt's budget can truncate the array
-                # mid-fact (the 2026-09-23 finances-profile incidents) —
-                # re-issuing the SAME budget with a JSON-only nudge just
-                # reproduces the truncation.
-                max_tokens=distill_max_tokens * multiplier,
-                temperature=0.1,
-                # First attempt asks for native structured output; the retries
-                # clear response_format so strict hosts don't re-reject and
-                # the model emits free-form JSON per the appended instruction.
-                response_format=DistilledLearning if multiplier == 1 else None,
-            )
-            raw_text = completion_content(raw)
-            if is_bootstrap:
-                # The completion continues the prefilled envelope; parse the
-                # concatenation, never the continuation alone.
-                raw_text = bootstrap_prefix + raw_text
-            distilled = _parse_distilled_learning(raw_text)
-            break
-        except ValidationError as exc:
-            # JSON-shaped output that failed a schema bound is the shape a
-            # better-aimed re-ask can fix: name the failing fields and the
-            # per-fact cap (the 2026-11-09 incidents: three consecutive
-            # facts.N.fact string_too_long rejections because the plain
-            # JSON-only re-ask never said the cap), then continue the ladder.
-            last_exc = exc
-            try:
-                raw = await ctx.host.complete(
-                    messages=validation_feedback_retry_messages(
-                        first_messages,
-                        DistilledLearning,
-                        _validation_summary(exc),
-                        note=f"Each 'fact' must be at most {FACT_CAP} characters.",
-                    ),
-                    model_def=model_def,
-                    max_tokens=distill_max_tokens * 2,
-                    temperature=0.1,
-                    response_format=None,
-                )
-                distilled = _parse_distilled_learning(completion_content(raw))
-                break
-            except Exception as feedback_exc:  # pylint: disable=broad-exception-caught
-                last_exc = feedback_exc
-                continue
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            last_exc = exc
-            continue
-    if distilled is None:
-        raise RuntimeError(
-            f"synthesize_and_store_learning distillation failed: {last_exc}"
-        ) from last_exc
-    return distilled
 
 
 def _build_store_content_json(ctx: OperationExecutionContext) -> dict[str, object]:

@@ -45,11 +45,10 @@ from typing import Any, TypedDict, cast
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
-    assistant_bootstrap_messages,
-    completion_content,
-    json_only_retry_messages,
+    FACT_CAP_CHARS,
+    DistillationLadder,
     parse_structured_payload,
-    validation_feedback_retry_messages,
+    run_distillation_ladder,
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
@@ -180,6 +179,12 @@ class MinedFacts(BaseModel):
     )
 
 
+#: The MinedFacts array property the ladder's bootstrap rung opens, kept in
+#: one place with the schema so a schema rename cannot silently desync the
+#: prefill from the payload the parsers expect.
+_MINED_FACTS_KEY = "facts"
+
+
 def _render_turns(turns: list[dict[str, Any]]) -> str:
     """Render the segment's turns as a numbered list for the LLM user message."""
     lines: list[str] = []
@@ -220,13 +225,6 @@ def _parse_mined(content: str) -> MinedFacts:
         raise ValueError(
             "mine_thread_segment: model returned non-JSON prose; refusing to mine"
         ) from exc
-
-
-def _validation_summary(exc: ValidationError) -> str:
-    """One-line ``loc: type`` list, e.g. ``facts.0.fact: string_too_long``."""
-    return "; ".join(
-        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}" for err in exc.errors()
-    )
 
 
 def _looks_like_json(text: str) -> bool:
@@ -332,12 +330,12 @@ async def _distill_facts(
 ) -> MinedFacts:
     """Distill a segment's rendered turns into durable facts via the model.
 
-    Three attempts: structured output, a JSON-only retry with a
-    schema-echoing user message, then an assistant-bootstrap prefill
-    (``{"facts": [``) that forces the model to continue inside the JSON
-    envelope — the poison shape the 2026-11-08..09 crash-loop logged was
-    reasoning prose before any JSON, which a re-ask alone reproduces.
-    Raises when all attempts fail.
+    Runs the shared kernel ladder (``run_distillation_ladder``): structured
+    output → JSON-only re-ask → validation-feedback re-ask (naming the
+    per-fact cap) → assistant-bootstrap prefill. Mining's parse hook is
+    fail-closed: JSON-shaped output that fails validation never falls back
+    to prose parsing, and all rungs failing raises the typed distillation
+    failure for the mining slice's quarantine contract.
     """
     model_id = ctx.preferred_model_id
     model_def = ctx.host.resolve_model(model_id)
@@ -351,70 +349,20 @@ async def _distill_facts(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    mined: MinedFacts | None = None
-    last_exc: Exception | None = None
-    bootstrap_messages = assistant_bootstrap_messages(first_messages, MinedFacts, top_key="facts")
-    bootstrap_prefix = str(bootstrap_messages[-1]["content"])
-    attempts: tuple[tuple[int, list[dict[str, Any]], bool], ...] = (
-        (1, first_messages, False),
-        (2, json_only_retry_messages(first_messages, MinedFacts), False),
-        (2, bootstrap_messages, True),
+    return await run_distillation_ladder(
+        ladder=DistillationLadder(
+            response_format_model=MinedFacts,
+            parse_content=_parse_mined,
+            validation_note=f"Each 'fact' must be at most {FACT_CAP_CHARS} characters.",
+            bootstrap_prefix=f'{{"{_MINED_FACTS_KEY}": [',
+        ),
+        complete_fn=ctx.host.complete,
+        messages=first_messages,
+        model_def=model_def,
+        max_tokens=mine_max_tokens,
+        temperature=0.1,
+        operation_label="mine_thread_segment",
     )
-    for multiplier, attempt_messages, is_bootstrap in attempts:
-        try:
-            raw = await ctx.host.complete(
-                messages=attempt_messages,
-                model_def=model_def,
-                # Escalate the budget on the retries, mirroring
-                # synthesize_learning (the kernel's truncation-rescue
-                # pattern): on reasoning models the visible JSON shares the
-                # completion budget with reasoning tokens, so re-issuing the
-                # SAME budget with a JSON-only nudge just reproduces the
-                # truncation (the 2026-11-08..09 mining crash-loop: 21 failed
-                # segments, zero mined, because a 640-token budget starved
-                # every attempt identically).
-                max_tokens=mine_max_tokens * multiplier,
-                temperature=0.1,
-                response_format=MinedFacts if multiplier == 1 else None,
-            )
-            raw_text = completion_content(raw)
-            if is_bootstrap:
-                # The completion continues the prefilled envelope; parse the
-                # concatenation, never the continuation alone.
-                raw_text = bootstrap_prefix + raw_text
-            mined = _parse_mined(raw_text)
-            break
-        except ValidationError as exc:
-            # JSON-shaped output that failed a schema bound is the shape a
-            # better-aimed re-ask can fix: name the failing fields and the
-            # per-fact cap (the 2026-11-09 incidents: over-length
-            # facts.N.fact values repeatedly because the re-ask never said
-            # the cap), then continue the ladder.
-            last_exc = exc
-            try:
-                raw = await ctx.host.complete(
-                    messages=validation_feedback_retry_messages(
-                        first_messages,
-                        MinedFacts,
-                        _validation_summary(exc),
-                        note="Each 'fact' must be at most 400 characters.",
-                    ),
-                    model_def=model_def,
-                    max_tokens=mine_max_tokens * 2,
-                    temperature=0.1,
-                    response_format=None,
-                )
-                mined = _parse_mined(completion_content(raw))
-                break
-            except Exception as feedback_exc:  # pylint: disable=broad-exception-caught
-                last_exc = feedback_exc
-                continue
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            last_exc = exc
-            continue
-    if mined is None:
-        raise RuntimeError(f"mine_thread_segment distillation failed: {last_exc}")
-    return mined
 
 
 def _validate_mining_params(

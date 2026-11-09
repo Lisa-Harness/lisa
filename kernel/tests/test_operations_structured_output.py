@@ -14,11 +14,13 @@ from __future__ import annotations
 import pytest
 from kernel.operations.structured_output import (
     REASONING_TAIL_CONTENT_SOURCE,
+    DistillationLadder,
     EmptyStructuredOutputError,
     assistant_bootstrap_messages,
     extract_json_object,
     parse_structured_payload,
     reasoning_tail_excerpt,
+    run_distillation_ladder,
     validation_feedback_retry_messages,
 )
 from pydantic import BaseModel, ValidationError
@@ -29,6 +31,19 @@ class _SamplePayload(BaseModel):
 
     query: str
     results: list[str] = []
+
+
+class _ArrayPayload(BaseModel):
+    """Schema with a top-level array property, for bootstrap-prefix tests."""
+
+    query: str = "q"
+    facts: list[str] = []
+
+
+class _ScalarPayload(BaseModel):
+    """Schema with only scalar properties."""
+
+    answer: str = ""
 
 
 class _StubCompletion:
@@ -326,3 +341,175 @@ def test_validation_feedback_does_not_mutate_input() -> None:
     messages: list[dict[str, str]] = [{"role": "user", "content": "produce payload"}]
     validation_feedback_retry_messages(messages, _SamplePayload, "query: string_too_long")
     assert messages == [{"role": "user", "content": "produce payload"}]
+
+
+# ── run_distillation_ladder ─────────────────────────────────────────────────
+
+
+class _Completion:
+    """Minimal completion stub returning fixed content."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def _fail_closed(text: str) -> _ArrayPayload:
+    return parse_structured_payload(_ArrayPayload, text)
+
+
+def _bootstrap_prefix() -> str:
+    return '{"facts": ['
+
+
+@pytest.mark.asyncio
+async def test_ladder_first_rung_native_structured_output_parses() -> None:
+    """A compliant first attempt answers without any retry."""
+    calls: list[dict] = []
+
+    async def complete_fn(**kwargs):
+        calls.append(kwargs)
+        return _Completion('{"facts": ["f1"], "query": "q"}')
+
+    payload = await run_distillation_ladder(
+        ladder=DistillationLadder(response_format_model=_ArrayPayload, parse_content=_fail_closed),
+        complete_fn=complete_fn,
+        messages=[{"role": "user", "content": "distill"}],
+        model_def={"model_id": "m"},
+        max_tokens=1000,
+        temperature=0.1,
+        operation_label="test op",
+    )
+
+    assert payload.facts == ["f1"]
+    assert len(calls) == 1
+    assert calls[0]["response_format"] is _ArrayPayload
+    assert calls[0]["max_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_ladder_validation_error_fires_feedback_rung() -> None:
+    """A JSON-shaped response failing a schema bound triggers exactly one
+    validation-feedback re-ask, which names the failing fields and the note."""
+    calls: list[list[dict]] = []
+
+    async def complete_fn(messages=None, **kwargs):
+        calls.append(list(messages or []))
+        if len(calls) == 1:
+            # Over-length array item: fails the schema only via custom parse.
+            return _Completion('{"facts": ["' + "x" * 50 + '"], "query": "q"}')
+        return _Completion('{"facts": ["ok"], "query": "q"}')
+
+    def parse(text: str) -> _ArrayPayload:
+        payload = parse_structured_payload(_ArrayPayload, text)
+        for fact in payload.facts:
+            if len(fact) > 20:
+                raise ValidationError.from_exception_data(
+                    title="array",
+                    line_errors=[
+                        {
+                            "type": "string_too_long",
+                            "loc": ("facts", 0, "fact"),
+                            "input": fact,
+                            "ctx": {"max_length": 20},
+                        }
+                    ],
+                )
+        return payload
+
+    result = await run_distillation_ladder(
+        ladder=DistillationLadder(
+            response_format_model=_ArrayPayload,
+            parse_content=parse,
+            validation_note="Each 'fact' must be at most 20 characters.",
+        ),
+        complete_fn=complete_fn,
+        messages=[{"role": "user", "content": "distill"}],
+        model_def={"model_id": "m"},
+        max_tokens=1000,
+        operation_label="test op",
+    )
+
+    assert result.facts == ["ok"]
+    # Rung 1 failed validation → rung 2 is the feedback re-ask (it skips the
+    # bare JSON-only rung, which cannot fix a bound the model was never told).
+    assert len(calls) == 2
+    feedback = calls[-1][-1]["content"]
+    assert "failed validation" in feedback
+    assert "string_too_long" in feedback
+    assert "at most 20 characters" in feedback
+    assert calls[-1][0]["role"] == "assistant" or calls[-1][-1]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_ladder_prose_failure_reaches_bootstrap_and_parses_prefix() -> None:
+    """Reasoning prose on the first rung climbs to the bootstrap prefill, and
+    the bootstrap rung parses prefix + continuation."""
+    calls: list[list[dict]] = []
+
+    async def complete_fn(messages=None, **kwargs):
+        calls.append(list(messages or []))
+        if calls[-1] and calls[-1][-1].get("role") == "assistant":
+            return _Completion('{"fact": "bootstrapped"}]}')
+        return _Completion("Let me analyze this conversation segment.")
+
+    payload = await run_distillation_ladder(
+        ladder=DistillationLadder(
+            response_format_model=_ArrayPayload,
+            parse_content=parses_facts_array,
+            bootstrap_prefix=_bootstrap_prefix(),
+        ),
+        complete_fn=complete_fn,
+        messages=[{"role": "user", "content": "distill"}],
+        model_def={"model_id": "m"},
+        max_tokens=1000,
+        operation_label="test op",
+    )
+
+    assert payload.facts == ["bootstrapped"]
+    assert len(calls) == 3
+    assert calls[-1][-1]["role"] == "assistant"
+    assert calls[-1][-1]["content"] == '{"facts": ['
+
+
+def parses_facts_array(text: str) -> _ArrayPayload:
+    """Parse only the facts array of a continuation-shaped envelope."""
+    import json as _json
+
+    payload = _json.loads(text)
+    return _ArrayPayload(facts=[item["fact"] for item in payload["facts"]])
+
+
+@pytest.mark.asyncio
+async def test_ladder_all_rungs_failing_raises_typed_error() -> None:
+    """Every rung failing still raises the typed distillation failure."""
+
+    async def complete_fn(messages=None, **kwargs):
+        return _Completion("Let me analyze this conversation segment.")
+
+    with pytest.raises(RuntimeError, match="test op distillation failed"):
+        await run_distillation_ladder(
+            ladder=DistillationLadder(
+                response_format_model=_ArrayPayload,
+                parse_content=_fail_closed,
+                bootstrap_prefix=_bootstrap_prefix(),
+            ),
+            complete_fn=complete_fn,
+            messages=[{"role": "user", "content": "distill"}],
+            model_def={"model_id": "m"},
+            max_tokens=1000,
+            operation_label="test op",
+        )
+
+
+def test_bootstrap_prefix_inferred_from_array_schema() -> None:
+    """Without an override the bootstrap prefix opens the schema's first
+    array property; a scalar-only schema opens the first scalar."""
+    import kernel.operations.structured_output as so
+
+    assert so._bootstrap_prefix_for(_ArrayPayload, "") == '{"facts": ['
+    assert so._bootstrap_prefix_for(_ArrayPayload, '{"facts": [') == '{"facts": ['
+    # Scalar-only schema opens the first scalar — still tighter than the
+    # bare object opening.
+    assert so._bootstrap_prefix_for(_ScalarPayload, "") == '{"answer": '
+    # The bare opening remains the last-resort default for object-typed opens.
+    assert so._ASSISTANT_BOOTSTRAP_PREFIX == '{"'

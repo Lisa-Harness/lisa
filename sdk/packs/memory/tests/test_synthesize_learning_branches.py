@@ -11,9 +11,9 @@ Complements ``test_synthesize_learning_tier.py`` with the remaining branches:
   re-raises
 - ``_default_learning_content``: query+response join, query-only,
   response-only, empty
-- ``_validation_summary``: one-line loc/type rendering
 - ``_distill_facts``: host None, first-attempt failure retried at 2× the
   token budget with ``response_format=None``, total failure raises
+  (the retry ladder itself is the kernel's ``run_distillation_ladder``)
 - ``_build_store_content_json``: had_briefing + thread_turn provenance
 - ``execute``: content defaulting, unresolvable model, storage error,
   unparseable memory id → extras omit ``memory_ids``
@@ -171,14 +171,17 @@ def test_parse_distilled_learning_unshapeable_content_reraises() -> None:
         op._parse_distilled_learning("'''")
 
 
-# ── _validation_summary ───────────────────────────────────────────────
+# ── validation_summary (kernel ladder) ────────────────────────────────
 
 
 def test_validation_summary_renders_loc_and_type() -> None:
+    """The ladder's failing-field summary is the kernel's now; pin its shape."""
+    from kernel.operations.structured_output import validation_summary
+
     try:
         op.DistilledLearning(facts="not-a-list")
     except ValidationError as exc:
-        summary = op._validation_summary(exc)
+        summary = validation_summary(exc)
 
     assert "facts" in summary
     assert ":" in summary
