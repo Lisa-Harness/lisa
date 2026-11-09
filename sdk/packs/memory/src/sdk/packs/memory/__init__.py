@@ -1,7 +1,8 @@
 """Memory pack for Lisa.
 
-Adds memory-backed conversational behavior and explicit remember-mode workflows
-without requiring changes to core-pack content.
+Adds memory-backed conversational behavior: write-time-deduped learning
+capture, recall, dispute, and thread-mining workflows without requiring
+changes to core-pack content.
 """
 
 from __future__ import annotations

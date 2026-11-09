@@ -5,7 +5,7 @@ Complements ``test_memory_recall.py`` with the remaining uncovered branches:
 - ``_parse_memory_records``: non-JSON output, dict envelope with a non-list
   ``results``, bare dict payload, non-dict list items, per-item validation
   failure
-- ``_render_recall_output``: not-found path fields, uncertainty-note and
+- ``_render_recall_output``: not-found path fields and
   evidence (with/without ``source_turn``) lines
 - ``execute``: empty query no-op, missing ``ctx.params`` guard, TypeError
   "not wired" host, re-raised foreign TypeError, tool error propagation
@@ -92,7 +92,7 @@ def test_parse_memory_records_skips_invalid_items_and_keeps_valid() -> None:
 def test_render_recall_output_not_found_returns_bare_answer() -> None:
     recall = build_memory_recall_answer(
         query="totally unrelated",
-        records=[_record(record_id=1, content="We chose PostgreSQL.", salience=0.0)],
+        records=[],
         limit=2,
     )
     assert recall.found is False
@@ -101,7 +101,7 @@ def test_render_recall_output_not_found_returns_bare_answer() -> None:
 
     assert result.output_text == recall.answer
     assert result.output_json is not None and result.output_json["found"] is False
-    assert result.extra == {"confidence": recall.confidence, "auto_deep_used": False}
+    assert result.extra == {"confidence": recall.confidence}
 
 
 def test_render_recall_output_includes_turn_pointers_for_evidence_with_turns() -> None:
@@ -118,11 +118,9 @@ def test_render_recall_output_includes_turn_pointers_for_evidence_with_turns() -
     assert recall.found is True
     # Stamp a source turn onto the evidence item.
     recall.evidence[0].source_turn = 17
-    recall.uncertainty_note = "low signal"
 
     result = op._render_recall_output(recall)
 
-    assert "Uncertainty: low signal" in result.output_text
     assert "Relevant memories:" in result.output_text
     assert "2026-07-10 (learned around turn 17)" in result.output_text
     assert "We chose PostgreSQL for analytics." in result.output_text
@@ -277,8 +275,8 @@ async def test_execute_tool_error_reports_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_found_with_evidence_without_turns_and_without_note() -> None:
-    """The found branch with no ``uncertainty_note`` and evidence lacking a
-    source turn renders neither the Uncertainty line nor the turn pointer."""
+    """The found branch with evidence lacking a source turn renders no
+    turn pointer."""
 
     async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:
         return ToolResult(

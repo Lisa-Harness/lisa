@@ -1,6 +1,6 @@
 [project]
 name = "lisa-harness"
-version = "0.5.1"
+version = "0.5.2"
 description = "Workspace for the public Lisa Harness packages and examples"
 requires-python = ">=3.11"
 dependencies = [
@@ -370,3 +370,11 @@ forbidden_modules = ["runtime"]
 name = "Bundled packs are independent"
 type = "independence"
 modules = ["sdk.packs.core", "sdk.packs.memory", "sdk.packs.introspect", "sdk.packs.recovery"]
+
+# Bundled packs consume kernel/SDK contracts; runtime composition is
+# off-limits (their thread reads go through the SDK store, not runtime).
+[[tool.importlinter.contracts]]
+name = "Bundled packs import no runtime or MCP server wiring"
+type = "forbidden"
+source_modules = ["sdk.packs.core", "sdk.packs.memory", "sdk.packs.introspect", "sdk.packs.recovery"]
+forbidden_modules = ["runtime"]

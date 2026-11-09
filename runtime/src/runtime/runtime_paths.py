@@ -75,7 +75,7 @@ class HostPaths:
     def run_dir(self, session_key: str) -> Path:
         """Per-session execution state root (``run/<session_key>``).
 
-        The bash/bwrap packs keep jobs, scratch, profile files, sandbox
+        The bash/bwrap packs keep jobs, scratch, shell files, sandbox
         facts, and per-session logs inside this one gc-able tree.
         """
         return self.data_dir / "run" / session_key

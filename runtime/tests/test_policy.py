@@ -234,6 +234,25 @@ def test_contained_execute_is_auto_approved(tmp_path: Path) -> None:
     assert "sandbox" in decision.reason.lower()
 
 
+def test_downgrade_requires_data_dir_and_fails_closed_without_it() -> None:
+    """Pin the precondition and its fail-safe: with no ``data_dir`` the
+    sandbox-fact file is unreachable, so a ``contained`` fact written on disk
+    is never read and a ``sandbox_downgrade`` policy still prompts.
+
+    The shipped host always threads its data dir through
+    ``PolicyApprovalService``, so this path is only reachable from a custom
+    composition that calls ``decide`` directly. It must fail *toward
+    prompting*, never toward approval — an unreadable containment fact is
+    "not contained", not "contained"."""
+    decision = decide(
+        policy=PolicyDocument(sandbox_downgrade=True),
+        invocation=_invocation(command="ls", identity=_identity()),
+        data_dir=None,
+    )
+    assert decision.verdict == VERDICT_ASK
+    assert decision.containment == "unknown"
+
+
 def test_unknown_containment_prompts(tmp_path: Path) -> None:
     # No fact file written.
     decision = decide(
@@ -544,6 +563,28 @@ def test_when_eval_error_in_allow_list_also_prompts() -> None:
     decision = decide(policy=policy, invocation=_invocation(command=""))
     assert decision.verdict == VERDICT_ASK
     assert "expression failed" in decision.reason
+
+
+def test_dual_param_invocation_reads_command_for_prefix_and_argv_for_tokens() -> None:
+    """Pin the dual-param fork: ``command_prefix`` reads the shell string;
+    ``action.argv`` prefers an explicit ``argv`` vector.
+
+    A tool that carries both (bare tokens plus a shell wrapper, e.g.
+    ``bash -c '...'``) makes ``command_prefix`` and a ``when`` over
+    ``action.argv`` evaluate different command strings for the same rule.
+    That is protective: the dangerous payload must survive both surfaces.
+    """
+    payload = ["bash", "-c", "rm -rf /"]
+    invocation = _invocation(
+        command="sudo -n /bin/true",
+        parameters={"command": "sudo -n /bin/true", "argv": payload},
+    )
+    # command_prefix sees the wrapper string, not the payload: no match.
+    prefix_policy = PolicyDocument(deny=[PolicyRule(command_prefix="bash -c")])
+    assert decide(policy=prefix_policy, invocation=invocation).verdict == VERDICT_ASK
+    # action.argv sees the real tokens; the first token names the interpreter.
+    token_policy = PolicyDocument(deny=[PolicyRule(when='action.argv[0] == "bash"')])
+    assert decide(policy=token_policy, invocation=invocation).verdict == VERDICT_DENY
 
 
 def test_when_binds_containment(tmp_path: Path) -> None:

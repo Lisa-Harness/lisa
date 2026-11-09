@@ -133,7 +133,7 @@ def packs_venv_for(data_dir: Path) -> Path:
          is honored consistently across pack install/uninstall and the
          rest of the host.
 
-    When ``data_dir`` is a **profile** (``<base>/profiles/<name>`` — see
+    When ``data_dir`` is a **profile** (``<profiles_root>/<name>`` — see
     :func:`runtime.config.profile_data_dir`), the venv stays shared with the
     profile's base data dir (``<base>/venv``) instead of a per-profile
     duplicate: packs are installed once and discovered from every
@@ -155,20 +155,42 @@ def packs_venv_for(data_dir: Path) -> Path:
 def profile_base_data_dir(data_dir: Path) -> Path | None:
     """Return the profile's base data dir when ``data_dir`` is a profile.
 
-    A profile data dir has the shape ``<base>/profiles/<name>``. When
-    ``data_dir`` matches that shape, return ``<base>``; otherwise return
-    ``None``. The detection is structural (parent dir is named
-    ``profiles/``), not identity-based, so it works for any base —
-    ``~/.lisa/profiles/taxes`` → ``~/.lisa``, a custom
-    ``LISA_DATA_DIR=/srv/lisa`` → ``/srv/lisa/profiles/x`` → ``/srv/lisa``.
+    A profile data dir has the shape ``<root>/<name>``. When ``data_dir``
+    matches that shape, return the base data dir that owns the packs venv;
+    otherwise return ``None``.
+
+    Two roots are recognized:
+
+    * The **default** root (``<base>/profiles``) — detected structurally by
+      the literal ``profiles/`` parent segment, so it works for any base:
+      ``~/.lisa/profiles/taxes`` → ``~/.lisa``, a custom
+      ``LISA_DATA_DIR=/srv/lisa`` → ``/srv/lisa/profiles/x`` → ``/srv/lisa``.
+    * A **relocated** root (``LISA_PROFILES_DIR``) — matched against the
+      configured root path itself, because a relocated root has an
+      arbitrary name and location (e.g. ``Lisa.Profiles`` on OneDrive).
+      Its base is the data dir (``LISA_DATA_DIR`` or ``~/.lisa``), NOT the
+      relocated root's parent: a synced folder holds profiles, not the
+      shared packs venv.
+
     ``..`` and other escapes are impossible because
     :func:`runtime.config.profile_data_dir` validates names to a single
     path segment.
     """
+    from runtime.config import base_data_dir, default_data_dir, profiles_dir
+
     data_dir = Path(data_dir).resolve()
-    if data_dir.parent.name != _PROFILES_SUBDIR_NAME:
-        return None
-    return data_dir.parent.parent
+    root = profiles_dir()
+    default_root = (default_data_dir() / _PROFILES_SUBDIR_NAME).resolve()
+    if data_dir.parent == root:
+        # Inside the profiles root. The default root sits under the data
+        # dir, so its parent is the base; a relocated root has no such
+        # relation, so the base is the data dir itself.
+        if root == default_root:
+            return root.parent
+        return base_data_dir()
+    if data_dir.parent.name == _PROFILES_SUBDIR_NAME:
+        return data_dir.parent.parent
+    return None
 
 
 def default_packs_venv() -> Path:
@@ -471,5 +493,6 @@ __all__ = [
     "is_tool_install",
     "packs_venv_for",
     "packs_venv_site_packages",
+    "profile_base_data_dir",
     "venv_root",
 ]

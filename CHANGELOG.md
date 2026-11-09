@@ -4,6 +4,82 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-08
+
+### Added
+
+- Relocatable profiles root: `LISA_PROFILES_DIR` moves the profiles root
+  (`<profiles-dir>/<name>` layout unchanged), so profiles can live in a
+  synced folder while the packs venv stays machine-local. A relocated
+  profile shares the base data dir's packs venv. Kernel fail-closed
+  hardening: missing lifecycle targets and tool errors under an abort
+  `pre_turn_failure_policy` fail the turn instead of proceeding.
+- Memory pack evals (`tests/evals/test_pack_validity.py`, `eval` marker) and
+  an offline scripted e2e scenario (`tests/e2e/dedup_recall.scenario.yml`,
+  registered in `e2etest/packs.yml`) that proves the store-then-recall flow
+  end to end with surface-scoped records.
+
+### Changed
+
+- **Memory capture is now a write-time upsert (breaking).** The memory pack's
+  `synthesize_and_store_learning` and `mine_thread_segment` operations search
+  the scoped store for similar existing records before distilling and persist
+  a per-fact create/update/skip decision: updates write a superseding record
+  (`supersedes_id`) and retire the original; duplicates are skipped. Captures
+  are stored as `memory_kind="semantic"` — distilled facts, not raw
+  conversation events. This replaces the batch
+  consolidate-episodic-pressure pipeline (the removed
+  `consolidate_semantic` operation), aligning the write path with the
+  extract-then-dedup design current agent-memory systems converge on.
+- `context.memory.consolidation` (`MemoryConsolidationTuning`) is removed
+  (breaking) and replaced by `context.memory.mining`
+  (`MemoryMiningTuning`): `enabled`, `trigger`, `preferred_model_id`,
+  `mine_operation`, `max_segments_per_slice`. Thread mining keeps running on
+  the slice provider under the new tuning.
+- `dispute_memory` performs a real supersession: the correction carries the
+  `supersedes_id` column link, inherits the disputed record's kind and scope,
+  and the original record is retired so it drops out of the active recall
+  pool (still queryable with `status=None` for audit). Previously the
+  original stayed active at full salience forever.
+- Memory recall uses one shared tokenizer (`sdk.memory.lexical`) across the
+  store's recall pools and the pack's evidence ranker, and the operation asks
+  the backend for candidate headroom above the final evidence limit so the
+  relevance-first re-ranker sees the full pool before truncating.
+- The memory-mining slice is fixed for production wiring: the slice-provider
+  view now carries the durable data root, active user, and model seams, and
+  the mining slice builds a real `OperationExecutionContext` instead of a
+  bare params dict. Previously the factory left `memory_data_dir=None` and
+  the user slug defaulted, so mining and consolidation silently never ran.
+- The `mine.marker` sidecar is positional: a marker id missing from the
+  segment index (rebuilt store) re-mines from the start instead of silently
+  stopping forever — non-destructive because write-time dedup skips records
+  that already exist.
+
+### Fixed
+
+- Thread mining leaves a segment pending after an operation exception or
+  memory-write failure, stopping the pass before a later segment can advance
+  the marker past it. A partial write is retried using write-time dedup.
+- Slice-provider content reads report an uninitialized content registry with
+  setup guidance instead of an attribute error.
+- Memory capture and mining log malformed dedup-search responses before
+  proceeding without candidates.
+
+### Removed
+
+- `MemoryRecallContext` (unused) and the vestigial
+  `used_semantic_search` / `auto_deep_used` / `uncertainty_note` /
+  `semantic_score` / `recency_score` recall fields; the dead
+  `_store_mined_facts` helper; the `deep` recall parameter (the deep-synthesis
+  flow it described never existed).
+
+### Migration
+
+- Replace `context.memory.consolidation` with `context.memory.mining` in
+  session configuration. Remove calls to `consolidate_semantic` and the
+  `deep` recall parameter. See
+  [memory mining configuration](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining).
+
 ## [0.5.1] - 2026-11-02
 
 ### Added

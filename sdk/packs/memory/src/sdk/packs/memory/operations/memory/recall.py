@@ -24,15 +24,16 @@ from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
 
 logger = logging.getLogger(__name__)
 
+#: Candidate headroom multiplier: the operation asks the backend for more
+#: candidates than the final evidence limit because the pack ranker
+#: re-orders them with a stricter relevance-first policy before truncating.
+_CANDIDATE_HEADROOM = 2
+
 
 class Parameters(BaseModel):
     """User-supplied inputs for the memory recall operation."""
 
     query: str = Field(..., description="The memory, note, or prior thread to recall.")
-    deep: bool = Field(
-        default=False,
-        description="Force a deep recall synthesis pass even when confidence is high.",
-    )
     limit: int = Field(
         default_factory=lambda: settings.memory_recall_final_limit,
         description="Maximum number of ranked evidence memories to include.",
@@ -50,7 +51,7 @@ def _resolve_recall_limit(ctx: OperationExecutionContext) -> int:
 def _build_search_context(
     ctx: OperationExecutionContext, raw_query: str, limit: int
 ) -> ToolExecutionContext:
-    """Build the ``memory.search`` ToolExecutionContext mirroring the synthesize path.
+    """Build the ``memory.search`` ToolExecutionContext.
 
     Scope fields (user_slug / workspace_id / surface_id / memory_scope) must
     ride in ``parameters`` — the memory.search synthetic alias forwards only
@@ -58,7 +59,13 @@ def _build_search_context(
     kernel.tools.synthetic.mcp_alias_tool), so setting them on the context
     alone leaves them at backend defaults and the scoped WHERE clause
     returns zero rows.
+
+    ``limit`` asks for ``limit * _CANDIDATE_HEADROOM`` candidates (bounded
+    by the backend's recall window): the pack ranker re-orders the
+    candidates relevance-first and truncates to the caller's limit, so
+    the backend must not pre-truncate at the final limit.
     """
+    candidate_limit = max(1, min(limit * _CANDIDATE_HEADROOM, 20))
     return ToolExecutionContext(
         tool_id="memory.search",
         workspace_id=ctx.workspace_id,
@@ -74,7 +81,7 @@ def _build_search_context(
             "workspace_id": ctx.workspace_id,
             "surface_id": ctx.surface_id,
             "memory_scope": ctx.memory_scope,
-            "limit": max(1, min(limit, 20)),
+            "limit": candidate_limit,
         },
     )
 
@@ -116,21 +123,19 @@ def _parse_memory_records(tool_result: ToolResult) -> list[MemoryRecord]:
 
 
 def _render_recall_output(recall: MemoryRecallAnswer) -> OperationResult:
-    """Build the final ``OperationResult`` from a synthesized recall answer.
+    """Build the final ``OperationResult`` from the ranked recall answer.
 
     The not-found path returns the bare answer; the found path appends the
-    uncertainty note and the top-3 evidence lines with thread-turn pointers.
+    top-3 evidence lines with thread-turn pointers.
     """
     if not recall.found:
         return OperationResult(
             output_text=recall.answer,
             output_json=recall.model_dump(mode="json"),
-            extra={"confidence": recall.confidence, "auto_deep_used": recall.auto_deep_used},
+            extra={"confidence": recall.confidence},
         )
 
     lines = [recall.answer.strip()]
-    if recall.uncertainty_note:
-        lines.append(f"Uncertainty: {recall.uncertainty_note}")
     if recall.evidence:
         lines.append("")
         lines.append("Relevant memories:")
@@ -147,7 +152,7 @@ def _render_recall_output(recall: MemoryRecallAnswer) -> OperationResult:
     return OperationResult(
         output_text="\n".join(lines),
         output_json=recall.model_dump(mode="json"),
-        extra={"confidence": recall.confidence, "auto_deep_used": recall.auto_deep_used},
+        extra={"confidence": recall.confidence},
     )
 
 
@@ -198,13 +203,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     records = _parse_memory_records(tool_result)
 
-    deep = bool(ctx.params.get("deep", False))
-
     recall = build_memory_recall_answer(
         query=raw_query,
         records=records,
         limit=limit,
-        deep=deep,
     )
 
     return _render_recall_output(recall)

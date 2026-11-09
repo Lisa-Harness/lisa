@@ -575,7 +575,7 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "steering routing.",
             "- /last [N] — reprint a previous response verbatim (default: the last "
             "model turn; no model call).",
-            "- /consolidate (or /slice) — explicit memory-consolidation slice.",
+            "- /consolidate (or /slice) — explicit memory-mining slice.",
             "- /intake — one intake tick (collect signals, process, write state) in-process.",
             "- /quit — exit the interactive console loop.",
         ]
@@ -831,13 +831,14 @@ def _host_shortcut_help_text(topic: str) -> str:
         ),
         "consolidate": (
             "## /consolidate (or /slice)\n\n"
-            "Run the explicit slice in-process: the memory pack's consolidation "
-            "slice distills episodic records and mines sealed thread segments "
-            "into durable memory. History is never compacted — the thread is lossless."
+            "Run the explicit slice in-process: the memory pack's mining "
+            "slice distills newly sealed thread segments into durable memory "
+            "(write-time dedup decides create/update/skip). History is never "
+            "compacted — the thread is lossless."
         ),
         "slice": (
             "## /slice (or /consolidate)\n\n"
-            "Alias for /consolidate: run the explicit memory-consolidation slice."
+            "Alias for /consolidate: run the explicit memory-mining slice."
         ),
         "intake": (
             "## /intake\n\n"

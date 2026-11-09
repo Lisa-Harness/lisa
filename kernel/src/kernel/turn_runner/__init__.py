@@ -7641,11 +7641,10 @@ async def _intercept_transition_stage(
 ) -> _TransitionIntercept:
     """Intercept one ``transition_stage`` call: validate, advance, or reject.
 
-    Unified FSM routing (see docs/ROUTING_RFC_HANDOFF.md):
-    ``transition_stage`` handles two target kinds — a routable ``mode_id``
-    (mid-turn mode switch / handoff, Case B below) and a workflow stage (the
-    intra-mode stage-advance path). Parallel fan-out is owned by the ``fork``
-    operation, not via transition_stage.
+    Unified FSM routing: ``transition_stage`` takes a routable ``mode_id``
+    (a mid-turn mode switch / handoff). Intra-mode workflow stages are
+    retired: there is no intra-mode stage-advance target. Parallel fan-out
+    is owned by the ``fork`` operation, not via transition_stage.
 
     A rejected handoff (not routable / target mode missing) returns
     ``handoff_to`` unchanged — the caller's already-stamped value must
@@ -7745,15 +7744,7 @@ async def _intercept_transition_stage(
         )
         return _ret(_ContinueIteration())
 
-    # ── Unified target resolution (Phase 6c) ──────────
-    # One resolution order for every mode kind: the target
-    # resolves against the current mode's stage graph first
-    # (intra-mode stage advance, validated against the
-    # current stage's allowed_next_stages), then against
-    # routable mode ids (inter-mode handoff). Both advance
-    # the same WorkflowPosition. Stage ids shadow mode ids
-    # within their own mode (ponder's ``exit`` wins over a
-    # hypothetical ``exit`` mode).
+    # ── Unified target resolution ─────────────────────
     # Intra-mode workflow stages are retired: ``mode_config.stages`` no
     # longer exists, and ``transition_stage`` resolves a mode handoff only.
     # A stage-id target matches nothing and falls through to the routable-mode
@@ -8915,10 +8906,10 @@ async def _assemble_turn_surface_and_messages(
     # the loop with the question as the turn content. The thread entry is
     # stamped ``yielded=True`` + ``yield_question`` for durable resume.
     #
-    # Unified FSM routing: ``transition_stage`` is advertised when the
-    # mode's stage graph has edges (intra-mode advancement) or the mode
+    # Unified FSM routing: ``transition_stage`` is advertised when the mode
     # has routing targets (inter-mode handoffs) — computed inside the
-    # assembler. See docs/ROUTING_RFC_HANDOFF.md.
+    # assembler. Intra-mode workflow stages are retired; there is no stage
+    # graph to advertise.
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
     _yield_policy_for_tools = _resolve_yield_policy(mode_config, yield_policy_override)
     tool_schemas, tool_prune_stats = await build_tool_surface(

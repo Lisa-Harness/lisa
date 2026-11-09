@@ -224,9 +224,8 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(temporary_path, target)",
         "temporary_path.unlink()",
     ),
-    "sdk/packs/memory/src/sdk/packs/memory/slice_provider.py": (
+    "sdk/packs/memory/src/sdk/packs/memory/mining_slice.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",
-        "path.write_text(",
         'path.write_text(seg_id, encoding="utf-8")',
     ),
 }

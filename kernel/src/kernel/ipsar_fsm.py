@@ -5,11 +5,9 @@ modes or stages.  The workflow catalog is loaded from the ``lisa-content`` MCP
 server at startup; the kernel never touches the filesystem directly.
 
     {mode_name}/
-      _mode.md         → YAML front-matter declares mode_id, start_stage_id,
+      _mode.md         → YAML front-matter declares mode_id,
                          mode_kind, description, command_pattern, and operation
                          bindings for the user-facing mode entry point
-      {stage_id}.md    → YAML front-matter declares stage config; body text is
-                         the instruction prose injected into AI prompts
 
 Adding a new workflow mode requires only a new folder with the appropriate files;
 no code changes are needed. The ``lisa-content`` server discovers and parses
@@ -259,7 +257,6 @@ _MODE_OVERRIDES_FILENAME = "_overrides.yaml"
 _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
     {
         "mode_id",
-        "start_stage_id",
         "mode_kind",
         "command_pattern",
         "require_query",
@@ -1091,28 +1088,19 @@ def load_catalog_from_disk(
     """Discover and load all workflow modes from the instructions directory.
 
     Scans `instructions_dir` (default: injected baseline mode root) for subdirectories.
-    Each subdirectory becomes one workflow mode.  The discovery contract is:
+    Each subdirectory becomes one workflow mode.      The discovery contract is:
 
-    {mode_name}/_mode.md       — required; front-matter must include:
-                        mode_id, start_stage_id.  It may also
-                        declare mode_kind, command_pattern,
-                        require_query, and operation bindings.
-      {mode_name}/{stage_id}.md  — one file per stage; front-matter must include:
-                                    stage_id, terminal, allowed_next_stages,
-                                    allow_user_questions, required_connectors.
+      {mode_name}/_mode.md       — required; front-matter must include:
+                        mode_id.  It may also declare mode_kind,
+                        command_pattern, require_query, and operation bindings.
 
     When *strict* is ``True`` (the default), a mode folder missing ``_mode.md``
     raises :class:`WorkflowValidationError` instead of logging a warning and
     skipping. This catches broken pack installs at startup. Tests that
     exercise partial installs pass ``strict=False``.
 
-    Stage files whose name starts with `_` are skipped (reserved for mode-level
-    config files like `_mode.md`).
-
-    The body text below each stage's front-matter delimiter is stored in
-    WorkflowStageConfig.instruction_body so runtime prompt injection never
-    needs a disk read after startup.
-
+    Files whose name starts with `_` are skipped (reserved for mode-level
+    config files like ``_mode.md``).
     Args:
         instructions_dir: Override the default scan root.  Useful in tests.
 
@@ -1740,6 +1728,7 @@ async def _dispatch_lifecycle_target(
     target_ctx: OperationExecutionContext,
     operation_catalog: dict[str, Any],
     tool_catalog: dict[str, Any],
+    failure_policy: Literal["abort", "skip"] = "abort",
 ) -> OperationResult | None:
     """Dispatch one lifecycle target polymorphically (operation or tool).
 
@@ -1748,10 +1737,21 @@ async def _dispatch_lifecycle_target(
         target_ctx: Execution context for the dispatch.
         operation_catalog: The operation catalog for resolution.
         tool_catalog: The tool catalog for resolution.
+        failure_policy: ``abort`` (default) raises when the target resolves to
+            no catalog entry or when a dispatched tool returned an error;
+            ``skip`` keeps the historical isolation (warn on an unknown id,
+            carry a tool error as result metadata).
 
     Returns:
-        The result, or ``None`` when the target is neither a known
-        operation nor a known tool (logged and skipped by the caller).
+        The result, or ``None`` when the target is neither a known operation
+        nor a known tool under the ``skip`` policy (logged and skipped by the
+        caller). Under ``abort`` an unresolvable target raises instead.
+
+    Raises:
+        RuntimeError: Under ``abort``, when the target is neither a known
+            operation nor a known tool, or when a dispatched tool returned
+            ``ToolResult.error`` (a failed prerequisite must not surface as
+            a successful lifecycle result).
     """
     if target_id in operation_catalog:
         return await _execute_operation(target_id, target_ctx)
@@ -1760,10 +1760,18 @@ async def _dispatch_lifecycle_target(
 
         tool_ctx = _build_tool_execution_context(target_id, target_ctx)
         tool_result = await execute_tool(target_id, tool_ctx)
+        if tool_result.error and failure_policy == "abort":
+            raise RuntimeError(
+                f"lifecycle target '{target_id}' tool dispatch failed: {tool_result.error}"
+            )
         return OperationResult(
             output_text=tool_result.output_text,
             output_json=dict(tool_result.output_json) if tool_result.output_json else {},
             extra={"tool_error": tool_result.error} if tool_result.error else {},
+        )
+    if failure_policy == "abort":
+        raise RuntimeError(
+            f"lifecycle target '{target_id}' is neither a known operation nor a known tool"
         )
     logger.warning(
         "lifecycle target '%s' is neither a known operation nor a known tool; skipping",
@@ -1899,7 +1907,11 @@ async def _execute_mode_target_ids(
         target_ctx = ctx.model_copy(update={"operation_id": target_id, "extra": extra})
         try:
             result = await _dispatch_lifecycle_target(
-                target_id, target_ctx, operation_catalog, tool_catalog
+                target_id,
+                target_ctx,
+                operation_catalog,
+                tool_catalog,
+                failure_policy=failure_policy,
             )
             if result is None:
                 continue

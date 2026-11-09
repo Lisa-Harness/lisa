@@ -77,6 +77,19 @@ Rule semantics:
   `argv`, `cmd`, `script` (`argv` lists are joined with spaces); leading
   whitespace is normalized.
 
+#### `command_prefix` and `action.argv` can read different parameters
+
+The two matchers resolve the command independently. `command_prefix` takes the
+first non-empty of `command`, `argv`, `cmd`, `script` (the shell string;
+`argv` lists joined with spaces). `action.argv` instead prefers an explicit
+`argv` vector, falling back to `shlex.split` of the command string. A tool
+that carries **both** — bare tokens plus a shell wrapper such as
+`bash -c '…'` — therefore makes `command_prefix` and a `when` over
+`action.argv` evaluate *different* command strings for the same rule. That is
+protective: a hostile payload must survive both surfaces to be auto-approved.
+Author `deny` rules on both surfaces (`command_prefix` for the string,
+`action.argv` for tokens) rather than assuming they describe one string.
+
 ### `when` expressions
 
 A rule may carry a [`when`](https://github.com/google/cel-spec) — a CEL
@@ -149,7 +162,14 @@ ladder:
 4. **Sandbox downgrade** — when `sandbox_downgrade` is on, an `execute`
    action whose containment fact is `contained` auto-approves. This step runs
    before the mode dial — the sandbox is the boundary — so a genuinely
-   sandboxed command approves even under `plan` mode.
+   sandboxed command approves even under `plan` mode. **Precondition:** the
+   host's data directory must reach `decide()` so the engine can find the
+   containment fact file. The shipped runtime threads it through
+   [`runtime.policy_service`](../runtime/src/runtime/policy_service.py); a
+   custom composition that calls `policy.decide()` without a `data_dir`
+   disables both the downgrade and the `containment` CEL binding and fails
+   *toward prompting* (the sandbox silently "never downgrades", never
+   silently approves).
 5. **Mode fallback** —
    - `read` always allows;
    - `plan` denies every effectful action;

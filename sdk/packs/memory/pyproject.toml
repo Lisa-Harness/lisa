@@ -8,7 +8,7 @@ only-include = ["src/sdk/packs/memory"]
 
 [project]
 name = "lisa-pack-memory"
-version = "0.5.1"
+version = "0.5.2"
 description = "Lisa memory pack - memory-backed default and remember workflows"
 requires-python = ">=3.11"
 
@@ -22,9 +22,12 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
 
 [project.entry-points."lisa.extensions.content_roots"]
 memory = "sdk.packs.memory:get_content_root"
 
 [project.entry-points."lisa.extensions.slice_providers"]
-memory_consolidation = "sdk.packs.memory.slice_provider:get_slice_provider_factory"
+memory_mining = "sdk.packs.memory.mining_slice:get_slice_provider_factory"

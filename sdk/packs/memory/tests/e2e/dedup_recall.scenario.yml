@@ -1,0 +1,36 @@
+# Offline memory-pack scenario: store a durable fact, then recall it.
+#
+# The scripted model (model/memory_dedup_recall.py) calls the pack's
+# operations through the model-facing tool surface — no credentials, no
+# live model. The oracles assert from bundle evidence: the write effect
+# receipt for the capture operation, the stored record's content and
+# scope, and the exchange text proving recall surfaced the fact.
+id: memory/dedup-recall
+session_context: session_context.md
+model:
+  script: model/memory_dedup_recall.py
+packs:
+  - lisa-pack-core
+  - lisa-pack-memory
+turns:
+  - Remember that the lisa harness memory pack dedups facts at write time.
+  - Search memory for what the harness dedups at write time and tell me what you find.
+budgets:
+  max_messages: 8
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 600
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_runtime_errors: {}
+    - max_exchanges: {n: 8}
+  dispatch:
+    - receipt: {capability: synthesize_and_store_learning, min: 1}
+    - receipt: {capability: recall_memory, min: 1}
+  memory:
+    - memory_recorded: {mentions_any: ["dedup", "write time"], min: 1}
+    - memory_scope: {surface_id: host-console, scope: personal}
+  recall:
+    - exchange_contains: {text: "Recall confirmed"}
