@@ -464,53 +464,12 @@ def _parse_memory_id(add_text: str) -> int | None:
         return None
 
 
-async def _retire_record(ctx: OperationExecutionContext, record_id: int | str) -> bool:
-    """Retire one superseded record; returns True when the backend confirmed."""
-    assert ctx.host is not None
-    retire_ctx = ToolExecutionContext(
-        tool_id="memory.retire",
-        workspace_id=ctx.workspace_id,
-        user_id=ctx.user_id,
-        user_slug=ctx.user_slug,
-        surface_id=ctx.surface_id,
-        memory_scope=ctx.memory_scope,
-        mode_id=ctx.mode_id,
-        parameters={
-            "memory_id": record_id,
-            "user_slug": ctx.user_slug,
-            "workspace_id": ctx.workspace_id,
-            "surface_id": ctx.surface_id,
-            "memory_scope": ctx.memory_scope,
-        },
-    )
-    try:
-        result = await ctx.host.execute_tool("memory.retire", retire_ctx)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning(
-            "synthesize_and_store_learning: retire of superseded record %s failed: %s "
-            "(superseding record was written; the original stays active)",
-            record_id,
-            exc,
-        )
-        return False
-    if getattr(result, "error", None):
-        logger.warning(
-            "synthesize_and_store_learning: retire of superseded record %s errored: %s "
-            "(superseding record was written; the original stays active)",
-            record_id,
-            result.error,
-        )
-        return False
-    return True
-
-
 @dataclass(slots=True)
 class _UpsertOutcome:
     """Accounting of one distillation's applied fact decisions."""
 
     created_ids: list[int]
     updated_ids: list[int]
-    retired_ids: list[int | str]
     #: Adds that succeeded but whose id the backend did not echo — stored
     #: work without thread linkage.
     stored_unparsed: int
@@ -603,12 +562,15 @@ async def _apply_fact_decisions(
     salience: float,
     memory_operation_id: str,
 ) -> _UpsertOutcome:
-    """Apply each fact's dedup decision, retiring superseded originals."""
-    outcome = _UpsertOutcome(
-        created_ids=[], updated_ids=[], retired_ids=[], stored_unparsed=0, skipped=0
-    )
+    """Apply each fact's dedup decision.
+
+    An ``update`` is one atomic supersession: ``memory.add`` carries
+    ``supersedes_id`` and the scoped active original retires in the same
+    store transaction.
+    """
+    outcome = _UpsertOutcome(created_ids=[], updated_ids=[], stored_unparsed=0, skipped=0)
     for item in distilled.facts:
-        kind, minted, supersedes = await _apply_one_fact(
+        kind, minted, _supersedes = await _apply_one_fact(
             ctx,
             item=item,
             candidate_ids=candidate_ids,
@@ -625,9 +587,6 @@ async def _apply_fact_decisions(
                 outcome.updated_ids.append(minted)
             else:
                 outcome.stored_unparsed += 1
-            assert supersedes is not None
-            if await _retire_record(ctx, supersedes):
-                outcome.retired_ids.append(supersedes)
         elif minted is not None:
             outcome.created_ids.append(minted)
         else:
@@ -746,13 +705,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             error_detail=str(exc),
         )
 
-    stored_any = (
-        applied.created_ids or applied.updated_ids or applied.retired_ids or applied.stored_unparsed
-    )
+    stored_any = applied.created_ids or applied.updated_ids or applied.stored_unparsed
     if not stored_any:
         return OperationResult(
             output_text="Nothing new to store: the durable knowledge is already in memory.",
-            extra={"recorded": False, "created_ids": [], "updated_ids": [], "retired_ids": []},
+            extra={"recorded": False, "created_ids": [], "updated_ids": []},
         )
 
     actions: list[str] = []
@@ -774,7 +731,6 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         "recorded": True,
         "created_ids": applied.created_ids,
         "updated_ids": applied.updated_ids,
-        "retired_ids": applied.retired_ids,
         "skipped": applied.skipped,
     }
     if minted_ids:

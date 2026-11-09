@@ -76,25 +76,42 @@ async def test_dedup_search_responses(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["capture", "mining"])
 @pytest.mark.parametrize("response", ["exception", "tool_error"])
-async def test_retirement_failure_is_reported(
-    operation: str, response: str, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_supersession_add_failure_is_reported(operation: str, response: str) -> None:
     calls: list[Any] = []
 
     async def execute_tool(tool_id: str, ctx: Any) -> ToolResult:
-        assert tool_id == "memory.retire"
+        assert tool_id == "memory.add"
         calls.append(ctx)
         if response == "exception":
-            raise RuntimeError("retire offline")
-        return ToolResult(tool_id=tool_id, error="retire offline")
+            raise RuntimeError("store offline")
+        return ToolResult(tool_id=tool_id, error="store offline")
 
     ctx = _context(execute_tool)
-    if operation == "capture":
-        retired = await synthesize_learning._retire_record(ctx, 7)
-    else:
-        retired = await mine_thread_segment._retire_record(ctx, _mining_params(), 7)
+    with pytest.raises(RuntimeError, match="store offline"):
+        if operation == "capture":
+            await synthesize_learning._apply_one_fact(
+                ctx,
+                item=synthesize_learning.DistilledFact(
+                    action="update", fact="corrected", supersedes_id=7
+                ),
+                candidate_ids={7},
+                content_json_base={},
+                memory_tier="long_term",
+                salience=0.8,
+                memory_operation_id="test",
+            )
+        else:
+            await mine_thread_segment._persist_mined_fact(
+                ctx,
+                _mining_params(),
+                item=mine_thread_segment.MinedFact(
+                    action="update", fact="corrected", supersedes_id=7
+                ),
+                candidate_ids={7},
+                turn_lo=None,
+                turn_hi=None,
+            )
 
-    assert retired is False
-    assert calls[0].parameters["memory_id"] == 7
+    assert len(calls) == 1
+    assert calls[0].parameters["supersedes_id"] == 7
     assert calls[0].parameters["user_slug"] == "alice"
-    assert "retire offline" in caplog.text

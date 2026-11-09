@@ -142,9 +142,10 @@ async def test_execute_by_id_writes_superseding_record_with_boosted_salience() -
     assert add_params["memory_kind"] == _memory_record().memory_kind
     assert add_params["content_json"]["dispute_reason"] == "outdated"
     assert add_params["content_json"]["original_content"] == _memory_record().content
-    # …and the original is retired so it drops out of the active recall pool.
-    assert calls[2][0] == "memory.retire"
-    assert calls[2][1]["memory_id"] == 5
+    # Supersession is atomic: the store retires the original inside the
+    # add's transaction, so the operation makes exactly two tool calls and
+    # issues no separate memory.retire.
+    assert [c[0] for c in calls] == ["memory.get", "memory.add"]
 
 
 @pytest.mark.asyncio
@@ -204,8 +205,10 @@ async def test_execute_by_search_unwraps_results_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_retire_failure_keeps_correction_and_warns() -> None:
-    """A retire failure is non-fatal: the correction stays, the note surfaces."""
+async def test_execute_add_failure_is_reported_and_no_success_claim() -> None:
+    """An add failure is the only failure path: no correction exists, no
+    success is claimed (the store retires the original atomically inside
+    the add's transaction, so a separate retire failure cannot happen)."""
 
     async def execute_tool(tool_id: str, _ctx: Any) -> ToolResult:
         if tool_id == "memory.get":
@@ -213,8 +216,8 @@ async def test_execute_retire_failure_keeps_correction_and_warns() -> None:
                 tool_id, output_text=json.dumps(_memory_record().model_dump(mode="json"))
             )
         if tool_id == "memory.add":
-            return _tool_result(tool_id, output_text="Memory stored with ID 9")
-        return _tool_result(tool_id, error="retire unavailable")
+            return _tool_result(tool_id, error="backend offline")
+        return _tool_result(tool_id, error=f"unexpected call {tool_id}")
 
     ctx = _ctx(
         params={"memory_id": "5", "correction": "corrected"},
@@ -223,10 +226,11 @@ async def test_execute_retire_failure_keeps_correction_and_warns() -> None:
 
     result = await op.execute(ctx)
 
-    assert "✅ Memory record 5 disputed and superseded." in result.output_text
-    assert "original could not be retired" in result.output_text
-    assert result.output_json is not None
-    assert result.output_json["retired"] is False
+    assert "failed to write correction" in result.output_text
+    assert "superseded" not in result.output_text
+    assert result.output_json == {}
+    assert result.status == "error"
+    assert result.error_detail == "backend offline"
 
 
 # ── execute: lookup misses and errors ─────────────────────────────────
