@@ -4,6 +4,17 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- The two memory distillers' retry ladders are one shared kernel escalation:
+  `kernel.operations.structured_output.run_distillation_ladder` (structured
+  output → JSON-only re-ask → validation-feedback re-ask naming the failing
+  fields and the per-fact cap → assistant-bootstrap prefill) behind a
+  `DistillationLadder` policy object. The operations keep only what differs
+  (mining's fail-closed parse vs synthesize's prose-fallback parse and their
+  failure labels); the next escalation rung is a one-place change instead of
+  two hand-rolled loops drifting apart.
+
 ### Fixed
 
 - Mining distillation crash-loop (2026-11-08..09 incident: 21 consecutive

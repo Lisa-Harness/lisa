@@ -1,7 +1,8 @@
 """Shared structured-output helpers for prompt-authored and Python-authored operations.
 
 Operations that ask a model for a JSON object matching a Pydantic schema share
-two failure modes:
+a small set of failure modes, and fixing them twice (once per operation) is
+how the 2026-11-08..09 distill incidents turned into whack-a-mole:
 
 1. The provider returns prose, fenced JSON, or extra commentary instead of a
    bare JSON object. ``parse_structured_payload`` tolerates that by extracting
@@ -17,6 +18,16 @@ two failure modes:
    assistant turn with the schema's opening envelope text so the model
    continues *inside* the JSON object instead of reasoning first (the
    2026-11-08..09 mining crash-loop's last unaddressed rung).
+4. A JSON-shaped response that fails a schema *bound* (e.g. a per-fact
+   character cap) is a failure the re-ask can fix, but only if the re-ask
+   names the bound. ``validation_feedback_retry_messages`` carries the
+   failing-field summary plus the constraint note.
+
+``run_distillation_ladder`` composes all of these into one escalation
+sequence (structured → JSON-only → validation-feedback → bootstrap) behind a
+``DistillationLadder`` policy object, so an operation keeps only what
+genuinely differs: its parse hook and failure label. The two memory
+distillers are its first consumers.
 
 These helpers are runtime-neutral and depend only on Pydantic and the kernel
 operation execution context. They are intentionally host-agnostic: the host's
@@ -28,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -35,6 +47,8 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "FACT_CAP_CHARS",
+    "DistillationLadder",
     "assistant_bootstrap_messages",
     "completion_content",
     "extract_json_object",
@@ -43,9 +57,11 @@ __all__ = [
     "json_only_retry_messages",
     "parse_structured_payload",
     "reasoning_tail_excerpt",
+    "run_distillation_ladder",
     "run_structured_completion_with_retry",
     "validation_feedback_instruction",
     "validation_feedback_retry_messages",
+    "validation_summary",
 ]
 
 #: Default cap on the quoted reasoning tail (characters). Reasoning trails
@@ -349,6 +365,7 @@ def assistant_bootstrap_messages(
     response_format_model: type[BaseModel],
     *,
     top_key: str | None = None,
+    bootstrap_prefix: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build a final retry whose assistant turn is prefilled with JSON.
 
@@ -358,15 +375,19 @@ def assistant_bootstrap_messages(
     assistant turn with the schema's opening envelope forces the completion
     to continue *inside* the JSON object instead of reasoning first.
 
-    ``top_key`` opens the named top-level property's array (``'{"facts": ['``);
-    without it the bare ``{"`` object opening is used. The completion is a
-    continuation of the prefix: the caller must parse the concatenation of
-    prefix and completion, never the continuation alone.
+    ``top_key`` opens the named top-level property's array (``'{"facts": ['``)
+    and an explicit ``bootstrap_prefix`` wins over it; without either the
+    bare ``{"`` object opening is used. The completion is a continuation of
+    the prefix: the caller must parse the concatenation of prefix and
+    completion, never the continuation alone.
     """
 
-    prefix = _ASSISTANT_BOOTSTRAP_PREFIX
-    if top_key:
+    if bootstrap_prefix is not None:
+        prefix = bootstrap_prefix
+    elif top_key:
         prefix = f'{{"{top_key}": ['
+    else:
+        prefix = _ASSISTANT_BOOTSTRAP_PREFIX
     return [
         *messages,
         {"role": "assistant", "content": prefix},
@@ -465,3 +486,191 @@ async def run_structured_completion_with_retry(
             response_format=None,
         )
         return parse_structured_payload(response_format_model, _content(retry_completion))
+
+
+#: Ladder rung budgets as multipliers of the base attempt's budget. The
+#: escalation mirrors the kernel's truncation-rescue pattern
+#: (``finish_reason=length`` → one retry at 2×): on reasoning models the
+#: visible JSON shares the completion budget with reasoning tokens, so
+#: re-issuing the SAME budget with a JSON-only nudge reproduces the
+#: truncation (the 2026-09-23 finances-profile incidents, and the
+#: 2026-11-08..09 mining crash-loop where a 640-token budget starved every
+#: attempt identically).
+_LADDER_RUNG_BUDGETS = (1, 2, 2)
+
+
+#: Cap note appended by the ladder's validation-feedback rung when a schema
+#: bounds a string field and the re-ask must name the bound. The 2026-11-09
+#: incidents: over-length ``facts.N.fact`` values returned repeatedly
+#: because every re-ask was a bare JSON-only instruction that never said the
+#: cap — the model reproduced the failure it was not told about.
+FACT_CAP_CHARS = 400
+
+
+@dataclass(frozen=True, slots=True)
+class DistillationLadder:
+    """Policy object for the shared model-distillation retry ladder.
+
+    Every Python-authored operation that distills content into a strict
+    Pydantic payload via ``ctx.host.complete`` runs the same escalation:
+    structured output → JSON-only re-ask → a validation-feedback re-ask
+    naming what failed plus the string-cap constraint → an
+    assistant-bootstrap prefill that continues inside the JSON envelope.
+    The 2026-11-08..09 incidents (the mining crash-loop, then three
+    consecutive over-length synthesize captures) were all this one ladder
+    fixed rung by rung — in two hand-rolled copies that drifted. This
+    policy object makes the sequence one place; the operation keeps only
+    what genuinely differs: the parse hook (fail-closed mining vs
+    prose-fallback synthesize) and the failure message.
+    """
+
+    response_format_model: type[BaseModel]
+    #: Extracts the model's text from one completion. Raising here marks the
+    #: rung failed and advances the ladder: a ``ValidationError`` naming a
+    #: schema bound triggers the validation-feedback rung, anything else
+    #: (prose refusal, empty output) advances without it.
+    parse_content: Callable[[str], BaseModel]
+    #: Constraint note the validation-feedback rung states (e.g. the per-fact
+    #: character cap) — the re-ask that names what failed must also name what
+    #: to fix.
+    validation_note: str = ""
+    #: Multiplier applied to the base budget on the retry rungs (2 escalates).
+    retry_budget_multiplier: int = 2
+    #: Prefix stamped into the bootstrap prefill (empty: the schema's first
+    #: non-required top-level array key is inferred).
+    bootstrap_prefix: str = ""
+
+
+def _bootstrap_prefix_for(response_format_model: type[BaseModel], override: str) -> str:
+    """Return the JSON prefix the bootstrap rung prefills the assistant with.
+
+    An explicit ``override`` wins. Otherwise the first top-level array-or-
+    object property in the schema is opened (``'{"facts": ['``); a schema
+    with only scalar properties opens its first scalar (``'{"answer": '``),
+    still tighter than the bare object opening. The completion continues the
+    prefix, so the caller parses prefix + continuation.
+    """
+
+    if override:
+        return override
+    schema = response_format_model.model_json_schema()
+    properties = schema.get("properties") or {}
+    # Prefer an array property (the payload's list content is where schema
+    # bounds bite); a scalar property is the fallback before the bare open.
+    for key, spec in properties.items():
+        if isinstance(spec, dict) and spec.get("type") == "array":
+            return f'{{"{key}": ['
+    for key, spec in properties.items():
+        if (
+            isinstance(spec, dict)
+            and isinstance(spec.get("type"), str)
+            and spec["type"] != "object"
+        ):
+            return f'{{"{key}": '
+    return _ASSISTANT_BOOTSTRAP_PREFIX
+
+
+async def run_distillation_ladder(
+    *,
+    ladder: DistillationLadder,
+    complete_fn: Callable[..., Awaitable[Any]],
+    messages: list[dict[str, Any]],
+    model_def: Any,
+    max_tokens: int,
+    temperature: float = 0.1,
+    operation_label: str,
+) -> BaseModel:
+    """Run the shared distillation retry ladder and return the parsed payload.
+
+    Rungs, in order (each re-issued at ``retry_budget_multiplier``× the base
+    budget):
+
+    1. **Structured output** — native ``response_format``; strict hosts that
+       reject it surface here.
+    2. **JSON-only re-ask** — ``response_format`` cleared, the schema echoed.
+       A re-ask alone reproduces whatever made attempt 1 fail (the
+       2026-11-08..09 mining crash-loop: reasoning prose before any JSON,
+       21 segments, zero mined).
+    3. **Validation-feedback re-ask** — fired only when a rung raised a
+       ``ValidationError``: the re-ask names the failing fields (the
+       ``loc: type`` summary) plus ``ladder.validation_note``. The 2026-11-09
+       synthesize incidents returned over-length facts three times because
+       the re-ask never said the per-fact cap. Fires once per ladder, after
+       whichever rung raised the typed error.
+    4. **Assistant-bootstrap prefill** — the assistant turn opens the JSON
+       envelope so the completion continues inside it instead of reasoning
+       first. Parsed as prefix + continuation.
+    """
+
+    schema_model = ladder.response_format_model
+    bootstrap_prefix = _bootstrap_prefix_for(schema_model, ladder.bootstrap_prefix)
+    bootstrapped = assistant_bootstrap_messages(
+        messages, schema_model, bootstrap_prefix=bootstrap_prefix
+    )
+    multiplier = max(1, ladder.retry_budget_multiplier)
+    feedback_fired = False
+    last_exc: Exception | None = None
+
+    rungs = list(enumerate(_LADDER_RUNG_BUDGETS))
+    final_rung_index = len(rungs) - 1
+    for rung_index, rung_budget in rungs:
+        rung_messages: list[dict[str, Any]]
+        native_format: type[BaseModel] | None
+        is_bootstrap = rung_index == final_rung_index
+        if rung_index == 0:
+            rung_messages = messages
+            native_format = schema_model
+        else:
+            rung_messages = (
+                bootstrapped if is_bootstrap else json_only_retry_messages(messages, schema_model)
+            )
+            native_format = None
+        try:
+            completion = await complete_fn(
+                messages=rung_messages,
+                model_def=model_def,
+                max_tokens=max_tokens * rung_budget,
+                temperature=temperature,
+                response_format=native_format,
+            )
+            raw_text = completion_content(completion)
+            if is_bootstrap:
+                # The completion continues the prefilled envelope; parse the
+                # concatenation, never the continuation alone.
+                raw_text = bootstrap_prefix + raw_text
+            return ladder.parse_content(raw_text)
+        except ValidationError as exc:
+            # JSON-shaped output that failed a schema bound is the shape a
+            # better-aimed re-ask can fix: name the failing fields and the
+            # constraint, then keep climbing.
+            last_exc = exc
+            if feedback_fired:
+                continue
+            feedback_fired = True
+            try:
+                feedback_completion = await complete_fn(
+                    messages=validation_feedback_retry_messages(
+                        messages,
+                        schema_model,
+                        validation_summary(exc),
+                        note=ladder.validation_note,
+                    ),
+                    model_def=model_def,
+                    max_tokens=max_tokens * multiplier,
+                    temperature=temperature,
+                    response_format=None,
+                )
+                return ladder.parse_content(completion_content(feedback_completion))
+            except Exception as feedback_exc:  # pylint: disable=broad-exception-caught
+                last_exc = feedback_exc
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            last_exc = exc
+
+    raise RuntimeError(f"{operation_label} distillation failed: {last_exc}") from last_exc
+
+
+def validation_summary(exc: ValidationError) -> str:
+    """One-line ``loc: type`` list, e.g. ``facts.0.fact: string_too_long``."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}" for err in exc.errors()
+    )
