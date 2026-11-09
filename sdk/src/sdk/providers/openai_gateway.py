@@ -1456,9 +1456,10 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
                 tool_name or "?",
             )
             return "{}"
-    elif isinstance(raw_arguments, dict):
-        if _parse_tool_arguments_object(raw_arguments) is not None:
-            return json.dumps(raw_arguments, allow_nan=False)
+    elif (
+        isinstance(raw_arguments, dict) and _parse_tool_arguments_object(raw_arguments) is not None
+    ):
+        return json.dumps(raw_arguments, allow_nan=False)
     logger.warning(
         "replaying a tool call with unusable arguments as an empty object "
         "(tool=%r, payload=%s); the backend rejects the original payload "

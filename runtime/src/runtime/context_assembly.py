@@ -798,13 +798,11 @@ def _resolve_replay_policy(
     include_recent = controls.include_recent_conversation is not False
     include_diag = controls.include_diagnostic_reflection is not False
 
-    if trigger_mode == "manual":
+    if trigger_mode == "manual" or (
+        trigger_mode in {"conditional", "hybrid"} and not query_gate_passed
+    ):
         include_manifest = False
         include_recent = False
-    elif trigger_mode in {"conditional", "hybrid"}:
-        if not query_gate_passed:
-            include_manifest = False
-            include_recent = False
 
     effective_history_max_tokens = _tighten_cap(
         budget_values["history_max_tokens"],
