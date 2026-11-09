@@ -344,11 +344,19 @@ class TurnIdentity:
 
         Compares the fields that say *whose* turn this is — the owner, the
         conversation, the surface, the workspace, the session plan, and the
-        task. ``thread_store_slug`` is excluded: it names where the turn's
-        evidence lives, and a continuation saved before that field existed
-        carries none. Two identities that disagree about it are still the
-        same turn, and rejecting them would strand every paused turn across
-        an upgrade.
+        task. Two fields are excluded:
+
+        ``thread_store_slug`` names where the turn's evidence lives, and a
+        continuation saved before that field existed carries none. Two
+        identities that disagree about it are still the same turn, and
+        rejecting them would strand every paused turn across an upgrade.
+
+        ``turn_index`` is a forensic join key reserved at turn start, not a
+        turn identity: a resumed turn takes a fresh reservation
+        (``reserved_turn``) so overlapping turns never share a number, and
+        comparing indexes would reject every in-place resume — the
+        2026-10-22 23:31 incident, where no cap-paused turn could resume
+        in place once the index joined the comparison.
 
         Args:
             other: The identity to compare against.
@@ -368,7 +376,6 @@ class TurnIdentity:
             and self.memory_scope == other.memory_scope
             and self.session_plan_digest == other.session_plan_digest
             and self.task_id == other.task_id
-            and self.turn_index == other.turn_index
             and self.task_goal == other.task_goal
         )
 

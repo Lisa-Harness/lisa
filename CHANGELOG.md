@@ -17,6 +17,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Every in-place resume of a paused turn failed with "Continuation belongs
+  to a different turn identity or session plan" (the 2026-10-22 23:31
+  incident, and zero successful cap-pause resumes since the comparison
+  landed). `TurnIdentity.same_turn` compared `turn_index`, which is a
+  forensic join key reserved at turn start (`runtime.thread.reserved_turn`),
+  not turn identity: a resumed turn reserves a fresh index so overlapping
+  turns never share a number, so the saved continuation's index never
+  matched the live one. The index is excluded from the comparison — like
+  the already-excluded `thread_store_slug` — while the fields that say
+  *whose* turn it is (owner, conversation, surface, session plan digest,
+  task) stay decisive: a continuation saved under a different session plan
+  or task is still rejected. The guard's error now names the two digests it
+  compared, so a genuine digest mismatch (editing
+  `config/session_context.md` between a pause and its resume) is
+  self-explanatory instead of opaque. Tests:
+  `kernel/tests/test_turn_continuation.py`,
+  `runtime/tests/test_core_services.py::test_a_paused_turn_saved_under_another_turn_index_still_resumes`.
 - Mining distillation crash-loop (2026-11-08..09 incident: 21 consecutive
   `mine_thread_segment` failures, zero segments ever mined): the mining
   distiller now escalates its token budget 2× on the JSON-only retry and

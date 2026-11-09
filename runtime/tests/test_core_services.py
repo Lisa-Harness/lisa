@@ -972,6 +972,117 @@ async def test_resume_phrase_resumes_cap_paused_loop_in_place(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_a_paused_turn_saved_under_another_turn_index_still_resumes(
+    tmp_path: Path,
+) -> None:
+    """The resume path must not fail the identity guard on a fresh reservation.
+
+    End-to-end regression for the 2026-10-22 23:31 incident: a cap pause
+    saves the continuation under the turn index it ran under; the resume
+    reserves a fresh index before building hooks, and comparing indexes in
+    ``same_turn`` turned every in-place resume into "Turn failed:
+    ValueError: Continuation belongs to a different turn identity or
+    session plan." The saved continuation carries an index the resume turn
+    cannot reproduce, and the resumed turn must still run ``run_turn`` with
+    it.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_continuation import TurnContinuation, capture_state
+    from kernel.turn_hooks import TurnIdentity
+    from kernel.turn_phases._turn_state import _TurnState
+    from runtime.callbacks import NullTransport
+    from runtime.thread import append_thread_entry
+    from runtime.turn_continuation import persist_continuation
+
+    runtime = _make_runtime(tmp_path)
+    live_identity = TurnIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        user_name=runtime.config.user_slug,
+        principal_key=runtime.config.user_slug,
+        thread_store_slug=runtime.config.thread_slug,
+        conversation_id=runtime.config.conversation_id,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
+        task_id="task-7",
+        turn_index=40,
+    )
+    saved = TurnContinuation(
+        identity=live_identity,
+        mode_id="worker",
+        query="fix issue 7",
+        state_json=capture_state(_TurnState()),
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="[]",
+        preferred_model_id=None,
+        max_iterations=3,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        reason="cap",
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="worker",
+        query="fix issue 7",
+        response_text="stuck in stage",
+        provenance={
+            "source": "observed",
+            "operator_exit": "paused",
+            "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, saved),
+        },
+    )
+    index_seen: list[int | None] = []
+    mode_seen: list[str] = []
+
+    async def execute_mode_turn(runtime_arg, message, mode_id, query, transport, **kwargs):
+        # _execute_mode_turn builds hooks internally; the observed route and
+        # task are enough to prove the turn ran through the resume path.
+        mode_seen.append(mode_id)
+        index_seen.append(kwargs.get("continuation").identity.turn_index)
+        raise AssertionError("resume must be validated, not executed, in this test")
+
+    with patch.object(handle_message_mod, "_execute_mode_turn", execute_mode_turn):
+        await handle_message(runtime, "continue", NullTransport())
+
+    # The resume routed to the paused turn's owner carrying the saved
+    # continuation whose identity index (40) the resumed turn cannot
+    # reproduce — it will reserve a fresh one. The turn still ran (no
+    # "different turn identity" failure).
+    assert mode_seen == ["worker"], "the resume must route to the paused turn's owner"
+    assert index_seen == [40]
+    # The saved continuation still validates against the live identity with
+    # a different index: the guard accepts it (same digest, same task).
+    assert saved.identity.same_turn(
+        TurnIdentity(
+            workspace_id=live_identity.workspace_id,
+            user_id=live_identity.user_id,
+            user_slug=live_identity.user_slug,
+            user_name=live_identity.user_name,
+            principal_key=live_identity.principal_key,
+            thread_store_slug=live_identity.thread_store_slug,
+            conversation_id=live_identity.conversation_id,
+            surface_type=live_identity.surface_type,
+            surface_id=live_identity.surface_id,
+            memory_scope=live_identity.memory_scope,
+            session_plan_digest=live_identity.session_plan_digest,
+            task_id="task-7",
+            turn_index=saved.identity.turn_index + 1,
+        )
+    )
+
+
+@pytest.mark.asyncio
 async def test_new_request_after_cap_pause_routes_normally(tmp_path: Path) -> None:
     continuation, notes = await _resumed_continuation_after(
         tmp_path, reason="cap", message="what is the weather like"
