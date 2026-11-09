@@ -45,6 +45,7 @@ from typing import Any, TypedDict, cast
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
+    assistant_bootstrap_messages,
     completion_content,
     json_only_retry_messages,
     parse_structured_payload,
@@ -313,8 +314,12 @@ async def _distill_facts(
 ) -> MinedFacts:
     """Distill a segment's rendered turns into durable facts via the model.
 
-    Two attempts: structured output first, then a JSON-only retry with a
-    schema-echoing user message. Raises when both attempts fail.
+    Three attempts: structured output, a JSON-only retry with a
+    schema-echoing user message, then an assistant-bootstrap prefill
+    (``{"facts": [``) that forces the model to continue inside the JSON
+    envelope — the poison shape the 2026-11-08..09 crash-loop logged was
+    reasoning prose before any JSON, which a re-ask alone reproduces.
+    Raises when all attempts fail.
     """
     model_id = ctx.preferred_model_id
     model_def = ctx.host.resolve_model(model_id)
@@ -330,32 +335,40 @@ async def _distill_facts(
     ]
     mined: MinedFacts | None = None
     last_exc: Exception | None = None
-    for attempt_idx, attempt_messages in enumerate(
-        (first_messages, json_only_retry_messages(first_messages, MinedFacts))
-    ):
+    bootstrap_messages = assistant_bootstrap_messages(first_messages, MinedFacts, top_key="facts")
+    bootstrap_prefix = str(bootstrap_messages[-1]["content"])
+    attempts: tuple[tuple[int, list[dict[str, Any]], bool], ...] = (
+        (1, first_messages, False),
+        (2, json_only_retry_messages(first_messages, MinedFacts), False),
+        (2, bootstrap_messages, True),
+    )
+    for multiplier, attempt_messages, is_bootstrap in attempts:
         try:
             raw = await ctx.host.complete(
                 messages=attempt_messages,
                 model_def=model_def,
-                # Escalate the budget on the retry, mirroring
+                # Escalate the budget on the retries, mirroring
                 # synthesize_learning (the kernel's truncation-rescue
                 # pattern): on reasoning models the visible JSON shares the
                 # completion budget with reasoning tokens, so re-issuing the
                 # SAME budget with a JSON-only nudge just reproduces the
                 # truncation (the 2026-11-08..09 mining crash-loop: 21 failed
                 # segments, zero mined, because a 640-token budget starved
-                # both attempts identically).
-                max_tokens=mine_max_tokens * (2 if attempt_idx else 1),
+                # every attempt identically).
+                max_tokens=mine_max_tokens * multiplier,
                 temperature=0.1,
-                response_format=MinedFacts if attempt_idx == 0 else None,
+                response_format=MinedFacts if multiplier == 1 else None,
             )
-            mined = _parse_mined(completion_content(raw))
+            raw_text = completion_content(raw)
+            if is_bootstrap:
+                # The completion continues the prefilled envelope; parse the
+                # concatenation, never the continuation alone.
+                raw_text = bootstrap_prefix + raw_text
+            mined = _parse_mined(raw_text)
             break
         except Exception as exc:  # pylint: disable=broad-exception-caught
             last_exc = exc
-            if attempt_idx == 0:
-                continue
-            break
+            continue
     if mined is None:
         raise RuntimeError(f"mine_thread_segment distillation failed: {last_exc}")
     return mined
@@ -565,7 +578,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         rec_id for rec in candidates if (rec_id := rec.get("id")) is not None
     }
 
-    # Distillation loop: 2 attempts (structured first, JSON-only retry).
+    # Distillation loop: 3 attempts (structured, JSON-only retry,
+    # assistant-bootstrap prefill).
     mined = await _distill_facts(
         ctx,
         system_prompt=system_prompt,

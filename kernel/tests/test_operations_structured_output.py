@@ -15,6 +15,7 @@ import pytest
 from kernel.operations.structured_output import (
     REASONING_TAIL_CONTENT_SOURCE,
     EmptyStructuredOutputError,
+    assistant_bootstrap_messages,
     extract_json_object,
     parse_structured_payload,
     reasoning_tail_excerpt,
@@ -244,3 +245,43 @@ def test_extract_json_object_no_braces_returns_stripped_original() -> None:
 def test_extract_json_object_strips_fences() -> None:
     """Markdown fences are stripped before extraction."""
     assert extract_json_object('```json\n{"a": 1}\n```') == '{"a": 1}'
+
+
+# ── assistant_bootstrap_messages ────────────────────────────────────────────
+
+
+def test_assistant_bootstrap_prefills_requested_top_key() -> None:
+    """The bootstrap retry replays the conversation and prefills the assistant
+    turn with the requested top-key array opening."""
+    messages = [{"role": "user", "content": "produce facts"}]
+    bootstrapped = assistant_bootstrap_messages(messages, _SamplePayload, top_key="results")
+    assert bootstrapped[:-1] == messages
+    assert bootstrapped[-1]["role"] == "assistant"
+    assert bootstrapped[-1]["content"] == '{"results": ['
+
+
+def test_assistant_bootstrap_default_is_bare_object_opening() -> None:
+    """Without a top key the prefill is the bare JSON object opening, which
+    keeps the helper generic over any schema."""
+    messages = [{"role": "user", "content": "produce payload"}]
+    bootstrapped = assistant_bootstrap_messages(messages, _SamplePayload)
+    assert bootstrapped[-1]["role"] == "assistant"
+    assert bootstrapped[-1]["content"] == '{"'
+
+
+def test_assistant_bootstrap_does_not_mutate_input() -> None:
+    """The input message list is left untouched — retries must be idempotent."""
+    messages: list[dict[str, str]] = [{"role": "user", "content": "produce facts"}]
+    assistant_bootstrap_messages(messages, _SamplePayload, top_key="results")
+    assert messages == [{"role": "user", "content": "produce facts"}]
+
+
+def test_bootstrap_prefill_concatenation_parses() -> None:
+    """The model continues the prefilled envelope; prefix + continuation
+    parses while the continuation alone does not — the caller must parse the
+    concatenation."""
+    continuation = '], "query": "test"}'
+    combined = '{"results": [' + continuation
+    assert parse_structured_payload(_SamplePayload, combined) == _SamplePayload(
+        query="test", results=[]
+    )
