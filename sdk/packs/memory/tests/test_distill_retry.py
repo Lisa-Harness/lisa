@@ -10,6 +10,7 @@ retry behavior for both the empty-output case and the JSON-truncation case.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -193,3 +194,89 @@ async def test_execute_raises_when_both_attempts_fail() -> None:
 
     with pytest.raises(RuntimeError, match="distillation failed: empty distillation output"):
         await execute(ctx)
+
+
+@pytest.mark.asyncio
+async def test_execute_feedback_rung_names_the_cap_and_succeeds() -> None:
+    """A JSON-shaped response whose facts exceed the per-fact cap triggers the
+    validation-feedback rung, which names the failing fields and the cap.
+
+    The 2026-11-09 incidents: three consecutive
+    ``facts.0.fact: string_too_long`` rejections because every re-ask was a
+    bare JSON-only instruction that never said the 400-character cap.
+    """
+    calls: list[list[dict[str, Any]]] = []
+    overlong = "x" * 450
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> Any:
+        calls.append(list(messages))
+        if len(calls) < 2:
+            return _completion(json.dumps({"facts": [{"action": "create", "fact": overlong}]}))
+        return _completion(
+            json.dumps({"facts": [{"action": "create", "fact": "fact within the cap"}]})
+        )
+
+    async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        return OperationResult(output_text="Memory stored with ID 1")
+
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the rundown",
+        execute_tool_fn=_execute_tool,
+    )
+
+    result = await execute(ctx)
+
+    # Attempt 1 returned JSON-shaped over-length facts; the FIRST re-ask is
+    # already the validation-feedback rung because rung 2 (bare JSON-only)
+    # would reproduce the failure it cannot name.
+    assert len(calls) == 2
+    feedback_text = calls[-1][-1]["content"]
+    assert "failed validation" in feedback_text
+    assert "string_too_long" in feedback_text
+    assert "at most 400 characters" in feedback_text
+    assert "Learning stored" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_execute_feedback_rung_message_covers_over_length_facts() -> None:
+    """The feedback re-ask is a distinct message whose content names the
+    per-fact cap — the lesson the bare JSON-only re-ask lacked."""
+    calls: list[list[dict[str, Any]]] = []
+    overlong = "fact " * 120  # > 400 chars
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> Any:
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return _completion(
+                json.dumps(
+                    {
+                        "facts": [
+                            {"action": "create", "fact": overlong},
+                            {"action": "create", "fact": overlong},
+                        ]
+                    }
+                )
+            )
+        return _completion(json.dumps({"facts": [{"action": "create", "fact": "short"}]}))
+
+    async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
+        if _tool_id == "memory.search":
+            return OperationResult(output_text="[]")
+        return OperationResult(output_text="Memory stored with ID 3")
+
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the rundown",
+        execute_tool_fn=_execute_tool,
+    )
+
+    result = await execute(ctx)
+
+    # Attempt 1 returned JSON-shaped over-length facts → the feedback rung
+    # re-asked with the cap named before the model complied.
+    assert len(calls) == 2
+    assert "at most 400 characters" in calls[-1][-1]["content"]
+    assert "Learning stored" in result.output_text

@@ -44,6 +44,8 @@ __all__ = [
     "parse_structured_payload",
     "reasoning_tail_excerpt",
     "run_structured_completion_with_retry",
+    "validation_feedback_instruction",
+    "validation_feedback_retry_messages",
 ]
 
 #: Default cap on the quoted reasoning tail (characters). Reasoning trails
@@ -276,6 +278,50 @@ def json_only_instruction(response_format_model: type[BaseModel]) -> str:
         f"Populate these top-level keys: {key_list}. "
         f"Match this JSON shape: {json.dumps(schema, separators=(', ', ': '))}"
     )
+
+
+def validation_feedback_instruction(
+    response_format_model: type[BaseModel],
+    error_summary: str,
+    *,
+    note: str = "",
+) -> str:
+    """Build a re-ask that carries what the last attempt got wrong.
+
+    A bare re-ask reproduces the failure: the 2026-11-09 synthesize incidents
+    returned over-length ``fact`` strings three times in a row because the
+    JSON-only instruction never said the per-fact cap. The re-ask therefore
+    names the failing fields (``error_summary`` — the one-line
+    ``loc: type`` list from the validation error) and, when ``note`` is
+    given, the constraint behind it (e.g. a character cap). The schema echo
+    stays so the shape contract holds.
+    """
+
+    instruction = json_only_instruction(response_format_model)
+    feedback = f"Your previous response failed validation: {error_summary}."
+    if note:
+        feedback += f" {note}"
+    return f"{feedback} {instruction}"
+
+
+def validation_feedback_retry_messages(
+    messages: list[dict[str, Any]],
+    response_format_model: type[BaseModel],
+    error_summary: str,
+    *,
+    note: str = "",
+) -> list[dict[str, Any]]:
+    """Append a validation-feedback re-ask to a prior message list."""
+
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": validation_feedback_instruction(
+                response_format_model, error_summary, note=note
+            ),
+        },
+    ]
 
 
 def json_only_retry_messages(

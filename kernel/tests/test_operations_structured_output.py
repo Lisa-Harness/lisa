@@ -19,6 +19,7 @@ from kernel.operations.structured_output import (
     extract_json_object,
     parse_structured_payload,
     reasoning_tail_excerpt,
+    validation_feedback_retry_messages,
 )
 from pydantic import BaseModel, ValidationError
 
@@ -285,3 +286,43 @@ def test_bootstrap_prefill_concatenation_parses() -> None:
     assert parse_structured_payload(_SamplePayload, combined) == _SamplePayload(
         query="test", results=[]
     )
+
+
+# ── validation_feedback_retry_messages ──────────────────────────────────────
+
+
+def test_validation_feedback_names_the_failing_fields_and_note() -> None:
+    """The feedback re-ask carries the validation summary and the constraint
+    note — a bare re-ask reproduces the failure (the 2026-11-09 synthesize
+    incidents: three consecutive over-length facts because the re-ask never
+    said the cap)."""
+    messages = [{"role": "user", "content": "produce payload"}]
+    retried = validation_feedback_retry_messages(
+        messages,
+        _SamplePayload,
+        "query: string_too_long",
+        note="Each 'query' must be at most 3 characters.",
+    )
+    assert retried[:-1] == messages
+    assert retried[-1]["role"] == "user"
+    text = retried[-1]["content"]
+    assert "failed validation: query: string_too_long" in text
+    assert "at most 3 characters" in text
+    # The schema echo stays so the shape contract holds.
+    assert "Return one JSON object only" in text
+
+
+def test_validation_feedback_without_note_still_names_fields() -> None:
+    messages = [{"role": "user", "content": "produce payload"}]
+    retried = validation_feedback_retry_messages(
+        messages, _SamplePayload, "results: json_invalid", note=""
+    )
+    text = retried[-1]["content"]
+    assert "failed validation: results: json_invalid" in text
+    assert "failed validation: results: json_invalid." in text
+
+
+def test_validation_feedback_does_not_mutate_input() -> None:
+    messages: list[dict[str, str]] = [{"role": "user", "content": "produce payload"}]
+    validation_feedback_retry_messages(messages, _SamplePayload, "query: string_too_long")
+    assert messages == [{"role": "user", "content": "produce payload"}]

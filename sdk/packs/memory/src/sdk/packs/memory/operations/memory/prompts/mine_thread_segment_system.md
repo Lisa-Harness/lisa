@@ -43,3 +43,7 @@ Each item has `action` ("create", "update", or "skip"), `fact` (empty only
 for skip), `supersedes_id` (only for update), and `reason` (one short
 clause). If the segment contains nothing durable, return an empty `facts`
 array.
+
+Each `fact` must be at most 400 characters: distill the knowledge, do not
+summarize the conversation. A fact that will not fit is knowledge too
+provisional to store — reduce it to its durable core or drop it.
