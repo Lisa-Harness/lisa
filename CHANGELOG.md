@@ -4,6 +4,45 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Mining distillation crash-loop (2026-11-08..09 incident: 21 consecutive
+  `mine_thread_segment` failures, zero segments ever mined): the mining
+  distiller now escalates its token budget 2× on the JSON-only retry and
+  raises its module default from 640 to 16384 tokens, mirroring
+  `synthesize_and_store_learning`'s documented reasoning-model lesson, and
+  the operation's timeout moves from the 60s default to an authored 300s.
+  The mining slice no longer stops the pass on the first segment failure:
+  each segment gets a bounded attempt budget (2) per pass, after which the
+  marker advances past it with a warning so one poisoned segment cannot
+  starve every later segment forever. Failed segments are surfaced in the
+  slice outcome notes.
+- Forensic reads merge `errors.jsonl` (ERROR+ evidence) with
+  `runtime.jsonl` (WARNING+ diagnostics) instead of reading the runtime log
+  only when the errors ledger is empty; duplicate rows are deduplicated and
+  a source that cannot be read is named under **missing**. Previously
+  warning-level records were invisible whenever the errors ledger held any
+  rows, and the bundle reported "runtime log: unavailable" over an existing
+  file (the incident's own audit could not see its 19 tool-parameter
+  rejections).
+- Pre-execution dispatch rejections (invalid parameters, mode allowlist,
+  unknown id) publish `tool.telemetry` rows before raising, so a rejected
+  dispatch is ledger evidence like any other failure instead of vanishing
+  from the decisions ledger — the failure shape that let a turn with 19
+  rejected tool calls read as "6 dispatches, 0 failed".
+- Slice-owned operations (thread mining) publish dispatch telemetry: the
+  runtime stores the subscribed telemetry bus of each hook build on the
+  session, and the mining slice stamps it onto its off-turn operation
+  context, so background crash-loops are visible in the decisions ledger
+  with `turn_index: null` (surfacing under *Unattributed records*).
+
+### Added
+
+- Behavioral signals detect a repeated-failure crash-loop: the same target
+  failing 5+ times in the window (including off-turn slice work) is
+  surfaced as a pattern instead of counting on a per-turn view that never
+  sees it.
+
 ## [0.5.2] - 2026-11-08
 
 ### Added
