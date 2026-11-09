@@ -299,6 +299,14 @@ class SqliteMemoryStore:
             self._conn.commit()
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
+        """Store one memory record, atomically superseding its predecessor.
+
+        When ``request.supersedes_id`` is set, the scoped predecessor is
+        retired by the same transaction that inserts the successor —
+        supersession is one atomic write, never two best-effort calls. A
+        predecessor that is missing or already inactive does not fail the
+        insert; the successor's ``supersedes_id`` link records the intent.
+        """
         write = (
             request
             if isinstance(request, MemoryWriteRequest)
@@ -344,6 +352,28 @@ class SqliteMemoryStore:
                     write.valid_until,
                 ),
             )
+            if write.supersedes_id is not None:
+                # Atomic supersession: retire the scoped predecessor inside
+                # the same transaction that inserts the successor, so a
+                # failed write can never half-supersede (old and new both
+                # active). A missing or already-inactive original matches
+                # zero rows — idempotent, and the successor's supersedes_id
+                # link still records the supersession.
+                self._conn.execute(
+                    """
+                    UPDATE memories
+                    SET status = 'retired'
+                    WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                      AND memory_scope = ? AND surface_id = ? AND status = 'active'
+                    """,
+                    (
+                        int(write.supersedes_id),
+                        write.user_slug,
+                        write.workspace_id,
+                        write.memory_scope,
+                        write.surface_id,
+                    ),
+                )
             self._conn.commit()
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE entry_id = ?",

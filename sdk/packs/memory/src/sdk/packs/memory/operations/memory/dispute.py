@@ -2,8 +2,9 @@
 
 No-LLM write-through: the model provides the correction text directly and
 the operation writes a superseding record with boosted salience and a
-``supersedes_id`` link to the original, then retires the original so the
-default ``status="active"`` recall pool stops surfacing the wrong content.
+``supersedes_id`` link — the store retires the scoped original in the same
+transaction, so the default ``status="active"`` recall pool stops surfacing
+the wrong content the moment the correction exists.
 The old record is preserved (audit trail — queryable with ``status=None``).
 """
 
@@ -216,9 +217,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # The correction inherits the disputed record's scope and kind (a
     # semantic fact is corrected by a semantic record, not by a store
     # default) and carries boosted salience so it outranks any remaining
-    # candidates. The disputed record is then retired: supersession is
-    # real, not cosmetic — the wrong record must stop surfacing in the
-    # default active recall pool while remaining queryable with
+    # candidates. The supersedes_id makes supersession atomic: the store
+    # retires the disputed record in the same transaction that inserts the
+    # correction, so the wrong record stops surfacing in the default
+    # active recall pool while remaining queryable with
     # ``status=None`` for audit.
     boosted_salience = max(0.8, min(1.0, disputed_record.salience + 0.2))
 
@@ -256,50 +258,16 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             output_text=f"Memory dispute: failed to write correction: {add_result.error}"
         )
 
-    # Retire the disputed record so the correction is the only active claim.
-    # A retire failure keeps the correction active but logs loudly — the
-    # correction outranks the original either way, and the next dedup/recall
-    # pass will not resurrect the old content as the top answer.
-    retired = False
-    retire_result = await ctx.host.execute_tool(
-        "memory.retire",
-        ToolExecutionContext(
-            tool_id="memory.retire",
-            workspace_id=disputed_record.workspace_id,
-            user_id=ctx.user_id,
-            user_slug=ctx.user_slug,
-            surface_id=disputed_record.surface_id,
-            memory_scope=disputed_record.memory_scope,
-            mode_id=ctx.mode_id,
-            parameters={
-                "memory_id": disputed_record.id,
-                "user_slug": ctx.user_slug,
-                "workspace_id": disputed_record.workspace_id,
-                "surface_id": disputed_record.surface_id,
-                "memory_scope": disputed_record.memory_scope,
-            },
-        ),
-    )
-    retired = not getattr(retire_result, "error", None)
-    if not retired:
-        logger.warning(
-            "dispute_memory: correction stored but retire of %s failed: %s "
-            "(the original record stays active alongside the correction)",
-            disputed_record.id,
-            getattr(retire_result, "error", "unknown error"),
-        )
-
-    retire_note = "" if retired else " (original could not be retired — both remain active)"
     return OperationResult(
         output_text=(
-            f"✅ Memory record {disputed_record.id} disputed and superseded.{retire_note}\n"
+            f"✅ Memory record {disputed_record.id} disputed and superseded.\n"
             f"Correction stored with salience {boosted_salience:.1f} "
             f"(original was {disputed_record.salience:.1f}).\n"
             f"Reason: {reason}"
         ),
         output_json={
             "superseded_id": str(disputed_record.id),
-            "retired": retired,
+            "retired": True,
             "correction": correction,
             "reason": reason,
             "salience": boosted_salience,

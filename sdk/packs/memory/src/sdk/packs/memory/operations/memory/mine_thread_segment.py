@@ -26,6 +26,10 @@ checkpoint on these:
   ``status="error"`` with ``error_detail``. The slice leaves the segment
   pending so the next pass retries it.
 
+An ``update`` decision is one atomic supersession: ``memory.add`` carries
+``supersedes_id`` and the scoped original retires in the same store
+transaction — the operation performs no separate best-effort retire call.
+
 A partial storage failure (some facts stored, then an error) is retryable:
 the operation stops at the first storage error and its error result does
 not enumerate partial writes — the store's write-time dedup makes the
@@ -335,46 +339,6 @@ async def _distill_facts(
     return mined
 
 
-async def _retire_record(
-    ctx: OperationExecutionContext, parsed: Parameters, record_id: int | str
-) -> bool:
-    """Retire one superseded record; returns True when the backend confirmed."""
-    assert ctx.host is not None
-    retire_ctx = ToolExecutionContext(
-        tool_id="memory.retire",
-        workspace_id=parsed.workspace_id,
-        user_id=ctx.user_id,
-        user_slug=parsed.user_slug,
-        surface_id=parsed.surface_id,
-        memory_scope=parsed.memory_scope,  # type: ignore[arg-type]
-        mode_id=ctx.mode_id,
-        parameters={
-            "memory_id": record_id,
-            "user_slug": parsed.user_slug,
-            "workspace_id": parsed.workspace_id,
-            "surface_id": parsed.surface_id,
-            "memory_scope": parsed.memory_scope,
-        },
-    )
-    try:
-        result = await ctx.host.execute_tool("memory.retire", retire_ctx)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning(
-            "mine_thread_segment: retire of superseded record %s failed: %s",
-            record_id,
-            exc,
-        )
-        return False
-    if getattr(result, "error", None):
-        logger.warning(
-            "mine_thread_segment: retire of superseded record %s errored: %s",
-            record_id,
-            result.error,
-        )
-        return False
-    return True
-
-
 def _parse_memory_id(add_text: str) -> int | None:
     """Extract the minted record id from a ``Memory stored with ID <n>`` reply."""
     if "ID " not in add_text:
@@ -508,6 +472,10 @@ async def _apply_mining_decisions(
 
     Raises :class:`_MiningStorageFailure` on the first storage error —
     facts after it are not attempted this pass.
+
+    An ``update`` is one atomic supersession: ``memory.add`` carries
+    ``supersedes_id`` and the scoped original retires in the same store
+    transaction (the retired list carries the supersedes ids).
     """
     created_ids: list[int] = []
     updated_ids: list[int] = []
@@ -526,8 +494,7 @@ async def _apply_mining_decisions(
             if minted is not None:
                 updated_ids.append(minted)
             assert supersedes is not None
-            if await _retire_record(ctx, parsed, supersedes):
-                retired_ids.append(supersedes)
+            retired_ids.append(supersedes)
         elif minted is not None:
             created_ids.append(minted)
     return created_ids, updated_ids, retired_ids
