@@ -213,7 +213,8 @@ async def add_memory(
         instruction_id: Provenance tag for the instruction version.
         content_json: Structured metadata dict stored alongside content.
         salience: Ranking weight (0.0-1.0) for recall ordering.
-        supersedes_id: Id of the record this one supersedes (consolidation).
+        supersedes_id: Id of the record this one supersedes; the scoped
+            original is retired in the same transaction (supersession).
         item_ids: Ids of the records this one was derived from.
         confidence: Confidence in the memory (0.0-1.0).
         valid_until: Optional semantic-validity bound (ISO 8601); overrides

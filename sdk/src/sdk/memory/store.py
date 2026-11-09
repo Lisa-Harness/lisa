@@ -299,6 +299,14 @@ class SqliteMemoryStore:
             self._conn.commit()
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
+        """Store one memory record, atomically superseding its predecessor.
+
+        When ``request.supersedes_id`` is set, the scoped predecessor is
+        retired by the same transaction that inserts the successor —
+        supersession is one atomic write, never two best-effort calls. A
+        predecessor that is missing or already inactive does not fail the
+        insert unless its id would make the successor self-referential.
+        """
         write = (
             request
             if isinstance(request, MemoryWriteRequest)
@@ -310,8 +318,8 @@ class SqliteMemoryStore:
         created_at = _now_iso()
         ttl_days = self.default_ttl_days.get(write.memory_tier, DEFAULT_TTL_DAYS["daily"])
         expires_at = _expires_at(ttl_days)
-        with self._lock:
-            self._conn.execute(
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
                 """
                 INSERT INTO memories (
                     entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
@@ -344,7 +352,24 @@ class SqliteMemoryStore:
                     write.valid_until,
                 ),
             )
-            self._conn.commit()
+            if write.supersedes_id is not None:
+                if cursor.lastrowid == write.supersedes_id:
+                    raise ValueError("A memory cannot supersede itself")
+                self._conn.execute(
+                    """
+                    UPDATE memories
+                    SET status = 'retired'
+                    WHERE id = ? AND user_slug = ? AND workspace_id = ?
+                      AND memory_scope = ? AND surface_id = ? AND status = 'active'
+                    """,
+                    (
+                        int(write.supersedes_id),
+                        write.user_slug,
+                        write.workspace_id,
+                        write.memory_scope,
+                        write.surface_id,
+                    ),
+                )
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE entry_id = ?",
                 (entry_id,),

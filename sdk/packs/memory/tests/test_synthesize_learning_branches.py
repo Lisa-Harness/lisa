@@ -339,8 +339,6 @@ async def test_execute_update_supersedes_and_retires_candidate(candidate_id: int
             )
         if tool_id == "memory.add":
             return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
-        if tool_id == "memory.retire":
-            return ToolResult(tool_id=tool_id, output_text="Retired")
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _ctx(
@@ -356,11 +354,10 @@ async def test_execute_update_supersedes_and_retires_candidate(candidate_id: int
     result = await op.execute(ctx)
 
     assert result.extra["updated_ids"] == [9]
-    assert result.extra["retired_ids"] == [candidate_id]
+    assert "retired_ids" not in result.extra
     add_calls = [params for tool, params in captured if tool == "memory.add"]
-    retire_calls = [params for tool, params in captured if tool == "memory.retire"]
     assert add_calls[0]["supersedes_id"] == candidate_id
-    assert retire_calls[0]["memory_id"] == candidate_id
+    assert not [params for tool, params in captured if tool == "memory.retire"]
 
 
 @pytest.mark.asyncio

@@ -25,8 +25,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   `synthesize_and_store_learning` and `mine_thread_segment` operations search
   the scoped store for similar existing records before distilling and persist
   a per-fact create/update/skip decision: updates write a superseding record
-  (`supersedes_id`) and retire the original; duplicates are skipped. Captures
-  are stored as `memory_kind="semantic"` — distilled facts, not raw
+  (`supersedes_id`) and retire the scoped active original in one transaction;
+  duplicates are skipped. Captures are stored as `memory_kind="semantic"` —
+  distilled facts, not raw
   conversation events. This replaces the batch
   consolidate-episodic-pressure pipeline (the removed
   `consolidate_semantic` operation), aligning the write path with the
@@ -64,6 +65,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   setup guidance instead of an attribute error.
 - Memory capture and mining log malformed dedup-search responses before
   proceeding without candidates.
+- A failed supersession transaction rolls back its successor and retirement;
+  failed dispute writes report an error status instead of a successful result.
+- Supersession rejects a missing target ID that would make the successor
+  reference and retire itself.
 
 ### Removed
 
@@ -79,6 +84,11 @@ All notable changes to the Lisa Harness will be documented in this file.
   session configuration. Remove calls to `consolidate_semantic` and the
   `deep` recall parameter. See
   [memory mining configuration](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining).
+- External `memory.add` providers must atomically retire the scoped active
+  predecessor when `supersedes_id` is supplied; capture, mining, and dispute
+  no longer issue a separate `memory.retire` call.
+- Capture results no longer expose `retired_ids`; inspect the stored
+  successors' `supersedes_id` links when the prior IDs are needed.
 
 ## [0.5.1] - 2026-11-02
 
