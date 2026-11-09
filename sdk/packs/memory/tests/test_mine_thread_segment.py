@@ -474,3 +474,65 @@ async def test_mine_distill_escalates_max_tokens_on_retry() -> None:
     )
     assert result.extra.get("mined") is True
     assert result.extra.get("memory_ids") == [7]
+
+
+@pytest.mark.asyncio
+async def test_mine_distill_uses_assistant_bootstrap_on_third_attempt() -> None:
+    """When structured output AND the JSON-only retry both return reasoning
+    prose (the 2026-11-08..09 poison shape: 21 segments failed with
+    'Let me analyze this conv…'), the third attempt prefills the assistant
+    turn with the schema opening and parses prefix + continuation."""
+    calls: list[list[dict[str, Any]]] = []
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        calls.append(list(messages))
+        if len(calls) < 3:
+            return "Let me analyze this conversation segment. The user discussed"
+        return '{"fact": "bootstrapped fact", "action": "create"}]}'
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns(), "user_slug": "adam"},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert len(calls) == 3
+    assert calls[-1][-1]["role"] == "assistant"
+    assert calls[-1][-1]["content"] == '{"facts": ['
+    assert result.extra.get("mined") is True
+    assert result.extra.get("memory_ids") == [9]
+
+
+@pytest.mark.asyncio
+async def test_mine_distill_all_attempts_failing_raises() -> None:
+    """All three rungs failing still raises the typed distillation failure
+    for the mining slice to quarantine the segment (fail-closed contract)."""
+    calls: list[list[dict[str, Any]]] = []
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        calls.append(list(messages))
+        return "Let me analyze this conversation segment. The user discussed"
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns(), "user_slug": "adam"},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    with pytest.raises(RuntimeError, match="distillation failed"):
+        await op.execute(ctx)
+    assert len(calls) == 3

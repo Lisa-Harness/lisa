@@ -11,6 +11,12 @@ two failure modes:
    case the caller should re-issue the call with an explicit JSON-only
    instruction. ``json_only_retry_messages`` builds that retry payload, and
    ``run_structured_completion_with_retry`` wraps the whole parse-retry loop.
+3. Reasoning-heavy models answer even the explicit JSON-only instruction
+   with analysis prose before any JSON. ``assistant_bootstrap_messages``
+   builds the final retry: it replays the conversation and prefills the
+   assistant turn with the schema's opening envelope text so the model
+   continues *inside* the JSON object instead of reasoning first (the
+   2026-11-08..09 mining crash-loop's last unaddressed rung).
 
 These helpers are runtime-neutral and depend only on Pydantic and the kernel
 operation execution context. They are intentionally host-agnostic: the host's
@@ -29,6 +35,7 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "assistant_bootstrap_messages",
     "completion_content",
     "extract_json_object",
     "is_structured_output_unsupported",
@@ -283,6 +290,40 @@ def json_only_retry_messages(
             "role": "user",
             "content": json_only_instruction(response_format_model),
         },
+    ]
+
+
+#: Bare object opening stamped into the assistant bootstrap turn when no
+#: ``top_key`` is given — generic over any schema.
+_ASSISTANT_BOOTSTRAP_PREFIX = '{"'
+
+
+def assistant_bootstrap_messages(
+    messages: list[dict[str, Any]],
+    response_format_model: type[BaseModel],
+    *,
+    top_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Build a final retry whose assistant turn is prefilled with JSON.
+
+    Reasoning-heavy models can answer every re-ask with analysis prose before
+    any JSON (the 2026-11-08..09 mining crash-loop: ``Let me analyze this
+    conv…`` twice per segment, 21 segments, zero mined). Prefilling the
+    assistant turn with the schema's opening envelope forces the completion
+    to continue *inside* the JSON object instead of reasoning first.
+
+    ``top_key`` opens the named top-level property's array (``'{"facts": ['``);
+    without it the bare ``{"`` object opening is used. The completion is a
+    continuation of the prefix: the caller must parse the concatenation of
+    prefix and completion, never the continuation alone.
+    """
+
+    prefix = _ASSISTANT_BOOTSTRAP_PREFIX
+    if top_key:
+        prefix = f'{{"{top_key}": ['
+    return [
+        *messages,
+        {"role": "assistant", "content": prefix},
     ]
 
 
