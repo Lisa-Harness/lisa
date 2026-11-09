@@ -2,10 +2,9 @@
 
 No-LLM write-through: the model provides the correction text directly and
 the operation writes a superseding record with boosted salience and a
-``supersedes_id`` link — the store retires the scoped original in the same
-transaction, so the default ``status="active"`` recall pool stops surfacing
-the wrong content the moment the correction exists.
-The old record is preserved (audit trail — queryable with ``status=None``).
+``supersedes_id`` link — the store retires a scoped active original in the
+same transaction, so it leaves the default recall pool when the correction
+is stored. Retirement preserves the original for audit.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from kernel.models import (
     ToolExecutionContext,
 )
 from pydantic import BaseModel, Field, ValidationError
+from sdk.memory.write_result import parse_supersession_retired
 
 logger = logging.getLogger(__name__)
 
@@ -260,16 +260,29 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             error_detail=str(add_result.error),
         )
 
+    retired = parse_supersession_retired(add_result)
+    if retired is None:
+        logger.warning(
+            "dispute_memory: provider did not report retirement outcome for %s",
+            disputed_record.id,
+        )
+    retirement_label = "unknown" if retired is None else str(retired).lower()
+    summary = (
+        f"✅ Memory record {disputed_record.id} disputed and superseded."
+        if retired is True
+        else f"✅ Correction stored with a supersession link to memory record {disputed_record.id}."
+    )
     return OperationResult(
         output_text=(
-            f"✅ Memory record {disputed_record.id} disputed and superseded.\n"
+            f"{summary}\n"
             f"Correction stored with salience {boosted_salience:.1f} "
             f"(original was {disputed_record.salience:.1f}).\n"
-            f"Reason: {reason}"
+            f"Reason: {reason}\n"
+            f"Retired by this write: {retirement_label}"
         ),
         output_json={
             "superseded_id": str(disputed_record.id),
-            "retired": True,
+            "retired": retired,
             "correction": correction,
             "reason": reason,
             "salience": boosted_salience,

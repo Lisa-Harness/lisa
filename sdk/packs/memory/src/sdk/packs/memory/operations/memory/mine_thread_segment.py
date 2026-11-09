@@ -27,7 +27,7 @@ checkpoint on these:
   pending so the next pass retries it.
 
 An ``update`` decision is one atomic supersession: ``memory.add`` carries
-``supersedes_id`` and the scoped original retires in the same store
+``supersedes_id`` and a scoped active original retires in the same store
 transaction — the operation performs no separate best-effort retire call.
 
 A partial storage failure (some facts stored, then an error) is retryable:
@@ -38,10 +38,10 @@ re-mine idempotent, so the retry only fills what is missing.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, TypedDict, cast
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
@@ -51,6 +51,7 @@ from kernel.operations.structured_output import (
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
+from sdk.memory.write_result import parse_memory_add_id, parse_supersession_retired
 
 logger = logging.getLogger(__name__)
 
@@ -344,15 +345,6 @@ async def _distill_facts(
     return mined
 
 
-def _parse_memory_id(add_text: str) -> int | None:
-    """Extract the minted record id from a ``Memory stored with ID <n>`` reply."""
-    if "ID " not in add_text:
-        return None
-    with contextlib.suppress(ValueError, IndexError):
-        return int(add_text.split("ID ", 1)[1].rstrip("."))
-    return None
-
-
 def _validate_mining_params(
     ctx: OperationExecutionContext,
 ) -> tuple[Parameters, str, OperationResult | None]:
@@ -407,8 +399,8 @@ async def _persist_mined_fact(
     candidate_ids: set[int | str],
     turn_lo: int | None,
     turn_hi: int | None,
-) -> tuple[str, int | None, int | str | None]:
-    """Persist one mined fact; return ``(kind, minted_id, supersedes_id)``.
+) -> tuple[str, int | None, int | str | None, bool | None]:
+    """Persist one fact and return its kind, IDs, and retirement outcome.
 
     Raises :class:`_MiningStorageFailure` when the storage call errors —
     the caller surfaces a typed retryable failure instead of skipping the
@@ -460,8 +452,28 @@ async def _persist_mined_fact(
     )
     if getattr(add_result, "error", None):
         raise _MiningStorageFailure(str(add_result.error))
-    minted = _parse_memory_id(getattr(add_result, "output_text", "") or "")
-    return ("update" if supersedes is not None else "create"), minted, supersedes
+    minted = parse_memory_add_id(add_result)
+    if minted is None:
+        logger.warning("mine_thread_segment: provider did not return a numeric memory ID")
+    retired = parse_supersession_retired(add_result) if supersedes is not None else None
+    return ("update" if supersedes is not None else "create"), minted, supersedes, retired
+
+
+class _SupersessionOutcome(TypedDict):
+    memory_id: int | None
+    supersedes_id: int | str
+    retired: bool | None
+
+
+@dataclass(slots=True)
+class _MiningOutcome:
+    created_ids: list[int] = field(default_factory=list)
+    updated_ids: list[int] = field(default_factory=list)
+    stored_unparsed: int = 0
+    retired_ids: list[int | str] = field(default_factory=list)
+    not_retired_by_write_ids: list[int | str] = field(default_factory=list)
+    retirement_unknown_ids: list[int | str] = field(default_factory=list)
+    supersession_outcomes: list[_SupersessionOutcome] = field(default_factory=list)
 
 
 async def _apply_mining_decisions(
@@ -472,19 +484,17 @@ async def _apply_mining_decisions(
     candidate_ids: set[int | str],
     turn_lo: int | None,
     turn_hi: int | None,
-) -> tuple[list[int], list[int], list[int | str]]:
-    """Persist each mined fact's decision; returns (created, updated, retired).
+) -> _MiningOutcome:
+    """Persist each mined fact's decision and record confirmed outcomes.
 
     Raises :class:`_MiningStorageFailure` on the first storage error —
     facts after it are not attempted this pass.
 
     An ``update`` is one atomic supersession: ``memory.add`` carries
-    ``supersedes_id`` and the scoped original retires in the same store
-    transaction (the retired list carries the supersedes ids).
+    ``supersedes_id`` and reports whether the scoped original was retired
+    in the same transaction.
     """
-    created_ids: list[int] = []
-    updated_ids: list[int] = []
-    retired_ids: list[int | str] = []
+    outcome = _MiningOutcome()
     for item in facts:
         result = await _persist_mined_fact(
             ctx,
@@ -494,15 +504,29 @@ async def _apply_mining_decisions(
             turn_lo=turn_lo,
             turn_hi=turn_hi,
         )
-        kind, minted, supersedes = result
+        kind, minted, supersedes, retired = result
+        if minted is None:
+            outcome.stored_unparsed += 1
         if kind == "update":
             if minted is not None:
-                updated_ids.append(minted)
+                outcome.updated_ids.append(minted)
             assert supersedes is not None
-            retired_ids.append(supersedes)
+            outcome.supersession_outcomes.append(
+                {"memory_id": minted, "supersedes_id": supersedes, "retired": retired}
+            )
+            if retired is True:
+                outcome.retired_ids.append(supersedes)
+            elif retired is False:
+                outcome.not_retired_by_write_ids.append(supersedes)
+            else:
+                logger.warning(
+                    "mine_thread_segment: provider did not report retirement outcome for %s",
+                    supersedes,
+                )
+                outcome.retirement_unknown_ids.append(supersedes)
         elif minted is not None:
-            created_ids.append(minted)
-    return created_ids, updated_ids, retired_ids
+            outcome.created_ids.append(minted)
+    return outcome
 
 
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
@@ -542,7 +566,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
 
     try:
-        created_ids, updated_ids, retired_ids = await _apply_mining_decisions(
+        outcome = await _apply_mining_decisions(
             ctx,
             parsed,
             facts=actionable,
@@ -564,19 +588,25 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             extra={"mined": False, "memory_ids": []},
         )
 
-    stored_count = len(created_ids) + len(updated_ids)
+    stored_count = len(outcome.created_ids) + len(outcome.updated_ids) + outcome.stored_unparsed
     return OperationResult(
         output_text=(
             f"✅ Mined {stored_count} durable fact(s) from turns "
-            f"{turn_lo}–{turn_hi} ({len(retired_ids)} superseded, "
+            f"{turn_lo}–{turn_hi} ({len(outcome.retired_ids)} retired, "
+            f"{len(outcome.not_retired_by_write_ids)} not retired by this write, "
+            f"{len(outcome.retirement_unknown_ids)} retirement outcomes unknown, "
             f"{len(mined.facts) - len(actionable)} skipped as duplicates)."
         ),
         extra={
             "mined": True,
-            "memory_ids": created_ids + updated_ids,
-            "created_ids": created_ids,
-            "updated_ids": updated_ids,
-            "retired_ids": retired_ids,
+            "memory_ids": outcome.created_ids + outcome.updated_ids,
+            "created_ids": outcome.created_ids,
+            "updated_ids": outcome.updated_ids,
+            "stored_unparsed": outcome.stored_unparsed,
+            "retired_ids": outcome.retired_ids,
+            "not_retired_by_write_ids": outcome.not_retired_by_write_ids,
+            "retirement_unknown_ids": outcome.retirement_unknown_ids,
+            "supersession_outcomes": outcome.supersession_outcomes,
             "thread_turn_lo": turn_lo,
             "thread_turn_hi": turn_hi,
             "facts": [item.fact for item in actionable],

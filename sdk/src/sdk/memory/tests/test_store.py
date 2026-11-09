@@ -162,6 +162,51 @@ async def test_record_memory_supersedes_atomically(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_state", "expected_retired"),
+    [
+        ("active", True),
+        ("retired", False),
+        ("missing", False),
+        ("other_surface", False),
+    ],
+)
+async def test_record_memory_reports_retirement_outcome(
+    tmp_path: Path, target_state: str, expected_retired: bool
+) -> None:
+    store = _store(tmp_path)
+    original = await store.record_memory(_write(content="original", surface_id="surface-a"))
+    await store.record_memory(_write(content="sentinel", surface_id="surface-a"))
+    if target_state == "retired":
+        assert await store.retire_memory(
+            memory_id=original.id, user_slug="adam", surface_id="surface-a"
+        )
+    elif target_state == "missing":
+        assert await store.delete_memory(
+            memory_id=original.id, user_slug="adam", surface_id="surface-a"
+        )
+
+    outcome = await store.record_memory_with_outcome(
+        _write(
+            content="correction",
+            surface_id="surface-b" if target_state == "other_surface" else "surface-a",
+            supersedes_id=original.id,
+        )
+    )
+
+    assert outcome.supersession_retired is expected_retired
+    assert outcome.record.supersedes_id == original.id
+
+
+@pytest.mark.asyncio
+async def test_record_memory_without_supersession_has_no_retirement_outcome(tmp_path: Path) -> None:
+    outcome = await _store(tmp_path).record_memory_with_outcome(_write(content="new"))
+
+    assert outcome.record.content == "new"
+    assert outcome.supersession_retired is None
+
+
+@pytest.mark.asyncio
 async def test_failed_supersession_is_rolled_back_before_later_writes(tmp_path: Path) -> None:
     store = _store(tmp_path)
     original = await store.record_memory(_write(content="original"))

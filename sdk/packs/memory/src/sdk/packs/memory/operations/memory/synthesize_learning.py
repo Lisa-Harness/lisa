@@ -30,6 +30,7 @@ from kernel.operations.structured_output import (
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
+from sdk.memory.write_result import parse_memory_add_id
 
 logger = logging.getLogger(__name__)
 
@@ -454,16 +455,6 @@ def _build_store_content_json(ctx: OperationExecutionContext) -> dict[str, objec
     return content_json
 
 
-def _parse_memory_id(add_text: str) -> int | None:
-    """Extract the minted record id from a ``Memory stored with ID <n>`` reply."""
-    if "ID " not in add_text:
-        return None
-    try:
-        return int(add_text.split("ID ", 1)[1].rstrip("."))
-    except (ValueError, IndexError):
-        return None
-
-
 @dataclass(slots=True)
 class _UpsertOutcome:
     """Accounting of one distillation's applied fact decisions."""
@@ -548,7 +539,9 @@ async def _apply_one_fact(
     if getattr(tool_result, "error", None):
         raise _FactStorageFailure(str(tool_result.error))
 
-    minted = _parse_memory_id(getattr(tool_result, "output_text", "") or "")
+    minted = parse_memory_add_id(tool_result)
+    if minted is None:
+        logger.warning("synthesize_and_store_learning: provider did not return a numeric memory ID")
     return ("update" if supersedes is not None else "create"), minted, supersedes
 
 

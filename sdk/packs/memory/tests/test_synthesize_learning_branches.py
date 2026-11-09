@@ -14,7 +14,6 @@ Complements ``test_synthesize_learning_tier.py`` with the remaining branches:
 - ``_distill_facts``: host None, first-attempt failure retried at 2× the
   token budget with ``response_format=None``, total failure raises
 - ``_build_store_content_json``: had_briefing + thread_turn provenance
-- ``_parse_memory_id``: missing marker, non-numeric fragment
 - ``execute``: content defaulting, unresolvable model, storage error,
   unparseable memory id → extras omit ``memory_ids``
 """
@@ -295,28 +294,18 @@ def test_build_store_content_json_ignores_non_int_thread_turn() -> None:
     assert "thread_turn" not in content_json
 
 
-# ── _parse_memory_id ──────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("Memory stored with ID 42", 42),
-        ("Memory stored with ID 42.", 42),
-        ("no marker here", None),
-        ("Memory stored with ID abc", None),
-    ],
-)
-def test_parse_memory_id(text: str, expected: int | None) -> None:
-    assert op._parse_memory_id(text) is expected
-
-
 # ── execute guard branches ────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("candidate_id", [7, "memory-7"])
-async def test_execute_update_supersedes_and_retires_candidate(candidate_id: int | str) -> None:
+@pytest.mark.parametrize(
+    "receipt",
+    ["Memory stored with ID 9", '{"memory_id":9,"supersession_retired":true}'],
+)
+async def test_execute_update_supersedes_and_retires_candidate(
+    candidate_id: int | str, receipt: str
+) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
@@ -338,7 +327,7 @@ async def test_execute_update_supersedes_and_retires_candidate(candidate_id: int
                 ),
             )
         if tool_id == "memory.add":
-            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
+            return ToolResult(tool_id=tool_id, output_text=receipt)
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _ctx(

@@ -82,7 +82,23 @@ out-of-scope predecessor does not prevent storing the linked successor, unless
 the requested ID would make the successor refer to itself.
 Search-then-write dedup is not a concurrency guarantee: simultaneous captures
 can both store a similar fact. External `memory.add` providers must implement
-the same atomic, scoped supersession behavior.
+the same atomic, scoped supersession behavior. For a superseding write, return
+a single-line JSON object with `memory_id` and boolean `supersession_retired`
+as the entire tool output or its first line; optional human-readable text may
+follow. `true` means this write retired the predecessor; `false` means it
+did not, including when the predecessor was missing, inactive, or outside
+the requested scope. The built-in server appends its existing
+`Memory stored with ID <id>` receipt after the JSON line. Direct operation
+hosts may instead place these fields in `ToolResult.output_json`.
+
+If a provider omits the boolean or returns a non-boolean value, retirement is
+unknown, not assumed successful. `dispute_memory` reports this as
+`retired: null`. Mining reports confirmed predecessors in `retired_ids`,
+unmatched predecessors in `not_retired_by_write_ids`, and unconfirmed outcomes
+in `retirement_unknown_ids`. Its `supersession_outcomes` list associates each
+successor ID (or `null` when unavailable) and predecessor ID with that write's
+`retired` boolean or `null`. The same predecessor can appear more than once if
+several facts target it.
 
 Captures are stored as `memory_kind="semantic"` — they are distilled,
 self-contained facts by construction. The store has no remaining episodic
