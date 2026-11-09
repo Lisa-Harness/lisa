@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 from kernel.approval import build_approval_invocation
 from kernel.tools.registry import ToolExecutionError
-from runtime.approvals import FileApprovalService
+from runtime.approvals import ApprovalStoreCorruptError, FileApprovalService
 from runtime.policy import (
     PolicyDocument,
     PolicyMode,
@@ -69,6 +69,63 @@ def _write_containment(tmp_path: Path, identity: object, state: str) -> None:
     path = tmp_path / "run" / key / "sandbox-facts.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(__import__("json").dumps({"containment": state}), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Corruption fail-closed (review 2026-11-08, finding 3): the working store
+# must distinguish file-absent from file-unreadable, and must never let a
+# mutation persist a misread (empty/subset) view over the original bytes.
+# ---------------------------------------------------------------------------
+
+
+async def _write_corrupt_approvals(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
+def _bash_invocation_for_corruption() -> object:
+    return _bash_invocation("ls -la")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("{not json", id="malformed-json"),
+        pytest.param("[]", id="not-an-object"),
+        pytest.param('{"req-1": {"state": "galaxy"}}', id="invalid-record"),
+    ],
+)
+async def test_read_corrupt_approval_store_fails_closed(tmp_path: Path, payload: str) -> None:
+    path = tmp_path / "state" / "approvals.json"
+    await _write_corrupt_approvals(path, payload)
+    store = FileApprovalService(path)
+
+    with pytest.raises(ApprovalStoreCorruptError):
+        await store.list_pending(_identity())
+
+
+@pytest.mark.asyncio
+async def test_approval_mutation_on_corrupt_store_preserves_original(
+    tmp_path: Path,
+) -> None:
+    """A mutation over a corrupt store raises and never rewrites the file."""
+    path = tmp_path / "state" / "approvals.json"
+    original = '{"req-1": {"state": "galaxy"}}'
+    await _write_corrupt_approvals(path, original)
+    store = FileApprovalService(path)
+
+    with pytest.raises(ApprovalStoreCorruptError):
+        await store.request(_bash_invocation_for_corruption())
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_missing_approval_store_is_clean_slate(tmp_path: Path) -> None:
+    store = FileApprovalService(tmp_path / "state" / "approvals.json")
+
+    assert await store.list_pending(_identity()) == []
 
 
 @pytest.mark.asyncio

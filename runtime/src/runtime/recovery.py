@@ -17,9 +17,19 @@ from sdk.filelock import (
     sidecar_lock_path,
 )
 
-__all__ = ["FileRecoveryService"]
+__all__ = ["FileRecoveryService", "RecoveryStoreCorruptError"]
 
 logger = logging.getLogger(__name__)
+
+
+class RecoveryStoreCorruptError(RuntimeError):
+    """The recovery store exists but cannot be read.
+
+    Raised instead of treating corruption as an empty store: a later
+    ``settle``/``begin`` would write the misread subset back and erase
+    open recovery records. The original file is never rewritten by this
+    path — an operator must repair or remove the file explicitly.
+    """
 
 
 class FileRecoveryService:
@@ -121,21 +131,33 @@ class FileRecoveryService:
             return changed
 
     def _load_records(self) -> dict[str, RecoveryRecord]:
+        """Load the recovery store, failing closed on corruption.
+
+        File-absent is the clean-slate case and returns ``{}``. A file
+        that exists but is unreadable, is not a JSON object, or contains
+        an unparsable record raises :class:`RecoveryStoreCorruptError` —
+        proceeding on a partial view would let the next ``_store_records``
+        persist that subset and erase the dropped records (the 2026-11-08
+        review, finding 3). The original bytes stay untouched.
+        """
         if not self._path.is_file():
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("recovery: failed to load %s", self._path, exc_info=True)
-            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RecoveryStoreCorruptError(
+                f"recovery store {self._path} is unreadable: {exc}"
+            ) from exc
         if not isinstance(raw, dict):
-            return {}
+            raise RecoveryStoreCorruptError(f"recovery store {self._path} is not a JSON object")
         records: dict[str, RecoveryRecord] = {}
         for work_item_id, value in raw.items():
             try:
                 records[str(work_item_id)] = RecoveryRecord.model_validate(value)
-            except Exception:  # pylint: disable=broad-except
-                continue
+            except Exception as exc:  # pylint: disable=broad-except
+                raise RecoveryStoreCorruptError(
+                    f"recovery store {self._path} has an invalid record {work_item_id!r}: {exc}"
+                ) from exc
         return records
 
     def _store_records(self, records: dict[str, RecoveryRecord]) -> None:
