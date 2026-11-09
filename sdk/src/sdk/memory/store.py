@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import MemoryRecord, MemoryWriteRequest
 from sdk.memory.lexical import tokenize
+from sdk.memory.write_result import MemoryWriteOutcome
 
 try:  # optional: semantic recall via sqlite-vec. Absent → lexical-only.
     import sqlite_vec as _sqlite_vec
@@ -299,6 +300,12 @@ class SqliteMemoryStore:
             self._conn.commit()
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
+        """Store a record and return it without the write's retirement outcome."""
+        return (await self.record_memory_with_outcome(request)).record
+
+    async def record_memory_with_outcome(
+        self, request: MemoryWriteRequest | Any
+    ) -> MemoryWriteOutcome:
         """Store one memory record, atomically superseding its predecessor.
 
         When ``request.supersedes_id`` is set, the scoped predecessor is
@@ -306,6 +313,8 @@ class SqliteMemoryStore:
         supersession is one atomic write, never two best-effort calls. A
         predecessor that is missing or already inactive does not fail the
         insert unless its id would make the successor self-referential.
+        The outcome reports whether this write retired a predecessor, or
+        ``None`` when no predecessor was requested.
         """
         write = (
             request
@@ -318,6 +327,7 @@ class SqliteMemoryStore:
         created_at = _now_iso()
         ttl_days = self.default_ttl_days.get(write.memory_tier, DEFAULT_TTL_DAYS["daily"])
         expires_at = _expires_at(ttl_days)
+        supersession_retired: bool | None = None
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
@@ -355,7 +365,7 @@ class SqliteMemoryStore:
             if write.supersedes_id is not None:
                 if cursor.lastrowid == write.supersedes_id:
                     raise ValueError("A memory cannot supersede itself")
-                self._conn.execute(
+                retirement = self._conn.execute(
                     """
                     UPDATE memories
                     SET status = 'retired'
@@ -370,6 +380,7 @@ class SqliteMemoryStore:
                         write.surface_id,
                     ),
                 )
+                supersession_retired = retirement.rowcount == 1
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE entry_id = ?",
                 (entry_id,),
@@ -383,7 +394,7 @@ class SqliteMemoryStore:
         # ``memories``; semantic recall simply won't find it until the
         # embedding is backfilled.
         await self._write_embedding(int(record.id), write.content)
-        return record
+        return MemoryWriteOutcome(record=record, supersession_retired=supersession_retired)
 
     async def _write_embedding(self, memory_id: int, content: str) -> None:
         """Persist an embedding for ``content`` into the ``memory_vec`` table.

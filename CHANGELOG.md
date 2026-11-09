@@ -69,6 +69,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   failed dispute writes report an error status instead of a successful result.
 - Supersession rejects a missing target ID that would make the successor
   reference and retire itself.
+- Dispute and mining report the retirement performed by each superseding
+  write rather than assuming a predecessor was still active. Providers that
+  do not report the outcome leave it explicitly unknown.
 
 ### Removed
 
@@ -86,7 +89,16 @@ All notable changes to the Lisa Harness will be documented in this file.
   [memory mining configuration](docs/SESSION_CONTEXT_AUTHORING_GUIDE.md#contextmemorymining).
 - External `memory.add` providers must atomically retire the scoped active
   predecessor when `supersedes_id` is supplied; capture, mining, and dispute
-  no longer issue a separate `memory.retire` call.
+  no longer issue a separate `memory.retire` call. Superseding writes now
+  return a JSON metadata line containing `memory_id` and boolean
+  `supersession_retired` before the built-in server's existing text receipt.
+  External providers should return the same metadata so retirement can be
+  confirmed; see [memory architecture](docs/MEMORY_ARCHITECTURE.md#write-time-dedup-create--update--skip).
+- `dispute_memory`'s `retired` result can be `null` when the provider does not
+  confirm the outcome. Mining's `retired_ids` contains only confirmed
+  retirements; `not_retired_by_write_ids` and `retirement_unknown_ids` report
+  the other outcomes, and `supersession_outcomes` associates each outcome
+  with its predecessor and successor.
 - Capture results no longer expose `retired_ids`; inspect the stored
   successors' `supersedes_id` links when the prior IDs are needed.
 

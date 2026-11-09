@@ -152,7 +152,12 @@ async def test_memory_add_supersedes_scoped_original(memory_env: Path) -> None:
         "add_memory",
         {**scope, "content": "corrected", "supersedes_id": original_id},
     )
-    successor_id = int(_tool_text(successor_result).rsplit("ID ", 1)[-1])
+    successor_text = _tool_text(successor_result)
+    successor_id = int(successor_text.rsplit("ID ", 1)[-1])
+    assert json.loads(successor_text.splitlines()[0]) == {
+        "memory_id": successor_id,
+        "supersession_retired": True,
+    }
 
     original = await memory_mcp.call_tool("get_memory", {**scope, "memory_id": original_id})
     successor = await memory_mcp.call_tool("get_memory", {**scope, "memory_id": successor_id})
@@ -160,6 +165,34 @@ async def test_memory_add_supersedes_scoped_original(memory_env: Path) -> None:
     assert json.loads(_tool_text(original))["status"] == "retired"
     assert json.loads(_tool_text(successor))["supersedes_id"] == original_id
     assert [record["id"] for record in json.loads(_tool_text(active))] == [successor_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_state", ["retired", "missing", "other_surface"])
+async def test_memory_add_reports_when_target_was_not_retired(
+    memory_env: Path, target_state: str
+) -> None:
+    scope = {"user_slug": "alice", "workspace_id": "project", "surface_id": "surface-a"}
+    original = await memory_mcp.call_tool("add_memory", {**scope, "content": "original"})
+    original_id = int(_tool_text(original).rsplit("ID ", 1)[-1])
+    await memory_mcp.call_tool("add_memory", {**scope, "content": "sentinel"})
+    if target_state in {"retired", "missing"}:
+        tool = "retire_memory" if target_state == "retired" else "delete_memory"
+        await memory_mcp.call_tool(tool, {**scope, "memory_id": original_id})
+    successor_scope = (
+        {**scope, "surface_id": "surface-b"} if target_state == "other_surface" else scope
+    )
+
+    result = await memory_mcp.call_tool(
+        "add_memory",
+        {**successor_scope, "content": "correction", "supersedes_id": original_id},
+    )
+
+    text = _tool_text(result)
+    assert json.loads(text.splitlines()[0]) == {
+        "memory_id": int(text.rsplit("ID ", 1)[-1]),
+        "supersession_retired": False,
+    }
 
 
 @pytest.mark.asyncio

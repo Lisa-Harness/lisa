@@ -8,6 +8,7 @@ implementation):
 - :class:`ReadOnlyMemoryStoreError` — raised by mutating operations when the
   store was opened with ``readonly=True``.
 - :class:`EmbeddingProvider` — the optional semantic-recall protocol.
+- :class:`MemoryWriteOutcome` — a stored record and its retirement outcome.
 - ``SCHEMA_VERSION`` / ``DEFAULT_TTL_DAYS`` — schema and retention constants.
 
 The ``lisa-memory`` MCP server (``mcp_server.memory.server``) wraps this;
@@ -25,11 +26,13 @@ from sdk.memory.store import (
     ReadOnlyMemoryStoreError,
     SqliteMemoryStore,
 )
+from sdk.memory.write_result import MemoryWriteOutcome
 
 __all__ = [
     "DEFAULT_TTL_DAYS",
     "SCHEMA_VERSION",
     "EmbeddingProvider",
+    "MemoryWriteOutcome",
     "ReadOnlyMemoryStoreError",
     "SqliteMemoryStore",
     "lexical_score",

@@ -133,8 +133,11 @@ async def test_invalid_params_reports_error() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("candidate_id", [7, "memory-7"])
-async def test_mine_update_supersedes_and_retires_candidate(candidate_id: int | str) -> None:
-    """An update decision writes a superseding record and retires the old one."""
+@pytest.mark.parametrize("provider_outcome", [True, False, None])
+async def test_mine_update_reports_retirement_outcome(
+    candidate_id: int | str, provider_outcome: bool | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An update reports the provider's retirement outcome."""
     captured: list[tuple[str, dict[str, Any]]] = []
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
@@ -170,7 +173,12 @@ async def test_mine_update_supersedes_and_retires_candidate(candidate_id: int | 
                 ),
             )
         if tool_id == "memory.add":
-            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 9")
+            metadata = (
+                {"supersession_retired": provider_outcome} if provider_outcome is not None else {}
+            )
+            return ToolResult(
+                tool_id=tool_id, output_text="Memory stored with ID 9", output_json=metadata
+            )
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _make_ctx(
@@ -183,10 +191,104 @@ async def test_mine_update_supersedes_and_retires_candidate(candidate_id: int | 
 
     assert result.extra.get("mined") is True
     assert result.extra.get("updated_ids") == [9]
-    assert result.extra.get("retired_ids") == [candidate_id]
+    assert result.extra.get("retired_ids") == ([candidate_id] if provider_outcome is True else [])
+    assert result.extra.get("not_retired_by_write_ids") == (
+        [candidate_id] if provider_outcome is False else []
+    )
+    assert result.extra.get("retirement_unknown_ids") == (
+        [candidate_id] if provider_outcome is None else []
+    )
+    assert result.extra.get("supersession_outcomes") == [
+        {"memory_id": 9, "supersedes_id": candidate_id, "retired": provider_outcome}
+    ]
+    assert ("provider did not report retirement outcome" in caplog.text) is (
+        provider_outcome is None
+    )
     add_calls = [c for c in captured if c[0] == "memory.add"]
     assert add_calls[0][1]["supersedes_id"] == candidate_id
     assert not [c for c in captured if c[0] == "memory.retire"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receipt", "expected_ids", "stored_unparsed"),
+    [
+        ('{"memory_id":9,"supersession_retired":true}', [9], 0),
+        ('{"supersession_retired":true}', [], 1),
+    ],
+)
+async def test_mine_counts_stored_facts_with_structured_receipts(
+    receipt: str, expected_ids: list[int], stored_unparsed: int
+) -> None:
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {"facts": [{"action": "update", "fact": "refined fact", "supersedes_id": 7}]}
+        )
+
+    async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text='[{"id":7,"content":"existing"}]')
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text=receipt)
+        return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
+
+    result = await op.execute(
+        _make_ctx(
+            params={"turns": _turns()}, complete_fn=complete_fn, execute_tool_fn=execute_tool_fn
+        )
+    )
+
+    assert result.extra["updated_ids"] == expected_ids
+    assert result.extra["stored_unparsed"] == stored_unparsed
+    assert result.extra["retired_ids"] == [7]
+    assert result.extra["supersession_outcomes"] == [
+        {
+            "memory_id": expected_ids[0] if expected_ids else None,
+            "supersedes_id": 7,
+            "retired": True,
+        }
+    ]
+    assert "Mined 1 durable fact(s)" in result.output_text
+
+
+@pytest.mark.asyncio
+async def test_mine_preserves_each_outcome_for_repeated_predecessors() -> None:
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        return json.dumps(
+            {
+                "facts": [
+                    {"action": "update", "fact": "first refinement", "supersedes_id": 7},
+                    {"action": "update", "fact": "second refinement", "supersedes_id": 7},
+                ]
+            }
+        )
+
+    receipts = iter(
+        [
+            '{"memory_id":9,"supersession_retired":true}',
+            '{"memory_id":10,"supersession_retired":false}',
+        ]
+    )
+
+    async def execute_tool_fn(tool_id: str, _ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text='[{"id":7,"content":"existing"}]')
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text=next(receipts))
+        return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
+
+    result = await op.execute(
+        _make_ctx(
+            params={"turns": _turns()}, complete_fn=complete_fn, execute_tool_fn=execute_tool_fn
+        )
+    )
+
+    assert result.extra["supersession_outcomes"] == [
+        {"memory_id": 9, "supersedes_id": 7, "retired": True},
+        {"memory_id": 10, "supersedes_id": 7, "retired": False},
+    ]
+    assert result.extra["retired_ids"] == [7]
+    assert result.extra["not_retired_by_write_ids"] == [7]
 
 
 @pytest.mark.asyncio
