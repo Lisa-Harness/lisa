@@ -535,4 +535,50 @@ async def test_mine_distill_all_attempts_failing_raises() -> None:
 
     with pytest.raises(RuntimeError, match="distillation failed"):
         await op.execute(ctx)
-    assert len(calls) == 3
+    # Three ladder rungs + one validation-feedback rung (the bootstrap
+    # attempt's prose continuation is JSON-shaped after prefix concatenation,
+    # so its ValidationError fires the feedback re-ask before the ladder
+    # raises). All-attempts-fail stays fail-closed.
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_mine_distill_feedback_rung_names_the_cap_and_succeeds() -> None:
+    """A mining distill response whose fact exceeds the per-fact cap triggers
+    the validation-feedback rung with the failing fields and cap named.
+
+    The 2026-11-09 02:30 failure: an over-length
+    ``facts.0.fact: string_too_long`` JSON-shaped response that the plain
+    re-ask could not fix because it never said the cap.
+    """
+    calls: list[list[dict[str, Any]]] = []
+    overlong = "fact " * 120  # > 400 chars
+
+    async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
+        calls.append(list(messages))
+        if len(calls) < 2:
+            return json.dumps({"facts": [{"action": "create", "fact": overlong}]})
+        return json.dumps({"facts": [{"action": "create", "fact": "within the cap"}]})
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        if tool_id == "memory.search":
+            return ToolResult(tool_id=tool_id, output_text="[]")
+        if tool_id == "memory.add":
+            return ToolResult(tool_id=tool_id, output_text="Memory stored with ID 11")
+        return ToolResult(tool_id=tool_id, error=f"unexpected call {tool_id}")
+
+    ctx = _make_ctx(
+        params={"turns": _turns(), "user_slug": "adam"},
+        complete_fn=complete_fn,
+        execute_tool_fn=execute_tool_fn,
+    )
+
+    result = await op.execute(ctx)
+
+    assert len(calls) == 2
+    feedback_text = calls[-1][-1]["content"]
+    assert "failed validation" in feedback_text
+    assert "string_too_long" in feedback_text
+    assert "at most 400 characters" in feedback_text
+    assert result.extra.get("mined") is True
+    assert result.extra.get("memory_ids") == [11]

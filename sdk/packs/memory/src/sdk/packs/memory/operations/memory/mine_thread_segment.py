@@ -49,6 +49,7 @@ from kernel.operations.structured_output import (
     completion_content,
     json_only_retry_messages,
     parse_structured_payload,
+    validation_feedback_retry_messages,
 )
 from pydantic import BaseModel, Field, ValidationError
 from sdk.content import require_authored_text
@@ -194,7 +195,16 @@ def _render_turns(turns: list[dict[str, Any]]) -> str:
 
 
 def _parse_mined(content: str) -> MinedFacts:
-    """Parse structured output; raise on JSON-shaped garbage (no prose fallback)."""
+    """Parse structured output; refuse prose fallback for JSON-shaped garbage.
+
+    JSON-shaped output that fails validation re-raises the
+    :class:`ValidationError` itself (not a wrapping ``RuntimeError``): the
+    distillation ladder's validation-feedback rung keys on the typed error
+    to name the failing fields in its re-ask, and the JSON-shaped refusal
+    semantics live in the caller — a non-JSON-shaped response still goes to
+    the (removed-for-mining) prose path and JSON-shaped failures never fall
+    back.
+    """
     normalized = (content or "").strip()
     if not normalized:
         raise ValueError("empty mining output")
@@ -204,11 +214,19 @@ def _parse_mined(content: str) -> MinedFacts:
         # Mirror synthesize_learning's guard: JSON-shaped output that failed
         # validation must not be prose-parsed into garbage facts.
         if _looks_like_json(normalized):
-            raise RuntimeError(
-                "mine_thread_segment: model returned JSON-shaped output that "
-                f"failed validation; refusing to fall back. Raw: {normalized[:200]!r}"
-            ) from exc
-        raise
+            raise exc
+        # Not JSON-shaped: plain-prose mining output is refused outright —
+        # mining must never persist undeduped garbage facts.
+        raise ValueError(
+            "mine_thread_segment: model returned non-JSON prose; refusing to mine"
+        ) from exc
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    """One-line ``loc: type`` list, e.g. ``facts.0.fact: string_too_long``."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['type']}" for err in exc.errors()
+    )
 
 
 def _looks_like_json(text: str) -> bool:
@@ -366,6 +384,31 @@ async def _distill_facts(
                 raw_text = bootstrap_prefix + raw_text
             mined = _parse_mined(raw_text)
             break
+        except ValidationError as exc:
+            # JSON-shaped output that failed a schema bound is the shape a
+            # better-aimed re-ask can fix: name the failing fields and the
+            # per-fact cap (the 2026-11-09 incidents: over-length
+            # facts.N.fact values repeatedly because the re-ask never said
+            # the cap), then continue the ladder.
+            last_exc = exc
+            try:
+                raw = await ctx.host.complete(
+                    messages=validation_feedback_retry_messages(
+                        first_messages,
+                        MinedFacts,
+                        _validation_summary(exc),
+                        note="Each 'fact' must be at most 400 characters.",
+                    ),
+                    model_def=model_def,
+                    max_tokens=mine_max_tokens * 2,
+                    temperature=0.1,
+                    response_format=None,
+                )
+                mined = _parse_mined(completion_content(raw))
+                break
+            except Exception as feedback_exc:  # pylint: disable=broad-exception-caught
+                last_exc = feedback_exc
+                continue
         except Exception as exc:  # pylint: disable=broad-exception-caught
             last_exc = exc
             continue

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 from sdk.packs.memory.operations.memory.synthesize_learning import (
     DistilledLearning,
     _parse_distilled_learning,
@@ -74,19 +75,21 @@ def test_parse_rejects_fenced_json_that_failed_validation() -> None:
 
     Before the fix, this input produced facts ``['json', '{', 'facts": [']``
     joined as ``json | { | facts": [`` — the exact garbage seen in the
-    memory database on 2026-07-17.
+    memory database on 2026-07-17. The refusal re-raises the typed
+    ValidationError so the distillation ladder's feedback rung can name the
+    failing fields.
     """
     # Fenced JSON truncated mid-array — will fail DistilledLearning validation
     # because `facts` is not a complete value. Looks like JSON → must raise.
     payload = '```json\n{\n  "facts": [\n```\n'
-    with pytest.raises(RuntimeError, match="JSON-shaped"):
+    with pytest.raises(ValidationError):
         _parse_distilled_learning(payload)
 
 
 def test_parse_rejects_bare_broken_json() -> None:
     """Bare (unfenced) broken JSON must also raise, not fall back to prose."""
     payload = '{"facts": ['
-    with pytest.raises(RuntimeError, match="JSON-shaped"):
+    with pytest.raises(ValidationError):
         _parse_distilled_learning(payload)
 
 

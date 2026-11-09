@@ -39,3 +39,7 @@ cheaper than a wrong replacement.
 Return the decisions as a JSON object with a `facts` array (0 to 3 items).
 Each item has `action` ("create", "update", or "skip"), `fact` (empty only
 for skip), `supersedes_id` (only for update), and `reason` (one short clause).
+
+Each `fact` must be at most 400 characters: distill the knowledge, do not
+summarize the conversation. A fact that will not fit is knowledge too
+provisional to store — reduce it to its durable core or drop it.

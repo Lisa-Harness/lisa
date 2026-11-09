@@ -6,8 +6,9 @@ Complements ``test_synthesize_learning_tier.py`` with the remaining branches:
 - ``_parse_bullet_facts`` / ``_parse_sentence_facts`` / ``_looks_like_json``
   pure branches (skip-empty, cap-at-three, strip quotes, fenced/bare/inner
   JSON signals)
-- ``_parse_distilled_learning``: empty output, JSON-guard RuntimeError,
-  bullet fallback, sentence fallback, unparseable prose re-raises
+- ``_parse_distilled_learning``: empty output, JSON-guard typed
+  ValidationError, bullet fallback, sentence fallback, unparseable prose
+  re-raises
 - ``_default_learning_content``: query+response join, query-only,
   response-only, empty
 - ``_validation_summary``: one-line loc/type rendering
@@ -141,7 +142,10 @@ def test_parse_distilled_learning_empty_raises_value_error() -> None:
 
 
 def test_parse_distilled_learning_rejects_json_shaped_invalid_output() -> None:
-    with pytest.raises(RuntimeError, match="refusing to fall back"):
+    """JSON-shaped output that fails validation refuses the prose fallbacks
+    and re-raises the typed ValidationError (the distillation ladder's
+    feedback rung keys on it to name the failing fields)."""
+    with pytest.raises(ValidationError):
         op._parse_distilled_learning('{"facts": "not-a-list"}')
 
 
