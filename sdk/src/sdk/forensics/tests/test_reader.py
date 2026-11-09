@@ -194,6 +194,67 @@ def test_reader_surfaces_log_errors_in_the_window(tmp_path: Path) -> None:
     assert bundle.sources.runtime_log
 
 
+def test_reader_merges_warnings_with_errors_ledger_rows(tmp_path: Path) -> None:
+    """Warnings stay visible when the errors ledger has rows.
+
+    The 2026-11-09 incident: 19 tool-parameter rejections were logged as
+    warnings in ``runtime.jsonl`` while ``errors.jsonl`` held unrelated
+    ERROR rows; the errors-ledger-wins contract hid every warning from the
+    forensic read, and the bundle reported the runtime log as unavailable
+    over a file that existed.
+    """
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+    now = datetime.now(UTC).isoformat()
+    _write_jsonl(
+        data_dir / "logs" / "errors.jsonl",
+        [{"ts": now, "level": "error", "msg": "operation 'x' failed"}],
+    )
+    _write_jsonl(
+        data_dir / "logs" / "runtime.jsonl",
+        [
+            {
+                "ts": now,
+                "level": "warning",
+                "name": "kernel.turn_runner",
+                "msg": "Tool 'coding_search_code' received invalid parameters",
+            }
+        ],
+    )
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle()
+
+    msgs = {record["msg"] for record in bundle.log_errors}
+    assert "operation 'x' failed" in msgs
+    assert "Tool 'coding_search_code' received invalid parameters" in msgs
+    assert bundle.sources.errors_log
+    assert bundle.sources.runtime_log
+
+
+def test_reader_dedupes_rows_present_in_both_log_sources(tmp_path: Path) -> None:
+    """A row that reached both logs (ERROR records do) is counted once."""
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+    now = datetime.now(UTC).isoformat()
+    row = {"ts": now, "level": "error", "name": "kernel.ops", "msg": "same failure"}
+    _write_jsonl(data_dir / "logs" / "errors.jsonl", [row])
+    _write_jsonl(data_dir / "logs" / "runtime.jsonl", [row])
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle()
+
+    assert len(bundle.log_errors) == 1
+
+
+def test_reader_names_missing_log_sources(tmp_path: Path) -> None:
+    """A log that does not exist is reported as missing, not as clean."""
+    data_dir, thread_dir = _seed(tmp_path, turns=1)
+
+    bundle = ForensicReader(data_dir, thread_dir=thread_dir, user_slug="u").bundle()
+
+    assert "errors.jsonl" in bundle.sources.missing
+    assert "runtime.jsonl" in bundle.sources.missing
+    assert bundle.log_errors == []
+    assert any("log diagnostics are unknown" in note for note in bundle.notes)
+
+
 def test_reader_handles_an_empty_data_root(tmp_path: Path) -> None:
     """Nothing to read is a stated empty answer, not a crash."""
     bundle = ForensicReader(tmp_path, user_slug="u").bundle()

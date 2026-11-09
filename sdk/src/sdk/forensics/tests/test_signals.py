@@ -212,6 +212,90 @@ def test_concentrated_failures_in_one_turn_are_named(tmp_path: Path) -> None:
     assert any("turn 0 recorded 3 failed dispatches" in s for s in signals.signals)
 
 
+def test_repeated_target_failures_fires_at_threshold(tmp_path: Path) -> None:
+    """The same target failing across the window is a crash-loop, not a one-off.
+
+    The 2026-11-08..09 mining incident: ``mine_thread_segment`` failed 21
+    consecutive times and no per-turn view surfaced it, because each slice
+    looked fine individually.
+    """
+    store = _write_entries(tmp_path, count=3)
+    ledger = _ledger(
+        tmp_path,
+        _dispatches(turn=0, count=1)
+        + _dispatches(turn=1, count=1)
+        + [
+            {
+                "topic": "tool.telemetry",
+                "turn_index": turn,
+                "target_id": "mine_thread_segment",
+                "target_type": "operation",
+                "status": "error",
+            }
+            for turn in range(3)
+            for _ in range(2)
+        ],
+    )
+
+    signals = compute_behavioral_signals(store, decisions_path=ledger)
+
+    assert any("mine_thread_segment×6" in s and "crash-loop" in s for s in signals.signals)
+
+
+def test_off_turn_failures_count_toward_repetition(tmp_path: Path) -> None:
+    """Off-turn failures (``turn_index`` None — slice-owned operations such as
+    thread mining) surface through the same-target repetition check."""
+    store = _write_entries(tmp_path, count=3)
+    ledger = _ledger(
+        tmp_path,
+        _dispatches(turn=0, count=1)
+        + _dispatches(turn=1, count=1)
+        + _dispatches(turn=2, count=1)
+        + [
+            {
+                "topic": "tool.telemetry",
+                "turn_index": None,
+                "target_id": "mine_thread_segment",
+                "target_type": "operation",
+                "status": "error",
+            }
+            for _ in range(5)
+        ],
+    )
+
+    signals = compute_behavioral_signals(store, decisions_path=ledger)
+
+    assert any("mine_thread_segment×5" in s for s in signals.signals)
+    # The in-turn rate signal must not admit off-turn rows: the window is
+    # defined by turns, and its count is all in-turn successes here.
+    assert not any("dispatches in the window failed" in s for s in signals.signals)
+
+
+def test_repeated_target_failures_silent_below_threshold(tmp_path: Path) -> None:
+    """Fewer than the threshold failures of one target stays silent."""
+    store = _write_entries(tmp_path, count=3)
+    ledger = _ledger(
+        tmp_path,
+        _dispatches(turn=0, count=1)
+        + _dispatches(turn=1, count=1)
+        + _dispatches(turn=2, count=1)
+        + [
+            {
+                "topic": "tool.telemetry",
+                "turn_index": turn,
+                "target_id": "read_file",
+                "target_type": "tool",
+                "status": "error",
+            }
+            for turn in range(4)
+        ],
+    )
+
+    signals = compute_behavioral_signals(store, decisions_path=ledger)
+
+    assert not any("crash-loop" in s for s in signals.signals)
+
+
 # ── Receipts vs dispatches ─────────────────────────────────────────────
 
 

@@ -177,6 +177,21 @@ class _SliceProviderHooksView:
         return self._runtime.session.last_context_snapshot
 
     @property
+    def event_bus(self) -> Any:
+        """The subscribed telemetry bus of the most recent hook build.
+
+        Slice-owned operations (thread mining) run off-turn with contexts
+        the slice builds itself; without a bus their dispatch telemetry —
+        including failures — never reaches ``decisions.jsonl`` and a
+        background crash-loop is invisible to forensics (the 2026-11-08..09
+        mining incident: 21 logged failures, zero ledger rows).
+        ``SessionState.event_bus`` is refreshed by every hook build; the
+        pre-first-turn value is ``None`` and slice telemetry no-ops, the
+        previous behavior.
+        """
+        return self._runtime.session.event_bus
+
+    @property
     def memory_data_dir(self) -> Path:
         """Host durable data root (``memory.db``, ``threads/`` live here)."""
         return self._runtime.paths.durable_dir
@@ -859,6 +874,9 @@ def _wire_runtime_context_seams(
             destination=runtime.paths.decisions_path,
             label="model.request",
         )
+    # Publish the subscribed bus so off-turn slice providers can reach the
+    # same durable ledgers (see SessionState.event_bus).
+    runtime.session.event_bus = bus
     return seams
 
 

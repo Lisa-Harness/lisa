@@ -85,6 +85,11 @@ class SignalThresholds:
     #: Per-turn token total, as a multiple of the window median, before a
     #: spike is reported.
     cost_spike_multiple: float = 3.0
+    #: Repeated failures of the same target (tool or operation) across the
+    #: window before a pattern is reported. Same-target repetition is the
+    #: crash-loop shape (the 2026-11-08..09 ``mine_thread_segment`` incident:
+    #: 21 consecutive failures nobody saw because each turn looked fine).
+    repeated_target_failures: int = 5
 
 
 @dataclass
@@ -244,27 +249,51 @@ def _check_dispatches(
     limits: SignalThresholds,
     result: BehavioralSignals,
 ) -> None:
-    """Report the dispatch failure rate and any single turn with many failures."""
+    """Report the dispatch failure rate and any single turn with many failures.
+
+    The rate and per-turn checks read in-turn dispatches only (the window is
+    defined by turns); the same-target repetition check additionally reads
+    off-turn failures (``turn_index`` None — slice-owned operations such as
+    thread mining), because a background crash-loop is exactly the repeated
+    pattern it exists to surface.
+    """
     if not records:
         return
     failed = [record for record in records if record.failed]
     result.counters["dispatches"] = len(records)
     result.counters["failed_dispatches"] = len(failed)
 
-    rate = len(failed) / len(records)
-    result.counters["dispatch_failure_rate"] = round(rate, 3)
-    if len(records) >= limits.min_dispatches_for_rate and rate >= limits.dispatch_failure_rate:
-        top = Counter(record.target_id or "unknown" for record in failed)
-        names = ", ".join(f"{name}×{count}" for name, count in top.most_common(3))
-        result.signals.append(
-            f"{len(failed)} of {len(records)} dispatches in the window failed "
-            f"({rate:.0%}); most frequent: {names}"
-        )
+    in_turn = [record for record in records if record.turn_index is not None]
+    in_turn_failed = [record for record in in_turn if record.failed]
+    if in_turn:
+        rate = len(in_turn_failed) / len(in_turn)
+        result.counters["dispatch_failure_rate"] = round(rate, 3)
+        if len(in_turn) >= limits.min_dispatches_for_rate and rate >= limits.dispatch_failure_rate:
+            top = Counter(record.target_id or "unknown" for record in in_turn_failed)
+            names = ", ".join(f"{name}×{count}" for name, count in top.most_common(3))
+            result.signals.append(
+                f"{len(in_turn_failed)} of {len(in_turn)} dispatches in the window failed "
+                f"({rate:.0%}); most frequent: {names}"
+            )
 
-    per_turn = Counter(record.turn_index for record in failed if record.turn_index is not None)
-    worst = per_turn.most_common(1)
-    if worst and worst[0][1] >= limits.failed_dispatches_in_turn:
-        result.signals.append(f"turn {worst[0][0]} recorded {worst[0][1]} failed dispatches")
+        per_turn = Counter(record.turn_index for record in in_turn_failed)
+        worst = per_turn.most_common(1)
+        if worst and worst[0][1] >= limits.failed_dispatches_in_turn:
+            result.signals.append(f"turn {worst[0][0]} recorded {worst[0][1]} failed dispatches")
+
+    by_target = Counter(record.target_id or "unknown" for record in failed)
+    repeated = [
+        (name, count)
+        for name, count in by_target.most_common(3)
+        if count >= limits.repeated_target_failures
+    ]
+    if repeated:
+        names = ", ".join(f"{name}×{count}" for name, count in repeated)
+        result.signals.append(
+            f"the same target failed repeatedly in the window ({names}); that is "
+            "a crash-loop shape, not a one-off — the target is likely broken, "
+            "not the calls"
+        )
 
 
 def _check_receipts(
@@ -359,10 +388,20 @@ def _recent_dispatches(
         return [], 0
     tail = read_jsonl_tail(decisions_path, max_bytes=scan_bytes, backup_count=None)
     owned = filter_owned(tail.records, user_slug, thread_store_slug)
+    # Off-turn dispatch rows (``turn_index`` None — slice-owned operations
+    # such as thread mining) join the scan too: a background crash-loop is
+    # exactly the repeated-failure pattern the scan exists to surface, and
+    # excluding it would hide the 2026-11-08..09 mining incident shape.
+    # The per-turn checks key on ``turn_index`` and skip None rows on their
+    # own, so only the same-target repetition sees them.
     raw = [
         record
         for record in owned.records
-        if record.get("topic") == "tool.telemetry" and record.get("turn_index") in window
+        if record.get("topic") == "tool.telemetry"
+        and (
+            record.get("turn_index") in window
+            or (record.get("turn_index") is None and str(record.get("status") or "") != "success")
+        )
     ]
     return [dispatch_from_record(record) for record in raw[-scan_records:]], owned.unstemmed
 

@@ -939,12 +939,18 @@ async def execute_operation(
     """Execute one internal operation by ID and return its structured result."""
     definition = _OPERATION_CATALOG.get(operation_id)
     if definition is None:
+        _publish_rejection_telemetry(ctx, operation_id, f"Unknown operation '{operation_id}'.")
         raise OperationExecutionError(f"Unknown operation '{operation_id}'.")
     if not _is_operation_allowed_for_mode(
         operation_id=operation_id,
         definition=definition,
         mode_id=ctx.mode_id,
     ):
+        _publish_rejection_telemetry(
+            ctx,
+            operation_id,
+            f"Operation '{operation_id}' is not allowed for mode '{ctx.mode_id}'.",
+        )
         raise OperationExecutionError(
             f"Operation '{operation_id}' is not allowed for mode '{ctx.mode_id}'."
         )
@@ -1065,10 +1071,48 @@ def _validate_parameters(
     try:
         parsed = definition.parameters_schema.model_validate(ctx.params)
     except Exception as exc:  # pylint: disable=broad-except
+        _publish_rejection_telemetry(
+            ctx,
+            definition.operation_id,
+            f"Operation '{definition.operation_id}' received invalid parameters: {exc}",
+        )
         raise OperationExecutionError(
             f"Operation '{definition.operation_id}' received invalid parameters: {exc}"
         ) from exc
     ctx.params = parsed.model_dump(mode="json")
+
+
+def _publish_rejection_telemetry(
+    ctx: OperationExecutionContext,
+    operation_id: str,
+    error_message: str,
+) -> None:
+    """Publish one ``tool.telemetry`` row for a pre-execution rejection.
+
+    These raises happen before the tracer wrapper installs its telemetry,
+    so without this publish the decisions ledger records nothing for a
+    rejected dispatch (see the tool registry's twin helper for the
+    2026-11-09 incident detail). Fire-and-forget, same contract as the
+    post-execution publishes.
+    """
+    if not ctx.event_bus:
+        return
+    event = ToolExecutionTelemetry(
+        target_id=operation_id,
+        target_type="operation",
+        status="error",
+        duration_ms=0,
+        error_message=error_message,
+        turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        user_slug=ctx.user_slug,
+        thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+    )
+    schedule_telemetry_publish(
+        ctx.event_bus,
+        "tool.telemetry",
+        event.model_dump(mode="json"),
+        source=f"operation:{operation_id}",
+    )
 
 
 async def _require_approval(

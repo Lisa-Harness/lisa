@@ -181,3 +181,27 @@ def test_build_turn_hooks_assigns_execute_tool_on_view(tmp_path: Path) -> None:
     hooks = build_turn_hooks(runtime, {"mode_id": "default"})
     assert hooks is not None
     assert hooks.operations.execute_operation is not None
+
+
+def test_view_exposes_the_subscribed_event_bus(tmp_path: Path) -> None:
+    """The view surfaces the subscribed bus of the latest hook build.
+
+    Slice-owned operations (thread mining) run off-turn; without the bus
+    their dispatch telemetry — including failures — never reaches
+    ``decisions.jsonl`` (the 2026-11-08..09 mining crash-loop: 21 logged
+    failures, zero ledger rows). The bus is refreshed per hook build and
+    published on the runtime session.
+    """
+    runtime = _make_runtime(tmp_path)
+
+    # Before any turn, there is no bus yet: slice telemetry no-ops.
+    view = _SliceProviderHooksView(runtime=runtime)
+    assert view.event_bus is None
+
+    # A hook build wires and publishes the bus.
+    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    assert hooks is not None
+    bus = runtime.session.event_bus
+    assert bus is not None
+    assert view.event_bus is bus
+    assert callable(getattr(bus, "subscribe", None))

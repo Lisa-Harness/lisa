@@ -515,44 +515,64 @@ class ForensicReader:
     ) -> list[dict[str, Any]]:
         """Return warning/error log lines inside the window, newest last.
 
-        The dedicated errors ledger (``errors.jsonl``, ERROR+ only, never
-        rotated or rate-limited) is preferred when it exists: the rotating
-        ``runtime.jsonl`` evicts old records and suppresses repeats, so a
-        bundle built from it can understate the error history. The
-        fallback keeps hosts that predate the ledger working, with the
-        source named either way.
+        Both sources are read and merged, each flagged truthfully: the
+        dedicated errors ledger (``errors.jsonl``, ERROR+ only, never
+        rotated or rate-limited) and the rotating ``runtime.jsonl``
+        (WARNING+, evicting, repeat-suppressing). The previous
+        errors-ledger-wins contract read ``runtime.jsonl`` only when the
+        ledger was empty, which hid every warning-level record — exactly
+        the 2026-11-09 incident shape: 19 tool-parameter rejections logged
+        as warnings were invisible to the forensic read while the errors
+        ledger held unrelated rows, and the bundle reported "runtime log:
+        unavailable" over a file that existed. The two sources overlap
+        (both receive ERROR records); rows are deduplicated on
+        ``(ts, level, name, msg)`` so a merged read does not double-count.
         """
         cutoff = now - timedelta(seconds=self._window_seconds)
+        collected: list[dict[str, Any]] = []
+
         errors_tail = read_jsonl_tail(self.errors_log_path, max_bytes=self._max_bytes, since=cutoff)
         if errors_tail.records:
             sources.errors_log = True
             self._note_truncation(errors_tail, _ERRORS_LOG_FILENAME, "the log window", notes)
-            windowed = filter_window(
-                errors_tail.records, now=now, window_seconds=self._window_seconds
+            collected.extend(
+                filter_window(errors_tail.records, now=now, window_seconds=self._window_seconds)
             )
-            errors = [
-                record
-                for record in windowed
-                if str(record.get("level") or "").lower() in _ERROR_LEVELS
-            ]
-            if len(errors) > max_records:
-                notes.append(
-                    f"{len(errors)} warning/error lines in the window; "
-                    f"using the most recent {max_records}"
-                )
-                errors = errors[-max_records:]
-            return errors
+        else:
+            sources.missing.append(_ERRORS_LOG_FILENAME)
 
         tail = read_jsonl_tail(self.runtime_log_path, max_bytes=self._max_bytes, since=cutoff)
-        if not tail.records:
-            notes.append(f"{_RUNTIME_LOG_FILENAME} has no records; log diagnostics are unknown")
-            return []
-        sources.runtime_log = True
-        self._note_truncation(tail, _RUNTIME_LOG_FILENAME, "the log window", notes)
-        windowed = filter_window(tail.records, now=now, window_seconds=self._window_seconds)
-        errors = [
-            record for record in windowed if str(record.get("level") or "").lower() in _ERROR_LEVELS
-        ]
+        if tail.records:
+            sources.runtime_log = True
+            self._note_truncation(tail, _RUNTIME_LOG_FILENAME, "the log window", notes)
+            collected.extend(
+                filter_window(tail.records, now=now, window_seconds=self._window_seconds)
+            )
+        else:
+            sources.missing.append(_RUNTIME_LOG_FILENAME)
+            if not errors_tail.records:
+                notes.append("neither log source has records; log diagnostics are unknown")
+
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def _dedup_key(record: dict[str, Any]) -> tuple[str, str, str, str]:
+            return (
+                str(record.get("ts") or ""),
+                str(record.get("level") or ""),
+                str(record.get("name") or ""),
+                str(record.get("msg") or record.get("message") or ""),
+            )
+
+        errors: list[dict[str, Any]] = []
+        for record in collected:
+            if str(record.get("level") or "").lower() not in _ERROR_LEVELS:
+                continue
+            key = _dedup_key(record)
+            if key in seen:
+                continue
+            seen.add(key)
+            errors.append(record)
+        errors.sort(key=lambda record: record_ts(record) or now)
         if len(errors) > max_records:
             notes.append(
                 f"{len(errors)} warning/error lines in the window; "

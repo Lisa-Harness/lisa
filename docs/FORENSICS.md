@@ -15,7 +15,15 @@ answers only part of the question. Forensics is the act of joining them.
 | `logs/decisions.jsonl` | [DecisionTelemetryHandler](../kernel/src/kernel/decision_telemetry.py) | Why the loop continued, finished, or yielded at each iteration; and what ran, for how long, with what status. The full segment set (`decisions.jsonl` plus every sealed `decisions.jsonl.<n>`) is read, not only the active file |
 | `logs/token-usage.jsonl` | [TokenUsageTelemetryHandler](../kernel/src/kernel/token_usage.py) | Which model was called, with how many tokens, at what cost |
 | `logs/approvals.jsonl` | [ApprovalLedger](../runtime/src/runtime/approval_ledger.py) | Who authorized each write/execute effect, and how: one append-only row per approval state transition (requested, approved, denied, consumed, expired), with the operator identity, the policy-vs-operator source, and the turn attribution |
-| `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | Process-level warnings and errors in the same window |
+| `logs/errors.jsonl` | [SealedErrorsHandler](../sdk/src/sdk/logging_setup.py) | ERROR+ evidence, never rotated or rate-limited; sealed segments are never deleted |
+| `logs/runtime.jsonl` | [sdk.logging_setup](../sdk/src/sdk/logging_setup.py) | WARNING+ process diagnostics in the same window; rotating (evicting) and repeat-suppressing |
+
+Both log sources are read and merged for the *Log warnings and errors*
+section — the errors ledger for the lossless ERROR+ history, the rotating
+runtime log for warnings the ledger never receives — and rows that reached
+both (ERROR records) are deduplicated. A source that cannot be read is
+named under **missing**; "no warnings" and "I could not read the log" are
+different answers, and only one of them is safe to act on.
 
 The thread is the primary record: it is lossless, append-only, and segmented.
 The other four are telemetry around it. The approval ledger is one row per
@@ -29,6 +37,9 @@ thread entry's `turn_input.calls`; their `model.request` rows in the
 decisions ledger — carrying the content-addressed `request_ref` for the
 archived request — are the record for exactly those calls, and they join
 on the same `turn_index` (`null` when the dispatch belongs to no turn).
+Off-turn *dispatches* (slice-owned operations such as thread mining) publish
+`tool.telemetry` rows the same way — with `turn_index: null`, so they surface
+under *Unattributed records* rather than silently missing.
 
 ## The join key
 
@@ -91,6 +102,7 @@ rows. See [loss observability](LOGGING.md#loss-observability).
 | --- | --- |
 | **Blocked** turn | Ended without satisfying its completion contract. `block_origin` names the contract (`task_completion`, `output_guard`, …) |
 | **Failed dispatch** | One call errored or timed out. The turn may still have completed |
+| **Rejected dispatch** | The call never ran: the registry refused it before execution (invalid parameters, mode allowlist, unknown id). Published to the dispatch ledger with `duration 0 ms`, so it appears in the dispatch section like any other failure |
 | **Degraded operation** | Completed with warnings; the status is `degraded`, not `error` |
 
 They have different causes and different fixes. A blocked turn is a routing or
