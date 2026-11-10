@@ -52,6 +52,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- In-process catalog/content sources for the kernel's synchronous adapters
+  (Slice B of `docs/SPEC/PROMPT_STARTUP.md`): the host now injects
+  `DirectCatalogSource` / `DirectContentSource` (which call the same
+  `sdk.content` builders the `lisa-catalog` / `lisa-content` MCP servers
+  wrap) behind the new kernel contracts `CatalogSource` / `ContentSource`
+  whenever the existing in-process MCP selection is active — eliminating
+  the two stdio subprocess spawns from the prompt-ready path without
+  importing sdk/mcp_server/runtime into the kernel. Source configuration is
+  resolved once into a frozen `CatalogSourceConfig` mirroring the stdio
+  env payload for byte-identical inputs; no `os.environ` mutation on the
+  in-process path; a source failure raises rather than silently falling
+  back to a subprocess; the shared SDK catalog cache invalidation stays
+  explicit; and `lisa-catalog` remains warm/published through the MCP
+  pool's in-process transport because its tools stay model-facing. Parity
+  fixtures drive the same corpus through both transports (competing
+  providers, overlays, ambient MCP tools, Unicode/spaced paths, traversal
+  attempts, missing content, two-config isolation). Tests:
+  `sdk/tests/test_catalog_sources.py`,
+  `kernel/tests/test_catalog_source_adapters.py`.
+
 - Framework-build session leases and a content-refresh boundary (Slice A of
   `docs/SPEC/PROMPT_STARTUP.md`): `setup_framework` acquires an epoch lease
   from the shared catalog/content stdio host before constructing its

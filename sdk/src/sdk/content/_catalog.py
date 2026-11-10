@@ -117,6 +117,7 @@ def build_mode_catalog_json(
     default_mcp_tool_ids: set[str] | None = None,
     strict: bool = False,
     overlay_root: Path | None = None,
+    provider_selections_json: str | None = None,
 ) -> str:
     """Scan mode roots and return a JSON-serializable mode catalog.
 
@@ -154,7 +155,7 @@ def build_mode_catalog_json(
     cache_key = (
         "modes:"
         + _roots_fingerprint(mode_roots)
-        + _provider_selection_cache_key()
+        + _selections_cache_key(provider_selections_json)
         + ":mcp_defaults="
         + ",".join(sorted(default_mcp_tool_ids or ()))
     )
@@ -166,7 +167,7 @@ def build_mode_catalog_json(
         overlay_root=overlay_root,
         strict=strict,
     )
-    selections = _load_session_provider_selections()
+    selections = load_session_provider_selections(provider_selections_json)
     # ── Shortcut validation ──────────────────────────────────────────
     # Shortcut entries (overlay modes without a provider folder) must
     # shadow an existing installed mode. Validate after all candidates
@@ -563,10 +564,32 @@ def _provider_selection_cache_key() -> str:
     return os.getenv(_SESSION_PROVIDER_SELECTIONS_ENV, "")
 
 
-def _load_session_provider_selections() -> dict[str, dict[str, str]]:
-    """Read the strict provider map serialized from the immutable SessionPlan."""
+def _selections_cache_key(provider_selections_json: str | None) -> str:
+    """Return the cache-key payload for explicit or ambient selections."""
+    return (
+        provider_selections_json
+        if provider_selections_json is not None
+        else _provider_selection_cache_key()
+    )
 
-    raw = _provider_selection_cache_key().strip()
+
+def load_session_provider_selections(
+    provider_selections_json: str | None = None,
+) -> dict[str, dict[str, str]]:
+    """Read the strict provider map serialized from the immutable SessionPlan.
+
+    When ``provider_selections_json`` is given it is decoded directly; the
+    ``LISA_SESSION_PROVIDER_SELECTIONS`` env var is only consulted when it
+    is ``None`` (the subprocess behavior). In-process callers pass the
+    payload the host would have exported so no ``os.environ`` mutation is
+    needed — a lock around env mutation does not isolate other threads.
+    """
+
+    raw = (
+        provider_selections_json
+        if provider_selections_json is not None
+        else _provider_selection_cache_key()
+    ).strip()
     selections: dict[str, dict[str, str]] = {
         "modes": {},
         "operations": {},
@@ -577,9 +600,11 @@ def _load_session_provider_selections() -> dict[str, dict[str, str]]:
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise CatalogCollisionError(f"Invalid JSON in {_SESSION_PROVIDER_SELECTIONS_ENV}") from exc
+        env_name = _SESSION_PROVIDER_SELECTIONS_ENV
+        raise CatalogCollisionError(f"Invalid JSON in {env_name}") from exc
     if not isinstance(decoded, dict):
-        raise CatalogCollisionError(f"{_SESSION_PROVIDER_SELECTIONS_ENV} must contain an object")
+        env_name = _SESSION_PROVIDER_SELECTIONS_ENV
+        raise CatalogCollisionError(f"{env_name} must contain an object")
 
     unexpected_kinds = set(decoded) - set(selections)
     if unexpected_kinds:
@@ -599,6 +624,12 @@ def _load_session_provider_selections() -> dict[str, dict[str, str]]:
                 raise CatalogCollisionError(f"Provider selections for {kind} require non-empty IDs")
             parsed_assignments[normalized_resource] = normalized_provider
     return selections
+
+
+def _load_session_provider_selections() -> dict[str, dict[str, str]]:
+    """Read the strict provider map serialized from the immutable SessionPlan."""
+
+    return load_session_provider_selections()
 
 
 def _infer_content_provider_id(root: Path) -> str:
@@ -959,7 +990,11 @@ _DECLARATIVE_OPERATION_FILENAME = "_operation.md"
 _DECLARATIVE_OPERATION_SUFFIX = ".operation.md"
 
 
-def build_operation_catalog_json(operation_roots: list[Path]) -> str:
+def build_operation_catalog_json(
+    operation_roots: list[Path],
+    *,
+    provider_selections_json: str | None = None,
+) -> str:
     """Scan operation roots and return a JSON-serializable operation catalog.
 
     Returns a JSON string encoding ``dict[str, dict]`` where each value is an
@@ -968,13 +1003,15 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
     locally (using the ``module_path`` field).
     """
     cache_key = (
-        "operations:" + _roots_fingerprint(operation_roots) + _provider_selection_cache_key()
+        "operations:"
+        + _roots_fingerprint(operation_roots)
+        + _selections_cache_key(provider_selections_json)
     )
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
     candidates_by_id: dict[str, list[dict[str, Any]]] = {}
-    selections = _load_session_provider_selections()
+    selections = load_session_provider_selections(provider_selections_json)
     for root in operation_roots:
         if not root.is_dir():
             continue
@@ -1387,7 +1424,11 @@ def _timeout_seconds(metadata: dict[str, Any], *, default: int) -> int:
 _TOOL_METADATA_SUFFIX = ".tool.yml"
 
 
-def build_tool_catalog_json(tool_roots: list[Path]) -> str:
+def build_tool_catalog_json(
+    tool_roots: list[Path],
+    *,
+    provider_selections_json: str | None = None,
+) -> str:
     """Scan tool roots and return a JSON-serializable internal tool catalog.
 
     Returns a JSON string encoding ``dict[str, dict]`` where each value is a
@@ -1398,12 +1439,14 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
     Tools are runtime-only (``.py`` + ``.tool.yml`` pairs). Declarative tools
     are not supported in this iteration.
     """
-    cache_key = "tools:" + _roots_fingerprint(tool_roots) + _provider_selection_cache_key()
+    cache_key = (
+        "tools:" + _roots_fingerprint(tool_roots) + _selections_cache_key(provider_selections_json)
+    )
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
     candidates_by_id: dict[str, list[dict[str, Any]]] = {}
-    selections = _load_session_provider_selections()
+    selections = load_session_provider_selections(provider_selections_json)
     for root in tool_roots:
         if not root.is_dir():
             continue

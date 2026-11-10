@@ -18,6 +18,7 @@ from typing import Any
 from mcp.client.stdio import StdioServerParameters
 from pydantic import BaseModel
 
+from kernel.context._catalog_sources import CatalogSource
 from kernel.context._shared_stdio import SharedSessionLease, SharedStdioSession
 from kernel.models import (
     DefaultIntentBridge,
@@ -102,8 +103,14 @@ class MCPModeCatalog:
     ``WorkflowModeConfig`` objects.
     """
 
-    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+    def __init__(
+        self,
+        config: MCPClientConfig,
+        lease: SharedSessionLease | None = None,
+        source: CatalogSource | None = None,
+    ) -> None:
         self._session = _shared_session(config, lease)
+        self._source: CatalogSource | None = source
         self._catalog: dict[str, WorkflowModeConfig] | None = None
 
     def prewarm(self) -> None:
@@ -117,7 +124,10 @@ class MCPModeCatalog:
         """Return the mode catalog, loading it from the MCP server on first call."""
         if self._catalog is not None:
             return self._catalog
-        raw_json = self._call("list_modes", {})
+        if self._source is not None:
+            raw_json = self._source.list_modes()
+        else:
+            raw_json = self._call("list_modes", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_modes")
         self._catalog = {
             mode_id: _deserialize_mode(mode_dict) for mode_id, mode_dict in raw_catalog.items()
@@ -127,6 +137,9 @@ class MCPModeCatalog:
     def invalidate(self) -> None:
         """Clear local and server-side caches so the next call rescans content roots."""
         self._catalog = None
+        if self._source is not None:
+            self._source.invalidate()
+            return
         self._call("invalidate_catalog", {})
 
 
@@ -194,8 +207,14 @@ class MCPOperationCatalog:
     field returned by the server.
     """
 
-    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+    def __init__(
+        self,
+        config: MCPClientConfig,
+        lease: SharedSessionLease | None = None,
+        source: CatalogSource | None = None,
+    ) -> None:
         self._session = _shared_session(config, lease)
+        self._source: CatalogSource | None = source
         self._catalog: dict[str, OperationDefinition] | None = None
 
     def prewarm(self) -> None:
@@ -209,7 +228,10 @@ class MCPOperationCatalog:
         """Return the operation catalog, loading it from the MCP server on first call."""
         if self._catalog is not None:
             return self._catalog
-        raw_json = self._call("list_operations", {})
+        if self._source is not None:
+            raw_json = self._source.list_operations()
+        else:
+            raw_json = self._call("list_operations", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_operations")
         self._catalog = {
             op_id: _deserialize_operation(op_dict) for op_id, op_dict in raw_catalog.items()
@@ -219,6 +241,9 @@ class MCPOperationCatalog:
     def invalidate(self) -> None:
         """Clear local and server-side caches so the next call rescans content roots."""
         self._catalog = None
+        if self._source is not None:
+            self._source.invalidate()
+            return
         self._call("invalidate_catalog", {})
 
 
@@ -334,8 +359,14 @@ class MCPToolCatalog:
     ``MCPOperationCatalog``.
     """
 
-    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+    def __init__(
+        self,
+        config: MCPClientConfig,
+        lease: SharedSessionLease | None = None,
+        source: CatalogSource | None = None,
+    ) -> None:
         self._session = _shared_session(config, lease)
+        self._source: CatalogSource | None = source
         self._catalog: dict[str, ToolDefinition] | None = None
 
     def prewarm(self) -> None:
@@ -349,7 +380,10 @@ class MCPToolCatalog:
         """Return the tool catalog, loading it from the MCP server on first call."""
         if self._catalog is not None:
             return self._catalog
-        raw_json = self._call("list_tools", {})
+        if self._source is not None:
+            raw_json = self._source.list_tools()
+        else:
+            raw_json = self._call("list_tools", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_tools")
         self._catalog = {
             tool_id: _deserialize_tool(tool_dict) for tool_id, tool_dict in raw_catalog.items()

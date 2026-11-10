@@ -31,6 +31,7 @@ from kernel.approval import (
     build_approval_invocation,
 )
 from kernel.capability_binding import CapabilityRef
+from kernel.context._catalog_sources import CatalogSource
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.models import (
     OperationDefinition,
@@ -54,6 +55,10 @@ from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
+
+#: Optional in-process catalog source injected by the host (Slice B). When
+#: ``None`` the configured stdio server is used.
+_operation_catalog_source: CatalogSource | None = None
 
 __all__ = [
     "build_operation_tool_schemas",
@@ -111,18 +116,21 @@ def _resolve_tool_catalog() -> dict[str, Any]:
     return get_tool_catalog()
 
 
-def register_operation_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-catalog`` MCP server config for operation catalog loading.
+def register_operation_mcp(config: MCPClientConfig, source: CatalogSource | None = None) -> None:
+    """Inject the ``lisa-catalog`` transport for operation catalog loading.
 
     Rebuilds and re-validates ``_OPERATION_CATALOG`` immediately by calling
-    ``list_operations`` on the server. The server does all filesystem access;
-    the kernel never touches the filesystem directly.
+    ``list_operations`` — through the injected in-process ``source`` when
+    given, otherwise on the configured stdio server. All filesystem access
+    happens behind the transport; the kernel never touches the filesystem
+    directly.
     """
-    global _operation_mcp_config, _OPERATION_CATALOG  # noqa: PLW0603
+    global _operation_mcp_config, _operation_catalog_source, _OPERATION_CATALOG  # noqa: PLW0603
     _operation_mcp_config = config
+    _operation_catalog_source = source
     from kernel.context.mcp_catalog import MCPOperationCatalog
 
-    catalog_loader = MCPOperationCatalog(config)
+    catalog_loader = MCPOperationCatalog(config, source=source)
     _OPERATION_CATALOG = catalog_loader.get_operation_catalog()
     validate_operation_catalog(_OPERATION_CATALOG)
 

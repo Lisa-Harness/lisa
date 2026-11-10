@@ -34,6 +34,7 @@ from typing import Any, Literal, cast
 import yaml
 
 from kernel.approval import ApprovalRequired
+from kernel.context._catalog_sources import CatalogSource
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.instruction_conditionals import (
@@ -60,6 +61,10 @@ logger = logging.getLogger(__name__)
 # The lisa-content MCP server config, injected by the host at startup.
 # When None, the kernel cannot load the mode catalog.
 _content_mcp_config: MCPClientConfig | None = None
+
+# Optional in-process catalog source injected by the host (Slice B). When
+# set, ``list_modes`` goes through it instead of the stdio server.
+_catalog_source: CatalogSource | None = None
 
 _EXIT_STAGE_ID = "exit"
 
@@ -126,16 +131,19 @@ def register_operation_callbacks(
     _execute_operation_fn = execute_operation_fn
 
 
-def register_content_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-catalog`` MCP server config for catalog loading.
+def register_content_mcp(config: MCPClientConfig, source: CatalogSource | None = None) -> None:
+    """Inject the ``lisa-catalog`` transport for workflow catalog loading.
 
     Must be called before the workflow catalog is first accessed (before any
-    call to ``get_workflow_catalog()``). The kernel calls ``list_modes`` on the
-    server to discover and load all workflow modes. The server does all
-    filesystem access; the kernel never touches the filesystem directly.
+    call to ``get_workflow_catalog()``). The kernel calls ``list_modes`` —
+    through the injected in-process ``source`` when given, otherwise on the
+    configured stdio server — to discover and load all workflow modes. All
+    filesystem access happens behind the transport; the kernel never touches
+    the filesystem directly.
     """
-    global _content_mcp_config  # noqa: PLW0603
+    global _content_mcp_config, _catalog_source  # noqa: PLW0603
     _content_mcp_config = config
+    _catalog_source = source
 
 
 def register_instructions_root(root: Path | None) -> None:
@@ -1568,7 +1576,7 @@ def _ensure_catalog_loaded() -> None:
         )
     from kernel.context.mcp_catalog import MCPModeCatalog
 
-    catalog_loader = MCPModeCatalog(_content_mcp_config)
+    catalog_loader = MCPModeCatalog(_content_mcp_config, source=_catalog_source)
     _workflow_catalog = catalog_loader.get_workflow_catalog()
     _apply_mode_conditionals(_workflow_catalog)
     validate_workflow_catalog(_workflow_catalog)

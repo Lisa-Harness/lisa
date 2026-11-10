@@ -29,6 +29,16 @@ __all__ = ["resolve_content_roots", "roots_fingerprint"]
 def load_disabled_pack_names_from_env() -> set[str]:
     """Return normalized names disabled for this content-server subprocess."""
     raw = os.environ.get("LISA_DISABLED_PACKS", "")
+    return normalize_disabled_pack_names(raw)
+
+
+def normalize_disabled_pack_names(raw: str) -> set[str]:
+    """Normalize a ``LISA_DISABLED_PACKS`` payload string into a name set.
+
+    Explicit-input variant of :func:`load_disabled_pack_names_from_env`:
+    in-process callers pass the payload the host would have exported
+    (``os.pathsep``-joined names) instead of mutating ``os.environ``.
+    """
     return {
         normalized
         for part in raw.split(os.pathsep)
@@ -36,21 +46,37 @@ def load_disabled_pack_names_from_env() -> set[str]:
     }
 
 
-def resolve_content_roots(extra_roots: list[Path] | None = None) -> list[Path]:
+def resolve_content_roots(
+    extra_roots: list[Path] | None = None,
+    *,
+    disabled_packs: str | None = None,
+    configured_roots: list[Path] | None = None,
+) -> list[Path]:
     """Return the merged, deduplicated content root list.
 
     Combines:
     - Installed pack roots discovered through the ``lisa.extensions.content_roots``
       entry-point group (minus disabled packs from ``LISA_DISABLED_PACKS``).
-    - Configured roots from the ``SDK_CONTENT_ROOTS`` env var.
+    - Configured roots from the ``SDK_CONTENT_ROOTS`` env var, or the explicit
+      ``configured_roots`` argument when given (in-process callers pass the
+      host-resolved list instead of mutating ``os.environ``).
     - Caller-supplied ``extra_roots`` (e.g. test fixtures).
+
+    ``disabled_packs`` overrides the ``LISA_DISABLED_PACKS`` env var when
+    given (same ``os.pathsep``-joined payload the host exports).
 
     The result is deduplicated by resolved path and ordered
     installed → configured → extra so first-wins semantics are stable.
     """
-    excluded = load_disabled_pack_names_from_env()
+    excluded = (
+        normalize_disabled_pack_names(disabled_packs)
+        if disabled_packs is not None
+        else load_disabled_pack_names_from_env()
+    )
     installed = discover_installed_content_roots(excluded_packs=excluded)
-    configured = discover_configured_content_roots()
+    configured = (
+        discover_configured_content_roots() if configured_roots is None else list(configured_roots)
+    )
     seen: set[str] = set()
     merged: list[Path] = []
     for root in (*installed, *configured, *(extra_roots or [])):
