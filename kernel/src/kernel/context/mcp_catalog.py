@@ -18,7 +18,7 @@ from typing import Any
 from mcp.client.stdio import StdioServerParameters
 from pydantic import BaseModel
 
-from kernel.context._shared_stdio import SharedStdioSession
+from kernel.context._shared_stdio import SharedSessionLease, SharedStdioSession
 from kernel.models import (
     DefaultIntentBridge,
     OperationDefinition,
@@ -56,7 +56,9 @@ def _extract_text(result: Any) -> str:
     return ""
 
 
-def _shared_session(config: MCPClientConfig) -> SharedStdioSession:
+def _shared_session(
+    config: MCPClientConfig, lease: SharedSessionLease | None = None
+) -> SharedStdioSession:
     """Return the shared stdio session handle for ``config``."""
     return SharedStdioSession(
         StdioServerParameters(
@@ -64,7 +66,8 @@ def _shared_session(config: MCPClientConfig) -> SharedStdioSession:
             args=config.args,
             env=config.env,
             cwd=config.cwd,
-        )
+        ),
+        lease=lease,
     )
 
 
@@ -99,8 +102,8 @@ class MCPModeCatalog:
     ``WorkflowModeConfig`` objects.
     """
 
-    def __init__(self, config: MCPClientConfig) -> None:
-        self._session = _shared_session(config)
+    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+        self._session = _shared_session(config, lease)
         self._catalog: dict[str, WorkflowModeConfig] | None = None
 
     def prewarm(self) -> None:
@@ -191,8 +194,8 @@ class MCPOperationCatalog:
     field returned by the server.
     """
 
-    def __init__(self, config: MCPClientConfig) -> None:
-        self._session = _shared_session(config)
+    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+        self._session = _shared_session(config, lease)
         self._catalog: dict[str, OperationDefinition] | None = None
 
     def prewarm(self) -> None:
@@ -331,8 +334,8 @@ class MCPToolCatalog:
     ``MCPOperationCatalog``.
     """
 
-    def __init__(self, config: MCPClientConfig) -> None:
-        self._session = _shared_session(config)
+    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
+        self._session = _shared_session(config, lease)
         self._catalog: dict[str, ToolDefinition] | None = None
 
     def prewarm(self) -> None:

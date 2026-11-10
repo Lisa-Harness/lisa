@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from kernel.context._shared_stdio import acquire_lease
 from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry, MCPServerSpec
@@ -483,12 +484,46 @@ def setup_framework(
     *,
     discovery: _FrameworkDiscovery | None = None,
 ) -> None:
+    """Wire the framework onto the runtime, owning the build's session lease.
+
+    Delegates to :func:`_setup_framework_impl` and releases the runtime's
+    shared-session lease when the build fails partway through, so a partial
+    build never leaves owned sessions behind (Slice A lifecycle ownership).
+    """
+    try:
+        _setup_framework_impl(runtime, discovery=discovery)
+    except BaseException:
+        lease = runtime.resources.shared_session_lease
+        if lease is not None:
+            lease.release()
+            runtime.resources.shared_session_lease = None
+        raise
+
+
+def _setup_framework_impl(
+    runtime: HostRuntime,
+    *,
+    discovery: _FrameworkDiscovery | None = None,
+) -> None:
     """Wire the lisa-content and lisa-catalog MCP servers onto the runtime.
 
     File-reading (``read_authored_text``) goes through ``lisa-content``.
     Catalog queries (``list_modes``, ``list_operations``, ``list_tools``)
     go through ``lisa-catalog``. The kernel never touches the filesystem
     directly — it calls these tools on the appropriate server.
+
+    Every build acquires a shared-session lease: the servers it starts are
+    stamped with that lease's epoch and are stopped exactly when the owning
+    runtime closes (or when this build fails partway through), while servers
+    started by an earlier, still-open framework build keep running. Each
+    build therefore always talks to fresh subprocesses — never to a server
+    whose in-process caches predate an edit to the content it serves.
+
+    Before the previous build's sessions are stopped, this build invalidates
+    their server-side content cache and the kernel's workflow-catalog
+    snapshot (the framework build/content-refresh boundary, Slice A of
+    ``docs/SPEC/PROMPT_STARTUP.md``): the invalidation tool calls must run
+    while the previous sessions can still serve them.
 
     Order matters: operation MCP first, then operation callbacks, then
     content MCP. ``validate_workflow_catalog`` calls
@@ -507,6 +542,10 @@ def setup_framework(
     workflow-instance boot-load (file I/O + ``current_mode_id`` override).
     Keeping construction side-effect-free means ``HostRuntime(config)`` is
     pure and ``setup_framework`` owns all kernel/world mutation.
+
+    On any failure (including partial construction), the build's lease —
+    acquired below — is released so no owned sessions outlive the failed
+    build.
     """
     data_dir = runtime.paths.data_dir
 
@@ -538,6 +577,37 @@ def setup_framework(
         provider_selections=runtime.session_plan.manifest.providers,
         overlays_dir=runtime.paths.overlays_dir,
     )
+
+    # ── Shared-session lease + content-refresh boundary (Slice A) ───────
+    # Invalidate the caches served by the PREVIOUS build's sessions while
+    # those sessions are still alive (``invalidate_cache`` and
+    # ``invalidate_catalog`` are explicit, idempotent invalidations — the
+    # only operations the spec allows replaying across the boundary), then
+    # stop the previous build's sessions by releasing its lease. This
+    # build's adapters run on a fresh lease, so they start fresh
+    # subprocesses with clean server-side caches.
+    from kernel.ipsar_fsm import reset_workflow_catalog
+
+    previous_lease = runtime.resources.shared_session_lease
+    if previous_lease is not None:
+        from kernel.context.mcp_content_registry import MCPContentRegistry
+
+        registry_probe = MCPContentRegistry(content_config, lease=None)
+        try:
+            registry_probe.invalidate()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "setup_framework: content-server cache invalidation before "
+                "rebuild failed; continuing — the rebuild's fresh sessions "
+                "start with clean caches anyway",
+                exc_info=True,
+            )
+        reset_workflow_catalog()
+        previous_lease.release()
+        runtime.resources.shared_session_lease = None
+    lease = acquire_lease()
+    runtime.resources.shared_session_lease = lease
+
     default_mcp_tool_ids = resolve_default_mcp_tool_ids(
         host_specs=discovery.host_specs,
         pack_specs=discovery.pack_specs,
@@ -555,9 +625,9 @@ def setup_framework(
     from kernel.context.mcp_catalog import MCPOperationCatalog
     from kernel.context.mcp_content_registry import MCPContentRegistry
 
-    registry = MCPContentRegistry(content_config)
+    registry = MCPContentRegistry(content_config, lease=lease)
     registry.prewarm()
-    MCPOperationCatalog(catalog_config).prewarm()
+    MCPOperationCatalog(catalog_config, lease=lease).prewarm()
 
     from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks
     from kernel.operations.registry import (

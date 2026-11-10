@@ -32,6 +32,21 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Framework-build session leases and a content-refresh boundary (Slice A of
+  `docs/SPEC/PROMPT_STARTUP.md`): `setup_framework` acquires an epoch lease
+  from the shared catalog/content stdio host before constructing its
+  adapters, invalidates the previous build's server-side content cache and
+  the kernel's workflow-catalog snapshot while the previous sessions can
+  still serve the invalidation, then releases the previous lease — so a
+  rebuilt framework gets fresh subprocesses with clean caches (edits to
+  authored content are visible after a rebuild) and servers from a
+  still-open runtime are never stopped underneath it. Releasing a lease
+  stops exactly its own build's sessions; `RuntimeResources.aclose()`
+  releases the runtime's lease on both the sync and deferred teardown
+  paths, and a build that fails partway through releases its own. Using a
+  session handle after its lease was released raises instead of silently
+  spawning a replacement.
+
 - Schema-driven provider argument normalization at the kernel dispatch
   boundary: `kernel.tools.parameter_normalization.normalize_payload`
   coerces the incident log's encoding shapes before pydantic validation in
