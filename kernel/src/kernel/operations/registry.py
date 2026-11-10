@@ -22,6 +22,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalRequired,
@@ -44,6 +46,10 @@ from kernel.telemetry import (
     set_span_attributes,
 )
 from kernel.tools.mcp_client import MCPClientConfig
+from kernel.tools.parameter_normalization import (
+    describe_validation_failure,
+    normalize_payload,
+)
 from kernel.tools.registry import project_execution_floor
 
 logger = logging.getLogger(__name__)
@@ -830,6 +836,7 @@ def _emit_operation_telemetry(
             turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
             user_slug=ctx.user_slug,
             thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+            normalized_fields=list(ctx.normalized_fields) if ctx.normalized_fields else None,
         )
         schedule_telemetry_publish(
             ctx.event_bus,
@@ -1068,8 +1075,26 @@ def _validate_parameters(
 
     if definition.parameters_schema is None:
         return
+    result = normalize_payload(
+        definition.parameters_schema,
+        ctx.params,
+        target_id=definition.operation_id,
+    )
     try:
-        parsed = definition.parameters_schema.model_validate(ctx.params)
+        parsed = definition.parameters_schema.model_validate(result.payload)
+    except ValidationError as exc:
+        message = describe_validation_failure(exc)
+        _publish_rejection_telemetry(
+            ctx,
+            definition.operation_id,
+            f"Operation '{definition.operation_id}' received invalid parameters: {message}",
+            normalized_fields=list(result.normalized_fields) or None,
+        )
+        raise OperationExecutionError(
+            f"Operation '{definition.operation_id}' received invalid parameters: {message}"
+        ) from exc
+    try:
+        parsed = definition.parameters_schema.model_validate(result.payload)
     except Exception as exc:  # pylint: disable=broad-except
         _publish_rejection_telemetry(
             ctx,
@@ -1080,12 +1105,15 @@ def _validate_parameters(
             f"Operation '{definition.operation_id}' received invalid parameters: {exc}"
         ) from exc
     ctx.params = parsed.model_dump(mode="json")
+    ctx.normalized_fields = list(result.normalized_fields) or None
 
 
 def _publish_rejection_telemetry(
     ctx: OperationExecutionContext,
     operation_id: str,
     error_message: str,
+    *,
+    normalized_fields: list[str] | None = None,
 ) -> None:
     """Publish one ``tool.telemetry`` row for a pre-execution rejection.
 
@@ -1106,6 +1134,7 @@ def _publish_rejection_telemetry(
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+        normalized_fields=normalized_fields,
     )
     schedule_telemetry_publish(
         ctx.event_bus,

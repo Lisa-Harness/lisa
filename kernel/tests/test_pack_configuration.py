@@ -198,12 +198,26 @@ async def test_operation_receives_its_owner_pack_configuration(
         "provider": None,
     }
 
+    # An out-of-bounds in-type numeric is an encoding, not a semantic
+    # error: normalization clamps it into the declared range and the
+    # dispatch proceeds (the R3 contract that replaced the rejection).
+    await execute_operation(
+        "owner_operation",
+        OperationExecutionContext(
+            mode_id="coding",
+            params={"count": 0},
+            capability_binding_provider=resolver,
+        ),
+    )
+    assert captured["parameters"] == {"count": 1}
+
+    # A required field omitted entirely still rejects.
     with pytest.raises(OperationExecutionError, match="invalid parameters"):
         await execute_operation(
             "owner_operation",
             OperationExecutionContext(
                 mode_id="coding",
-                params={"count": 0},
+                params={},
                 capability_binding_provider=resolver,
             ),
         )
@@ -297,7 +311,7 @@ async def test_operation_parameter_rejection_publishes_telemetry(
             "owner_operation",
             OperationExecutionContext(
                 mode_id="coding",
-                params={"count": 0},
+                params={},
                 event_bus=bus,
             ),
         )

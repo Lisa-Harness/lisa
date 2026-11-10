@@ -4,6 +4,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Schema-driven provider argument normalization at the kernel dispatch
+  boundary: `kernel.tools.parameter_normalization.normalize_payload`
+  coerces the incident log's encoding shapes before pydantic validation in
+  both registries — optional-field ``"null"``/``""`` sentinels become
+  ``None``, string-encoded arrays decode (JSON, then Python literals, then
+  safe single-record/single-line conventions), out-of-bounds numerics
+  clamp to declared ``ge``/``le`` — while over-cap strings reject with an
+  intent-naming message instead of truncating. Every coercion logs one
+  warning and stamps ``normalized_fields`` onto ``tool.telemetry`` rows;
+  schemas opt out with ``model_config = {"strict_parameters": True}``.
+
 ### Removed
 
 - The `self_model` operation's dead mode-support check (a `mode_kind` of
@@ -4259,3 +4272,4 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both router planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
 - Router routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
+
