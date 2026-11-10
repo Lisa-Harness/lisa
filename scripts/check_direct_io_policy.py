@@ -125,6 +125,16 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "data_dir.mkdir(parents=True, exist_ok=True)",
         "state_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Session-source archive and restore snapshots are host-internal state
+    # under <data_dir>/state/sessions/ (plan-digest continuity, verified
+    # restore, .bak snapshot); the temp+os.replace shape mirrors the
+    # approvals store.
+    "runtime/src/runtime/session_archive.py": (
+        "path.parent.mkdir(parents=True, exist_ok=True)",
+        "os.replace(temp_name, path)",
+        "os.unlink(temp_name)",
+        'backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")',
+    ),
     "runtime/src/runtime/policy.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",
         'path.write_text(header + body, encoding="utf-8")',

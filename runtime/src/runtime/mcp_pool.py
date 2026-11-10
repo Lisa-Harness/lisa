@@ -30,7 +30,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kernel.context._shared_stdio import acquire_lease
+from kernel.context._catalog_sources import CatalogSource, CatalogSourceConfigLike, ContentSource
+from kernel.context._shared_stdio import SharedSessionLease, acquire_lease
 from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry, MCPServerSpec
@@ -479,6 +480,40 @@ def resolve_default_mcp_tool_ids(
 # ── Framework wiring ─────────────────────────────────────────────────
 
 
+def _build_catalog_source_config(
+    runtime: HostRuntime,
+    discovery: _FrameworkDiscovery,
+) -> CatalogSourceConfigLike:
+    """Build the frozen in-process source config from resolved host inputs.
+
+    The payloads mirror, byte for byte, the env the stdio servers receive
+    (see ``sdk.mcp_host.content_servers.build_content_mcp_config``), so the
+    two transports observe identical inputs (Slice B parity).
+    """
+    import json
+
+    from sdk.catalog_sources import CatalogSourceConfig
+    from sdk.mcp_host import session_provider_selection_payload
+
+    payload = session_provider_selection_payload(runtime.session_plan.manifest.providers)
+    selections_json = (
+        json.dumps(payload, ensure_ascii=True, sort_keys=True) if any(payload.values()) else ""
+    )
+    default_ids = resolve_default_mcp_tool_ids(
+        host_specs=discovery.host_specs,
+        pack_specs=discovery.pack_specs,
+        user_specs=discovery.user_specs,
+    )
+    return CatalogSourceConfig.from_payloads(
+        content_roots=list(discovery.roots),
+        disabled_packs=discovery.disabled_packs,
+        provider_selections_json=selections_json,
+        overlays_dir=runtime.paths.overlays_dir,
+        default_mcp_tool_ids=default_ids,
+        packs_venv_site_packages=_resolve_packs_venv_site_packages(runtime.paths.data_dir),
+    )
+
+
 def setup_framework(
     runtime: HostRuntime,
     *,
@@ -498,6 +533,73 @@ def setup_framework(
             lease.release()
             runtime.resources.shared_session_lease = None
         raise
+
+
+def _release_previous_build(
+    runtime: HostRuntime,
+    discovery: _FrameworkDiscovery,
+    content_config: MCPClientConfig,
+) -> None:
+    """Invalidate the previous build's caches and release its lease (Slice A).
+
+    The invalidation tool calls must run while the previous sessions can
+    still serve them, so this runs before the lease release. In-process
+    mode refreshes through the direct source; stdio mode probes the
+    content server through a lease-less registry handle.
+    """
+    from kernel.ipsar_fsm import reset_workflow_catalog
+
+    previous_lease = runtime.resources.shared_session_lease
+    if previous_lease is None:
+        return
+    if runtime._in_process_mcp:
+        from sdk.catalog_sources import DirectCatalogSource
+
+        DirectCatalogSource(_build_catalog_source_config(runtime, discovery)).invalidate()
+    else:
+        from kernel.context.mcp_content_registry import MCPContentRegistry
+
+        registry_probe = MCPContentRegistry(content_config, lease=None)
+        try:
+            registry_probe.invalidate()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "setup_framework: content-server cache invalidation before "
+                "rebuild failed; continuing — the rebuild's fresh sessions "
+                "start with clean caches anyway",
+                exc_info=True,
+            )
+    reset_workflow_catalog()
+    previous_lease.release()
+    runtime.resources.shared_session_lease = None
+
+
+def _resolve_kernel_transports(
+    runtime: HostRuntime,
+    discovery: _FrameworkDiscovery,
+    catalog_config: MCPClientConfig,
+    lease: SharedSessionLease,
+) -> tuple[CatalogSource | None, ContentSource | None]:
+    """Return the (catalog, content) transports for this build (Slice B).
+
+    In-process mode returns direct SDK sources — no catalog/content
+    subprocess on the critical path. Stdio mode returns ``(None, None)``
+    after prewarming the shared lisa-catalog session so its interpreter
+    startup overlaps the rest of boot.
+    """
+    if not runtime._in_process_mcp:
+        from kernel.context.mcp_catalog import MCPOperationCatalog
+
+        MCPOperationCatalog(catalog_config, lease=lease).prewarm()
+        return None, None
+    # Slice B: serve the kernel's synchronous catalog/content consumers
+    # in-process through the shared SDK service. lisa-catalog stays warm
+    # in the MCP pool (in-process transport) because its tools stay
+    # published.
+    from sdk.catalog_sources import DirectCatalogSource, DirectContentSource
+
+    source_config = _build_catalog_source_config(runtime, discovery)
+    return DirectCatalogSource(source_config), DirectContentSource(source_config)
 
 
 def _setup_framework_impl(
@@ -586,25 +688,8 @@ def _setup_framework_impl(
     # stop the previous build's sessions by releasing its lease. This
     # build's adapters run on a fresh lease, so they start fresh
     # subprocesses with clean server-side caches.
-    from kernel.ipsar_fsm import reset_workflow_catalog
 
-    previous_lease = runtime.resources.shared_session_lease
-    if previous_lease is not None:
-        from kernel.context.mcp_content_registry import MCPContentRegistry
-
-        registry_probe = MCPContentRegistry(content_config, lease=None)
-        try:
-            registry_probe.invalidate()
-        except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "setup_framework: content-server cache invalidation before "
-                "rebuild failed; continuing — the rebuild's fresh sessions "
-                "start with clean caches anyway",
-                exc_info=True,
-            )
-        reset_workflow_catalog()
-        previous_lease.release()
-        runtime.resources.shared_session_lease = None
+    _release_previous_build(runtime, discovery, content_config)
     lease = acquire_lease()
     runtime.resources.shared_session_lease = lease
 
@@ -619,15 +704,12 @@ def _setup_framework_impl(
         catalog_env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
         catalog_config = dataclasses.replace(catalog_config, env=catalog_env)
 
-    # Start the shared lisa-catalog and lisa-content subprocesses together so
-    # their interpreter startups overlap; every catalog/content adapter below
-    # reuses these two long-lived sessions instead of spawning per call.
-    from kernel.context.mcp_catalog import MCPOperationCatalog
+    source, content_source = _resolve_kernel_transports(runtime, discovery, catalog_config, lease)
     from kernel.context.mcp_content_registry import MCPContentRegistry
 
-    registry = MCPContentRegistry(content_config, lease=lease)
-    registry.prewarm()
-    MCPOperationCatalog(catalog_config, lease=lease).prewarm()
+    registry = MCPContentRegistry(content_config, lease=lease, source=content_source)
+    if content_source is None:
+        registry.prewarm()
 
     from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks
     from kernel.operations.registry import (
@@ -637,8 +719,8 @@ def _setup_framework_impl(
     )
     from kernel.tools.registry import register_tool_mcp
 
-    register_operation_mcp(catalog_config)
-    register_tool_mcp(catalog_config)
+    register_operation_mcp(catalog_config, source=source)
+    register_tool_mcp(catalog_config, source=source)
 
     # ── Pack prerequisite validation (bare-vs-none elimination) ────────
     # A pack that cannot satisfy a host-level prerequisite (e.g. bwrap needs
@@ -650,7 +732,7 @@ def _setup_framework_impl(
     _validate_pack_prerequisites()
 
     register_operation_callbacks(get_operation_catalog, execute_operation)
-    register_content_mcp(catalog_config)
+    register_content_mcp(catalog_config, source=source)
 
     # Wire the MCPContentRegistry as the content registry for authored context
     # assets and the sub-turn contract assets (fork/delegate briefings + midpoint

@@ -52,6 +52,7 @@ from kernel.approval import (
     build_approval_invocation,
 )
 from kernel.capability_binding import CapabilityRef, ExecutionFloorView
+from kernel.context._catalog_sources import CatalogSource
 from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
@@ -73,6 +74,10 @@ from kernel.tools.parameter_normalization import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Optional in-process catalog source injected by the host (Slice B). When
+#: ``None`` the configured stdio server is used.
+_tool_catalog_source: CatalogSource | None = None
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
 
 __all__ = [
@@ -113,17 +118,19 @@ def get_tool_catalog() -> dict[str, ToolDefinition]:
     return _TOOL_CATALOG
 
 
-def register_tool_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-catalog`` MCP server config for tool catalog loading.
+def register_tool_mcp(config: MCPClientConfig, source: CatalogSource | None = None) -> None:
+    """Inject the ``lisa-catalog`` transport for tool catalog loading.
 
     Rebuilds and re-validates ``_TOOL_CATALOG`` immediately by calling
-    ``list_tools`` on the server. The server does all filesystem access; the
-    kernel never touches the filesystem directly.
+    ``list_tools`` — through the injected in-process ``source`` when given,
+    otherwise on the configured stdio server. All filesystem access happens
+    behind the transport; the kernel never touches the filesystem directly.
     """
-    global _TOOL_CATALOG  # noqa: PLW0603
+    global _TOOL_CATALOG, _tool_catalog_source  # noqa: PLW0603
+    _tool_catalog_source = source
     from kernel.context.mcp_catalog import MCPToolCatalog
 
-    catalog_loader = MCPToolCatalog(config)
+    catalog_loader = MCPToolCatalog(config, source=source)
     _TOOL_CATALOG = catalog_loader.get_tool_catalog()
     validate_tool_catalog(_TOOL_CATALOG)
 
