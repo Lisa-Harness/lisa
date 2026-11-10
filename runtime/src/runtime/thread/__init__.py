@@ -89,22 +89,30 @@ def project_thread_messages(
     task_id: str = "",
     *,
     thread_path: Path | None,
+    ephemeral_results_path: Path | None = None,
     budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Persist large raw results before sending recoverable previews to a model.
+
+    ``thread_path`` is the durable thread store. Under ``--no-thread`` it is
+    ``None`` and ``ephemeral_results_path`` provides a session-scoped
+    result-object store (same ``r<sha256>`` contract, cache-backed) so
+    previews stay recoverable without creating a thread artifact. Both
+    ``None`` is still an error: projection requires a storage base.
 
     ``budget_bytes`` bounds the resident tool-result bytes in this projection
     (``None`` keeps the sdk default ceiling); the turn-start replay path uses
     it to recompute the resident working set under the session's replay lane.
     """
-    if thread_path is None:
+    base = thread_path if thread_path is not None else ephemeral_results_path
+    if base is None:
         raise ValueError("Tool-result projection requires a thread storage path")
     return project_tool_messages(
         messages,
         task_id,
-        lambda result: _persist_result(thread_path, result),
+        lambda result: _persist_result(base, result),
         _thread_redaction,
-        lambda ref: load_result_object(thread_path, ref),
+        lambda ref: load_result_object(base, ref),
         budget_bytes=budget_bytes,
     )
 

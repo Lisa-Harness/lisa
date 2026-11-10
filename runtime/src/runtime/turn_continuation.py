@@ -34,10 +34,21 @@ def load_continuation(
     return TurnContinuation.model_validate_json(payload)
 
 
-def persist_request(thread_path: Path | None, request: dict[str, Any]) -> str:
-    if thread_path is None:
+def persist_request(
+    thread_path: Path | None,
+    request: dict[str, Any],
+    ephemeral_results_path: Path | None = None,
+) -> str:
+    """Archive one model request snapshot under the result-object store.
+
+    Under ``--no-thread`` the session's cache-backed store takes over
+    (PROMPT_STARTUP Slice D): snapshots stay recorded without a thread
+    artifact. Continuations still require the durable thread path.
+    """
+    base = thread_path if thread_path is not None else ephemeral_results_path
+    if base is None:
         raise ValueError("Model request recording requires a thread storage path.")
-    return _persist_result(thread_path, {"content": json.dumps(request, ensure_ascii=False)})
+    return _persist_result(base, {"content": json.dumps(request, ensure_ascii=False)})
 
 
 def usage_since_resume(result: TurnResult, saved: TurnContinuation | None) -> TurnResult:

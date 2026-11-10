@@ -45,6 +45,7 @@ class HostPaths:
     decisions_path: Path
     models_path: Path
     models_proposal_path: Path
+    ephemeral_results_path: Path | None
 
     # ── Category directories (sdk.layout naming) ────────────────────
     @property
@@ -96,11 +97,19 @@ class HostPaths:
         thread_path: Path | None = None
         if not config.no_thread and config.thread_slug:
             thread_path = config.resolved_thread_dir / config.thread_slug
+        # PROMPT_STARTUP Slice D: --no-thread turns still spill oversized tool
+        # results and record request snapshots, so the projection needs a
+        # result store. Park one under the rm-safe cache tree; no thread
+        # artifact is ever created under threads/.
+        ephemeral_results_path: Path | None = None
+        if config.no_thread:
+            ephemeral_results_path = config.data_dir / CACHE_DIR / "thread-results"
         return cls(
             data_dir=config.data_dir,
             overlays_dir=config.resolved_overlays_dir,
             thread_dir=config.resolved_thread_dir,
             thread_path=thread_path,
+            ephemeral_results_path=ephemeral_results_path,
             log_path=config.resolved_log_path,
             host_log_path=config.resolved_host_log_path,
             token_usage_path=config.data_dir / LOGS_DIR / "token-usage.jsonl",
