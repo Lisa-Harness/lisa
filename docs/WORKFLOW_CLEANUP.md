@@ -24,6 +24,7 @@ table is either shipped behavior or a proposal, labelled as such.
 | Mid-turn multi-step plans reach the operator | Shipped (Phase C) |
 | Planner retired as a mode | Withdrawn — the planner works; retiring it would delete the mechanism |
 | Yields revisited | Proposed — Phase D |
+| One `enter_mode` for turn start and mid-turn handoff | Proposed — Phase E |
 
 ## What the measurements say
 
@@ -206,6 +207,92 @@ fix:
 
 Not proposed for implementation yet: this needs a decision about what a turn
 is allowed to ask before it is worth code.
+
+## Phase E — one `enter_mode` for turn start and mid-turn handoff
+
+Proposed (not yet started): the largest remaining item of the 2026-10-30
+turn-loop structural review. Loop-body refactors landed earlier (resume
+dataclass, `LoopControl` union, `_TurnState` by reference, the handoff-cap
+predicate, `_next_loop_action`); this phase consolidates what is left.
+
+### The defect: two implementations of "enter a mode"
+
+One concept — make `target` the turn's active mode — is implemented twice,
+independently. The turn-start path runs through `_run_turn_entry_sequence`
+and `execute_entry_phase` (`turn_phases/_entry.py`); the mid-turn handoff
+path runs through `_execute_mid_turn_handoff`, which owns its own copies of
+every entry concern:
+
+| Concern | Turn start | Mid-turn handoff |
+| --- | --- | --- |
+| Entry operations | `execute_entry_phase` | `_run_handoff_entry_operations` |
+| Pre-turn operations | `run_mode_pre_turn_operations` (FSM) | `_run_handoff_pre_turn_operations` |
+| Model pin / routing context | entry-phase path | `_apply_mode_routing_context` (the single writer of `state.active_mode_id`) |
+| Tool surface / manifest | Phase-1 assembler | `_rebuild_tool_schemas_for_mode` (`turn_phases/_tool_schemas.py`) + `_recompile_manifest_and_refresh_user` |
+| Workflow position | initial seed | `_advance_handoff_workflow_position` |
+
+Each path grew its own copy of every entry concern, and the copies agree only
+because their past divergences were patched locally after they fired — the
+stuck progress footer (completion could not credit a mid-turn mode) and the
+discarded plans of Phase C are both instances of "a turn-start assumption
+baked into mid-turn handling". Every escalation into the planner happens
+mid-turn, so the handoff path is the one production exercises.
+
+### The move
+
+Replace both paths with one function owning everything that must happen when
+a mode becomes active — manifest recompute, model pin and routing context
+(`_apply_mode_routing_context` stays the single writer of
+`state.active_mode_id`; `enter_mode` calls it, never assigns the field),
+entry operations with plan resume-awareness, plan recording, hint arming and
+suppression, context refresh, and pre-turn operations. An
+`origin: Literal["turn_start", "handoff"]` parameter gates only the
+legitimate differences:
+
+| Concern | `turn_start` | `handoff` |
+| --- | --- | --- |
+| Early-return semantics | entry op can end the turn | rejection is a tool result, never a turn end |
+| Workflow position | seed initial position if absent | advance from the departing mode |
+| Handoff context block | not built | `_build_structured_handoff_context` |
+| Routing side effects | entry-phase save | `apply_routing` + departed-modes bookkeeping |
+| Suppression | sticky caller OR entry flag | post-handoff hint guards |
+
+Anything not in that table has exactly one implementation after Phase E.
+
+### The sequencing contract is load-bearing
+
+The mid-turn order — gate against routing targets and catalog; system-prompt
+base swap plus routing-hint/handoff-context segment clearing; structured
+handoff context; tool-schema rebuild (yield policy resolved as Phase 1 does);
+manifest recompile and capability-block refresh in one seam; routing context
+and model pin; completion-contract action-tool refresh; entry operations;
+identity swap (`departed_modes`, `mode_id`, `handoff_to`); `apply_routing`
+side effects; `ctx.mode_id` patch; durable workflow-position advance before
+the hint recomputes (otherwise the hint reads the departing step and
+synthesizes a transition back to it); pre-turn operations; post-handoff hint
+recomputation and guards — must be preserved for the `handoff` origin, along
+with the entry sequence's equivalent order for `turn_start`.
+
+### Discipline
+
+- **No behavior change.** Where the paths disagree today (e.g. `plan_prefix`
+  staging rules: any steps at turn start vs. multi-step only mid-turn), the
+  difference is made explicit in `origin` branches, not silently unified.
+- **Single writers stay single.** `_apply_mode_routing_context` remains the
+  only direct writer of `state.active_mode_id`.
+- **Pinned contracts are the safety net.** The guard-ordering test
+  (`kernel/tests/test_loop_control_ordering.py`), the transition tests
+  (`kernel/tests/test_turn_runner_transitions.py`), and the scenario matrix
+  must pass unchanged; any failure names a real divergence to resolve, not a
+  test to update.
+- **Land as one focused change**: this region is the most contested in the
+  file; rebase onto the source tip before starting.
+
+Regression entry points: `kernel/tests/test_turn_runner_transitions.py`
+(handoff behavior), `kernel/tests/test_turn_runner.py` and
+`kernel/tests/test_mode_instructions.py` (entry-phase contracts),
+`kernel/tests/test_loop_control_ordering.py` (guard ordering),
+`kernel/tests/test_turn_scenario_matrix.py` (scenario matrix).
 
 ## Non-goals
 
