@@ -1,4 +1,4 @@
-"""Kernel seams — host-injection protocols for blob, browser, state, and memory.
+"""Kernel seams — host-injection protocols for blob, state, and memory.
 
 These Protocols define the dependency-inversion surface between the
 runtime-neutral kernel and host applications. Hosts implement these
