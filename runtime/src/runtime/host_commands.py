@@ -154,6 +154,7 @@ def register_builtin_host_commands() -> None:
             "/last",
             "/mcp",
             "/proxy",
+            "/session",
         )
     )
     register_host_command_exacts(

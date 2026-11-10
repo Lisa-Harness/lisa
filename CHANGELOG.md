@@ -4,6 +4,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Session-source archive + `/session` command: every boot now writes its
+  resolved session source (``from:``/``body:`` directives already expanded)
+  to ``<data_dir>/state/sessions/<plan-digest>.md`` with a ``.meta.json``
+  sidecar recording the source URI. A turn continuation stamps the compiled
+  plan digest, the resume guard fails closed across a session-file edit
+  ("Continuation belongs to a different turn identity or session plan"), and
+  before the archive that failure had no lever: the saved digest named bytes
+  that no longer existed anywhere. Restoring the archived bytes restores the
+  digest (the plan is content-addressed, URI-scoped: the digest payload
+  includes ``source_uri``, so the restore replays at the recorded path and
+  verifies against the archived digest, snapshotting the replaced file as
+  ``.bak``). ``/session`` reports whether the latest paused turn is
+  resumable, lists the archive, and performs the verified restore; the boot
+  hook is idempotent, skips injected plans, and degrades to a log line on
+  failure. Tests: ``runtime/tests/test_session_archive.py``,
+  ``runtime/tests/test_session_command.py``,
+  ``runtime/tests/test_session_archive_boot.py``.
+
 ### Fixed
 
 - ``--no-thread`` runs crashed the moment a tool result needed durable

@@ -155,6 +155,7 @@ from runtime.commands._routing import (
     preferred_model_id_for_route,
     set_runtime_route_preview,
 )
+from runtime.commands._session import handle_session_command
 from runtime.commands._simple import (
     handle_debug_command,
     handle_help_command,
@@ -224,6 +225,7 @@ __all__ = [
     "handle_pack_command",
     "handle_policy_command",
     "handle_proxy_command",
+    "handle_session_command",
     "handle_simple_command",
     "handle_workflow_command",
     "installed_pack_roots_by_name",
