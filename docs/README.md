@@ -29,6 +29,12 @@ The [project README](../README.md) explains the project and its current status.
   concepts, a turn's lifecycle, and host responsibilities.
 - [Host integration](HOST_INTEGRATION.md): composition, async ownership,
   transport callbacks, and the integration checklist.
+- [Host SDK architecture](HOST_SDK_ARCHITECTURE.md): planned language-neutral
+  hosting, package ownership, process boundaries, and development gates.
+- [Host Protocol specification](SPEC/HOST_PROTOCOL.md): proposed v1 messages,
+  lifecycle, outcomes, security, and cross-language conformance.
+- [Host SDK design primer](HOST_SDK_PRIMER.md): rationale, trade-offs, and
+  rejected alternatives for the planned Host SDK.
 - [MCP interoperability](MCP_INTEROP.md): running Lisa's first-party MCP
   servers without the turn loop, which servers to expose, identity limits, and
   the client-config export.

@@ -6,7 +6,9 @@ and the runtime's async lifecycle. Most hosts should compose
 replacing that composition layer.
 
 See [architecture](BOUNDARIES.md) for ownership and [runtime](../runtime/README.md)
-for the module map.
+for the module map. For the planned language-neutral Host SDK and its Python
+sidecar, see [Host SDK architecture](HOST_SDK_ARCHITECTURE.md); that design
+does not change the in-process integration below or convert `lisa-cli`.
 
 ## Use the composition factory
 
