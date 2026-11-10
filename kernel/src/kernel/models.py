@@ -127,6 +127,11 @@ class ToolExecutionContext(BaseModel):
     task_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
     code_change_artifact_store: Any = Field(default=None, exclude=True)
+    # Fields the parameter normalizer rewrote before validation (e.g.
+    # ``"null"`` -> ``None`` on an optional id). Stamped onto tool
+    # telemetry by the registry's post-execution publish; ``None`` means
+    # the dispatch needed no normalization.
+    normalized_fields: list[str] | None = Field(default=None, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
     # When ``True``, the tool is allowed to publish incremental
@@ -283,6 +288,12 @@ class OperationExecutionContext(BaseModel):
     task_id: str = Field(default="", exclude=True)
     session_plan_digest: str = Field(default="", exclude=True)
     code_change_artifact_store: Any = Field(default=None, exclude=True)
+    # Fields the parameter normalizer rewrote before validation (e.g.
+    # ``"null"`` -> ``None`` on an optional id). Stamped onto tool
+    # telemetry by the registry's post-execution publish; ``None`` means
+    # the dispatch needed no normalization. See the tool context's field
+    # of the same name — both registries share the contract.
+    normalized_fields: list[str] | None = Field(default=None, exclude=True)
     extra: dict[str, Any] = Field(default_factory=dict)
     tool_schemas: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
@@ -2705,6 +2716,11 @@ class ToolExecutionTelemetry(BusEvent):
     #: that names the thread store, so a reader scopes the store and the
     #: ledger rows that join onto it by one identifier.
     thread_store_slug: str | None = None
+    #: Fields the parameter normalizer rewrote before validation (e.g.
+    #: ``"null"`` -> ``None`` on an optional id). ``None`` = no
+    #: normalization happened, so per-shape provider argument quality is
+    #: measurable from the ledger alone without reading logs.
+    normalized_fields: list[str] | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

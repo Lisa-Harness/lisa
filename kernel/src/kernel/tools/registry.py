@@ -43,6 +43,8 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from kernel.approval import (
     ApprovalIdentity,
     ApprovalRequired,
@@ -65,6 +67,10 @@ from kernel.telemetry import (
 )
 from kernel.tools.mcp_client import MCPClientConfig
 from kernel.tools.output_stream import TOOL_OUTPUT_TOPIC
+from kernel.tools.parameter_normalization import (
+    describe_validation_failure,
+    normalize_payload,
+)
 
 logger = logging.getLogger(__name__)
 EMPTY_PACK_CONFIGURATION: Mapping[str, Any] = MappingProxyType({})
@@ -392,6 +398,7 @@ def _publish_tool_telemetry(
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+        normalized_fields=list(ctx.normalized_fields) if ctx.normalized_fields else None,
     )
     event_bus = ctx.event_bus
     if event_bus is None:
@@ -542,8 +549,24 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
 
     if definition.parameters_schema is None:
         return
+    result = normalize_payload(
+        definition.parameters_schema,
+        ctx.parameters,
+        target_id=definition.tool_id,
+    )
     try:
-        parsed = definition.parameters_schema.model_validate(ctx.parameters)
+        parsed = definition.parameters_schema.model_validate(result.payload)
+    except ValidationError as exc:
+        message = describe_validation_failure(exc)
+        _publish_rejection_telemetry(
+            ctx,
+            definition.tool_id,
+            f"Tool '{definition.tool_id}' received invalid parameters: {message}",
+            normalized_fields=list(result.normalized_fields) or None,
+        )
+        raise ToolExecutionError(
+            f"Tool '{definition.tool_id}' received invalid parameters: {message}"
+        ) from exc
     except Exception as exc:  # pylint: disable=broad-except
         _publish_rejection_telemetry(
             ctx,
@@ -554,12 +577,15 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
             f"Tool '{definition.tool_id}' received invalid parameters: {exc}"
         ) from exc
     ctx.parameters = parsed.model_dump(mode="json")
+    ctx.normalized_fields = list(result.normalized_fields) or None
 
 
 def _publish_rejection_telemetry(
     ctx: ToolExecutionContext,
     tool_id: str,
     error_message: str,
+    *,
+    normalized_fields: list[str] | None = None,
 ) -> None:
     """Publish one ``tool.telemetry`` row for a pre-execution rejection.
 
@@ -582,6 +608,7 @@ def _publish_rejection_telemetry(
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
+        normalized_fields=normalized_fields,
     )
     schedule_telemetry_publish(
         ctx.event_bus,
