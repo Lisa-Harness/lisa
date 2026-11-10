@@ -197,6 +197,9 @@ def test_identity_same_turn_still_separates_different_turns() -> None:
     assert not base.same_turn(
         TurnIdentity(user_slug="u", conversation_id="c", task_id="t", session_plan_digest="other")
     )
+    assert not base.same_turn(
+        TurnIdentity(user_slug="u", conversation_id="c", task_id="t", task_goal="diagnostic")
+    )
 
 
 @pytest.mark.asyncio
