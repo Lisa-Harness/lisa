@@ -33,7 +33,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kernel.session_plan import SessionPlan
 from kernel.tools.mcp_client import InProcessResolver, MCPToolPool
@@ -53,6 +53,9 @@ from runtime.runtime_paths import HostPaths
 from runtime.services import HostServices
 from runtime.session_context import compile_selected_session_plan
 from runtime.thread import latest_turn_owner_mode
+
+if TYPE_CHECKING:
+    from kernel.context._shared_stdio import SharedSessionLease
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +290,20 @@ class RuntimeResources:
         """Set by aclose() to tell the deferred-start task to tear down the
         pool. The task then closes the pool's child AsyncExitStacks in its
         own task, where the anyio cancel scopes were entered."""
+        self._shared_session_lease: SharedSessionLease | None = None
+        """Epoch lease owning this build's shared catalog/content stdio
+        sessions (Slice A). Set by ``setup_framework``; released exactly
+        once — by whichever of aclose() or the next setup_framework build
+        gets there first — so servers from a still-open runtime are never
+        stopped underneath it."""
+
+    @property
+    def shared_session_lease(self) -> SharedSessionLease | None:
+        return self._shared_session_lease
+
+    @shared_session_lease.setter
+    def shared_session_lease(self, lease: SharedSessionLease | None) -> None:
+        self._shared_session_lease = lease
 
     # ── Accessors ─────────────────────────────────────────────────────
 
@@ -706,6 +723,7 @@ class RuntimeResources:
             self._mcp_start_exc = None
             self._mcp_started_event = None
             self._mcp_close_signal = None
+            self._release_shared_session_lease()
             logger.debug("RuntimeResources: MCP pool closed (deferred)")
             return
         # Sync-start path (start() was called directly, or the deferred
@@ -727,7 +745,15 @@ class RuntimeResources:
         self._mcp_start_exc = None
         self._mcp_started_event = None
         self._mcp_close_signal = None
+        self._release_shared_session_lease()
         logger.debug("RuntimeResources: MCP pool closed")
+
+    def _release_shared_session_lease(self) -> None:
+        """Release this build's shared-session lease (idempotent)."""
+        lease = self._shared_session_lease
+        if lease is not None:
+            lease.release()
+            self._shared_session_lease = None
 
 
 # ── HostRuntime — thin composition root ─────────────────────────────────

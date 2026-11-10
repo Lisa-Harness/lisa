@@ -1580,6 +1580,19 @@ def _ensure_catalog_loaded() -> None:
     validate_export_boundaries()
 
 
+def reset_workflow_catalog() -> None:
+    """Drop the cached workflow catalog so the next access reloads it.
+
+    Part of the framework build/content-refresh boundary (Slice A of
+    ``docs/SPEC/PROMPT_STARTUP.md``): the host calls this before re-running
+    ``setup_framework`` so the rebuilt framework re-reads modes — including
+    edited instruction bodies — instead of silently reusing the previous
+    build's snapshot.
+    """
+    global _workflow_catalog  # noqa: PLW0603
+    _workflow_catalog = None
+
+
 def get_workflow_catalog() -> dict[str, WorkflowModeConfig]:
     """Return the validated workflow mode catalog.
 

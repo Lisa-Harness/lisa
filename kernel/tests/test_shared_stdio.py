@@ -7,7 +7,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from kernel.context._shared_stdio import SharedStdioSession, close_shared_sessions
+from kernel.context._shared_stdio import (
+    SharedStdioSession,
+    acquire_lease,
+    close_shared_sessions,
+)
 from kernel.context.mcp_content_registry import MCPContentRegistry
 from kernel.tools.mcp_client import MCPClientConfig
 from mcp.client.stdio import StdioServerParameters
@@ -114,3 +118,65 @@ def test_content_registry_reads_through_shared_session(server_script: Path) -> N
     assert registry.read_authored_text("prompts/system-prompt.md") == (
         "text:prompts/system-prompt.md"
     )
+
+
+def test_lease_release_stops_only_its_own_sessions(server_script: Path) -> None:
+    first = acquire_lease()
+    first_session = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=first,
+    )
+    original = _text(first_session.call("pid", {}))
+
+    second = acquire_lease()
+    second_session = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=second,
+    )
+
+    first.release()
+
+    with pytest.raises(RuntimeError):
+        first_session.call("pid", {})
+    assert _text(second_session.call("pid", {})) != original
+
+
+def test_new_lease_gets_fresh_subprocess_for_equal_config(server_script: Path) -> None:
+    first = acquire_lease()
+    old_build = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=first,
+    )
+    old_pid = _text(old_build.call("pid", {}))
+
+    second = acquire_lease()
+    new_build = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=second,
+    )
+
+    assert _text(new_build.call("pid", {})) != old_pid
+
+
+def test_double_release_is_idempotent(server_script: Path) -> None:
+    lease = acquire_lease()
+    session = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=lease,
+    )
+    session.call("pid", {})
+
+    lease.release()
+    lease.release()
+
+
+def test_close_shared_sessions_after_release_is_clean(server_script: Path) -> None:
+    lease = acquire_lease()
+    session = SharedStdioSession(
+        StdioServerParameters(command=sys.executable, args=[str(server_script)]),
+        lease=lease,
+    )
+    session.call("pid", {})
+    lease.release()
+
+    close_shared_sessions()

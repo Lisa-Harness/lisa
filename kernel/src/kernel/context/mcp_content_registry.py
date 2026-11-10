@@ -11,7 +11,7 @@ from typing import Any
 
 from mcp.client.stdio import StdioServerParameters
 
-from kernel.context._shared_stdio import SharedStdioSession
+from kernel.context._shared_stdio import SharedSessionLease, SharedStdioSession
 from kernel.tools.mcp_client import MCPClientConfig
 
 __all__ = ["MCPContentRegistry"]
@@ -32,14 +32,15 @@ class MCPContentRegistry:
     ``lisa-content`` server via a shared, long-lived stdio session.
     """
 
-    def __init__(self, config: MCPClientConfig) -> None:
+    def __init__(self, config: MCPClientConfig, lease: SharedSessionLease | None = None) -> None:
         self._session = SharedStdioSession(
             StdioServerParameters(
                 command=config.command,
                 args=config.args,
                 env=config.env,
                 cwd=config.cwd,
-            )
+            ),
+            lease=lease,
         )
 
     def prewarm(self) -> None:
