@@ -46,14 +46,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     tool_catalog = _resolve_tool_catalog(ctx)
     model_manifest = _resolve_model_manifest(ctx)
 
-    supported_modes: list[str] = []
-    unsupported_modes: dict[str, str] = {}
-    for mode_id, mode in sorted(workflow_catalog.items()):
-        gap = _mode_support_gap(mode)
-        if gap is None:
-            supported_modes.append(mode_id)
-        else:
-            unsupported_modes[mode_id] = gap
+    supported_modes = sorted(workflow_catalog)
 
     # ── Build entries by category ───────────────────────────────────────
 
@@ -61,11 +54,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     capability_entries = _build_capability_entries(
         supported_modes, operation_catalog, tool_catalog, model_manifest, now_iso
     )
-    limitation_entries = _build_limitation_entries(unsupported_modes, now_iso)
     architecture_entries = _build_architecture_entries(now_iso)
     memory_entries = _build_memory_entries(ctx, now_iso)
     grounding_entries = _build_grounding_entries(ctx, now_iso)
-    known_unknown_entries = _build_known_unknown_entries(unsupported_modes, now_iso)
 
     identity_summary = (
         f"Lisa operating as {user_slug} with {len(supported_modes)} supported modes, "
@@ -88,11 +79,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         grounding_summary=grounding_summary,
         identity=identity_entries,
         capabilities=capability_entries,
-        limitations=limitation_entries,
         architecture=architecture_entries,
         memory_awareness=memory_entries,
         grounding=grounding_entries,
-        known_unknowns=known_unknown_entries,
     )
 
     # ── Augment with live introspection telemetry (no LLM call) ──────────
@@ -120,11 +109,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             "entry_counts": {
                 "identity": len(identity_entries),
                 "capabilities": len(capability_entries),
-                "limitations": len(limitation_entries),
                 "architecture": len(architecture_entries),
                 "memory_awareness": len(memory_entries),
                 "grounding": len(grounding_entries),
-                "known_unknowns": len(known_unknown_entries),
             },
         },
     )
@@ -252,21 +239,6 @@ def _resolve_model_manifest(ctx: OperationExecutionContext) -> ModelManifest | N
     return None
 
 
-def _mode_support_gap(mode: Any) -> str | None:
-    """Check whether a mode has a known support gap. Best-effort."""
-    try:
-        # Modes with a mode_kind that requires host wiring
-        if hasattr(mode, "mode_kind") and str(mode.mode_kind) in (
-            "workflow",
-            "browser",
-            "image",
-        ):
-            return f"requires host wiring for {mode.mode_kind}"
-    except Exception:
-        pass
-    return None
-
-
 def _resolve_timezone(ctx: OperationExecutionContext) -> str:
     """Best-effort timezone from context extra."""
     extra = ctx.extra or {}
@@ -380,26 +352,6 @@ def _build_capability_entries(
     return entries
 
 
-def _build_limitation_entries(
-    unsupported_modes: dict[str, str], now_iso: str
-) -> list[SelfKnowledgeEntry]:
-    entries: list[SelfKnowledgeEntry] = []
-    for idx, (mode_id, gap) in enumerate(sorted(unsupported_modes.items())):
-        entries.append(
-            SelfKnowledgeEntry(
-                entry_id=_make_entry_id("limitation", idx),
-                category="limitation",
-                title=mode_id,
-                body=f"Mode '{mode_id}' is not supported: {gap}.",
-                confidence=1.0,
-                source_refs=["workflow_catalog"],
-                tags=["unsupported_mode"],
-                updated_at=now_iso,
-            )
-        )
-    return entries
-
-
 def _build_architecture_entries(now_iso: str) -> list[SelfKnowledgeEntry]:
     return [
         SelfKnowledgeEntry(
@@ -452,23 +404,3 @@ def _build_grounding_entries(
             updated_at=now_iso,
         ),
     ]
-
-
-def _build_known_unknown_entries(
-    unsupported_modes: dict[str, str], now_iso: str
-) -> list[SelfKnowledgeEntry]:
-    entries: list[SelfKnowledgeEntry] = []
-    for idx, (mode_id, gap) in enumerate(sorted(unsupported_modes.items())):
-        entries.append(
-            SelfKnowledgeEntry(
-                entry_id=_make_entry_id("known_unknown", idx),
-                category="known_unknown",
-                title=f"Unsupported: {mode_id}",
-                body=f"Mode '{mode_id}' requires host capability not available: {gap}.",
-                confidence=0.8,
-                source_refs=["workflow_catalog"],
-                tags=["gap", mode_id],
-                updated_at=now_iso,
-            )
-        )
-    return entries
