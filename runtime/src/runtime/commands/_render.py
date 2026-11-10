@@ -573,6 +573,9 @@ def format_help(runtime: HostRuntime | None = None) -> str:
             "- /workflow [status|conclude [reason]] — show the active multi-step "
             "workflow and its step progress, or conclude it durably so it stops "
             "steering routing.",
+            "- /session [status|archive|restore <digest>] — compare the live session "
+            "plan digest against the latest paused turn's, list the archived session "
+            "sources, or restore one so a paused turn can resume after a session edit.",
             "- /last [N] — reprint a previous response verbatim (default: the last "
             "model turn; no model call).",
             "- /consolidate (or /slice) — explicit memory-mining slice.",
@@ -836,6 +839,21 @@ def _host_shortcut_help_text(topic: str) -> str:
             "(write-time dedup decides create/update/skip). History is never "
             "compacted — the thread is lossless."
         ),
+        "session": (
+            "## /session\n\n"
+            "Inspect and repair the session plan identity across pauses.\n\n"
+            "- /session — compare the live plan digest against the latest paused\n"
+            "  turn's saved digest and state whether it is resumable or blocked.\n"
+            "- /session archive — list every archived session source (content-\n"
+            "  addressed by plan digest; one written per boot and per distinct edit).\n"
+            "- /session restore <digest> — replay an archived source to its recorded\n"
+            "  path (the digest is URI-scoped), verified against the archived digest.\n"
+            "  The replaced file is snapshotted as `.bak`. Takes effect on the next\n"
+            '  launch; then send "continue" to resume the paused turn.\n\n'
+            'Recovery loop after "Turn failed: Continuation belongs to a different\n'
+            'turn identity or session plan": run /session, take the saved digest,\n'
+            "/session restore <digest>, resume, then re-apply your session edit."
+        ),
         "slice": (
             "## /slice (or /consolidate)\n\n"
             "Alias for /consolidate: run the explicit memory-mining slice."
@@ -873,5 +891,6 @@ _HOST_SHORTCUT_TOPICS = frozenset(
         "intake",
         "quit",
         "policy",
+        "session",
     }
 )

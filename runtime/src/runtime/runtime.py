@@ -51,6 +51,7 @@ from runtime.operator_signal import OperatorSignal
 from runtime.providers import ProviderRegistry
 from runtime.runtime_paths import HostPaths
 from runtime.services import HostServices
+from runtime.session_archive import archive_session_source, resolve_boot_source
 from runtime.session_context import compile_selected_session_plan
 from runtime.thread import latest_turn_owner_mode
 
@@ -756,6 +757,41 @@ class RuntimeResources:
             self._shared_session_lease = None
 
 
+def _archive_boot_session_plan(
+    *,
+    session_context: str,
+    data_dir: Path,
+    plan_digest: str,
+) -> None:
+    """Archive this boot's resolved session source under its plan digest.
+
+    See :mod:`runtime.session_archive` for the recovery contract. Never
+    raises: an archive I/O failure is logged and the boot proceeds — the
+    recovery lever must not be able to take the host down.
+    """
+    try:
+        resolved = resolve_boot_source(session_context=session_context, data_dir=data_dir)
+        if resolved is None:
+            return
+        source_uri, resolved_text = resolved
+        # Write only text that compiles to the digest this boot actually
+        # built the plan from — the archive's whole value is "these bytes
+        # honor this digest".
+        if _digest_of_resolved(source_uri, resolved_text) != plan_digest:
+            logger.warning("session archive skipped: re-resolved source digest drifted")
+            return
+        archive_session_source(source_uri, resolved_text, data_dir=data_dir)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("session archive skipped: %s", exc)
+
+
+def _digest_of_resolved(source_uri: str, resolved_text: str) -> str:
+    """Return the compiled digest for already-resolved session text."""
+    from kernel.session_plan import compile_session_plan
+
+    return compile_session_plan(text=resolved_text, source_uri=source_uri).plan_digest
+
+
 # ── HostRuntime — thin composition root ─────────────────────────────────
 
 
@@ -780,6 +816,20 @@ class HostRuntime:
             session_context=config.session_context,
             data_dir=config.data_dir,
         )
+        if session_plan is None:
+            # Content-address the boot's resolved session source into the
+            # archive: a paused turn's continuation carries this boot's plan
+            # digest, and restoring these exact bytes restores that digest —
+            # the seam that un-strands "Continuation belongs to a different
+            # turn identity or session plan" resumes. Injection (the
+            # session_plan=… path) skips it: an injected plan has no
+            # resolved source to archive. Failures degrade to a log line;
+            # archiving must never break startup.
+            _archive_boot_session_plan(
+                session_context=config.session_context,
+                data_dir=config.data_dir,
+                plan_digest=self.session_plan.plan_digest,
+            )
         source_matches_user_slug = (
             bool(config.session_context) and config.user_slug == config.session_context
         )

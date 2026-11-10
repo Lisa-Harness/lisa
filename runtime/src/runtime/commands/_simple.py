@@ -139,3 +139,20 @@ def handle_workflow_command(
     from runtime.commands._workflow import handle_workflow_command as _handle
 
     return _handle(runtime, stripped, message)
+
+
+def handle_session_command(
+    runtime: HostRuntime,
+    stripped: str,
+    message: str,
+) -> str:
+    """Handle ``/session [status|archive|restore <digest>]``.
+
+    Delegates to :mod:`runtime.commands._session`. Imported lazily for the
+    same reason as :func:`handle_workflow_command` (``_simple`` is imported
+    by the ``runtime.commands`` package initializer ``_session`` also
+    imports from).
+    """
+    from runtime.commands._session import handle_session_command as _handle
+
+    return _handle(runtime, stripped, message)
