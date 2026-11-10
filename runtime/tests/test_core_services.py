@@ -1083,6 +1083,89 @@ async def test_a_paused_turn_saved_under_another_turn_index_still_resumes(
 
 
 @pytest.mark.asyncio
+async def test_a_paused_diagnostic_turn_resumes_with_its_declared_task_goal(
+    tmp_path: Path,
+) -> None:
+    """The resume must not lose the operator's ``[task_goal: …]`` declaration.
+
+    The marker is consumed and stripped at the original turn's start
+    (``_consume_task_goal_declaration``), so the resumed query carries no
+    marker to re-derive it from. Rebuilding the hooks with the default
+    ``implementation`` goal flips the saved ``diagnostic`` identity — and
+    ``TurnIdentity.same_turn`` compares the goal, so every resume of a
+    diagnostic turn failed with "Continuation belongs to a different turn
+    identity or session plan" (same class as the 2026-10-22 turn_index
+    incident).
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_continuation import TurnContinuation, capture_state
+    from kernel.turn_hooks import TurnIdentity
+    from kernel.turn_phases._turn_state import _TurnState
+    from runtime.callbacks import NullTransport
+    from runtime.thread import append_thread_entry
+    from runtime.turn_continuation import persist_continuation
+
+    runtime = _make_runtime(tmp_path)
+    saved = TurnContinuation(
+        identity=TurnIdentity(
+            workspace_id=runtime.session_plan.manifest.name,
+            user_id=runtime.config.user_slug,
+            user_slug=runtime.config.user_slug,
+            user_name=runtime.config.user_slug,
+            principal_key=runtime.config.user_slug,
+            thread_store_slug=runtime.config.thread_slug,
+            conversation_id=runtime.config.conversation_id,
+            surface_type=runtime.config.surface_type,
+            surface_id=runtime.config.surface_id,
+            memory_scope=runtime.config.memory_scope,
+            session_plan_digest=runtime.session_plan.plan_digest,
+            task_id="task-diag",
+            task_goal="diagnostic",
+            turn_index=40,
+        ),
+        mode_id="worker",
+        query="why do the tests fail?",
+        state_json=capture_state(_TurnState()),
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="[]",
+        preferred_model_id=None,
+        max_iterations=3,
+        per_step_max_iterations=0,
+        per_step_max_tool_calls=0,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        reason="cap",
+    )
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="worker",
+        query="why do the tests fail?",
+        response_text="stuck in stage",
+        provenance={
+            "source": "observed",
+            "operator_exit": "paused",
+            "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, saved),
+        },
+    )
+
+    async def execute_mode_turn(runtime_arg, message, mode_id, query, transport, **kwargs):
+        # The observed task_goal proves the resume threaded the saved goal
+        # through to _run_reserved_turn's run_context without re-deriving
+        # it from the marker-free resumed query.
+        assert kwargs.get("task_goal") == "diagnostic", kwargs.get("task_goal")
+        raise AssertionError("resume must be validated, not executed, in this test")
+
+    with patch.object(handle_message_mod, "_execute_mode_turn", execute_mode_turn):
+        await handle_message(runtime, "continue", NullTransport())
+
+
+@pytest.mark.asyncio
 async def test_new_request_after_cap_pause_routes_normally(tmp_path: Path) -> None:
     continuation, notes = await _resumed_continuation_after(
         tmp_path, reason="cap", message="what is the weather like"

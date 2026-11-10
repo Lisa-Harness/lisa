@@ -4,6 +4,22 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Resuming a turn paused under an operator `[task_goal: diagnostic]`
+  declaration failed the continuation identity guard ("Continuation
+  belongs to a different turn identity or session plan") on every resume
+  path: the declaration was consumed and stripped at the original turn's
+  start, so the resumed query carried no marker and the rebuilt hooks kept
+  the `implementation` default while `TurnIdentity.same_turn` compares the
+  goal. The resume paths now thread the saved continuation's `task_goal`
+  (and, for the pause-phrase path, its `task_id`) through to the rebuilt
+  identity instead of re-deriving it from marker-free text. Same class as
+  the 0.5.3 turn_index exclusion; the goal stays decisive for a genuinely
+  different task. Tests:
+  `runtime/tests/test_core_services.py::test_a_paused_diagnostic_turn_resumes_with_its_declared_task_goal`,
+  `kernel/tests/test_turn_continuation.py`.
+
 ### Added
 
 - Schema-driven provider argument normalization at the kernel dispatch

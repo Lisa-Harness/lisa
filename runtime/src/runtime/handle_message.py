@@ -713,6 +713,7 @@ async def _route_model_turn(
             continuation.query,
             transport,
             task_id=continuation.identity.task_id,
+            task_goal=continuation.identity.task_goal,
             continuation=continuation,
             extra_item_builders=extra_item_builders,
         )
@@ -723,6 +724,7 @@ async def _route_model_turn(
                 runtime,
                 message,
                 transport,
+                task_id=paused.identity.task_id,
                 continuation=resume_after_pause(paused, message),
                 extra_item_builders=extra_item_builders,
             )
@@ -1422,6 +1424,7 @@ async def _execute_mode_turn(
     transport: TransportCallbacks,
     *,
     task_id: str = "",
+    task_goal: str = "",
     continuation: TurnContinuation | None = None,
     extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> HostCommandResult | str:
@@ -1432,6 +1435,12 @@ async def _execute_mode_turn(
     constructs ``TurnHooks`` via ``build_turn_hooks``, calls ``run_turn``,
     persists the result, and updates token counters.
 
+    A resume passes ``task_goal`` from the saved continuation's identity:
+    the operator declaration (``[task_goal: …]``) was consumed and stripped
+    at the original turn's start, so re-deriving the goal from the resumed
+    query loses it — and ``TurnIdentity.same_turn`` would reject the saved
+    continuation across the goal field it compares.
+
     ``extra_item_builders`` — optional host-supplied ``ExtensionItemBuilder``
     instances (the VS Code sidecar's editor-context bridge) composed into
     the turn's context assembly. Keyword-only so existing positional
@@ -1439,7 +1448,14 @@ async def _execute_mode_turn(
     """
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
-    task_goal, message, query = _consume_task_goal_declaration(message, query)
+    if continuation is not None:
+        # The declaration was consumed and stripped at the original turn's
+        # start; re-deriving from the resumed query would flip a saved
+        # ``diagnostic`` goal back to ``implementation`` and fail the
+        # continuation guard's task_goal comparison.
+        task_goal = continuation.identity.task_goal
+    else:
+        task_goal, message, query = _consume_task_goal_declaration(message, query)
     execution_policy = resolve_execution_policy(
         default_policy=runtime.config.execution_policy,
         session_request=runtime.session_plan.manifest.execution,
