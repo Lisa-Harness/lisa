@@ -64,8 +64,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         f"and {len(model_manifest.models) if model_manifest else 0} models."
     )
     grounding_summary = (
-        f"Host: little_lisa. Timezone: {_resolve_timezone(ctx)}. "
-        f"Surface: {ctx.surface_type or 'personal_dm'}."
+        f"Timezone: {_resolve_timezone(ctx)}. Surface: {ctx.surface_type or 'personal_dm'}."
     )
 
     artifact = LisaSelfModelArtifact(
@@ -257,10 +256,10 @@ def _build_identity_entries(
         SelfKnowledgeEntry(
             entry_id=_make_entry_id("identity", 0),
             category="identity",
-            title="Host runtime",
-            body=f"Lisa is running on the little_lisa host as user '{user_slug}'.",
+            title="Acting user",
+            body=f"Lisa is acting as user '{user_slug}'.",
             confidence=1.0,
-            source_refs=["host:little_lisa"],
+            source_refs=["ctx.user_slug"],
             updated_at=now_iso,
         ),
         SelfKnowledgeEntry(
