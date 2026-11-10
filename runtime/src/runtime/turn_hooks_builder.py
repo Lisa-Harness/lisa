@@ -660,7 +660,11 @@ async def _maybe_auto_capture(
         # Durable off-turn recording: the distillation call is a model
         # call the turn's own ``turn_input.calls`` never captures, so
         # give the dispatch the same recorder the turn loop uses.
-        capture_ctx.request_recorder = partial(persist_request, runtime.paths.thread_path)
+        capture_ctx.request_recorder = partial(
+            persist_request,
+            runtime.paths.thread_path,
+            runtime.paths.ephemeral_results_path,
+        )
         capture_ctx.turn_index = raw_turn_index if isinstance(raw_turn_index, int) else None
         capture_result = await execute_operation("synthesize_and_store_learning", capture_ctx)
         # Thread → memory linkage: record the minted memory id(s) on the
@@ -1335,7 +1339,11 @@ def _assemble_turn_hooks(
             complete=None,
             complete_stream=wired.complete_stream,
             on_delta=wired.on_delta,
-            record_request=partial(persist_request, runtime.paths.thread_path),
+            record_request=partial(
+                persist_request,
+                runtime.paths.thread_path,
+                runtime.paths.ephemeral_results_path,
+            ),
             count_request_tokens=count_request_tokens,
         ),
         tools=ToolHooks(
@@ -1357,10 +1365,13 @@ def _assemble_turn_hooks(
             prior_messages=partial(
                 build_open_task_messages,
                 thread_path=runtime.paths.thread_path,
+                ephemeral_results_path=runtime.paths.ephemeral_results_path,
                 budget_bytes=_effective_replay_budget_bytes(runtime),
             ),
             project_messages=partial(
-                project_thread_messages, thread_path=runtime.paths.thread_path
+                project_thread_messages,
+                thread_path=runtime.paths.thread_path,
+                ephemeral_results_path=runtime.paths.ephemeral_results_path,
             ),
         ),
         lifecycle=LifecycleHooks(

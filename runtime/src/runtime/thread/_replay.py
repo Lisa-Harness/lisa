@@ -144,9 +144,16 @@ def _paired_approval_result(
 
 
 def build_open_task_messages(
-    *, thread_path: Path | None, budget_bytes: int | None = None
+    *,
+    thread_path: Path | None,
+    ephemeral_results_path: Path | None = None,
+    budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return the latest turn and its unfinished task as replayable messages.
+
+    ``ephemeral_results_path`` mirrors ``project_thread_messages``: under
+    ``--no-thread`` projection result objects land in the session's
+    cache-backed store instead of a thread artifact.
 
     ``budget_bytes`` bounds the resident tool-result bytes for the whole
     replayed working set (``None`` keeps the projection default): oldest
@@ -180,6 +187,7 @@ def build_open_task_messages(
                         replay,
                         str(provenance.get("task_id") or ""),
                         thread_path=thread_path,
+                        ephemeral_results_path=ephemeral_results_path,
                         budget_bytes=_entry_tool_bytes(replay),
                     )
                 )
@@ -193,6 +201,7 @@ def build_open_task_messages(
                 replay,
                 str(provenance.get("task_id") or ""),
                 thread_path=thread_path,
+                ephemeral_results_path=ephemeral_results_path,
                 budget_bytes=_entry_tool_bytes(replay),
             )
         )
@@ -205,6 +214,7 @@ def build_open_task_messages(
             messages,
             str((entries[-1].get("provenance") or {}).get("task_id") or "") if entries else "",
             thread_path=thread_path,
+            ephemeral_results_path=ephemeral_results_path,
             budget_bytes=budget_bytes,
         )
     return messages

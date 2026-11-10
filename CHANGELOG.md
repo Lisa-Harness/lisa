@@ -6,6 +6,16 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- ``--no-thread`` runs crashed the moment a tool result needed durable
+  projection: ``project_thread_messages`` raised "Tool-result projection
+  requires a thread storage path" (PROMPT_STARTUP Slice D). ``HostPaths``
+  now derives an ``ephemeral_results_path`` under the rm-safe cache tree
+  when ``no_thread`` is set, and projection, replay projection, spill
+  hooks, and model-request recording fall back to it — same ``r<sha256>``
+  result-object contract, dereferenceable for the session, zero thread
+  artifacts created. Continuations still require the durable thread store.
+  Tests: ``runtime/tests/test_no_thread_projection.py``.
+
 - Resuming a turn paused under an operator `[task_goal: diagnostic]`
   declaration failed the continuation identity guard ("Continuation
   belongs to a different turn identity or session plan") on every resume
