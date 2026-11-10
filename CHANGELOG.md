@@ -11,6 +11,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   the limitation / known-unknown builders it alone fed, plus the stale
   "browser" mention in the kernel seams docstring. No kernel browser seam
   exists; browser capability is specified as an MCP-backed pack.
+- The `self_model` operation's hardcoded `little_lisa` host claim (identity
+  entry, `host:little_lisa` source ref, and grounding summary). No host
+  identity reaches the operation context, so the identity entry now reports
+  only the acting user.
 
 ## [0.5.3] - 2026-11-09
 
