@@ -23,6 +23,7 @@ never in this module.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -71,6 +72,12 @@ from runtime.content_roots import (
 )
 from runtime.provider_endpoints import direct_provider_base_urls
 from runtime.runtime import HostRuntime
+from runtime.startup_telemetry import (
+    boot_invocation_id,
+    seconds_since_boot,
+    stage,
+    warn_if_repeat_setup,
+)
 
 _MAX_TCP_PORT = 65_535
 
@@ -231,6 +238,16 @@ def discover_framework(
     seed (e.g. :func:`compile_mcp_configs` falling back standalone)
     pass ``seed_lock=False``.
     """
+    with stage("discover_framework"):
+        return _discover_framework_impl(runtime, seed_lock=seed_lock)
+
+
+def _discover_framework_impl(
+    runtime: HostRuntime,
+    *,
+    seed_lock: bool = True,
+) -> _FrameworkDiscovery:
+    """Discovery body (wrapped by :func:`discover_framework`'s stage timer)."""
     config = runtime.config
     manifest_path = _resolve_framework_manifest_path(config)
     user_manifest_path = _resolve_user_manifest_path(config)
@@ -525,14 +542,27 @@ def setup_framework(
     shared-session lease when the build fails partway through, so a partial
     build never leaves owned sessions behind (Slice A lifecycle ownership).
     """
-    try:
-        _setup_framework_impl(runtime, discovery=discovery)
-    except BaseException:
-        lease = runtime.resources.shared_session_lease
-        if lease is not None:
-            lease.release()
-            runtime.resources.shared_session_lease = None
-        raise
+    warn_if_repeat_setup()
+    with stage("setup_framework"):
+        try:
+            _setup_framework_impl(runtime, discovery=discovery)
+        except BaseException:
+            lease = runtime.resources.shared_session_lease
+            if lease is not None:
+                lease.release()
+                runtime.resources.shared_session_lease = None
+            raise
+        logger.info(
+            "startup setup_framework_complete %s",
+            json.dumps(
+                {
+                    "boot_id": boot_invocation_id(),
+                    "t_seconds": round(seconds_since_boot(), 6),
+                    "pid": os.getpid(),
+                },
+                sort_keys=True,
+            ),
+        )
 
 
 def _release_previous_build(
