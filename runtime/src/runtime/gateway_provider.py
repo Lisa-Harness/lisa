@@ -17,8 +17,10 @@ across turns. No gateway is constructed eagerly: instances are created lazily on
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -28,6 +30,7 @@ from sdk.providers.openai_gateway import create_azure_openai_client
 
 from runtime.provider_endpoints import direct_provider_base_url
 from runtime.runtime import HostRuntime
+from runtime.startup_telemetry import boot_invocation_id, seconds_since_boot
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +95,27 @@ class HostGatewayProvider:
         if not normalized:
             return None
         if normalized not in self._instances:
+            # First model submission for this provider — the boot's
+            # model-submission boundary (Slice C instrumentation). The
+            # duration covers gateway construction; the first completion
+            # request runs after this returns.
+            started = time.perf_counter()
             instance = self._build(normalized)
             if instance is None:
                 return None
+            logger.info(
+                "startup model_submission_ready %s",
+                json.dumps(
+                    {
+                        "boot_id": boot_invocation_id(),
+                        "provider": normalized,
+                        "t_seconds": round(seconds_since_boot(), 6),
+                        "build_seconds": round(time.perf_counter() - started, 6),
+                        "pid": os.getpid(),
+                    },
+                    sort_keys=True,
+                ),
+            )
             self._instances[normalized] = instance
         return self._instances[normalized]
 

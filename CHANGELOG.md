@@ -52,6 +52,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Monotonic boot-stage instrumentation (Slice C of `docs/SPEC/PROMPT_STARTUP.md`,
+  framework half): every `build_runtime` boot emits structured JSON lines on the
+  `lisa.startup` logger — begin/end/error with monotonic durations for runtime
+  construction, state-snapshot load, framework discovery, `setup_framework`,
+  runtime configuration and MCP config compilation; a `boot_complete` boundary
+  marker with seconds-since-boot; pool-readiness timing in `ensure_pool_ready`;
+  a first-provider `model_submission_ready` marker at the host gateway seam;
+  and a shared-session warm inventory (server commands and counts only). A
+  per-process boot invocation id ties the lines together, and
+  `warn_if_repeat_setup` warns on the second `setup_framework` invocation in a
+  process — the trace-side evidence for the spec's apparent-repeated-bootstrap
+  investigation (cProfile call counts include coroutine resumes and do not
+  prove two runtime constructions). No prompt text, credentials, environment
+  values or private content appears in any payload. Tests:
+  `runtime/tests/test_startup_telemetry.py`,
+  `kernel/tests/test_shared_stdio_inventory.py`.
+
 - In-process catalog/content sources for the kernel's synchronous adapters
   (Slice B of `docs/SPEC/PROMPT_STARTUP.md`): the host now injects
   `DirectCatalogSource` / `DirectContentSource` (which call the same

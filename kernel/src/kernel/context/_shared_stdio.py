@@ -36,19 +36,33 @@ import logging
 import threading
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, TypedDict, TypeVar
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SharedSessionLease", "SharedStdioSession", "acquire_lease", "close_shared_sessions"]
+__all__ = [
+    "SharedSessionLease",
+    "SharedStdioSession",
+    "acquire_lease",
+    "close_shared_sessions",
+    "shared_session_inventory",
+]
 
 _T = TypeVar("_T")
 _CLOSE_TIMEOUT_SECONDS = 5.0
 
 _SessionKey = tuple[str, tuple[str, ...], tuple[tuple[str, str], ...], str | None]
+
+
+class InventoryEntry(TypedDict):
+    """One warm/cold shared-session row: identifiers and counts only."""
+
+    command: str
+    epoch: int
+    established: bool
 
 
 @dataclass
@@ -61,6 +75,8 @@ class _Entry:
     established: bool = field(default=False)
     epoch: int = -1
     """The lease epoch this session was started under."""
+    command: str = ""
+    """The server's ``command`` (inventory only — no args/env)."""
 
 
 @dataclass
@@ -272,6 +288,39 @@ def close_shared_sessions() -> None:
     new session.
     """
     _HOST.close()
+
+
+def shared_session_inventory(epoch: int | None = None) -> list[InventoryEntry]:
+    """Return one row per live shared-session entry (Slice C warm inventory).
+
+    Rows carry the server command, owning lease epoch and established
+    flag — counts and identifiers only, never args or environment
+    values. All epochs are reported by default; pass ``epoch`` to scope
+    to one framework build.
+    """
+    with _HOST._lock:
+        entries = [
+            entry
+            for (entry_epoch, _), entry in sorted(_HOST._entries.items())
+            if epoch is None or entry_epoch == epoch
+        ]
+    return [
+        {"command": entry.command, "epoch": entry.epoch, "established": entry.established}
+        for entry in entries
+    ]
+
+
+def shared_session_command_counts() -> dict[str, int]:
+    """Return {server command: live session count} (kernel-safe telemetry).
+
+    Same source as :func:`shared_session_inventory`, shaped for kernel-side
+    logging — commands and counts only, no args or environment values.
+    """
+    with _HOST._lock:
+        counts: dict[str, int] = {}
+        for entry in _HOST._entries.values():
+            counts[entry.command] = counts.get(entry.command, 0) + 1
+        return counts
 
 
 def acquire_lease() -> SharedSessionLease:

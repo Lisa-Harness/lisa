@@ -28,7 +28,9 @@ task/cancel-scope ownership rules easy to read end to end.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -53,6 +55,7 @@ from runtime.runtime_paths import HostPaths
 from runtime.services import HostServices
 from runtime.session_archive import archive_session_source, resolve_boot_source
 from runtime.session_context import compile_selected_session_plan
+from runtime.startup_telemetry import boot_invocation_id, stage
 from runtime.thread import latest_turn_owner_mode
 
 if TYPE_CHECKING:
@@ -454,6 +457,11 @@ class RuntimeResources:
         cached — subsequent calls re-raise the cached exception so the
         caller fails loudly but doesn't re-await a completed task.
         """
+        with stage("pool_readiness"):
+            await self._ensure_pool_ready_impl()
+
+    async def _ensure_pool_ready_impl(self) -> None:
+        """Readiness body (wrapped by :meth:`ensure_pool_ready`'s stage timer)."""
         if self._mcp_start_exc is not None:
             raise self._mcp_start_exc
         if self._mcp_started_event is not None:
@@ -658,6 +666,26 @@ class RuntimeResources:
         from runtime.mcp_pool import register_mcp_aliases
 
         register_mcp_aliases(self._mcp_tool_pool)
+
+        # Slice C warm inventory: one log line of counts/identifiers for
+        # every live shared catalog/content session (spec §5 — no args,
+        # env values or private content). The kernel-safe counter helper
+        # keeps this log inside the kernel's layering rules.
+        from kernel.context._shared_stdio import shared_session_command_counts
+
+        command_count = shared_session_command_counts()
+        logger.info(
+            "startup shared_session_inventory %s",
+            json.dumps(
+                {
+                    "boot_id": boot_invocation_id(),
+                    "commands": command_count,
+                    "sessions": sum(command_count.values()),
+                    "pid": os.getpid(),
+                },
+                sort_keys=True,
+            ),
+        )
         self._mcp_started = True
         logger.info(
             "RuntimeResources: MCP pool started with %d warm server(s)",

@@ -35,6 +35,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from runtime.config import HostConfig
+from runtime.startup_telemetry import log_boot_complete, stage
 
 if TYPE_CHECKING:
     from runtime.runtime import HostRuntime
@@ -176,17 +177,25 @@ def build_runtime(
 
     register_builtin_host_commands()
 
-    runtime = HostRuntime(config, in_process_mcp=in_process_mcp)
-    runtime.session.state_snapshot = load_state_snapshot(
-        explicit_path=state_snapshot_path,
-        data_dir=config.data_dir,
-    )
-    discovery = discover_framework(runtime)
-    setup_framework(runtime, discovery=discovery)
-    configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
-    runtime.resources.set_mcp_configs(warm, cold)
-    runtime.resources.set_proxy_configs(compile_proxy_configs(runtime, discovery=discovery))
+    with stage("runtime_construct"):
+        runtime = HostRuntime(config, in_process_mcp=in_process_mcp)
+    with stage("state_snapshot_load"):
+        runtime.session.state_snapshot = load_state_snapshot(
+            explicit_path=state_snapshot_path,
+            data_dir=config.data_dir,
+        )
+    with stage("discover_framework"):
+        discovery = discover_framework(runtime)
+    with stage("setup_framework"):
+        setup_framework(runtime, discovery=discovery)
+    with stage("configure_runtime"):
+        configure_runtime(runtime)
+    with stage("compile_mcp_configs"):
+        warm, cold = compile_mcp_configs(runtime, discovery=discovery)
+        runtime.resources.set_mcp_configs(warm, cold)
+    with stage("compile_proxy_configs"):
+        runtime.resources.set_proxy_configs(compile_proxy_configs(runtime, discovery=discovery))
+    log_boot_complete()
     return runtime
 
 
