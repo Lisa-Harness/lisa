@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from kernel.session_plan import compile_session_plan
 from runtime.commands._session import handle_session_command
 from runtime.session_archive import archive_session_source, sessions_dir
@@ -163,6 +164,43 @@ def test_restore_subcommand_restores_the_archived_source(tmp_path: Path) -> None
     assert uri.with_suffix(".md.bak").read_text(encoding="utf-8") == _V2
 
 
+def test_archive_with_empty_inventory_prints_the_guidance(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    out = handle_session_command(_runtime(tmp_path), "/session archive", "/session archive")
+    assert "The archive is empty" in out
+
+
+def test_archive_flags_a_missing_source_file(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    uri = tmp_path / "config" / "session_context.md"
+    digest = _digest_of(_V1, uri)
+    archive_session_source(str(uri), _V1, data_dir=tmp_path)
+    runtime = _runtime(tmp_path, digest=_digest_of(_V2, uri))
+    (tmp_path / "state" / "sessions" / f"{digest}.md").unlink()
+
+    out = handle_session_command(runtime, "/session archive", "/session archive")
+    assert "**source file missing**" in out
+
+
+def test_restore_failure_reports_the_verdict_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    out = handle_session_command(_runtime(tmp_path), "/session restore ff", "/session restore ff")
+    assert "## Session restore failed" in out
+    assert "No archived session source matches" in out
+
+
+def test_simple_module_routes_session_command_to_the_lazily_imported_handler(
+    tmp_path: Path,
+) -> None:
+    """The ``_simple`` delegation reaches ``_session`` through the lazy import."""
+    from runtime.commands._simple import handle_session_command as simple_handle
+
+    (tmp_path / "config").mkdir()
+    runtime = _runtime(tmp_path)
+    out = simple_handle(runtime, "/session archive", "/session archive")
+    assert "## Session archive" in out
+
+
 def test_restore_without_a_digest_prints_usage(tmp_path: Path) -> None:
     (tmp_path / "config").mkdir()
     out = handle_session_command(_runtime(tmp_path), "/session restore", "/session restore")
@@ -195,3 +233,35 @@ def test_broken_continuation_reference_is_skipped_not_fatal(tmp_path: Path) -> N
     )
     out = handle_session_command(runtime, "/session", "/session")
     assert "Latest paused turn: none" in out, "an unreadable ref must not fail the command"
+
+
+def test_paused_scan_skips_entries_without_continuation_refs(tmp_path: Path) -> None:
+    """Normal (non-paused) thread entries are skipped in the latest-pause scan."""
+    (tmp_path / "config").mkdir()
+    runtime = _runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.paths.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="regular question",
+        response_text="answered",
+        provenance={"source": "observed"},
+        turn=2,
+    )
+    out = handle_session_command(runtime, "/session", "/session")
+    assert "Latest paused turn: none" in out
+
+
+def test_paused_scan_skips_a_none_saved_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A load that resolves to ``None`` (empty ref) does not crash the status scan."""
+    import runtime.turn_continuation as continuation_mod
+
+    (tmp_path / "config").mkdir()
+    runtime = _runtime(tmp_path)
+    _seed_paused_turn(runtime, runtime.session_plan.plan_digest)
+    monkeypatch.setattr(continuation_mod, "load_continuation", lambda *_a, **_k: None)
+
+    out = handle_session_command(runtime, "/session", "/session")
+    assert "Latest paused turn: none" in out

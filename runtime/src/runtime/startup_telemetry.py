@@ -32,7 +32,6 @@ __all__ = [
     "warn_if_repeat_setup",
 ]
 
-_SKIP = object()
 _BOOT_INVOCATION_ID: str | None = None
 _PREVIOUS_BOOT_INVOCATION_ID: str | None = None
 _BOOT_SETUP_COUNT = 0
@@ -76,7 +75,7 @@ def _log_stage(
     invocation_id: str,
     name: str,
     event: str,
-    seconds: float | object = _SKIP,
+    seconds: float | None = None,
 ) -> None:
     """Emit one structured startup-stage line (durations/counts only)."""
     record: dict[str, Any] = {
@@ -85,8 +84,8 @@ def _log_stage(
         "event": event,
         "pid": os.getpid(),
     }
-    if seconds is not _SKIP:
-        record["seconds"] = round(float(seconds), 6)
+    if seconds is not None:
+        record["seconds"] = round(seconds, 6)
     logger.info("startup %s", json.dumps(record, sort_keys=True))
 
 

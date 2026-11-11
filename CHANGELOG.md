@@ -4,6 +4,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-11
+
 ### Added
 
 - Boot variant for the startup benchmark harness: an optional ``--boot``
@@ -12,7 +14,56 @@ All notable changes to the Lisa Harness will be documented in this file.
   no provider endpoint; in-process MCP keeps it subprocess-free), then
   times ``HostRuntime.aclose()``. The report gains a teardown column,
   publishing the teardown half of the spec's lifecycle gate.
-
+- Monotonic boot-stage instrumentation (Slice C of `docs/SPEC/PROMPT_STARTUP.md`,
+  framework half): every `build_runtime` boot emits structured JSON lines on the
+  `lisa.startup` logger — begin/end/error with monotonic durations for runtime
+  construction, state-snapshot load, framework discovery, `setup_framework`,
+  runtime configuration and MCP config compilation; a `boot_complete` boundary
+  marker with seconds-since-boot; pool-readiness timing in `ensure_pool_ready`;
+  a first-provider `model_submission_ready` marker at the host gateway seam;
+  and a shared-session warm inventory (server commands and counts only). A
+  per-process boot invocation id ties the lines together, and
+  `warn_if_repeat_setup` warns on the second `setup_framework` invocation in a
+  process — the trace-side evidence for the spec's apparent-repeated-bootstrap
+  investigation (cProfile call counts include coroutine resumes and do not
+  prove two runtime constructions). No prompt text, credentials, environment
+  values or private content appears in any payload. Tests:
+  `runtime/tests/test_startup_telemetry.py`,
+  `kernel/tests/test_shared_stdio_inventory.py`.
+- In-process catalog/content sources for the kernel's synchronous adapters
+  (Slice B of `docs/SPEC/PROMPT_STARTUP.md`): the host now injects
+  `DirectCatalogSource` / `DirectContentSource` (which call the same
+  `sdk.content` builders the `lisa-catalog` / `lisa-content` MCP servers
+  wrap) behind the new kernel contracts `CatalogSource` / `ContentSource`
+  whenever the existing in-process MCP selection is active — eliminating
+  the two stdio subprocess spawns from the prompt-ready path without
+  importing sdk/mcp_server/runtime into the kernel. Source configuration is
+  resolved once into a frozen `CatalogSourceConfig` mirroring the stdio
+  env payload for byte-identical inputs; no `os.environ` mutation on the
+  in-process path; a source failure raises rather than silently falling
+  back to a subprocess; the shared SDK catalog cache invalidation stays
+  explicit; and `lisa-catalog` remains warm/published through the MCP
+  pool's in-process transport because its tools stay model-facing. Parity
+  fixtures drive the same corpus through both transports (competing
+  providers, overlays, ambient MCP tools, Unicode/spaced paths, traversal
+  attempts, missing content, two-config isolation). Tests:
+  `sdk/tests/test_catalog_sources.py`,
+  `kernel/tests/test_catalog_source_adapters.py`; stdio ↔ direct parity:
+  `mcp_server/tests/test_catalog_parity.py`.
+- Framework-build session leases and a content-refresh boundary (Slice A of
+  `docs/SPEC/PROMPT_STARTUP.md`): `setup_framework` acquires an epoch lease
+  from the shared catalog/content stdio host before constructing its
+  adapters, invalidates the previous build's server-side content cache and
+  the kernel's workflow-catalog snapshot while the previous sessions can
+  still serve the invalidation, then releases the previous lease — so a
+  rebuilt framework gets fresh subprocesses with clean caches (edits to
+  authored content are visible after a rebuild) and servers from a
+  still-open runtime are never stopped underneath it. Releasing a lease
+  stops exactly its own build's sessions; `RuntimeResources.aclose()`
+  releases the runtime's lease on both the sync and deferred teardown
+  paths, and a build that fails partway through releases its own. Using a
+  session handle after its lease was released raises instead of silently
+  spawning a replacement.
 - Controlled startup benchmark harness (Slice E framework half of
   ``docs/SPEC/PROMPT_STARTUP.md``): ``runtime.startup_benchmark`` plus
   ``scripts/startup_benchmark.py`` run fresh-process probes under identical
@@ -27,7 +78,6 @@ All notable changes to the Lisa Harness will be documented in this file.
   checkout report states which package tree served the samples. A failed
   probe records a failed sample instead of destroying the sweep. Tests:
   ``runtime/tests/test_startup_benchmark.py``.
-
 - Session-source archive + `/session` command: every boot now writes its
   resolved session source (``from:``/``body:`` directives already expanded)
   to ``<data_dir>/state/sessions/<plan-digest>.md`` with a ``.meta.json``
@@ -66,7 +116,12 @@ All notable changes to the Lisa Harness will be documented in this file.
   hooks, and model-request recording fall back to it — same ``r<sha256>``
   result-object contract, dereferenceable for the session, zero thread
   artifacts created. Continuations still require the durable thread store.
-  Tests: ``runtime/tests/test_no_thread_projection.py``.
+  ``persist_request`` now takes the fallback path as its second parameter
+  (before ``request``) so the turn-loop's two-path
+  ``functools.partial`` binds correctly — the snapshot was landing in the
+  path slot and every recorded turn failed with "got multiple values for
+  argument 'thread_path'". Tests:
+  ``runtime/tests/test_no_thread_projection.py``.
 
 - Resuming a turn paused under an operator `[task_goal: diagnostic]`
   declaration failed the continuation identity guard ("Continuation
@@ -82,70 +137,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   `runtime/tests/test_core_services.py::test_a_paused_diagnostic_turn_resumes_with_its_declared_task_goal`,
   `kernel/tests/test_turn_continuation.py`.
 
-### Added
-
-- Monotonic boot-stage instrumentation (Slice C of `docs/SPEC/PROMPT_STARTUP.md`,
-  framework half): every `build_runtime` boot emits structured JSON lines on the
-  `lisa.startup` logger — begin/end/error with monotonic durations for runtime
-  construction, state-snapshot load, framework discovery, `setup_framework`,
-  runtime configuration and MCP config compilation; a `boot_complete` boundary
-  marker with seconds-since-boot; pool-readiness timing in `ensure_pool_ready`;
-  a first-provider `model_submission_ready` marker at the host gateway seam;
-  and a shared-session warm inventory (server commands and counts only). A
-  per-process boot invocation id ties the lines together, and
-  `warn_if_repeat_setup` warns on the second `setup_framework` invocation in a
-  process — the trace-side evidence for the spec's apparent-repeated-bootstrap
-  investigation (cProfile call counts include coroutine resumes and do not
-  prove two runtime constructions). No prompt text, credentials, environment
-  values or private content appears in any payload. Tests:
-  `runtime/tests/test_startup_telemetry.py`,
-  `kernel/tests/test_shared_stdio_inventory.py`.
-
-- In-process catalog/content sources for the kernel's synchronous adapters
-  (Slice B of `docs/SPEC/PROMPT_STARTUP.md`): the host now injects
-  `DirectCatalogSource` / `DirectContentSource` (which call the same
-  `sdk.content` builders the `lisa-catalog` / `lisa-content` MCP servers
-  wrap) behind the new kernel contracts `CatalogSource` / `ContentSource`
-  whenever the existing in-process MCP selection is active — eliminating
-  the two stdio subprocess spawns from the prompt-ready path without
-  importing sdk/mcp_server/runtime into the kernel. Source configuration is
-  resolved once into a frozen `CatalogSourceConfig` mirroring the stdio
-  env payload for byte-identical inputs; no `os.environ` mutation on the
-  in-process path; a source failure raises rather than silently falling
-  back to a subprocess; the shared SDK catalog cache invalidation stays
-  explicit; and `lisa-catalog` remains warm/published through the MCP
-  pool's in-process transport because its tools stay model-facing. Parity
-  fixtures drive the same corpus through both transports (competing
-  providers, overlays, ambient MCP tools, Unicode/spaced paths, traversal
-  attempts, missing content, two-config isolation). Tests:
-  `sdk/tests/test_catalog_sources.py`,
-  `kernel/tests/test_catalog_source_adapters.py`.
-
-- Framework-build session leases and a content-refresh boundary (Slice A of
-  `docs/SPEC/PROMPT_STARTUP.md`): `setup_framework` acquires an epoch lease
-  from the shared catalog/content stdio host before constructing its
-  adapters, invalidates the previous build's server-side content cache and
-  the kernel's workflow-catalog snapshot while the previous sessions can
-  still serve the invalidation, then releases the previous lease — so a
-  rebuilt framework gets fresh subprocesses with clean caches (edits to
-  authored content are visible after a rebuild) and servers from a
-  still-open runtime are never stopped underneath it. Releasing a lease
-  stops exactly its own build's sessions; `RuntimeResources.aclose()`
-  releases the runtime's lease on both the sync and deferred teardown
-  paths, and a build that fails partway through releases its own. Using a
-  session handle after its lease was released raises instead of silently
-  spawning a replacement.
-
-- Schema-driven provider argument normalization at the kernel dispatch
-  boundary: `kernel.tools.parameter_normalization.normalize_payload`
-  coerces the incident log's encoding shapes before pydantic validation in
-  both registries — optional-field ``"null"``/``""`` sentinels become
-  ``None``, string-encoded arrays decode (JSON, then Python literals, then
-  safe single-record/single-line conventions), out-of-bounds numerics
-  clamp to declared ``ge``/``le`` — while over-cap strings reject with an
-  intent-naming message instead of truncating. Every coercion logs one
-  warning and stamps ``normalized_fields`` onto ``tool.telemetry`` rows;
-  schemas opt out with ``model_config = {"strict_parameters": True}``.
+- The `delegate` and `fork` operations' `timeout_seconds` raised from
+  900 to 1800: long-running sub-turns of long-running agents (their own
+  budgets and validation intact) were being cut off by a ceiling sized
+  for ordinary turns.
 
 ### Removed
 
@@ -4402,4 +4397,3 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both router planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
 - Router routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
-

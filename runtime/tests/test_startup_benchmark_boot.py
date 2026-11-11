@@ -29,8 +29,15 @@ def test_boot_probe_real_subprocess() -> None:
 def test_report_includes_teardown_column() -> None:
     run = summarize_variant(
         "boot",
-        [BenchmarkSample(variant="boot", wall_seconds=1.5, exit_code=0,
-                         teardown_wall_seconds=0.25, setup_invocations=1)],
+        [
+            BenchmarkSample(
+                variant="boot",
+                wall_seconds=1.5,
+                exit_code=0,
+                teardown_wall_seconds=0.25,
+                setup_invocations=1,
+            )
+        ],
     )
     report = format_report([run])
     assert "teardown (s)" in report

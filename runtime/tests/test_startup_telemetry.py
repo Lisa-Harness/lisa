@@ -214,7 +214,10 @@ def test_setup_framework_logs_completion_without_repeat_warning(
         "runtime.mcp_pool._setup_framework_impl", lambda rt, *, discovery=None: None
     )
 
-    with caplog.at_level(logging.INFO, logger="lisa.startup"):
+    # The completion line goes through mcp_pool's module logger (its
+    # stage() events go through lisa.startup), so INFO must be enabled on
+    # every logger for this test's records to contain both.
+    with caplog.at_level(logging.INFO, logger="lisa.startup"), caplog.at_level(logging.INFO):
         setup_framework(runtime)  # type: ignore[arg-type]
 
     messages = [record.getMessage() for record in caplog.records]

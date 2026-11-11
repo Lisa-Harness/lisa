@@ -36,8 +36,8 @@ def load_continuation(
 
 def persist_request(
     thread_path: Path | None,
+    ephemeral_results_path: Path | None,
     request: dict[str, Any],
-    ephemeral_results_path: Path | None = None,
 ) -> str:
     """Archive one model request snapshot under the result-object store.
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +122,7 @@ def test_empty_replay_projection_succeeds_under_no_thread(tmp_path: Path) -> Non
 def test_persist_request_archives_to_the_ephemeral_store(tmp_path: Path) -> None:
     paths = _paths(tmp_path, no_thread=True)
     request = {"model": "stub", "messages": [{"role": "user", "content": "hi"}]}
-    ref = persist_request(paths.thread_path, request, paths.ephemeral_results_path)
+    ref = persist_request(paths.thread_path, paths.ephemeral_results_path, request)
     assert ref.startswith("r")
     assert result_object_path(paths.ephemeral_results_path, ref).is_file()
     assert _thread_dirs(tmp_path) == []
@@ -129,4 +130,23 @@ def test_persist_request_archives_to_the_ephemeral_store(tmp_path: Path) -> None
 
 def test_persist_request_still_requires_a_base_without_ephemeral() -> None:
     with pytest.raises(ValueError, match="thread storage path"):
-        persist_request(None, {"model": "stub"})
+        persist_request(None, None, {"model": "stub"})
+
+
+def test_recorder_partial_binds_paths_positionally_like_production(tmp_path: Path) -> None:
+    """The turn loop's ``record_request(snapshot)`` is a one-argument call.
+
+    ``functools.partial`` inserts pre-bound positional arguments *before*
+    call arguments, so the production partials —
+    ``partial(persist_request, thread_path, ephemeral_results_path)`` —
+    need ``request`` to be the last parameter. Keyword-binding the paths
+    instead collides with the snapshot's positional fill
+    ("got multiple values for argument 'thread_path'") and positional
+    ``request`` first would stash the snapshot into the ephemeral path
+    (the recorded bug this guard pins).
+    """
+    paths = _paths(tmp_path, no_thread=True)
+    recorder = partial(persist_request, paths.thread_path, paths.ephemeral_results_path)
+    ref = recorder({"model": "stub"})
+    assert ref.startswith("r")
+    assert result_object_path(paths.ephemeral_results_path, ref).is_file()
