@@ -32,6 +32,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 __all__ = [
+    "BOOT_PROBE_SOURCE",
     "IMPORT_PROBE_SOURCE",
     "BenchmarkRun",
     "BenchmarkSample",
@@ -70,6 +71,61 @@ print(json.dumps({"module_paths": paths, "import_wall_seconds": wall}))
 """
 
 
+#: Boot probe (spec §7): full framework composition in a fresh interpreter
+#: against a seeded minimal ``models.yaml`` stub manifest — deterministic,
+#: no provider endpoint contacted. Captures every ``lisa.startup`` stage
+#: line, then times ``HostRuntime.aclose()`` for the teardown gate.
+#: In-process MCP keeps the probe subprocess-free. Raw string: the child
+#: parses its own ``\n`` escapes.
+BOOT_PROBE_SOURCE = r"""
+import asyncio
+import io
+import json
+import logging
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+telemetry = io.StringIO()
+handler = logging.StreamHandler(telemetry)
+lg = logging.getLogger("lisa.startup")
+lg.addHandler(handler)
+lg.setLevel(logging.DEBUG)
+lg.propagate = False
+payload = {"module_paths": {}, "import_wall_seconds": 0.0,
+           "teardown_wall_seconds": 0.0}
+data_dir = ""
+try:
+    started = time.perf_counter()
+    import kernel  # noqa: F401
+    import runtime.bootstrap
+    payload["import_wall_seconds"] = time.perf_counter() - started
+    payload["module_paths"] = {
+        n: getattr(sys.modules[n], "__file__", "")
+        for n in ("kernel", "runtime", "sdk") if n in sys.modules}
+    from sdk.layout import CONFIG_DIR
+    data_dir = tempfile.mkdtemp(prefix="lisa-bench-boot-")
+    cfg = Path(data_dir) / CONFIG_DIR
+    cfg.mkdir(parents=True, exist_ok=True)
+    lines = ["version: 1", "mode_models: {default: bench-stub-model}",
+             "models:", "  - model_id: bench-stub-model", "    provider: ollama"]
+    (cfg / "models.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    from runtime.bootstrap import build_runtime
+    runtime = build_runtime(host_kind="cli", data_dir=data_dir,
+                            no_thread=True, in_process_mcp=True)
+    close_started = time.perf_counter()
+    asyncio.run(runtime.aclose())
+    payload["teardown_wall_seconds"] = time.perf_counter() - close_started
+finally:
+    if data_dir:
+        shutil.rmtree(data_dir, True)
+payload["telemetry"] = telemetry.getvalue()
+print(json.dumps(payload))
+"""
+
+
 @dataclass(frozen=True)
 class BenchmarkSample:
     """One fresh-process probe result (all values durations/counts only)."""
@@ -85,6 +141,8 @@ class BenchmarkSample:
     setup_invocations: int = 0
     duplicate_setups: int = 0
     shared_sessions: int = 0
+    teardown_wall_seconds: float = 0.0
+    """Wall seconds of the timed ``HostRuntime.aclose()`` (boot probes)."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +159,7 @@ class BenchmarkRun:
     total_duplicate_setups: int
     max_shared_sessions: int
     module_root: str
+    max_teardown_wall_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-ready mapping for ``--json`` artifacts."""
@@ -268,6 +327,11 @@ def run_child_probe(
         wall_seconds=wall,
         exit_code=completed.returncode,
         import_wall_seconds=float(import_wall) if isinstance(import_wall, (int, float)) else 0.0,
+        teardown_wall_seconds=(
+            float(payload["teardown_wall_seconds"])
+            if isinstance(payload.get("teardown_wall_seconds"), (int, float))
+            else 0.0
+        ),
         module_paths=module_paths if isinstance(module_paths, dict) else {},
         stage_durations=stage_durations(stages),
         setup_invocations=setup_invocation_count(stages),
@@ -294,26 +358,29 @@ def summarize_variant(variant: str, samples: list[BenchmarkSample]) -> Benchmark
         module_root=common_module_root(
             {key: path for sample in samples for key, path in sample.module_paths.items() if path}
         ),
+        max_teardown_wall_seconds=max(sample.teardown_wall_seconds for sample in samples),
     )
 
 
 def format_report(runs: list[BenchmarkRun]) -> str:
     """Render the published markdown report table for a benchmark sweep."""
     header = (
-        "| variant | n | p50 (s) | p95 (s) | min (s) | max (s) | setups | dup setups | sessions |"
+        "| variant | n | p50 (s) | p95 (s) | min (s) | max (s) |"
+        " teardown (s) | setups | dup setups | sessions |"
     )
     rows = [
         f"| {run.variant} | {run.sample_count} | {run.p50_wall_seconds:.4f} | "
         f"{run.p95_wall_seconds:.4f} | {run.min_wall_seconds:.4f} | "
-        f"{run.max_wall_seconds:.4f} | {run.max_setup_invocations} | "
-        f"{run.total_duplicate_setups} | {run.max_shared_sessions} |"
+        f"{run.max_wall_seconds:.4f} | {run.max_teardown_wall_seconds:.4f} | "
+        f"{run.max_setup_invocations} | {run.total_duplicate_setups} | "
+        f"{run.max_shared_sessions} |"
         for run in runs
     ]
     lines = [
         "# Prompt startup benchmark",
         "",
         header,
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         *rows,
     ]
     return "\n".join(lines) + "\n"

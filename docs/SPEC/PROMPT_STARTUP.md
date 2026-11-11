@@ -1,7 +1,9 @@
 # SPEC: Prompt startup latency
 
-Status: **SPEC ONLY for the follow-up work below; implementation deferred.**
-Updated 2026-10-24.
+The framework half (Slices A-E) is implemented in the framework repository;
+the CLI-side release gate and profile-driven import trimming (Slices C/E
+CLI half) remain spec-only.
+Updated 2026-11-10.
 
 ## 1. Scope and implemented baseline
 

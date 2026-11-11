@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
         "--samples", type=int, default=10, help="warm fresh-process samples (spec: 10)"
     )
     parser.add_argument("--python", default=sys.executable, help="interpreter to probe")
+    parser.add_argument(
+        "--boot",
+        action="store_true",
+        help="also run the framework boot probe (stub manifest, no provider endpoint)",
+    )
     parser.add_argument("--timeout", type=float, default=300.0, help="per-probe timeout")
     parser.add_argument("--json", type=Path, default=None, help="write full JSON results")
     args = parser.parse_args(argv)
@@ -51,9 +56,18 @@ def main(argv: list[str] | None = None) -> int:
         for _ in range(max(args.samples, 1))
     ]
     runs = [summarize_variant("cold", [cold]), summarize_variant("warm", warm)]
-    print(format_report(runs))
-
     samples: list[BenchmarkSample] = [cold, *warm]
+    if args.boot:
+        from runtime.startup_benchmark import BOOT_PROBE_SOURCE
+
+        boot_command = child_python_command(args.python, BOOT_PROBE_SOURCE)
+        boot_samples = [
+            run_child_probe(boot_command, variant="boot", timeout_seconds=args.timeout)
+            for _ in range(max(args.samples, 1))
+        ]
+        samples.extend(boot_samples)
+        runs.append(summarize_variant("boot", boot_samples))
+    print(format_report(runs))
     if args.json is not None:
         args.json.write_text(
             json.dumps(

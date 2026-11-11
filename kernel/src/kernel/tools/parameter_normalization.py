@@ -5,8 +5,7 @@ provider's habits rather than the schema's contract: ``"null"``/``""`` for
 optional ids, string-encoded arrays, in-type-but-out-of-bounds numbers.
 Every one of those is an *encoding* of the right intent, and per-field
 coercion validators absorbed them one sentinel at a time across packs
-(``docs/SPEC/PROVIDER_ARGUMENT_NORMALIZATION.md``: ~252 rejected dispatches
-in nine days). This module is the one normalization pass both registries
+(~252 rejected dispatches in nine days). This module is the one normalization pass both registries
 run before pydantic sees the payload.
 
 Rules (schema-derived from ``model_fields``; top-level fields only —
