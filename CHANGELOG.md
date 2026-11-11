@@ -6,6 +6,21 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Controlled startup benchmark harness (Slice E framework half of
+  ``docs/SPEC/PROMPT_STARTUP.md``): ``runtime.startup_benchmark`` plus
+  ``scripts/startup_benchmark.py`` run fresh-process probes under identical
+  interpreter conditions, report first-run (cold) effects separately from
+  steady-state (warm) samples, aggregate p50/p95/min/max wall times, and
+  capture the Slice C ``lisa.startup`` telemetry — stage durations (summed
+  per stage), distinct ``setup_framework`` invocation counts from begin
+  events (the dedup-investigation evidence; cProfile call counts include
+  coroutine resumes and do not), ``repeat_setup_detected`` flags, and
+  shared-session inventory counts. Child probes report resolved module
+  paths, and each report row carries the deepest common module root so a
+  checkout report states which package tree served the samples. A failed
+  probe records a failed sample instead of destroying the sweep. Tests:
+  ``runtime/tests/test_startup_benchmark.py``.
+
 - Session-source archive + `/session` command: every boot now writes its
   resolved session source (``from:``/``body:`` directives already expanded)
   to ``<data_dir>/state/sessions/<plan-digest>.md`` with a ``.meta.json``
