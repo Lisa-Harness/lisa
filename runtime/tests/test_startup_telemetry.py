@@ -57,8 +57,22 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch, *, config: Any) -> None:
     monkeypatch.setattr("runtime.mcp_pool.compile_mcp_configs", lambda r, discovery=None: ([], []))
     monkeypatch.setattr("runtime.mcp_pool.compile_proxy_configs", lambda r, discovery=None: [])
     monkeypatch.setattr("runtime.mcp_pool.configure_runtime", lambda r: None)
-    monkeypatch.setattr("runtime.mcp_pool.discover_framework", lambda r: object())
-    monkeypatch.setattr("runtime.mcp_pool.setup_framework", lambda r, discovery=None: None)
+
+    # Production-faithful fakes: mcp_pool instruments these two stages
+    # itself (stage() inside discover_framework/setup_framework), so the
+    # fakes wrap the same way. A bare lambda here would let an outer
+    # stage() wrapper in bootstrap.py reintroduce nested duplicate spans
+    # (9 begins instead of 7) without this sequence test noticing.
+    def _fake_discover_framework(runtime: Any) -> object:
+        with stage("discover_framework"):
+            return object()
+
+    def _fake_setup_framework(runtime: Any, discovery: Any = None) -> None:
+        with stage("setup_framework"):
+            return
+
+    monkeypatch.setattr("runtime.mcp_pool.discover_framework", _fake_discover_framework)
+    monkeypatch.setattr("runtime.mcp_pool.setup_framework", _fake_setup_framework)
     monkeypatch.setattr("runtime.runtime.HostRuntime", fake_runtime_cls)
     monkeypatch.setattr(
         "runtime.state_provider.load_state_snapshot",
@@ -163,10 +177,19 @@ def test_build_runtime_emits_boot_stage_lines(
     events = _events(caplog)
     # Begin/end pairs per stage, one boot id, and the boot_complete line
     # (which is a boundary marker, not a stage). Begin events give the
-    # ordered stage list.
+    # ordered stage list. The fakes wrap the two framework calls exactly
+    # like mcp_pool does, so exactly one begin/end pair per stage holds;
+    # an outer stage() wrapper in bootstrap.py would emit 9 begins and
+    # duplicated end pairs — the regression this guard catches.
     assert [event["event"] for event in events] == ["begin", "end"] * 7 + ["boot_complete"]
+    begins = [event["stage"] for event in events if event["event"] == "begin"]
+    ends = [event["stage"] for event in events if event["event"] == "end"]
+    # Single span owner per stage: exactly one begin and one end, no
+    # duplicated stage names anywhere in the sequence.
+    assert len(begins) == len(ends) == 7
+    assert len(set(begins)) == len(set(ends)) == 7
     assert len({event["boot_id"] for event in events}) == 1
-    stages = [event["stage"] for event in events if event["event"] == "begin"]
+    stages = begins
     assert stages == [
         "runtime_construct",
         "state_snapshot_load",

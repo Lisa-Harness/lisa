@@ -41,6 +41,16 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Nested duplicate ``lisa.startup`` telemetry spans removed: both
+  ``runtime.bootstrap`` and ``runtime.mcp_pool`` wrapped
+  ``discover_framework`` and ``setup_framework`` in same-named ``stage()``
+  contexts, so one real invocation emitted two begin/end pairs and Slice
+  E's summed ``stage_durations`` overstated ``setup_framework`` ~2x
+  (~2.59 s reported vs ~1.30 s real in the dedup-investigation boot).
+  ``mcp_pool`` is now the single owner of both stages; the stage-sequence
+  test fakes mirror that self-instrumentation so a reintroduced outer
+  wrapper fails the test. Tests: ``runtime/tests/test_startup_telemetry.py``.
+
 - ``--no-thread`` runs crashed the moment a tool result needed durable
   projection: ``project_thread_messages`` raised "Tool-result projection
   requires a thread storage path" (PROMPT_STARTUP Slice D). ``HostPaths``
