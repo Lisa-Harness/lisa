@@ -184,10 +184,11 @@ def build_runtime(
             explicit_path=state_snapshot_path,
             data_dir=config.data_dir,
         )
-    with stage("discover_framework"):
-        discovery = discover_framework(runtime)
-    with stage("setup_framework"):
-        setup_framework(runtime, discovery=discovery)
+    # discover_framework and setup_framework stage() themselves inside
+    # mcp_pool (the single span owner); wrapping them here too would nest
+    # same-name spans and double the durations stage_durations reports.
+    discovery = discover_framework(runtime)
+    setup_framework(runtime, discovery=discovery)
     with stage("configure_runtime"):
         configure_runtime(runtime)
     with stage("compile_mcp_configs"):
