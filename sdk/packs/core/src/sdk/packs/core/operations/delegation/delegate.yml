@@ -8,6 +8,7 @@ description: >
 pack_id: lisa-pack-core
 effect: read
 execution_kind: runtime
+# Long-running sub-turns of long-running agents outran the 900s ceiling.
 timeout_seconds: 1800
 max_calls_per_turn: 5
 preferred_model_id: default

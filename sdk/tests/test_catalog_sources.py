@@ -1,12 +1,12 @@
-"""Slice B: in-process catalog/content source contracts and stdio parity.
+"""Slice B: in-process catalog/content source contracts.
 
-Drives the same fixture corpus through the ``lisa-catalog`` /
-``lisa-content`` tool surface (env-driven, as the subprocesses run) and the
-runtime-injected direct sources (explicit inputs), per
-``docs/SPEC/PROMPT_STARTUP.md`` §4: competing providers, overlays, ambient
-MCP tools, Unicode/spaced paths, traversal attempts, missing content,
-hit-only read caching, explicit invalidation, and two differently
-configured services without cross-contamination.
+Drives the direct sources (explicit inputs, no env reads) against a
+fixture corpus of competitors/providers per ``docs/SPEC/PROMPT_STARTUP.md``
+§4: overlays, traversal attempts, missing content, hit-only read caching,
+explicit invalidation, and two differently configured services without
+cross-contamination. The stdio ↔ direct transport parity half lives in
+``mcp_server/tests/test_catalog_parity.py`` — the mcp_server suite is
+where both transports meet without an SDK test importing the servers.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 from sdk.catalog_sources import CatalogSourceConfig, DirectCatalogSource, DirectContentSource
-from sdk.content import ContentReader
 
 SELECTIONS_A = json.dumps(
     {"modes": {"default": "provider-a"}, "operations": {}, "tools": {}},
@@ -126,6 +125,32 @@ def test_content_source_rejects_traversal_and_missing(corpus: Path) -> None:
     assert source.read_authored_text("prompts/missing.md") == ""
 
 
+def test_content_source_roots_fingerprint_and_invalidation(corpus: Path) -> None:
+    source = DirectContentSource(direct_config(corpus))
+    base = source.roots_fingerprint()
+    assert base  # non-empty: real root set
+
+    source.invalidate()
+    assert source.roots_fingerprint() == base  # same roots, cache reset only
+
+
+def test_catalog_source_list_content_roots_and_absent_overlay_dir(corpus: Path) -> None:
+    import json as json_module
+
+    missing_overlays = corpus / "no-overlays-here"
+    config = CatalogSourceConfig.from_payloads(
+        content_roots=[corpus / "roots" / "provider-a"],
+        disabled_packs=set(),
+        provider_selections_json="",
+        overlays_dir=missing_overlays,
+    )
+    source = DirectCatalogSource(config)
+    roots = json_module.loads(source.list_content_roots())
+    assert any(str(p).endswith("provider-a") for p in roots)
+    # The configured-but-absent overlay directory is skipped, not an error.
+    assert not any("no-overlays-here" in str(p) for p in roots)
+
+
 def test_content_source_invalidate_forces_reread(corpus: Path) -> None:
     source = DirectContentSource(direct_config(corpus))
     path = corpus / "roots" / "provider-a" / "content" / "prompts" / "greeting.md"
@@ -153,93 +178,6 @@ def test_content_source_two_configs_no_cross_contamination(corpus: Path) -> None
 
     assert first.read_authored_text("prompts/greeting.md") == "hello from provider-a\n"
     assert second.read_authored_text("prompts/greeting.md") == "hello from provider-c\n"
-
-
-# ── stdio ↔ direct parity ───────────────────────────────────────────
-
-
-def _stdio_catalog_json(
-    monkeypatch: pytest.MonkeyPatch,
-    corpus: Path,
-    *,
-    overlays: bool,
-    selections_env: str,
-    ambient: str,
-) -> str:
-    from mcp_server.catalog import server as catalog_server
-    from mcp_server.content import server as content_server
-
-    child_roots = [corpus / "roots" / "provider-a", corpus / "roots" / "provider-b"]
-    subdir_roots = [r / "content" for r in child_roots if (r / "content").is_dir()]
-    configured = [*child_roots, *subdir_roots]
-    payload = os.pathsep.join(str(p) for p in configured)
-    if overlays:
-        payload = str(corpus / "overlays") + os.pathsep + payload
-    monkeypatch.setenv("SDK_CONTENT_ROOTS", payload)
-    monkeypatch.setenv("LISA_SESSION_PROVIDER_SELECTIONS", selections_env)
-    monkeypatch.setenv("LISA_DEFAULT_MCP_TOOLS", ambient)
-    if overlays:
-        monkeypatch.setenv("LISA_OVERLAY_ROOT", str(corpus / "overlays"))
-    else:
-        monkeypatch.delenv("LISA_OVERLAY_ROOT", raising=False)
-    # Direct tool call path uses the test seam for deps (no lifespan).
-    content_server.set_deps_for_test(
-        content_server.ContentDeps(reader=ContentReader(extra_roots=[]))
-    )
-    catalog_server.set_deps_for_test(catalog_server.CatalogDeps(extra_roots=list(child_roots)))
-    return asyncio.run(catalog_server.list_modes(None))
-
-
-def test_mode_catalog_parity_stdio_vs_direct(monkeypatch: pytest.MonkeyPatch, corpus: Path) -> None:
-    direct = DirectCatalogSource(direct_config(corpus))
-    direct_json = direct.list_modes()
-
-    stdio_json = _stdio_catalog_json(
-        monkeypatch, corpus, overlays=False, selections_env=SELECTIONS_A, ambient=""
-    )
-
-    assert json.loads(direct_json).keys() == json.loads(stdio_json).keys()
-    assert json.loads(direct_json) == json.loads(stdio_json)
-
-
-def test_mode_catalog_parity_with_overlay_and_ambient(
-    monkeypatch: pytest.MonkeyPatch, corpus: Path
-) -> None:
-    ambient = frozenset({"lisa-storage.read_file"})
-    direct = DirectCatalogSource(direct_config(corpus, overlays=True, ambient=ambient))
-    direct_json = direct.list_modes()
-
-    stdio_json = _stdio_catalog_json(
-        monkeypatch,
-        corpus,
-        overlays=True,
-        selections_env=SELECTIONS_A,
-        ambient="lisa-storage.read_file",
-    )
-
-    assert json.loads(direct_json) == json.loads(stdio_json)
-
-
-def test_competing_providers_resolved_by_selections(
-    monkeypatch: pytest.MonkeyPatch, corpus: Path
-) -> None:
-    selections = json.dumps(
-        {"modes": {"default": "provider-b"}, "operations": {}, "tools": {}},
-        ensure_ascii=True,
-        sort_keys=True,
-    )
-    direct = DirectCatalogSource(direct_config(corpus, selections_json=selections))
-    direct_json = direct.list_modes()
-
-    stdio_json = _stdio_catalog_json(
-        monkeypatch, corpus, overlays=False, selections_env=selections, ambient=""
-    )
-
-    assert json.loads(direct_json) == json.loads(stdio_json)
-    assert (
-        json.loads(direct_json)["default"]["instruction_body"].strip()
-        == "# provider-b\n\nbeta body"
-    )
 
 
 def test_direct_catalog_source_invalidate_reflects_edit(corpus: Path) -> None:
@@ -279,6 +217,26 @@ def test_provider_selection_cache_key_variants() -> None:
         "operations": {},
         "tools": {},
     }
+
+
+def test_load_session_provider_selections_rejects_malformed_payloads() -> None:
+    from sdk.content._catalog import (
+        CatalogCollisionError,
+        load_session_provider_selections,
+    )
+
+    with pytest.raises(CatalogCollisionError, match="Invalid JSON"):
+        load_session_provider_selections("not json")
+    with pytest.raises(CatalogCollisionError, match="must contain an object"):
+        load_session_provider_selections('"a string"')
+    with pytest.raises(CatalogCollisionError, match="Unexpected provider selection kinds"):
+        load_session_provider_selections('{"modes": {}, "surprise": {}}')
+    with pytest.raises(CatalogCollisionError, match="must be an object"):
+        load_session_provider_selections('{"modes": ["a"]}')
+    with pytest.raises(CatalogCollisionError, match="require string IDs"):
+        load_session_provider_selections('{"modes": {"default": 7}}')
+    with pytest.raises(CatalogCollisionError, match="require non-empty IDs"):
+        load_session_provider_selections('{"modes": {"default": "  "}}')
 
 
 def test_normalize_disabled_pack_names() -> None:

@@ -31,7 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kernel.context._catalog_sources import CatalogSource, CatalogSourceConfigLike, ContentSource
+from kernel.context._catalog_sources import CatalogSource, ContentSource
 from kernel.context._shared_stdio import SharedSessionLease, acquire_lease
 from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.compiler import compile_registry
@@ -45,6 +45,7 @@ from kernel.proxy_launch.manifest import ProxyServerManifestError, load_proxy_se
 from kernel.proxy_launch.policy import ALL_PROVIDERS, ProxyServerRegistry, ProxyServerSpec
 from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
+from sdk.catalog_sources import CatalogSourceConfig
 from sdk.layout import CACHE_DIR, LOGS_DIR, MCP_LOGS_SUBDIR
 
 from runtime.capability_servers import (
@@ -500,16 +501,19 @@ def resolve_default_mcp_tool_ids(
 def _build_catalog_source_config(
     runtime: HostRuntime,
     discovery: _FrameworkDiscovery,
-) -> CatalogSourceConfigLike:
+) -> CatalogSourceConfig:
     """Build the frozen in-process source config from resolved host inputs.
 
     The payloads mirror, byte for byte, the env the stdio servers receive
     (see ``sdk.mcp_host.content_servers.build_content_mcp_config``), so the
-    two transports observe identical inputs (Slice B parity).
+    two transports observe identical inputs (Slice B parity). The return
+    type is the SDK's concrete frozen config: every consumer passes it
+    straight into ``DirectCatalogSource`` / ``DirectContentSource``, which
+    require the concrete type, while the kernel's adapters keep reading it
+    through the ``CatalogSourceConfigLike`` structural contract.
     """
     import json
 
-    from sdk.catalog_sources import CatalogSourceConfig
     from sdk.mcp_host import session_provider_selection_payload
 
     payload = session_provider_selection_payload(runtime.session_plan.manifest.providers)

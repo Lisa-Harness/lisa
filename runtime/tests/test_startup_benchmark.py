@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -75,6 +76,36 @@ def test_parse_startup_lines_keeps_only_telemetry_dicts() -> None:
     assert events[-1]["event"] == "boot_complete"
 
 
+def test_parse_startup_lines_skips_malformed_and_prefix_events() -> None:
+    text = "\n".join(
+        [
+            'startup {"event": "begin", "stage": "runtime_construct"}',
+            "startup not-json",  # malformed payload: skipped
+            "noise line",  # not telemetry: skipped
+            'startup repeat_setup_detected {"invocations": 2}',  # prefix-style event
+            '{"event": "end"}',  # JSON but no prefix: skipped
+        ]
+    )
+    events = parse_startup_lines(text)
+    assert events == [
+        {"event": "begin", "stage": "runtime_construct"},
+        {"event": "repeat_setup_detected", "invocations": 2},
+    ]
+
+
+def test_common_module_root_joins_sibling_package_dirs() -> None:
+    # Paths synthesized with os.path so the expectation holds on every
+    # platform's separator (the probe reports the child's own path shape).
+    base = os.path.join("repo", "src")
+    paths = {
+        "kernel": os.path.join(base, "kernel", "__init__.py"),
+        "runtime": os.path.join(base, "runtime", "__init__.py"),
+        "sdk": os.path.join(base, "sdk", "__init__.py"),
+    }
+    assert common_module_root(paths) == base
+    assert common_module_root({}) == ""
+
+
 def test_setup_invocation_count_uses_begin_events_not_repeat_warnings() -> None:
     events = parse_startup_lines(_telemetry_text())
     assert setup_invocation_count(events) == 2
@@ -94,16 +125,6 @@ def test_stage_durations_maps_completed_stages() -> None:
         "setup_framework": 0.35,
         "discover_framework": 0.5,
     }
-
-
-def test_common_module_root_joins_sibling_package_dirs() -> None:
-    paths = {
-        "kernel": "/repo/src/kernel/__init__.py",
-        "runtime": "/repo/src/runtime/__init__.py",
-        "sdk": "/repo/src/sdk/__init__.py",
-    }
-    assert common_module_root(paths) == "/repo/src"
-    assert common_module_root({}) == ""
 
 
 def test_child_python_command_builds_dash_c_argv() -> None:

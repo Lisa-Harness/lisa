@@ -178,6 +178,21 @@ def test_r2_python_literal_and_bare_line_fallbacks() -> None:
     assert bare.payload["commands"] == ["git status"]
 
 
+def test_r2_decoder_ladder_branches() -> None:
+    """Tuple/set literals, JSON objects, and quoted prose resolve per the ladder."""
+    from kernel.tools.parameter_normalization import _decode_string_encoded_list
+
+    # Python tuple/set literals decode to lists.
+    assert _decode_string_encoded_list("('a', 'b')") == ["a", "b"]
+    assert _decode_string_encoded_list("{'k': 1}") == [{"k": 1}]
+    # A single JSON object lifts to a one-element list.
+    assert _decode_string_encoded_list('{"k": 1}') == [{"k": 1}]
+    # Quoted single line stays in the ladder (starts with a quote): no bare wrap.
+    assert _decode_string_encoded_list('"just text"') is None
+    # Empty text leaves the payload untouched.
+    assert _decode_string_encoded_list("   ") is None
+
+
 def test_r2_ambiguous_prose_is_left_for_pydantic() -> None:
     result = normalize_payload(BashRunParams, {"commands": "line one\nline two"})
     assert result.payload["commands"] == "line one\nline two"

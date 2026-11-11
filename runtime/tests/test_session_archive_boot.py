@@ -92,3 +92,73 @@ def test_archive_failure_never_blocks_boot(
     monkeypatch.setattr(runtime_mod, "archive_session_source", explode)
     runtime = _boot(tmp_path, _SESSION)  # must not raise
     assert str(runtime.session_plan.plan_digest)
+
+
+def test_reresolution_failure_skips_the_archive_without_failing_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.session_archive import resolve_boot_source
+
+    def explode(**kwargs: object) -> object:
+        raise RuntimeError("directive resolution failed")
+
+    monkeypatch.setattr("runtime.session_from_resolver.resolve_session_from_directives", explode)
+    out = resolve_boot_source(
+        session_context=_SESSION,
+        data_dir=tmp_path,  # type: ignore[arg-type]
+    )
+    assert out is None
+
+
+def test_boot_archive_swallows_unexpected_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception from re-resolution is logged; the boot hook never raises."""
+    import runtime.runtime as runtime_mod
+
+    def explode(**kwargs: object) -> object:
+        raise OSError("config read failed")
+
+    monkeypatch.setattr(runtime_mod, "resolve_boot_source", explode)
+    # Must not raise:
+    runtime_mod._archive_boot_session_plan(
+        session_context=_SESSION,
+        data_dir=tmp_path,
+        plan_digest="1" * 64,
+    )
+
+
+def test_boot_archive_skips_when_the_digest_drifts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-resolved source whose digest no longer matches the boot is not archived."""
+    import runtime.runtime as runtime_mod
+
+    archived: list[tuple[str, str]] = []
+
+    def fake_archive(source_uri: str, resolved_text: str, *, data_dir: Path) -> Path:
+        archived.append((source_uri, resolved_text))
+        return data_dir / "ignored.md"
+
+    monkeypatch.setattr(runtime_mod, "archive_session_source", fake_archive)
+    monkeypatch.setattr(
+        runtime_mod,
+        "_digest_of_resolved",
+        lambda source_uri, resolved_text: "0" * 64,
+    )
+
+    def failing_resolve_boot_source(*, session_context: str, data_dir: Path) -> tuple[str, str]:
+        return str(data_dir / "config" / "session_context.md"), _SESSION
+
+    monkeypatch.setattr(
+        runtime_mod,
+        "resolve_boot_source",
+        failing_resolve_boot_source,
+    )
+    runtime_mod._archive_boot_session_plan(
+        session_context=_SESSION,
+        data_dir=tmp_path,
+        plan_digest="1" * 64,
+    )
+    assert archived == []
