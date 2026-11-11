@@ -1,8 +1,7 @@
 """Conformance tests for provider argument normalization.
 
-Replays the nine incident shapes from
-``docs/SPEC/PROVIDER_ARGUMENT_NORMALIZATION.md`` (~252 rejected dispatches
-in nine days) and pins the R1-R4 contract: encodings normalize with zero
+Replays the nine incident shapes (~252 rejected dispatches in nine
+days) and pins the R1-R4 contract: encodings normalize with zero
 rejections and dispatch-equivalent payloads, over-cap strings reject with
 intent-naming messages instead of truncating, required fields are never
 touched, strict schemas opt out entirely, and every coercion lands one

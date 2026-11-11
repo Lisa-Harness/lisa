@@ -6,6 +6,13 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Boot variant for the startup benchmark harness: an optional ``--boot``
+  probe runs the full ``build_runtime`` composition in a fresh interpreter
+  against a seeded minimal ``models.yaml`` stub manifest (deterministic,
+  no provider endpoint; in-process MCP keeps it subprocess-free), then
+  times ``HostRuntime.aclose()``. The report gains a teardown column,
+  publishing the teardown half of the spec's lifecycle gate.
+
 - Controlled startup benchmark harness (Slice E framework half of
   ``docs/SPEC/PROMPT_STARTUP.md``): ``runtime.startup_benchmark`` plus
   ``scripts/startup_benchmark.py`` run fresh-process probes under identical
