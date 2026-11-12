@@ -50,9 +50,8 @@ class DiscoveredModel:
     ``capabilities``, ``cost_tier``, ``latency_tier``, ``context_window``,
     ``description``) are optional and populated best-effort by each provider
     probe from the metadata the provider's list endpoint already returns.
-    Probes only fill what they can prove from the API response; the static
-    registry in ``known_models.yaml`` is the fallback for fields the
-    provider does not expose.
+    Probes only fill what they can prove from the API response; fields the
+    provider does not publish remain unknown.
     """
 
     model_id: str
@@ -97,6 +96,26 @@ class DiscoveredModel:
     #: Provider-published retirement date (OpenRouter ``expiration_date``).
     #: ``None`` = the provider did not publish one — NOT "never expires".
     expires_at: date | None = None
+    #: Provider-published parameter names (OpenRouter
+    #: ``supported_parameters``). Empty = not published.
+    supported_parameters: tuple[str, ...] = ()
+    #: Provider-published input modalities (OpenRouter
+    #: ``architecture.input_modalities``). Empty = not published.
+    modalities: tuple[str, ...] = ()
+    #: Provider-published lifecycle string (Anthropic model-row ``lifecycle``).
+    #: Empty = not published.
+    lifecycle: str = ""
+    #: Provider-published deprecation date (Anthropic ``deprecated_at``).
+    #: ``None`` = not published — NOT "not deprecated".
+    deprecated_at: date | None = None
+    #: Capabilities the provider explicitly published as present (Ollama
+    #: ``/api/show``, Anthropic capability object). Empty = the provider
+    #: publishes no capability data — NOT "unsupported".
+    published_capabilities: tuple[str, ...] = ()
+    #: Capabilities the provider explicitly published as absent. Together
+    #: with :attr:`published_capabilities` this gives three-valued
+    #: capability semantics: supported / unsupported / unknown.
+    unsupported_capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
