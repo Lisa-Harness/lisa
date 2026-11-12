@@ -40,7 +40,7 @@ def record_dispatch_history(
     resident_content: str,
     log: logging.Logger,
 ) -> None:
-    """Record one successful result's history claims on the turn ledger."""
+    """Record one result's history claims (an error's side effects only) on the ledger."""
     policy = getattr(tool_def, "history", None)
     if policy is None or tool_result is None:
         return
@@ -400,7 +400,7 @@ def approved_invocation_history(
     """
     definition = get_tool_catalog().get(tool_id)
     policy = getattr(definition, "history", None)
-    if policy is None or not isinstance(result, ToolResult) or result.error:
+    if policy is None or not isinstance(result, ToolResult):
         return {}
     try:
         claims = resolve_history_keys(

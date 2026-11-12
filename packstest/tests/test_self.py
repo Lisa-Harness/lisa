@@ -378,6 +378,8 @@ def test_stale_lisa_packs_modules_classifies_outside_and_missing(
 
     from packstest.catalog import _stale_lisa_packs_modules
 
+    for slug in ("inside", "tool"):
+        (tmp_path / "checkout" / "lisa_packs" / slug).mkdir(parents=True)
     inside = ModuleType("lisa_packs.inside")
     inside.__file__ = str(tmp_path / "checkout" / "lisa_packs" / "inside" / "__init__.py")
     outside_tool = ModuleType("lisa_packs.tool")
@@ -406,11 +408,63 @@ def test_stale_lisa_packs_modules_returns_all_on_unusable_namespace_path(
         def __len__(self):
             raise KeyError("parent evicted")
 
+    (tmp_path / "checkout" / "lisa_packs" / "broken").mkdir(parents=True)
     broken = ModuleType("lisa_packs.broken")
     broken.__path__ = BrokenPath()  # type: ignore[assignment]
     monkeypatch.setitem(sys.modules, "lisa_packs.broken", broken)
 
     assert _stale_lisa_packs_modules((tmp_path / "checkout").resolve()) == ["lisa_packs.broken"]
+
+
+def test_stale_lisa_packs_modules_keeps_non_colliding_packs_and_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading a second checkout must not orphan the first pack's live modules.
+
+    Only names the checkout itself provides can collide; another pack's
+    modules and the shared ``lisa_packs`` namespace stay cached so callers
+    that already imported them keep patching the same module objects.
+    """
+
+    from packstest.catalog import _stale_lisa_packs_modules
+
+    (tmp_path / "checkout" / "src" / "lisa_packs" / "bwrap").mkdir(parents=True)
+    namespace = ModuleType("lisa_packs")
+    namespace.__path__ = [str(tmp_path / "first" / "lisa_packs")]  # type: ignore[assignment]
+    first = ModuleType("lisa_packs.coding")
+    first.__file__ = str(tmp_path / "first" / "lisa_packs" / "coding" / "__init__.py")
+    child = ModuleType("lisa_packs.coding.commands")
+    child.__file__ = str(tmp_path / "first" / "lisa_packs" / "coding" / "commands.py")
+    other_bwrap = ModuleType("lisa_packs.bwrap")
+    other_bwrap.__file__ = str(tmp_path / "elsewhere" / "lisa_packs" / "bwrap" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "lisa_packs", namespace)
+    monkeypatch.setitem(sys.modules, "lisa_packs.coding", first)
+    monkeypatch.setitem(sys.modules, "lisa_packs.coding.commands", child)
+    monkeypatch.setitem(sys.modules, "lisa_packs.bwrap", other_bwrap)
+
+    assert _stale_lisa_packs_modules((tmp_path / "checkout").resolve()) == ["lisa_packs.bwrap"]
+
+
+def test_ensure_source_importable_puts_checkout_portion_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A widened namespace resolves a shared slug from the newest checkout."""
+
+    from packstest.catalog import _ensure_source_importable
+
+    old_portion = tmp_path / "old" / "lisa_packs"
+    (old_portion / "widgets").mkdir(parents=True)
+    new_portion = tmp_path / "new" / "lisa_packs"
+    (new_portion / "widgets").mkdir(parents=True)
+    namespace = ModuleType("lisa_packs")
+    namespace.__path__ = [str(old_portion)]  # type: ignore[assignment]
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setitem(sys.modules, "lisa_packs", namespace)
+
+    _ensure_source_importable(tmp_path / "new")
+
+    assert next(iter(namespace.__path__)) == str(new_portion.resolve())
+    assert str(old_portion) in namespace.__path__
 
 
 def test_stale_lisa_packs_modules_skips_module_without_files(

@@ -30,10 +30,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 HistoryScope = Literal["task", "turn"]
 
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
-_FIELD_PATH = re.compile(
-    r"(?P<result>result\.)?(?P<root>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P<fanout>\[\])?(?P<rest>(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
-)
+_SEGMENT = r"[A-Za-z_][A-Za-z0-9_]*(?:\[\])?"
+_FIELD_PATH = re.compile(rf"(?P<result>result\.)?(?P<path>{_SEGMENT}(?:\.{_SEGMENT})*)")
 _RESULT_REF = re.compile(r"r[a-f0-9]{64}")
 _MISSING = object()
 
@@ -45,9 +43,13 @@ class HistoryTemplateError(ValueError):
 @dataclass(frozen=True, slots=True)
 class _Placeholder:
     from_result: bool
-    root: str
+    head: tuple[str, ...]
     fanout: bool
     rest: tuple[str, ...]
+
+    @property
+    def root(self) -> str:
+        return self.head[0]
 
 
 def _parse_template(template: str) -> list[_Placeholder]:
@@ -56,13 +58,19 @@ def _parse_template(template: str) -> list[_Placeholder]:
         match = _FIELD_PATH.fullmatch(raw)
         if match is None:
             raise HistoryTemplateError(f"invalid history placeholder {{{raw}}} in {template!r}")
-        rest = tuple(part for part in match.group("rest").split(".") if part)
+        segments = match.group("path").split(".")
+        fanouts = [index for index, part in enumerate(segments) if part.endswith("[]")]
+        if len(fanouts) > 1:
+            raise HistoryTemplateError(
+                f"placeholder {{{raw}}} has more than one [] in {template!r}"
+            )
+        split = fanouts[0] + 1 if fanouts else len(segments)
         placeholders.append(
             _Placeholder(
                 from_result=bool(match.group("result")),
-                root=match.group("root"),
-                fanout=bool(match.group("fanout")),
-                rest=rest,
+                head=tuple(part.removesuffix("[]") for part in segments[:split]),
+                fanout=bool(fanouts),
+                rest=tuple(segments[split:]),
             )
         )
     if sum(1 for p in placeholders if p.fanout) > 1:
@@ -78,8 +86,8 @@ class HistoryPolicy(BaseModel):
 
     ``key``/``invalidates``/``anchor`` are templates: ``{param}`` reads the
     validated call parameters, ``{result.field}`` reads the result's
-    ``output_json``, ``{name[]}`` / ``{name[].field}`` fans one template out
-    over a list. ``hook: true`` delegates key computation to the tool
+    ``output_json``, ``{name[]}`` / ``{a.list[].field}`` fans one template
+    out over a list (one ``[]`` per template). ``hook: true`` delegates key computation to the tool
     module's ``history_keys(params, result)``. ``snapshot: true`` marks the
     tool module's ``history_snapshot(ctx, keys)`` as the pack's turn-end
     state summary.
@@ -179,12 +187,11 @@ def _placeholder_values(
     placeholder: _Placeholder, params: Mapping[str, Any], result: Mapping[str, Any]
 ) -> list[Any] | None:
     source = result if placeholder.from_result else params
-    base = _lookup(source, (placeholder.root,))
+    base = _lookup(source, placeholder.head)
     if base is _MISSING:
         return None
     if not placeholder.fanout:
-        value = _lookup(base, placeholder.rest) if placeholder.rest else base
-        return None if value is _MISSING else [value]
+        return [base]
     if not isinstance(base, list | tuple):
         return None
     values = [_lookup(item, placeholder.rest) if placeholder.rest else item for item in base]
@@ -253,15 +260,25 @@ def resolve_history_keys(
     params: Mapping[str, Any],
     result: Any,
 ) -> HistoryKeys | None:
-    """Return the history claims for one successful tool result, or ``None``.
+    """Return the history claims for one tool result, or ``None``.
 
     ``result`` is the tool's ``ToolResult``. ``params`` are the raw call
     arguments; the tool's ``Parameters`` model fills defaults first. Hooked
     tools call the module's ``history_keys(params, result)``; declarative
     tools expand templates over ``params`` and ``result.output_json``.
+
+    An error result claims no keys, but it may still report a side effect
+    that happened before the failure (an edit that rebased, then rejected a
+    stale hash). Only ``invalidates`` templates that read nothing but
+    ``{result.*}`` resolve against an error's ``output_json``; parameter
+    templates describe the failed intent and never fire.
     """
-    if policy is None or result is None or str(getattr(result, "error", "") or "").strip():
+    if policy is None or result is None:
         return None
+    output = getattr(result, "output_json", None)
+    output = output if isinstance(output, Mapping) else {}
+    if str(getattr(result, "error", "") or "").strip():
+        return _error_side_effects(policy, output)
     params = _validated_params(module, params)
     if policy.hook:
         hook = getattr(module, "history_keys", None)
@@ -271,8 +288,24 @@ def resolve_history_keys(
         if claims is None:
             return None
         return HistoryKeys.model_validate(claims)
-    output = getattr(result, "output_json", None)
-    return keys_from_policy(policy, params, output if isinstance(output, Mapping) else {})
+    return keys_from_policy(policy, params, output)
+
+
+def _result_only(template: str) -> bool:
+    placeholders = _parse_template(template)
+    return bool(placeholders) and all(p.from_result for p in placeholders)
+
+
+def _error_side_effects(policy: HistoryPolicy, output: Mapping[str, Any]) -> HistoryKeys | None:
+    invalidates = [
+        key
+        for template in policy.invalidates
+        if _result_only(template)
+        for key in expand_template(template, {}, output)
+    ]
+    if not invalidates:
+        return None
+    return HistoryKeys(invalidates=tuple(dict.fromkeys(invalidates)))
 
 
 @dataclass

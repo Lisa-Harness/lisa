@@ -63,6 +63,10 @@ def test_expand_template_reads_params_results_and_fans_out() -> None:
     assert expand_template("k:{paths[]}@", params, result) == ["k:a.py@", "k:b.py@"]
     assert expand_template("k:{result.files[].path}", params, result) == ["k:c.py", "k:d.py"]
     assert expand_template("k:{opts.mode}", params, result) == ["k:x"]
+    nested = {"sync": {"paths": ["e.py"], "files": [{"meta": {"p": "f.py"}}]}}
+    assert expand_template("k:{result.sync.paths[]}", params, nested) == ["k:e.py"]
+    assert expand_template("k:{result.sync.files[].meta.p}", params, nested) == ["k:f.py"]
+    assert expand_template("k:{result.sync.absent[]}", params, nested) == []
 
 
 def test_expand_template_missing_yields_no_key_and_none_renders_dash() -> None:
@@ -75,6 +79,10 @@ def test_expand_template_missing_yields_no_key_and_none_renders_dash() -> None:
 def test_policy_rejects_malformed_templates() -> None:
     with pytest.raises(ValueError, match="more than one"):
         HistoryPolicy(key=("k:{a[]}:{b[]}",))
+    with pytest.raises(ValueError, match="more than one"):
+        HistoryPolicy(key=("k:{a[].b[]}",))
+    with pytest.raises(ValueError, match="invalid history placeholder"):
+        HistoryPolicy(key=("k:{a.[]}",))
     with pytest.raises(ValueError, match="invalid history placeholder"):
         HistoryPolicy(key=("k:{a-b}",))
     with pytest.raises(ValueError, match="scheme"):
@@ -129,6 +137,34 @@ def test_resolve_keys_skips_errors_and_calls_hooks() -> None:
     assert resolve_history_keys(HistoryPolicy(hook=True), hooked, {"cmd": "ls"}, ok) == HistoryKeys(
         keys=("ls",)
     )
+
+
+def test_error_results_keep_only_result_side_effect_invalidations() -> None:
+    policy = HistoryPolicy(
+        key="k:{artifact_id}",
+        scope="turn",
+        invalidates=[
+            "r:{artifact_id}:{edits[].path}",
+            "r:{result.artifact_id}:{result.sync.upstream_paths[]}@-:",
+            "s:{artifact_id}",
+            "constant",
+        ],
+    )
+    params = {"artifact_id": "w", "edits": [{"path": "a.py"}]}
+    rebased = ToolResult(
+        tool_id="t",
+        error="stale hash",
+        output_json={"artifact_id": "w", "sync": {"upstream_paths": ["b.py", "c.py"]}},
+    )
+    assert resolve_history_keys(policy, None, params, rebased) == HistoryKeys(
+        invalidates=("r:w:b.py@-:", "r:w:c.py@-:")
+    )
+    # No side effect reported: nothing to claim.
+    bare = ToolResult(tool_id="t", error="stale hash", output_json={"artifact_id": "w"})
+    assert resolve_history_keys(policy, None, params, bare) is None
+    # Hooks never run for errors.
+    hooked = SimpleNamespace(history_keys=lambda params, result: pytest.fail("hook ran"))
+    assert resolve_history_keys(HistoryPolicy(hook=True), hooked, params, rebased) is None
 
 
 def test_resolve_keys_fills_parameter_defaults() -> None:
@@ -454,6 +490,38 @@ def test_record_dispatch_history_survives_hook_failure() -> None:
     assert state.history_ledger.records == []
 
 
+def test_record_dispatch_history_records_error_side_effects() -> None:
+    state = _turn_state()
+    common = {
+        "state": state,
+        "tool_def": SimpleNamespace(
+            history=HistoryPolicy(
+                scope="turn", invalidates=["r:{path}", "r:{result.sync.upstream_paths[]}"]
+            ),
+            implementation_module=None,
+            owner_id="p",
+        ),
+        "tool_name": "edit",
+        "params": {"path": "a.py"},
+        "resident_content": "x",
+        "log": _quiet_log(),
+    }
+    record_dispatch_history(
+        tool_call_id="c1", tool_result=ToolResult(tool_id="edit", error="boom"), **common
+    )
+    assert state.history_ledger.records == []
+    record_dispatch_history(
+        tool_call_id="c2",
+        tool_result=ToolResult(
+            tool_id="edit", error="boom", output_json={"sync": {"upstream_paths": ["b.py"]}}
+        ),
+        **common,
+    )
+    [record] = state.history_ledger.records
+    assert (record.call_id, record.keys, record.invalidates) == ("c2", [], ["r:b.py"])
+    assert record.scope != "turn"
+
+
 class _Bindings:
     def binding_for(self, capability: CapabilityRef) -> CapabilityBinding:
         return CapabilityBinding(
@@ -612,6 +680,24 @@ def test_approved_invocation_history_carries_invalidations(
     }
     failed = ToolResult(tool_id="edit", error="boom")
     assert approved_invocation_history(tool_id="edit", result=failed, **common) == {}
+    catalog["edit"] = ToolDefinition(
+        tool_id="edit",
+        owner_id="lisa-pack-x",
+        history=HistoryPolicy(scope="turn", invalidates=["r:{path}", "r:{result.paths[]}"]),
+    )
+    rebased = ToolResult(tool_id="edit", error="boom", output_json={"paths": ["b.py"]})
+    assert approved_invocation_history(tool_id="edit", result=rebased, **common) == {
+        "records": [
+            {
+                "call_id": "approved-approval-1",
+                "tool_id": "edit",
+                "scope": "task",
+                "chars": 0,
+                "owner_id": "lisa-pack-x",
+                "invalidates": ["r:b.py"],
+            }
+        ]
+    }
     plain = ToolResult(tool_id="plain")
     assert approved_invocation_history(tool_id="plain", result=plain, **common) == {}
 

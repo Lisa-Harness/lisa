@@ -36,6 +36,13 @@ All notable changes to the Lisa Harness will be documented in this file.
     its thread entry, so an operator-approved edit still stales the reads
     it changed.
   - **Templates:** history templates see the call's ``Parameters`` defaults.
+    One ``[]`` anywhere in a field path fans the template out
+    (``{result.sync.upstream_paths[]}``).
+  - **Errors:** an error result claims no keys, but its ``invalidates``
+    templates that read only ``{result.*}`` still resolve against its
+    ``output_json``. A side effect that landed before the failure, such as
+    an auto-rebase before a rejected edit, still stales what it changed.
+    Hooks and parameter templates never fire for errors.
   - **e2e:** the new ``history_folded`` oracle asserts that records are refd
     and that snapshots are present.
   - **Tests:** ``kernel/tests/test_history.py``,
@@ -48,6 +55,13 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- packstest no longer evicts unrelated ``lisa_packs`` modules when it makes
+  a pack checkout importable. It now drops only the ``lisa_packs.<slug>``
+  modules the checkout itself provides that resolved elsewhere, and it puts
+  the checkout's namespace portion first. Previously, loading a second
+  checkout evicted the whole namespace, so later tests patched fresh module
+  objects while calling the old functions, which failed depending on test
+  order. Tests: ``packstest/tests/test_self.py``.
 - MCP server ERROR+ evidence no longer forks a per-server ledger:
   ``configure_logging``'s default composed ``errors.jsonl`` as a sibling
   of every rotating log, so servers logging under the canonical
