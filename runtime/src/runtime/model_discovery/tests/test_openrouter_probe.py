@@ -119,19 +119,20 @@ class TestEnrichment:
         assert model.prompt_price == pytest.approx(0.0000025)
         assert model.completion_price == pytest.approx(0.000015)
         assert model.pricing_currency == "USD"
+        # Capabilities come from the catalog row alone; the registry's
+        # "code" pin is gone (no id-shape inference).
         assert set(model.capabilities) == {
             "text",
             "tools",
             "structured_output",
             "vision",
             "reasoning",
-            "code",
         }
         assert model.thinking_model is True
         assert model.cost_tier == "frontier"
-        # ``known_models.yaml`` pins gpt-5.4 to medium latency (frontier cost,
-        # low-latency class) — the registry overrides the probe's computed tier.
-        assert model.latency_tier == "medium"
+        # A thinking model computes to the high-latency tier; no registry
+        # override layer exists anymore.
+        assert model.latency_tier == "high"
         assert model.description == "OpenAI's frontier model."
 
     def test_no_reasoning_block_not_thinking(self) -> None:

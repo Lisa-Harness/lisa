@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -231,26 +231,14 @@ def _enrich_azure_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     # ``thinking_model`` for codex is set above (near the init).
     completion_api = "responses" if needs_responses else "chat_completions"
 
-    enrichment = apply_known_override(
-        "azure_openai",
-        model_id,
-        {
-            "thinking_model": thinking_model,
-            "display_name": display_name,
-            "capabilities": tuple(capabilities_list),
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "completion_api": completion_api,
-        },
-    )
     return _model(
         model_id,
         "azure_openai",
-        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
-        display_name=str(enrichment.get("display_name", display_name)),
-        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities_list))),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=tuple(capabilities_list),
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
         structured_reliability=1.0,
-        completion_api=str(enrichment.get("completion_api", completion_api)),
+        completion_api=completion_api,
     )

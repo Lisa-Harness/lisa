@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import env_any
 from ..types import DiscoveredModel, ProbeError, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _model
 
@@ -175,46 +175,26 @@ def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredMod
         if _supported(thinking):
             caps.append("reasoning")
         capabilities: tuple[str, ...] = tuple(caps)
-        published: set[str] = {"capabilities", "thinking_model"}
     else:
         capabilities = ("text", "tools", "structured_output", "vision")
         thinking_model = line in {"opus", "mythos"}
-        published = set()
     context_window = _positive_int(row.get("max_input_tokens"))
     max_completion_tokens = _positive_int(row.get("max_tokens"))
-    if context_window:
-        published.add("context_window")
-    if max_completion_tokens:
-        published.add("max_completion_tokens")
 
     if not display_name:
         display_name = (
             f"Claude {model_id.split('-', 1)[1].title()}" if "-" in model_id else model_id
         )
 
-    enrichment = apply_known_override(
-        "anthropic",
-        model_id,
-        {
-            "thinking_model": thinking_model,
-            "display_name": display_name,
-            "capabilities": capabilities,
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "context_window": context_window,
-            "max_completion_tokens": max_completion_tokens,
-        },
-        published=published,
-    )
     return _model(
         model_id,
         "anthropic",
-        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
-        display_name=str(enrichment.get("display_name", display_name)),
-        capabilities=tuple(enrichment.get("capabilities", capabilities)),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
-        context_window=int(enrichment.get("context_window") or 0),
-        max_completion_tokens=int(enrichment.get("max_completion_tokens") or 0),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=capabilities,
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
         structured_reliability=1.0,
     )

@@ -6,8 +6,6 @@ model — ``name``, ``context_length``, ``architecture.{input,output}_modalities
 block, and ``description``. This probe consumes all of it into a
 :class:`~runtime.model_discovery.types.DiscoveredModel` so ``lisa models
 discover`` surfaces OpenRouter models with real pricing and capabilities.
-The static ``known_models.yaml`` registry is still the last-word override for
-fields the API under-reports.
 
 Filtered to chat-capable text models (``text`` among the input, not a
 media/embedding output modality) to keep the emitted manifest lean; the raw
@@ -29,7 +27,6 @@ from typing import Any
 import httpx
 
 from ..classify import (
-    apply_known_override,
     env_any,
     is_batch_only_model,
     is_code_model,
@@ -160,8 +157,7 @@ def _enrich_openrouter_model(
 
     OpenRouter provides capability and pricing metadata directly, so
     capabilities, tiers, and context window come from the API payload, not
-    inference — with a known-models override layered on top for the models it
-    under-reports. ``expires_at`` carries the catalog's published
+    inference. ``expires_at`` carries the catalog's published
     ``expiration_date`` (``None`` = not published).
     """
 
@@ -216,45 +212,21 @@ def _enrich_openrouter_model(
 
     description = str(row.get("description") or "").strip()
 
-    base_enrichment = {
-        "display_name": display_name,
-        "capabilities": tuple(capabilities),
-        "cost_tier": cost_tier,
-        "latency_tier": latency_tier,
-        "context_window": context_window,
-        "max_completion_tokens": max_completion_tokens,
-        "prompt_price": prompt_price,
-        "completion_price": completion_price,
-        "cache_read_price": cache_read_price,
-        "cache_write_price": cache_write_price,
-        "description": description,
-        "thinking_model": thinking_model,
-    }
-    numeric_fields = (
-        "context_window",
-        "max_completion_tokens",
-        "prompt_price",
-        "completion_price",
-        "cache_read_price",
-        "cache_write_price",
-    )
-    published = {field for field in numeric_fields if base_enrichment[field]}
-    merged = apply_known_override("openrouter", model_id, base_enrichment, published=published)
     return _model(
         model_id,
         "openrouter",
-        thinking_model=bool(merged.get("thinking_model", False)),
-        display_name=str(merged.get("display_name") or display_name),
-        capabilities=tuple(merged.get("capabilities") or ()),
-        cost_tier=str(merged.get("cost_tier") or ""),
-        latency_tier=str(merged.get("latency_tier") or ""),
-        context_window=_int_or_zero(merged.get("context_window")),
-        max_completion_tokens=_int_or_zero(merged.get("max_completion_tokens")),
-        prompt_price=float(merged.get("prompt_price") or 0.0),
-        completion_price=float(merged.get("completion_price") or 0.0),
-        cache_read_price=float(merged.get("cache_read_price") or 0.0),
-        cache_write_price=float(merged.get("cache_write_price") or 0.0),
-        description=str(merged.get("description") or ""),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=tuple(capabilities),
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
+        prompt_price=prompt_price,
+        completion_price=completion_price,
+        cache_read_price=cache_read_price,
+        cache_write_price=cache_write_price,
+        description=description,
         expires_at=expires_at,
     )
 

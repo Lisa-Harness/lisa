@@ -158,27 +158,28 @@ class TestManifestCompletionCeiling:
         load_model_manifest_from_text(render_manifest_yaml(payload))
 
 
-class TestRegistryPrecedence:
-    """``known_models.yaml`` fills gaps; it never replaces published fields."""
+class TestProviderPublishedFactsWin:
+    """Published provider fields stand alone; gaps stay unknown."""
 
-    def test_published_context_window_beats_registry(self) -> None:
+    def test_published_context_window_is_used(self) -> None:
         model = _enrich_anthropic_model("claude-sonnet-5", _anthropic_row())
         assert model.context_window == 1_000_000
 
-    def test_registry_fills_unpublished_context_window(self) -> None:
+    def test_unpublished_context_window_stays_unknown(self) -> None:
+        """No registry fallback: an absent ``max_input_tokens`` means unknown."""
         row = _anthropic_row()
         del row["max_input_tokens"]
         model = _enrich_anthropic_model("claude-sonnet-5", row)
-        assert model.context_window == 200_000
+        assert model.context_window == 0
 
-    def test_published_negative_capability_beats_registry(self) -> None:
-        """The registry marks claude-opus-4-8 thinking; the API says manual thinking 400s."""
+    def test_explicitly_unsupported_thinking_is_respected(self) -> None:
+        """The API says manual thinking 400s for claude-opus-4-8; it stays off."""
         caps = _anthropic_row()["capabilities"]
         caps["thinking"]["types"]["enabled"] = {"supported": False}
         model = _enrich_anthropic_model("claude-opus-4-8", _anthropic_row(capabilities=caps))
         assert model.thinking_model is False
 
-    def test_google_published_input_limit_beats_registry(self) -> None:
+    def test_google_published_input_limit_is_used(self) -> None:
         model = _enrich_google_model(
             "gemini-2.5-pro",
             {"supportedGenerationMethods": ["generateContent"], "inputTokenLimit": 1_048_576},

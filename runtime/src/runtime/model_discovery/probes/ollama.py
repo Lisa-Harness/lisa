@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import apply_known_override, env_any, is_code_model
+from ..classify import env_any, is_code_model
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -151,8 +151,7 @@ def _derive_ollama_capabilities(
     family/size, so this heuristic cannot be replaced. This lets the
     router rule ``'"code" in route.required_capabilities'`` and
     ``_pick_code_model`` select a coding model (e.g. glm-5.2:cloud)
-    instead of silently defaulting. ``known_models.yaml`` can still
-    override per model.
+    instead of silently defaulting.
     """
     capabilities: list[str] = ["text", "tools", "structured_output"]
     if show_caps:
@@ -183,8 +182,7 @@ def _derive_ollama_tiers(
     Local models treat ``response_format`` as a *soft hint*: small models
     routinely ignore the declared schema and emit prose, so the
     structured-output confidence starts at a conservative floor and rises
-    with parameter count. ``known_models.yaml`` can override per model
-    where measured.
+    with parameter count.
     """
     if model_id.lower().endswith(":cloud"):
         # Cloud-hosted models — billing is opaque, assume standard.
@@ -253,8 +251,7 @@ def _enrich_ollama_model(
     When ``show_payload`` (the per-model ``/api/show`` response) is
     supplied, its authoritative ``capabilities`` array and
     ``model_info.general.context_length`` override the family-based
-    ``vision`` guess and the default ``context_window``. The static
-    registry in ``known_models.yaml`` is applied last and still wins.
+    ``vision`` guess and the default ``context_window``.
     """
 
     raw_details = item.get("details")
@@ -277,37 +274,21 @@ def _enrich_ollama_model(
     # Authoritative context length: /api/show model_info wins any
     # ``*.context_length`` (family-keyed on the Ollama cloud proxy); the
     # tag-derived ``details.context_length`` fills in when /api/show is
-    # absent or unusable. Either is provider-published, so
-    # ``known_models.yaml`` only fills it when both are missing.
+    # absent or unusable.
     context_window = _ollama_show_context_window(show_payload)
     if context_window <= 0:
         raw_caption_ctx = details.get("context_length")
         if isinstance(raw_caption_ctx, (int, float)) and raw_caption_ctx > 0:
             context_window = int(raw_caption_ctx)
 
-    enrichment = apply_known_override(
-        "ollama",
-        model_id,
-        {
-            "capabilities": tuple(capabilities),
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "description": description,
-            "context_window": context_window,
-            "structured_reliability": structured_reliability,
-        },
-        published=("context_window",) if context_window > 0 else (),
-    )
     return _model(
         model_id,
         "ollama",
         display_name=display_name,
-        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities))),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
-        context_window=int(enrichment.get("context_window", context_window)),
-        description=str(enrichment.get("description", description)),
-        structured_reliability=float(
-            enrichment.get("structured_reliability", structured_reliability)
-        ),
+        capabilities=tuple(capabilities),
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        description=description,
+        structured_reliability=structured_reliability,
     )

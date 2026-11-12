@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -239,16 +239,6 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     max_completion_tokens = (
         output_limit if isinstance(output_limit, int) and output_limit > 0 else 0
     )
-    published = {
-        field
-        for field, present in (
-            ("context_window", context_window > 0),
-            ("max_completion_tokens", max_completion_tokens > 0),
-            ("thinking_model", isinstance(row.get("thinking"), bool)),
-        )
-        if present
-    }
-
     # Cost/latency inference from the model id — Gemini Flash = budget/low,
     # Gemini Pro = premium/medium, everything else standard/medium.
     lowered = model_id.lower()
@@ -261,31 +251,16 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
         cost_tier = "premium"
         latency_tier = "medium"
 
-    enrichment = apply_known_override(
-        "google",
-        model_id,
-        {
-            "thinking_model": thinking_model,
-            "display_name": display_name,
-            "capabilities": capabilities,
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "context_window": context_window,
-            "max_completion_tokens": max_completion_tokens,
-            "description": description,
-        },
-        published=published,
-    )
     return _model(
         model_id,
         "google",
-        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
-        display_name=str(enrichment.get("display_name", display_name)),
-        capabilities=tuple(enrichment.get("capabilities", capabilities)),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
-        context_window=int(enrichment.get("context_window", context_window)),
-        max_completion_tokens=int(enrichment.get("max_completion_tokens", max_completion_tokens)),
-        description=str(enrichment.get("description", description)),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=capabilities,
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
+        description=description,
         structured_reliability=1.0,
     )

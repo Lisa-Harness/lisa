@@ -5,10 +5,8 @@ from __future__ import annotations
 from datetime import date
 
 from runtime.model_discovery.classify import (
-    apply_known_override,
     is_batch_only_model,
     is_model_expired,
-    load_known_models,
     model_expires_within,
     parse_expiry_date,
     uses_prompt_cache_breakpoints,
@@ -72,8 +70,8 @@ class TestOpenAIEnrichment:
         assert model.thinking_model is True
         assert model.reasoning_model is True
         assert "reasoning" in model.capabilities
-        # The static registry overrides o3-pro to frontier tier.
-        assert model.cost_tier == "frontier"
+        # No registry override layer: the probe computes o3-pro as premium.
+        assert model.cost_tier == "premium"
 
     def test_gpt_5_is_frontier(self) -> None:
         model = _enrich_openai_model("gpt-5.4")
@@ -83,7 +81,9 @@ class TestOpenAIEnrichment:
     def test_mini_is_budget(self) -> None:
         model = _enrich_openai_model("gpt-5.4-mini")
         assert model.cost_tier == "standard"
-        assert model.latency_tier == "low"
+        # Tiers come from the probe's own computation; the registry's
+        # "low" latency pin is gone.
+        assert model.latency_tier == "medium"
 
     def test_codex_uses_responses_api(self) -> None:
         """Codex-family models only expose the Responses API on Azure."""
@@ -464,70 +464,56 @@ class TestPromptCacheBreakpointClassification:
         assert not uses_prompt_cache_breakpoints("openai", "gpt-5.6-terra")
 
 
-class TestKnownModelsRegistry:
-    def test_load_known_models_returns_dict(self) -> None:
-        registry = load_known_models()
-        assert isinstance(registry, dict)
-        # Must have at least the seed entries
-        assert "openai:gpt-5.4" in registry
+class TestOllamaCloudShowCapabilities:
+    """``/api/show`` capabilities are the provenance for cloud reasoning.
 
-    def test_apply_known_override_fills_missing_fields(self) -> None:
-        enrichment = apply_known_override(
-            "openai",
-            "gpt-5.4",
-            {"display_name": "", "cost_tier": ""},
-        )
-        assert enrichment["display_name"] == "GPT-5.4"
-        assert enrichment["cost_tier"] == "frontier"
+    The 2026-09-19 narration-loop incident: a discovered manifest
+    dropped the ``reasoning`` capability from glm-5.3-flash:cloud, which
+    silently demoted it to the lean 4096 legacy completion budget (the
+    capability drives ``_turn_completion_max_tokens``), and every turn
+    truncated mid-tool-call. The capability must come from the provider's
+    published ``/api/show`` ``capabilities`` array (``thinking`` maps to
+    ``reasoning``); nothing else restores it — the hand-maintained
+    registry that used to pin these rows is gone by design.
+    """
 
-    def test_apply_known_override_preserves_provider_fields_when_no_entry(self) -> None:
-        enrichment = apply_known_override(
-            "openai",
-            "totally-unknown-model",
-            {"display_name": "From Provider", "cost_tier": "standard"},
-        )
-        assert enrichment["display_name"] == "From Provider"
-        assert enrichment["cost_tier"] == "standard"
-
-    def test_apply_known_override_skips_empty_registry_values(self) -> None:
-        # A registry entry with empty values should not wipe provider data.
-        registry_entry = load_known_models().get("openai:gpt-5.4", {})
-        assert registry_entry.get("cost_tier") == "frontier"  # non-empty
-
-    def test_ollama_cloud_reasoning_models_keep_reasoning_capability(self) -> None:
-        """Registry pins ``reasoning`` on Ollama cloud reasoning models.
-
-        The 2026-09-19 narration-loop incident: a discovered manifest
-        dropped the ``reasoning`` capability from glm-5.3-flash:cloud, which
-        silently demoted it to the lean 4096 legacy completion budget (the
-        capability drives ``_turn_completion_max_tokens``), and every turn
-        truncated mid-tool-call. The registry override must restore the
-        capability even though the substring heuristic does not flag
-        these model ids as reasoning models.
-        """
+    def test_cloud_reasoning_capability_comes_from_show_payload(self) -> None:
         for model_id in (
             "glm-5.3:cloud",
             "glm-5.3-flash:cloud",
             "deepseek-v4.1-flash:cloud",
         ):
-            enrichment = apply_known_override(
-                "ollama",
+            model = _enrich_ollama_model(
                 model_id,
-                {"capabilities": ("text", "tools", "structured_output")},
+                {"details": {"parameter_size": "0B", "family": "qwen3"}},
+                show_payload={"capabilities": ["tools", "thinking"]},
             )
-            assert "reasoning" in enrichment["capabilities"], model_id
+            assert "reasoning" in model.capabilities, model_id
 
-    def test_ollama_cloud_reasoning_models_flag_stays_false(self) -> None:
-        """The registry must NOT set ``reasoning_model`` for Ollama models.
+    def test_missing_show_capability_stays_missing(self) -> None:
+        """No ``/api/show`` thinking row -> no invented capability."""
+        model = _enrich_ollama_model(
+            "glm-5.3:cloud",
+            {"details": {"parameter_size": "0B", "family": "qwen3"}},
+        )
+        assert "reasoning" not in model.capabilities
+        assert model.thinking_model is False
+
+    def test_reasoning_flag_stays_false_for_ollama(self) -> None:
+        """The flag must NOT be set for Ollama models.
 
         The flag switches the OpenAI-compatible gateway to
         ``max_completion_tokens``, which Ollama accepts but silently
         ignores (probed live: cap=50 → 254 completion tokens,
-        finish=stop) — losing all budget enforcement. The capability-only
-        override keeps the wire on ``max_tokens`` while still driving the
-        reasoning-aware completion budget.
+        finish=stop) — losing all budget enforcement. The ``reasoning``
+        capability alone keeps the wire on ``max_tokens`` while still
+        driving the reasoning-aware completion budget.
         """
         for model_id in ("glm-5.3:cloud", "glm-5.3-flash:cloud"):
-            registry_entry = load_known_models().get(f"ollama:{model_id}", {})
-            assert "reasoning_model" not in registry_entry, model_id
-            assert registry_entry.get("thinking_model") is None, model_id
+            model = _enrich_ollama_model(
+                model_id,
+                {"details": {"parameter_size": "0B", "family": "qwen3"}},
+                show_payload={"capabilities": ["tools", "thinking"]},
+            )
+            assert model.thinking_model is False, model_id
+            assert model.reasoning_model is False, model_id

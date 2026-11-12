@@ -50,9 +50,8 @@ class DiscoveredModel:
     ``capabilities``, ``cost_tier``, ``latency_tier``, ``context_window``,
     ``description``) are optional and populated best-effort by each provider
     probe from the metadata the provider's list endpoint already returns.
-    Probes only fill what they can prove from the API response; the static
-    registry in ``known_models.yaml`` is the fallback for fields the
-    provider does not expose.
+    Probes only fill what they can prove from the API response; fields the
+    provider does not publish remain unknown.
     """
 
     model_id: str

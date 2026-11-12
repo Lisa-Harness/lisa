@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -132,28 +132,16 @@ def _enrich_openai_model(model_id: str) -> DiscoveredModel:
     # generated manifest routes them correctly without a hand edit.
     completion_api = "responses" if "codex" in lowered else "chat_completions"
 
-    enrichment = apply_known_override(
-        "openai",
-        model_id,
-        {
-            "thinking_model": thinking_model,
-            "display_name": display_name,
-            "capabilities": tuple(capabilities),
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "completion_api": completion_api,
-        },
-    )
     return _model(
         model_id,
         "openai",
-        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
-        display_name=str(enrichment.get("display_name", display_name)),
-        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities))),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=tuple(capabilities),
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
         structured_reliability=1.0,
-        completion_api=str(enrichment.get("completion_api", completion_api)),
+        completion_api=completion_api,
     )
 
 

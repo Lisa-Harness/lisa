@@ -10,13 +10,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable
 from datetime import date, datetime, timedelta
-from functools import lru_cache
-from pathlib import Path
-from typing import Any
-
-import yaml
 
 # Reasoning-model markers. Substring match against the lower-cased
 # model id. Kept deliberately narrow to avoid false positives like
@@ -57,8 +51,6 @@ _CODE_MODEL_MARKERS = ("codex", "coder", "glm", "code-")
 #: pack-contributed role defaults consult this.
 _LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
 
-_KNOWN_MODELS_PATH = Path(__file__).parent / "known_models.yaml"
-
 
 def env_any(*names: str) -> str:
     """Return the first non-empty environment variable among ``names``."""
@@ -95,9 +87,7 @@ def is_code_model(model_id: str) -> bool:
     well-known coding model families/naming conventions. Providers without
     capability metadata (notably Ollama) use this to advertise the ``code``
     capability so the router rule ``'"code" in route.required_capabilities'``
-    and ``_pick_code_model`` can select a coding model. Overrides in
-    ``known_models.yaml`` still win because each probe applies the registry
-    after this heuristic.
+    and ``_pick_code_model`` can select a coding model.
     """
 
     value = model_id.strip().lower()
@@ -193,56 +183,3 @@ def is_batch_only_model(model_id: str) -> bool:
     pinning one fails on the first turn.
     """
     return model_id.strip().lower().endswith(":batch")
-
-
-@lru_cache(maxsize=1)
-def load_known_models() -> dict[str, dict[str, Any]]:
-    """Load the static ``known_models.yaml`` registry.
-
-    Returns a ``{provider:model_id: {field: value}}`` mapping. The file is
-    cached for the process lifetime; restart the host to pick up edits.
-
-    Returns an empty dict if the file is missing or unreadable — discovery
-    must never fail because the registry is corrupt.
-    """
-
-    if not _KNOWN_MODELS_PATH.exists():
-        return {}
-    try:
-        payload = yaml.safe_load(_KNOWN_MODELS_PATH.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        str(key).lower(): dict(value) for key, value in payload.items() if isinstance(value, dict)
-    }
-
-
-def apply_known_override(
-    provider: str,
-    model_id: str,
-    enrichment: dict[str, Any],
-    *,
-    published: Iterable[str] = (),
-) -> dict[str, Any]:
-    """Overlay static-registry values on top of provider-derived enrichment.
-
-    The registry fills fields the provider does not expose and corrects
-    heuristic guesses. Fields named in ``published`` came from the
-    provider's own catalog row for this model and are never overridden —
-    a hand-maintained number must not replace the provider's live one.
-    """
-
-    registry = load_known_models()
-    registry_key = f"{provider}:{model_id}".lower()
-    override = registry.get(registry_key)
-    if not override:
-        return enrichment
-    provider_owned = frozenset(published)
-    merged = dict(enrichment)
-    for field, value in override.items():
-        if field in provider_owned or value in (None, "", [], ()):
-            continue
-        merged[field] = value
-    return merged
