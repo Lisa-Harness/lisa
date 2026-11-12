@@ -55,6 +55,16 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Structured-output operations recover truncated model payloads before
+  validation: ``parse_structured_payload`` runs one normalization pass —
+  ``salvage_truncated_envelope`` (rebuild a closed JSON envelope from a
+  token-truncated one, element-wise over a masked copy that keeps every
+  complete object) then ``unwrap_nested_envelope`` — so the distiller's
+  ``{"facts": [...]}`` shape survives a mid-array token cutoff instead of
+  crash-looping ``synthesize_and_store_learning`` (34 failures Nov 8-11).
+  Recovered payloads still have to satisfy the operation's schema, and
+  string-only or never-opened payloads pass through unchanged. Tests:
+  ``kernel/tests/test_operations_structured_output.py``.
 - packstest no longer evicts unrelated ``lisa_packs`` modules when it makes
   a pack checkout importable. It now drops only the ``lisa_packs.<slug>``
   modules the checkout itself provides that resolved elsewhere, and it puts
