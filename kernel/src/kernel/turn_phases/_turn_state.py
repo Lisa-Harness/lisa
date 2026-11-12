@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from kernel.history import HistoryLedger
 from kernel.models import (
     EffectReceipt,
     ForkChildResult,
@@ -548,9 +549,13 @@ class _TurnState:
     # soft-trigger crossing); ``truncation_tripped`` is the one-way
     # output circuit-breaker (first finish_reason=length mid-turn).
     intra_turn_compaction: IntraTurnCompactionState = field(
-        default_factory=IntraTurnCompactionState
+        default_factory=IntraTurnCompactionState.from_settings
     )
     intra_turn_compaction_estimator: LiveArrayEstimator = field(default_factory=LiveArrayEstimator)
+    history_ledger: HistoryLedger = field(default_factory=HistoryLedger)
+    """Pack-declared history claims for this turn's tool results
+    (``kernel.history``): drives the supersession epoch and the
+    ``TurnResult.history`` block replay folds from."""
     truncation_tripped: bool = False
     """One-way output circuit-breaker: set at the FIRST mid-turn
     finish_reason=length. Further large emissions are kernel-blocked

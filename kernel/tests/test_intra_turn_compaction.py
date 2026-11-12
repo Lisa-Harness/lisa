@@ -352,3 +352,26 @@ def test_compaction_state_defaults_and_snapshot() -> None:
     snap = IntraTurnCompactionState.from_settings()
     assert snap.soft_trigger_share > 0.0
     assert snap.hard_ceiling_share > snap.soft_trigger_share
+
+
+def test_mode_working_set_caps_soft_trigger() -> None:
+    common: dict[str, Any] = {
+        "model_def": SimpleNamespace(context_window=10_000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "coding_execute",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
+    # 900 tokens is far under half of a 10K window: no epoch by share alone.
+    state, hooks, messages = _epoch_fixture(window=10_000, estimate=900)
+    assert maybe_run_soft_epoch(state=state, hooks=hooks, messages=messages, **common) is False
+    # A mode working set of 800 tokens pulls the trigger down under the estimate.
+    state, hooks, messages = _epoch_fixture(window=10_000, estimate=900)
+    state.mode_config = SimpleNamespace(working_set_tokens=800)
+    assert maybe_run_soft_epoch(state=state, hooks=hooks, messages=messages, **common) is True
+    assert len(str(messages[2]["content"])) < 24000
+
+
+def test_compaction_state_snapshots_history_epoch_setting() -> None:
+    assert IntraTurnCompactionState.from_settings().history_epoch_min_tokens == 12_000

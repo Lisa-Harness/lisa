@@ -39,7 +39,7 @@ from kernel.approval import (
 )
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationResult, ToolResult
-from kernel.turn_runner import execute_approved_invocation
+from kernel.turn_runner import approved_invocation_history, execute_approved_invocation
 
 from runtime.approval.presentation import (
     approval_action_receipt,
@@ -520,6 +520,16 @@ async def _record_and_continue_after_approval(
         handoff_to=""
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
+        history=None
+        if error or invocation.target_kind != "tool"
+        else approved_invocation_history(
+            tool_id=str(invocation.target_id or ""),
+            request_id=invocation.request_id,
+            parameters=dict(invocation.parameters or {}),
+            result=result,
+            log=logger,
+        )
+        or None,
     )
 
     if error and not (

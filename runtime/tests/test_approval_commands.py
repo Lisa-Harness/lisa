@@ -1995,3 +1995,103 @@ async def test_approve_rejects_cross_user_request_from_other_session(
     persisted = await runtime.services.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_approved_edit_records_history_that_stales_earlier_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host-approved edit's invalidations fold the reads it changed at replay."""
+    from kernel.history import HistoryPolicy
+    from kernel.models import ToolDefinition
+    from runtime.thread import (
+        build_open_task_messages,
+        load_recent_thread_entries,
+        persist_thread_tool_result,
+    )
+
+    runtime = _make_runtime(tmp_path)
+    runtime.session.current_mode_id = "executor"
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "edit": ToolDefinition(
+                tool_id="edit",
+                owner_id="lisa-pack-x",
+                history=HistoryPolicy(scope="turn", invalidates="read:{path}"),
+            )
+        },
+    )
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="edit",
+        pack_id="lisa-pack-x",
+        effect="write",
+        parameters={"path": "a.py"},
+        identity=_identity(runtime),
+        pack_config={},
+    )
+    thread = runtime.paths.thread_path
+    assert thread is not None
+    read_text = "FILE A v1 " * 50
+    ref = persist_thread_tool_result(
+        thread, {"content": read_text, "task_id": "task-1", "tool_name": "read"}
+    )
+    call = {"id": "call-1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+    edit = {"id": "call-2", "type": "function", "function": {"name": "edit", "arguments": "{}"}}
+    append_thread_entry(
+        thread_path=thread,
+        user_slug=runtime.config.user_slug,
+        mode_id="executor",
+        query="fix the bug",
+        response_text="approval required",
+        provenance={
+            "source": "observed",
+            "task_id": "task-1",
+            "pending_approval_request_id": invocation.request_id,
+            "pending_approval_tool_call_id": "call-2",
+        },
+        transcript=[
+            {"role": "user", "content": "fix the bug"},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call-1", "content": read_text},
+            {"role": "assistant", "content": "", "tool_calls": [edit]},
+        ],
+        history={
+            "records": [
+                {
+                    "call_id": "call-1",
+                    "tool_id": "read",
+                    "owner_id": "lisa-pack-x",
+                    "keys": ["read:a.py"],
+                    "ref": ref,
+                    "chars": len(read_text),
+                }
+            ]
+        },
+    )
+    approval_module = importlib.import_module("runtime.approval.orchestration")
+
+    async def route_model_turn(
+        _runtime: HostRuntime, _query: str, _t: object, *, task_id: str = ""
+    ) -> HostCommandResult:
+        return HostCommandResult(text="continued")
+
+    await approval_module._record_and_continue_after_approval(
+        runtime,
+        invocation,
+        ToolResult(tool_id="edit", output_text="saved a.py"),
+        transport=NullTransport(),
+        route_model_turn=route_model_turn,
+    )
+
+    approved = load_recent_thread_entries(thread_path=thread, limit=1)[0]
+    assert approved["history"]["records"][0]["invalidates"] == ["read:a.py"]
+    tool_contents = [
+        str(m["content"])
+        for m in build_open_task_messages(thread_path=thread)
+        if m["role"] == "tool"
+    ]
+    assert tool_contents[0].startswith("[invalidated by call")
+    assert ref in tool_contents[0]
+    assert tool_contents[-1] == "saved a.py"

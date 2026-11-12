@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 from kernel.config import settings as _kernel_settings
+from kernel.history import HistoryPolicy
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
 
 # Config-backed completion defaults for declarative operations. The kernel
@@ -411,6 +412,7 @@ def _load_one_mode(
         ),
         "task_completion": str(front_matter.get("task_completion", "none") or "none"),
         "task_artifact_tool_id": str(front_matter.get("task_artifact_tool_id", "") or ""),
+        "working_set_tokens": int(front_matter.get("working_set_tokens", 0) or 0),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,
@@ -1577,4 +1579,15 @@ def _load_runtime_tool(
         "abbreviation_template": str(metadata.get("abbreviation_template", "") or ""),
         "display_template": str(metadata.get("display_template", "") or ""),
         "stream_output": bool(metadata.get("stream_output", False)),
+        "history": _history_block(yml_path, metadata.get("history")),
     }
+
+
+def _history_block(yml_path: Path, raw: Any) -> dict[str, Any] | None:
+    """Validate a ``history:`` block's shape; parameter names are checked on import."""
+    if raw is None:
+        return None
+    try:
+        return HistoryPolicy.model_validate(raw).model_dump(mode="json")
+    except ValueError as exc:
+        raise ValueError(f"{yml_path}: invalid history block: {exc}") from exc

@@ -496,6 +496,36 @@ async def execute_tool(
     return _coerce_tool_result(tool_id, result)
 
 
+_HISTORY_HOOKS = frozenset({"history_snapshot", "resolve_history_anchor"})
+
+
+async def invoke_history_hook(
+    tool_id: str,
+    hook_name: str,
+    ctx: ToolExecutionContext,
+    argument: Any,
+    *,
+    timeout_seconds: float = 10.0,
+) -> Any:
+    """Call one pack history hook under its tool's own configuration binding.
+
+    History hooks (``kernel.history``) read the same pack state the tool
+    does, so they get the tool's resolved ``pack_config`` and never the
+    capability-binding provider itself. Returns ``None`` when the tool or
+    hook is absent.
+    """
+    if hook_name not in _HISTORY_HOOKS:
+        raise ValueError(f"unknown history hook {hook_name!r}")
+    definition = _TOOL_CATALOG.get(tool_id)
+    hook = getattr(definition.implementation_module, hook_name, None) if definition else None
+    if definition is None or hook is None:
+        return None
+    hook_ctx = ctx.model_copy(update={"tool_id": tool_id, "parameters": {}})
+    _resolve_execution_configuration(definition, hook_ctx)
+    hook_ctx.capability_binding_provider = None
+    return await asyncio.wait_for(hook(hook_ctx, argument), timeout=timeout_seconds)
+
+
 def project_execution_floor(provider: Any, tool_id: str) -> ExecutionFloorView | None:
     """Expose only a child's execution posture, not its pack configuration."""
     definition = _TOOL_CATALOG.get(tool_id)

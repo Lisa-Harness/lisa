@@ -407,13 +407,26 @@ class Settings(BaseSettings):
     # Pending dedupes collapse to a single line when one preview has
     # appeared this many times in the current result.
     intra_turn_spill_preview_repeat_limit: int = Field(default=3)
-    # Cache economics constants for bust accounting/logging (0.0 =
-    # use the manifest's per-model prices). Provider-standard defaults:
-    # cache reads bill at roughly 0.1x base input and cache creation at
-    # roughly 1.25x, so rewriting a cached suffix re-pays it at about
-    # 12.5x the read rate. Accounting only — they never hard-gate.
+    # Cache economics fallback: cached-read and cache-write prices as a
+    # share of the uncached input price, used when the model manifest
+    # does not publish ``cache_read_price``. Provider-standard defaults:
+    # reads bill at roughly 0.1x base input and 5-minute cache creation
+    # at roughly 1.25x. The supersession epoch folds only when the
+    # rewrite this costs is repaid by later requests (see
+    # ``kernel.turn_phases._history.fold_pays_off``). 1.0/1.0 models a
+    # provider without prompt caching, where every fold pays off.
     intra_turn_cache_read_share: float = Field(default=0.1, ge=0, le=1)
     intra_turn_cache_write_share: float = Field(default=1.25, ge=0)
+    # Pack-declared history (``kernel.history``): floor of stale resident
+    # tokens before the supersession epoch evaluates a fold at all. Above
+    # the floor the cache-cost model decides; the floor only skips
+    # rewrites too small to matter. Sized from the 2026-11 coding turns,
+    # where stale reads/verify reports reached ~30K tokens and the
+    # 2K-floor interim shipped in dac9812a fired the epoch eight times in
+    # one turn, each rewrite re-purchasing the cached prefix at full input
+    # price for a net loss. 0 disables the in-turn epoch; the turn-start
+    # replay still folds stale and turn-scoped results.
+    history_epoch_min_tokens: int = Field(default=12_000, ge=0)
 
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
@@ -527,6 +540,7 @@ class Settings(BaseSettings):
         "intra_turn_spill_preview_repeat_limit",
         "intra_turn_cache_read_share",
         "intra_turn_cache_write_share",
+        "history_epoch_min_tokens",
         mode="before",
     )
     @classmethod

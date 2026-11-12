@@ -1092,3 +1092,31 @@ async def test_recovery_open_id_expansion(tmp_path: Path, monkeypatch: pytest.Mo
     (state / "recovery-items.json").write_text("not-json{", encoding="utf-8")
     exchange = await conversation.send("turn", "/skip $RECOVERY_OPEN_ID")
     assert exchange.message == "/skip $RECOVERY_OPEN_ID"
+
+
+def test_history_folded_oracle_reads_thread_history(tmp_path: Path) -> None:
+    threads = tmp_path / "data" / "data" / "threads"
+    threads.mkdir(parents=True)
+    entry = {
+        "turn": 1,
+        "history": {
+            "records": [
+                {"call_id": "c1", "tool_id": "bash_run", "ref": "r" + "a" * 64},
+                {"call_id": "c2", "tool_id": "bash_run", "ref": "r" + "b" * 64},
+            ],
+            "snapshots": {"lisa-pack-bash": {"cwd": "/w"}},
+        },
+    }
+    (threads / "t.current.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    evidence = Evidence(RunPaths(tmp_path, tmp_path / "data", None, None, ""), DriverOutcome())
+
+    (ok,) = evaluate(
+        (_spec("history_folded", tool="bash_run", min=2, snapshot="lisa-pack-bash"),), evidence
+    )
+    assert ok.passed, ok.detail
+    (short,) = evaluate((_spec("history_folded", tool="bash_run", min=3),), evidence)
+    assert not short.passed
+    (no_snap,) = evaluate(
+        (_spec("history_folded", tool="bash_run", snapshot="lisa-pack-coding"),), evidence
+    )
+    assert not no_snap.passed and "lisa-pack-bash" in no_snap.detail

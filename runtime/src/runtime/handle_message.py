@@ -1157,6 +1157,7 @@ async def _handle_pending_approval(
         reservation=reservation,
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
+        history=result.history,
     )
     approved_result = (
         None
@@ -1714,6 +1715,7 @@ async def _run_reserved_turn(
         if isinstance(run_context.get("memory_ids"), list)
         else None,
         transcript=result.transcript,
+        history=result.history,
     )
     turn_index = turn_index if committed_turn is None else committed_turn
     run_context["turn_index"] = turn_index

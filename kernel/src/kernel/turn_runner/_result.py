@@ -143,6 +143,11 @@ class TurnResult:
     transcript: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim non-system messages this turn added (user message, assistant
     tool calls, tool results), excluding replayed prior messages."""
+    history: dict[str, Any] = field(default_factory=dict)
+    """Pack-declared history for this turn's tool results (``kernel.history``):
+    ``{"records": [...], "snapshots": {owner_id: text}}``. The host stores it
+    on the thread entry; replay folds stale and turn-scoped results to
+    ref-carrying stubs from it. Empty when no tool declared history."""
     model_requests: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim request snapshot for every model call this turn (messages,
     tools, model params), in call order."""

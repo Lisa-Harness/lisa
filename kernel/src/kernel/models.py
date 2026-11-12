@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kernel.approval import EffectKind
 from kernel.capability_binding import ExecutionFloorView
+from kernel.history import HistoryPolicy
 
 if TYPE_CHECKING:
     pass  # forward-ref imports only
@@ -249,6 +250,11 @@ class ToolDefinition(BaseModel):
     # and the host's transport. ``False`` (default) keeps a tool's output
     # invisible until dispatch completes.
     stream_output: bool = False
+    # Authored as the ``.tool.yml`` ``history:`` block (see
+    # ``kernel.history``): opaque supersession keys, invalidation prefixes,
+    # and a fold scope the kernel uses to stub stale results with their
+    # ``r<sha256>`` refs. ``None`` keeps every result resident as before.
+    history: HistoryPolicy | None = None
 
 
 class OperationExecutionContext(BaseModel):
@@ -1433,6 +1439,12 @@ class WorkflowModeConfig(BaseModel):
     # cannot stop. 0/absent = no mode rail. Authored in ``_mode.md``
     # front matter (``turn_completion_budget_tokens``).
     turn_completion_budget_tokens: int = Field(default=0, ge=0)
+    # Live-array working set the mode's loop needs (pack history semantics):
+    # caps the intra-turn soft trigger at ``min(window * share, this)`` so a
+    # long tool loop refs out old results before re-sending them dozens of
+    # times. 0/absent = window share only. Authored in ``_mode.md`` front
+    # matter (``working_set_tokens``).
+    working_set_tokens: int = Field(default=0, ge=0)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

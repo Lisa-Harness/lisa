@@ -337,17 +337,41 @@ def _probe_entry_callable(callable_obj: Any) -> Any:
     return callable_obj()
 
 
+def _checkout_lisa_packs_names(checkout: Path) -> set[str]:
+    """``lisa_packs.<slug>`` names the checkout itself provides."""
+
+    names: set[str] = set()
+    for base in (checkout / "lisa_packs", checkout / "src" / "lisa_packs"):
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            if child.is_dir() and child.name != "__pycache__":
+                names.add(f"lisa_packs.{child.name}")
+            elif child.suffix == ".py" and child.stem != "__init__":
+                names.add(f"lisa_packs.{child.stem}")
+    return names
+
+
 def _stale_lisa_packs_modules(checkout: Path) -> list[str]:
-    """Cached ``lisa_packs*`` modules that live outside ``checkout``.
+    """Cached ``lisa_packs.<slug>*`` modules that collide with ``checkout``.
 
     Two source checkouts in one interpreter collide on the same module name:
     once ``lisa_packs.widgets`` is imported from pack A, importlib returns
-    pack A's module for pack B. A module whose own file (or namespace search
-    path) resolves outside the current checkout is stale and must be evicted
-    before the pack's modules import from the right source.
+    pack A's module for pack B. A module the checkout also provides whose own
+    file (or namespace search path) resolves outside the checkout is stale and
+    must be evicted before the pack's modules import from the right source.
+
+    Modules the checkout does not provide never collide and stay cached, and
+    the ``lisa_packs`` namespace itself is widened rather than evicted.
+    Evicting either would orphan live references held by callers that
+    imported another pack first (their functions would keep the old module's
+    globals while fresh imports see a new module object).
     """
     stale: list[str] = []
-    names_lisa = [m for m in list(sys.modules) if m == "lisa_packs" or m.startswith("lisa_packs.")]
+    provided = _checkout_lisa_packs_names(checkout)
+    names_lisa = [
+        m for m in list(sys.modules) if any(m == p or m.startswith(f"{p}.") for p in provided)
+    ]
     for name in names_lisa:
         module = sys.modules.get(name)
         if module is None:
@@ -365,12 +389,8 @@ def _stale_lisa_packs_modules(checkout: Path) -> list[str]:
             return names_lisa
         if not files:
             continue
-        outside = all(checkout not in f.resolve().parents for f in files)
-        if outside:
+        if all(checkout not in f.resolve().parents for f in files):
             stale.append(name)
-        if name == "lisa_packs" and outside:
-            # Evicting the parent invalidates every child unconditionally.
-            return names_lisa
     return stale
 
 
@@ -383,6 +403,8 @@ def _ensure_source_importable(pack_path: Path) -> list[Path]:
     Same-named modules from another checkout (a previous ``validate_pack``
     call in this process) are evicted first: a regular package's ``__path__``
     is pinned at first import and ``extend_path`` cannot widen a stale child.
+    The shared ``lisa_packs`` namespace is widened with this checkout's
+    portions placed first so its slugs win over same-named older portions.
     """
 
     added: list[Path] = []
@@ -392,12 +414,15 @@ def _ensure_source_importable(pack_path: Path) -> list[Path]:
             sys.path.insert(0, resolved)
             added.append(candidate)
     importlib.invalidate_caches()
-    for name in _stale_lisa_packs_modules(pack_path.resolve()):
+    checkout = pack_path.resolve()
+    for name in _stale_lisa_packs_modules(checkout):
         sys.modules.pop(name, None)
     importlib.invalidate_caches()
     namespace = sys.modules.get("lisa_packs")
     if namespace is not None and hasattr(namespace, "__path__"):
-        namespace.__path__ = extend_path(list(namespace.__path__), namespace.__name__)
+        widened = extend_path(list(namespace.__path__), namespace.__name__)
+        own = [p for p in widened if checkout in Path(p).resolve().parents]
+        namespace.__path__ = own + [p for p in widened if p not in own]
     return added
 
 

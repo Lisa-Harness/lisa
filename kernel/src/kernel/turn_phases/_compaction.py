@@ -65,6 +65,9 @@ class IntraTurnCompactionState:
     hard_ceiling_share: float = 0.65
     large_dispatch_min_chars: int = 2000
     preview_repeat_limit: int = 3
+    history_epoch_min_tokens: int = 12_000
+    cache_read_share: float = 0.1
+    cache_write_share: float = 1.25
     epoch_done_for_crossing: bool = False
     finish_now: bool = False
 
@@ -77,6 +80,9 @@ class IntraTurnCompactionState:
             hard_ceiling_share=float(_kernel_settings.intra_turn_hard_ceiling_share),
             large_dispatch_min_chars=int(_kernel_settings.intra_turn_large_dispatch_min_chars),
             preview_repeat_limit=int(_kernel_settings.intra_turn_spill_preview_repeat_limit),
+            history_epoch_min_tokens=int(_kernel_settings.history_epoch_min_tokens),
+            cache_read_share=float(_kernel_settings.intra_turn_cache_read_share),
+            cache_write_share=float(_kernel_settings.intra_turn_cache_write_share),
         )
 
 
@@ -119,6 +125,17 @@ class LiveArrayEstimator:
             return 0
         delta_tokens = -(-self._live_bytes // 3)
         return int((self._estimate + delta_tokens) * 1.05)
+
+    def release(self, *, bytes_removed: int) -> None:
+        """Record bytes leaving the live array (history folds).
+
+        The byte baseline drops in full; the adopted request-token anchor
+        drops at a quarter weight so the estimate stays biased high — the
+        same under-subtraction the fold governor prices its rewrites with.
+        """
+
+        self._live_bytes = max(0, self._live_bytes - bytes_removed)
+        self._estimate = max(0, self._estimate - bytes_removed // 4)
 
 
 class _WindowFitter:
@@ -294,6 +311,12 @@ def maybe_run_soft_epoch(
 
     window = model_context_window_tokens(model_def)
     soft_tokens = int(window * cfg.soft_trigger_share)
+    # A mode's ``working_set_tokens`` caps the trigger: a coding loop needs a
+    # bounded working set, not half of a million-token window.
+    mode_config = getattr(state, "mode_config", None)
+    working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
+    if working_set > 0:
+        soft_tokens = min(soft_tokens, working_set)
     crossing = estimate >= soft_tokens and not cfg.epoch_done_for_crossing
     if not crossing:
         return False
@@ -302,10 +325,10 @@ def maybe_run_soft_epoch(
     # projector once per call); the reactive reduction remains the net.
     cfg.epoch_done_for_crossing = True
     log.info(
-        "soft trigger crossed (estimate=%d >= %.0f%% of window=%d); running "
+        "soft trigger crossed (estimate=%d >= %d of window=%d); running "
         "batched ref-out epoch (mode=%s)",
         estimate,
-        cfg.soft_trigger_share * 100,
+        soft_tokens,
         window,
         mode_id,
     )
@@ -316,7 +339,7 @@ def maybe_run_soft_epoch(
         model_def=model_def,
         tools=tools,
         max_tokens=max_tokens,
-        soft_window=int(window * cfg.soft_trigger_share),
+        soft_window=soft_tokens,
         prompt_cache_key=prompt_cache_key,
         log=log,
     )

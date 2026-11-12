@@ -235,6 +235,7 @@ Capability and knowledge:
 | Oracle | Args | Passes when |
 | --- | --- | --- |
 | `receipt` | `capability` (id or list), `min` | ≥ `min` effect receipts for those capabilities |
+| `history_folded` | `tool` (id or list), `min`, `snapshot` (owner, optional) | ≥ `min` pack-history records for those tools, each with a ref; the snapshot owner is present when given |
 | `memory_recorded` | `mentions_any`, `min` | ≥ `min` stored memories mention any term |
 | `memory_scope` | `surface_id`, `scope` | every stored memory carries the scenario's declared surface id (and memory scope when given) |
 
