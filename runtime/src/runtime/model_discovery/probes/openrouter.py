@@ -228,6 +228,8 @@ def _enrich_openrouter_model(
         cache_write_price=cache_write_price,
         description=description,
         expires_at=expires_at,
+        supported_parameters=tuple(sorted(supported_params)),
+        modalities=tuple(sorted(input_modalities)),
     )
 
 

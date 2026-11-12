@@ -115,6 +115,10 @@ def _model(
     structured_reliability: float = 0.0,
     completion_api: str = "chat_completions",
     expires_at: date | None = None,
+    supported_parameters: tuple[str, ...] = (),
+    modalities: tuple[str, ...] = (),
+    lifecycle: str = "",
+    deprecated_at: date | None = None,
 ) -> DiscoveredModel:
     """Construct a :class:`DiscoveredModel` with the shared heuristic.
 
@@ -155,6 +159,10 @@ def _model(
         completion_api=completion_api,
         prompt_cache_breakpoints=uses_prompt_cache_breakpoints(provider, model_id),
         expires_at=expires_at,
+        supported_parameters=supported_parameters,
+        modalities=modalities,
+        lifecycle=lifecycle,
+        deprecated_at=deprecated_at,
     )
 
 

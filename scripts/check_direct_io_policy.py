@@ -120,6 +120,15 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "runtime/src/runtime/approval_ledger.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
+    # Candidate catalog swap (MODEL-DATA-LAYERS slice 2): the discovery
+    # command layer writes models.proposed.yaml through a temp file +
+    # os.replace so a crash mid-write can never tear the candidate. The
+    # writer is only invoked after a fully successful probe run, so a
+    # failed/partial run never replaces the last good catalog.
+    "runtime/src/runtime/model_discovery/catalog.py": (
+        "os.replace(tmp_path, path)",
+        "os.unlink(tmp_path)",
+    ),
     "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",

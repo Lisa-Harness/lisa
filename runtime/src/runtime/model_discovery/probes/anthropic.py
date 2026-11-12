@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import env_any
+from ..classify import env_any, parse_expiry_date
 from ..types import DiscoveredModel, ProbeError, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _model
 
@@ -180,6 +180,8 @@ def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredMod
         thinking_model = line in {"opus", "mythos"}
     context_window = _positive_int(row.get("max_input_tokens"))
     max_completion_tokens = _positive_int(row.get("max_tokens"))
+    lifecycle = str(row.get("lifecycle") or "").strip().lower()
+    deprecated_at = parse_expiry_date(row.get("deprecated_at"))
 
     if not display_name:
         display_name = (
@@ -196,5 +198,7 @@ def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredMod
         latency_tier=latency_tier,
         context_window=context_window,
         max_completion_tokens=max_completion_tokens,
+        lifecycle=lifecycle,
+        deprecated_at=deprecated_at,
         structured_reliability=1.0,
     )
