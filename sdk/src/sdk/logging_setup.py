@@ -53,6 +53,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sdk.layout import LOGS_DIR, MCP_LOGS_SUBDIR
+
+# Depth of a canonical ``<data_dir>/logs/mcp/<server>.jsonl`` rotating log:
+# the parent chain from the log file to its data dir is exactly
+# server-name -> mcp -> logs -> <data_dir>.
+_MCP_LOG_PATH_DEPTH = 3
+
 __all__ = [
     "LISA_AUDIT_GUARD_ENV",
     "LISA_LOG_DEBUG_ENV",
@@ -345,6 +352,29 @@ def _resolve_stderr_enabled(host_kind: str | None) -> bool:
     return _stderr_default_for(host_kind)
 
 
+def _resolve_default_errors_path(log_path: Path) -> Path:
+    """Compose the default ERROR+ ledger destination for ``log_path``.
+
+    The split-brain bug (2026-11-11 self-diagnosis, Bug C): composing the
+    ledger as a sibling of every rotating log forked one per-server
+    ``errors.jsonl`` under ``<data_dir>/logs/mcp/`` for each first-party
+    MCP server while their ERROR+ evidence was wanted in the host ledger
+    forensics reads (``~/.lisa/logs/errors.jsonl``), leaving beside it an
+    empty ``mcp/errors.jsonl`` and a weeks-old zero-byte ``~/.lisa/errors.jsonl``
+    from an older flat-layout launch.
+
+    Canonical-layout logs (``<data_dir>/logs/mcp/<server>.jsonl``, per
+    ``sdk.layout``) therefore route to the host ledger. Explicit
+    ``errors_path`` callers keep their path, and non-canonical layouts
+    (tests, flat single-file hosts) keep the sibling default.
+    """
+
+    parts = log_path.parent.parts
+    if len(parts) >= _MCP_LOG_PATH_DEPTH and parts[-1] == MCP_LOGS_SUBDIR and parts[-2] == LOGS_DIR:
+        return log_path.parent.parent / _ERRORS_FILENAME
+    return log_path.parent / _ERRORS_FILENAME
+
+
 def configure_logging(
     *,
     log_path: Path,
@@ -374,7 +404,10 @@ def configure_logging(
         Override the default :class:`JSONFormatter` (used by tests).
     errors_path:
         Destination for the ERROR+ evidence ledger (default:
-        ``<log_path.parent>/errors.jsonl``). Unlike the rotating log, this
+        ``<log_path.parent>/errors.jsonl``, routed to the host ledger
+        ``<data_dir>/logs/errors.jsonl`` when the rotating log lives
+        under the canonical ``<data_dir>/logs/mcp/`` subtree — see
+        :func:`_resolve_default_errors_path`). Unlike the rotating log, this
         handler is neither rotated nor rate-limited — every ERROR+ record
         lands, sealed to never-deleted numbered sidecars when large. Pass
         ``log_path`` explicitly to disable the ledger (single-file hosts).
@@ -399,9 +432,9 @@ def configure_logging(
     file_handler.addFilter(rate_filter)
     root.addHandler(file_handler)
 
-    resolved_errors_path = (
-        errors_path if errors_path is not None else (log_path.parent / _ERRORS_FILENAME)
-    )
+    resolved_errors_path = errors_path
+    if resolved_errors_path is None:
+        resolved_errors_path = _resolve_default_errors_path(log_path)
     if resolved_errors_path != log_path:
         errors_handler = SealedErrorsHandler(resolved_errors_path)
         errors_handler.setLevel(logging.ERROR)

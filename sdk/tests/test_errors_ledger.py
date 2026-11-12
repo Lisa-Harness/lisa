@@ -182,6 +182,43 @@ def test_rate_limited_error_still_lands_in_ledger(tmp_path: Path) -> None:
     assert sum(1 for r in ledger if r["msg"] == "same failure") == 10
 
 
+def test_mcp_log_ledger_routes_to_host_errors_jsonl(tmp_path: Path) -> None:
+    """Canonical ``logs/mcp/<server>.jsonl`` logs write the host ledger.
+
+    Per-server siblings under ``logs/mcp/`` forked the ERROR+ evidence
+    ledger (Bug C, 2026-11-11): the forensics reader only consumes
+    ``<data_dir>/logs/errors.jsonl``, so server-side errors landed in an
+    orphan nobody read.
+    """
+    log_path = tmp_path / "logs" / "mcp" / "lisa-catalog.jsonl"
+    configure_logging(log_path=log_path, level="info", host_kind=None)
+    root = logging.getLogger()
+    try:
+        logging.getLogger("test.mcp.errors").error("server-side failure")
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+
+    host_ledger = _read_jsonl(tmp_path / "logs" / "errors.jsonl")
+    assert any(r["msg"] == "server-side failure" for r in host_ledger)
+    assert not (tmp_path / "logs" / "mcp" / "errors.jsonl").exists()
+
+
+def test_non_canonical_log_keeps_sibling_ledger(tmp_path: Path) -> None:
+    """A rotating log outside ``logs/mcp/`` keeps its sibling ledger."""
+    log_path = tmp_path / "elsewhere" / "server.jsonl"
+    configure_logging(log_path=log_path, level="info", host_kind=None)
+    root = logging.getLogger()
+    try:
+        logging.getLogger("test.flat.errors").error("sibling failure")
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+
+    sibling = _read_jsonl(tmp_path / "elsewhere" / "errors.jsonl")
+    assert any(r["msg"] == "sibling failure" for r in sibling)
+
+
 def test_level_floor_survives_apply_log_levels(tmp_path: Path) -> None:
     log_path = tmp_path / "runtime.jsonl"
     configure_logging(log_path=log_path, level="info", host_kind="cli")

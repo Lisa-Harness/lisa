@@ -4,6 +4,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP server ERROR+ evidence no longer forks a per-server ledger:
+  ``configure_logging``'s default composed ``errors.jsonl`` as a sibling
+  of every rotating log, so servers logging under the canonical
+  ``<data_dir>/logs/mcp/`` subtree each wrote an orphan ledger the
+  forensics reader never reads (2026-11-11 split-brain diagnosis — an
+  active ``logs/errors.jsonl`` beside empty ``logs/mcp/errors.jsonl``).
+  Canonical-layout logs now route to the host ledger
+  ``<data_dir>/logs/errors.jsonl``; explicit ``errors_path`` callers and
+  non-canonical layouts keep their existing destinations. Tests:
+  ``sdk/tests/test_errors_ledger.py``.
+
 ## [0.5.4] - 2026-11-11
 
 ### Added
