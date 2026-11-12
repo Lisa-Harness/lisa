@@ -64,7 +64,19 @@ All notable changes to the Lisa Harness will be documented in this file.
   crash-looping ``synthesize_and_store_learning`` (34 failures Nov 8-11).
   Recovered payloads still have to satisfy the operation's schema, and
   string-only or never-opened payloads pass through unchanged. Tests:
+
   ``kernel/tests/test_operations_structured_output.py``.
+
+- History anchors are served only when the kernel issued them: the
+  live-message half of the issuance check now parses the candidate as a
+  whole-message stub (via ``kernel.history.stub_anchor``) instead of
+  substring-matching the stub prose, so a stub quoted inside another
+  tool's output no longer authorizes running the owning pack's
+  ``resolve_history_anchor`` with anchor-derived parameters. The fold
+  paths release folded bytes through the new
+  ``LiveArrayEstimator.release`` instead of writing the estimator's
+  private fields. Tests: ``kernel/tests/test_history_anchor_issuance.py``.
+
 - packstest no longer evicts unrelated ``lisa_packs`` modules when it makes
   a pack checkout importable. It now drops only the ``lisa_packs.<slug>``
   modules the checkout itself provides that resolved elsewhere, and it puts
@@ -4413,6 +4425,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - `_extract_completion_usage` (turn runner) now returns a 7-tuple including `cached_tokens`, `reasoning_tokens`, `duration_ms`, and `latency_ms`; callers updated accordingly.
 - `_extract_usage_counts` (Little Lisa) now returns a 5-tuple including `cached_tokens` and `reasoning_tokens`; both call sites updated.
 
+
 ## [0.1.0] — 2026-10-19
 
 ### Added
@@ -4495,3 +4508,4 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both router planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
 - Router routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
+

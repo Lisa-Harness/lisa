@@ -19,6 +19,7 @@ from kernel.history import (
     existing_result_ref,
     render_stub,
     resolve_history_keys,
+    stub_anchor,
 )
 from kernel.models import ToolResult
 from kernel.tools.registry import get_tool_catalog, invoke_history_hook
@@ -256,10 +257,7 @@ def maybe_run_supersession_epoch(
         folded += 1
         removed += max(0, len(content.encode("utf-8")) - len(stub.encode("utf-8")))
     if folded:
-        estimator = state.intra_turn_compaction_estimator
-        # Under-subtract (4 bytes/token) so the estimate stays biased high.
-        estimator._estimate = max(0, estimator._estimate - removed // 4)
-        estimator._live_bytes = max(0, estimator._live_bytes - removed)
+        state.intra_turn_compaction_estimator.release(bytes_removed=removed)
         log.info("history epoch: folded %d stale result(s), %d bytes", folded, removed)
     return folded
 
@@ -425,15 +423,18 @@ def approved_invocation_history(
 def _anchor_issued(state: Any, anchor: str) -> bool:
     """True when the kernel handed ``anchor`` out in a stub.
 
-    Anchor resolvers run pack code with anchor-derived parameters, so only
-    anchors from this turn's ledger or from a stub in the live messages
-    (replay folds) are served; anything else takes the normal ref path.
+    Anchor resolvers run pack code with anchor-derived parameters, so an
+    anchor must trace to a kernel issuance: a record on this turn's ledger
+    (in-turn folds), or a stub the kernel rendered as a whole tool message
+    (replay folds — the runtime folds prior turns and discards their
+    ledger). :func:`kernel.history.stub_anchor` parses the whole message
+    strictly, so a stub quoted inside another tool's output and a
+    fabricated anchor string both take the normal ref path.
     """
     if any(r.anchor == anchor for r in state.history_ledger.records):
         return True
-    marker = f" or {anchor} with thread_read_content]"
     return any(
-        isinstance(m.get("content"), str) and marker in m["content"]
+        stub_anchor(str(m.get("content") or "")) == anchor
         for m in state.messages or ()
         if m.get("role") == "tool"
     )

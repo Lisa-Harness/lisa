@@ -429,6 +429,29 @@ def render_stub(record: HistoryRecord) -> str:
     )
 
 
+_STUB_ANCHOR = re.compile(
+    r"\[[^\[\]]+ \(\d+ chars\) — dereference r[a-f0-9]{64}"
+    r"(?: or (?P<anchor>[a-z][a-z0-9_]*:\S+))? with thread_read_content\]"
+)
+"""The exact shape of a :func:`render_stub` stub that may carry an anchor."""
+
+
+def stub_anchor(content: str) -> str:
+    """Return the anchor a kernel-rendered stub carries, or ``""``.
+
+    A stub counts only when it is the message's entire content — exactly
+    what :func:`render_stub` emits and what a replay fold leaves as a
+    whole tool message — so a stub quoted inside another tool's output,
+    and any fabricated anchor string, fail the match and take the normal
+    ref path.
+    """
+
+    match = _STUB_ANCHOR.fullmatch(content.strip())
+    if match is None:
+        return ""
+    return match.group("anchor") or ""
+
+
 def existing_result_ref(content: str) -> str:
     """Return the ``r<sha256>`` ref a spilled/previewed result already carries."""
     stripped = content.strip()
@@ -529,4 +552,5 @@ __all__ = [
     "render_stub",
     "resolve_history_keys",
     "split_pack_state",
+    "stub_anchor",
 ]

@@ -126,6 +126,17 @@ class LiveArrayEstimator:
         delta_tokens = -(-self._live_bytes // 3)
         return int((self._estimate + delta_tokens) * 1.05)
 
+    def release(self, *, bytes_removed: int) -> None:
+        """Record bytes leaving the live array (history folds).
+
+        The byte baseline drops in full; the adopted request-token anchor
+        drops at a quarter weight so the estimate stays biased high — the
+        same under-subtraction the fold governor prices its rewrites with.
+        """
+
+        self._live_bytes = max(0, self._live_bytes - bytes_removed)
+        self._estimate = max(0, self._estimate - bytes_removed // 4)
+
 
 class _WindowFitter:
     """Callable shim that fits a request to a fraction of the model window.
