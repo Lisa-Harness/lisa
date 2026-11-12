@@ -1,8 +1,9 @@
 # Static model registry — hand-curated ground truth for model enrichment.
 #
 # This file is the fallback when provider APIs don't expose enough metadata.
-# It is also the override layer: entries here take precedence over
-# provider-derived enrichment for the fields they specify.
+# It overrides heuristic guesses, but never a field the provider published
+# for that model in its list response (context window, output ceiling,
+# prices, and API-reported capabilities win over this file).
 #
 # Keys are "provider:model_id" (lowercased). Each entry may set any subset
 # of the enrichment fields. Fields not set here fall through to the

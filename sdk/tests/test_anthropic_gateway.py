@@ -19,6 +19,7 @@ from kernel.provider_contracts import (
 )
 from sdk.providers.anthropic_gateway import (
     AnthropicGateway,
+    _base_messages_payload,
     _build_anthropic_messages,
 )
 from sdk.providers.openai_gateway import (
@@ -1062,3 +1063,31 @@ def test_repair_degrades_a_too_deeply_nested_payload() -> None:
     deep = '{"a":' * 20000 + "1" + "}" * 20000
     assert _repair_openai_tool_arguments(deep) == "{}"
     assert _coerce_tool_arguments_object(deep) == {}
+
+
+# ── Manual-thinking budget ────────────────────────────────────────────
+
+
+def _thinking_request(max_tokens: int) -> CompletionRequest:
+    model_def = _model_def()
+    model_def.thinking_model = True
+    return _request([{"role": "user", "content": "hi"}], max_tokens=max_tokens, model_def=model_def)
+
+
+def test_thinking_budget_stays_below_max_tokens() -> None:
+    """The Messages API rejects ``budget_tokens >= max_tokens``."""
+    payload = _base_messages_payload(_thinking_request(16384), "")
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 12288}
+    assert payload["thinking"]["budget_tokens"] < payload["max_tokens"]
+
+
+def test_thinking_omitted_when_call_too_small_for_minimum_budget() -> None:
+    payload = _base_messages_payload(_thinking_request(1200), "")
+    assert "thinking" not in payload
+
+
+def test_non_thinking_model_sends_no_thinking_block() -> None:
+    payload = _base_messages_payload(
+        _request([{"role": "user", "content": "hi"}], max_tokens=16384), ""
+    )
+    assert "thinking" not in payload

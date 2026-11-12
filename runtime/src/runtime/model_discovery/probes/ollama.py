@@ -277,7 +277,8 @@ def _enrich_ollama_model(
     # Authoritative context length: /api/show model_info wins any
     # ``*.context_length`` (family-keyed on the Ollama cloud proxy); the
     # tag-derived ``details.context_length`` fills in when /api/show is
-    # absent or unusable. ``known_models.yaml`` still overrides both.
+    # absent or unusable. Either is provider-published, so
+    # ``known_models.yaml`` only fills it when both are missing.
     context_window = _ollama_show_context_window(show_payload)
     if context_window <= 0:
         raw_caption_ctx = details.get("context_length")
@@ -295,6 +296,7 @@ def _enrich_ollama_model(
             "context_window": context_window,
             "structured_reliability": structured_reliability,
         },
+        published=("context_window",) if context_window > 0 else (),
     )
     return _model(
         model_id,

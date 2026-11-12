@@ -170,6 +170,7 @@ def _enrich_openrouter_model(
     top_provider = _mapping(row.get("top_provider"))
     if not context_window:
         context_window = _int_or_zero(top_provider.get("context_length"))
+    max_completion_tokens = _int_or_zero(top_provider.get("max_completion_tokens"))
 
     # ── Pricing ──
     pricing = _mapping(row.get("pricing"))
@@ -221,6 +222,7 @@ def _enrich_openrouter_model(
         "cost_tier": cost_tier,
         "latency_tier": latency_tier,
         "context_window": context_window,
+        "max_completion_tokens": max_completion_tokens,
         "prompt_price": prompt_price,
         "completion_price": completion_price,
         "cache_read_price": cache_read_price,
@@ -228,7 +230,16 @@ def _enrich_openrouter_model(
         "description": description,
         "thinking_model": thinking_model,
     }
-    merged = apply_known_override("openrouter", model_id, base_enrichment)
+    numeric_fields = (
+        "context_window",
+        "max_completion_tokens",
+        "prompt_price",
+        "completion_price",
+        "cache_read_price",
+        "cache_write_price",
+    )
+    published = {field for field in numeric_fields if base_enrichment[field]}
+    merged = apply_known_override("openrouter", model_id, base_enrichment, published=published)
     return _model(
         model_id,
         "openrouter",
@@ -238,6 +249,7 @@ def _enrich_openrouter_model(
         cost_tier=str(merged.get("cost_tier") or ""),
         latency_tier=str(merged.get("latency_tier") or ""),
         context_window=_int_or_zero(merged.get("context_window")),
+        max_completion_tokens=_int_or_zero(merged.get("max_completion_tokens")),
         prompt_price=float(merged.get("prompt_price") or 0.0),
         completion_price=float(merged.get("completion_price") or 0.0),
         cache_read_price=float(merged.get("cache_read_price") or 0.0),

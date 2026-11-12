@@ -563,7 +563,7 @@ def _parse_nonnegative_int(raw_value: Any, *, field_name: str, model_id: str) ->
     return value
 
 
-_MIN_DECLARED_COMPLETION_BUDGET = 1024
+MIN_DECLARED_COMPLETION_BUDGET = 1024
 
 
 def _parse_model_completion_budget(
@@ -582,7 +582,7 @@ def _parse_model_completion_budget(
     value = _parse_nonnegative_int(raw_value, field_name="max_completion_tokens", model_id=model_id)
     if value == 0:
         return 0
-    if value < _MIN_DECLARED_COMPLETION_BUDGET:
+    if value < MIN_DECLARED_COMPLETION_BUDGET:
         raise ValueError(
             f"Manifest model entry for '{model_id}' max_completion_tokens must be "
             "0 (inherit) or at least 1024."
