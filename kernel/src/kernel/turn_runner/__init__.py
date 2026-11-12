@@ -5207,12 +5207,21 @@ def _build_structured_handoff_context(
 
         # Terminal-step directive: when there are no
         # remaining steps, tell the model to COMPLETE
-        # and respond, not to hand off. The previous
-        # unconditional "hand off to the next step"
+        # and respond when its work is done. The
+        # previous unconditional "hand off to the next step"
         # line contradicted the "(none — this is the
         # final step)" sentinel and left the terminal
         # mode (e.g. markdown) flailing with no
         # completion signal (2026-07-30 incident).
+        # Do NOT forbid mid-turn handoffs: a terminal
+        # mode may still need to route to another mode
+        # for a fresh read budget or state reasons
+        # (2026-11-12 turn 1247: coding_execute hit the
+        # 50-call read cap, tried to hand off to
+        # coding_review for a fresh budget, but the
+        # "do NOT call transition_stage" directive
+        # made the model narrate the handoff in prose
+        # instead of calling the tool).
         if remaining_steps:
             next_directive = (
                 "- After you complete your work, hand off to "
@@ -5222,8 +5231,10 @@ def _build_structured_handoff_context(
         else:
             next_directive = (
                 "- You are the final step in this chain. "
-                "Complete your work and respond to the user "
-                "directly — do NOT call `transition_stage`.\n"
+                "When your work is complete, respond to the user "
+                "directly. If you need to hand off mid-turn "
+                "(e.g. for a fresh read budget or state reasons), "
+                "call `transition_stage` as usual.\n"
             )
         handoff_context = (
             "\n\n## Handoff Context\n"
