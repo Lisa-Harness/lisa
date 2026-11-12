@@ -651,8 +651,13 @@ async def test_handoff_to_terminal_mode_instructs_completion_not_handoff() -> No
         "terminal handoff must instruct completion, not further handoff; "
         f"got: {post_handoff_prompt!r}"
     )
-    assert "do NOT call `transition_stage`" in post_handoff_prompt, (
-        f"terminal handoff must explicitly forbid transition_stage; got: {post_handoff_prompt!r}"
+    assert "do NOT call `transition_stage`" not in post_handoff_prompt, (
+        "terminal handoff must not forbid mid-turn handoffs for budget/state reasons; "
+        f"got: {post_handoff_prompt!r}"
+    )
+    assert "call `transition_stage` as usual" in post_handoff_prompt, (
+        "terminal handoff must allow mid-turn handoffs for budget/state reasons; "
+        f"got: {post_handoff_prompt!r}"
     )
     # The unconditional hand-off directive must NOT appear on the terminal step.
     assert "After you complete your work, hand off to the next step" not in post_handoff_prompt, (
