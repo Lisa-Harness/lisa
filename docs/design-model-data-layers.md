@@ -4,7 +4,7 @@
 
 The `MODEL-DATA-LAYERS` spec is Proposed and replaces the current hardcoded model registry with a typed, reviewable provider catalog and a separate operator settings file. The implementation must remove `runtime/src/runtime/model_discovery/classify.py` registry logic (lines 199–260 for `load_known_models` and `apply_known_override`; line 60 for `_KNOWN_MODELS_PATH`), update all probe call sites, and introduce a catalog/settings split with strict validation.
 
-The design is a hard cutover: no compatibility reader for the old registry format. This avoids silently supporting two ownership models and forces migration decisions to be explicit. The new catalog is `models.proposed.yaml`, maintained as a candidate provider catalog with field-level source attribution and observed timestamps. Operator configuration remains in `models.yaml` and is never mutated by `/models apply`.
+The design is a hard cutover: no compatibility reader for the old registry format. This avoids silently supporting two ownership models and forces migration decisions to be explicit. The measured/provider layer is `models.catalog.yaml`, written only after a fully successful probe run; `models.proposed.yaml` stays the operator's reviewable edit surface with field-level source attribution and observed timestamps carried in the catalog. Operator configuration remains in `models.yaml` (and the promoted active manifest) and is never mutated from catalog data by `/models apply`.
 
 The resulting effective model manifest is composed at reload time from four layers, with explicit precedence and a report for unknown provenance in existing files.
 
