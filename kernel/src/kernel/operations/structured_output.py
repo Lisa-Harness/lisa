@@ -29,6 +29,12 @@ sequence (structured → JSON-only → validation-feedback → bootstrap) behind
 genuinely differs: its parse hook and failure label. The two memory
 distillers are its first consumers.
 
+Prompt escalation alone cannot fix payloads whose malformed shape every
+rung deterministically reproduces. ``parse_structured_payload`` therefore
+runs one normalization pass (``salvage_truncated_envelope`` →
+``unwrap_nested_envelope``) before raising, so the ladder climbs against
+payloads that differ rung to rung.
+
 These helpers are runtime-neutral and depend only on Pydantic and the kernel
 operation execution context. They are intentionally host-agnostic: the host's
 ``complete_fn`` is the only provider touchpoint.
@@ -61,6 +67,8 @@ __all__ = [
     "reasoning_tail_excerpt",
     "run_distillation_ladder",
     "run_structured_completion_with_retry",
+    "salvage_truncated_envelope",
+    "unwrap_nested_envelope",
     "validation_feedback_instruction",
     "validation_feedback_retry_messages",
     "validation_summary",
@@ -233,6 +241,130 @@ def extract_json_object(text: str) -> str:
     return normalized
 
 
+#: Brace depth of an element inside the top-level array: object + array.
+_ELEMENT_DEPTH = 2
+
+
+def _mask_json_strings(text: str) -> str:
+    """Replace JSON string contents with ``x`` so structure scans are simple.
+
+    Delimiting quotes survive; content characters (including escapes) do
+    not, so a brace or quote inside a fact string cannot desynchronize a
+    structural pass over the masked copy.
+    """
+
+    chars = list(text)
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                chars[i] = "x"
+                esc = False
+            elif ch == "\\":
+                chars[i] = "x"
+                esc = True
+            elif ch == '"':
+                in_str = False
+            else:
+                chars[i] = "x"
+            continue
+        if ch == '"':
+            in_str = True
+    return "".join(chars)
+
+
+def _scan_element_spans(masked: str) -> list[tuple[int, int]]:
+    """Return ``(start, end)`` spans of complete object elements.
+
+    Runs over a masked copy, so quotes never straddle a fact object's
+    braces. An object element opens at element depth and collects on the
+    matching ``}``; truncated tails never collect. String-only arrays
+    pass through salvage unchanged (the distiller shapes are object
+    arrays).
+    """
+
+    depth = 0
+    elem_start = -1
+    spans: list[tuple[int, int]] = []
+    for i, ch in enumerate(masked):
+        if ch == "{":
+            if elem_start < 0 and depth == _ELEMENT_DEPTH:
+                elem_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == _ELEMENT_DEPTH and elem_start >= 0:
+                spans.append((elem_start, i))
+                elem_start = -1
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+    return spans
+
+
+def salvage_truncated_envelope(text: str) -> str:
+    """Rebuild a closed JSON envelope from a truncated one, element-wise.
+
+    Model output truncated by a token budget (Ollama mid-array, the
+    2026-11-08 synthesize incidents) dies inside an open array. The scan
+    masks string contents, keeps every object element that closed balanced
+    and complete, skips the partial tail, and closes what was left open.
+    Returns the input unchanged when it does not begin with ``{``, when
+    no element completed, or when the array never opened.
+    """
+
+    normalized = str(text or "").strip()
+    if not normalized or normalized[0] != "{":
+        return normalized
+    spans = _scan_element_spans(_mask_json_strings(normalized))
+    if not spans:
+        return normalized
+    arr_open = normalized.find("[")
+    if arr_open < 0:
+        return normalized
+    prefix = normalized[: arr_open + 1]
+    return prefix + ",".join(normalized[start : end + 1] for start, end in spans) + "]}"
+
+
+def unwrap_nested_envelope(text: str) -> str:
+    """Flatten one re-nested envelope level (``{"facts": [{"facts": [...]}]}``).
+
+    Reasoning models echo the prompt's example object as the first array
+    element (the 2026-11-10..11 synthesize incidents), yielding a valid
+    JSON object whose array holds an envelope instead of an element.
+    Applies only when the outer envelope holds exactly one key whose array
+    holds exactly one single-key envelope whose value is a non-empty list —
+    and the inner key must equal the outer key (both guards stop the
+    flattening from re-interpreting legitimately different payloads).
+    """
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict) or len(payload) != 1:
+        return text
+    ((array_key, array),) = payload.items()
+    if (
+        not isinstance(array, list)
+        or len(array) != 1
+        or not isinstance(array[0], dict)
+        or len(array[0]) != 1
+    ):
+        return text
+    ((inner_key, inner),) = array[0].items()
+    if not isinstance(inner, list) or not inner or inner_key != array_key:
+        return text
+    payload[array_key] = inner
+    logger.warning(
+        "unwrap_nested_envelope: flattened re-nested %s envelope",
+        array_key,
+    )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class EmptyStructuredOutputError(ValueError):
     """Raised when a structured-output completion returned no text at all.
 
@@ -255,6 +387,15 @@ def parse_structured_payload(
     callers can distinguish "provider returned nothing" from "provider
     returned malformed JSON". Raises ``ValidationError`` when the content
     is non-empty but neither attempt yields a valid payload.
+
+    Before raising, one deterministic normalization pass runs —
+    ``salvage_truncated_envelope`` then ``unwrap_nested_envelope`` — and a
+    recovered payload gets one more ``model_validate_json`` attempt. Only a
+    recovered-and-valid payload succeeds here; when recovery changes
+    nothing or still fails, the extracted object's ``ValidationError``
+    propagates so the ladder's validation-feedback rung keys on the typed
+    error exactly as before (the 2026-11-08..11 truncated and re-nested
+    envelope incidents).
     """
 
     if not str(content or "").strip():
@@ -266,8 +407,17 @@ def parse_structured_payload(
         return response_format_model.model_validate_json(content)
     except ValidationError as direct_exc:
         extracted_json = extract_json_object(content)
-        if extracted_json == content:
-            raise
+        if extracted_json != content:
+            try:
+                return response_format_model.model_validate_json(extracted_json)
+            except ValidationError:
+                pass
+        recovered = unwrap_nested_envelope(salvage_truncated_envelope(str(content or "")))
+        if recovered != str(content or "").strip():
+            try:
+                return response_format_model.model_validate_json(recovered)
+            except ValidationError:
+                pass
         try:
             return response_format_model.model_validate_json(extracted_json)
         except ValidationError as extracted_exc:

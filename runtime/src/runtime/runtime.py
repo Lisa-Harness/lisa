@@ -1015,7 +1015,7 @@ class HostRuntime:
 
         Wired as ``ToolHooks.post_dispatch_result``. Paths come from the tool's
         own arguments — the kernel does not know which argument holds one, and
-        tools that touch no identifiable file (commit, run_check, a
+        tools that touch no identifiable file (commit, verify, a
         workspace-wide listing) carry none, so they pass through untouched.
 
         Each instruction body is appended at most once per dispatch token,
