@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 from kernel.approval import InMemoryApprovalService
-from kernel.history import HistoryPolicy
+from kernel.history import PACK_STATE_KEY, HistoryPolicy, pack_state_message
 from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.turn_hooks import (
     ContextHooks,
@@ -39,6 +39,23 @@ class _Parameters(BaseModel):
 class _Completion:
     content: str = ""
     tool_calls: list[dict[str, Any]] | None = None
+
+
+def _hooks(complete: Any, **context: Any) -> TurnHooks:
+    return TurnHooks(
+        models=ModelHooks(complete=complete),
+        context=ContextHooks(**context),
+        tools=ToolHooks(),
+        services=HostServiceHandles(approval_service=InMemoryApprovalService()),
+        identity=TurnIdentity(
+            workspace_id="w",
+            user_id="u",
+            user_slug="u",
+            surface_id="s",
+            session_plan_digest="p",
+            task_id="task-1",
+        ),
+    )
 
 
 def _read_call(call_id: str, path: str) -> dict[str, Any]:
@@ -72,6 +89,9 @@ async def test_superseded_read_folds_mid_turn_and_lands_in_history(
         },
     )
     monkeypatch.setattr(config.settings, "history_epoch_min_tokens", 100)
+    # A provider without prompt caching: the cost model folds any stale result.
+    monkeypatch.setattr(config.settings, "intra_turn_cache_read_share", 1.0)
+    monkeypatch.setattr(config.settings, "intra_turn_cache_write_share", 1.0)
     # The default mode routes a stage hint; keep the enforcer out of this test.
     monkeypatch.setattr(config.settings, "forced_action_non_compliant_cap", 99)
     store: dict[str, str] = {}
@@ -124,3 +144,33 @@ async def test_superseded_read_folds_mid_turn_and_lands_in_history(
     assert records["c1"]["ref"] in stub
     assert store[records["c1"]["ref"]].startswith("line of a.py\n" * 200)
     assert all(r["ref"] in store for r in records.values())
+
+
+@pytest.mark.asyncio
+async def test_replayed_pack_state_rides_on_the_new_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config.settings, "forced_action_non_compliant_cap", 99)
+    prior = [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "ok"},
+        pack_state_message({"lisa-pack-x": "cwd=/w"}),
+    ]
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        return _Completion(content="done")
+
+    result = await run_turn(
+        mode_id="default",
+        query="next",
+        hooks=_hooks(complete, prior_messages=lambda: [dict(m) for m in prior]),
+    )
+
+    sent = result.model_requests[0]["messages"]
+    assert all(PACK_STATE_KEY not in m for m in sent)
+    # The replayed prefix is byte-identical; only the new user message changed.
+    assert sent[1:3] == prior[:2]
+    user = sent[3]
+    assert user["role"] == "user"
+    assert "## Pack State\n\n[lisa-pack-x state] cwd=/w" in user["content"]
+    assert user["content"].index("## Pack State") < user["content"].index("## User Query")

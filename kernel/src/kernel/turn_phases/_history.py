@@ -2,9 +2,9 @@
 
 The pure ledger lives in :mod:`kernel.history`; this module wires it into
 the turn. Folding follows the governor's cache policy: the live array is
-append-only between epochs, and a supersession epoch rewrites it only once
-enough stale bytes have accumulated (``history_epoch_min_tokens``), so one
-cache rewrite buys back the stale bytes on every later iteration.
+append-only between epochs, and a supersession epoch rewrites it only when
+the model's cache prices say the rewrite is repaid by the stale bytes it
+stops re-sending on the iterations still expected this turn.
 """
 
 from __future__ import annotations
@@ -101,17 +101,114 @@ def _ensure_ref(record: HistoryRecord, content: str, hooks: Any) -> str:
     return ref
 
 
+def cache_price_shares(model_def: Any, cfg: Any) -> tuple[float, float]:
+    """Return ``(read, write)`` cache prices as shares of the uncached input price.
+
+    The manifest's per-model prices win when the provider publishes a
+    cached-read price; a published read price without a write price means
+    cache creation bills at the base rate. Otherwise the configured
+    fallback shares apply.
+    """
+    prompt = float(getattr(model_def, "prompt_price", 0.0) or 0.0)
+    read = float(getattr(model_def, "cache_read_price", 0.0) or 0.0)
+    write = float(getattr(model_def, "cache_write_price", 0.0) or 0.0)
+    if prompt > 0 and read > 0:
+        return read / prompt, (write / prompt if write > 0 else 1.0)
+    return float(cfg.cache_read_share), float(cfg.cache_write_share)
+
+
+def fold_pays_off(
+    *,
+    removed: int,
+    suffix: int,
+    later_requests: int,
+    read_share: float,
+    write_share: float,
+) -> float:
+    """Return the net saving (in uncached-input units) of folding; > 0 pays off.
+
+    Folding rewrites the cached ``suffix`` from the first stub onward: the
+    next request writes ``suffix - removed`` instead of reading ``suffix``
+    from cache, and each later request reads ``removed`` fewer cached
+    units. Without caching (``read_share == write_share == 1``) the
+    rewrite is free and any removal pays off.
+    """
+    rewrite_cost = write_share * (suffix - removed) - read_share * suffix
+    return read_share * removed * later_requests - rewrite_cost
+
+
+def _message_chars(message: dict[str, Any]) -> int:
+    size = len(str(message.get("content") or ""))
+    if message.get("tool_calls"):
+        size += len(json.dumps(message["tool_calls"], default=str))
+    return size
+
+
+def _later_requests(state: Any) -> int:
+    """Estimate the requests left in this turn from the requests made so far."""
+    done = max(1, int(getattr(state, "iteration", 0) or 0))
+    cap = int(getattr(state, "max_iterations", 0) or 0)
+    return max(0, min(done, cap - done)) if cap > 0 else done
+
+
+def _best_fold_start(
+    candidates: list[tuple[int, HistoryRecord]],
+    messages: list[dict[str, Any]],
+    *,
+    later_requests: int,
+    read_share: float,
+    write_share: float,
+) -> int:
+    """Return the candidate position to fold from (folding all later ones), or -1."""
+    best, best_saving = -1, 0.0
+    removed = 0
+    suffix = sum(_message_chars(m) for m in messages[candidates[-1][0] :])
+    next_index = candidates[-1][0]
+    for position in range(len(candidates) - 1, -1, -1):
+        index, record = candidates[position]
+        suffix += sum(_message_chars(m) for m in messages[index:next_index])
+        next_index = index
+        removed += record.chars
+        saving = fold_pays_off(
+            removed=removed,
+            suffix=suffix,
+            later_requests=later_requests,
+            read_share=read_share,
+            write_share=write_share,
+        )
+        if saving > best_saving:
+            best, best_saving = position, saving
+    return best
+
+
+def _fold_candidates(state: Any, messages: list[dict[str, Any]]) -> list[tuple[int, HistoryRecord]]:
+    """Return stale records still resident, with their message index, in order."""
+    candidates: list[tuple[int, HistoryRecord]] = []
+    for record in state.history_ledger.foldable(turn_finished=False):
+        index = _tool_message_index(messages, record.call_id, state.transcript_start)
+        if index < 0:
+            record.folded = True
+        else:
+            candidates.append((index, record))
+    return sorted(candidates, key=lambda pair: pair[0])
+
+
 def maybe_run_supersession_epoch(
     *,
     state: Any,
     hooks: Any,
     messages: list[dict[str, Any]],
     log: logging.Logger,
+    model_def: Any = None,
 ) -> int:
-    """Fold stale results once enough stale bytes are resident. Returns the fold count.
+    """Fold stale results when the cache rewrite pays for itself. Returns the fold count.
 
-    Every stub carries a persisted ``r<sha256>`` ref; a result whose ref
-    cannot be produced (no store wired) stays resident.
+    Above the ``history_epoch_min_tokens`` floor, the epoch picks the fold
+    boundary with the largest net saving under the model's cache prices
+    (:func:`fold_pays_off`); a later boundary rewrites less cached prefix,
+    so older stale results may wait for a later epoch. Every stub carries
+    a persisted ``r<sha256>`` ref; a result whose ref cannot be produced
+    (no store wired) stays resident.
     """
     cfg = state.intra_turn_compaction
     ledger = state.history_ledger
@@ -120,13 +217,31 @@ def maybe_run_supersession_epoch(
     # Same conservative 3 bytes/token the live-array estimator uses.
     if -(-ledger.pending_dead_chars() // 3) < cfg.history_epoch_min_tokens:
         return 0
+    candidates = _fold_candidates(state, messages)
+    if not candidates:
+        return 0
+    read_share, write_share = cache_price_shares(model_def, cfg)
+    later = _later_requests(state)
+    start = _best_fold_start(
+        candidates,
+        messages,
+        later_requests=later,
+        read_share=read_share,
+        write_share=write_share,
+    )
+    if start < 0:
+        log.debug(
+            "history epoch: %d stale result(s) kept; no fold repays its cache rewrite "
+            "(read=%.3g write=%.3g later=%d)",
+            len(candidates),
+            read_share,
+            write_share,
+            later,
+        )
+        return 0
     removed = 0
     folded = 0
-    for record in ledger.foldable(turn_finished=False):
-        index = _tool_message_index(messages, record.call_id, state.transcript_start)
-        if index < 0:
-            record.folded = True
-            continue
+    for index, record in candidates[start:]:
         content = str(messages[index].get("content") or "")
         if not _ensure_ref(record, content, hooks):
             continue
@@ -345,7 +460,9 @@ def _anchor_page(anchor: str, content: str, tool_arguments: dict[str, Any]) -> s
 
 
 __all__ = [
+    "cache_price_shares",
     "finalize_turn_history",
+    "fold_pays_off",
     "maybe_resolve_anchor_read",
     "maybe_run_supersession_epoch",
     "record_dispatch_history",

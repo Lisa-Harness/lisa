@@ -374,4 +374,4 @@ def test_mode_working_set_caps_soft_trigger() -> None:
 
 
 def test_compaction_state_snapshots_history_epoch_setting() -> None:
-    assert IntraTurnCompactionState.from_settings().history_epoch_min_tokens == 12_000
+    assert IntraTurnCompactionState.from_settings().history_epoch_min_tokens == 2_000

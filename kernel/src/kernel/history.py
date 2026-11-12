@@ -414,16 +414,31 @@ def existing_result_ref(content: str) -> str:
     return ref if previewed and isinstance(ref, str) and _RESULT_REF.fullmatch(ref) else ""
 
 
+PACK_STATE_KEY = "lisa_pack_state"
+"""Marks the replayed pack-state message the kernel lifts into the new user message."""
+
+
+@dataclass(frozen=True)
+class ReplayFolds:
+    """Replay folding result: stub text by call id and pack snapshots by owner."""
+
+    replacements: dict[str, str] = field(default_factory=dict)
+    snapshots: dict[str, str] = field(default_factory=dict)
+
+
 def fold_replay(
     entries: Iterable[tuple[str, Mapping[str, Any]]],
-) -> dict[str, str]:
-    """Return replacement content for replayed tool results, keyed by call id.
+) -> ReplayFolds:
+    """Return replacement content for replayed tool results and the pack snapshots.
 
     ``entries`` are ``(call_id_prefix, entry_history)`` pairs in thread
     order; replay prefixes call ids per turn, so records are rebuilt with
     the same prefix. Every replayed turn is finished, so turn-scoped
-    results fold along with stale ones. The newest snapshot per pack owner
-    is appended to that owner's last folded result.
+    results fold along with stale ones. The newest snapshot of each pack
+    owner with at least one folded result is returned separately: the
+    host places it after the replayed transcript (see
+    :func:`pack_state_message`) so a changing snapshot never rewrites an
+    older, cached message.
     """
     ledger = HistoryLedger()
     snapshots: dict[str, str] = {}
@@ -435,27 +450,50 @@ def fold_replay(
             if isinstance(text, str) and text.strip():
                 snapshots[str(owner)] = text.strip()
     folded = [r for r in ledger.foldable(turn_finished=True) if _RESULT_REF.fullmatch(r.ref)]
-    replacements = {record.call_id: render_stub(record) for record in folded}
-    last_by_owner: dict[str, str] = {}
-    for record in folded:
-        last_by_owner[record.owner_id] = record.call_id
-    for owner, call_id in last_by_owner.items():
-        if owner in snapshots:
-            replacements[call_id] += f"\n[{owner} state] {snapshots[owner]}"
-    return replacements
+    owners = {record.owner_id for record in folded}
+    return ReplayFolds(
+        replacements={record.call_id: render_stub(record) for record in folded},
+        snapshots={owner: text for owner, text in snapshots.items() if owner in owners},
+    )
+
+
+def pack_state_message(snapshots: Mapping[str, str]) -> dict[str, Any] | None:
+    """Return the tagged replay message carrying pack snapshots, or ``None``."""
+    if not snapshots:
+        return None
+    lines = [f"[{owner} state] {text}" for owner, text in sorted(snapshots.items())]
+    return {"role": "user", "content": "\n".join(lines), PACK_STATE_KEY: True}
+
+
+def split_pack_state(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Remove tagged pack-state messages; return the rest and their joined text."""
+    kept: list[dict[str, Any]] = []
+    state: list[str] = []
+    for message in messages:
+        if message.get(PACK_STATE_KEY):
+            state.append(str(message.get("content") or ""))
+        else:
+            kept.append(message)
+    return kept, "\n".join(text for text in state if text)
 
 
 __all__ = [
+    "PACK_STATE_KEY",
     "HistoryKeys",
     "HistoryLedger",
     "HistoryPolicy",
     "HistoryRecord",
     "HistoryScope",
     "HistoryTemplateError",
+    "ReplayFolds",
     "existing_result_ref",
     "expand_template",
     "fold_replay",
     "keys_from_policy",
+    "pack_state_message",
     "render_stub",
     "resolve_history_keys",
+    "split_pack_state",
 ]

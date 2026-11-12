@@ -17,18 +17,23 @@ from kernel.history import (
     HistoryPolicy,
     HistoryRecord,
     HistoryTemplateError,
+    ReplayFolds,
     existing_result_ref,
     expand_template,
     fold_replay,
+    pack_state_message,
     render_stub,
     resolve_history_keys,
+    split_pack_state,
 )
 from kernel.ipsar_fsm import WorkflowValidationError, _parse_working_set_tokens
 from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.turn_phases._history import (
     approved_invocation_history,
+    cache_price_shares,
     finalize_turn_history,
+    fold_pays_off,
     maybe_resolve_anchor_read,
     maybe_run_supersession_epoch,
     record_dispatch_history,
@@ -205,18 +210,45 @@ def test_fold_replay_uses_prefixes_turn_scope_and_latest_snapshot() -> None:
     }
     folds = fold_replay([("t1_", turn1), ("t2_", turn2)])
     # t1_c has no ref, so it can never be stubbed; the live re-read stays resident.
-    assert set(folds) == {"t1_a", "t1_b"}
-    assert "superseded by call t2_a" in folds["t1_a"]
-    assert folds["t1_b"].endswith("[p state] cwd=/w")
+    assert set(folds.replacements) == {"t1_a", "t1_b"}
+    assert "superseded by call t2_a" in folds.replacements["t1_a"]
+    # Snapshots never ride on a folded result: that would rewrite a cached message.
+    assert all("state]" not in stub for stub in folds.replacements.values())
+    assert folds.snapshots == {"p": "cwd=/w"}
+
+
+def test_fold_replay_drops_snapshots_of_owners_without_folds() -> None:
+    turn = {
+        "records": [{"call_id": "a", "tool_id": "read", "keys": ["r:x"], "ref": _ref("1")}],
+        "snapshots": {"p": "cwd=/w"},
+    }
+    assert fold_replay([("t1_", turn)]) == ReplayFolds()
+
+
+def test_pack_state_message_round_trips_through_split() -> None:
+    assert pack_state_message({}) is None
+    state = pack_state_message({"q": "b", "p": "a"})
+    assert state is not None and state["role"] == "user"
+    replay = [{"role": "user", "content": "hi"}, state]
+    kept, text = split_pack_state(replay)
+    assert kept == [{"role": "user", "content": "hi"}]
+    assert text == "[p state] a\n[q state] b"
 
 
 # ── Turn wiring ────────────────────────────────────────────────────────
 
 
-def _turn_state(min_tokens: int = 10) -> SimpleNamespace:
+def _turn_state(
+    min_tokens: int = 10, *, read_share: float = 1.0, write_share: float = 1.0
+) -> SimpleNamespace:
+    # Default shares model a provider without prompt caching: every fold pays off.
     return SimpleNamespace(
         history_ledger=HistoryLedger(),
-        intra_turn_compaction=IntraTurnCompactionState(history_epoch_min_tokens=min_tokens),
+        intra_turn_compaction=IntraTurnCompactionState(
+            history_epoch_min_tokens=min_tokens,
+            cache_read_share=read_share,
+            cache_write_share=write_share,
+        ),
         intra_turn_compaction_estimator=LiveArrayEstimator(),
         provider_messages=[],
         transcript_start=1,
@@ -244,8 +276,10 @@ _READ_DEF = SimpleNamespace(
 )
 
 
-def _dispatch(state: Any, messages: list[dict[str, Any]], call_id: str, path: str) -> None:
-    content = f"contents of {path} " * 20
+def _dispatch(
+    state: Any, messages: list[dict[str, Any]], call_id: str, path: str, repeat: int = 20
+) -> None:
+    content = f"contents of {path} " * repeat
     messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
     record_dispatch_history(
         state=state,
@@ -286,6 +320,89 @@ def test_supersession_epoch_folds_after_threshold_and_resyncs() -> None:
     assert messages[2]["content"] != stub
     assert state.intra_turn_compaction_estimator._estimate < 5000
     assert state.history_ledger.pending_dead_chars() == 0
+
+
+def test_cache_price_shares_prefer_manifest_prices() -> None:
+    cfg = IntraTurnCompactionState(cache_read_share=0.2, cache_write_share=1.5)
+    anthropic = SimpleNamespace(prompt_price=3e-6, cache_read_price=3e-7, cache_write_price=3.75e-6)
+    assert cache_price_shares(anthropic, cfg) == pytest.approx((0.1, 1.25))
+    # A published read price with no write price: creation bills at the base rate.
+    openai = SimpleNamespace(prompt_price=2e-6, cache_read_price=5e-7, cache_write_price=0.0)
+    assert cache_price_shares(openai, cfg) == pytest.approx((0.25, 1.0))
+    assert cache_price_shares(SimpleNamespace(prompt_price=1e-6), cfg) == (0.2, 1.5)
+    assert cache_price_shares(None, cfg) == (0.2, 1.5)
+
+
+def test_fold_pays_off_weighs_rewrite_against_later_reads() -> None:
+    # No caching: the rewrite is free, any removal pays off.
+    assert (
+        fold_pays_off(removed=1, suffix=100_000, later_requests=0, read_share=1.0, write_share=1.0)
+        > 0
+    )
+    cached = {"read_share": 0.1, "write_share": 1.25}
+    # 12K stale under a 60K suffix: about 45 later requests to break even.
+    assert fold_pays_off(removed=12_000, suffix=60_000, later_requests=40, **cached) < 0
+    assert fold_pays_off(removed=12_000, suffix=60_000, later_requests=70, **cached) > 0
+    # Stale bytes at the tail cost almost nothing to fold.
+    assert fold_pays_off(removed=12_000, suffix=13_000, later_requests=2, **cached) > 0
+
+
+def test_supersession_epoch_skips_unprofitable_folds_under_caching() -> None:
+    state = _turn_state(read_share=0.1, write_share=1.25)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": "s"}]
+    _dispatch(state, messages, "c1", "a.py")
+    messages.append({"role": "user", "content": "x" * 20_000})
+    _dispatch(state, messages, "c2", "a.py")
+    hooks = _hooks({})
+    state.iteration = 3
+    assert (
+        maybe_run_supersession_epoch(state=state, hooks=hooks, messages=messages, log=_quiet_log())
+        == 0
+    )
+    assert messages[1]["content"].startswith("contents of a.py")
+    # The same fold pays off once enough requests are expected to follow ...
+    state.iteration = 1000
+    state.max_iterations = 0
+    folded = maybe_run_supersession_epoch(
+        state=state, hooks=hooks, messages=messages, log=_quiet_log()
+    )
+    assert folded == 1 and messages[1]["content"].startswith("[superseded by call c2")
+
+
+def test_supersession_epoch_respects_the_iteration_cap() -> None:
+    state = _turn_state(read_share=0.1, write_share=1.25)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": "s"}]
+    _dispatch(state, messages, "c1", "a.py")
+    messages.append({"role": "user", "content": "x" * 20_000})
+    _dispatch(state, messages, "c2", "a.py")
+    # ... but not when the iteration cap leaves no requests to repay it.
+    state.iteration, state.max_iterations = 1000, 1001
+    assert (
+        maybe_run_supersession_epoch(
+            state=state, hooks=_hooks({}), messages=messages, log=_quiet_log()
+        )
+        == 0
+    )
+
+
+def test_supersession_epoch_picks_the_boundary_with_the_largest_saving() -> None:
+    state = _turn_state(read_share=0.1, write_share=1.25)
+    state.iteration = 10
+    messages: list[dict[str, Any]] = [{"role": "system", "content": "s"}]
+    _dispatch(state, messages, "a1", "a.py")
+    messages.append({"role": "user", "content": "x" * 50_000})
+    _dispatch(state, messages, "b1", "b.py", repeat=400)
+    _dispatch(state, messages, "a2", "a.py")
+    _dispatch(state, messages, "b2", "b.py")
+    folded = maybe_run_supersession_epoch(
+        state=state, hooks=_hooks({}), messages=messages, log=_quiet_log()
+    )
+    # Folding b1 rewrites only the short tail; also folding a1 would rewrite
+    # the 50K message between them for 340 chars, so a1 stays resident.
+    assert folded == 1
+    assert messages[1]["content"].startswith("contents of a.py")
+    assert messages[3]["content"].startswith("[superseded by call b2")
+    assert [r.call_id for r in state.history_ledger.foldable(turn_finished=False)] == ["a1"]
 
 
 def existing_ref_in(stub: str) -> str:
@@ -394,7 +511,8 @@ async def test_finalize_persists_refs_filters_own_records_and_snapshots(
     assert history["snapshots"] == {"lisa-pack-x": "cwd=/w"}
     assert seen == {"config": {"root": "/w"}, "keys": ["r:a.py", "r:a.py"]}
     folds = fold_replay([("t0_", history)])
-    assert folds["t0_c1"].endswith("[lisa-pack-x state] cwd=/w")
+    assert "t0_c1" in folds.replacements
+    assert folds.snapshots == {"lisa-pack-x": "cwd=/w"}
 
 
 @pytest.mark.asyncio

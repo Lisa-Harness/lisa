@@ -83,6 +83,7 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.history import split_pack_state
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
     get_routing_targets,
@@ -2262,11 +2263,17 @@ def _prepare_turn_messages_and_model(
     # so the rendered prompt stays byte-identical to the historical single
     # string while the stable prefix is never rewritten per-iteration.
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_segments.flatten()}]
+    pack_state = ""
     if hooks.context.prior_messages is not None and not state.sub_turn_kind:
-        messages.extend(_valid_replay_messages(hooks.context.prior_messages()))
+        prior, pack_state = split_pack_state(hooks.context.prior_messages())
+        messages.extend(_valid_replay_messages(prior))
 
     # Build user message
     user_parts: list[str] = []
+    if pack_state:
+        # Replayed pack snapshots ride on the new user message, the first
+        # message that differs from the previous turn's requests anyway.
+        user_parts.append(f"## Pack State\n\n{pack_state}")
     if pre_briefing:
         user_parts.append(f"## Pre-turn Briefing\n\n{pre_briefing}")
     if memory_snippet:
@@ -11067,7 +11074,13 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             else 0
         )
         if _state.intra_turn_compaction.enabled:
-            maybe_run_supersession_epoch(state=_state, hooks=hooks, messages=messages, log=_log)
+            maybe_run_supersession_epoch(
+                state=_state,
+                hooks=hooks,
+                messages=messages,
+                log=_log,
+                model_def=effective_model_def,
+            )
             maybe_run_soft_epoch(
                 state=_state,
                 hooks=hooks,

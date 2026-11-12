@@ -13,7 +13,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from kernel.history import fold_replay
+from kernel.history import fold_replay, pack_state_message
 
 from runtime.host_commands import is_host_command_query
 
@@ -215,7 +215,7 @@ def build_open_task_messages(
         if approved_result is not None:
             paired_ids.add(str(provenance["pending_approval_request_id"]))
         replay = _entry_messages(
-            entry, _thread_redaction, approved_result=approved_result, folds=folds
+            entry, _thread_redaction, approved_result=approved_result, folds=folds.replacements
         )
         messages.extend(
             project_thread_messages(
@@ -238,6 +238,11 @@ def build_open_task_messages(
             ephemeral_results_path=ephemeral_results_path,
             budget_bytes=budget_bytes,
         )
+    # Pack snapshots trail the transcript (the kernel lifts them into the new
+    # user message) so a changed snapshot never rewrites a cached prefix.
+    state = pack_state_message(folds.snapshots)
+    if state is not None:
+        messages.append(state)
     return messages
 
 

@@ -14,12 +14,21 @@ All notable changes to the Lisa Harness will be documented in this file.
   - **Folding:** a stale result, or a turn-scoped one once its turn ends,
     folds to a one-line stub that always carries the result's ``r<sha256>``
     ref, so no evidence is lost.
-  - **When it folds:** mid-turn, a supersession epoch folds once at least
-    ``history_epoch_min_tokens`` (default 12000) are dead, or once the live
-    array exceeds the mode's new ``working_set_tokens`` frontmatter cap. At
-    turn start, replay folds the lossless thread through the same ledger.
+  - **When it folds:** mid-turn, a supersession epoch folds only when the
+    cache rewrite pays for itself: the model's manifest ``cache_read_price``
+    and ``cache_write_price`` (falling back to ``intra_turn_cache_read_share``
+    and ``intra_turn_cache_write_share``) price the rewrite against the stale
+    bytes later requests stop re-sending, estimating the requests left from
+    those made so far, capped by the iteration limit. The epoch folds from
+    the boundary with the largest saving, so older stale results behind a
+    large live span wait. ``history_epoch_min_tokens`` (default 2000) is a
+    floor below which no fold is considered. Separately, the mode's new
+    ``working_set_tokens`` frontmatter caps the compaction epoch's trigger.
+    At turn start, replay folds the lossless thread through the same ledger.
   - **Pack hooks:** ``history_snapshot(ctx, keys)`` keeps a pack's live state
-    resident after its records fold. An ``anchor`` routes a stub's
+    visible after its records fold. Replay places the snapshots in a
+    ``## Pack State`` section of the new user message, never on an earlier
+    message, so a changed snapshot cannot break the cached prefix. An ``anchor`` routes a stub's
     dereference to the tool's ``resolve_history_anchor`` and falls back to
     the stored ref. Only anchors the kernel issued, in a ledger record or in
     a stub in the live messages, are served this way.

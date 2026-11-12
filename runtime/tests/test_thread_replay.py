@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kernel.history import pack_state_message
 from runtime.host_commands import register_builtin_host_commands
 from runtime.thread import (
     append_thread_entry,
@@ -207,8 +208,10 @@ def test_open_task_replay_folds_stale_results_losslessly(tmp_path: Path) -> None
     assert tool_contents[1] == second
     stub = tool_contents[0]
     assert stub.startswith("[superseded by call t1_c1") and "read:a.py" in stub
-    # The newest owner snapshot rides on that owner's last folded result.
-    assert stub.endswith("[lisa-pack-coding state] w1: clean")
+    # The newest owner snapshot trails the transcript instead of riding on a
+    # folded result, so it never rewrites an earlier (cached) message.
+    assert "state]" not in stub
+    assert messages[-1] == pack_state_message({"lisa-pack-coding": "w1: clean"})
     ref = next(word for word in stub.split() if word.startswith("r") and len(word) == 65)
     page = json.loads(ThreadReader(ThreadStore(thread)).read_content(ref, 0))
     assert page["content"] == first
