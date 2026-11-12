@@ -787,7 +787,7 @@ async def _restart_edited_candidate(
     patch = "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-hello\n+fixed\n"
     for tool_id, parameters in (
         ("coding_apply_patch", {"artifact_id": artifact_id, "patch": patch}),
-        ("coding_run_check", {"artifact_id": artifact_id, "check_id": "smoke"}),
+        ("coding_verify", {"artifact_id": artifact_id, "check_ids": ["smoke"]}),
     ):
         step = await run_tool(catalog, tool_id, prior_factory, parameters)
         assert step.result.error == "", step.result.error
@@ -806,10 +806,6 @@ async def _restart_edited_candidate(
     assert read.result.output_json["scope"] == "worktree"
     assert read.result.output_json["artifact_id"] == artifact_id
     assert read.result.output_json["content_sha256"]
-    blocked = await run_tool(
-        catalog, "coding_commit", factory, {"artifact_id": artifact_id, "message": "unchecked"}
-    )
-    assert "Every required check must pass" in blocked.result.error
     factory.identity["session_plan_digest"] = "changed-session-plan"
     survived = await run_tool(
         catalog, "coding_read_file", factory, {"artifact_id": artifact_id, "path": "app.txt"}
@@ -897,12 +893,19 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
         resumed_factory = await _restart_edited_candidate(
             host_dir, repo, catalog, committed_artifact_id, prior_factory=factory
         )
-        for tool_id, parameters in (
-            ("coding_run_check", {"artifact_id": committed_artifact_id, "check_id": "smoke"}),
-            ("coding_commit", {"artifact_id": committed_artifact_id, "message": "Fix bug"}),
-        ):
-            step = await run_tool(catalog, tool_id, resumed_factory, parameters)
-            assert step.result.error == "", step.result.error
+        steps = [
+            await run_tool(catalog, tool_id, resumed_factory, parameters)
+            for tool_id, parameters in (
+                ("coding_verify", {"artifact_id": committed_artifact_id, "check_ids": ["smoke"]}),
+                ("coding_commit", {"artifact_id": committed_artifact_id, "message": "Fix bug"}),
+            )
+        ]
+        # Both succeed, and the post-restart edit does not ride on the
+        # pre-restart check.
+        assert (
+            [step.result.error for step in steps],
+            [item["reused"] for item in steps[0].result.output_json["checks"]],
+        ) == (["", ""], [False])
 
         assert (await verify(request)).verified is True
         assert (
