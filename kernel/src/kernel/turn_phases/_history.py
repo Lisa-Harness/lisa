@@ -106,15 +106,18 @@ def cache_price_shares(model_def: Any, cfg: Any) -> tuple[float, float]:
     """Return ``(read, write)`` cache prices as shares of the uncached input price.
 
     The manifest's per-model prices win when the provider publishes a
-    cached-read price; a published read price without a write price means
-    cache creation bills at the base rate. Otherwise the configured
-    fallback shares apply.
+    cached-read price. A published read price without a write price keeps
+    the write estimate at 1.25x base rather than 1.0x: an unpublishing
+    provider (OpenRouter does not expose ``input_cache_write`` on every
+    model) may still bill cache creation at a premium, and the fold
+    pay-off must be proven on the cost it cannot rule out. Otherwise the
+    configured fallback shares apply.
     """
     prompt = float(getattr(model_def, "prompt_price", 0.0) or 0.0)
     read = float(getattr(model_def, "cache_read_price", 0.0) or 0.0)
     write = float(getattr(model_def, "cache_write_price", 0.0) or 0.0)
     if prompt > 0 and read > 0:
-        return read / prompt, (write / prompt if write > 0 else 1.0)
+        return read / prompt, (write / prompt if write > 0 else float(cfg.cache_write_share))
     return float(cfg.cache_read_share), float(cfg.cache_write_share)
 
 
@@ -146,10 +149,20 @@ def _message_chars(message: dict[str, Any]) -> int:
 
 
 def _later_requests(state: Any) -> int:
-    """Estimate the requests left in this turn from the requests made so far."""
+    """Estimate the requests that will still read the stale bytes being folded.
+
+    ``round(done / 2)`` is the observed amortization window: a mid-turn
+    fold is typically re-foldd around by the next epoch within a handful
+    of requests (2026-11-12 turn 1240: 1-16 dispatch boundaries between
+    consecutive folds, against pay-off estimates of 26-80), so the
+    naive ``cap - done`` figure assumes read savings that never accrue.
+    The turn-remaining half keeps long-tail turns folding while refusing
+    to bet a full-price cache rewrite on the whole rest of the loop.
+    """
     done = max(1, int(getattr(state, "iteration", 0) or 0))
     cap = int(getattr(state, "max_iterations", 0) or 0)
-    return max(0, min(done, cap - done)) if cap > 0 else done
+    remaining = max(0, cap - done) if cap > 0 else done
+    return max(0, min(done // 2, remaining))
 
 
 def _best_fold_start(

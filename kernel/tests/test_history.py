@@ -30,6 +30,7 @@ from kernel.ipsar_fsm import WorkflowValidationError, _parse_working_set_tokens
 from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
 from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.turn_phases._history import (
+    _later_requests,
     approved_invocation_history,
     cache_price_shares,
     finalize_turn_history,
@@ -362,9 +363,10 @@ def test_cache_price_shares_prefer_manifest_prices() -> None:
     cfg = IntraTurnCompactionState(cache_read_share=0.2, cache_write_share=1.5)
     anthropic = SimpleNamespace(prompt_price=3e-6, cache_read_price=3e-7, cache_write_price=3.75e-6)
     assert cache_price_shares(anthropic, cfg) == pytest.approx((0.1, 1.25))
-    # A published read price with no write price: creation bills at the base rate.
+    # A published read price with NO write price keeps the configured write
+    # fallback (1.5 here): cache creation may still bill at a premium.
     openai = SimpleNamespace(prompt_price=2e-6, cache_read_price=5e-7, cache_write_price=0.0)
-    assert cache_price_shares(openai, cfg) == pytest.approx((0.25, 1.0))
+    assert cache_price_shares(openai, cfg) == pytest.approx((0.25, 1.5))
     assert cache_price_shares(SimpleNamespace(prompt_price=1e-6), cfg) == (0.2, 1.5)
     assert cache_price_shares(None, cfg) == (0.2, 1.5)
 
@@ -383,6 +385,40 @@ def test_fold_pays_off_weighs_rewrite_against_later_reads() -> None:
     assert fold_pays_off(removed=12_000, suffix=13_000, later_requests=2, **cached) > 0
 
 
+def test_turn_1240_fold_parameters_stay_unprofitable() -> None:
+    # Regression witness for the 2026-11-12 turn 1240 cache-collapse. The
+    # epoch folded ~7K-token stale reads under a ~70K cached suffix on
+    # glm-5.3-flashx (read share 0.2, no published write price) eight
+    # times in one turn, each rewrite re-purchasing the prefix at full
+    # input price. With the honest amortization window (about half the
+    # requests made so far; observed gaps between folds were 1-16
+    # requests) the fold must never look profitable.
+    later = _later_requests(SimpleNamespace(iteration=26, max_iterations=150))
+    assert later == 13
+    # OpenRouter publishes a read price but no write price: write share
+    # stays at the configured fallback (1.25), not the old 1.0 guess.
+    read, write = cache_price_shares(
+        SimpleNamespace(prompt_price=3.7e-7, cache_read_price=7.5e-8, cache_write_price=0.0),
+        IntraTurnCompactionState(cache_read_share=0.1, cache_write_share=1.25),
+    )
+    assert read == pytest.approx(0.2027, abs=1e-3)
+    assert write == pytest.approx(1.25)
+    assert (
+        fold_pays_off(
+            removed=7_000, suffix=70_000, later_requests=later, read_share=read, write_share=write
+        )
+        < 0
+    )
+    # ... and even the most optimistic old estimate (later=26) loses once
+    # the write share is honest.
+    assert (
+        fold_pays_off(
+            removed=7_000, suffix=70_000, later_requests=26, read_share=read, write_share=write
+        )
+        < 0
+    )
+
+
 def test_supersession_epoch_skips_unprofitable_folds_under_caching() -> None:
     state = _turn_state(read_share=0.1, write_share=1.25)
     messages: list[dict[str, Any]] = [{"role": "system", "content": "s"}]
@@ -397,7 +433,9 @@ def test_supersession_epoch_skips_unprofitable_folds_under_caching() -> None:
     )
     assert messages[1]["content"].startswith("contents of a.py")
     # The same fold pays off once enough requests are expected to follow ...
-    state.iteration = 1000
+    # (later = iteration // 2 must exceed this geometry's ~2K-request
+    # break-even; iteration=5000 gives later=2500.)
+    state.iteration = 5000
     state.max_iterations = 0
     folded = maybe_run_supersession_epoch(
         state=state, hooks=hooks, messages=messages, log=_quiet_log()

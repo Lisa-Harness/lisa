@@ -18,10 +18,13 @@ All notable changes to the Lisa Harness will be documented in this file.
     cache rewrite pays for itself: the model's manifest ``cache_read_price``
     and ``cache_write_price`` (falling back to ``intra_turn_cache_read_share``
     and ``intra_turn_cache_write_share``) price the rewrite against the stale
-    bytes later requests stop re-sending, estimating the requests left from
-    those made so far, capped by the iteration limit. The epoch folds from
+    bytes the requests still ahead of the amortization window stop
+    re-sending. The window is half the requests made so far (the observed
+    gap between consecutive folds), capped by the iteration limit, because a
+    fold that is followed by another epoch never collects the read savings
+    the whole-remaining-turn figure promised. The epoch folds from
     the boundary with the largest saving, so older stale results behind a
-    large live span wait. ``history_epoch_min_tokens`` (default 2000) is a
+    large live span wait. ``history_epoch_min_tokens`` (default 12000) is a
     floor below which no fold is considered. Separately, the mode's new
     ``working_set_tokens`` frontmatter caps the compaction epoch's trigger.
     At turn start, replay folds the lossless thread through the same ledger.

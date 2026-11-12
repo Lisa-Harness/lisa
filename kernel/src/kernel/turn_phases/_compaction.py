@@ -65,7 +65,7 @@ class IntraTurnCompactionState:
     hard_ceiling_share: float = 0.65
     large_dispatch_min_chars: int = 2000
     preview_repeat_limit: int = 3
-    history_epoch_min_tokens: int = 2_000
+    history_epoch_min_tokens: int = 12_000
     cache_read_share: float = 0.1
     cache_write_share: float = 1.25
     epoch_done_for_crossing: bool = False
