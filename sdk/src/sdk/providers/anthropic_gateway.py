@@ -345,13 +345,26 @@ def _base_messages_payload(
     if request.temperature:
         payload["temperature"] = request.temperature
     if getattr(request.model_def, "thinking_model", False):
-        payload["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": request.max_tokens,
-        }
+        thinking_budget = _thinking_budget_tokens(request.max_tokens)
+        if thinking_budget:
+            payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
     if cache_enabled:
         payload["cache_control"] = {"type": "ephemeral"}
     return payload
+
+
+_MIN_THINKING_BUDGET_TOKENS = 1024
+
+
+def _thinking_budget_tokens(max_tokens: int) -> int:
+    """Return a manual-thinking budget the Messages API accepts, or 0.
+
+    Anthropic requires ``1024 <= budget_tokens < max_tokens`` and counts
+    thinking against ``max_tokens``; a quarter of the call stays for the
+    visible reply and tool calls. 0 = the call is too small to think.
+    """
+    budget = (max_tokens * 3) // 4
+    return budget if budget >= _MIN_THINKING_BUDGET_TOKENS else 0
 
 
 def _parse_content_blocks(

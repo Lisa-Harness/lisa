@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from kernel.model_manifest import MIN_DECLARED_COMPLETION_BUDGET
 from sdk.filelock import atomic_write_text, file_lock, sidecar_lock_path
 
 from .classify import (
@@ -348,10 +349,28 @@ def _apply_optional_model_fields(entry: dict[str, Any], model: DiscoveredModel) 
             entry[field] = value
     if model.expires_at is not None:
         entry["expires_at"] = model.expires_at.isoformat()
+    ceiling = _manifest_completion_ceiling(model)
+    if ceiling:
+        entry["max_completion_tokens"] = ceiling
     if model.pricing_currency and model.pricing_currency != "USD":
         entry["pricing_currency"] = model.pricing_currency
     if model.completion_api and model.completion_api != "chat_completions":
         entry["completion_api"] = model.completion_api
+
+
+def _manifest_completion_ceiling(model: DiscoveredModel) -> int:
+    """Return the provider output ceiling when the manifest loader accepts it.
+
+    The loader rejects ceilings below its floor or above ``context_window``;
+    a provider row that breaks either rule is inconsistent catalog data, so
+    it is omitted and the host budget stays authoritative.
+    """
+    ceiling = model.max_completion_tokens
+    if ceiling < MIN_DECLARED_COMPLETION_BUDGET:
+        return 0
+    if model.context_window and ceiling > model.context_window:
+        return 0
+    return ceiling
 
 
 def _pick_code_model(

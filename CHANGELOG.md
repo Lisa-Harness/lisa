@@ -58,6 +58,25 @@ All notable changes to the Lisa Harness will be documented in this file.
   ``<data_dir>/logs/errors.jsonl``; explicit ``errors_path`` callers and
   non-canonical layouts keep their existing destinations. Tests:
   ``sdk/tests/test_errors_ledger.py``.
+- Model discovery now uses the limits and capabilities providers publish:
+  - **Output ceilings:** Anthropic ``max_tokens``, Google
+    ``outputTokenLimit`` and OpenRouter
+    ``top_provider.max_completion_tokens`` become the manifest's
+    ``max_completion_tokens``. Values the loader would reject (below 1024
+    or above ``context_window``) are omitted.
+  - **Anthropic:** ``max_input_tokens`` sets ``context_window``;
+    ``capabilities`` sets vision, structured output and reasoning;
+    ``line`` sets the tier; ``lifecycle: retired`` models are dropped.
+    ``thinking_model`` follows ``capabilities.thinking.types.enabled``,
+    because the gateway sends manual thinking.
+  - **Google:** the ``thinking`` flag sets ``thinking_model``.
+  - **Precedence:** ``known_models.yaml`` no longer overrides a field the
+    provider published for that model; it only fills gaps.
+- The Anthropic gateway sent ``budget_tokens == max_tokens``, which the
+  Messages API rejects. It now reserves a quarter of ``max_tokens`` for the
+  reply, and omits ``thinking`` when the budget would fall below 1024.
+  Tests: ``runtime/src/runtime/model_discovery/tests/test_discovery_metadata.py``,
+  ``sdk/tests/test_anthropic_gateway.py``.
 
 ## [0.5.4] - 2026-11-11
 

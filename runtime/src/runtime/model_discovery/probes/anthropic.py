@@ -48,7 +48,7 @@ class AnthropicProbe(ProviderProbe):
         self,
         client: httpx.AsyncClient,
         timeout: float,
-    ) -> tuple[DiscoveredModel, ...] | None:
+    ) -> tuple[DiscoveredModel, ...] | ProbeResult | None:
         api_key = env_any(_LISA_ANTHROPIC_API_KEY_ENV, "ANTHROPIC_API_KEY")
 
         response = await client.get(
@@ -71,13 +71,24 @@ class AnthropicProbe(ProviderProbe):
             else []
         )
         models: list[DiscoveredModel] = []
+        dropped: list[str] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             model_id = str(row.get("id") or "").strip()
             if not model_id:
                 continue
+            if row.get("lifecycle") == "retired":
+                dropped.append(model_id)
+                continue
             models.append(_enrich_anthropic_model(model_id, row))
+        if dropped:
+            return ProbeResult(
+                provider=self.provider,
+                status=ProbeStatus.OK if models else ProbeStatus.EMPTY,
+                models=tuple(models),
+                dropped_model_ids=tuple(dropped),
+            )
         if models:
             return tuple(models)
         # 200 but empty list — fall back rather than reporting zero.
@@ -112,39 +123,69 @@ class AnthropicProbe(ProviderProbe):
         return result
 
 
+_LINE_TIERS: dict[str, tuple[str, str]] = {
+    "mythos": ("frontier", "high"),
+    "opus": ("frontier", "high"),
+    "fable": ("premium", "medium"),
+    "sonnet": ("standard", "medium"),
+    "haiku": ("budget", "low"),
+}
+
+
+def _supported(node: object) -> bool:
+    """Read a ``CapabilitySupport`` object (``{"supported": bool}``)."""
+    return isinstance(node, dict) and node.get("supported") is True
+
+
+def _positive_int(value: object) -> int:
+    return value if isinstance(value, int) and value > 0 else 0
+
+
 def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
-    """Build a :class:`DiscoveredModel` enriched from Anthropic's model metadata.
+    """Build a :class:`DiscoveredModel` from Anthropic's ``/v1/models`` row.
 
-    Anthropic's ``/v1/models`` response carries ``display_name`` and
-    ``type`` alongside ``id``. We infer the rest from the model family:
-
-    - Claude Opus: premium tier, extended thinking (4+ models).
-    - Claude Sonnet: standard tier, medium latency.
-    - Claude Haiku: budget tier, low latency.
-    - All Claude models support text, tools, structured_output, and vision.
+    The row is authoritative when it carries the field: ``max_input_tokens``
+    (context window), ``max_tokens`` (per-call output ceiling), ``line``
+    (cost/latency tier) and ``capabilities`` (vision, structured outputs, and
+    manual thinking). ``thinking_model`` tracks
+    ``capabilities.thinking.types.enabled`` because the gateway sends
+    ``{"type": "enabled"}``; a model that only accepts adaptive thinking
+    would reject it. Rows without these fields (older API versions, the
+    404 fallback) keep the id-substring heuristic.
     """
 
     display_name = str(row.get("display_name") or "").strip()
     lowered = model_id.lower()
 
-    capabilities: tuple[str, ...] = ("text", "tools", "structured_output", "vision")
-    thinking_model = False
-    cost_tier = ""
-    latency_tier = ""
+    line = str(row.get("line") or "").strip().lower()
+    if line not in _LINE_TIERS:
+        line = next((name for name in _LINE_TIERS if name in lowered), "")
+    cost_tier, latency_tier = _LINE_TIERS.get(line, ("", ""))
 
-    if "opus" in lowered:
-        cost_tier = "frontier"
-        latency_tier = "high"
-        thinking_model = True
-    elif "sonnet" in lowered:
-        cost_tier = "standard"
-        latency_tier = "medium"
-    elif "haiku" in lowered:
-        cost_tier = "budget"
-        latency_tier = "low"
-    elif "fable" in lowered:
-        cost_tier = "premium"
-        latency_tier = "medium"
+    raw_caps = row.get("capabilities")
+    if isinstance(raw_caps, dict):
+        caps: list[str] = ["text", "tools"]
+        if _supported(raw_caps.get("structured_outputs")):
+            caps.append("structured_output")
+        if _supported(raw_caps.get("image_input")):
+            caps.append("vision")
+        thinking = raw_caps.get("thinking")
+        types = thinking.get("types") if isinstance(thinking, dict) else None
+        thinking_model = isinstance(types, dict) and _supported(types.get("enabled"))
+        if _supported(thinking):
+            caps.append("reasoning")
+        capabilities: tuple[str, ...] = tuple(caps)
+        published: set[str] = {"capabilities", "thinking_model"}
+    else:
+        capabilities = ("text", "tools", "structured_output", "vision")
+        thinking_model = line in {"opus", "mythos"}
+        published = set()
+    context_window = _positive_int(row.get("max_input_tokens"))
+    max_completion_tokens = _positive_int(row.get("max_tokens"))
+    if context_window:
+        published.add("context_window")
+    if max_completion_tokens:
+        published.add("max_completion_tokens")
 
     if not display_name:
         display_name = (
@@ -160,7 +201,10 @@ def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredMod
             "capabilities": capabilities,
             "cost_tier": cost_tier,
             "latency_tier": latency_tier,
+            "context_window": context_window,
+            "max_completion_tokens": max_completion_tokens,
         },
+        published=published,
     )
     return _model(
         model_id,
@@ -170,5 +214,7 @@ def _enrich_anthropic_model(model_id: str, row: dict[str, Any]) -> DiscoveredMod
         capabilities=tuple(enrichment.get("capabilities", capabilities)),
         cost_tier=str(enrichment.get("cost_tier", cost_tier)),
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        context_window=int(enrichment.get("context_window") or 0),
+        max_completion_tokens=int(enrichment.get("max_completion_tokens") or 0),
         structured_reliability=1.0,
     )

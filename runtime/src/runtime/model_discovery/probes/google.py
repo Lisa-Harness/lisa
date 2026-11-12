@@ -223,16 +223,31 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     # ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
     lowered_id = model_id.lower()
     thinking_model = (
-        "thinking" in methods_list
+        row.get("thinking") is True
+        or "thinking" in methods_list
         or "thinking" in lowered_id
         or _is_gemini_thinking_model_id(lowered_id)
     )
 
-    # Context window is the input token limit (Google also reports output).
+    # Context window is the input token limit; the output limit becomes the
+    # manifest's per-request completion ceiling.
     context_window = 0
     input_limit = row.get("inputTokenLimit")
     if isinstance(input_limit, int) and input_limit > 0:
         context_window = input_limit
+    output_limit = row.get("outputTokenLimit")
+    max_completion_tokens = (
+        output_limit if isinstance(output_limit, int) and output_limit > 0 else 0
+    )
+    published = {
+        field
+        for field, present in (
+            ("context_window", context_window > 0),
+            ("max_completion_tokens", max_completion_tokens > 0),
+            ("thinking_model", isinstance(row.get("thinking"), bool)),
+        )
+        if present
+    }
 
     # Cost/latency inference from the model id — Gemini Flash = budget/low,
     # Gemini Pro = premium/medium, everything else standard/medium.
@@ -256,8 +271,10 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
             "cost_tier": cost_tier,
             "latency_tier": latency_tier,
             "context_window": context_window,
+            "max_completion_tokens": max_completion_tokens,
             "description": description,
         },
+        published=published,
     )
     return _model(
         model_id,
@@ -268,6 +285,7 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
         cost_tier=str(enrichment.get("cost_tier", cost_tier)),
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
         context_window=int(enrichment.get("context_window", context_window)),
+        max_completion_tokens=int(enrichment.get("max_completion_tokens", max_completion_tokens)),
         description=str(enrichment.get("description", description)),
         structured_reliability=1.0,
     )

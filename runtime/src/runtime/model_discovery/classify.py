@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -222,12 +223,15 @@ def apply_known_override(
     provider: str,
     model_id: str,
     enrichment: dict[str, Any],
+    *,
+    published: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Overlay static-registry values on top of provider-derived enrichment.
 
-    Registry entries take precedence for the fields they specify. Fields
-    not present in the registry fall through to the provider-derived values
-    already in ``enrichment``.
+    The registry fills fields the provider does not expose and corrects
+    heuristic guesses. Fields named in ``published`` came from the
+    provider's own catalog row for this model and are never overridden —
+    a hand-maintained number must not replace the provider's live one.
     """
 
     registry = load_known_models()
@@ -235,9 +239,10 @@ def apply_known_override(
     override = registry.get(registry_key)
     if not override:
         return enrichment
+    provider_owned = frozenset(published)
     merged = dict(enrichment)
     for field, value in override.items():
-        if value in (None, "", [], ()):
+        if field in provider_owned or value in (None, "", [], ()):
             continue
         merged[field] = value
     return merged

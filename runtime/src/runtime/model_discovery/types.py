@@ -64,6 +64,10 @@ class DiscoveredModel:
     cost_tier: str = ""
     latency_tier: str = ""
     context_window: int = 0
+    #: Provider-published per-request output-token ceiling (Anthropic
+    #: ``max_tokens``, Google ``outputTokenLimit``, OpenRouter
+    #: ``top_provider.max_completion_tokens``). 0 = not published.
+    max_completion_tokens: int = 0
     #: Per-token USD price for prompt (input) tokens when the provider
     #: publishes it (e.g. OpenRouter's ``pricing.prompt``). 0.0 = unknown.
     prompt_price: float = 0.0
