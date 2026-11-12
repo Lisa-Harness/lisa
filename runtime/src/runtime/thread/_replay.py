@@ -13,6 +13,8 @@ import copy
 from pathlib import Path
 from typing import Any
 
+from kernel.history import fold_replay
+
 from runtime.host_commands import is_host_command_query
 
 _SCAN_LIMIT = 50
@@ -81,20 +83,32 @@ def _call_payload(call: dict[str, Any]) -> dict[str, Any]:
     return function if isinstance(function, dict) else call
 
 
+def _entry_prefix(entry: dict[str, Any]) -> str:
+    # Tool-call ids are only unique within one turn; prefix them per turn.
+    return f"t{entry.get('turn', 'x')}_"
+
+
 def _entry_messages(
     entry: dict[str, Any],
     redaction: Any,
     *,
     approved_result: dict[str, Any] | None = None,
+    folds: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    # Tool-call ids are only unique within one turn; prefix them per turn.
-    prefix = f"t{entry.get('turn', 'x')}_"
+    prefix = _entry_prefix(entry)
     messages = [{"role": "user", "content": _redact(str(entry.get("query") or ""), redaction)}]
     transcript = list(entry.get("transcript") or [])
     # The stored user message carries this turn's briefings; replay the plain query instead.
     if transcript and transcript[0].get("role") == "user":
         transcript = transcript[1:]
     messages.extend(_replay_message(m, prefix, redaction) for m in transcript)
+    if folds:
+        # Stale and turn-scoped results replay as ref-carrying stubs; the
+        # thread keeps the full text, so the fold is lossless.
+        for message in messages:
+            stub = folds.get(str(message.get("tool_call_id") or ""))
+            if message.get("role") == "tool" and stub is not None:
+                message["content"] = stub
     if approved_result is not None:
         messages.append(_replay_message(approved_result, prefix, redaction))
         return messages
@@ -175,6 +189,11 @@ def build_open_task_messages(
         if (provenance := entry.get("provenance") or {}).get("source") in _APPROVAL_SOURCES
         and provenance.get("approval_request_id")
     }
+    folds = fold_replay(
+        (_entry_prefix(entry), entry["history"])
+        for entry in entries
+        if isinstance(entry.get("history"), dict)
+    )
     messages: list[dict[str, Any]] = []
     paired_ids: set[str] = set()
     for entry in entries:
@@ -195,7 +214,9 @@ def build_open_task_messages(
         approved_result = _paired_approval_result(entry, approvals)
         if approved_result is not None:
             paired_ids.add(str(provenance["pending_approval_request_id"]))
-        replay = _entry_messages(entry, _thread_redaction, approved_result=approved_result)
+        replay = _entry_messages(
+            entry, _thread_redaction, approved_result=approved_result, folds=folds
+        )
         messages.extend(
             project_thread_messages(
                 replay,

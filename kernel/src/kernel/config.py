@@ -414,6 +414,14 @@ class Settings(BaseSettings):
     # 12.5x the read rate. Accounting only — they never hard-gate.
     intra_turn_cache_read_share: float = Field(default=0.1, ge=0, le=1)
     intra_turn_cache_write_share: float = Field(default=1.25, ge=0)
+    # Pack-declared history (``kernel.history``): once fully superseded or
+    # invalidated tool results still resident in the live array reach this
+    # many estimated tokens, the kernel runs one supersession epoch that
+    # replaces them with ref-carrying stubs. Sized from the 2026-11 coding
+    # turns, where stale reads/verify reports reached ~30K tokens and were
+    # re-sent on every later iteration. 0 disables the in-turn epoch; the
+    # turn-start replay still folds stale and turn-scoped results.
+    history_epoch_min_tokens: int = Field(default=12_000, ge=0)
 
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
@@ -527,6 +535,7 @@ class Settings(BaseSettings):
         "intra_turn_spill_preview_repeat_limit",
         "intra_turn_cache_read_share",
         "intra_turn_cache_write_share",
+        "history_epoch_min_tokens",
         mode="before",
     )
     @classmethod

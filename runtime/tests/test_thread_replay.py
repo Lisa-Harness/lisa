@@ -12,6 +12,7 @@ from runtime.host_commands import register_builtin_host_commands
 from runtime.thread import (
     append_thread_entry,
     build_open_task_messages,
+    persist_thread_tool_result,
     project_thread_messages,
     set_thread_redaction_policy,
 )
@@ -160,6 +161,60 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     call_ids = [c["id"] for m in messages for c in m.get("tool_calls") or []]
     assert len(set(call_ids)) == 2
     assert all(cid.startswith("t") for cid in call_ids)
+
+
+def test_open_task_replay_folds_stale_results_losslessly(tmp_path: Path) -> None:
+    """Pack history folds a superseded read to a ref stub; the thread keeps it."""
+    thread = tmp_path / "threads" / "tester"
+    first, second = "FILE A v1 " * 50, "FILE A v2 " * 50
+
+    def history(content: str, **extra: object) -> dict[str, object]:
+        ref = persist_thread_tool_result(
+            thread, {"content": content, "task_id": "task-1", "tool_name": "read"}
+        )
+        record = {
+            "call_id": "c1",
+            "tool_id": "read",
+            "owner_id": "lisa-pack-coding",
+            "ref": ref,
+            "chars": len(content),
+        }
+        return {"records": [{**record, **extra}]}
+
+    _append(
+        thread,
+        "fix issue 6",
+        response_text="budget paused",
+        provenance={"source": "observed", "operator_exit": "paused", "task_id": "task-1"},
+        transcript=_read_turn("fix issue 6", first),
+        history=history(first, keys=["read:a.py"], anchor="read:a.py"),
+    )
+    _append(
+        thread,
+        "continue",
+        response_text="paused again",
+        provenance={"source": "observed", "operator_exit": "paused", "task_id": "task-1"},
+        transcript=_read_turn("continue", second),
+        history={
+            **history(second, keys=["read:a.py"]),
+            "snapshots": {"lisa-pack-coding": "w1: clean"},
+        },
+    )
+
+    messages = build_open_task_messages(thread_path=thread)
+
+    tool_contents = [str(m["content"]) for m in messages if m.get("role") == "tool"]
+    assert tool_contents[1] == second
+    stub = tool_contents[0]
+    assert stub.startswith("[superseded by call t1_c1") and "read:a.py" in stub
+    # The newest owner snapshot rides on that owner's last folded result.
+    assert stub.endswith("[lisa-pack-coding state] w1: clean")
+    ref = next(word for word in stub.split() if word.startswith("r") and len(word) == 65)
+    page = json.loads(ThreadReader(ThreadStore(thread)).read_content(ref, 0))
+    assert page["content"] == first
+    raw = ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]
+    assert raw["transcript"][-1]["content"] == first
+    assert raw["history"]["records"][0]["keys"] == ["read:a.py"]
 
 
 def _call(call_id: str, name: str, arguments: str, *, flat: bool) -> dict[str, object]:

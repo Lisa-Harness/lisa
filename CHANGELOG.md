@@ -4,6 +4,39 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Pack-declared history semantics. A tool's ``.tool.yml`` ``history:`` block,
+  or its module's ``history_keys(params, result)`` hook, claims supersession
+  ``key``s, ``invalidates`` prefixes, and a ``task``/``turn`` ``scope`` for
+  each successful result. The kernel (``kernel.history``) records these
+  claims per call and stays the only thing that rewrites model history.
+  - **Folding:** a stale result, or a turn-scoped one once its turn ends,
+    folds to a one-line stub that always carries the result's ``r<sha256>``
+    ref, so no evidence is lost.
+  - **When it folds:** mid-turn, a supersession epoch folds once at least
+    ``history_epoch_min_tokens`` (default 12000) are dead, or once the live
+    array exceeds the mode's new ``working_set_tokens`` frontmatter cap. At
+    turn start, replay folds the lossless thread through the same ledger.
+  - **Pack hooks:** ``history_snapshot(ctx, keys)`` keeps a pack's live state
+    resident after its records fold. An ``anchor`` routes a stub's
+    dereference to the tool's ``resolve_history_anchor`` and falls back to
+    the stored ref. Only anchors the kernel issued, in a ledger record or in
+    a stub in the live messages, are served this way.
+  - **Approvals:** a host-approved tool call persists its history claims on
+    its thread entry, so an operator-approved edit still stales the reads
+    it changed.
+  - **Templates:** history templates see the call's ``Parameters`` defaults.
+  - **e2e:** the new ``history_folded`` oracle asserts that records are refd
+    and that snapshots are present.
+  - **Tests:** ``kernel/tests/test_history.py``,
+    ``kernel/tests/test_history_turn.py``,
+    ``kernel/tests/test_intra_turn_compaction.py``,
+    ``runtime/tests/test_approval_commands.py``,
+    ``sdk/tests/test_tool_history.py``,
+    ``runtime/tests/test_thread_replay.py``, and
+    ``e2etest/tests/test_harness.py``.
+
 ### Fixed
 
 - MCP server ERROR+ evidence no longer forks a per-server ledger:

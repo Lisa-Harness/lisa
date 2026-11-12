@@ -30,6 +30,7 @@ from kernel.operations.registry import OperationTimeoutError
 from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import execute_tool
+from kernel.turn_phases._history import maybe_resolve_anchor_read
 from kernel.turn_phases._post_turn import (
     _stringify_pack_tool_result,
     _stringify_result,
@@ -297,6 +298,7 @@ class CapabilityDispatchOutcome:
     is_ok: bool
     operation_result: OperationResult | None = None
     delegate_yield: YieldAction | None = None
+    tool_result: ToolResult | None = None
 
 
 async def _dispatch_operation(
@@ -831,9 +833,20 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
                 hooks=hooks,
             )
         else:
-            mcp_res = await pool.call_tool(tool_name, tool_arguments)
-            mcp_result = mcp_res
-            tool_output = mcp_res.output_text or "Done"
+            anchored = await maybe_resolve_anchor_read(
+                state=state,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                tool_catalog=tool_catalog,
+                ctx=ctx,
+                log=logger,
+            )
+            if anchored is not None:
+                tool_output = anchored
+            else:
+                mcp_res = await pool.call_tool(tool_name, tool_arguments)
+                mcp_result = mcp_res
+                tool_output = mcp_res.output_text or "Done"
 
         state.total_tool_calls += 1
         state.step_tool_calls += 1
@@ -1009,4 +1022,5 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
         is_ok=is_ok,
         operation_result=op_result,
         delegate_yield=delegate_yield,
+        tool_result=tool_result if isinstance(tool_result, ToolResult) else None,
     )

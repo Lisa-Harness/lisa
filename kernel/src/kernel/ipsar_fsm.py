@@ -288,6 +288,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "required_capabilities",
         "completion_budget_tokens",
         "turn_completion_budget_tokens",
+        "working_set_tokens",
         "default_intent_bridges",
         "artifact_type",
         "yield_policy",
@@ -738,6 +739,13 @@ def _parse_completion_budget_tokens(
     return per_call, per_turn
 
 
+def _parse_working_set_tokens(mode_front_matter: dict[str, Any], mode_config_path: Path) -> int:
+    raw = mode_front_matter.get("working_set_tokens")
+    if raw is None:
+        return 0
+    return _coerce_positive_budget_int(raw, "working_set_tokens", mode_config_path)
+
+
 def _coerce_positive_budget_int(raw: Any, field_name: str, mode_config_path: Path) -> int:
     try:
         value = int(raw)
@@ -994,6 +1002,7 @@ def _load_mode_from_dir(
         required_capabilities=routing.required_capabilities,
         completion_budget_tokens=_mode_budget_tokens[0],
         turn_completion_budget_tokens=_mode_budget_tokens[1],
+        working_set_tokens=_parse_working_set_tokens(mode_front_matter, mode_config_path),
         command_pattern=command_pattern,
         require_query=require_query,
         entry_operation_ids=operation_bindings.entry_operation_ids,

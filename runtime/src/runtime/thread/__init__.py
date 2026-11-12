@@ -290,6 +290,7 @@ def _build_thread_entry(
     turn_input: dict[str, Any] | None,
     memory_ids: list[int] | None,
     transcript: list[dict[str, Any]] | None = None,
+    history: dict[str, Any] | None = None,
     verified_facts: list[dict[str, Any]] | None = None,
     departed_modes: list[str] | None = None,
     provisional_turn: int | None = None,
@@ -333,6 +334,9 @@ def _build_thread_entry(
     )
     if transcript:
         entry["transcript"] = transcript
+    if history:
+        # Pack history claims (``kernel.history``); replay folds from them.
+        entry["history"] = history
     return entry
 
 
@@ -407,6 +411,7 @@ def append_thread_entry(
     turn_input: dict[str, Any] | None = None,
     memory_ids: list[int] | None = None,
     transcript: list[dict[str, Any]] | None = None,
+    history: dict[str, Any] | None = None,
     verified_facts: list[dict[str, Any]] | None = None,
     departed_modes: list[str] | None = None,
     reservation: str = "",
@@ -451,6 +456,7 @@ def append_thread_entry(
             turn_input=turn_input,
             memory_ids=memory_ids,
             transcript=transcript,
+            history=history,
             verified_facts=verified_facts,
             departed_modes=departed_modes,
             provisional_turn=turn,

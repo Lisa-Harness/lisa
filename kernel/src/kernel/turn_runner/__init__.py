@@ -40,6 +40,7 @@ __all__ = [
     "_noop_complete",
     "_plan_steps_to_workflow_steps",
     "_synthesized_call_missing_all_required",
+    "approved_invocation_history",
     "execute_approved_invocation",
     "get_workflow_catalog",
     "run_turn",
@@ -173,6 +174,12 @@ from kernel.turn_phases._dispatch import (
 )
 from kernel.turn_phases._entry import build_plan_failure_recovery, execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context
+from kernel.turn_phases._history import (
+    approved_invocation_history,
+    finalize_turn_history,
+    maybe_run_supersession_epoch,
+    record_dispatch_history,
+)
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
 )
@@ -1433,7 +1440,7 @@ async def _run_turn_with_approval(
         # differs from the entry mode, so an approval paused in the entry
         # mode does not fabricate a self-handoff.
         owning_mode = required.invocation.identity.mode_id or ""
-        return _with_transcript(
+        approval_result = _with_transcript(
             TurnResult(
                 response_text=render_approval_request(required.invocation),
                 pending_approval=required.invocation,
@@ -1461,7 +1468,22 @@ async def _run_turn_with_approval(
             ),
             capture,
         )
-    return _with_transcript(result, capture)
+        return await _with_history(approval_result, capture, hooks)
+    return await _with_history(_with_transcript(result, capture), capture, hooks)
+
+
+async def _with_history(result: TurnResult, capture: list[Any], hooks: TurnHooks) -> TurnResult:
+    """Attach the turn's pack-history block; replay folds stale results from it."""
+    if not capture:
+        return result
+    try:
+        result.history = await finalize_turn_history(
+            state=capture[0], hooks=hooks, tool_catalog=get_tool_catalog(), log=logger
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # Without the block replay keeps every result resident: costlier, never lossy.
+        logger.warning("turn history finalize failed; replay will not fold: %s", exc)
+    return result
 
 
 def _with_transcript(result: TurnResult, capture: list[Any]) -> TurnResult:
@@ -7929,7 +7951,11 @@ async def _dispatch_capability_and_track(
             }
         )
 
-    return {"tool_output": tool_output, "delegate_yield": delegate_yield}
+    return {
+        "tool_output": tool_output,
+        "delegate_yield": delegate_yield,
+        "tool_result": _outcome.tool_result,
+    }
 
 
 def _wire_build_entry_ctx(
@@ -9655,6 +9681,16 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             preview_repeat_limit=state.intra_turn_compaction.preview_repeat_limit,
         )
     state.intra_turn_compaction_estimator.observe_append(tool_result_msg)
+    record_dispatch_history(
+        state=state,
+        tool_def=tool_catalog.get(prepared.tool_name),
+        tool_name=prepared.tool_name,
+        tool_call_id=prepared.tool_call_id,
+        params=prepared.tool_arguments,
+        tool_result=dispatch["tool_result"],
+        resident_content=str(tool_result_msg["content"]),
+        log=log,
+    )
     return _ContinueIteration()
 
 
@@ -11031,6 +11067,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             else 0
         )
         if _state.intra_turn_compaction.enabled:
+            maybe_run_supersession_epoch(state=_state, hooks=hooks, messages=messages, log=_log)
             maybe_run_soft_epoch(
                 state=_state,
                 hooks=hooks,

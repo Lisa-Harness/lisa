@@ -199,6 +199,26 @@ def _receipt(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     return len(hits) >= need, f"{len(hits)} receipt(s) for {sorted(wanted)}; seen: {seen}"
 
 
+@oracle("history_folded")
+def _history_folded(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Pack history semantics recorded foldable results for ``tool`` (each with a ref)."""
+    wanted = set(args["tool"]) if isinstance(args["tool"], list) else {args["tool"]}
+    records = [r for e in ev.thread_entries for r in (e.get("history") or {}).get("records") or ()]
+    hits = [r for r in records if r.get("tool_id") in wanted]
+    unrefd = [r.get("call_id") for r in hits if not r.get("ref")]
+    snapshots = sorted(
+        {o for e in ev.thread_entries for o in (e.get("history") or {}).get("snapshots") or {}}
+    )
+    need = int(args.get("min", 1))
+    want_snapshot = args.get("snapshot")
+    ok = len(hits) >= need and not unrefd and (not want_snapshot or want_snapshot in snapshots)
+    seen = sorted({str(r.get("tool_id")) for r in records})
+    return ok, (
+        f"{len(hits)} history record(s) for {sorted(wanted)}; unrefd={unrefd}; "
+        f"seen: {seen}; snapshots: {snapshots}"
+    )
+
+
 @oracle("memory_recorded")
 def _memory_recorded(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     rows = ev.memories
