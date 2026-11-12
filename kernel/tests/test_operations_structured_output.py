@@ -11,6 +11,8 @@ from "provider returned malformed JSON".
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from kernel.operations.structured_output import (
     REASONING_TAIL_CONTENT_SOURCE,
@@ -21,6 +23,8 @@ from kernel.operations.structured_output import (
     parse_structured_payload,
     reasoning_tail_excerpt,
     run_distillation_ladder,
+    salvage_truncated_envelope,
+    unwrap_nested_envelope,
     validation_feedback_retry_messages,
 )
 from pydantic import BaseModel, ValidationError
@@ -44,6 +48,12 @@ class _ScalarPayload(BaseModel):
     """Schema with only scalar properties."""
 
     answer: str = ""
+
+
+class _FactPayload(BaseModel):
+    """Schema whose array property holds objects — the distiller shape."""
+
+    facts: list[_SamplePayload] = []
 
 
 class _StubCompletion:
@@ -247,6 +257,59 @@ def test_parse_structured_payload_fenced_schema_error_reports_schema_problem() -
         parse_structured_payload(_SamplePayload, '```json\n{"results": ["a"]}\n```')
     assert "query" in str(excinfo.value)
     assert "json_invalid" not in str(excinfo.value)
+
+
+# ── truncated-envelope and re-nested-envelope recovery ──
+
+
+def test_salvage_recovers_truncated_array_keeping_complete_elements() -> None:
+    """A token-budget truncation mid-array keeps complete elements and
+    closes the envelope (the 2026-11-08 synthesize incidents)."""
+    truncated = '{"facts": [{"action": "create", "fact": "one"}, {"action": "up'
+    recovered = salvage_truncated_envelope(truncated)
+    assert json.loads(recovered) == {"facts": [{"action": "create", "fact": "one"}]}
+
+
+def test_salvage_ignores_string_only_arrays() -> None:
+    """Salvage is object-scoped: a truncated string-element array has no
+    complete object element, so the input passes through unchanged."""
+    text = '{"query": "test", "results": ["alpha", "beta"'
+    assert salvage_truncated_envelope(text) == text
+
+
+def test_salvage_returns_input_unchanged_when_nothing_completes() -> None:
+    """No balanced element at all returns the input unchanged."""
+    text = '{"facts": [{"action": "up'
+    assert salvage_truncated_envelope(text) == text
+
+
+def test_unwrap_flattens_single_renested_envelope() -> None:
+    """The 2026-11-10..11 shape — the example envelope echoed as the first
+    array element — flattens to the inner facts array."""
+    nested = '{"facts": [{"facts": [{"action": "create", "fact": "one"}]}]}'
+    assert json.loads(unwrap_nested_envelope(nested)) == {
+        "facts": [{"action": "create", "fact": "one"}]
+    }
+
+
+def test_unwrap_requires_matching_inner_key() -> None:
+    """A different inner key is left alone — no unrelated flattening."""
+    other_key = '{"facts": [{"items": [{"a": 1}]}]}'
+    assert unwrap_nested_envelope(other_key) == other_key
+
+
+def test_parse_structured_payload_salvages_truncated_object_array() -> None:
+    """End-to-end: a truncated fact-object array parses via the recovery pass."""
+    truncated = '{"facts": [{"query": "a"}, {"query": "b"'
+    parsed = parse_structured_payload(_FactPayload, truncated)
+    assert [f.query for f in parsed.facts] == ["a"]
+
+
+def test_parse_structured_payload_unwraps_renested_payload() -> None:
+    """End-to-end: the re-nested envelope parses via the recovery pass."""
+    nested = '{"facts": [{"facts": ["a", "b"]}]}'
+    parsed = parse_structured_payload(_ArrayPayload, nested)
+    assert parsed.facts == ["a", "b"]
 
 
 # ── extract_json_object ────────────────────────────────────────────────
