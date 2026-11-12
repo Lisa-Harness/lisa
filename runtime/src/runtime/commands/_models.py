@@ -28,6 +28,12 @@ from runtime.model_discovery import (
     discover_models,
     render_manifest_yaml,
 )
+from runtime.model_discovery.catalog import (
+    catalog_path,
+    read_catalog,
+    write_proposed_catalog,
+)
+from runtime.model_discovery.compose import compose_effective_manifest
 from runtime.model_manifest import load_model_manifest_text
 from runtime.model_runtime import (
     active_manifest_path,
@@ -298,6 +304,24 @@ async def _handle_models_discover(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
+    # Candidate provider catalog: written only when every probe
+    # succeeded, so a failed or partial run can never replace the last
+    # good catalog (spec: probe safety). The proposal write below is
+    # separately gated on models being present.
+    catalog_note = ""
+    all_ok = bool(report.results) and all(
+        result.status is ProbeStatus.OK for result in report.results
+    )
+    if all_ok:
+        try:
+            write_proposed_catalog(catalog_path(runtime.paths.data_dir), tuple(report.models))
+            catalog_note = f"- catalog_rows: {len(report.models)}"
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("models: failed to write provider catalog")
+            catalog_note = "- catalog: write failed (proposal unaffected)"
+    else:
+        catalog_note = "- catalog: unchanged (not all probes succeeded)"
+
     proposal_text = render_manifest_yaml(payload, router_block=payload.get("router"))
     write_error = await _write_manifest_text_to_storage(
         runtime,
@@ -322,6 +346,7 @@ async def _handle_models_discover(
         "Model discovery completed.",
         f"- discovered_models: {len(report.models)} ({provider_text})",
         f"- proposal_written: {proposal_path}",
+        catalog_note,
         "- next_step: edit proposal as needed, then run /models apply",
         "- presets: see sdk/router/README.md for copy-paste router presets",
     ]
@@ -330,6 +355,64 @@ async def _handle_models_discover(
     lines.append("- notes:")
     lines.extend(notes_lines or ["- none"])
     response_text = "\n".join(lines)
+    return handle_simple_command(runtime, message, "models", response_text)
+
+
+def _render_migration_report(
+    operator_document: dict[str, Any],
+    catalog_file: Path,
+) -> list[str]:
+    """Compose operator+catalog (dry run) and render the migration report.
+
+    Read-only: returns UI-safe one-line entries, or ``[]`` when no
+    catalog exists yet (nothing to report). The active manifest itself
+    is never rewritten from catalog data here.
+    """
+
+    catalog = read_catalog(catalog_file)
+    if catalog is None:
+        return []
+    _composed, report = compose_effective_manifest(operator_document, catalog)
+    lines: list[str] = []
+    for entry in report:
+        kind = str(entry.get("kind", "unknown"))
+        model = str(entry.get("model", "?"))
+        field = entry.get("field")
+        if field:
+            lines.append(f"  - {kind}: {model}.{field}")
+        else:
+            lines.append(f"  - {kind}: {model}")
+    return lines
+
+
+async def _handle_models_reload(runtime: HostRuntime, message: str, active_path: Path) -> str:
+    """Handle ``/models reload``: cold-load with in-memory composition."""
+
+    try:
+        active_text, active_error = await _read_manifest_text_from_storage(
+            runtime,
+            which="active",
+        )
+        if active_error is not None:
+            raise ValueError(active_error)
+        if active_text is None:
+            raise ValueError("read_model_manifest returned empty output")
+        # Compose the operator manifest with the provider catalog in
+        # memory: the operator document on disk stays byte-stable;
+        # the composition lives only in the session manifest.
+        parsed_active = yaml.safe_load(active_text)
+        if not isinstance(parsed_active, dict):
+            raise ValueError("Active manifest root must be an object.")
+        catalog = read_catalog(catalog_path(runtime.paths.data_dir))
+        if catalog is not None:
+            parsed_active, _report = compose_effective_manifest(parsed_active, catalog)
+        runtime.session.manifest = load_model_manifest_text(render_manifest_yaml(parsed_active))
+        response_text = _render_models_manifest_from_manifest(runtime, runtime.session.manifest)
+    except Exception as exc:  # pylint: disable=broad-except
+        response_text = (
+            f"Failed to reload models from {active_path}: {exc}\n"
+            "Run /models discover to generate a proposal first."
+        )
     return handle_simple_command(runtime, message, "models", response_text)
 
 
@@ -398,14 +481,23 @@ async def _handle_models_apply(
         if write_error is not None:
             raise ValueError(write_error)
         runtime.session.manifest = manifest
-        response_text = "\n".join(
-            [
-                "Applied models proposal.",
-                f"- active_manifest: {active_path}",
-                f"- model_count: {len(manifest.models)}",
-                f"- proposal_retained: {proposal_path}",
-            ]
+        # Migration report: dry-run compose of the promoted operator
+        # document with the provider catalog. The active manifest stays
+        # byte-stable — catalog data is reported, never merged here.
+        report_lines = _render_migration_report(
+            parsed if isinstance(parsed, dict) else {},
+            catalog_path(runtime.paths.data_dir),
         )
+        response_parts = [
+            "Applied models proposal.",
+            f"- active_manifest: {active_path}",
+            f"- model_count: {len(manifest.models)}",
+            f"- proposal_retained: {proposal_path}",
+        ]
+        if report_lines:
+            response_parts.append("- migration_report:")
+            response_parts.extend(report_lines)
+        response_text = "\n".join(response_parts)
     except Exception as exc:  # pylint: disable=broad-except
         response_text = (
             f"Failed to apply proposal from {proposal_path}: {exc}\n"
@@ -437,23 +529,7 @@ async def handle_models_command(
         return handle_simple_command(runtime, message, "models", rendered)
 
     if subcommand == "reload":
-        try:
-            active_text, active_error = await _read_manifest_text_from_storage(
-                runtime,
-                which="active",
-            )
-            if active_error is not None:
-                raise ValueError(active_error)
-            if active_text is None:
-                raise ValueError("read_model_manifest returned empty output")
-            runtime.session.manifest = load_model_manifest_text(active_text)
-            response_text = _render_models_manifest_from_manifest(runtime, runtime.session.manifest)
-        except Exception as exc:  # pylint: disable=broad-except
-            response_text = (
-                f"Failed to reload models from {active_path}: {exc}\n"
-                "Run /models discover to generate a proposal first."
-            )
-        return handle_simple_command(runtime, message, "models", response_text)
+        return await _handle_models_reload(runtime, message, active_path)
 
     if subcommand == "discover":
         return await _handle_models_discover(runtime, message, args, proposal_path)

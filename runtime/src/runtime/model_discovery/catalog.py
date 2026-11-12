@@ -31,8 +31,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .types import DiscoveredModel
 
@@ -205,11 +210,6 @@ def write_proposed_catalog(path: Any, models: tuple[DiscoveredModel, ...]) -> No
     never leave a torn candidate behind.
     """
 
-    import os
-    import tempfile
-
-    import yaml
-
     document = build_proposed_catalog(models)
     payload = yaml.safe_dump(
         document,
@@ -228,3 +228,40 @@ def write_proposed_catalog(path: Any, models: tuple[DiscoveredModel, ...]) -> No
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
+
+
+def catalog_path(data_dir: Any) -> Path:
+    """Return the provider catalog path inside the host data directory.
+
+    The catalog is the measured/provider layer (``models.catalog.yaml``);
+    the operator's edit surface stays ``models.proposed.yaml``.
+    """
+
+    return Path(str(data_dir)) / "models.catalog.yaml"
+
+
+def read_catalog(path: Any) -> dict[str, Any] | None:
+    """Read a catalog document, or ``None`` when absent/invalid.
+
+    A missing or malformed catalog is a *reported* condition, never a
+    crash: composition callers fall back to the operator document
+    unchanged. Structural gate: must be a mapping with a ``providers``
+    mapping (the schema's one invariant).
+    """
+
+    try:
+        text = Path(str(path)).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.warning("catalog: unreadable catalog at %s", path)
+        return None
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        logger.warning("catalog: unparseable catalog at %s", path)
+        return None
+    if not isinstance(document, dict) or not isinstance(document.get("providers"), dict):
+        logger.warning("catalog: malformed catalog document at %s", path)
+        return None
+    return document
