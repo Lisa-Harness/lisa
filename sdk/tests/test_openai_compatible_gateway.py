@@ -552,8 +552,8 @@ def test_extract_usage_reads_cost_from_sdk_model_extra() -> None:
     assert usage.provider_cost_usd == pytest.approx(0.00042)
 
 
-def test_extract_usage_reports_zero_when_provider_omits_cost() -> None:
-    """Providers that publish no cost leave the field at 0.0 (not reported)."""
+def test_extract_usage_reports_unknown_when_provider_omits_cost() -> None:
+    """Providers that publish no cost leave the field unknown (``None``)."""
     from sdk.providers.openai_gateway import extract_openai_completion_usage
 
     response = SimpleNamespace(
@@ -561,7 +561,7 @@ def test_extract_usage_reports_zero_when_provider_omits_cost() -> None:
     )
     usage = extract_openai_completion_usage(response)
     assert usage is not None
-    assert usage.provider_cost_usd == 0.0
+    assert usage.provider_cost_usd is None
 
 
 @pytest.mark.asyncio

@@ -299,28 +299,124 @@ def format_token_stats(runtime: HostRuntime) -> str:
     return "\n".join(lines)
 
 
+def _record_metric(record: dict[str, Any], key: str) -> int | None:
+    """Read one token counter from a persisted usage record.
+
+    Absent/``None``/malformed/negative is unknown (``None``); a present
+    non-negative integer — including a measured ``0`` — is kept.
+    """
+    value = record.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _record_cost(record: dict[str, Any]) -> float | None:
+    """Read ``cost_usd`` from a persisted usage record under v2 rules.
+
+    Legacy rows (no ``schema_version``) with a zero cost are ambiguous —
+    the old schema defaulted the field, so a zero may mean "not priced"
+    rather than a measured free call — and are reported as unknown.
+    v2 rows keep an explicit ``0.0`` as a real measured zero.
+    """
+    raw = record.get("cost_usd")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return None
+    if "schema_version" not in record and float(raw) == 0.0:
+        return None
+    return float(raw)
+
+
+def _reduce_usage_record(
+    record: dict[str, Any],
+    totals: dict[str, Any],
+    entry: dict[str, int] | None,
+) -> None:
+    """Fold one persisted usage record into ``totals`` (in place).
+
+    ``entry`` is the per-model accumulator for this record's ``model_id``
+    (``None`` when the row carries no model). Counter and cost rules live
+    in :func:`_record_metric` and :func:`_record_cost`; known counts ride
+    ``totals["known"]`` so partial telemetry is visible instead of
+    silently reading as zero usage.
+    """
+    counters = {
+        "prompt": _record_metric(record, "prompt_tokens"),
+        "completion": _record_metric(record, "completion_tokens"),
+        "total": _record_metric(record, "total_tokens"),
+        "cached": _record_metric(record, "cached_tokens"),
+        "reasoning": _record_metric(record, "reasoning_tokens"),
+        "cache_creation": _record_metric(record, "cache_creation_tokens"),
+    }
+    for metric, value in counters.items():
+        if value is None:
+            continue
+        totals[metric] += value
+        totals["known"][metric] += 1
+        if entry is not None:
+            key = "cache_creation_tokens" if metric == "cache_creation" else f"{metric}_tokens"
+            entry[key] += value
+    rec_cost = _record_cost(record)
+    if rec_cost is not None:
+        totals["cost"] += rec_cost
+        totals["known"]["cost"] += 1
+    emitted_at = str(record.get("emitted_at") or "")
+    if emitted_at:
+        if not totals["first_at"] or emitted_at < totals["first_at"]:
+            totals["first_at"] = emitted_at
+        if not totals["last_at"] or emitted_at > totals["last_at"]:
+            totals["last_at"] = emitted_at
+    if record.get("turn_index") is not None:
+        totals["known"]["turn"] += 1
+    else:
+        totals["unattributed"] += 1
+
+
 def _aggregate_lifetime_usage(
     lines: list[str],
 ) -> dict[str, Any] | None:
     """Aggregate the parsed token-usage JSONL lines into lifetime totals.
 
+    Delegates each record to :func:`_reduce_usage_record`; the legacy-versus-v2
+    reader rules live there. The returned dict carries per-metric known counts
+    and the unattributed row count beside the sums so the renderer can show
+    coverage.
+
     Returns:
         A dict of aggregate totals (prompt/completion/total/cached/reasoning/
         cache_creation tokens, cost, event count, first/last timestamps,
-        and the per-model breakdown), or ``None`` when no parsable event
-        lines were found.
+        per-model breakdown, per-metric known-coverage counts, and the
+        unattributed row count), or ``None`` when no parsable event lines
+        were found.
     """
-    prompt = 0
-    completion = 0
-    total = 0
-    cached = 0
-    reasoning = 0
-    cost = 0.0
+    totals: dict[str, Any] = {
+        "prompt": 0,
+        "completion": 0,
+        "total": 0,
+        "cached": 0,
+        "reasoning": 0,
+        "cache_creation": 0,
+        "cost": 0.0,
+        "first_at": "",
+        "last_at": "",
+        "known": {
+            "prompt": 0,
+            "completion": 0,
+            "total": 0,
+            "cached": 0,
+            "reasoning": 0,
+            "cache_creation": 0,
+            "cost": 0,
+            "turn": 0,
+        },
+        "unattributed": 0,
+    }
     event_count = 0
-    first_at = ""
-    last_at = ""
     model_totals: dict[str, dict[str, int]] = {}
-    cache_creation = 0
 
     for raw_line in lines:
         try:
@@ -330,27 +426,8 @@ def _aggregate_lifetime_usage(
         if not isinstance(record, dict):
             continue
         event_count += 1
-        rec_prompt = int(record.get("prompt_tokens") or 0)
-        rec_completion = int(record.get("completion_tokens") or 0)
-        rec_total = int(record.get("total_tokens") or 0)
-        rec_cached = int(record.get("cached_tokens") or 0)
-        rec_reasoning = int(record.get("reasoning_tokens") or 0)
-        rec_cache_creation = int(record.get("cache_creation_tokens") or 0)
-        rec_cost = float(record.get("cost_usd") or 0.0)
-        prompt += rec_prompt
-        completion += rec_completion
-        total += rec_total
-        cached += rec_cached
-        reasoning += rec_reasoning
-        cache_creation += rec_cache_creation
-        cost += rec_cost
-        emitted_at = str(record.get("emitted_at") or "")
-        if emitted_at:
-            if not first_at or emitted_at < first_at:
-                first_at = emitted_at
-            if not last_at or emitted_at > last_at:
-                last_at = emitted_at
         model_id = str(record.get("model_id") or "")
+        entry: dict[str, int] | None = None
         if model_id:
             entry = model_totals.setdefault(
                 model_id,
@@ -363,32 +440,22 @@ def _aggregate_lifetime_usage(
                     "cache_creation_tokens": 0,
                 },
             )
-            entry["prompt_tokens"] += rec_prompt
-            entry["completion_tokens"] += rec_completion
-            entry["total_tokens"] += rec_total
-            entry["cached_tokens"] += rec_cached
-            entry["reasoning_tokens"] += rec_reasoning
-            entry["cache_creation_tokens"] += rec_cache_creation
+        _reduce_usage_record(record, totals, entry)
 
     if event_count == 0:
         return None
-    return {
-        "prompt": prompt,
-        "completion": completion,
-        "total": total,
-        "cached": cached,
-        "reasoning": reasoning,
-        "cache_creation": cache_creation,
-        "cost": cost,
-        "event_count": event_count,
-        "first_at": first_at,
-        "last_at": last_at,
-        "model_totals": model_totals,
-    }
+    totals["event_count"] = event_count
+    totals["model_totals"] = model_totals
+    return totals
 
 
 def _render_lifetime_usage_lines(agg: dict[str, Any]) -> list[str]:
-    """Render the aggregated lifetime totals as the Markdown section lines."""
+    """Render the aggregated lifetime totals as the Markdown section lines.
+
+    Cache-efficiency v2 reporting rules: unknown metrics render as
+    ``n/a`` (never as zero), every metric carries its known/total
+    coverage, and attribution coverage is shown beside the totals.
+    """
     prompt = agg["prompt"]
     completion = agg["completion"]
     total = agg["total"]
@@ -400,23 +467,42 @@ def _render_lifetime_usage_lines(agg: dict[str, Any]) -> list[str]:
     first_at = agg["first_at"]
     last_at = agg["last_at"]
     model_totals: dict[str, dict[str, int]] = agg["model_totals"]
+    known: dict[str, int] = agg.get("known", {})
+    unattributed = agg.get("unattributed", 0)
 
-    billed = max(0, total - cached)
+    def _coverage(metric: str) -> str:
+        count = known.get(metric, 0)
+        return f"{count}/{event_count}" if count < event_count else f"{event_count}/{event_count}"
+
     # Cache-read share: tokens served from cache as a fraction of everything
-    # the provider *input* (prompt + cache reads). Zero-denominator guard so
-    # an all-empty record set renders 0.0 rather than raising.
-    cache_read_share = cached / (prompt + cached) if (prompt + cached) > 0 else 0.0
+    # the provider *input* (prompt + cache reads). Shown only when both
+    # components have known coverage; a zero denominator is n/a, not 0%.
+    input_denominator = prompt + cached
+    cache_read_share = f"{cached / input_denominator:.1%}" if input_denominator > 0 else "n/a"
+    # Estimated cost shows coverage: a partial sum is labelled, not silently
+    # presented as the lifetime spend.
+    cost_known = known.get("cost", 0)
+    cost_label = "Estimated cost (canonical)"
+    if cost_known < event_count:
+        cost_label += f" — {cost_known}/{event_count} rows priced"
     out: list[str] = [
         "",
         "### Lifetime (all sessions)",
         f"- Events: {event_count}",
         f"- Span: {first_at or 'n/a'} → {last_at or 'n/a'}",
-        f"- Estimated cost: ${cost:.4f}",
-        f"- Prompt cache: {cached:,} read ({cache_read_share:.1%} of input), "
+        f"- {cost_label}: ${cost:.4f}",
+        f"- Prompt cache: {cached:,} read ({cache_read_share} of input), "
         f"{cache_creation:,} created",
-        "| Prompt | Completion | Total | Cached | Reasoning | Billed (total-cached) |",
-        "| --- | --- | --- | --- | --- | --- |",
-        f"| {prompt} | {completion} | {total} | {cached} | {reasoning} | {billed} |",
+        f"- Attribution: {event_count - unattributed}/{event_count} rows turn-attributed",
+        "",
+        "| Metric | Sum | Known |",
+        "| --- | --- | --- |",
+        f"| Prompt tokens | {prompt:,} | {_coverage('prompt')} |",
+        f"| Completion tokens | {completion:,} | {_coverage('completion')} |",
+        f"| Total tokens | {total:,} | {_coverage('total')} |",
+        f"| Cached read | {cached:,} | {_coverage('cached')} |",
+        f"| Reasoning | {reasoning:,} | {_coverage('reasoning')} |",
+        f"| Cache creation | {cache_creation:,} | {_coverage('cache_creation')} |",
     ]
 
     if model_totals:
@@ -424,20 +510,17 @@ def _render_lifetime_usage_lines(agg: dict[str, Any]) -> list[str]:
             [
                 "",
                 "#### Lifetime by Model",
-                "| Model | Prompt | Completion | Total | Cached | Reasoning | "
-                "Billed (total-cached) |",
-                "| --- | --- | --- | --- | --- | --- |",
+                "| Model | Prompt | Completion | Total | Cached | Reasoning | Cache created |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for model_key in sorted(model_totals):
             entry = model_totals[model_key]
-            model_total = entry["total_tokens"]
-            model_cached = entry["cached_tokens"]
             out.append(
-                f"| {model_key} | {entry['prompt_tokens']} | "
-                f"{entry['completion_tokens']} | {model_total} | "
-                f"{model_cached} | {entry['reasoning_tokens']} | "
-                f"{max(0, model_total - model_cached)} |"
+                f"| {model_key} | {entry['prompt_tokens']:,} | "
+                f"{entry['completion_tokens']:,} | {entry['total_tokens']:,} | "
+                f"{entry['cached_tokens']:,} | {entry['reasoning_tokens']:,} | "
+                f"{entry['cache_creation_tokens']:,} |"
             )
 
     return out

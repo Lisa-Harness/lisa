@@ -140,8 +140,9 @@ def test_anthropic_usage_maps_cache_creation_to_dedicated_counter() -> None:
     assert usage.cached_tokens == 800
     assert usage.prompt_tokens == 1150
     assert usage.total_tokens == 1190
-    # Cache creation is a write-rate cost, not reasoning output.
-    assert usage.reasoning_tokens == 0
+    # Cache creation is a write-rate cost, not reasoning output. Anthropic
+    # publishes no reasoning counter at all, so it stays unknown (v2).
+    assert usage.reasoning_tokens is None
 
 
 # ── Cache-aware system prompt segmentation ────────────────────────────

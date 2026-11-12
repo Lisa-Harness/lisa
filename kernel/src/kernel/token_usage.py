@@ -20,7 +20,11 @@ Design notes:
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
 import logging
+import math
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -38,6 +42,7 @@ logger = logging.getLogger(__name__)
 TOKEN_USAGE_TOPIC = "lisa.token_usage"
 
 __all__ = [
+    "PSEUDONYM_SECRET_FILENAME",
     "TOKEN_USAGE_TOPIC",
     "TokenUsageTelemetryHandler",
     "build_token_usage_event",
@@ -45,7 +50,10 @@ __all__ = [
     "coerce_non_negative_int",
     "ensure_usage_entry",
     "estimate_call_cost_usd",
+    "nullable_float",
+    "nullable_int",
     "publish_token_usage",
+    "thread_pseudonym",
 ]
 
 
@@ -55,6 +63,45 @@ def coerce_non_negative_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def nullable_int(value: Any) -> int | None:
+    """Convert *value* to a non-negative int, or ``None`` when unknown.
+
+    Telemetry counterpart to :func:`coerce_non_negative_int` for the
+    cache-efficiency v2 contract: an absent, ``None``, or malformed
+    provider value is *unknown* and stays ``None`` instead of being
+    reported as a measured zero. A present finite non-negative number —
+    including a real ``0`` — is preserved as measured. Negative or
+    non-finite values are rejected as malformed (``None``).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def nullable_float(value: Any) -> float | None:
+    """Convert *value* to a non-negative float, or ``None`` when unknown.
+
+    Same unknown-versus-zero split as :func:`nullable_int` for the
+    nullable cost/latency fields on ``TokenUsageEvent``. ``bool`` is not a
+    measured value; negative or non-finite numbers are malformed.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0.0:
+        return None
+    return number
 
 
 def publish_token_usage(bus: Any, event: TokenUsageEvent) -> None:
@@ -111,6 +158,67 @@ def ensure_usage_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+#: Secret-file name under the data root. Created once per data root with
+#: owner-only permissions; losing it permanently severs pseudonym joins to
+#: already-persisted rows (documented consequence, not an error).
+PSEUDONYM_SECRET_FILENAME = ".token-usage-pseudonym-key"
+
+#: Domain-separation prefix for the thread-pseudonym HMAC, plus the on-disk
+#: pseudonym prefix. A v2 scheme change (algorithm or domain) would ship as
+#: ``v2:`` without reinterpreting ``v1:`` rows.
+_PSEUDONYM_DOMAIN = b"lisa-token-usage-thread-v1"
+_PSEUDONYM_PREFIX = "v1:"
+
+
+def _resolve_pseudonym_secret(data_dir: Path) -> bytes | None:
+    """Return the data-root pseudonym secret, creating it atomically if absent.
+
+    The key file is created with ``O_CREAT | O_EXCL`` and mode ``0o600`` so
+    concurrent processes sharing one data root cannot race out two secrets
+    (the loser re-reads the winner's key) and the secret is never
+    world-readable. Any failure (read, create, or permission oddity)
+    returns ``None`` and the handler then emits *unattributed* rows rather
+    than failing the turn loop.
+    """
+
+    key_path = data_dir / PSEUDONYM_SECRET_FILENAME
+    try:
+        return key_path.read_bytes()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    secret = os.urandom(32)
+    try:
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process won the race; reuse its key so every writer in
+        # one data root produces the same pseudonym space.
+        try:
+            return key_path.read_bytes()
+        except OSError:
+            return None
+    except OSError:
+        return None
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(secret)
+    return secret
+
+
+def thread_pseudonym(thread_store_slug: str, secret: bytes) -> str:
+    """Return the stable data-root-scoped pseudonym for one thread slug.
+
+    ``HMAC-SHA256(secret, domain || slug)`` hex, ``v1:``-prefixed. Distinct
+    slugs map to distinct pseudonyms within one data root; different data
+    roots are unlinkable because each generates its own secret.
+    """
+
+    digest = hmac.new(
+        secret, _PSEUDONYM_DOMAIN + thread_store_slug.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return _PSEUDONYM_PREFIX + digest
+
+
 class TokenUsageTelemetryHandler:
     """Append every ``TokenUsageEvent`` to a durable JSONL file.
 
@@ -120,6 +228,17 @@ class TokenUsageTelemetryHandler:
     so it slots into the existing ``EventBus`` protocol, but the file
     write itself is synchronous and fast (one ``open(..., "a")`` per
     event).
+
+    Durability contract (cache-efficiency telemetry slice):
+
+    - The in-memory ``thread_store_slug`` rides the bus event for joins,
+      but the persisted row carries only ``thread_pseudonym_id`` (a
+      data-root-scoped HMAC of the slug). Raw thread identity never
+      reaches disk.
+    - ``user_slug`` persists so cross-user rows stay separable on a shared
+      data root; it is an existing scoping key, not new exposure.
+    - Numerics persist as ``null`` when unknown; the serializer never
+      coerces ``None`` into a measured zero.
 
     Idempotency key:
         When the incoming event has an empty ``idempotency_key``, the
@@ -131,6 +250,11 @@ class TokenUsageTelemetryHandler:
     Args:
         path: Absolute path to the ``token-usage.jsonl`` file. Parent
             directories are created lazily on first write.
+        data_dir: Optional host data root. When supplied, the handler
+            loads (or atomically creates) the per-root pseudonym secret
+            and stamps ``thread_pseudonym_id`` on every row. ``None``
+            keeps the handler unattributed: rows persist with
+            ``thread_pseudonym_id=None`` and no raw slug.
         filter_fn: Optional predicate that receives the event and
             returns ``True`` to persist, ``False`` to skip. Hosts use
             this to drop events below a severity threshold or to
@@ -145,12 +269,17 @@ class TokenUsageTelemetryHandler:
         self,
         path: Path,
         *,
+        data_dir: Path | None = None,
         filter_fn: Any | None = None,
         lock_factory: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn
         self._lock_factory = lock_factory or contextlib.nullcontext
+        # Pseudonym secret: loaded once per handler instance. ``None`` =
+        # unavailable; rows persist unattributed (fail closed) rather than
+        # carrying a raw identity or a fabricated pseudonym.
+        self._pseudonym_secret = _resolve_pseudonym_secret(data_dir) if data_dir else None
         # Per-instance sequence + identity: the token ledger is shared by
         # every process writing one data dir, so a global counter is not
         # comparable across writers. ``sequence`` orders this instance's
@@ -213,6 +342,15 @@ class TokenUsageTelemetryHandler:
         # ``ledger_instance``.
         event.sequence = self._sequence
         event.ledger_instance = self._instance
+        # Pseudonymous attribution: stamp the durable pseudonym when the
+        # per-root key is available, then strip the raw slug so it never
+        # reaches disk. No key -> the row stays unattributed (``None``),
+        # never carrying a raw identity or a fabricated pseudonym.
+        if self._pseudonym_secret is not None and event.thread_store_slug:
+            event.thread_pseudonym_id = thread_pseudonym(
+                event.thread_store_slug, self._pseudonym_secret
+            )
+        event.thread_store_slug = ""
         try:
             with self._lock_factory():
                 self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,17 +387,17 @@ def build_token_usage_event(
     provider: str,
     model_id: str,
     kind: str = "chat_completion",
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    total_tokens: int = 0,
-    cached_tokens: int = 0,
-    reasoning_tokens: int = 0,
-    cache_creation_tokens: int = 0,
-    duration_ms: float = 0.0,
-    latency_ms: int = 0,
-    cost_usd: float = 0.0,
-    time_cost_usd: float = 0.0,
-    provider_cost_usd: float = 0.0,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    cached_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
+    duration_ms: float | None = None,
+    latency_ms: int | None = None,
+    cost_usd: float | None = None,
+    time_cost_usd: float | None = None,
+    provider_cost_usd: float | None = None,
     request_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
@@ -270,13 +408,17 @@ def build_token_usage_event(
     thread_store_slug: str = "",
     surface_id: str = "",
     extra: dict[str, Any] | None = None,
+    metric_origins: dict[str, str] | None = None,
 ) -> TokenUsageEvent:
-    """Build one ``TokenUsageEvent`` with normalized defaults.
+    """Build one ``TokenUsageEvent`` preserving unknown-versus-zero.
 
     Hosts call this from each LLM call site so every provider call produces
-    exactly one durable record. The
-    ``total_tokens`` field falls out as ``prompt + completion`` when
-    the caller does not supply it directly.
+    exactly one durable record. v2 semantics: a ``None`` argument means the
+    provider never surfaced that value and the field persists as unknown;
+    an explicit ``0`` is a real measured zero and is kept. ``total_tokens``
+    is derived from ``prompt + completion`` only when both are known and no
+    explicit total was supplied (a supplied total, including ``0``, is
+    authoritative); the derivation is recorded in ``metric_origins``.
 
     The ``kind`` literal discriminates billing shape:
         - ``chat_completion`` / ``embedding`` / ``image_generation`` /
@@ -286,23 +428,26 @@ def build_token_usage_event(
           billable signal; token counters may still be populated for
           observability even when cost is time-derived.
     """
-    if total_tokens <= 0:
+    origins: dict[str, str] = dict(metric_origins or {})
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
+        origins.setdefault("total_tokens", "derived")
     return TokenUsageEvent(
         provider=provider,
         model_id=model_id,
         kind=kind,  # type: ignore[arg-type]
-        prompt_tokens=int(prompt_tokens or 0),
-        completion_tokens=int(completion_tokens or 0),
-        total_tokens=int(total_tokens or 0),
-        cached_tokens=int(cached_tokens or 0),
-        reasoning_tokens=int(reasoning_tokens or 0),
-        cache_creation_tokens=int(cache_creation_tokens or 0),
-        duration_ms=float(duration_ms or 0.0),
-        latency_ms=int(latency_ms or 0),
-        cost_usd=float(cost_usd or 0.0),
-        time_cost_usd=float(time_cost_usd or 0.0),
-        provider_cost_usd=float(provider_cost_usd or 0.0),
+        prompt_tokens=nullable_int(prompt_tokens),
+        completion_tokens=nullable_int(completion_tokens),
+        total_tokens=nullable_int(total_tokens),
+        cached_tokens=nullable_int(cached_tokens),
+        reasoning_tokens=nullable_int(reasoning_tokens),
+        cache_creation_tokens=nullable_int(cache_creation_tokens),
+        duration_ms=nullable_float(duration_ms),
+        latency_ms=nullable_int(latency_ms),
+        cost_usd=nullable_float(cost_usd),
+        time_cost_usd=nullable_float(time_cost_usd),
+        provider_cost_usd=nullable_float(provider_cost_usd),
+        metric_origins=origins,
         request_id=str(request_id or ""),
         mode_id=str(mode_id or ""),
         stage_id=str(stage_id or ""),
@@ -318,20 +463,27 @@ def build_token_usage_event(
 
 def estimate_call_cost_usd(
     *,
-    prompt_tokens: int,
-    completion_tokens: int,
-    cached_tokens: int = 0,
-    cache_creation_tokens: int = 0,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    cached_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
     prompt_price: float = 0.0,
     completion_price: float = 0.0,
     cache_read_price: float = 0.0,
     cache_write_price: float = 0.0,
-) -> float:
-    """Price one completion from per-token USD rates (0.0 when unpriced).
+) -> float | None:
+    """Price one completion from per-token USD rates, or ``None`` when unpriced.
 
     This is the *canonical* cost model every host shares: the same math the
     CLI footer used to re-derive locally, but with the prompt-cache split
     applied to both sides of the cache rather than just reads.
+
+    Cache-efficiency v2 honesty rule: ``None`` means "this call cannot be
+    priced from known data" — either a required count is unknown or the
+    model publishes no rates at all. A returned ``0.0`` is valid only when
+    the sourced rates genuinely price the call at zero (an explicitly
+    configured free rate), never as a stand-in for missing data: a
+    zero-cost estimate is not evidence that inference was free.
 
     The prompt side is a three-way split, because a cache hit is billed at
     the provider's discounted read rate while a cache *population* is billed
@@ -342,26 +494,36 @@ def estimate_call_cost_usd(
     total prompt size), so the uncached remainder is what is left after
     removing them.
 
-    Rates of 0.0 mean "provider does not price this", in which case the
-    corresponding tokens fall back to ``prompt_price`` (the pre-split
-    behaviour) so an incomplete manifest never produces a *free* call.
-    Returns 0.0 overall when the provider publishes no prices at all.
+    A missing cache split (both sub-counters ``None``) prices the full
+    prompt at the prompt rate — the pre-split behaviour for providers that
+    publish no cache rates — and never invents a cached-read discount.
     """
 
-    prompt = max(0, int(prompt_tokens or 0))
-    completion = max(0, int(completion_tokens or 0))
-    cached = min(max(0, int(cached_tokens or 0)), prompt)
-    # Cache writes are a subset of the prompt too. A provider that reports a
-    # write count larger than the remaining prompt (Anthropic reports
-    # creation and read counts for the same prefix across calls) must not
-    # push the split negative; clamp to what is left after reads.
-    writes = min(max(0, int(cache_creation_tokens or 0)), prompt - cached)
-    uncached = prompt - cached - writes
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    prompt = max(0, int(prompt_tokens))
+    completion = max(0, int(completion_tokens))
 
     prompt_rate = float(prompt_price or 0.0)
+    completion_rate = float(completion_price or 0.0)
+    if prompt_rate == 0.0 and completion_rate == 0.0:
+        # No sourced rate for the only components that can bill: the call
+        # is unpriced, not free.
+        return None
+
+    if cached_tokens is None and cache_creation_tokens is None:
+        return max(0.0, prompt * prompt_rate + completion * completion_rate)
+
+    cached = max(0, int(cached_tokens or 0))
+    writes = max(0, int(cache_creation_tokens or 0))
+    if cached + writes > prompt:
+        # Inconsistent provider data: the split exceeds the prompt. Refuse
+        # to price rather than silently clamping and calling it an estimate.
+        return None
+    uncached = prompt - cached - writes
+
     read_rate = float(cache_read_price or 0.0) or prompt_rate
     write_rate = float(cache_write_price or 0.0) or prompt_rate
-    completion_rate = float(completion_price or 0.0)
 
     return max(
         0.0,

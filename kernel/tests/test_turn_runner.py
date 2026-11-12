@@ -3449,9 +3449,12 @@ async def test_model_call_complete_payload_carries_cache_counters_and_cost() -> 
 
     _label, data = next(e for e in events if e[0] == "model_call_complete")
     assert data["cached_tokens"] == 800
+    # A stub-reported 0 is a measured zero and survives as 0 (v2 honesty).
     assert data["cache_creation_tokens"] == 0
     assert data["provider_cost_usd"] == pytest.approx(0.0042)
-    assert data["cost_usd"] == 0.0
+    # The stub model def declares no prices, so the canonical estimate is
+    # unknown (``None``) rather than a fabricated 0.0.
+    assert data["cost_usd"] is None
 
 
 @pytest.mark.asyncio

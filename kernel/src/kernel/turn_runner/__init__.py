@@ -144,6 +144,8 @@ from kernel.system_segments import (
 )
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
 from kernel.token_usage import estimate_call_cost_usd as _estimate_call_cost_usd_fn
+from kernel.token_usage import nullable_float as _nullable_float_fn
+from kernel.token_usage import nullable_int as _nullable_int_fn
 from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
@@ -1942,14 +1944,14 @@ def _wire_record_model_usage(
     def _record_model_usage(
         model_def: Any,
         *,
-        p: int,
-        c: int,
-        t: int,
-        ct: int,
-        rt: int,
-        d: float,
-        lat: int,
-        cc: int = 0,
+        p: int | None = None,
+        c: int | None = None,
+        t: int | None = None,
+        ct: int | None = None,
+        rt: int | None = None,
+        d: float | None = None,
+        lat: int | None = None,
+        cc: int | None = None,
     ) -> None:
         """Merge one completion's counters into the per-model accumulator."""
         record_model_usage_fn(
@@ -3148,8 +3150,8 @@ async def _streamed_gateway_completion(
         and not aggregated.content.strip()
         and aggregated.reasoning_content.strip()
         and (effective_tools or tools_offered_this_turn)
-        and aggregated.usage
-        and aggregated.usage.completion_tokens
+        and aggregated.usage is not None
+        and (aggregated.usage.completion_tokens or 0)
         >= completion_request.max_tokens * _REASONING_BURNOUT_SHARE
     ):
         _retry = _truncation_retry_budget(
@@ -3360,7 +3362,7 @@ def _audit_request_context(
     budget = request.context_budget
     if budget is None:
         return completion
-    observed = _extract_completion_usage(completion).prompt_tokens
+    observed = _extract_completion_usage(completion).prompt_tokens or 0
     key = f"{getattr(request.model_def, 'provider', '')}:{request.model_def.model_id}"
     if observed > budget.input_tokens > 0:
         state.request_token_scales[key] = (
@@ -3806,11 +3808,11 @@ def _resolve_call_cost(
     *,
     effective_model_def: Any,
     usage: Any,
-    prompt_tokens: int,
-    completion_tokens: int,
-    cached_tokens: int,
-    cache_creation_tokens: int,
-) -> tuple[float, float]:
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    cached_tokens: int | None,
+    cache_creation_tokens: int | None,
+) -> tuple[float | None, float | None]:
     """Return ``(canonical_cost_usd, provider_cost_usd)`` for one model call.
 
     ``canonical_cost_usd`` is the harness's own arithmetic, computed from the
@@ -3821,20 +3823,27 @@ def _resolve_call_cost(
 
     ``provider_cost_usd`` is the provider's own reported charge
     (``usage.cost`` from OpenRouter), passed through untouched so a host or
-    pack can compare the two. Both are 0.0 when the corresponding source is
-    absent — an unpriced local model reports no cost rather than a fake one.
+    pack can compare the two. Cache-efficiency v2 honesty: ``None`` means
+    the value is unknown — an unpriced model reports ``None``, never a
+    fabricated ``0.0``. A genuine ``0.0`` survives only when a sourced
+    rate is explicitly zero.
     """
 
-    provider_cost = float(getattr(usage, "provider_cost_usd", 0.0) or 0.0)
+    provider_cost = _nullable_float_fn(getattr(usage, "provider_cost_usd", None))
     canonical = _estimate_call_cost_usd_fn(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
-        prompt_price=float(getattr(effective_model_def, "prompt_price", 0.0) or 0.0),
-        completion_price=float(getattr(effective_model_def, "completion_price", 0.0) or 0.0),
-        cache_read_price=float(getattr(effective_model_def, "cache_read_price", 0.0) or 0.0),
-        cache_write_price=float(getattr(effective_model_def, "cache_write_price", 0.0) or 0.0),
+        prompt_price=_nullable_float_fn(getattr(effective_model_def, "prompt_price", None)) or 0.0,
+        completion_price=_nullable_float_fn(getattr(effective_model_def, "completion_price", None))
+        or 0.0,
+        cache_read_price=_nullable_float_fn(getattr(effective_model_def, "cache_read_price", None))
+        or 0.0,
+        cache_write_price=_nullable_float_fn(
+            getattr(effective_model_def, "cache_write_price", None)
+        )
+        or 0.0,
     )
     return canonical, provider_cost
 
@@ -3860,14 +3869,14 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     Returns the usage fields as a dict for the caller's locals.
     """
     usage = _extract_completion_usage(completion)
-    prompt_tokens = usage.prompt_tokens
-    completion_tokens = usage.completion_tokens
-    completion_total_tokens = usage.total_tokens
-    cached_tokens = usage.cached_tokens
-    reasoning_tokens = usage.reasoning_tokens
-    cache_creation_tokens = usage.cache_creation_tokens
-    duration_ms = usage.duration_ms
-    latency_ms = usage.latency_ms
+    prompt_tokens = _nullable_int_fn(usage.prompt_tokens)
+    completion_tokens = _nullable_int_fn(usage.completion_tokens)
+    completion_total_tokens = _nullable_int_fn(usage.total_tokens)
+    cached_tokens = _nullable_int_fn(usage.cached_tokens)
+    reasoning_tokens = _nullable_int_fn(usage.reasoning_tokens)
+    cache_creation_tokens = _nullable_int_fn(usage.cache_creation_tokens)
+    duration_ms = _nullable_float_fn(usage.duration_ms)
+    latency_ms = _nullable_int_fn(usage.latency_ms)
     cost_usd, provider_cost_usd = _resolve_call_cost(
         effective_model_def=effective_model_def,
         usage=usage,
@@ -3876,14 +3885,17 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
     )
-    state.total_prompt_tokens += prompt_tokens
-    state.total_completion_tokens += completion_tokens
-    state.total_tokens += completion_total_tokens
-    state.total_cached_tokens += cached_tokens
-    state.total_reasoning_tokens += reasoning_tokens
-    state.total_cache_creation_tokens += cache_creation_tokens
-    state.total_duration_ms += duration_ms
-    state.total_latency_ms += latency_ms
+    # Operational accumulators stay total-based arithmetic (a ``None``
+    # counter contributes 0 to turn/session math), while the durable event
+    # above keeps ``None`` so unknown never masquerades as a measured zero.
+    state.total_prompt_tokens += prompt_tokens or 0
+    state.total_completion_tokens += completion_tokens or 0
+    state.total_tokens += completion_total_tokens or 0
+    state.total_cached_tokens += cached_tokens or 0
+    state.total_reasoning_tokens += reasoning_tokens or 0
+    state.total_cache_creation_tokens += cache_creation_tokens or 0
+    state.total_duration_ms += duration_ms or 0.0
+    state.total_latency_ms += latency_ms or 0
     # Anchor the intra-turn compaction estimator on the kernel's own
     # counted input tokens for this request (authoritative; includes
     # framing), so the governor's soft/hard thresholds are computed from
@@ -3891,7 +3903,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     state.intra_turn_compaction_estimator.observe_request_tokens(
         state.request_context_budget.input_tokens
         if state.request_context_budget is not None
-        else prompt_tokens
+        else (prompt_tokens or 0)
     )
     proxy_telemetry = dict(usage.proxy_telemetry or {})
     if proxy_telemetry:
@@ -3945,6 +3957,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
             user_slug=hooks.identity.user_slug,
             thread_store_slug=hooks.identity.thread_store_slug,
             surface_id=str(hooks.identity.surface_id or ""),
+            metric_origins=dict(getattr(usage, "metric_origins", None) or {}),
         ),
     )
 
@@ -6228,21 +6241,21 @@ async def _force_final_content_completion(
             content = final_visible
             content_source = ""
             final_usage = _extract_completion_usage(final_completion)
-            final_reasoning_tokens = final_usage.reasoning_tokens
+            final_reasoning_tokens = final_usage.reasoning_tokens or 0
             final_cost, final_provider_cost = _resolve_call_cost(
                 effective_model_def=effective_model_def,
                 usage=final_usage,
-                prompt_tokens=final_usage.prompt_tokens,
-                completion_tokens=final_usage.completion_tokens,
-                cached_tokens=final_usage.cached_tokens,
-                cache_creation_tokens=final_usage.cache_creation_tokens,
+                prompt_tokens=_nullable_int_fn(final_usage.prompt_tokens),
+                completion_tokens=_nullable_int_fn(final_usage.completion_tokens),
+                cached_tokens=_nullable_int_fn(final_usage.cached_tokens),
+                cache_creation_tokens=_nullable_int_fn(final_usage.cache_creation_tokens),
             )
-            state.total_prompt_tokens += final_usage.prompt_tokens
-            state.total_completion_tokens += final_usage.completion_tokens
-            state.total_tokens += final_usage.total_tokens
-            state.total_cached_tokens += final_usage.cached_tokens
-            state.total_cache_creation_tokens += final_usage.cache_creation_tokens
-            state.total_duration_ms += final_usage.duration_ms
+            state.total_prompt_tokens += final_usage.prompt_tokens or 0
+            state.total_completion_tokens += final_usage.completion_tokens or 0
+            state.total_tokens += final_usage.total_tokens or 0
+            state.total_cached_tokens += final_usage.cached_tokens or 0
+            state.total_cache_creation_tokens += final_usage.cache_creation_tokens or 0
+            state.total_duration_ms += final_usage.duration_ms or 0.0
             record_model_usage(
                 effective_model_def,
                 p=final_usage.prompt_tokens,

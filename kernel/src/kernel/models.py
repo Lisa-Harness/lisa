@@ -2646,9 +2646,20 @@ class TokenUsageEvent(BusEvent):
     directory. The handler uses the event timestamp, handler instance,
     sequence, and nanosecond suffix as the idempotency key so events from
     separate writers cannot collide on coarse-grained clocks.
+
+    Schema v2 (cache-efficiency telemetry slice): every measured numeric is
+    nullable. ``None`` means the provider (or the harness) never surfaced
+    the value — unknown; a present ``0`` is a real measured zero. The
+    durable serializer drops ``thread_store_slug`` and persists only the
+    data-root-scoped ``thread_pseudonym_id``, so raw thread identity never
+    reaches disk.
     """
 
     event_type: BusEventType = "token_used"
+    #: Durable-schema revision. Rows without this field are legacy rows:
+    # their zero-valued numerics are ambiguous (default- vs measured-zero)
+    # and readers must treat them as unknown, not measured zeros.
+    schema_version: int = 2
     conversation_id: str = ""
     user_slug: str = "default"
     surface_type: ConversationSurface = "personal_dm"
@@ -2661,9 +2672,12 @@ class TokenUsageEvent(BusEvent):
     #: attributable. ``None`` = not attributable to a turn (off-turn slice
     #: work); ``0`` is the thread's first real turn.
     turn_index: int | None = None
-    #: Thread this model call belongs to, named by its store stem. Turn indices
-    #: are per-thread and two conversations of one user both count from zero,
-    #: so the owner alone cannot separate their cost rows.
+    #: Data-root-scoped pseudonymous thread identity (``v1:<hmac>``) stamped
+    #: by the durable handler at append time. ``None`` = unattributed (no
+    #: key, no slug). Raw ``thread_store_slug`` never persists.
+    thread_pseudonym_id: str | None = None
+    #: In-process thread identity, used for joins before persistence. The
+    #: durable serializer strips this field; it must never reach disk.
     thread_store_slug: str = ""
     call_site: str = ""
     provider: str = ""
@@ -2676,24 +2690,33 @@ class TokenUsageEvent(BusEvent):
         "stream_chunk",
         "time_billed",
     ] = "chat_completion"
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    reasoning_tokens: int = 0
+    #: All counters/costs below are ``None`` when unknown. ``0`` is a real
+    #: measured zero, never a stand-in for "the provider said nothing".
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
     #: Provider-reported prompt-cache *creation/population* tokens
-    #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
-    cache_creation_tokens: int = 0
-    cost_usd: float = 0.0
+    #: (Anthropic ``cache_creation_input_tokens``). ``None`` when unknown.
+    cache_creation_tokens: int | None = None
+    #: Canonical host-side estimate; ``None`` when the call cannot be priced
+    #: from known counts and sourced rates. A zero is never an estimate of
+    #: "free" — an unpriced call is ``None``.
+    cost_usd: float | None = None
     #: The provider's own reported charge for this call (OpenRouter
-    #: ``usage.cost``), when it published one. ``cost_usd`` above is the
-    #: host-computed canonical estimate; this field exists so a host or pack
-    #: can reconcile its arithmetic against the provider's real meter
-    #: without losing either number. 0.0 = the provider reported nothing.
-    provider_cost_usd: float = 0.0
-    duration_ms: float = 0.0
-    time_cost_usd: float = 0.0
-    latency_ms: int = 0
+    #: ``usage.cost``). ``cost_usd`` above is the host-computed canonical
+    #: estimate; this field is the provider's real meter. ``None`` = the
+    #: provider reported nothing.
+    provider_cost_usd: float | None = None
+    duration_ms: float | None = None
+    time_cost_usd: float | None = None
+    latency_ms: int | None = None
+    #: Per-field origin map for derived/estimated values, e.g.
+    #: ``{"total_tokens": "derived"}``. Absent key = provider-reported or
+    #: host-measured at the source. Known values: ``provider``, ``derived``,
+    #: ``host``.
+    metric_origins: dict[str, str] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
     extra_context_appended: bool = False
     #: Per-instance monotonic counter the durable handler stamps at append

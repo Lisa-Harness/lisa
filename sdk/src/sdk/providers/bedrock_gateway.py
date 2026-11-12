@@ -26,7 +26,7 @@ from kernel.provider_contracts import (
     extract_request_id,
     provider_gateway_error_from_exception,
 )
-from kernel.token_usage import coerce_non_negative_int
+from kernel.token_usage import nullable_int
 from sdk.providers.openai_gateway import (
     _coerce_tool_arguments_object,
     _normalize_openai_tool_arguments,
@@ -326,38 +326,50 @@ def _extract_bedrock_response(response: Any) -> tuple[list[str], list[dict[str, 
 
 
 def _extract_bedrock_usage(response: Any) -> CompletionUsage | None:
-    """Extract normalized usage from a Bedrock Converse response."""
+    """Extract normalized usage from a Bedrock Converse response.
+
+    Cache-efficiency v2: unsurfaced counters stay ``None``; Bedrock
+    Converse does not report cache sub-counters, so they stay unknown
+    rather than being reported as zeros.
+    """
 
     raw_usage = (
         response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
     )
     if raw_usage is None:
         return None
-    prompt_tokens = coerce_non_negative_int(
+    prompt_tokens = nullable_int(
         raw_usage.get("inputTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "inputTokens", None)
     )
-    completion_tokens = coerce_non_negative_int(
+    completion_tokens = nullable_int(
         raw_usage.get("outputTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "outputTokens", None)
     )
-    total_tokens = coerce_non_negative_int(
+    total_tokens = nullable_int(
         raw_usage.get("totalTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "totalTokens", None)
     )
-    if total_tokens <= 0:
+    origins: dict[str, str] = {}
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
-    if prompt_tokens == 0 and completion_tokens == 0:
+        origins["total_tokens"] = "derived"
+    if prompt_tokens is None and completion_tokens is None:
         return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
-        cached_tokens=0,
-        reasoning_tokens=0,
+        cached_tokens=nullable_int(
+            raw_usage.get("cacheReadInputTokens")
+            if isinstance(raw_usage, dict)
+            else getattr(raw_usage, "cacheReadInputTokens", None)
+        ),
+        reasoning_tokens=None,
+        metric_origins=origins,
     )
 
 

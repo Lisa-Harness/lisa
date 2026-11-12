@@ -165,7 +165,7 @@ async def test_handler_swallows_os_errors() -> None:
         )
 
 
-def test_build_token_usage_event_defaults_total_tokens() -> None:
+def test_build_token_usage_event_derives_total_tokens() -> None:
     event = build_token_usage_event(
         provider="openai",
         model_id="gpt-4o",
@@ -173,9 +173,10 @@ def test_build_token_usage_event_defaults_total_tokens() -> None:
         completion_tokens=50,
     )
     assert event.total_tokens == 150
+    assert event.metric_origins["total_tokens"] == "derived"
     assert event.kind == "chat_completion"
-    assert event.duration_ms == 0.0
-    assert event.time_cost_usd == 0.0
+    assert event.duration_ms is None
+    assert event.time_cost_usd is None
 
 
 def test_build_token_usage_event_supports_time_billed_kind() -> None:
@@ -297,16 +298,16 @@ def test_estimate_call_cost_clamps_overreported_cache_counters() -> None:
         prompt_price=0.000001,
         cache_write_price=0.000001,
     )
-    # 80 cached at 1e-6 (read falls back to prompt rate) + 20 clamped writes.
-    assert cost == pytest.approx(100 * 0.000001)
-    assert cost >= 0.0
+    # The split exceeds the prompt: v2 refuses to price rather than clamp
+    # and call the fabricated figure an estimate.
+    assert cost is None
 
 
-def test_estimate_call_cost_is_zero_when_provider_publishes_no_prices() -> None:
-    """Unpriced models (local Ollama) report no cost rather than a fake one."""
+def test_estimate_call_cost_is_unknown_when_provider_publishes_no_prices() -> None:
+    """Unpriced models (local Ollama) report unknown cost rather than a fake one."""
     from kernel.token_usage import estimate_call_cost_usd
 
-    assert estimate_call_cost_usd(prompt_tokens=5000, completion_tokens=500) == 0.0
+    assert estimate_call_cost_usd(prompt_tokens=5000, completion_tokens=500) is None
 
 
 @pytest.mark.asyncio

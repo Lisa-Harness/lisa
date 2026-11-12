@@ -23,7 +23,7 @@ from kernel.provider_contracts import (
     extract_request_id,
     provider_gateway_error_from_exception,
 )
-from kernel.token_usage import coerce_non_negative_int
+from kernel.token_usage import nullable_int
 from sdk.providers.openai_gateway import (
     _coerce_tool_arguments_object,
     _normalize_openai_tool_arguments,
@@ -52,6 +52,12 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
     Anthropic uses ``input_tokens`` / ``output_tokens`` instead of
     ``prompt_tokens`` / ``completion_tokens``. Cache hits surface under
     ``cache_creation_input_tokens`` and ``cache_read_input_tokens``.
+
+    Cache-efficiency v2: field presence is preserved. A counter the
+    provider did not surface stays ``None`` (unknown) instead of being
+    coerced to a measured zero. ``prompt_tokens`` is the aggregate input
+    (native input + cache reads + cache creation), marked ``derived`` in
+    ``metric_origins`` whenever a cache component was folded in.
     """
 
     raw_usage = getattr(response, "usage", None)
@@ -59,28 +65,24 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = coerce_non_negative_int(
-        getattr(raw_usage, "input_tokens", None)
-        if not isinstance(raw_usage, dict)
-        else raw_usage.get("input_tokens")
-    )
-    completion_tokens = coerce_non_negative_int(
-        getattr(raw_usage, "output_tokens", None)
-        if not isinstance(raw_usage, dict)
-        else raw_usage.get("output_tokens")
-    )
-    cache_creation = coerce_non_negative_int(
-        getattr(raw_usage, "cache_creation_input_tokens", None)
-        if not isinstance(raw_usage, dict)
-        else raw_usage.get("cache_creation_input_tokens")
-    )
-    cache_read = coerce_non_negative_int(
-        getattr(raw_usage, "cache_read_input_tokens", None)
-        if not isinstance(raw_usage, dict)
-        else raw_usage.get("cache_read_input_tokens")
-    )
-    all_zero = (
-        prompt_tokens == 0 and completion_tokens == 0 and cache_creation == 0 and cache_read == 0
+
+    def _read(field: str) -> int | None:
+        raw = (
+            getattr(raw_usage, field, None)
+            if not isinstance(raw_usage, dict)
+            else raw_usage.get(field)
+        )
+        return nullable_int(raw)
+
+    native_input = _read("input_tokens")
+    completion_tokens = _read("output_tokens")
+    cache_creation = _read("cache_creation_input_tokens")
+    cache_read = _read("cache_read_input_tokens")
+    all_unknown = (
+        native_input is None
+        and completion_tokens is None
+        and cache_creation is None
+        and cache_read is None
     )
     usage_keys_present = isinstance(raw_usage, dict) and any(
         raw_usage.get(key) is not None
@@ -91,21 +93,37 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
             "cache_read_input_tokens",
         )
     )
-    # All counters zero/empty with no usage keys on the wire (some partial
-    # events report nothing) — return None so an empty ``usage`` does not
-    # silently fabricate a 0/0 completion record.
-    if all_zero and not usage_keys_present:
+    # No counter surfaced at all (some partial events report nothing) —
+    # return None so an empty ``usage`` does not silently fabricate a
+    # 0/0 completion record.
+    if all_unknown and not usage_keys_present:
         return None
+    origins: dict[str, str] = {}
+    if native_input is not None and (cache_creation or cache_read):
+        prompt_tokens: int | None = native_input + (cache_creation or 0) + (cache_read or 0)
+        origins["prompt_tokens"] = "derived"
+        origins["total_tokens"] = "derived"
+    else:
+        prompt_tokens = native_input
+        if native_input is not None and completion_tokens is not None:
+            origins["total_tokens"] = "derived"
+    total_tokens = (
+        prompt_tokens + completion_tokens
+        if prompt_tokens is not None and completion_tokens is not None
+        else None
+    )
     return CompletionUsage(
-        prompt_tokens=prompt_tokens + cache_creation + cache_read,
+        prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + cache_creation + cache_read + completion_tokens,
+        total_tokens=total_tokens,
         cached_tokens=cache_read,
+        reasoning_tokens=None,
         # ``cache_creation_input_tokens`` reports tokens *written into* the
         # prompt cache at the write rate. It is NOT reasoning output, so it
         # must not be folded into ``reasoning_tokens`` (the pre-split
         # conflation); it rides the dedicated counter instead.
         cache_creation_tokens=cache_creation,
+        metric_origins=origins,
     )
 
 

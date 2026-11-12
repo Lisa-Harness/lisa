@@ -6,15 +6,16 @@ Owns the capability-gate check (``_validate_model_capabilities`` +
 ``_stringify_pack_tool_result``), the tool-context builder
 (``_to_tool_context``), and the completion-usage extraction helpers
 (``_coerce_non_negative_int``, ``_coerce_non_negative_float``,
-``_extract_completion_usage``).
+``_optional_int``, ``_optional_float``, ``_extract_completion_usage``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from kernel.models import (
     BlockDiagnostic,
@@ -34,26 +35,32 @@ if TYPE_CHECKING:
 class CompletionUsageSummary:
     """Normalized per-completion usage, including cache sub-counters.
 
-    Returned by :func:`_extract_completion_usage` so new sub-counter fields
-    (e.g. ``cache_creation_tokens``) can be added by attribute rather than
-    widening a positional tuple that every call site must unpack.
+    Returned by :func:`_extract_completion_usage`. Cache-efficiency v2:
+    counters the provider never surfaced stay ``None`` (unknown); a
+    present ``0`` is a real measured zero. ``total_tokens`` is derived
+    from ``prompt + completion`` only when both are known, and the
+    derivation is marked in ``metric_origins``.
     """
 
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    reasoning_tokens: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
     #: Provider-reported prompt-cache *creation/population* tokens
-    #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
-    cache_creation_tokens: int = 0
-    duration_ms: float = 0.0
-    latency_ms: int = 0
+    #: (Anthropic ``cache_creation_input_tokens``). ``None`` when unknown.
+    cache_creation_tokens: int | None = None
+    duration_ms: float | None = None
+    latency_ms: int | None = None
     #: The provider's own reported charge for this call (OpenRouter
-    #: ``usage.cost``). Authoritative when non-zero — it already reflects the
-    #: provider's real cache read/write rates — and 0.0 when unreported, in
-    #: which case callers price the call from manifest rates instead.
-    provider_cost_usd: float = 0.0
+    #: ``usage.cost``). Authoritative when present — it already reflects
+    #: the provider's real cache read/write rates. ``None`` when
+    #: unreported, in which case callers may price the call from manifest
+    #: rates; ``None`` is unknown, not a measured free call.
+    provider_cost_usd: float | None = None
+    #: Per-field origin map (``derived`` / ``host``); absent key =
+    #: provider-reported at the source.
+    metric_origins: dict[str, str] = field(default_factory=dict)
     #: Counters a routing proxy declared on this call's response headers
     #: (see ``ProxyTelemetrySpec``). Empty when no proxy is in the path or it
     #: declared none.
@@ -63,24 +70,26 @@ class CompletionUsageSummary:
     #: duration_ms, latency_ms)``. Iterating/unpacking preserves the original
     #: 7-field order so pre-summary tuple consumption keeps working; the new
     #: ``cache_creation_tokens`` counter is read by attribute, not by index.
+    #: Unknown counters contribute ``0`` to the legacy tuple (operational
+    #: arithmetic only — the durable event keeps ``None``).
     def __iter__(self) -> Any:
-        yield self.prompt_tokens
-        yield self.completion_tokens
-        yield self.total_tokens
-        yield self.cached_tokens
-        yield self.reasoning_tokens
-        yield self.duration_ms
-        yield self.latency_ms
+        yield self.prompt_tokens or 0
+        yield self.completion_tokens or 0
+        yield self.total_tokens or 0
+        yield self.cached_tokens or 0
+        yield self.reasoning_tokens or 0
+        yield self.duration_ms or 0.0
+        yield self.latency_ms or 0
 
     def __getitem__(self, index: int) -> Any:
         values = (
-            self.prompt_tokens,
-            self.completion_tokens,
-            self.total_tokens,
-            self.cached_tokens,
-            self.reasoning_tokens,
-            self.duration_ms,
-            self.latency_ms,
+            self.prompt_tokens or 0,
+            self.completion_tokens or 0,
+            self.total_tokens or 0,
+            self.cached_tokens or 0,
+            self.reasoning_tokens or 0,
+            self.duration_ms or 0.0,
+            self.latency_ms or 0,
         )
         return values[index]
 
@@ -285,6 +294,35 @@ def _coerce_non_negative_float(value: Any) -> float:
         return 0.0
 
 
+def _optional_int(value: Any) -> int | None:
+    """Coerce to a non-negative int, or ``None`` when the value is absent.
+
+    Cache-efficiency v2 counterpart to :func:`_coerce_non_negative_int`:
+    ``None``/absent/malformed stays unknown instead of degrading to a
+    measured zero. ``0`` survives as a measured zero.
+    """
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _optional_float(value: Any) -> float | None:
+    """Coerce to a non-negative float, or ``None`` when the value is absent."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
 def _coerce_telemetry(value: Any) -> dict[str, int]:
     """Normalize proxy-supplied counters to a ``{str: non-negative int}`` map.
 
@@ -308,6 +346,96 @@ def _coerce_telemetry(value: Any) -> dict[str, int]:
     return clean
 
 
+_UsageT = TypeVar("_UsageT")
+
+
+def _resolve_usage_value(
+    flat: _UsageT | None,
+    nested: _UsageT | None,
+) -> _UsageT | None:
+    """Resolve one usage metric: a nonzero flat value wins, flat-0 defers.
+
+    Legacy hosts stamped ``0`` defaults onto the completion object for
+    metrics the provider never surfaced, so a flat ``0`` is treated as the
+    "not populated" sentinel and the nested provider ``usage`` value wins.
+    A nonzero flat value is an explicit host measurement. When neither
+    source reports the metric the flat value (``0`` sentinel or ``None``)
+    survives, and the kernel's nullable pipeline keeps it unknown when
+    unknown is the truth.
+    """
+
+    if flat is not None and flat != 0:
+        return flat
+    if nested is not None:
+        return nested
+    return flat
+
+
+def _read_nested_usage(
+    usage: Any,
+    duration_ms: float,
+) -> tuple[
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    float | None,
+    dict[str, int],
+    float,
+]:
+    """Read the nested provider ``usage`` object defensively.
+
+    Handles both dict-shaped and object-shaped usage (the kernel gateways
+    emit objects; some hosts pass raw provider dicts). Returns the nested
+    counters/cost/proxy-telemetry plus the duration fallback applied: flat
+    attributes take precedence over the nested ``duration_ms`` so
+    time-billed providers keep their duration without the caller
+    re-stamping it.
+    """
+
+    empty_telemetry: dict[str, int] = {}
+    if usage is None:
+        return None, None, None, None, None, None, None, empty_telemetry, duration_ms
+
+    def _get(key: str) -> Any:
+        return usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+
+    def _first_present(*keys: str) -> Any:
+        """First alias whose value is present — a measured ``0`` wins."""
+
+        for key in keys:
+            value = _get(key)
+            if value is not None:
+                return value
+        return None
+
+    prompt = _optional_int(_first_present("prompt_tokens", "input_tokens"))
+    completion = _optional_int(_first_present("completion_tokens", "output_tokens"))
+    total = _optional_int(_first_present("total_tokens"))
+    cached = _optional_int(_first_present("cached_tokens"))
+    reasoning = _optional_int(_first_present("reasoning_tokens"))
+    cache_creation = _optional_int(
+        _first_present("cache_creation_tokens", "cache_creation_input_tokens")
+    )
+    provider_cost = _optional_float(_get("provider_cost_usd"))
+    proxy_telemetry = _coerce_telemetry(_get("proxy_telemetry"))
+    if duration_ms <= 0.0:
+        duration_ms = _coerce_non_negative_float(_get("duration_ms") or 0.0)
+    return (
+        prompt,
+        completion,
+        total,
+        cached,
+        reasoning,
+        cache_creation,
+        provider_cost,
+        proxy_telemetry,
+        duration_ms,
+    )
+
+
 def _extract_completion_usage(
     completion: Any,
 ) -> CompletionUsageSummary:
@@ -320,76 +448,54 @@ def _extract_completion_usage(
 
     The function reads both the flat attributes some hosts set on the
     completion object (``prompt_tokens`` etc.) and the nested ``usage``
-    object the kernel gateways populate. Sub-counters (``cached_tokens``,
-    ``reasoning_tokens``, ``cache_creation_tokens``) and ``duration_ms``
-    are read defensively so a missing field never raises; they default to
-    0 when the provider did not surface them.
+    object the kernel gateways populate. Fields are read defensively so a
+    missing field never raises. Cache-efficiency v2 resolution per metric:
+    a nonzero flat attribute wins; a flat ``0`` (the legacy "host did not
+    populate this" sentinel) defers to the nested provider ``usage``; when
+    neither reports the metric it stays ``None`` (unknown), and a genuine
+    measured ``0`` from the only reporting source survives.
     """
 
-    prompt_tokens = _coerce_non_negative_int(getattr(completion, "prompt_tokens", 0))
-    completion_tokens = _coerce_non_negative_int(getattr(completion, "completion_tokens", 0))
-    total_tokens = _coerce_non_negative_int(getattr(completion, "total_tokens", 0))
-    cached_tokens = _coerce_non_negative_int(getattr(completion, "cached_tokens", 0))
-    reasoning_tokens = _coerce_non_negative_int(getattr(completion, "reasoning_tokens", 0))
-    cache_creation_tokens = _coerce_non_negative_int(
-        getattr(completion, "cache_creation_tokens", 0)
-    )
-    provider_cost = _coerce_non_negative_float(getattr(completion, "provider_cost_usd", 0.0))
+    prompt_tokens = _optional_int(getattr(completion, "prompt_tokens", None))
+    completion_tokens = _optional_int(getattr(completion, "completion_tokens", None))
+    total_tokens = _optional_int(getattr(completion, "total_tokens", None))
+    cached_tokens = _optional_int(getattr(completion, "cached_tokens", None))
+    reasoning_tokens = _optional_int(getattr(completion, "reasoning_tokens", None))
+    cache_creation_tokens = _optional_int(getattr(completion, "cache_creation_tokens", None))
+    provider_cost = _optional_float(getattr(completion, "provider_cost_usd", None))
     duration_ms = _coerce_non_negative_float(getattr(completion, "duration_ms", 0.0))
     latency_ms = _coerce_non_negative_int(getattr(completion, "latency_ms", 0))
 
+    origins: dict[str, str] = {}
     usage = getattr(completion, "usage", None)
-    usage_prompt = 0
-    usage_completion = 0
-    usage_total = 0
-    usage_cached = 0
-    usage_reasoning = 0
-    usage_cache_creation = 0
-    usage_provider_cost = 0.0
-    usage_proxy_telemetry: dict[str, int] = {}
-    if isinstance(usage, dict):
-        usage_prompt = _coerce_non_negative_int(
-            usage.get("prompt_tokens") or usage.get("input_tokens")
-        )
-        usage_completion = _coerce_non_negative_int(
-            usage.get("completion_tokens") or usage.get("output_tokens")
-        )
-        usage_total = _coerce_non_negative_int(usage.get("total_tokens"))
-        usage_cached = _coerce_non_negative_int(usage.get("cached_tokens"))
-        usage_reasoning = _coerce_non_negative_int(usage.get("reasoning_tokens"))
-        usage_cache_creation = _coerce_non_negative_int(
-            usage.get("cache_creation_tokens") or usage.get("cache_creation_input_tokens")
-        )
-        usage_provider_cost = _coerce_non_negative_float(usage.get("provider_cost_usd"))
-        usage_proxy_telemetry = _coerce_telemetry(usage.get("proxy_telemetry"))
-    elif usage is not None:
-        usage_prompt = _coerce_non_negative_int(
-            getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
-        )
-        usage_completion = _coerce_non_negative_int(
-            getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
-        )
-        usage_total = _coerce_non_negative_int(getattr(usage, "total_tokens", None))
-        usage_cached = _coerce_non_negative_int(getattr(usage, "cached_tokens", None))
-        usage_reasoning = _coerce_non_negative_int(getattr(usage, "reasoning_tokens", None))
-        usage_cache_creation = _coerce_non_negative_int(
-            getattr(usage, "cache_creation_tokens", None)
-            or getattr(usage, "cache_creation_input_tokens", None)
-        )
-        usage_provider_cost = _coerce_non_negative_float(getattr(usage, "provider_cost_usd", None))
-        usage_proxy_telemetry = _coerce_telemetry(getattr(usage, "proxy_telemetry", None))
-        if duration_ms <= 0.0:
-            # Gateways can measure duration on the nested ``usage`` object
-            # (``CompletionUsage.duration_ms``). Flat attrs take precedence;
-            # fall back to the nested counter so time-billed providers keep
-            # their duration without the caller re-stamping it.
-            duration_ms = _coerce_non_negative_float(getattr(usage, "duration_ms", 0.0))
+    (
+        usage_prompt,
+        usage_completion,
+        usage_total,
+        usage_cached,
+        usage_reasoning,
+        usage_cache_creation,
+        usage_provider_cost,
+        usage_proxy_telemetry,
+        duration_ms,
+    ) = _read_nested_usage(usage, duration_ms)
 
-    prompt = prompt_tokens or usage_prompt
-    completion_value = completion_tokens or usage_completion
-    total_value = total_tokens or usage_total
-    if total_value <= 0:
+    prompt = _resolve_usage_value(prompt_tokens, usage_prompt)
+    completion_value = _resolve_usage_value(completion_tokens, usage_completion)
+    total_value = _resolve_usage_value(total_tokens, usage_total)
+    cached_value = _resolve_usage_value(cached_tokens, usage_cached)
+    reasoning_value = _resolve_usage_value(reasoning_tokens, usage_reasoning)
+    cache_creation_value = _resolve_usage_value(cache_creation_tokens, usage_cache_creation)
+    provider_cost_value = _resolve_usage_value(provider_cost, usage_provider_cost)
+    if (
+        (total_value is None or total_value == 0)
+        and prompt is not None
+        and completion_value is not None
+    ):
+        # ``None`` is unknown and a flat ``0`` is the legacy host sentinel;
+        # both derive from known prompt + completion.
         total_value = prompt + completion_value
+        origins["total_tokens"] = "derived"
     if latency_ms <= 0 and duration_ms > 0.0:
         latency_ms = _coerce_non_negative_int(duration_ms)
 
@@ -397,11 +503,12 @@ def _extract_completion_usage(
         prompt_tokens=prompt,
         completion_tokens=completion_value,
         total_tokens=total_value,
-        cached_tokens=cached_tokens or usage_cached,
-        reasoning_tokens=reasoning_tokens or usage_reasoning,
-        cache_creation_tokens=cache_creation_tokens or usage_cache_creation,
+        cached_tokens=cached_value,
+        reasoning_tokens=reasoning_value,
+        cache_creation_tokens=cache_creation_value,
         duration_ms=duration_ms,
         latency_ms=latency_ms,
-        provider_cost_usd=provider_cost or usage_provider_cost,
+        provider_cost_usd=provider_cost_value,
+        metric_origins=origins,
         proxy_telemetry=usage_proxy_telemetry,
     )
