@@ -77,12 +77,29 @@ TOOL_TELEMETRY_TOPIC = "tool.telemetry"
 #: precisely for the calls the thread entry never sees.
 MODEL_REQUEST_TOPIC = "model.request"
 
+#: Event-bus topic carrying one row per routing-hint computation (turn
+#: start and every post-handoff recompute): what hint the model was
+#: shown, whether the deterministic fork/transition decision was armed,
+#: and whether the model was exempt from the forced-action enforcer.
+#: Persisted per-request, this answers "how often is the hint shown vs
+#: followed vs overridden vs enforced" from ``decisions.jsonl`` alone.
+ROUTING_DECISION_TOPIC = "routing.decision"
+
+#: Event-bus topic carrying one row per forced-action synthesis fire —
+#: the enforcer overriding a non-compliant dispatch or synthesizing a
+#: refused call on an empty completion. This is the enforcer's
+#: accountability record: kind, targets, non-compliant dispatch count,
+#: and the model trust fields that decided jurisdiction.
+ROUTING_FORCED_TOPIC = "routing.forced"
+
 #: Field stamped onto every persisted record so a reader can tell which topic
 #: produced a line without inferring it from its key set.
 TOPIC_FIELD = "topic"
 
 __all__ = [
     "MODEL_REQUEST_TOPIC",
+    "ROUTING_DECISION_TOPIC",
+    "ROUTING_FORCED_TOPIC",
     "TOOL_TELEMETRY_TOPIC",
     "TOPIC_FIELD",
     "TURN_DECISION_TOPIC",
@@ -96,13 +113,15 @@ def _null_lock_factory() -> AbstractContextManager[None]:
 
 
 class DecisionTelemetryHandler:
-    """Append ``turn.decision`` and ``tool.telemetry`` payloads to one JSONL file.
+    """Append routing/decision/tool telemetry payloads to one JSONL file.
 
     Hosts construct one instance with the resolved ``decisions.jsonl`` path and
-    register :meth:`publish_turn_decision` / :meth:`publish_tool_telemetry` as
-    event-bus subscribers. Both are ``async`` so they slot into the existing
-    ``EventBus`` protocol, but the write itself is a synchronous single-line
-    append.
+    register a ``publish_*`` method per topic
+    (:meth:`publish_turn_decision` / :meth:`publish_tool_telemetry` /
+    :meth:`publish_routing_decision` / :meth:`publish_routing_forced` /
+    :meth:`publish_model_request`) as event-bus subscribers. All are
+    ``async`` so they slot into the existing ``EventBus`` protocol, but the
+    write itself is a synchronous single-line append.
 
     Args:
         path: Absolute path to the ``decisions.jsonl`` file. Parent
@@ -163,6 +182,14 @@ class DecisionTelemetryHandler:
     async def publish_model_request(self, payload: Any) -> None:
         """Persist one ``model.request`` payload."""
         self._persist(MODEL_REQUEST_TOPIC, payload)
+
+    async def publish_routing_decision(self, payload: Any) -> None:
+        """Persist one ``routing.decision`` payload."""
+        self._persist(ROUTING_DECISION_TOPIC, payload)
+
+    async def publish_routing_forced(self, payload: Any) -> None:
+        """Persist one ``routing.forced`` payload."""
+        self._persist(ROUTING_FORCED_TOPIC, payload)
 
     # ── Internals ──────────────────────────────────────────────────────
 

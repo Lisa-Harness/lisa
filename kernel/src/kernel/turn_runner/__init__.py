@@ -142,6 +142,7 @@ from kernel.system_segments import (
     N_ROUTING_HINT,
     SystemPromptSegments,
 )
+from kernel.telemetry import schedule_telemetry_publish
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
 from kernel.token_usage import estimate_call_cost_usd as _estimate_call_cost_usd_fn
 from kernel.token_usage import nullable_float as _nullable_float_fn
@@ -242,6 +243,7 @@ from kernel.turn_phases._routing import (
     save_route_decision,
 )
 from kernel.turn_phases._routing_hint import (
+    _PLAN_ESCALATION_HINT,
     _compute_capability_routing_hint,
     _compute_fork_targets,
     _detect_query_intents,
@@ -626,6 +628,125 @@ def _extract_hint_target(hint_text: str) -> str:
     if end < 0:
         return ""
     return rest[:end].strip()
+
+
+def _model_forced_exempt(state: _TurnState) -> bool:
+    """Return the trust-aware enforcer exemption for the active model.
+
+    Frontier / reasoning / high-structured-reliability models are exempt
+    from the forced-action enforcer. The resolver reads the same predicate
+    via ``forced_action_exempt``; this helper keeps the telemetry rows and
+    the two enforcement sites from drifting apart.
+    """
+    model = getattr(state, "effective_model", None)
+    if model is None:
+        return False
+    return (
+        str(getattr(model, "cost_tier", "") or "") == "frontier"
+        or bool(getattr(model, "reasoning_model", False))
+        or float(getattr(model, "structured_reliability", 0.0) or 0.0)
+        >= _PLAN_MODEL_RELIABILITY_EXEMPT
+    )
+
+
+def _classify_routing_hint(hint_text: str) -> tuple[str, list[str]]:
+    """Classify a computed routing hint into ``(hint_kind, targets)``.
+
+    Pure prose classification over the kernel-emitted hint shapes (see
+    ``_compute_capability_routing_hint``): planner escalation, fork
+    fan-out, single/step handoff, or silence. Powers the
+    ``routing.decision`` telemetry row — the durable "what did the model
+    see, and what would the kernel force" record.
+
+    - ``planner_escalation``: the fixed ``_PLAN_ESCALATION_HINT`` prose.
+    - ``fork``: the "Call the `fork` operation with targets [...]" shape;
+      targets are the bracketed mode-id list.
+    - ``handoff``: any ``transition_stage`` directive; target is its
+      ``target_stage_id`` (plan-driven, chained, producer-first, single,
+      and partial-coverage hints all share this shape).
+    - ``none``: empty hint (no gap, or a suppressed computation).
+    """
+    if not hint_text.strip():
+        return "none", []
+    if hint_text == _PLAN_ESCALATION_HINT:
+        return "planner_escalation", [_extract_hint_target(hint_text)]
+    # Fork fan-out: "Call the `fork` operation with targets [a, b] to fan
+    # out in parallel."
+    marker = "Call the `fork` operation with targets ["
+    idx = hint_text.find(marker)
+    if idx >= 0:
+        rest = hint_text[idx + len(marker) :]
+        end = rest.find("]")
+        if end >= 0:
+            targets = [t.strip() for t in rest[:end].split(",") if t.strip()]
+            return "fork", targets
+    # Any transition_stage directive (single handoff, chained step,
+    # producer-first, partial coverage, plan-driven next step).
+    target = _extract_hint_target(hint_text)
+    if "transition_stage" in hint_text:
+        return "handoff", [target] if target else []
+    return "other", [target] if target else []
+
+
+async def _publish_routing_decision(
+    *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    mode_id: str,
+    query: str,
+    hint_text: str,
+    suppressed: bool,
+    forced_kind: str,
+    forced_targets: list[str],
+    forced_exempt: bool,
+    log: logging.Logger,
+) -> None:
+    """Publish one ``routing.decision`` row (best-effort).
+
+    Called at every hint-computation site (turn start, post-handoff
+    recompute, and suppressed-suppression resumption) so ``decisions.jsonl``
+    carries the full hint lifecycle: what the model was shown, whether the
+    deterministic forced-action decision was armed for it, and whether the
+    model's trust tier exempted it from the enforcer. Failures never break
+    the turn (same posture as ``turn.decision``).
+
+    ``suppressed`` marks a computation the guards dropped (override cap,
+    duplicate, 2-cycle) so analysts can distinguish "no hint was needed"
+    from "a hint existed and was withheld".
+    """
+    event_bus = hooks.context_seams.event_bus
+    if event_bus is None:
+        return
+    hint_kind, hint_targets = _classify_routing_hint(hint_text)
+    try:
+        await event_bus.publish(
+            "routing.decision",
+            {
+                "mode_id": mode_id,
+                "query_preview": query[:120],
+                "turn_index": hooks.identity.turn_index,
+                "user_slug": hooks.identity.user_slug,
+                "thread_store_slug": hooks.identity.thread_store_slug,
+                "iteration": state.iteration,
+                "turn": state.iteration,
+                "hint_kind": hint_kind,
+                "hint_targets": hint_targets,
+                "hint_injected": bool(hint_text) and not suppressed,
+                "hint_suppressed": suppressed,
+                "forced_armed": bool(forced_kind),
+                "forced_kind": forced_kind,
+                "forced_targets": forced_targets,
+                "forced_exempt": forced_exempt,
+                "model_id": str(getattr(state.effective_model, "model_id", "") or ""),
+                "model_cost_tier": str(getattr(state.effective_model, "cost_tier", "") or ""),
+                "model_reasoning": bool(getattr(state.effective_model, "reasoning_model", False)),
+                "model_structured_reliability": float(
+                    getattr(state.effective_model, "structured_reliability", 0.0) or 0.0
+                ),
+            },
+        )
+    except Exception as _bus_exc:  # pylint: disable=broad-except
+        log.debug("routing.decision telemetry publish failed: %s", _bus_exc)
 
 
 def _build_budget_briefing(
@@ -2106,7 +2227,7 @@ def _wire_resolve_iteration_model(
     return _resolve_iteration_model
 
 
-def _init_turn_routing_hint(
+async def _init_turn_routing_hint(
     *,
     state: _TurnState,
     hooks: TurnHooks,
@@ -2219,6 +2340,22 @@ def _init_turn_routing_hint(
             getattr(mode_config, "satisfies_intents", None),
             get_routing_targets(mode_id) if mode_config else [],
         )
+    await _publish_routing_decision(
+        hooks=hooks,
+        state=state,
+        mode_id=mode_id,
+        query=query,
+        hint_text=routing_hint,
+        # The suppress_routing_hint gate (delegate/fork children, resume
+        # in-flight) withheld the computation entirely — record it as
+        # suppressed so the ledger can distinguish "nothing to suggest"
+        # from "computation withheld".
+        suppressed=suppress_routing_hint,
+        forced_kind=state.forced_action.kind if state.forced_action else "",
+        forced_targets=list(state.forced_action.targets) if state.forced_action else [],
+        forced_exempt=_model_forced_exempt(state),
+        log=log,
+    )
     return routing_hint, system_prompt
 
 
@@ -4053,6 +4190,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
 
 def _synthesize_empty_completion_call(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -4083,6 +4221,16 @@ def _synthesize_empty_completion_call(
             mode_id,
             state.iteration,
             _fa.targets,
+        )
+        _publish_routing_forced(
+            hooks=hooks,
+            state=state,
+            mode_id=mode_id,
+            forced_kind=_fa.kind,
+            forced_targets=list(_fa.targets),
+            non_compliant_dispatches=_fa.non_compliant_dispatches,
+            trigger="empty_completion",
+            log=log,
         )
         if _fa.kind == "fork":
             _forced_arguments: dict[str, Any] = {
@@ -4338,8 +4486,62 @@ def _compute_post_handoff_hint(
     return post_handoff_hint
 
 
-def _apply_post_handoff_hint_guards(
+async def _refresh_post_handoff_forced_action(
     *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    query: str,
+    target_stage: str,
+    target_mode_config: Any,
+    post_handoff_hint: str,
+    routing_hint: str,
+    log: logging.Logger,
+) -> None:
+    """Refresh ``state.forced_action`` for a handoff and emit the routing row.
+
+    Both concerns are post-handoff: the enforcer re-arms against the new
+    mode's routing decision (the fork list wins when both shapes are
+    present), and the ``routing.decision`` ledger row records the hint the
+    model will see next plus the armed decision behind it.
+
+    When the surviving hint is empty, still emits a row with the "none"
+    classification — the ledger must distinguish "all gaps closed" (this
+    case) from "a hint was computed but withheld" (the ``suppressed`` flag)
+    and from "no computation ran at all" (no row).
+    """
+    _ph_fork_targets = _compute_fork_targets(
+        query=query,
+        routing_targets=get_routing_targets(target_stage),
+        mode_config=target_mode_config,
+        extra_satisfied=state.chain_satisfied,
+    )
+    _post_handoff_target = _extract_hint_target(post_handoff_hint)
+    _ph_transition_target = (
+        _post_handoff_target
+        if _post_handoff_target and not _post_handoff_target.startswith("fork")
+        else ""
+    )
+    _ph_targets = _ph_fork_targets or ([_ph_transition_target] if _ph_transition_target else [])
+    from kernel.turn_phases._turn_state import ForcedAction
+
+    state.forced_action = ForcedAction(targets=list(_ph_targets)) if _ph_targets else None
+    await _publish_routing_decision(
+        hooks=hooks,
+        state=state,
+        mode_id=target_stage,
+        query=query,
+        hint_text=routing_hint or "",
+        suppressed=bool(post_handoff_hint) and not routing_hint,
+        forced_kind=state.forced_action.kind if state.forced_action else "",
+        forced_targets=list(state.forced_action.targets) if state.forced_action else [],
+        forced_exempt=_model_forced_exempt(state),
+        log=log,
+    )
+
+
+async def _apply_post_handoff_hint_guards(
+    *,
+    hooks: TurnHooks,
     state: _TurnState,
     target_stage: str,
     target_mode_config: Any,
@@ -4362,6 +4564,7 @@ def _apply_post_handoff_hint_guards(
     refreshes the forced action for the new mode. Returns
     ``(routing_hint, chain_advance_guidance, pending_yield)``.
     """
+
     if post_handoff_hint:
         # ── Hint-override suppression ──────
         # After the model overrides the hint
@@ -4524,24 +4727,16 @@ def _apply_post_handoff_hint_guards(
             # (Phase 5: one enforcer; the fork
             # list wins when both shapes are
             # present).
-            _ph_fork_targets = _compute_fork_targets(
+            await _refresh_post_handoff_forced_action(
+                hooks=hooks,
+                state=state,
                 query=query,
-                routing_targets=get_routing_targets(target_stage),
-                mode_config=target_mode_config,
-                extra_satisfied=state.chain_satisfied,
+                target_stage=target_stage,
+                target_mode_config=target_mode_config,
+                post_handoff_hint=post_handoff_hint,
+                routing_hint=routing_hint,
+                log=log,
             )
-            _post_handoff_target = _extract_hint_target(post_handoff_hint)
-            _ph_transition_target = (
-                _post_handoff_target
-                if _post_handoff_target and not _post_handoff_target.startswith("fork")
-                else ""
-            )
-            _ph_targets = _ph_fork_targets or (
-                [_ph_transition_target] if _ph_transition_target else []
-            )
-            from kernel.turn_phases._turn_state import ForcedAction
-
-            state.forced_action = ForcedAction(targets=list(_ph_targets)) if _ph_targets else None
     else:
         # The new mode satisfies all remaining
         # intents; clear the stale hint so the
@@ -4552,6 +4747,18 @@ def _apply_post_handoff_hint_guards(
         state.last_hint_text = ""
         # No remaining gap → no forced action.
         state.forced_action = None
+        await _publish_routing_decision(
+            hooks=hooks,
+            state=state,
+            mode_id=target_stage,
+            query=query,
+            hint_text="",
+            suppressed=False,
+            forced_kind="",
+            forced_targets=[],
+            forced_exempt=_model_forced_exempt(state),
+            log=log,
+        )
     return routing_hint, chain_advance_guidance, pending_yield
 
 
@@ -6136,7 +6343,12 @@ async def _execute_mid_turn_handoff(
             # ``_apply_post_handoff_hint_guards``
             # (suppression guards, chain-advance
             # guidance, forced-action refresh).
-            routing_hint, chain_advance_guidance, pending_yield = _apply_post_handoff_hint_guards(
+            (
+                routing_hint,
+                chain_advance_guidance,
+                pending_yield,
+            ) = await _apply_post_handoff_hint_guards(
+                hooks=hooks,
                 state=state,
                 target_stage=target_stage,
                 target_mode_config=target_mode_config,
@@ -7013,8 +7225,60 @@ def _abort_synthesized_call_missing_params(
     return True
 
 
+def _publish_routing_forced(
+    *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    mode_id: str,
+    forced_kind: str,
+    forced_targets: list[str],
+    non_compliant_dispatches: int,
+    trigger: str,
+    log: logging.Logger,
+) -> None:
+    """Publish one ``routing.forced`` row (fire-and-forget, never drops silently).
+
+    Called on every forced-action synthesis (dispatch-override enforcer
+    and empty-completion synthesizer). This is the enforcer's durable
+    accountability record: what the kernel forced, which model trust tier
+    put it in the enforcer's jurisdiction, and how many non-compliant
+    dispatches accumulated first. Uses the shared ``schedule_telemetry_publish``
+    so a failed publish is logged at WARNING (the ledger must not lose a
+    row silently) and the turn never waits on telemetry.
+    """
+    event_bus = getattr(hooks, "context_seams", None)
+    bus = getattr(event_bus, "event_bus", None) if event_bus is not None else None
+    if bus is None:
+        return
+    model = state.effective_model
+    schedule_telemetry_publish(
+        bus,
+        "routing.forced",
+        {
+            "mode_id": mode_id,
+            "turn_index": hooks.identity.turn_index,
+            "user_slug": hooks.identity.user_slug,
+            "thread_store_slug": hooks.identity.thread_store_slug,
+            "iteration": state.iteration,
+            "kind": forced_kind,
+            "targets": forced_targets,
+            "non_compliant_dispatches": non_compliant_dispatches,
+            "trigger": trigger,
+            "expected_tool": "fork" if forced_kind == "fork" else "transition_stage",
+            "model_id": str(getattr(model, "model_id", "") or ""),
+            "model_cost_tier": str(getattr(model, "cost_tier", "") or ""),
+            "model_reasoning": bool(getattr(model, "reasoning_model", False)),
+            "model_structured_reliability": float(
+                getattr(model, "structured_reliability", 0.0) or 0.0
+            ),
+        },
+        source="turn_runner.routing_forced",
+    )
+
+
 def _enforce_forced_action_on_dispatch(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -7094,6 +7358,16 @@ def _enforce_forced_action_on_dispatch(
         _forced.non_compliant_dispatches,
         _forced.kind,
         _forced.targets,
+    )
+    _publish_routing_forced(
+        hooks=hooks,
+        state=state,
+        mode_id=mode_id,
+        forced_kind=_forced.kind,
+        forced_targets=list(_forced.targets),
+        non_compliant_dispatches=_forced.non_compliant_dispatches,
+        trigger="dispatch_override",
+        log=log,
     )
     if _forced.kind == "fork":
         tool_arguments = {
@@ -8377,6 +8651,7 @@ async def _run_turn_entry_sequence(
 
 async def _process_empty_completion(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -8417,6 +8692,7 @@ async def _process_empty_completion(
     """
     synthesized_forced = False
     tool_calls, synthesized_forced, pre_handoff_text = _synthesize_empty_completion_call(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -9114,7 +9390,7 @@ async def _assemble_turn_surface_and_messages(
     # per-iteration lifecycle briefing for exactly one iteration; cleared
     # after the next model call regardless of outcome.
     _stalled_write_guidance = ""
-    routing_hint, system_prompt = _init_turn_routing_hint(
+    routing_hint, system_prompt = await _init_turn_routing_hint(
         state=state,
         hooks=hooks,
         mode_id=mode_id,
@@ -9398,6 +9674,7 @@ async def _prepare_tool_call_dispatch(
         return _PreparedToolCall(_BreakIteration(), False)
 
     tool_name, tool_arguments = _enforce_forced_action_on_dispatch(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -9511,6 +9788,7 @@ class _EmptyCompletionResult:
 
 async def _resolve_empty_completion_for_dispatch(
     *,
+    hooks: TurnHooks,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     yielded: bool,
@@ -9556,6 +9834,7 @@ async def _resolve_empty_completion_for_dispatch(
         stalled_write_guidance,
         action,
     ) = await _process_empty_completion(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -11178,6 +11457,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         # dispatch path raises ``UnboundLocalError`` on a real-tool-call
         # iteration (2026-08-27 planner transition turn).
         _empty_completion = await _resolve_empty_completion_for_dispatch(
+            hooks=hooks,
             tool_calls=tool_calls,
             synthesized_forced=False,
             yielded=_yielded,

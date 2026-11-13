@@ -6,6 +6,26 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Durable routing telemetry: two new ``decisions.jsonl`` topics make the
+  hint/enforcer lifecycle queryable. ``routing.decision`` is published at
+  every hint computation (turn start and post-handoff recompute; a
+  withheld computation records ``hint_suppressed`` so "no hint needed"
+  is distinguishable from "hint withheld"): ``hint_kind``
+  (``planner_escalation`` / ``fork`` / ``handoff`` / ``none`` / ``other``),
+  ``hint_targets``, ``hint_injected``, the armed ``forced_kind`` /
+  ``forced_targets``, and the model trust fields that decide enforcer
+  jurisdiction. ``routing.forced`` is published per forced-action
+  synthesis (dispatch override and empty-completion): kind, targets,
+  ``non_compliant_dispatches``, ``trigger``, and the model trust
+  fields. Both ride the shared ``DecisionTelemetryHandler`` (topics
+  ``ROUTING_DECISION_TOPIC`` / ``ROUTING_FORCED_TOPIC``; the runtime
+  subscribes both) and were added after the 2026-11-13 turn 1258
+  postmortem — "how often is the hint shown vs followed vs overridden
+  vs enforced" is now a one-line query over ``decisions.jsonl``
+  instead of transcript archaeology. Tests:
+  ``kernel/tests/test_turn_decision.py``, ``kernel/tests/test_turn_runner_transitions.py``,
+  ``kernel/tests/test_decision_telemetry.py``, and
+  ``runtime/tests/test_routing_telemetry_wiring.py``.
 - Pack-declared history semantics. A tool's ``.tool.yml`` ``history:`` block,
   or its module's ``history_keys(params, result)`` hook, claims supersession
   ``key``s, ``invalidates`` prefixes, and a ``task``/``turn`` ``scope`` for
