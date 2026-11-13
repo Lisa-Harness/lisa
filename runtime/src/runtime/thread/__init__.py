@@ -44,7 +44,7 @@ from sdk.thread import ThreadRedactionPolicy, ThreadStore, load_result_object, p
 
 from runtime.thread import _reservations
 from runtime.thread._excerpt import build_recent_thread_excerpt, build_thread_manifest
-from runtime.thread._replay import build_open_task_messages
+from runtime.thread._rehydrate import build_open_task_messages
 from runtime.thread._results import _persist_result
 from runtime.thread._store import (
     _DEFAULT_SEGMENT_TURNS,
@@ -101,8 +101,8 @@ def project_thread_messages(
     ``None`` is still an error: projection requires a storage base.
 
     ``budget_bytes`` bounds the resident tool-result bytes in this projection
-    (``None`` keeps the sdk default ceiling); the turn-start replay path uses
-    it to recompute the resident working set under the session's replay lane.
+    (``None`` keeps the sdk default ceiling); the turn-start rehydration path uses
+    it to recompute the resident working set under the session's history lane.
     """
     base = thread_path if thread_path is not None else ephemeral_results_path
     if base is None:
@@ -335,7 +335,7 @@ def _build_thread_entry(
     if transcript:
         entry["transcript"] = transcript
     if history:
-        # Pack history claims (``kernel.history``); replay folds from them.
+        # Pack history claims (``kernel.history``); rehydration folds from them.
         entry["history"] = history
     return entry
 

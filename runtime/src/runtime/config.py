@@ -49,15 +49,15 @@ LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_REFLECTION_
 LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_HISTORY_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS_ENV = "LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS"
 LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO_ENV = "LISA_CONTEXT_BUDGET_TOKEN_CHAR_RATIO"
-LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES_ENV = "LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES"
+LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES_ENV = "LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES"
 LISA_PROMPT_CACHE_ENABLED_ENV = "LISA_PROMPT_CACHE_ENABLED"
 LISA_PROVIDER_BASE_URLS_ENV = "LISA_PROVIDER_BASE_URLS"
 
 # ── Default values ────────────────────────────────────────────────────
 
 _DEFAULT_THREAD_SEGMENT_TURNS = 256
-#: Zero defers replay residency to the whole-request context allocator.
-_DEFAULT_REPLAY_BUDGET_BYTES = 0
+#: Zero defers rehydration residency to the whole-request context allocator.
+_DEFAULT_REHYDRATE_BUDGET_BYTES = 0
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
 _PROFILES_SUBDIR_NAME = "profiles"
@@ -221,9 +221,9 @@ def _context_budget_overrides() -> dict[str, int | bool]:
             4,
         ),
         (
-            LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES_ENV,
-            "context_budget_replay_max_bytes",
-            _DEFAULT_REPLAY_BUDGET_BYTES,
+            LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES_ENV,
+            "context_budget_rehydrate_max_bytes",
+            _DEFAULT_REHYDRATE_BUDGET_BYTES,
         ),
     )
     for env_name, field_name, default_value in int_specs:
@@ -489,7 +489,7 @@ class HostConfig:
     # ``LISA_CONTEXT_BUDGET_MEMORY_MAX_TOKENS``.
     context_budget_memory_max_tokens: int = 1200
     # Ceiling for the ``reflection`` lane: the diagnostic-reflection
-    # block injected when replay controls enable it, summarizing what the
+    # block injected when rehydration controls enable it, summarizing what the
     # previous turn did and what remains. Session front matter may
     # tighten this cap but never raise it. Override via
     # ``LISA_CONTEXT_BUDGET_REFLECTION_MAX_TOKENS``.
@@ -509,14 +509,14 @@ class HostConfig:
     # the prompt. Override via
     # ``LISA_CONTEXT_BUDGET_OPERATIONAL_MAX_TOKENS``.
     context_budget_operational_max_tokens: int = 800
-    # Ceiling for the turn-start replay working set (bytes): the total
-    # tool-result bytes replayed verbatim for the open task before the
+    # Ceiling for the turn-start rehydration working set (bytes): the total
+    # tool-result bytes rehydrated verbatim for the open task before the
     # rest collapse to recoverable ref-stubs (residency by allocation,
     # R2). Zero (default) defers to whole-request allocation. Session
     # front matter may impose an explicit ceiling via
-    # ``context.history.replay_max_bytes`` but never raise past this.
-    # Override via ``LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES``.
-    context_budget_replay_max_bytes: int = _DEFAULT_REPLAY_BUDGET_BYTES
+    # ``context.history.rehydrate_max_bytes`` but never raise past this.
+    # Override via ``LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES``.
+    context_budget_rehydrate_max_bytes: int = _DEFAULT_REHYDRATE_BUDGET_BYTES
 
     # ── Prompt caching (provider wire-level) ────────────────────────
     # When True (default), providers that support explicit prompt-cache

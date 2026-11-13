@@ -1,4 +1,4 @@
-"""Pack-declared history semantics: policy, ledger, stubs, replay folds, turn wiring."""
+"""Pack-declared history semantics: policy, ledger, stubs, history folds, turn wiring."""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ import pytest
 from kernel.capability_binding import CapabilityBinding, CapabilityRef
 from kernel.context.mcp_catalog import _deserialize_tool
 from kernel.history import (
+    HistoryFolds,
     HistoryKeys,
     HistoryLedger,
     HistoryPolicy,
     HistoryRecord,
     HistoryTemplateError,
-    ReplayFolds,
     existing_result_ref,
     expand_template,
-    fold_replay,
+    fold_history,
     pack_state_message,
     render_stub,
     resolve_history_keys,
@@ -232,7 +232,7 @@ def test_existing_result_ref_reads_bare_and_preview_refs() -> None:
     assert existing_result_ref("plain text") == ""
 
 
-def test_fold_replay_uses_prefixes_turn_scope_and_latest_snapshot() -> None:
+def test_fold_history_uses_prefixes_turn_scope_and_latest_snapshot() -> None:
     turn1 = {
         "records": [
             {"call_id": "a", "tool_id": "read", "keys": ["r:x"], "ref": _ref("1")},
@@ -245,7 +245,7 @@ def test_fold_replay_uses_prefixes_turn_scope_and_latest_snapshot() -> None:
         "records": [{"call_id": "a", "tool_id": "read", "keys": ["r:x"], "ref": _ref("3")}],
         "snapshots": {"p": "cwd=/w"},
     }
-    folds = fold_replay([("t1_", turn1), ("t2_", turn2)])
+    folds = fold_history([("t1_", turn1), ("t2_", turn2)])
     # t1_c has no ref, so it can never be stubbed; the live re-read stays resident.
     assert set(folds.replacements) == {"t1_a", "t1_b"}
     assert "superseded by call t2_a" in folds.replacements["t1_a"]
@@ -254,20 +254,20 @@ def test_fold_replay_uses_prefixes_turn_scope_and_latest_snapshot() -> None:
     assert folds.snapshots == {"p": "cwd=/w"}
 
 
-def test_fold_replay_drops_snapshots_of_owners_without_folds() -> None:
+def test_fold_history_drops_snapshots_of_owners_without_folds() -> None:
     turn = {
         "records": [{"call_id": "a", "tool_id": "read", "keys": ["r:x"], "ref": _ref("1")}],
         "snapshots": {"p": "cwd=/w"},
     }
-    assert fold_replay([("t1_", turn)]) == ReplayFolds()
+    assert fold_history([("t1_", turn)]) == HistoryFolds()
 
 
 def test_pack_state_message_round_trips_through_split() -> None:
     assert pack_state_message({}) is None
     state = pack_state_message({"q": "b", "p": "a"})
     assert state is not None and state["role"] == "user"
-    replay = [{"role": "user", "content": "hi"}, state]
-    kept, text = split_pack_state(replay)
+    rehydrate = [{"role": "user", "content": "hi"}, state]
+    kept, text = split_pack_state(rehydrate)
     assert kept == [{"role": "user", "content": "hi"}]
     assert text == "[p state] a\n[q state] b"
 
@@ -616,7 +616,7 @@ async def test_finalize_persists_refs_filters_own_records_and_snapshots(
     assert all(r["ref"] in store for r in history["records"])
     assert history["snapshots"] == {"lisa-pack-x": "cwd=/w"}
     assert seen == {"config": {"root": "/w"}, "keys": ["r:a.py", "r:a.py"]}
-    folds = fold_replay([("t0_", history)])
+    folds = fold_history([("t0_", history)])
     assert "t0_c1" in folds.replacements
     assert folds.snapshots == {"lisa-pack-x": "cwd=/w"}
 
@@ -651,7 +651,7 @@ async def test_anchor_read_resolves_pages_and_falls_back_to_ref(
         is None
     )
     assert forged == {"ref": "read:a.py"}
-    # Replay folds issue anchors through stubs in the live messages.
+    # Rehydration folds issue anchors through stubs in the live messages.
     state.messages = [
         {"role": "tool", "tool_call_id": "c0", "content": _stub("read:a.py")},
         {"role": "tool", "tool_call_id": "c9", "content": _stub("read:c.py")},

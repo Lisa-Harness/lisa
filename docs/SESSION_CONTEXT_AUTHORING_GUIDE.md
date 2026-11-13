@@ -11,7 +11,8 @@ The session plan is the **author-owned source of truth**. It replaces every lega
 - No `applies_to` mode filtering — the body is the primary prompt for every turn.
 - No loose `packs` map or `policy` block — pack and server selection is explicit and validated.
 - No `context_routing` namespaces — context admission is deterministic, rule-based, and session-owned.
-- No `replay.*` controls — conversation history compaction is part of the context plan, not a separate replay subsystem.
+- History rehydration controls live under `context.history`; there is no
+  separate rehydration subsystem in session front matter.
 
 The compiler (`kernel.session_plan.compile_session_plan`) is strict: `extra="forbid"` on every model. Unknown keys fail compilation. There is no silent degradation.
 
@@ -124,14 +125,14 @@ context:
       fallback: true
   history:
     recent_message_limit: 6
-    # Bound the turn-start replay working set: total tool-result bytes
-    # replayed verbatim for the open task before the rest collapse to
+    # Bound the turn-start rehydration working set: total tool-result bytes
+    # rehydrated verbatim for the open task before the rest collapse to
     # recoverable ref-stubs (the stubs re-expand via thread_read_content;
     # nothing is lost). Tighten-only against the host ceiling
-    # (LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES, default 0 = no separate cap).
-    # Omit this knob to let replay and live results fill the request's
+    # (LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES, default 0 = no separate cap).
+    # Omit this knob to let rehydrated and live results fill the request's
     # remaining model window after input framing and output reservations.
-    replay_max_bytes: 32768
+    rehydrate_max_bytes: 32768
     # Thread digest pushed into the retrieval lane each turn (all defaults shown)
     digest:
       enabled: true            # false → tool pulls only, nothing pushed
@@ -821,7 +822,7 @@ Conversation history settings for context assembly.
 | `include_recent_conversation` | `true` | Include the recent-conversation excerpt. Read by the runtime. |
 | `include_reflection` | `false` | Include the diagnostic reflection. **Not implemented — accepted by the schema but never read by the runtime.** |
 | `recent_message_limit` | `6` | Recent-message selection limit; non-negative. **Not implemented — never read by the runtime.** The recent-conversation excerpt is built with a fixed three-item limit; use `digest.recent_entries` to size the digest's recent-history item. |
-| `replay_max_bytes` | absent | Optional 1–1048576-byte replay ceiling, tighten-only against a finite host ceiling. |
+| `rehydrate_max_bytes` | absent | Optional 1–1048576-byte rehydration ceiling, tighten-only against a finite host ceiling. |
 | `digest` | object | Bounded task-state/recent-history/open-objective projection. |
 
 ##### `include_recent_conversation`
@@ -831,22 +832,22 @@ the **`history`** lane. It does not gate the thread manifest or the digest
 items. The excerpt is built from the thread store with a hard-coded
 three-entry limit, and host-only command queries are filtered out of it.
 
-The excerpt is additionally suppressed by the host's replay policy in
+The excerpt is additionally suppressed by the host's rehydration policy in
 `manual` trigger mode and when the query is shorter than the configured
 `min_query_chars` — so `include_recent_conversation: true` is a permission,
 not a guarantee.
 
-##### `replay_max_bytes`
+##### `rehydrate_max_bytes`
 
-Bounds the **turn-start replay working set**: the total tool-result bytes
-replayed verbatim for the open task. Content beyond the ceiling collapses
+Bounds the **turn-start rehydration working set**: the total tool-result bytes
+rehydrated verbatim for the open task. Content beyond the ceiling collapses
 into recoverable reference stubs that keep the addressing information for
 the original result; the model re-expands a stub through
 `thread_read_content`. Nothing is lost — the thread store remains the
 lossless ground truth, and this knob governs *residency*, not storage.
 
 The effective ceiling is the **minimum** of the session knob and the host's
-`context_budget_replay_max_bytes` (env `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES`,
+`context_budget_rehydrate_max_bytes` (env `LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES`,
 default `0` = no host ceiling). So:
 
 - session value **below** the host ceiling → the session value applies;
@@ -1107,7 +1108,7 @@ The compiler (`compile_session_plan`) enforces:
 - Every `resources.packs.auto_install` key must also appear in `resources.packs.required`.
 - `execution` numeric limits must be `>= 1`; `execution.capabilities` and `execution.scopes` keys must be non-empty, and each nested numeric value must be `>= 1`.
 - `context.memory.mining.max_segments_per_slice` must be `>= 1`.
-- `context.history.replay_max_bytes` must be `1`-`1048576`; `context.history.digest` fields are bounded (`recent_entries` 1–40, `recent_body_chars` 200–8000, `task_view_budget_bytes` 1024–16384, `max_open_objective_lines` 1–10).
+- `context.history.rehydrate_max_bytes` must be `1`-`1048576`; `context.history.digest` fields are bounded (`recent_entries` 1–40, `recent_body_chars` 200–8000, `task_view_budget_bytes` 1024–16384, `max_open_objective_lines` 1–10).
 - `context.sources[].min_freshness` must be `0.0`-`1.0`; `context.budget.output_reserve_tokens` must be `>= 1` and `safety_margin_tokens` `>= 0`; `max_materialized_candidates` must be `>= 1`.
 
 Any violation raises `SessionPlanError` (a `ValueError` subclass). The host renders this as a startup error and exits.

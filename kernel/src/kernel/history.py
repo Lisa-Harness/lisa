@@ -14,7 +14,7 @@ A folded result is replaced by a one-line stub that always carries the
 result's ``r<sha256>`` ref, so folding never loses evidence: the model can
 dereference the ref with ``thread_read_content`` (or the pack's anchor,
 when the tool declares one). The ledger is shared by the in-turn
-supersession epoch and the turn-start replay so both fold identically.
+supersession epoch and the turn-start rehydration so both fold identically.
 """
 
 from __future__ import annotations
@@ -337,7 +337,7 @@ class HistoryRecord:
         return bool(self.keys) and set(self.keys) <= set(self.dead_keys)
 
     def to_json(self) -> dict[str, Any]:
-        """Return the thread-entry form (fold state is recomputed on replay)."""
+        """Return the thread-entry form (fold state is recomputed on rehydration)."""
         record: dict[str, Any] = {
             "call_id": self.call_id,
             "tool_id": self.tool_id,
@@ -440,7 +440,7 @@ def stub_anchor(content: str) -> str:
     """Return the anchor a kernel-rendered stub carries, or ``""``.
 
     A stub counts only when it is the message's entire content — exactly
-    what :func:`render_stub` emits and what a replay fold leaves as a
+    what :func:`render_stub` emits and what a history fold leaves as a
     whole tool message — so a stub quoted inside another tool's output,
     and any fabricated anchor string, fail the match and take the normal
     ref path.
@@ -471,28 +471,28 @@ def existing_result_ref(content: str) -> str:
 
 
 PACK_STATE_KEY = "lisa_pack_state"
-"""Marks the replayed pack-state message the kernel lifts into the new user message."""
+"""Marks the rehydrated pack-state message the kernel lifts into the new user message."""
 
 
 @dataclass(frozen=True)
-class ReplayFolds:
-    """Replay folding result: stub text by call id and pack snapshots by owner."""
+class HistoryFolds:
+    """Rehydration folding result: stub text by call id and pack snapshots by owner."""
 
     replacements: dict[str, str] = field(default_factory=dict)
     snapshots: dict[str, str] = field(default_factory=dict)
 
 
-def fold_replay(
+def fold_history(
     entries: Iterable[tuple[str, Mapping[str, Any]]],
-) -> ReplayFolds:
-    """Return replacement content for replayed tool results and the pack snapshots.
+) -> HistoryFolds:
+    """Return replacement content for rehydrated tool results and the pack snapshots.
 
     ``entries`` are ``(call_id_prefix, entry_history)`` pairs in thread
-    order; replay prefixes call ids per turn, so records are rebuilt with
-    the same prefix. Every replayed turn is finished, so turn-scoped
+    order; rehydration prefixes call ids per turn, so records are rebuilt with
+    the same prefix. Every rehydrated turn is finished, so turn-scoped
     results fold along with stale ones. The newest snapshot of each pack
     owner with at least one folded result is returned separately: the
-    host places it after the replayed transcript (see
+    host places it after the rehydrated transcript (see
     :func:`pack_state_message`) so a changing snapshot never rewrites an
     older, cached message.
     """
@@ -507,14 +507,14 @@ def fold_replay(
                 snapshots[str(owner)] = text.strip()
     folded = [r for r in ledger.foldable(turn_finished=True) if _RESULT_REF.fullmatch(r.ref)]
     owners = {record.owner_id for record in folded}
-    return ReplayFolds(
+    return HistoryFolds(
         replacements={record.call_id: render_stub(record) for record in folded},
         snapshots={owner: text for owner, text in snapshots.items() if owner in owners},
     )
 
 
 def pack_state_message(snapshots: Mapping[str, str]) -> dict[str, Any] | None:
-    """Return the tagged replay message carrying pack snapshots, or ``None``."""
+    """Return the tagged history message carrying pack snapshots, or ``None``."""
     if not snapshots:
         return None
     lines = [f"[{owner} state] {text}" for owner, text in sorted(snapshots.items())]
@@ -537,16 +537,16 @@ def split_pack_state(
 
 __all__ = [
     "PACK_STATE_KEY",
+    "HistoryFolds",
     "HistoryKeys",
     "HistoryLedger",
     "HistoryPolicy",
     "HistoryRecord",
     "HistoryScope",
     "HistoryTemplateError",
-    "ReplayFolds",
     "existing_result_ref",
     "expand_template",
-    "fold_replay",
+    "fold_history",
     "keys_from_policy",
     "pack_state_message",
     "render_stub",

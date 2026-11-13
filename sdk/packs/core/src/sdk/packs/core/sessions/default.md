@@ -103,7 +103,7 @@ execution:
   # turn-length governor.
   max_completion_tokens: 500000
 context:
-  # Replay and live tool results share the model request's remaining window.
+  # Rehydration and live tool results share the model request's remaining window.
   sources:
     - rule_id: default
       lane_id: operational

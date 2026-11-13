@@ -115,7 +115,7 @@ class ContextHooks:
     assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
 
     #: ``prior_messages()`` returns earlier turns' messages (user, assistant,
-    #: tool) to replay verbatim before this turn's user message. Parent turns
+    #: tool) to rehydrate verbatim before this turn's user message. Parent turns
     #: only. Default: none.
     prior_messages: Callable[[], list[dict[str, Any]]] | None = None
 

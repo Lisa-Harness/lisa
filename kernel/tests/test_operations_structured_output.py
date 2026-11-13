@@ -330,7 +330,7 @@ def test_extract_json_object_strips_fences() -> None:
 
 
 def test_assistant_bootstrap_prefills_requested_top_key() -> None:
-    """The bootstrap retry replays the conversation and prefills the assistant
+    """The bootstrap retry rehydrates the conversation and prefills the assistant
     turn with the requested top-key array opening."""
     messages = [{"role": "user", "content": "produce facts"}]
     bootstrapped = assistant_bootstrap_messages(messages, _SamplePayload, top_key="results")

@@ -1,4 +1,4 @@
-"""Replay the latest turn and its unfinished task as verbatim model messages.
+"""Rehydrate the latest turn and its unfinished task as verbatim model messages.
 
 The thread is the lossless record; this read path turns the most recent
 entry — plus every immediately preceding entry that belongs to the same
@@ -13,7 +13,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from kernel.history import fold_replay, pack_state_message
+from kernel.history import fold_history, pack_state_message
 
 from runtime.host_commands import is_host_command_query
 
@@ -63,18 +63,18 @@ def _redact(value: str, redaction: Any) -> str:
     return redaction.redact(value) if redaction is not None else value
 
 
-def _replay_message(message: dict[str, Any], prefix: str, redaction: Any) -> dict[str, Any]:
-    replayed = copy.deepcopy(message)
-    if isinstance(replayed.get("content"), str) and replayed.get("role") != "tool":
-        replayed["content"] = _redact(replayed["content"], redaction)
-    if replayed.get("tool_call_id"):
-        replayed["tool_call_id"] = f"{prefix}{replayed['tool_call_id']}"
-    for call in replayed.get("tool_calls") or []:
+def _rehydrate_message(message: dict[str, Any], prefix: str, redaction: Any) -> dict[str, Any]:
+    rehydrated = copy.deepcopy(message)
+    if isinstance(rehydrated.get("content"), str) and rehydrated.get("role") != "tool":
+        rehydrated["content"] = _redact(rehydrated["content"], redaction)
+    if rehydrated.get("tool_call_id"):
+        rehydrated["tool_call_id"] = f"{prefix}{rehydrated['tool_call_id']}"
+    for call in rehydrated.get("tool_calls") or []:
         call["id"] = f"{prefix}{call.get('id', '')}"
         payload = _call_payload(call)
         if isinstance(payload.get("arguments"), str):
             payload["arguments"] = _redact(payload["arguments"], redaction)
-    return replayed
+    return rehydrated
 
 
 def _call_payload(call: dict[str, Any]) -> dict[str, Any]:
@@ -98,19 +98,19 @@ def _entry_messages(
     prefix = _entry_prefix(entry)
     messages = [{"role": "user", "content": _redact(str(entry.get("query") or ""), redaction)}]
     transcript = list(entry.get("transcript") or [])
-    # The stored user message carries this turn's briefings; replay the plain query instead.
+    # The stored user message carries this turn's briefings; rehydrate the plain query instead.
     if transcript and transcript[0].get("role") == "user":
         transcript = transcript[1:]
-    messages.extend(_replay_message(m, prefix, redaction) for m in transcript)
+    messages.extend(_rehydrate_message(m, prefix, redaction) for m in transcript)
     if folds:
-        # Stale and turn-scoped results replay as ref-carrying stubs; the
+        # Stale and turn-scoped results rehydrate as ref-carrying stubs; the
         # thread keeps the full text, so the fold is lossless.
         for message in messages:
             stub = folds.get(str(message.get("tool_call_id") or ""))
             if message.get("role") == "tool" and stub is not None:
                 message["content"] = stub
     if approved_result is not None:
-        messages.append(_replay_message(approved_result, prefix, redaction))
+        messages.append(_rehydrate_message(approved_result, prefix, redaction))
         return messages
     response = str(entry.get("response_text") or "")
     last_message = transcript[-1] if transcript else None
@@ -163,14 +163,14 @@ def build_open_task_messages(
     ephemeral_results_path: Path | None = None,
     budget_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the latest turn and its unfinished task as replayable messages.
+    """Return the latest turn and its unfinished task as model history messages.
 
     ``ephemeral_results_path`` mirrors ``project_thread_messages``: under
     ``--no-thread`` projection result objects land in the session's
     cache-backed store instead of a thread artifact.
 
     ``budget_bytes`` bounds the resident tool-result bytes for the whole
-    replayed working set (``None`` keeps the projection default): oldest
+    rehydrated working set (``None`` keeps the projection default): oldest
     results collapse into the evidence inventory by address, newest stay
     verbatim. Residency by allocation at the turn boundary (R2).
     """
@@ -189,7 +189,7 @@ def build_open_task_messages(
         if (provenance := entry.get("provenance") or {}).get("source") in _APPROVAL_SOURCES
         and provenance.get("approval_request_id")
     }
-    folds = fold_replay(
+    folds = fold_history(
         (_entry_prefix(entry), entry["history"])
         for entry in entries
         if isinstance(entry.get("history"), dict)
@@ -200,36 +200,36 @@ def build_open_task_messages(
         provenance = entry.get("provenance") or {}
         if provenance.get("source") in _APPROVAL_SOURCES:
             if provenance.get("approval_request_id") not in paired_ids:
-                replay = _entry_messages(entry, _thread_redaction)
+                rehydrated = _entry_messages(entry, _thread_redaction)
                 messages.extend(
                     project_thread_messages(
-                        replay,
+                        rehydrated,
                         str(provenance.get("task_id") or ""),
                         thread_path=thread_path,
                         ephemeral_results_path=ephemeral_results_path,
-                        budget_bytes=_entry_tool_bytes(replay),
+                        budget_bytes=_entry_tool_bytes(rehydrated),
                     )
                 )
             continue
         approved_result = _paired_approval_result(entry, approvals)
         if approved_result is not None:
             paired_ids.add(str(provenance["pending_approval_request_id"]))
-        replay = _entry_messages(
+        rehydrated = _entry_messages(
             entry, _thread_redaction, approved_result=approved_result, folds=folds.replacements
         )
         messages.extend(
             project_thread_messages(
-                replay,
+                rehydrated,
                 str(provenance.get("task_id") or ""),
                 thread_path=thread_path,
                 ephemeral_results_path=ephemeral_results_path,
-                budget_bytes=_entry_tool_bytes(replay),
+                budget_bytes=_entry_tool_bytes(rehydrated),
             )
         )
     if budget_bytes is not None:
         # Turn-boundary working-set recompute (R2): the per-entry projection
         # above bounds each result on its own; this final pass bounds the
-        # whole replayed set, collapsing the oldest tool groups into the
+        # whole rehydrated set, collapsing the oldest tool groups into the
         # evidence inventory by address so the newest stays resident.
         messages = project_thread_messages(
             messages,
@@ -247,7 +247,7 @@ def build_open_task_messages(
 
 
 def _entry_tool_bytes(messages: list[dict[str, Any]]) -> int:
-    """Replay admits complete payloads; the kernel budgets the assembled request."""
+    """Rehydration admits complete payloads; the kernel budgets the assembled request."""
     return sum(
         len(str(message.get("content") or "").encode("utf-8"))
         for message in messages

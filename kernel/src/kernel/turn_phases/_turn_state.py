@@ -555,7 +555,7 @@ class _TurnState:
     history_ledger: HistoryLedger = field(default_factory=HistoryLedger)
     """Pack-declared history claims for this turn's tool results
     (``kernel.history``): drives the supersession epoch and the
-    ``TurnResult.history`` block replay folds from."""
+    ``TurnResult.history`` block rehydration folds from."""
     truncation_tripped: bool = False
     """One-way output circuit-breaker: set at the FIRST mid-turn
     finish_reason=length. Further large emissions are kernel-blocked

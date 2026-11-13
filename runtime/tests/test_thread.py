@@ -3,7 +3,7 @@
 Covers:
 
 - The host-command stripping behaviour so that operator UI gestures
-  (``/pack disable github``, ``/help``, ``/tokens``, ...) are not replayed
+  (``/pack disable github``, ``/help``, ``/tokens``, ...) are not rehydrated
   to the model as "recent conversation" or accumulated in the digest.
 - The segmented + zstd-sealed store: sealing at the segment threshold,
   lossless round-trip, recent-N spanning sealed + active segments, range

@@ -1274,7 +1274,7 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 #: JSON numbers as float64, so an integer beyond this range is not
 #: representable and its decoder rejects it — Python's ``int`` is
 #: unbounded, so ``json`` accepts and re-emits it happily. The boundary
-#: was observed live: a 309-digit integer replayed, a 310-digit one
+#: was observed live: a 309-digit integer rehydrated, a 310-digit one
 #: answered ``400 invalid tool call arguments``.
 _MAX_FINITE_FLOAT = 1.7976931348623157e308
 
@@ -1408,10 +1408,10 @@ def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     Backends validate the arguments string of every assistant ``tool_calls``
     entry they receive in the history and answer ``400 invalid tool call
     arguments`` when it does not parse as a JSON object. That check applies
-    to REPLAYED history too, not only to the call the backend just
+    to rehydrated history too, not only to the call the backend just
     produced: a call the kernel refused (a length-cut payload, or a call
     whose parallel siblings were stitched together) stays in the message
-    history, and the next request replays it and dies on the 400.
+    history, and the next request rehydrates it and dies on the 400.
 
     An empty argument string is NOT acceptable on the wire even though the
     kernel reads it as a legitimate "no parameters" call — the backend
@@ -1432,19 +1432,19 @@ def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
 
 
 def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") -> str:
-    """Return an argument payload a strict backend will accept on replay.
+    """Return an argument payload a strict backend will accept on rehydration.
 
     A tool call whose arguments never parsed — because the completion was
     cut mid-payload, or because parallel calls were stitched together —
     cannot be repaired into its original values; those values do not
-    exist. Replaying it verbatim is what turns a recoverable turn into a
+    exist. Rehydrating it verbatim is what turns a recoverable turn into a
     dead one: the backend answers ``400 invalid tool call arguments`` and
     the whole turn fails. The empty object is the honest repair — it
     states "this call carried no usable arguments" and keeps the history
     well-formed, so the model can re-issue the call.
 
     The kernel already refused to dispatch such a call and fed the model
-    an error; this only makes the REPLAY of that refusal survivable. The
+    an error; this only makes rehydration of that refusal survivable. The
     discarded payload is logged so the incident stays diagnosable.
     """
     payload_type = type(raw_arguments).__name__
@@ -1457,7 +1457,7 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
             # invalid JSON. The conversion is routine, so it is logged at
             # debug level and does not dilute a real incident's warning.
             logger.debug(
-                "replaying a zero-parameter tool call with an empty argument "
+                "rehydrating a zero-parameter tool call with an empty argument "
                 "string as an empty object (tool=%r)",
                 tool_name or "?",
             )
@@ -1467,7 +1467,7 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
     ):
         return json.dumps(raw_arguments, allow_nan=False)
     logger.warning(
-        "replaying a tool call with unusable arguments as an empty object "
+        "rehydrating a tool call with unusable arguments as an empty object "
         "(tool=%r, payload=%s); the backend rejects the original payload "
         "with 400 invalid tool call arguments",
         tool_name or "?",

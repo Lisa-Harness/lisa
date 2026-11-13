@@ -2001,7 +2001,7 @@ async def test_approve_rejects_cross_user_request_from_other_session(
 async def test_approved_edit_records_history_that_stales_earlier_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A host-approved edit's invalidations fold the reads it changed at replay."""
+    """A host-approved edit's invalidations fold the reads it changed at rehydrate."""
     from kernel.history import HistoryPolicy
     from kernel.models import ToolDefinition
     from runtime.thread import (

@@ -1,4 +1,4 @@
-"""Tests for replaying the latest turn and its unfinished task from the thread."""
+"""Tests for rehydrating the latest turn and its unfinished task from the thread."""
 
 from __future__ import annotations
 
@@ -51,7 +51,9 @@ def _read_turn(turn_query: str, output: str, call_id: str = "c1") -> list[dict[s
     ]
 
 
-def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_path: Path) -> None:
+def test_resumed_turn_rehydrates_latest_checkpoint_without_duplicating_history(
+    tmp_path: Path,
+) -> None:
     thread = tmp_path / "threads" / "tester"
     transcript = _read_turn("original request", "first result")
     _append(
@@ -73,7 +75,7 @@ def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_
     assert not any("approval" in str(message.get("content")) for message in messages)
 
 
-def test_opaque_provider_context_survives_durable_thread_replay(tmp_path: Path) -> None:
+def test_opaque_provider_context_survives_durable_thread_rehydrate(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     transcript = _read_turn("check weather", "sunny")
     continuation = {
@@ -133,7 +135,7 @@ def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_pa
     assert ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]["transcript"] == transcript
 
 
-def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
+def test_open_task_rehydrates_paused_chain_verbatim(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(thread, "unrelated earlier", response_text="done")
     _append(
@@ -164,7 +166,7 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     assert all(cid.startswith("t") for cid in call_ids)
 
 
-def test_open_task_replay_folds_stale_results_losslessly(tmp_path: Path) -> None:
+def test_open_task_rehydrate_folds_stale_results_losslessly(tmp_path: Path) -> None:
     """Pack history folds a superseded read to a ref stub; the thread keeps it."""
     thread = tmp_path / "threads" / "tester"
     first, second = "FILE A v1 " * 50, "FILE A v2 " * 50
@@ -229,7 +231,7 @@ def _call(call_id: str, name: str, arguments: str, *, flat: bool) -> dict[str, o
 
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
-def test_approved_action_replays_as_original_tool_result(
+def test_approved_action_rehydrates_as_original_tool_result(
     tmp_path: Path, failed: bool, flat: bool
 ) -> None:
     thread = tmp_path / "threads" / "tester"
@@ -286,7 +288,7 @@ def test_approved_action_replays_as_original_tool_result(
     assert all("/approve" not in str(message.get("content", "")) for message in messages)
 
 
-def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
+def test_open_task_rehydrate_redacts_on_read(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -304,7 +306,7 @@ def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
     assert "SECRET123" in thread.with_suffix(".current.jsonl").read_text(encoding="utf-8")
 
 
-def test_open_task_replay_redacts_flat_tool_call_arguments(tmp_path: Path) -> None:
+def test_open_task_rehydrate_redacts_flat_tool_call_arguments(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -329,7 +331,7 @@ def test_open_task_replay_redacts_flat_tool_call_arguments(tmp_path: Path) -> No
     assert "SECRET123" not in str(messages)
 
 
-def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path) -> None:
+def test_open_task_rehydrate_does_not_duplicate_transcript_response(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -346,7 +348,7 @@ def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path)
     assert [message["role"] for message in messages] == ["user", "assistant"]
 
 
-def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path) -> None:
+def test_large_live_and_rehydrated_results_are_durable_and_lossless(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     original = "full output " * 10000
     transcript = _read_turn("read", original)
@@ -357,12 +359,12 @@ def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path
     assert transcript[-1]["content"] == original
     assert project_thread_messages(transcript, "task-1", thread_path=thread) == live
     _append(thread, "read", transcript=transcript, provenance={"task_id": "task-1"})
-    replayed = build_open_task_messages(thread_path=thread, budget_bytes=65536)
-    replay_stub = json.loads(
-        next(message for message in replayed if message["role"] == "tool")["content"]
+    rehydrated = build_open_task_messages(thread_path=thread, budget_bytes=65536)
+    rehydrate_stub = json.loads(
+        next(message for message in rehydrated if message["role"] == "tool")["content"]
     )
-    assert replay_stub["abbreviated"]
-    assert replay_stub["ref"] == stub["ref"]
+    assert rehydrate_stub["abbreviated"]
+    assert rehydrate_stub["ref"] == stub["ref"]
     stored = json.loads(result_object_path(thread, stub["ref"]).read_text())
     assert stored["task_id"] == "task-1"
     reader = ThreadReader(ThreadStore(thread))
@@ -403,11 +405,11 @@ def test_inventory_refs_expand_to_original_bytes_not_stub_json(tmp_path: Path) -
         transcript=transcript,
     )
 
-    replayed = build_open_task_messages(thread_path=thread, budget_bytes=800)
+    rehydrated = build_open_task_messages(thread_path=thread, budget_bytes=800)
 
     reader = ThreadReader(ThreadStore(thread))
     refs: list[str] = []
-    for message in replayed:
+    for message in rehydrated:
         content = str(message.get("content") or "")
         if not content.startswith("{"):
             continue
@@ -467,7 +469,7 @@ def _tool_bytes(messages: list[dict[str, Any]]) -> int:
     )
 
 
-def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
+def test_rehydrate_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
     """The resident working set is recomputed under a byte budget at the turn
     boundary (R2): six individually sub-threshold results (6KB each, below the
     8KB inline threshold so none stubs on its own) accumulate to 36KB verbatim
@@ -485,7 +487,7 @@ def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
 
     messages = build_open_task_messages(thread_path=thread, budget_bytes=12_000)
 
-    # Residency is bounded (verbatim replay was 36KB).
+    # Residency is bounded (verbatim history was 36KB).
     assert _tool_bytes(messages) <= 12_000
     # Coherence by address: every collapsed result carries a ref that
     # re-expands losslessly to its full 6000 chars.
@@ -501,7 +503,7 @@ def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
         assert page["content"] == "x" * 6000
 
 
-def test_replay_working_set_unbounded_without_budget(tmp_path: Path) -> None:
+def test_rehydrate_working_set_unbounded_without_budget(tmp_path: Path) -> None:
     """With no budget_bytes the prior verbatim behavior is unchanged."""
     thread = tmp_path / "threads" / "tester"
     _append(
@@ -610,14 +612,14 @@ def test_result_refs_cannot_follow_symlinks_or_cross_threads(tmp_path: Path) -> 
 
 def test_reprojection_reuses_original_result_references_under_pressure(tmp_path: Path) -> None:
     thread = tmp_path / "thread"
-    replayed = []
+    rehydrated = []
     original_refs = set()
     for index in range(200):
         turn = _read_turn("read", f"large result {index} " * 2000, call_id=f"call-{index}")[1:]
         preview = project_thread_messages(turn, "task-1", thread_path=thread, budget_bytes=4096)
         original_refs.add(json.loads(preview[-1]["content"])["ref"])
-        replayed.extend(preview)
-    projected = project_thread_messages(replayed, "task-1", thread_path=thread)
+        rehydrated.extend(preview)
+    projected = project_thread_messages(rehydrated, "task-1", thread_path=thread)
     for message in projected:
         if message.get("role") == "tool":
             assert json.loads(message["content"])["ref"] in original_refs
@@ -675,7 +677,7 @@ class TestVerifiedFactsExtraction:
         )
 
     def test_fact_round_trips_through_approved_turn(self, tmp_path: Path) -> None:
-        """The fact lands on the recorded approved turn and survives replay."""
+        """The fact lands on the recorded approved turn and survives rehydration."""
         thread = tmp_path / "threads" / "tester"
         _append(
             thread,

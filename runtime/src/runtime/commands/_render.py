@@ -164,11 +164,11 @@ def resolve_last_turn(runtime: HostRuntime, arg: str) -> tuple[int | None, str]:
 
     ``arg`` is the stripped argument — empty for the default (the previous
     model turn's response) or a non-negative integer turn index. The turn
-    index is the global thread number of the replayed entry — the same
+    index is the global thread number of the reprinted entry — the same
     number the prompt surfaces render — so the operator can address the
-    replayed turn without counting. ``None`` means the result is a
+    reprinted turn without counting. ``None`` means the result is a
     diagnostic (usage error, not-found turn, no-completed-turns, or a
-    default walk with no prior model response), not a replayed response.
+    default walk with no prior model response), not a reprinted response.
 
     Reads the durable thread directly (the same source of truth as
     :func:`render_debug_turn`), so resolution works identically after a
@@ -201,8 +201,8 @@ def _resolve_default_turn(runtime: HostRuntime) -> tuple[int | None, str]:
     """Walk the recent window back to the last model response.
 
     The walk skips host-command turns and empty responses so ``/last``
-    after ``/settings`` (or another ``/last``) still replays the last
-    *model* response. The replayed entry's own ``turn`` stamp is the
+    after ``/settings`` (or another ``/last``) still reprints the last
+    *model* response. The reprinted entry's own ``turn`` stamp is the
     number; entries without one fall back to their positional index.
     """
     next_turn = next_turn_index(thread_path=runtime.paths.thread_path)
@@ -232,7 +232,7 @@ def render_last_turn(runtime: HostRuntime, arg: str) -> str:
     ``arg`` is the stripped argument after ``/last`` — empty for the default
     (the previous model turn's response) or a non-negative integer turn
     index. Verbatim companion of :func:`resolve_last_turn` (which also
-    reports the replayed turn index): transports that need the number call
+    reports the reprinted turn index): transports that need the number call
     that instead; this stays byte-identical to the response for piped/
     machine-readable consumers.
     """
@@ -795,7 +795,7 @@ def _pack_command_help_text() -> str:
             "- /pack disable <pack> — deactivate an installed pack "
             "(always-on packs cannot be disabled).",
             "- /pack install <spec> — install a pack from a git URL, local path, or bare name.",
-            "    Append ` --resume <message>` to replay a turn after the next launch.",
+            "    Append ` --resume <message>` to submit a turn after the next launch.",
             "- /pack uninstall <package> — remove an installed pack.",
             "- /pack update <pack> — reinstall an installed pack in place from its "
             "recorded source.",
@@ -944,7 +944,7 @@ def _host_shortcut_help_text(topic: str) -> str:
             "  turn's saved digest and state whether it is resumable or blocked.\n"
             "- /session archive — list every archived session source (content-\n"
             "  addressed by plan digest; one written per boot and per distinct edit).\n"
-            "- /session restore <digest> — replay an archived source to its recorded\n"
+            "- /session restore <digest> — restore an archived source to its recorded\n"
             "  path (the digest is URI-scoped), verified against the archived digest.\n"
             "  The replaced file is snapshotted as `.bak`. Takes effect on the next\n"
             '  launch; then send "continue" to resume the paused turn.\n\n'

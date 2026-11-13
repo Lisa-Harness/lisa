@@ -1,10 +1,10 @@
-"""Turn-start replay working-set budget wiring (residency by allocation, R2).
+"""Turn-start rehydration working-set budget wiring (residency by allocation, R2).
 
 Pins that ``build_turn_hooks`` wires ``prior_messages`` to bound the
-replayed tool-result working set by the session plan's
-``context.history.replay_max_bytes`` knob (tighten-only against the host
-``context_budget_replay_max_bytes`` ceiling). Without an explicit ceiling,
-replay stays full until the kernel allocates the complete model request.
+rehydrated tool-result working set by the session plan's
+``context.history.rehydrate_max_bytes`` knob (tighten-only against the host
+``context_budget_rehydrate_max_bytes`` ceiling). Without an explicit ceiling,
+history stays full until the kernel allocates the complete model request.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _tool_bytes(messages: list[dict[str, object]]) -> int:
     )
 
 
-def _runtime_with_history_knob(tmp_path: Path, replay_max_bytes: int | None) -> object:
+def _runtime_with_history_knob(tmp_path: Path, rehydrate_max_bytes: int | None) -> object:
     """Build a runtime whose compiled session history knob is forced.
 
     Each case explicitly selects a ceiling or defers to request allocation.
@@ -65,7 +65,7 @@ def _runtime_with_history_knob(tmp_path: Path, replay_max_bytes: int | None) -> 
     runtime = build_test_runtime(tmp_path, user_slug="user", surface_type="dm", surface_id="s")
     plan = runtime.session_plan
     history = plan.manifest.context.history.model_copy(
-        update={"replay_max_bytes": replay_max_bytes}
+        update={"rehydrate_max_bytes": rehydrate_max_bytes}
     )
     context = plan.manifest.context.model_copy(update={"history": history})
     manifest = plan.manifest.model_copy(update={"context": context})
@@ -74,9 +74,9 @@ def _runtime_with_history_knob(tmp_path: Path, replay_max_bytes: int | None) -> 
 
 
 def test_prior_messages_bounds_working_set_to_history_knob(tmp_path: Path) -> None:
-    """The session knob tightens the replay working set: 36000 verbatim
+    """The session knob tightens the rehydrated working set: 36000 verbatim
     bytes collapse to ref-stubs under a 12288-byte budget."""
-    runtime = _runtime_with_history_knob(tmp_path, replay_max_bytes=12288)
+    runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=12288)
     _seed_open_task(runtime.paths.thread_path)
 
     hooks = build_turn_hooks(runtime, context=None, transport=None)
@@ -88,13 +88,13 @@ def test_prior_messages_bounds_working_set_to_history_knob(tmp_path: Path) -> No
         for m in messages
         if m.get("role") == "tool" and str(m.get("content") or "").startswith('{"ref"')
     ]
-    assert stub_refs, "expected over-budget results to replay as ref-stubs"
+    assert stub_refs, "expected over-budget results to rehydrate as ref-stubs"
 
 
 def test_prior_messages_core_default_session_defers_to_request_budget(tmp_path: Path) -> None:
-    """The core default admits complete replay for whole-request allocation."""
+    """The core default admits complete history for whole-request allocation."""
     runtime = build_test_runtime(tmp_path, user_slug="user", surface_type="dm", surface_id="s")
-    assert runtime.session_plan.manifest.context.history.replay_max_bytes is None
+    assert runtime.session_plan.manifest.context.history.rehydrate_max_bytes is None
     _seed_open_task(runtime.paths.thread_path)
 
     hooks = build_turn_hooks(runtime, context=None, transport=None)
@@ -109,7 +109,7 @@ def test_prior_messages_host_ceiling_when_knob_absent(
 ) -> None:
     """An explicitly-absent knob keeps the host ceiling: a 36000-byte set
     stays verbatim (36000 < 65536 default), exactly as before this feature."""
-    runtime = _runtime_with_history_knob(tmp_path, replay_max_bytes=None)
+    runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
     _seed_open_task(runtime.paths.thread_path)
 
     hooks = build_turn_hooks(runtime, context=None, transport=None)
@@ -123,9 +123,9 @@ def test_prior_messages_knob_cannot_exceed_host_ceiling(
 ) -> None:
     """Tighten-only: a knob above the host ceiling is capped back to it.
     A 131072-byte knob cannot loosen a 12288-byte env ceiling."""
-    monkeypatch.setenv("LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES", "12288")
-    runtime = _runtime_with_history_knob(tmp_path, replay_max_bytes=131072)
-    assert runtime.config.context_budget_replay_max_bytes == 12288
+    monkeypatch.setenv("LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES", "12288")
+    runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=131072)
+    assert runtime.config.context_budget_rehydrate_max_bytes == 12288
     _seed_open_task(runtime.paths.thread_path)
 
     hooks = build_turn_hooks(runtime, context=None, transport=None)
@@ -134,19 +134,39 @@ def test_prior_messages_knob_cannot_exceed_host_ceiling(
     assert _tool_bytes(messages) <= 12288
 
 
-def test_default_replay_and_live_results_share_actual_remaining_window(tmp_path: Path) -> None:
+@pytest.mark.parametrize("new_ceiling", [None, "12288"])
+def test_history_budget_ignores_old_environment_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_ceiling: str | None
+) -> None:
+    monkeypatch.setenv("LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES", "1")
+    if new_ceiling is None:
+        monkeypatch.delenv("LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES", new_ceiling)
+    runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
+    _seed_open_task(runtime.paths.thread_path)
+
+    messages = build_turn_hooks(runtime, context=None, transport=None).context.prior_messages()
+
+    if new_ceiling is None:
+        assert _tool_bytes(messages) == 36000
+    else:
+        assert _tool_bytes(messages) <= int(new_ceiling)
+
+
+def test_default_rehydrate_and_live_results_share_actual_remaining_window(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
     from kernel.turn_phases._turn_state import _TurnState
     from kernel.turn_runner import _project_provider_messages
     from runtime.thread import load_result_object
 
-    runtime = _runtime_with_history_knob(tmp_path, replay_max_bytes=None)
+    runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
     _seed_open_task(runtime.paths.thread_path, result_size=30_000)
     hooks = build_turn_hooks(runtime, context=None, transport=None)
-    replay = hooks.context.prior_messages()
-    assert _tool_bytes(replay) == 180_000, "default replay must not pre-trim to 64KB"
-    messages = [{"role": "system", "content": "fixed"}, *replay]
+    rehydrate = hooks.context.prior_messages()
+    assert _tool_bytes(rehydrate) == 180_000, "default rehydrate must not pre-trim to 64KB"
+    messages = [{"role": "system", "content": "fixed"}, *rehydrate]
     state = _TurnState()
     large = SimpleNamespace(model_id="unknown", context_window=131_072)
     fitted = _project_provider_messages(state, hooks, messages, large, max_tokens=4096)

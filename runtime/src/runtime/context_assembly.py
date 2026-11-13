@@ -52,7 +52,7 @@ from kernel.session_plan import ContextPlan
 from sdk.content import MissingAuthoredContentError, require_authored_text  # noqa: F401
 
 from runtime.model_runtime import StubModelDefinition
-from runtime.session_context import ReplayControls
+from runtime.session_context import RehydrateControls
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +324,7 @@ def assemble_dynamic_user_context(
     state: UnifiedState | None,
     session_context_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
-    replay_controls_loader: Callable[[], ReplayControls] | None = None,
+    rehydrate_controls_loader: Callable[[], RehydrateControls] | None = None,
     thread_manifest_builder: Callable[[], str] | None = None,
     host_name: str | None = None,
     host_os: str | None = None,
@@ -385,23 +385,25 @@ def assemble_dynamic_user_context(
         ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
     ]
 
-    replay_controls = (
-        replay_controls_loader() if replay_controls_loader is not None else ReplayControls()
+    rehydrate_controls = (
+        rehydrate_controls_loader()
+        if rehydrate_controls_loader is not None
+        else RehydrateControls()
     )
-    replay_policy = _resolve_replay_policy(
-        replay_controls,
+    rehydrate_policy = _resolve_rehydrate_policy(
+        rehydrate_controls,
         query=query,
         budget_values=budget_values,
     )
 
-    _append_replay_gated_sections(
+    _append_rehydrate_gated_sections(
         raw_sections=raw_sections,
         content_loader=content_loader,
         query=query,
         session_context_loader=session_context_loader,
         recent_thread_excerpt_builder=recent_thread_excerpt_builder,
         thread_manifest_builder=thread_manifest_builder,
-        replay_policy=replay_policy,
+        rehydrate_policy=rehydrate_policy,
     )
 
     # Ranked context evidence from the session-owned mapper (no MCP
@@ -460,7 +462,7 @@ def assemble_dynamic_user_context(
     # the host config (migrated from kernel.config).
     allocator = _build_context_allocator(
         budget_values=budget_values,
-        replay_policy=replay_policy,
+        rehydrate_policy=rehydrate_policy,
         total_tokens=(
             mapper_snapshot.available_context_tokens if mapper_snapshot is not None else None
         ),
@@ -515,17 +517,17 @@ def _render_budgeted_sections(
 def _build_context_allocator(
     *,
     budget_values: ContextBudgetValues,
-    replay_policy: _ReplayPolicy,
+    rehydrate_policy: _RehydratePolicy,
     total_tokens: int | None,
 ) -> ContextBudgetAllocator:
-    """Build the per-turn lane budget allocator with tighten-only replay caps.
+    """Build the per-turn lane budget allocator with tighten-only rehydration caps.
 
     Lane budgets and the master switch live on the host config
     (``budget_values``). The allocator's total ceiling is the mapper's
     model-aware available context (``total_tokens``); when the mapper
     produced no snapshot (no ranked context), the lanes' own limits remain
     the binding constraint. Session front matter may REDUCE lane budgets
-    via the replay controls, never increase them.
+    via the rehydration controls, never increase them.
     """
     allocator = ContextBudgetAllocator.for_turn(
         enabled=budget_values["enabled"],
@@ -545,17 +547,17 @@ def _build_context_allocator(
     # Tighten-only override: session front matter may reduce lane budgets,
     # never increase kernel defaults.
     allocator.lane_limits["history"] = min(
-        allocator.lane_limits.get("history", replay_policy.effective_history_max_tokens),
-        replay_policy.effective_history_max_tokens,
+        allocator.lane_limits.get("history", rehydrate_policy.effective_history_max_tokens),
+        rehydrate_policy.effective_history_max_tokens,
     )
     allocator.lane_limits["reflection"] = min(
-        allocator.lane_limits.get("reflection", replay_policy.effective_reflection_max_tokens),
-        replay_policy.effective_reflection_max_tokens,
+        allocator.lane_limits.get("reflection", rehydrate_policy.effective_reflection_max_tokens),
+        rehydrate_policy.effective_reflection_max_tokens,
     )
     return allocator
 
 
-def _append_replay_gated_sections(
+def _append_rehydrate_gated_sections(
     *,
     raw_sections: list[tuple[str, ContextLane, str]],
     content_loader: Callable[[str], str],
@@ -563,9 +565,9 @@ def _append_replay_gated_sections(
     session_context_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
     thread_manifest_builder: Callable[[], str] | None,
-    replay_policy: _ReplayPolicy,
+    rehydrate_policy: _RehydratePolicy,
 ) -> None:
-    """Append the memory/history/reflection sections gated by replay policy.
+    """Append the memory/history/reflection sections gated by rehydration policy.
 
     The recent-conversation excerpt is allocated BEFORE the manifest so
     the most recent dialogue wins the history-lane budget. Both share the
@@ -593,7 +595,7 @@ def _append_replay_gated_sections(
         )
 
     conversation_excerpt = recent_thread_excerpt_builder(3)
-    if replay_policy.include_recent_conversation and conversation_excerpt:
+    if rehydrate_policy.include_recent_conversation and conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
 
     # Thread manifest: a structured "table of contents" of the recent
@@ -606,7 +608,7 @@ def _append_replay_gated_sections(
             thread_manifest = thread_manifest_builder().strip()
         except Exception:  # pylint: disable=broad-except
             thread_manifest = ""
-    if replay_policy.include_thread_manifest and thread_manifest:
+    if rehydrate_policy.include_thread_manifest and thread_manifest:
         # The hint prose ("Use the `thread_read_range` tool...") is authored
         # Markdown shipped as package data. Load it through the strict loader
         # so a missing/empty asset fails loudly instead of silently degrading
@@ -620,12 +622,12 @@ def _append_replay_gated_sections(
             )
         )
 
-    if replay_policy.include_diagnostic_reflection:
+    if rehydrate_policy.include_diagnostic_reflection:
         diagnostic_reflection = _build_diagnostic_reflection_block(
-            trigger_mode=replay_policy.trigger_mode,
-            min_query_chars=replay_policy.min_query_chars,
-            effective_history_max_tokens=replay_policy.effective_history_max_tokens,
-            effective_reflection_max_tokens=replay_policy.effective_reflection_max_tokens,
+            trigger_mode=rehydrate_policy.trigger_mode,
+            min_query_chars=rehydrate_policy.min_query_chars,
+            effective_history_max_tokens=rehydrate_policy.effective_history_max_tokens,
+            effective_reflection_max_tokens=rehydrate_policy.effective_reflection_max_tokens,
             query=query,
             thread_manifest_present=bool(thread_manifest),
             recent_conversation_present=bool(conversation_excerpt),
@@ -744,8 +746,8 @@ _SECTION_PROVENANCE: dict[str, str] = {
 }
 
 
-class _ReplayPolicy:
-    """Resolved replay controls after tighten-only clamping."""
+class _RehydratePolicy:
+    """Resolved rehydration controls after tighten-only clamping."""
 
     __slots__ = (
         "effective_history_max_tokens",
@@ -777,13 +779,13 @@ class _ReplayPolicy:
         self.min_query_chars = min_query_chars
 
 
-def _resolve_replay_policy(
-    controls: ReplayControls,
+def _resolve_rehydrate_policy(
+    controls: RehydrateControls,
     *,
     query: str,
     budget_values: ContextBudgetValues,
-) -> _ReplayPolicy:
-    """Resolve replay controls with tighten-only clamping and trigger gating.
+) -> _RehydratePolicy:
+    """Resolve rehydration controls with tighten-only clamping and trigger gating.
 
     The lossy digest path was removed in the memory × thread realignment;
     the thread manifest (built by ``thread_manifest_builder``) is the only
@@ -813,7 +815,7 @@ def _resolve_replay_policy(
         controls.reflection_max_tokens,
     )
 
-    return _ReplayPolicy(
+    return _RehydratePolicy(
         trigger_mode=trigger_mode,
         include_thread_manifest=include_manifest,
         include_recent_conversation=include_recent,
@@ -848,12 +850,12 @@ def _build_diagnostic_reflection_block(
 
     return (
         "## Diagnostic Reflection\n\n"
-        f"- replay_trigger_mode: {trigger_mode}\n"
-        f"- replay_min_query_chars: {min_query_chars}\n"
-        f"- replay_effective_history_max_tokens: {effective_history_max_tokens}\n"
-        f"- replay_effective_reflection_max_tokens: {effective_reflection_max_tokens}\n"
-        f"- replay_query_chars: {len(query.strip())}\n"
-        f"- replay_thread_manifest_present: {'true' if thread_manifest_present else 'false'}\n"
-        f"- replay_recent_conversation_present: "
+        f"- rehydrate_trigger_mode: {trigger_mode}\n"
+        f"- rehydrate_min_query_chars: {min_query_chars}\n"
+        f"- rehydrate_effective_history_max_tokens: {effective_history_max_tokens}\n"
+        f"- rehydrate_effective_reflection_max_tokens: {effective_reflection_max_tokens}\n"
+        f"- rehydrate_query_chars: {len(query.strip())}\n"
+        f"- rehydrate_thread_manifest_present: {'true' if thread_manifest_present else 'false'}\n"
+        f"- rehydrate_recent_conversation_present: "
         f"{'true' if recent_conversation_present else 'false'}"
     )
