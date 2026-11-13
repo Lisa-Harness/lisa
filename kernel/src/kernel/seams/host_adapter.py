@@ -276,25 +276,64 @@ class _CallableHost:
 
         model_def = getattr(request, "model_def", None)
         usage = getattr(result, "usage", None)
+
+        def _nullable_counter(obj: Any, name: str) -> int | None:
+            """Read one counter without coercing unknown to a fabricated zero.
+
+            The pre-Workstream-1 producer wrote ``int(getattr(x, 0) or 0)``,
+            so historical v3 ``operation`` rows carry fabricated zeros; new
+            rows preserve ``None`` for an unsurfaced counter (nullable_int
+            rules: malformed/negative is also unknown, not zero).
+            """
+            value = getattr(obj, name, None) if obj is not None else None
+            if value is None:
+                return None
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return None
+            return number if number >= 0 else None
+
+        def _nullable_number(obj: Any, name: str) -> float | None:
+            """Same unknown-preserving read for a float field."""
+            value = getattr(obj, name, None) if obj is not None else None
+            if value is None:
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if number >= 0 else None
+
         try:
             _publish_usage(
                 audit.event_bus,
                 _build_usage(
                     provider=str(getattr(model_def, "provider", "") or ""),
                     model_id=str(getattr(model_def, "model_id", "") or ""),
-                    prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                    completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-                    total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
-                    cached_tokens=int(getattr(usage, "cached_tokens", 0) or 0),
-                    reasoning_tokens=int(getattr(usage, "reasoning_tokens", 0) or 0),
-                    cache_creation_tokens=int(getattr(usage, "cache_creation_tokens", 0) or 0),
-                    duration_ms=float(getattr(result, "duration_ms", 0.0) or 0.0),
-                    latency_ms=int(getattr(usage, "latency_ms", 0) or 0),
+                    prompt_tokens=_nullable_counter(usage, "prompt_tokens"),
+                    completion_tokens=_nullable_counter(usage, "completion_tokens"),
+                    total_tokens=_nullable_counter(usage, "total_tokens"),
+                    cached_tokens=_nullable_counter(usage, "cached_tokens"),
+                    reasoning_tokens=_nullable_counter(usage, "reasoning_tokens"),
+                    cache_creation_tokens=_nullable_counter(usage, "cache_creation_tokens"),
+                    duration_ms=_nullable_number(result, "duration_ms"),
+                    latency_ms=_nullable_counter(usage, "latency_ms"),
                     request_id=str(getattr(result, "request_id", "") or ""),
                     turn_index=audit.turn_index,
                     call_site="operation",
                     user_slug=audit.user_slug,
                     thread_store_slug=audit.thread_store_slug,
+                    effective_model_data_source=(
+                        str(x)
+                        if (x := getattr(model_def, "effective_model_data_source", None))
+                        else None
+                    ),
+                    effective_model_data_version=(
+                        str(x)
+                        if (x := getattr(model_def, "effective_model_data_version", None))
+                        else None
+                    ),
                 ),
             )
         except Exception:  # pylint: disable=broad-except

@@ -471,6 +471,8 @@ def build_token_usage_event(
     cost_usd: float | None = None,
     time_cost_usd: float | None = None,
     provider_cost_usd: float | None = None,
+    effective_model_data_source: str | None = None,
+    effective_model_data_version: str | None = None,
     request_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
@@ -499,6 +501,14 @@ def build_token_usage_event(
     allowlist, unlike the untyped ``extra`` bag, which is dropped at
     append time and exists only for in-process joins.
 
+    ``effective_model_data_source`` / ``effective_model_data_version``
+    stamp where the effective model data for this call came from and its
+    immutable version (v3 provenance fields, allowlisted since v3 but
+    never populated until Workstream 1). ``None`` / empty stays unknown:
+    the factory never invents a source or a version, and producers pass
+    values only from the model-composition seam when it actually knows
+    them.
+
     The ``kind`` literal discriminates billing shape:
         - ``chat_completion`` / ``embedding`` / ``image_generation`` /
           ``stream_chunk``: token-based billing.
@@ -526,6 +536,8 @@ def build_token_usage_event(
         cost_usd=nullable_float(cost_usd),
         time_cost_usd=nullable_float(time_cost_usd),
         provider_cost_usd=nullable_float(provider_cost_usd),
+        effective_model_data_source=effective_model_data_source or None,
+        effective_model_data_version=effective_model_data_version or None,
         proxy_telemetry=dict(proxy_telemetry) if proxy_telemetry else {},
         metric_origins=origins,
         request_id=str(request_id or ""),

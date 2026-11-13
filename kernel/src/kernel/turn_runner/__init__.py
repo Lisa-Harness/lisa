@@ -4092,6 +4092,16 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
             thread_store_slug=hooks.identity.thread_store_slug,
             surface_id=str(hooks.identity.surface_id or ""),
             metric_origins=dict(getattr(usage, "metric_origins", None) or {}),
+            effective_model_data_source=(
+                str(x)
+                if (x := getattr(effective_model_def, "effective_model_data_source", None))
+                else None
+            ),
+            effective_model_data_version=(
+                str(x)
+                if (x := getattr(effective_model_def, "effective_model_data_version", None))
+                else None
+            ),
         ),
     )
 
@@ -6499,6 +6509,17 @@ async def _force_final_content_completion(
                     user_slug=hooks.identity.user_slug,
                     thread_store_slug=hooks.identity.thread_store_slug,
                     surface_id=str(hooks.identity.surface_id or ""),
+                    metric_origins=dict(getattr(final_usage, "metric_origins", None) or {}),
+                    effective_model_data_source=(
+                        str(x)
+                        if (x := getattr(effective_model_def, "effective_model_data_source", None))
+                        else None
+                    ),
+                    effective_model_data_version=(
+                        str(x)
+                        if (x := getattr(effective_model_def, "effective_model_data_version", None))
+                        else None
+                    ),
                 ),
             )
         else:

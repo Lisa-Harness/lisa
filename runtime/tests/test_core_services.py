@@ -2241,8 +2241,9 @@ def test_format_token_stats_appends_lifetime_section(tmp_path: Path) -> None:
     assert "- Span: 2026-08-20T10:00:00Z → 2026-08-22T18:30:00Z" in output
     # Both legacy rows carry a nonzero cost_usd, so both count as priced.
     assert "- Estimated cost (canonical): $0.0110" in output
-    # 120 cached of 520 provider-input tokens.
-    assert "- Prompt cache: 120 read (23.1% of input), 0 created" in output
+    # 120 cached of the 400-token normalized prompt (prompt already
+    # includes cache reads; adding them back double-counted).
+    assert "- Prompt cache: 120 read (30.0% of input), 0 created" in output
     # Legacy rows carry no turn_index, so attribution coverage is honest 0/2.
     assert "- Attribution: 0/2 rows turn-attributed" in output
     # v2 reporting: every metric carries known/total coverage, and the
