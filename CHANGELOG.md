@@ -6,6 +6,19 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Factored stable-base prompt assembly (cache-efficiency Workstream 3
+  implementation): an optional ``ContextHooks.assemble_system_prompt_parts``
+  hook returns ``(invariant, mode)`` parts; the kernel seeds an S0/S1
+  factored stable base and a mid-turn handoff swaps only the mode tail,
+  so the invariant head keeps its bytes and its provider cache across
+  mode switches. The runtime composes harness + session + copilot
+  customizations as the invariant part and mode + stage as the mode
+  part; flattening stays byte-identical, and hosts that do not wire the
+  hook keep merged-base behavior. The e2e prefix trace now drives the
+  real handoff path through ``run_turn``: ``prefix_changed`` with first
+  divergence at the mode segment and the carried digest equal to the
+  invariant-head shape digest.
+
 - Safe-handoff prompt-layout design (cache-efficiency Workstream 3,
   SPEC §6): ``docs/design-safe-handoff-prompt-layout.md`` inventories
   every prompt component as invariant, mode-variable, ephemeral, or

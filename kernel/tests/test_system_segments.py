@@ -106,3 +106,44 @@ def test_handoff_context_segment_does_not_touch_stable_prefix() -> None:
     # follow. The boundary text (the stable block) is unchanged.
     assert segments.flatten().startswith("BASE")
     assert "handoff chain info" in segments.flatten()
+
+
+def test_from_parts_seeds_factored_stable_base() -> None:
+    """``from_parts`` yields two stable segments rendering the joined text."""
+    segments = SystemPromptSegments.from_parts("INVARIANT", "MODE")
+    typed = segments.segments()
+    assert [s.text for s in typed if s.is_stable] == ["INVARIANT", "MODE"]
+    assert segments.flatten() == "INVARIANT\n\nMODE"
+
+
+def test_replace_mode_tail_swaps_only_the_tail() -> None:
+    """A handoff on a factored base rewrites S1; S0 keeps its bytes."""
+    segments = SystemPromptSegments.from_parts("INVARIANT", "MODE A")
+    segments.replace_mode_tail("MODE B")
+    typed = segments.segments()
+    assert [s.text for s in typed if s.is_stable] == ["INVARIANT", "MODE B"]
+    assert segments.flatten() == "INVARIANT\n\nMODE B"
+
+
+def test_replace_mode_tail_keeps_boundary_on_empty_mode() -> None:
+    """An empty tail keeps the two-segment boundary; flattening is identical."""
+    seeded = SystemPromptSegments.from_parts("INVARIANT", "MODE")
+    seeded.replace_mode_tail("")
+    assert [s.text for s in seeded.segments() if s.is_stable] == ["INVARIANT", ""]
+    assert seeded.flatten() == "INVARIANT"
+
+    from_scratch = SystemPromptSegments.from_parts("INVARIANT", "")
+    assert from_scratch.flatten() == "INVARIANT"
+
+
+def test_replace_mode_tail_requires_factored_base() -> None:
+    """The merged legacy base has no tail slot and fails loudly."""
+    segments = SystemPromptSegments.from_base("MERGED")
+    with pytest.raises(ValueError, match="from_parts"):
+        segments.replace_mode_tail("MODE B")
+
+
+def test_from_parts_rejects_empty_invariant_head() -> None:
+    """The invariant head is the cache anchor; an empty one fails loudly."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        SystemPromptSegments.from_parts("   ", "MODE")

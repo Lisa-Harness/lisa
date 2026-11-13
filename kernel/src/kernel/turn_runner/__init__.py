@@ -6096,6 +6096,41 @@ class _MidTurnHandoffOutcome(NamedTuple):
     entry_output: str
 
 
+def _swap_base_for_handoff(
+    *,
+    sys_segments: SystemPromptSegments,
+    hooks: TurnHooks,
+    assemble_system: Callable[[str, str | None], str],
+    target_stage: str,
+) -> str:
+    """Return the post-handoff stable base, mutating segments in place.
+
+    With ``assemble_system_prompt_parts`` wired and a factored S0/S1
+    registry, only the mode tail (S1) is rewritten and the flattened
+    factored base is returned: the invariant head (S0: harness +
+    session + customizations) keeps its bytes and its provider cache
+    across the handoff (docs/design-safe-handoff-prompt-layout.md).
+    Otherwise the merged base replaces the stable segment wholesale,
+    exactly as before (``clear_base`` keeps the pre-segment bare-mode
+    behavior for an intro-less target). Dynamics are cleared either
+    way; the caller re-adds the new mode's routing hint below.
+    """
+    target_mode_instruction = get_mode_system_intro(target_stage)
+    merged_base = assemble_system(target_mode_instruction, None)
+    sys_segments.clear_dynamic(N_ROUTING_HINT)
+    sys_segments.clear_dynamic(N_HANDOFF_CONTEXT)
+    parts_hook = hooks.context.assemble_system_prompt_parts
+    if parts_hook is not None and sys_segments.has_factored_base():
+        _, mode_tail = parts_hook(target_mode_instruction, None)
+        sys_segments.replace_mode_tail(mode_tail)
+        return sys_segments.flatten()
+    if merged_base.strip():
+        sys_segments.replace_base(merged_base)
+    else:
+        sys_segments.clear_base()
+    return merged_base
+
+
 async def _execute_mid_turn_handoff(
     *,
     state: _TurnState,
@@ -6165,22 +6200,19 @@ async def _execute_mid_turn_handoff(
         if target_mode_config is None:
             tool_output = f"Target mode '{target_stage}' not found."
         else:
-            # Swap system prompt: replace the entire
-            # stable base for the post-handoff mode. The
-            # routing hint for the new mode is re-added
+            # Swap system prompt for the post-handoff mode; with a
+            # factored base (``assemble_system_prompt_parts`` wired)
+            # only the mode tail is rewritten, so the invariant head's
+            # provider cache survives the handoff
+            # (docs/design-safe-handoff-prompt-layout.md). Dynamics are
+            # cleared inside; the new mode's routing hint is re-added
             # below as a dynamic segment.
-            target_mode_instruction = get_mode_system_intro(target_stage)
-            _new_base = assemble_system(target_mode_instruction, None)
-            sys_segments.clear_dynamic(N_ROUTING_HINT)
-            sys_segments.clear_dynamic(N_HANDOFF_CONTEXT)
-            if _new_base.strip():
-                sys_segments.replace_base(_new_base)
-            else:
-                # Pre-segment behavior allowed an empty
-                # target prompt (bare mode with no intro);
-                # preserve it by clearing the stable segment
-                # rather than raising mid-turn.
-                sys_segments.clear_base()
+            _new_base = _swap_base_for_handoff(
+                sys_segments=sys_segments,
+                hooks=hooks,
+                assemble_system=assemble_system,
+                target_stage=target_stage,
+            )
             messages[0] = {
                 "role": "system",
                 "content": _new_base,
@@ -8485,6 +8517,10 @@ class _TurnEntryOutcome(NamedTuple):
     mode_instruction: str
     stage_instruction: str | None
     ctx: Any
+    #: Optional factored stable base ``(invariant, mode_tail)`` from
+    #: ``assemble_system_prompt_parts``. ``None`` means the merged-base
+    #: path seeded the registry via ``from_base``.
+    system_prompt_parts: tuple[str, str] | None = None
 
 
 async def _run_turn_entry_sequence(
@@ -8656,6 +8692,12 @@ async def _run_turn_entry_sequence(
         stage_id_override=stage_id_override,
     )
     system_prompt = assemble_system(mode_instruction, stage_instruction)
+    _system_prompt_parts: tuple[str, str] | None = None
+    _parts_hook = hooks.context.assemble_system_prompt_parts
+    if _parts_hook is not None:
+        _invariant, _mode_tail = _parts_hook(mode_instruction, stage_instruction)
+        _system_prompt_parts = (_invariant, _mode_tail)
+        system_prompt = "\n\n".join(part for part in (_invariant, _mode_tail) if part.strip())
     return _TurnEntryOutcome(
         None,
         query,
@@ -8667,6 +8709,7 @@ async def _run_turn_entry_sequence(
         mode_instruction,
         stage_instruction,
         ctx,
+        _system_prompt_parts,
     )
 
 
@@ -9262,6 +9305,7 @@ async def _assemble_turn_surface_and_messages(
     mode_config: Any,
     pre_briefing: str,
     system_prompt: str,
+    system_prompt_parts: tuple[str, str] | None,
     suppress_routing_hint: bool,
     yield_policy_override: YieldPolicy | None,
     preferred_model_id: str | None,
@@ -9385,7 +9429,14 @@ async def _assemble_turn_surface_and_messages(
     # Seed the typed prompt-segment registry from the stable harness +
     # session + customization + mode + stage base assembled above. Any
     # routing hint below lands as an ephemeral segment on top of it.
-    _sys_segments = SystemPromptSegments.from_base(system_prompt)
+    # With ``assemble_system_prompt_parts`` wired, the base is factored
+    # into an invariant head (S0) and a mode tail (S1) so a mid-turn
+    # handoff swaps only the tail
+    # (docs/design-safe-handoff-prompt-layout.md).
+    if system_prompt_parts is not None:
+        _sys_segments = SystemPromptSegments.from_parts(*system_prompt_parts)
+    else:
+        _sys_segments = SystemPromptSegments.from_base(system_prompt)
 
     # Unified FSM routing: capability-manifest-aware proactive hint injection.
     # Compare the manifest against the user's query — if the current mode
@@ -10953,6 +11004,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         mode_instruction,
         _,  # stage_instruction — consumed inside the helper
         ctx,
+        _system_prompt_parts,
     ) = await _run_turn_entry_sequence(
         hooks=hooks,
         mode_id=mode_id,
@@ -11010,6 +11062,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         mode_config=mode_config,
         pre_briefing=pre_briefing,
         system_prompt=system_prompt,
+        system_prompt_parts=_system_prompt_parts,
         suppress_routing_hint=suppress_routing_hint,
         yield_policy_override=_yield_policy_override,
         preferred_model_id=preferred_model_id,
