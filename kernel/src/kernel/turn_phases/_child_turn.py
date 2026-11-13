@@ -225,6 +225,41 @@ def _verify_write_contract(
         child_result.called_tool_names
     )
     write_attempted = bool(called_bare & action_tool_ids)
+
+    # A reasoning-only completion is not a work product, read-only or not.
+    # A child that hit its completion cap on thinking (no visible answer,
+    # only the labeled reasoning-tail quote the gateway surfaces) read
+    # nothing out loud; accepting it as "complete (read-only work)" or as
+    # dense content reported ``ok`` for a run the model never finished
+    # (turn 1258, 2026-11-13: two coding_execute children "succeeded" this
+    # way after honest fetch reads). This gate runs BEFORE the read-only
+    # acceptance so a reasoning-tail quote can never satisfy either path;
+    # the tail quote still rides the outcome so the parent sees what the
+    # child was thinking. A verified write receipt (checked above) still
+    # wins — the work landed regardless of what the visible text looks like.
+    if getattr(child_result, "content_source", "") == "reasoning_tail":
+        _clog.warning(
+            "child turn mode=%s hit its completion cap on reasoning with no "
+            "visible answer; classifying interrupted (not complete), "
+            "reasoning_tail_quote=%s",
+            mode_id,
+            len(child_result.response_text.strip()),
+        )
+        return _child_outcome(
+            child_result=child_result,
+            mode_id=mode_id,
+            elapsed_ms=elapsed_ms,
+            status="interrupted",
+            error_message=(
+                f"child turn {mode_id} consumed its completion budget on "
+                "reasoning before emitting a visible answer or tool call; "
+                "its surfaced output is a reasoning-tail quote, not a work "
+                "product. Re-dispatch with a tighter instruction or a "
+                "non-reasoning model."
+            ),
+            usage_kwargs=usage_kwargs,
+        )
+
     if read_work and not write_attempted:
         _clog.debug(
             "child turn mode=%s complete (read-only work verified via "

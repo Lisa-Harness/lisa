@@ -162,6 +162,23 @@ class Settings(BaseSettings):
     # ``DELEGATION_GRACE_SECONDS``.
     delegation_grace_seconds: int = 30
 
+    # ── Turn runner: fork child budget floors ─────────────────────────
+    # ``_fork_child_budget`` divides the parent's ``TurnBudget`` across
+    # N children. A large fan-out (the 2026-11-13 turn 1258 incident:
+    # 5 slices of one diff) shrinks each child's share below the
+    # envelope one honest attempt needs — 150/5 = 30 tool calls and
+    # 1M/5 = 200K tokens starved a test-slice worker into "turn budget
+    # exhausted" after 31 read calls. These floors raise the divided
+    # share when a finite parent field divides that far. Set 0 to keep
+    # raw division with no floor. A floor never loosens an unlimited (0)
+    # parent field, and each child stays individually bounded — the sum
+    # of children's shares exceeds the parent's envelope under a floor;
+    # that is the accepted trade for not starving honest workers.
+    # Override via ``FORK_CHILD_MIN_TOOL_CALLS`` /
+    # ``FORK_CHILD_MIN_TOTAL_TOKENS``.
+    fork_child_min_tool_calls: int = Field(default=75, ge=0)
+    fork_child_min_total_tokens: int = Field(default=300_000, ge=0)
+
     # ── Turn runner: per-step sub-budgets ─────────────────────────────────
     # Per-step iteration sub-budget. Each workflow step (the span between
     # two ``transition_stage`` handoffs) gets its own iteration allowance
@@ -512,6 +529,8 @@ class Settings(BaseSettings):
         "max_tool_iterations",
         "max_auto_approved_actions",
         "fork_child_max_tool_iterations",
+        "fork_child_min_tool_calls",
+        "fork_child_min_total_tokens",
         "delegate_child_max_tool_iterations",
         "delegate_max_depth",
         "delegation_grace_seconds",

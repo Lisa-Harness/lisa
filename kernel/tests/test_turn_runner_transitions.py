@@ -83,45 +83,78 @@ def test_fork_child_budget_none_when_parent_has_no_budget() -> None:
 
 
 def test_fork_child_budget_divides_max_tool_calls() -> None:
-    """max_tool_calls is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=10, max_total_tokens=0, max_wall_ms=0)
+    """max_tool_calls is divided equally across n children above the floor."""
+    budget = TurnBudget(max_tool_calls=500, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 2)
     assert child is not None
-    assert child.max_tool_calls == 5
+    assert child.max_tool_calls == 250  # above the 75 floor
 
 
 def test_fork_child_budget_divides_max_total_tokens() -> None:
-    """max_total_tokens is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=1000, max_wall_ms=0)
+    """max_total_tokens is divided equally across n children above the floor."""
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=2_000_000, max_wall_ms=0)
     child = _fork_child_budget(budget, 4)
     assert child is not None
-    assert child.max_total_tokens == 250
+    assert child.max_total_tokens == 500_000  # above the 300K floor
 
 
 def test_fork_child_budget_divides_max_wall_ms() -> None:
-    """max_wall_ms is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_wall_ms=800)
+    """max_wall_ms is divided equally across n children (no wall floor)."""
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_wall_ms=800_000,
+    )
     child = _fork_child_budget(budget, 2)
     assert child is not None
-    assert child.max_wall_ms == 400
+    assert child.max_wall_ms == 400_000
 
 
 def test_fork_child_budget_passes_through_zero_as_unlimited() -> None:
-    """A field set to 0 (unlimited) is passed through as 0, not divided."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=100, max_wall_ms=0)
+    """A field set to 0 (unlimited) is passed through as 0, not divided.
+
+    The token floor applies only to finite parent fields; an unlimited (0)
+    parent field stays unlimited regardless of n or the floor.
+    """
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 3)
     assert child is not None
     assert child.max_tool_calls == 0  # unlimited stays unlimited
-    assert child.max_total_tokens == 33  # 100 // 3
+    assert child.max_total_tokens == 0  # unlimited stays unlimited
     assert child.max_wall_ms == 0  # unlimited stays unlimited
 
 
 def test_fork_child_budget_floors_division() -> None:
-    """Integer division floors gracefully when budget is smaller than n."""
+    """Division below the kernel floors is raised to the fork-child floor.
+
+    When the parent budget is smaller than n children, raw integer division
+    would floor the share near zero — the pre-floor behavior returned
+    ``max_tool_calls == 0``; the floor (75 by default) keeps each child
+    individually bounded but honest-work-sized.
+    """
     budget = TurnBudget(max_tool_calls=3, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 5)
     assert child is not None
-    assert child.max_tool_calls == 0  # 3 // 5 = 0
+    assert child.max_tool_calls == 75  # 3 // 5 = 0 → floor 75
+    # An unlimited parent field stays unlimited regardless of n.
+
+
+def test_fork_child_budget_floors_token_share() -> None:
+    """A token share divided below the floor (1M/5 = 200K < 300K) is raised."""
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=1_000_000, max_wall_ms=0)
+    child = _fork_child_budget(budget, 5)
+    assert child is not None
+    assert child.max_tool_calls == 0  # unlimited stays unlimited
+    assert child.max_total_tokens == 300_000  # 200K share → 300K floor
+
+
+def test_fork_child_budget_floor_never_reshapes_bigger_share() -> None:
+    """A share already above the floor passes through at raw division."""
+    budget = TurnBudget(max_tool_calls=500, max_total_tokens=2_000_000, max_wall_ms=0)
+    child = _fork_child_budget(budget, 2)
+    assert child is not None
+    assert child.max_tool_calls == 250  # above the 75 floor
+    assert child.max_total_tokens == 1_000_000  # above the 300K floor
 
 
 # ── Fork: _fork_mode_requires_tools ────────────────────────────────────
