@@ -27,7 +27,7 @@ from kernel.provider_contracts import (
     is_pydantic_model_class,
     provider_gateway_error_from_exception,
 )
-from kernel.token_usage import coerce_non_negative_int
+from kernel.token_usage import nullable_int
 from sdk.providers.openai_gateway import (
     _coerce_tool_arguments_object,
     _normalize_openai_tool_arguments,
@@ -547,24 +547,31 @@ def _extract_gemini_finish(
 
 
 def _extract_gemini_usage(data: dict[str, Any]) -> CompletionUsage | None:
-    """Extract normalized usage from a Gemini ``generateContent`` response."""
+    """Extract normalized usage from a Gemini ``generateContent`` response.
+
+    Cache-efficiency v2: unsurfaced counters stay ``None`` (unknown) and a
+    derived ``total_tokens`` is marked in ``metric_origins``.
+    """
 
     usage_meta = data.get("usageMetadata")
     if not usage_meta:
         return None
-    prompt_tokens = coerce_non_negative_int(usage_meta.get("promptTokenCount"))
-    completion_tokens = coerce_non_negative_int(usage_meta.get("candidatesTokenCount"))
-    total_tokens = coerce_non_negative_int(usage_meta.get("totalTokenCount"))
-    if total_tokens <= 0:
+    prompt_tokens = nullable_int(usage_meta.get("promptTokenCount"))
+    completion_tokens = nullable_int(usage_meta.get("candidatesTokenCount"))
+    total_tokens = nullable_int(usage_meta.get("totalTokenCount"))
+    origins: dict[str, str] = {}
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
-    if prompt_tokens == 0 and completion_tokens == 0:
+        origins["total_tokens"] = "derived"
+    if prompt_tokens is None and completion_tokens is None:
         return None
-    cached_tokens = coerce_non_negative_int(usage_meta.get("cachedContentTokenCount"))
-    reasoning_tokens = coerce_non_negative_int(usage_meta.get("thoughtsTokenCount"))
+    cached_tokens = nullable_int(usage_meta.get("cachedContentTokenCount"))
+    reasoning_tokens = nullable_int(usage_meta.get("thoughtsTokenCount"))
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
+        metric_origins=origins,
     )

@@ -2239,12 +2239,23 @@ def test_format_token_stats_appends_lifetime_section(tmp_path: Path) -> None:
     assert "### Lifetime (all sessions)" in output
     assert "- Events: 2" in output
     assert "- Span: 2026-08-20T10:00:00Z → 2026-08-22T18:30:00Z" in output
-    assert "- Estimated cost: $0.0110" in output
-    # Totals row: 400 prompt | 250 completion | 650 total | 120 cached | 40 reasoning | 530 billed
-    assert "| 400 | 250 | 650 | 120 | 40 | 530 |" in output
+    # Both legacy rows carry a nonzero cost_usd, so both count as priced.
+    assert "- Estimated cost (canonical): $0.0110" in output
+    # 120 cached of 520 provider-input tokens.
+    assert "- Prompt cache: 120 read (23.1% of input), 0 created" in output
+    # Legacy rows carry no turn_index, so attribution coverage is honest 0/2.
+    assert "- Attribution: 0/2 rows turn-attributed" in output
+    # v2 reporting: every metric carries known/total coverage, and the
+    # legacy rows' absent cache_creation_tokens reads unknown (0/2), not zero.
+    assert "| Prompt tokens | 400 | 2/2 |" in output
+    assert "| Completion tokens | 250 | 2/2 |" in output
+    assert "| Total tokens | 650 | 2/2 |" in output
+    assert "| Cached read | 120 | 2/2 |" in output
+    assert "| Reasoning | 40 | 2/2 |" in output
+    assert "| Cache creation | 0 | 0/2 |" in output
     assert "#### Lifetime by Model" in output
-    assert "| deepseek-r1:latest | 300 | 200 | 500 | 100 | 40 | 400 |" in output
-    assert "| gemma3:latest | 100 | 50 | 150 | 20 | 0 | 130 |" in output
+    assert "| deepseek-r1:latest | 300 | 200 | 500 | 100 | 40 | 0 |" in output
+    assert "| gemma3:latest | 100 | 50 | 150 | 20 | 0 | 0 |" in output
 
 
 def test_format_token_stats_lifetime_absent_without_log(tmp_path: Path) -> None:

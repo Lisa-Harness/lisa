@@ -116,40 +116,49 @@ class CompletionRequest:
 class CompletionUsage:
     """Normalized per-call token usage extracted from one provider response.
 
-    Fields are optional because not every provider surfaces every counter.
-    ``prompt_tokens`` and ``completion_tokens`` are the canonical pair used
-    for cost math; ``total_tokens`` falls out as the sum when the provider
-    does not report it directly. ``cached_tokens`` is the provider-reported
-    prompt-cache *read* count (tokens served from cache); ``reasoning_tokens``
+    Cache-efficiency v2 semantics: every counter is ``None`` when the
+    provider did not surface it — unknown; a present ``0`` is a real
+    measured zero. ``prompt_tokens`` and ``completion_tokens`` are the
+    canonical pair used for cost math; ``total_tokens`` is derived as the
+    sum when the provider does not report it directly. ``cached_tokens``
+    is the provider-reported prompt-cache *read* count; ``reasoning_tokens``
     is reasoning output/effort.
 
     ``cache_creation_tokens`` is the provider-reported prompt-cache
     *creation/population* count — tokens paid at the write rate, not the
     read rate. Anthropic (``cache_creation_input_tokens``) and Azure
-    GPT-5.6+ (``cache_write_tokens``) surface it; it defaults to 0 for
-    providers that do not report it.
+    GPT-5.6+ (``cache_write_tokens``) surface it.
 
     ``duration_ms`` captures wall-clock time spent on the provider call.
     Some providers (notably Ollama when billing local GPU time) charge by
     duration rather than token count; hosts that need time-based cost
-    math read this field. Defaults to 0 when the gateway did not measure.
+    math read this field. ``None`` when the gateway did not measure.
 
     ``provider_cost_usd`` is the *authoritative* charge the provider itself
     reported for this call (OpenRouter returns ``usage.cost`` in the final
     streaming chunk). It is not an estimate: it already accounts for the
     provider's real prompt-cache read/write rates, so it should be preferred
-    over manifest-price arithmetic whenever present. 0.0 means the provider
-    did not report a cost — the caller falls back to computing one.
+    over manifest-price arithmetic whenever present. ``None`` means the
+    provider did not report a cost — the caller may compute one.
+
+    ``metric_origins`` marks values that are not direct provider reports:
+    ``"derived"`` for arithmetic on reported counters (e.g. Anthropic's
+    aggregate prompt = native input + cache reads + writes, or a computed
+    ``total_tokens``) and ``"host"`` for host-measured values. An absent
+    key means the value came straight from the provider.
     """
 
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    reasoning_tokens: int = 0
-    cache_creation_tokens: int = 0
-    duration_ms: float = 0.0
-    provider_cost_usd: float = 0.0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    duration_ms: float | None = None
+    provider_cost_usd: float | None = None
+    #: Per-field origin map (``derived`` / ``host``); absent key =
+    #: provider-reported at the source.
+    metric_origins: dict[str, str] = field(default_factory=dict)
     #: Counters a routing proxy declared on its response headers for this
     #: call (see ``ProxyTelemetrySpec``), keyed by the field names the pack
     #: chose. An empty dict means either no proxy was in the path or the
@@ -202,18 +211,22 @@ class CompletionResult:
 
     @property
     def prompt_tokens(self) -> int:
-        """Flat prompt-token counter (operations read these as attributes)."""
-        return self.usage.prompt_tokens if self.usage else 0
+        """Flat prompt-token counter (operations read these as attributes).
+
+        Unknown contributes 0 to flat operational reads; the nullable
+        source of truth stays on ``usage``.
+        """
+        return self.usage.prompt_tokens or 0 if self.usage else 0
 
     @property
     def completion_tokens(self) -> int:
-        """Flat completion-token counter."""
-        return self.usage.completion_tokens if self.usage else 0
+        """Flat completion-token counter (0 when unknown)."""
+        return self.usage.completion_tokens or 0 if self.usage else 0
 
     @property
     def total_tokens(self) -> int:
-        """Flat total-token counter."""
-        return self.usage.total_tokens if self.usage else 0
+        """Flat total-token counter (0 when unknown)."""
+        return self.usage.total_tokens or 0 if self.usage else 0
 
     @property
     def proxy_telemetry(self) -> dict[str, int]:

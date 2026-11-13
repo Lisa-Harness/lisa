@@ -75,6 +75,7 @@ class HostServices:
             ),
             token_usage_handler=TokenUsageTelemetryHandler(
                 token_usage_path,
+                data_dir=data_dir,
                 lock_factory=lambda: file_lock(
                     sidecar_lock_path(token_usage_path), timeout=_TELEMETRY_LOCK_TIMEOUT_S
                 ),

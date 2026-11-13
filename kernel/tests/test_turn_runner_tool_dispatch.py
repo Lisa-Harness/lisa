@@ -1093,13 +1093,13 @@ def test_extract_completion_usage_from_flat_attributes() -> None:
     assert result.total_tokens == 150
     assert result.cached_tokens == 20
     assert result.reasoning_tokens == 5
-    assert result.cache_creation_tokens == 0
+    assert result.cache_creation_tokens is None
     assert result.duration_ms == 123.4
     assert result.latency_ms == 200
 
 
 def test_extract_completion_usage_from_usage_dict() -> None:
-    """_extract_completion_usage reads from a usage dict when flat attrs are 0."""
+    """A flat-0 sentinel defers to the nested usage dict."""
     from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(
@@ -1127,7 +1127,7 @@ def test_extract_completion_usage_from_usage_dict() -> None:
 
 
 def test_extract_completion_usage_computes_total_when_missing() -> None:
-    """When total_tokens is 0, it's computed as prompt + completion."""
+    """A flat-0 total sentinel derives the total from prompt + completion."""
     from kernel.turn_phases._post_turn import _extract_completion_usage
 
     completion = SimpleNamespace(

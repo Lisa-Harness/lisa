@@ -140,11 +140,22 @@ class TestEnrichment:
         assert model.thinking_model is False
         assert model.latency_tier == "medium"
 
-    def test_missing_pricing_leaves_zero_and_blank_tier(self) -> None:
+    def test_missing_pricing_is_unknown_and_blank_tier(self) -> None:
+        """§4: an unpublished price is unknown (``None``), not a free tier."""
         model = _enrich_openrouter_model("x/m", _row(pricing={}, reasoning=None))
+        assert model.prompt_price is None
+        assert model.completion_price is None
+        assert model.cost_tier == ""
+
+    def test_explicit_free_pricing_is_a_real_zero(self) -> None:
+        """§4: an explicit ``"0"`` is a genuinely free tier, kept distinct
+        from an unpublished (unknown) price — and prices the budget tier."""
+        model = _enrich_openrouter_model(
+            "x/free", _row(pricing={"prompt": "0", "completion": "0"}, reasoning=None)
+        )
         assert model.prompt_price == 0.0
         assert model.completion_price == 0.0
-        assert model.cost_tier == ""
+        assert model.cost_tier == "budget"
 
     def test_cache_pricing_maps_to_dedicated_fields(self) -> None:
         """``pricing.input_cache_read``/``input_cache_write`` land on the
@@ -166,10 +177,11 @@ class TestEnrichment:
         assert model.cache_write_price == pytest.approx(0.00000025)
         assert model.prompt_price == pytest.approx(0.0000002)
 
-    def test_missing_cache_pricing_leaves_zero(self) -> None:
+    def test_missing_cache_pricing_is_unknown(self) -> None:
+        """§4: no published cache rates stay unknown, distinct from free."""
         model = _enrich_openrouter_model("x/m", _row(reasoning=None))
-        assert model.cache_read_price == 0.0
-        assert model.cache_write_price == 0.0
+        assert model.cache_read_price is None
+        assert model.cache_write_price is None
 
     def test_falls_back_to_top_provider_context(self) -> None:
         model = _enrich_openrouter_model(
@@ -187,8 +199,13 @@ class TestEnrichment:
 
 
 class TestCostTierFromPrice:
-    def test_blank_when_both_zero(self) -> None:
-        assert _cost_tier_from_price(0.0, 0.0) == ""
+    def test_blank_when_completion_rate_unknown(self) -> None:
+        """§4: an unknown driver rate blanks the tier — unknown ≠ free."""
+        assert _cost_tier_from_price(0.0, None) == ""
+
+    def test_budget_when_explicitly_free(self) -> None:
+        """A genuinely $0 model is budget tier, not an unknown blank."""
+        assert _cost_tier_from_price(0.0, 0.0) == "budget"
 
     def test_budget(self) -> None:
         # e.g. a $0.1/M-token completion model.

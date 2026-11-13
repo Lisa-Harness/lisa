@@ -709,14 +709,14 @@ def record_model_usage(
     state: _TurnState,
     model_def: Any,
     *,
-    p: int,
-    c: int,
-    t: int,
-    ct: int,
-    rt: int,
-    d: float,
-    lat: int,
-    cc: int = 0,
+    p: int | None = None,
+    c: int | None = None,
+    t: int | None = None,
+    ct: int | None = None,
+    rt: int | None = None,
+    d: float | None = None,
+    lat: int | None = None,
+    cc: int | None = None,
     mode_id: str = "",
 ) -> None:
     """Merge one completion's counters into the per-model accumulator.
@@ -728,29 +728,44 @@ def record_model_usage(
     driven recursive handoff (plan → search → coding) merges every inner
     turn's tokens into the outer result and the host attributes them to
     the entry mode.
+
+    Cache-efficiency v2: callers forward the durable event's nullable
+    counters, so a ``None`` value (provider never surfaced the metric)
+    contributes ``0`` to these operational accumulators — the same
+    coercion ``merge_child_usage`` applies — while the durable event keeps
+    ``None`` so unknown never masquerades as a measured zero.
     """
+    p_tokens = _int(p)
+    c_tokens = _int(c)
+    t_tokens = _int(t)
+    ct_tokens = _int(ct)
+    rt_tokens = _int(rt)
+    cc_tokens = _int(cc)
+    d_ms = _float(d)
+    lat_ms = _int(lat)
+
     mid = (getattr(model_def, "model_id", "") or "-").strip()
     entry = state.per_model_usage.setdefault(mid, {"model_id": mid})
-    entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p
-    entry["completion_tokens"] = entry.get("completion_tokens", 0) + c
-    entry["total_tokens"] = entry.get("total_tokens", 0) + t
-    entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct
-    entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
-    entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cc
-    entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
-    entry["latency_ms"] = entry.get("latency_ms", 0) + lat
+    entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p_tokens
+    entry["completion_tokens"] = entry.get("completion_tokens", 0) + c_tokens
+    entry["total_tokens"] = entry.get("total_tokens", 0) + t_tokens
+    entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct_tokens
+    entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt_tokens
+    entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cc_tokens
+    entry["duration_ms"] = entry.get("duration_ms", 0.0) + d_ms
+    entry["latency_ms"] = entry.get("latency_ms", 0) + lat_ms
 
     mid_mode = (mode_id or "").strip()
     if mid_mode:
         mode_entry = state.per_mode_usage.setdefault(mid_mode, {"mode_id": mid_mode})
-        mode_entry["prompt_tokens"] = mode_entry.get("prompt_tokens", 0) + p
-        mode_entry["completion_tokens"] = mode_entry.get("completion_tokens", 0) + c
-        mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t
-        mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct
-        mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt
-        mode_entry["cache_creation_tokens"] = mode_entry.get("cache_creation_tokens", 0) + cc
-        mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d
-        mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat
+        mode_entry["prompt_tokens"] = mode_entry.get("prompt_tokens", 0) + p_tokens
+        mode_entry["completion_tokens"] = mode_entry.get("completion_tokens", 0) + c_tokens
+        mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t_tokens
+        mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct_tokens
+        mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt_tokens
+        mode_entry["cache_creation_tokens"] = mode_entry.get("cache_creation_tokens", 0) + cc_tokens
+        mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d_ms
+        mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat_ms
 
 
 def merge_child_usage(
