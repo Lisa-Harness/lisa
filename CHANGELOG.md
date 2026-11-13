@@ -6,6 +6,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Cache-prefix oracle (cache-efficiency Workstream 4, SPEC §7 criterion
+  2): ``kernel/cache_oracle.py`` digests the canonical provider request
+  shape — typed system segments, transcript entries, ordered tool
+  schemas — on every model iteration and explains each transition with
+  an explicit break reason (no prior request, identical, tail append
+  only, prefix changed at the first divergent entry, cache expired,
+  provider/model changed, tool schemas changed) plus the longest
+  still-valid carried digest and per-observation TTL state. Fold and
+  compaction evidence comes from the real ``fold_history``/
+  ``render_stub`` machinery, and reports carry digests and boundary
+  positions, never prompt text. Tests assert every §7 oracle property:
+  appended tool results leave the previously cached digest intact,
+  folds move the digest only at the rewritten boundary, a fold and a
+  compaction at the same boundary cause no duplicate rewrite, mode
+  handoff preserves tool availability and schema order, and a
+  known-expired cache is distinguished from a changed prefix.
+
 - Baseline replay (cache-efficiency Workstream 4, SPEC §7 criterion 1):
   ``runtime/cache_replay.py`` replays a whole ledger — or any window —
   through the same capture, line-classification, and partition-fold
