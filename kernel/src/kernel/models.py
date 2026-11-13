@@ -1042,10 +1042,10 @@ ContextPromptStrategy = Literal["broker_packet",]
 
 
 class LoadedContextPart(BaseModel):
-    """One dynamic prompt fragment recorded for previous-turn replay.
+    """One dynamic prompt fragment recorded for previous-turn inspection.
 
     The agent stores these parts in the exact order they were loaded into the
-    model input so `/debug context` can replay the prior turn without
+    model input so `/debug context` can show the prior turn's context without
     reconstructing from telemetry.
     """
 

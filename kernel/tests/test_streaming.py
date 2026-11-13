@@ -315,7 +315,7 @@ def test_aggregate_separates_parallel_calls_sharing_an_index() -> None:
     into one garbage call named
     ``lisa-storage.list_fileslisa-storage.read_file`` with three JSON
     objects glued end to end. The turn loop then refused the unparseable
-    payload, and the next request replayed the broken call and died on
+    payload, and the next request rehydrated the broken call and died on
     ``400 invalid tool call arguments``.
     """
     chunks = [
@@ -1478,7 +1478,7 @@ def test_aggregate_keeps_a_call_whole_when_the_id_repeats() -> None:
     fragment. A backend that shares one index across parallel calls AND
     repeats the id on each fragment would have its own call misread as a
     new call, splitting one call's arguments across two entries and
-    leaving two tool calls with the same id — fatal to a replay, because
+    leaving two tool calls with the same id — fatal to a rehydrate, because
     a duplicate tool-call id is rejected on its own.
     """
     chunks = [
@@ -1638,7 +1638,7 @@ def test_aggregate_keeps_one_call_whole_without_an_index() -> None:
     ``StreamedChunk.tool_call_deltas`` does not require one. Treating a
     missing index as a new call split the call in two, leaving one entry
     with an empty id and one with an empty name — neither parseable, and
-    the empty name produced a 500 on replay.
+    the empty name produced a 500 on rehydrate.
     """
     chunks = [
         StreamedChunk(

@@ -405,7 +405,7 @@ def _existing_result(
         # (e.g. head 431). Recognizing only the current 600/300 scale would
         # re-persist such a stub as fresh content — a stub-of-a-stub whose
         # ref expands to preview JSON, not original bytes (2026-10-07
-        # replay-eviction finding). Rebuild the preview at the stub's own
+        # rehydrate-eviction finding). Rebuild the preview at the stub's own
         # head/tail and compare; that accepts any scale while still
         # rejecting envelopes whose excerpts do not match the store.
         head_chars = preview.get("head")

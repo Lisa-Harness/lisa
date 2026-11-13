@@ -264,7 +264,7 @@ Requirements:
   and tool schema ordering. Any changed ordering must have an explicit
   equivalence argument and tests.
 - Account for model/provider changes, cache breakpoints, dynamic memory,
-  context compaction, and thread replay.
+  context compaction, and thread rehydration.
 - If an optimization cannot preserve access boundaries and correct
   instructions, accept the cache miss.
 

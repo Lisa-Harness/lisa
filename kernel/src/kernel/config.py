@@ -442,7 +442,7 @@ class Settings(BaseSettings):
     # 2K-floor interim shipped in dac9812a fired the epoch eight times in
     # one turn, each rewrite re-purchasing the cached prefix at full input
     # price for a net loss. 0 disables the in-turn epoch; the turn-start
-    # replay still folds stale and turn-scoped results.
+    # rehydrate still folds stale and turn-scoped results.
     history_epoch_min_tokens: int = Field(default=12_000, ge=0)
 
     # ── Context mapper: scoring weights ────────────────────────────────

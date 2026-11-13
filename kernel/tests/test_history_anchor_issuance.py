@@ -3,7 +3,7 @@
 ``_anchor_issued`` gates whether ``thread_read_content`` runs the owning
 pack's ``resolve_history_anchor`` with anchor-derived parameters. The
 live-message half must authenticate a stub the kernel rendered — the
-whole tool message, as a replay fold leaves it — not any message that
+whole tool message, as a history fold leaves it — not any message that
 merely contains the stub text.
 """
 
@@ -35,7 +35,7 @@ def test_ledger_record_anchor_is_issued() -> None:
     assert not _anchor_issued(state, "peek_file:other.py")
 
 
-def test_whole_message_replay_stub_is_issued() -> None:
+def test_whole_message_rehydrate_stub_is_issued() -> None:
     record = _record("c1", anchor="peek_file:a.py")
     state = SimpleNamespace(
         history_ledger=HistoryLedger(),

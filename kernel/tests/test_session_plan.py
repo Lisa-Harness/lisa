@@ -242,25 +242,33 @@ def test_compile_session_plan_requires_nonempty_body() -> None:
         )
 
 
-def test_compile_session_plan_accepts_replay_max_bytes() -> None:
-    """``context.history.replay_max_bytes`` compiles and round-trips.
+def test_compile_session_plan_accepts_rehydrate_max_bytes() -> None:
+    """``context.history.rehydrate_max_bytes`` compiles and round-trips.
 
-    The knob bounds the turn-start replay working set (residency by
+    The knob bounds the turn-start rehydration working set (residency by
     allocation, R2): tighten-only against the host ceiling in the runtime
     wiring, ``None`` (absent) keeping the host default.
     """
-    text = _manifest(extra=("context:\n  history:\n    replay_max_bytes: 24576\n"))
+    text = _manifest(extra=("context:\n  history:\n    rehydrate_max_bytes: 24576\n"))
     plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
-    assert plan.manifest.context.history.replay_max_bytes == 24576
+    assert plan.manifest.context.history.rehydrate_max_bytes == 24576
 
     # Absent knob stays None (host default governs).
     plan_default = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
-    assert plan_default.manifest.context.history.replay_max_bytes is None
+    assert plan_default.manifest.context.history.rehydrate_max_bytes is None
 
     # Negative and zero are rejected: tighten-only caps must be positive.
+    with pytest.raises(SessionPlanError, match="rehydrate_max_bytes"):
+        compile_session_plan(
+            text=_manifest(extra=("context:\n  history:\n    rehydrate_max_bytes: 0\n")),
+            source_uri="workspace:session_context.md",
+        )
+
+
+def test_compile_session_plan_rejects_old_history_budget_key() -> None:
     with pytest.raises(SessionPlanError, match="replay_max_bytes"):
         compile_session_plan(
-            text=_manifest(extra=("context:\n  history:\n    replay_max_bytes: 0\n")),
+            text=_manifest(extra="context:\n  history:\n    replay_max_bytes: 24576\n"),
             source_uri="workspace:session_context.md",
         )
 

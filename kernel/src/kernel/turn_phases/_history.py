@@ -285,7 +285,7 @@ async def finalize_turn_history(
     """Persist refs for every recorded result and collect pack snapshots.
 
     Returns the thread-entry ``history`` block (``{}`` when nothing was
-    recorded). Replay folds from these records, so the thread transcript
+    recorded). Rehydration folds from these records, so the thread transcript
     itself stays the lossless record.
     """
     ledger = state.history_ledger
@@ -293,7 +293,7 @@ async def finalize_turn_history(
         return {}
     messages = state.messages
     # A resumed turn restores an earlier segment's ledger; only results in
-    # this entry's transcript belong to its block (replay prefixes call ids
+    # this entry's transcript belong to its block (rehydrate prefixes call ids
     # per entry, so a carried-over record would shadow the real one).
     own: list[HistoryRecord] = []
     for record in ledger.records:
@@ -406,7 +406,7 @@ def approved_invocation_history(
 
     The approved result lands in the thread entry's response text, not in a
     tool message, so it never folds; its record exists so the call's
-    ``invalidates`` and ``key`` claims still fire at replay (an approved
+    ``invalidates`` and ``key`` claims still fire at rehydration (an approved
     edit must stale the reads it changed).
     """
     definition = get_tool_catalog().get(tool_id)
@@ -439,7 +439,7 @@ def _anchor_issued(state: Any, anchor: str) -> bool:
     Anchor resolvers run pack code with anchor-derived parameters, so an
     anchor must trace to a kernel issuance: a record on this turn's ledger
     (in-turn folds), or a stub the kernel rendered as a whole tool message
-    (replay folds — the runtime folds prior turns and discards their
+    (rehydration folds — the runtime folds prior turns and discards their
     ledger). :func:`kernel.history.stub_anchor` parses the whole message
     strictly, so a stub quoted inside another tool's output and a
     fabricated anchor string both take the normal ref path.

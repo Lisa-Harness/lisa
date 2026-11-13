@@ -12,7 +12,7 @@ arguments — there is no ``_RUNTIME_STATE``.
 from __future__ import annotations
 
 import pytest
-from runtime.session_context import ReplayControls
+from runtime.session_context import RehydrateControls
 
 from runtime import context_assembly
 
@@ -75,7 +75,7 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
     assert "user_slug: none" in context
 
 
-def test_assemble_dynamic_user_context_replay_manual_disables_history_sections() -> None:
+def test_assemble_dynamic_user_context_rehydrate_manual_disables_history_sections() -> None:
     context = context_assembly.assemble_dynamic_user_context(
         "default",
         "hello there",
@@ -86,15 +86,15 @@ def test_assemble_dynamic_user_context_replay_manual_disables_history_sections()
         state=None,
         session_context_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
-        replay_controls_loader=lambda: ReplayControls(trigger_mode="manual"),
+        rehydrate_controls_loader=lambda: RehydrateControls(trigger_mode="manual"),
     )
 
     assert 'source="thread_manifest"' not in context
     assert 'source="recent_conversation"' not in context
-    assert "replay_trigger_mode: manual" in context
+    assert "rehydrate_trigger_mode: manual" in context
 
 
-def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> None:
+def test_assemble_dynamic_user_context_rehydrate_conditional_min_query_chars() -> None:
     context = context_assembly.assemble_dynamic_user_context(
         "default",
         "short",
@@ -105,7 +105,7 @@ def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> N
         state=None,
         session_context_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
-        replay_controls_loader=lambda: ReplayControls(
+        rehydrate_controls_loader=lambda: RehydrateControls(
             trigger_mode="conditional",
             min_query_chars=20,
         ),
@@ -113,10 +113,10 @@ def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> N
 
     assert 'source="thread_manifest"' not in context
     assert 'source="recent_conversation"' not in context
-    assert "replay_min_query_chars: 20" in context
+    assert "rehydrate_min_query_chars: 20" in context
 
 
-def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_toggle() -> None:
+def test_assemble_dynamic_user_context_rehydrate_includes_diagnostic_reflection_toggle() -> None:
     context = context_assembly.assemble_dynamic_user_context(
         "default",
         "hello there",
@@ -127,7 +127,7 @@ def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_tog
         state=None,
         session_context_loader=lambda: "",
         recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
-        replay_controls_loader=lambda: ReplayControls(
+        rehydrate_controls_loader=lambda: RehydrateControls(
             include_diagnostic_reflection=False,
         ),
     )

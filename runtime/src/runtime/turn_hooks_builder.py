@@ -1384,7 +1384,7 @@ def _assemble_turn_hooks(
                 build_open_task_messages,
                 thread_path=runtime.paths.thread_path,
                 ephemeral_results_path=runtime.paths.ephemeral_results_path,
-                budget_bytes=_effective_replay_budget_bytes(runtime),
+                budget_bytes=_effective_rehydrate_budget_bytes(runtime),
             ),
             project_messages=partial(
                 project_thread_messages,
@@ -1855,10 +1855,10 @@ def _transport_forwarder(transport: Any, runtime: HostRuntime | None = None) -> 
     return on_stage, on_delta
 
 
-def _effective_replay_budget_bytes(runtime: Any) -> int | None:
-    """Resolve explicit replay ceilings; absent ceilings defer to request allocation."""
-    ceiling = int(runtime.config.context_budget_replay_max_bytes)
-    knob = runtime.session_plan.manifest.context.history.replay_max_bytes
+def _effective_rehydrate_budget_bytes(runtime: Any) -> int | None:
+    """Resolve explicit rehydration ceilings; absent ceilings defer to request allocation."""
+    ceiling = int(runtime.config.context_budget_rehydrate_max_bytes)
+    knob = runtime.session_plan.manifest.context.history.rehydrate_max_bytes
     limits = [value for value in (ceiling, knob) if value is not None and value > 0]
     return min(limits) if limits else None
 

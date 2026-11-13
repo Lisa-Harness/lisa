@@ -8,7 +8,7 @@ the conversation transcript fed back to the model (see
 
 The model already observes the *effect* of these commands via the live
 capability manifest / pack lock injected at context-assembly time;
-replaying the raw ``/pack disable ...`` text as "conversation" makes the
+rehydrating the raw ``/pack disable ...`` text as "conversation" makes the
 model treat a UI gesture as something the user said.
 
 Boundary
@@ -99,7 +99,7 @@ def is_host_command_query(query: str) -> bool:
     strip operator UI gestures (``/pack disable github``, ``/help``,
     ``/tokens``, ...) from the conversation transcript that gets injected
     back into the model's context. The model observes the *effect* of these
-    commands through the live capability manifest and pack lock; replaying
+    commands through the live capability manifest and pack lock; rehydrating
     the raw command text as "recent conversation" makes the model treat a
     UI gesture as something the user said.
     """

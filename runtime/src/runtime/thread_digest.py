@@ -88,7 +88,7 @@ def build_thread_context_items(
     ``live_state`` is the host's pre-turn snapshot of durable workflow
     state (``resolve_live_workflow_state``): recorded approval blockers are
     reconciled against it so a blocker the store already settled is
-    annotated as superseded instead of being replayed as a live prompt —
+    annotated as superseded instead of being rehydrated as a live prompt —
     the failure mode that trapped the 2026-10-05 thread in a stale-yield
     loop after a crash lost the continuation turn.
     """

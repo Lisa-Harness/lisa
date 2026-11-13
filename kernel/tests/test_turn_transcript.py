@@ -1,4 +1,4 @@
-"""Tests for the verbatim turn transcript, model-request capture, and prior-message replay."""
+"""Tests for the verbatim turn transcript, model-request capture, and prior-message rehydrate."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ async def test_approval_paused_turn_carries_transcript_and_model_requests(
 
 
 @pytest.mark.asyncio
-async def test_prior_messages_replay_before_query_and_stay_out_of_transcript() -> None:
+async def test_prior_messages_rehydrate_before_query_and_stay_out_of_transcript() -> None:
     prior = [
         {"role": "user", "content": "old request"},
         {

@@ -14,7 +14,7 @@ how the 2026-11-08..09 distill incidents turned into whack-a-mole:
    ``run_structured_completion_with_retry`` wraps the whole parse-retry loop.
 3. Reasoning-heavy models answer even the explicit JSON-only instruction
    with analysis prose before any JSON. ``assistant_bootstrap_messages``
-   builds the final retry: it replays the conversation and prefills the
+   builds the final retry: it rehydrates the conversation and prefills the
    assistant turn with the schema's opening envelope text so the model
    continues *inside* the JSON object instead of reasoning first (the
    2026-11-08..09 mining crash-loop's last unaddressed rung).

@@ -3,7 +3,7 @@
 A re-read supersedes the earlier read; the supersession epoch folds the
 stale result to a ref stub in the live array, the next model request
 carries the stub, and the turn result exposes the history block the host
-stores for replay.
+stores for rehydrate.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ async def test_superseded_read_folds_mid_turn_and_lands_in_history(
 
 
 @pytest.mark.asyncio
-async def test_replayed_pack_state_rides_on_the_new_user_message(
+async def test_rehydrated_pack_state_rides_on_the_new_user_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config.settings, "forced_action_non_compliant_cap", 99)
@@ -168,7 +168,7 @@ async def test_replayed_pack_state_rides_on_the_new_user_message(
 
     sent = result.model_requests[0]["messages"]
     assert all(PACK_STATE_KEY not in m for m in sent)
-    # The replayed prefix is byte-identical; only the new user message changed.
+    # The rehydrated prefix is byte-identical; only the new user message changed.
     assert sent[1:3] == prior[:2]
     user = sent[3]
     assert user["role"] == "user"

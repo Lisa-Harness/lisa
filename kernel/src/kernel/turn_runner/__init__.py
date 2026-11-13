@@ -347,8 +347,8 @@ _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
 _QUOTA_STATUS_CODE = 429
 
 
-def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep replayable messages, pairing every assistant tool call with its result."""
+def _valid_rehydrate_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep history messages, pairing every assistant tool call with its result."""
     answered = {
         m.get("tool_call_id") for m in prior if m.get("role") == "tool" and m.get("tool_call_id")
     }
@@ -1597,7 +1597,7 @@ async def _run_turn_with_approval(
 
 
 async def _with_history(result: TurnResult, capture: list[Any], hooks: TurnHooks) -> TurnResult:
-    """Attach the turn's pack-history block; replay folds stale results from it."""
+    """Attach the turn's pack-history block; rehydration folds stale results from it."""
     if not capture:
         return result
     try:
@@ -1605,8 +1605,8 @@ async def _with_history(result: TurnResult, capture: list[Any], hooks: TurnHooks
             state=capture[0], hooks=hooks, tool_catalog=get_tool_catalog(), log=logger
         )
     except Exception as exc:  # pylint: disable=broad-except
-        # Without the block replay keeps every result resident: costlier, never lossy.
-        logger.warning("turn history finalize failed; replay will not fold: %s", exc)
+        # Without the block rehydration keeps every result resident: costlier, never lossy.
+        logger.warning("turn history finalize failed; rehydration will not fold: %s", exc)
     return result
 
 
@@ -2405,12 +2405,12 @@ def _prepare_turn_messages_and_model(
     pack_state = ""
     if hooks.context.prior_messages is not None and not state.sub_turn_kind:
         prior, pack_state = split_pack_state(hooks.context.prior_messages())
-        messages.extend(_valid_replay_messages(prior))
+        messages.extend(_valid_rehydrate_messages(prior))
 
     # Build user message
     user_parts: list[str] = []
     if pack_state:
-        # Replayed pack snapshots ride on the new user message, the first
+        # Rehydrated pack snapshots ride on the new user message, the first
         # message that differs from the previous turn's requests anyway.
         user_parts.append(f"## Pack State\n\n{pack_state}")
     if pre_briefing:
@@ -6854,7 +6854,7 @@ async def _resolve_empty_turn_content(
     # the successes and their write receipts were erased pre-model.
     # Render the per-child digest instead: statuses, verified writes,
     # and each child's partial output, so the operator (and the next
-    # turn's model, replaying the thread) sees what actually happened.
+    # turn's model, rehydrating the thread) sees what actually happened.
     # A synthesis model call is NOT made here: the loop already broke on
     # the failed children, so a forced completion would re-plan with the
     # failures in hand — that is the NEXT turn's job against the persisted

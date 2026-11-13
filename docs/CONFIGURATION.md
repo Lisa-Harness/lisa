@@ -196,7 +196,7 @@ rather than silently calling the wrong host.
 | `LISA_THREAD_REDACTION_ENABLED` | true | Read-time thread redaction |
 | `LISA_THREAD_REDACTION_PATTERNS` | Defaults plus pack patterns | Newline-separated regex overrides; `none` disables |
 | `LISA_PROMPT_CACHE_ENABLED` | true | Provider prompt-cache controls |
-| `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES` | 0 | No separate replay ceiling; use whole-request allocation |
+| `LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES` | 0 | No separate rehydration ceiling; use whole-request allocation |
 
 Host `LISA_CONTEXT_BUDGET_*` settings cap prompt-assembly sections.
 Kernel `Settings` controls loop limits and request allocation. Session

@@ -457,7 +457,7 @@ async def test_last_no_prior_turns(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_last_replays_previous_model_response_verbatim(tmp_path: Path) -> None:
+async def test_last_reprints_previous_model_response_verbatim(tmp_path: Path) -> None:
     from runtime.thread import append_thread_entry
 
     runtime = _make_runtime(tmp_path)
@@ -496,7 +496,7 @@ async def test_last_skips_host_command_turns(tmp_path: Path) -> None:
     )
     transport = NullTransport()
     # A host-command turn lands on the thread between the model turn and
-    # the /last replay; the default walk must skip it and find turn 0.
+    # the /last reprint; the default walk must skip it and find turn 0.
     output = await handle_message(runtime, "/settings", transport)
     assert "## Runtime Settings" in output.text
     output = await handle_message(runtime, "/last", transport)
@@ -571,10 +571,10 @@ async def test_last_bad_argument_usage_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_last_turn_reports_replayed_turn_index(tmp_path: Path) -> None:
-    """``resolve_last_turn`` returns the replayed entry's turn stamp.
+async def test_resolve_last_turn_reports_reprinted_turn_index(tmp_path: Path) -> None:
+    """``resolve_last_turn`` returns the reprinted entry's turn stamp.
 
-    Hosts surface this number so a replayed response is addressable — the
+    Hosts surface this number so a reprinted response is addressable — the
     same global turn index the prompt output and thread entry carry.
     """
     from runtime.commands import resolve_last_turn

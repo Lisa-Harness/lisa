@@ -297,7 +297,7 @@ def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
                 if isinstance(nested_payload, dict):
                     function_payload = nested_payload
                 # A refused call (length-cut payload, or parallel calls
-                # stitched together) stays in the history and is replayed
+                # stitched together) stays in the history and is rehydrated
                 # here; a payload that is not a JSON object would be a
                 # malformed tool input, so it is coerced to the empty one.
                 parsed_input = _coerce_tool_arguments_object(

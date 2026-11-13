@@ -143,7 +143,7 @@ more queries fan out.
 
 A fork or delegate child starts with fresh model history: the turn runner skips
 `prior_messages` when a child turn kind is set, so the parent conversation is
-not replayed into the child's request.
+not rehydrated into the child's request.
 
 Fresh history is not isolation. A child runs through the same host-owned turn
 hooks and reassembles its own context, so it shares the parent's hook instances

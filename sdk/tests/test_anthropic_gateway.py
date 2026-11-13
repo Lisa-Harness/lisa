@@ -735,13 +735,13 @@ def test_normalize_no_trailing_nudge_when_require_thought_signature_false() -> N
 
 
 def test_normalize_repairs_unparseable_tool_call_arguments() -> None:
-    """A tool call whose arguments never parsed is replayed as ``{}``.
+    """A tool call whose arguments never parsed is rehydrated as ``{}``.
 
     Regression for the 2026-10-19 MiniMax M3.1 Flash turn failure: three
     parallel tool calls were stitched into one call whose arguments were
     three JSON objects glued end to end. The kernel refused to dispatch
     it, but the broken call stayed in the message history and the next
-    request replayed it. Ollama validates the arguments of every
+    request rehydrated it. Ollama validates the arguments of every
     assistant ``tool_calls`` entry in the history and answered
     ``400 invalid tool call arguments``, which killed the whole turn.
 
@@ -779,7 +779,7 @@ def test_normalize_repairs_length_cut_tool_call_arguments() -> None:
     The 2026-09-23 finances incident produced the same shape from a
     different cause: ``finish_reason='length'`` cut the arguments
     mid-payload. The kernel refuses to dispatch such a call, so the
-    replay must not kill the turn either.
+    rehydrate must not kill the turn either.
     """
 
     messages: list[dict[str, Any]] = [
@@ -833,7 +833,7 @@ def test_normalize_repairs_empty_tool_call_arguments_string() -> None:
 
 
 def test_normalize_keeps_parseable_tool_call_arguments_untouched() -> None:
-    """A well-formed payload is replayed byte-for-byte."""
+    """A well-formed payload is rehydrated byte-for-byte."""
 
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": "go"},

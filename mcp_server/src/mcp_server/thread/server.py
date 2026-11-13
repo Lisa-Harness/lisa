@@ -338,7 +338,7 @@ async def thread_read_content(
     Refs are scoped to this thread: t391.query, t391.response_text,
     t391.m20.content, t391.m19.tool_calls, or t391.m20 for a full message.
     Search can also return t391.m19.c0.arguments or .name for one call.
-    Live/replayed result previews carry r<sha256> refs, available before
+    Live/rehydrated result previews carry r<sha256> refs, available before
     the current turn completes and after restart. inventory_ref points to
     omitted tool groups with their arguments and full-result references.
     Full reasoning_text and raw turn_input are not available through this tool.
@@ -397,7 +397,7 @@ async def thread_task_view(
     budget_bytes: int = DEFAULT_READOUT_BYTES,
     ctx: Context[ThreadDeps, Any] | None = None,
 ) -> str:
-    """Summarize one task's recorded state instead of replaying its history.
+    """Summarize one task's recorded state instead of rehydrating its history.
 
     task_id defaults to the most recent recorded task identity. Scans at
     most 200 recent entries. This is NOT the active invocation's task identity.

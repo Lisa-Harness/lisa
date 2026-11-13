@@ -240,7 +240,7 @@ async def test_approval_keeps_pending_batch_and_context(
             )
         return SimpleNamespace(content="finished", tool_calls=[])
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     def forbidden_context(*_: Any) -> str:
@@ -260,7 +260,7 @@ async def test_approval_keeps_pending_batch_and_context(
         await service.approve(result.pending_approval.request_id, result.pending_approval.identity)
         saved = TurnContinuation.model_validate_json(result.continuation.model_dump_json())
         hooks.context = ContextHooks(
-            prior_messages=forbidden_replay,
+            prior_messages=forbidden_rehydrate,
             assemble_user_context=forbidden_context,
         )
 
@@ -429,7 +429,7 @@ async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
             tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -443,7 +443,7 @@ async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
     assert paused.continuation.reason == "cap"
     assert not paused.continuation.requires_approval
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = resume_after_pause(
         TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
         "keep going",
@@ -497,7 +497,7 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
             tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -511,7 +511,7 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
     assert paused.continuation.reason == "cap"
     assert paused.continuation.requires_approval is False
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = TurnContinuation.model_validate_json(paused.continuation.model_dump_json())
     resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
     # The pause fired again on the resumed turn's first pass (before any model
@@ -569,7 +569,7 @@ async def test_cap_resume_grants_a_fresh_stage_budget(
             ],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -583,7 +583,7 @@ async def test_cap_resume_grants_a_fresh_stage_budget(
     assert paused.continuation.reason == "cap"
     assert len(requests) == 2
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = resume_after_pause(
         TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
         "keep going",

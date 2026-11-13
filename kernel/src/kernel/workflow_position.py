@@ -382,7 +382,7 @@ def render_workflow_progress(position: WorkflowPosition) -> str:
 
     Used by the host's context assembler as the "work done so far"
     summary — replacing re-reading the thread tail (which
-    is host-owned UI/replay state the kernel never reads for routing). The
+    is host-owned UI/history state the kernel never reads for routing). The
     summary lists each declared step with a checkmark (done) or a dash
     (remaining), plus the result preview when available.
 

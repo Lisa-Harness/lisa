@@ -103,6 +103,22 @@ All notable changes to the Lisa Harness will be documented in this file.
     ``runtime/tests/test_thread_replay.py``, and
     ``e2etest/tests/test_harness.py``.
 
+### Changed
+
+- Reserve **replay** for re-executing recorded work. Rebuilding model history
+  is now **rehydration**: the runtime module is `runtime.thread._rehydrate`,
+  history folds use `fold_history` / `HistoryFolds`, and context controls use
+  `RehydrateControls`. Rename `context.history.replay_max_bytes` to
+  `context.history.rehydrate_max_bytes`, `HostConfig.context_budget_replay_max_bytes`
+  to `HostConfig.context_budget_rehydrate_max_bytes`, and
+  `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES` to
+  `LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES`. This is a hard cutover with no
+  aliases; update session front matter and environment configuration.
+  Diagnostic history fields now use the `rehydrate_*` prefix. History
+  assembly, folding, redaction, and budgets otherwise behave identically.
+  `/last` remains a reprint, not a replay. Stored thread and ledger formats
+  are unchanged.
+
 ### Fixed
 
 - A parent turn whose fork fan-out returned mixed results surfaces a

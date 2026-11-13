@@ -32,7 +32,7 @@ Public surface
 - :func:`bundled_default_session_path`
 - :func:`extract_front_matter_thread_name`
 - :class:`SessionContextSource`
-- :class:`ReplayControls` (transitional — used by context_assembly)
+- :class:`RehydrateControls` (transitional — used by context_assembly)
 """
 
 from __future__ import annotations
@@ -202,12 +202,12 @@ def _read_session_source(*, source_uri: str, path: Path) -> SessionContextSource
     )
 
 
-# ── Transitional: ReplayControls ────────────────────────────────────
+# ── Transitional: RehydrateControls ────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
-class ReplayControls:
-    """Replay-policy controls used by context_assembly.
+class RehydrateControls:
+    """Rehydration-policy controls used by context_assembly.
 
     Transitional: the v2 ``ContextHistoryPlan`` in
     ``SessionPlan.manifest.context.history`` is the authoritative source

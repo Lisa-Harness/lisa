@@ -170,7 +170,7 @@ class CompletionUsage:
 
 @dataclass(slots=True)
 class ProviderContinuation:
-    """Opaque provider-owned context, replayable only to its originating model."""
+    """Opaque provider-owned context, rehydrated only for its originating model."""
 
     provider: str
     model_id: str
@@ -863,7 +863,7 @@ def _stitch_tool_call_delta(
     ``storage.list_filesstorage.read_file`` carrying three JSON
     objects glued end to end. The unparseable result was then correctly
     refused by the turn loop, but the broken call stayed in the message
-    history and the next request replayed it — a strict backend answered
+    history and the next request rehydrated it — a strict backend answered
     ``400 invalid tool call arguments`` and killed the turn.
     """
     call_id = str(delta.get("id") or "")

@@ -827,7 +827,7 @@ def test_task_goal_marker_is_detected_and_stripped() -> None:
     """``[task_goal: diagnostic]`` declares intent and then leaves the request.
 
     The marker is an operator directive: it must set the task goal for this
-    turn and then be removed, so it is neither replayed to the model as part
+    turn and then be removed, so it is neither rehydrated to the model as part
     of the request nor persisted in the thread entry's query.
     """
     from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker

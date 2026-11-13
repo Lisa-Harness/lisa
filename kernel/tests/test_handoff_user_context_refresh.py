@@ -11,7 +11,7 @@ The write-contract backstop then armed and burned two further completions.
 
 These tests pin that the turn's own user message is REFRESHED —
 the capability block recomputed against the active mode — after a mid-turn
-handoff, and that no replayed history is touched.
+handoff, and that no rehydrated history is touched.
 """
 
 from __future__ import annotations

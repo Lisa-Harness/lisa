@@ -1,4 +1,4 @@
-"""Durable thread-owned result objects for provider-only live/replay previews."""
+"""Durable thread-owned result objects for provider-only live/rehydrate previews."""
 
 from __future__ import annotations
 

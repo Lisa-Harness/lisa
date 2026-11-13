@@ -570,7 +570,7 @@ def _is_state_settling_command(lowered: str) -> bool:
     These commands decide pending work (recovery items, approvals) — the
     operator's answer to a paused/stalled turn. Their outcome must land in
     the thread the same way ``/approve`` lands one, or the recorded tail
-    keeps replaying the question the operator already answered
+    keeps rehydrating the question the operator already answered
     (the 2026-10-05 stale-yield loop: ``/cancel-all`` cleaned up the
     recovery items at 02:57:51Z but the thread tail still ended at
     "paused awaiting your decision", so every later turn re-yielded the
@@ -902,7 +902,7 @@ def _strip_task_goal_marker(message: str) -> str:
     """Remove the operator's ``[task_goal: …]`` declaration from the message.
 
     The marker is an operator directive, not content. Leaving it in would
-    replay it to the model every turn, persist it in the thread entry's
+    rehydrate it to the model every turn, persist it in the thread entry's
     ``query``, and make it look like part of the request in a later resume.
 
     Args:
@@ -1398,7 +1398,7 @@ def _consume_task_goal_declaration(message: str, query: str) -> tuple[str, str, 
 
     The operator's ``[task_goal: …]`` marker is a directive, not content: it
     selects the goal for this turn and is then removed, so it is never
-    replayed to the model as part of the request nor persisted in the thread
+    rehydrated to the model as part of the request nor persisted in the thread
     entry's ``query``.
 
     Args:
@@ -1552,7 +1552,7 @@ async def _run_reserved_turn(
     # turn starts. The digest builders are synchronous; this is the async
     # seam where the durable stores are readable. A recorded blocker the
     # store already settled (consumed / denied / cancelled) is then
-    # annotated as superseded instead of replayed as a live prompt —
+    # annotated as superseded instead of rehydrated as a live prompt —
     # the 2026-10-05 stale-yield loop.
     runtime.session.live_workflow_state = await _resolve_live_workflow_state_for_turn(runtime)
 

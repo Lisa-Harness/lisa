@@ -1,6 +1,6 @@
 """PROMPT_STARTUP Slice D regression tests: ``--no-thread`` result projection.
 
-The spec's Slice D contract: projecting oversized tool results, replaying
+The spec's Slice D contract: projecting oversized tool results, rehydrating
 context, and recording a request snapshot must all succeed without a thread
 path, create no thread artifacts, keep ``r<sha256>`` refs dereferenceable
 through the same result-object contract, and change nothing when a durable
@@ -107,7 +107,7 @@ def test_threaded_projection_is_unchanged(tmp_path: Path) -> None:
     assert result_object_path(thread_path, _expected_ref(result["content"])).is_file()
 
 
-def test_empty_replay_projection_succeeds_under_no_thread(tmp_path: Path) -> None:
+def test_empty_rehydrate_projection_succeeds_under_no_thread(tmp_path: Path) -> None:
     paths = _paths(tmp_path, no_thread=True)
     assert (
         build_open_task_messages(

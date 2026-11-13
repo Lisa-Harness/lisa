@@ -206,5 +206,5 @@ def build_evidence() -> ContextItem:
 ```
 
 See [context lifecycle](CONTEXT_LIFECYCLE.md) for whole-request allocation,
-resident tool-result references, replay, and caching. Lane admission is not
+resident tool-result references, rehydration, and caching. Lane admission is not
 the complete model-request budget.

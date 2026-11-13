@@ -495,7 +495,7 @@ async def _record_and_continue_after_approval(
     # ── Thread record for the approved action ────────────────────────
     # No model call was made (the registry executed the saved invocation
     # directly), so there is no ``turn_input`` snapshot — provenance states
-    # the source so /debug does not try to replay a model input that never
+    # the source so /debug does not try to show a model input that never
     # existed. The receipt makes the write/execute contract countable.
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
