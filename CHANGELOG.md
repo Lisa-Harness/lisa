@@ -6,6 +6,33 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Cache-efficiency Workstream 1 — honest cache measurement. ``/tokens``
+  now appends a focused cache section computed at report time only
+  (``runtime/cache_report.py``): per-partition cache request-hit proxy
+  and cached-token share over a rolling 14-day window, with denominators,
+  exclusion counts, and diagnostics shown beside every figure. The
+  ledger reader is incremental (``state/cache-measurement/`` checkpoint
+  with byte offset, size/inode, and a SHA-256 of the consumed prefix),
+  detects truncation/rotation/same-size rewrites, counts malformed
+  lines and bad timestamps as incomplete-window diagnostics, and
+  degrades to an explicit ``unavailable`` status line on lock, I/O, or
+  source-instability failure — never to a fabricated figure, and never
+  on the model-call hot path. The pure metric layer
+  (``kernel/cache_metrics.py``) trusts a zero cache counter only from
+  the nullable-counter era and only off the fabricated-zero
+  ``call_site=operation`` producer chain; legacy and fabricated zeros
+  are excluded as coverage, never averaged into the rate. Measured-layer
+  snapshots stay unwritten while route/prefix identity is unknown —
+  expected for the whole current ledger. Producers now stamp the v3
+  ``effective_model_data_source`` / ``effective_model_data_version``
+  fields (turn loop, forced-final, and off-turn; forwarded from the
+  model definition when present), and the off-turn producer no longer
+  coerces unsurfaced counters into zeros. The ``/tokens`` lifetime
+  cache-read share now divides cached reads by the normalized prompt
+  (which already includes them) instead of double-counting them into
+  the denominator. Tests: ``kernel/tests/test_cache_metrics.py``,
+  ``kernel/tests/test_cache_provenance.py``,
+  ``runtime/tests/test_cache_report.py``.
 - Durable routing telemetry: two new ``decisions.jsonl`` topics make the
   hint/enforcer lifecycle queryable. ``routing.decision`` is published at
   every hint computation (turn start and post-handoff recompute; a

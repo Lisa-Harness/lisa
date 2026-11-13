@@ -296,6 +296,19 @@ def format_token_stats(runtime: HostRuntime) -> str:
     lifetime_lines = _format_lifetime_token_usage(runtime.paths.token_usage_path)
     if lifetime_lines:
         lines.extend(lifetime_lines)
+    # Workstream 1: focused cache section, computed at report time only
+    # (never inside a turn). Every failure degrades to an explicit
+    # status line — never a fabricated figure.
+    from runtime.cache_report import report_cache
+
+    paths = runtime.paths
+    checkpoint_path = paths.cache_checkpoint_path or paths.token_usage_path.with_name(
+        paths.token_usage_path.name + ".cache-state.json"
+    )
+    measured_path = paths.cache_measured_store_path or (
+        paths.token_usage_path.parent.parent / "state" / "cache-measurement" / "measured.json"
+    )
+    lines.extend(report_cache(paths.token_usage_path, checkpoint_path, measured_path))
     return "\n".join(lines)
 
 
@@ -474,11 +487,13 @@ def _render_lifetime_usage_lines(agg: dict[str, Any]) -> list[str]:
         count = known.get(metric, 0)
         return f"{count}/{event_count}" if count < event_count else f"{event_count}/{event_count}"
 
-    # Cache-read share: tokens served from cache as a fraction of everything
-    # the provider *input* (prompt + cache reads). Shown only when both
-    # components have known coverage; a zero denominator is n/a, not 0%.
-    input_denominator = prompt + cached
-    cache_read_share = f"{cached / input_denominator:.1%}" if input_denominator > 0 else "n/a"
+    # Cache-read share: tokens served from cache as a fraction of the
+    # normalized whole prompt input. The gateways normalize ``prompt``
+    # already-inclusive of cache reads (Anthropic derives it from input
+    # + cache components), so adding cached again would double-count.
+    # Shown only when prompt has known coverage; a zero denominator is
+    # n/a, not 0%.
+    cache_read_share = f"{cached / prompt:.1%}" if prompt > 0 else "n/a"
     # Estimated cost shows coverage: a partial sum is labelled, not silently
     # presented as the lifetime spend.
     cost_known = known.get("cost", 0)
