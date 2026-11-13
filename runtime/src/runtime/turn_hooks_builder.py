@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, cast
 from kernel.capability_binding import CapabilityRef
 from kernel.decision_telemetry import (
     MODEL_REQUEST_TOPIC,
+    ROUTING_DECISION_TOPIC,
+    ROUTING_FORCED_TOPIC,
     TOOL_TELEMETRY_TOPIC,
     TURN_DECISION_TOPIC,
 )
@@ -877,6 +879,22 @@ def _wire_runtime_context_seams(
             method_name="publish_model_request",
             destination=runtime.paths.decisions_path,
             label="model.request",
+        )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=ROUTING_DECISION_TOPIC,
+            handler=decision_handler,
+            method_name="publish_routing_decision",
+            destination=runtime.paths.decisions_path,
+            label="routing.decision",
+        )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=ROUTING_FORCED_TOPIC,
+            handler=decision_handler,
+            method_name="publish_routing_forced",
+            destination=runtime.paths.decisions_path,
+            label="routing.forced",
         )
     # Publish the subscribed bus so off-turn slice providers can reach the
     # same durable ledgers (see SessionState.event_bus).

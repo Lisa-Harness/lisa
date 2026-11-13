@@ -8058,6 +8058,7 @@ async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
 async def test_tool_calls_preserve_prior_yield_state() -> None:
     tool_calls = [{"id": "call_after_yield"}]
     result = await _resolve_empty_completion_for_dispatch(
+        hooks=TurnHooks(),
         tool_calls=tool_calls,
         synthesized_forced=False,
         yielded=True,

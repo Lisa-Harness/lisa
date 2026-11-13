@@ -902,7 +902,17 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
         # and the parent synthesis return text.
         return _StubCompletion(content="Synthesized from forced fork.")
 
+    published_events: list[tuple[str, dict[str, Any]]] = []
+
+    class _CaptureBus:
+        async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+            published_events.append((topic, payload))
+
+        def subscribe(self, topic: str, handler: Any) -> None:
+            pass
+
     hooks = _build_hooks(two_step)
+    hooks.context_seams.event_bus = _CaptureBus()
     # A query that triggers a fork hint from default mode (remember + write).
     result = await run_turn(
         mode_id="default",
@@ -914,6 +924,20 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
     # the model never called transition_stage with a fork target.
     assert result.fork_results is not None
     assert len(result.fork_results) >= 2
+
+    # The enforcer's fire is durably recorded: one ``routing.forced`` row
+    # per synthesis naming the kind, targets, and the non-compliant count
+    # that reached the cap (the 2026-11-13 routing-telemetry follow-up:
+    # "how many forced forks have ever fired" must be a ledger query,
+    # not a log grep).
+    forced_rows = [p for t, p in published_events if t == "routing.forced"]
+    assert len(forced_rows) >= 1
+    row = forced_rows[0]
+    assert row["kind"] == "fork"
+    assert len(row["targets"]) >= 2
+    assert row["non_compliant_dispatches"] == 2
+    assert row["trigger"] == "dispatch_override"
+    assert row["expected_tool"] == "fork"
 
 
 @pytest.mark.asyncio
@@ -1275,6 +1299,7 @@ def test_enforcer_treats_a_batch_with_the_expected_tool_as_compliant() -> None:
     assert _batch_contains_expected_tool(state, batch, "call_bash") is True
 
     name, arguments = _enforce_forced_action_on_dispatch(
+        hooks=TurnHooks(),
         state=state,
         mode_id="default",
         query="q",
@@ -1317,6 +1342,7 @@ def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
         batch_has_expected = _batch_contains_expected_tool(state, batch, call_id)
         assert batch_has_expected is False
         name, arguments = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
             state=state,
             mode_id="default",
             query="q",
@@ -1351,6 +1377,7 @@ def test_forced_transition_rationale_reports_the_cap_not_a_refusal() -> None:
     for i in range(4):
         call = _make_tool_call(f"c{i}", "bash_run", {"commands": ["true"]})
         name, produced = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
             state=state,
             mode_id="default",
             query="q",

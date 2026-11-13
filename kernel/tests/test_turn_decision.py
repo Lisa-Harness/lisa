@@ -156,6 +156,67 @@ def test_turn_decision_telemetry_event_emitted() -> None:
     assert "read_receipts" in event
 
 
+def test_routing_decision_telemetry_published_on_handoff_hint() -> None:
+    """A turn whose hint suggests a handoff persists a ``routing.decision``
+    row naming the hint kind, targets, and the armed forced action.
+
+    The durable record is what makes "how often is the hint shown vs
+    followed vs overridden vs forced" a one-line query over
+    ``decisions.jsonl`` instead of transcript archaeology (the 2026-11-13
+    turn 1258 postmortem needed it).
+    """
+    import asyncio
+    from typing import Any
+
+    from kernel.turn_hooks import ModelHooks
+    from kernel.turn_runner import TurnHooks, run_turn
+
+    published_events: list[tuple[str, dict[str, Any]]] = []
+
+    class _CaptureEventBus:
+        async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+            published_events.append((topic, payload))
+
+        def subscribe(self, topic: str, handler: Any) -> None:
+            pass
+
+    async def complete(**_kwargs: Any) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            content="Handing off.",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": '{"target_stage_id": "markdown", "rationale": "hint"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+    )
+    hooks.context_seams.event_bus = _CaptureEventBus()
+
+    asyncio.run(
+        run_turn(mode_id="default", query="write me a markdown doc for the api", hooks=hooks)
+    )
+
+    routing_events = [p for t, p in published_events if t == "routing.decision"]
+    assert len(routing_events) >= 1
+    event = routing_events[0]
+    assert event["mode_id"] == "default"
+    assert event["hint_kind"] in ("handoff", "planner_escalation", "fork", "none", "other")
+    assert event["forced_armed"] == (event["hint_kind"] != "none")
+    assert isinstance(event["hint_injected"], bool)
+    assert isinstance(event["forced_exempt"], bool)
+    assert "model_id" in event
+
+
 def test_empty_response_produces_finish() -> None:
     """An empty model response (no tools, no content) still produces ``FINISH``."""
     result = evaluate_turn_decision(

@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 from kernel.decision_telemetry import (
+    ROUTING_DECISION_TOPIC,
+    ROUTING_FORCED_TOPIC,
     TOOL_TELEMETRY_TOPIC,
     TOPIC_FIELD,
     TURN_DECISION_TOPIC,
@@ -339,3 +341,64 @@ async def test_lock_timeout_drops_the_line_instead_of_raising() -> None:
         # Must not raise despite the lock factory exploding.
         await handler.publish_turn_decision({"mode_id": "m", "turn_index": 1})
         assert not (Path(td) / "decisions.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_routing_decision_appended_with_topic_tag() -> None:
+    """A ``routing.decision`` payload lands tagged with its topic."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "decisions.jsonl"
+        handler = DecisionTelemetryHandler(path)
+
+        await handler.publish_routing_decision(
+            {
+                "mode_id": "default",
+                "iteration": 1,
+                "hint_kind": "handoff",
+                "hint_targets": ["coding_design"],
+                "hint_injected": True,
+                "hint_suppressed": False,
+                "forced_armed": True,
+                "forced_kind": "transition",
+                "forced_targets": ["coding_design"],
+                "forced_exempt": False,
+                "model_id": "z-ai/glm-5.3-flashx",
+            }
+        )
+
+        record = json.loads(path.read_text(encoding="utf-8").strip())
+        assert record[TOPIC_FIELD] == ROUTING_DECISION_TOPIC
+        assert record["hint_kind"] == "handoff"
+        assert record["forced_armed"] is True
+        assert record["forced_targets"] == ["coding_design"]
+
+
+@pytest.mark.asyncio
+async def test_routing_forced_appended_with_topic_tag() -> None:
+    """A ``routing.forced`` payload lands tagged with its topic."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "decisions.jsonl"
+        handler = DecisionTelemetryHandler(path)
+
+        await handler.publish_routing_forced(
+            {
+                "mode_id": "default",
+                "turn_index": 7,
+                "iteration": 4,
+                "kind": "transition",
+                "targets": ["planner"],
+                "non_compliant_dispatches": 2,
+                "trigger": "dispatch_override",
+                "expected_tool": "transition_stage",
+                "model_id": "z-ai/glm-flash-latest",
+                "model_cost_tier": "budget",
+                "model_reasoning": False,
+                "model_structured_reliability": 0.0,
+            }
+        )
+
+        record = json.loads(path.read_text(encoding="utf-8").strip())
+        assert record[TOPIC_FIELD] == ROUTING_FORCED_TOPIC
+        assert record["kind"] == "transition"
+        assert record["non_compliant_dispatches"] == 2
+        assert record["trigger"] == "dispatch_override"
