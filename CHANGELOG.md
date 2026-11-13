@@ -6,6 +6,25 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Safe-handoff prompt-layout design (cache-efficiency Workstream 3,
+  SPEC §6): ``docs/design-safe-handoff-prompt-layout.md`` inventories
+  every prompt component as invariant, mode-variable, ephemeral, or
+  provider-specific, states each gateway's cacheable prefix and
+  invalidation rules, and declares the expected cache effect of every
+  handoff type in ``CacheOracle`` break-reason vocabulary — including
+  the honest structural miss that a tool-authorization change at a
+  handoff invalidates the provider prefix ahead of the system region on
+  current providers, so factoring the stable base pays only on
+  same-authorization handoffs and same-mode turn boundaries. The
+  equivalence argument (byte-identical flattening for segment-blind
+  gateways, additive Anthropic block metadata, no tool union, preserved
+  priority/approval semantics) and the follow-up implementation sketch
+  are in the document. ``kernel/tests/test_handoff_prefix_trace.py``
+  adds the required pre-implementation e2e prefix trace: today's merged
+  base shows ``prefix_changed`` at entry 0 on handoff, while the
+  factored S0/S1 target keeps the invariant head digest intact. No
+  production behavior changes.
+
 - Cache-prefix oracle (cache-efficiency Workstream 4, SPEC §7 criterion
   2): ``kernel/cache_oracle.py`` digests the canonical provider request
   shape — typed system segments, transcript entries, ordered tool
