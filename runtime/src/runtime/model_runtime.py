@@ -92,31 +92,41 @@ class StubModelDefinition:
 
     JSON-bound work. Default 0.0 for backward compatibility."""
 
-    prompt_price: float = 0.0
+    prompt_price: float | None = None
 
-    """Per-token USD price for prompt (input) tokens, forwarded from
+    """Per-token USD rate for prompt (input) tokens, forwarded from
 
-    ``ManifestModelEntry.prompt_price`` for cost estimation. 0.0 = unknown."""
+    ``ManifestModelEntry.prompt_price`` for cost estimation. ``None`` =
 
-    completion_price: float = 0.0
+    unknown; an explicit ``0.0`` is a genuinely free tier."""
 
-    """Per-token USD price for completion (output) tokens, forwarded from
+    completion_price: float | None = None
 
-    ``ManifestModelEntry.completion_price``. 0.0 = unknown."""
+    """Per-token USD rate for completion (output) tokens, forwarded from
 
-    cache_read_price: float = 0.0
+    ``ManifestModelEntry.completion_price``. ``None`` = unknown; an
 
-    """Per-token USD price for prompt-cache reads, forwarded from
+    explicit ``0.0`` is a genuinely free tier."""
+
+    cache_read_price: float | None = None
+
+    """Per-token USD rate for prompt-cache reads, forwarded from
 
     ``ManifestModelEntry.cache_read_price`` so cache-aware cost estimates
 
-    blend the read rate. 0.0 = unknown."""
+    bill the discounted read rate. ``None`` = unknown — cost estimates
 
-    cache_write_price: float = 0.0
+    treat the call as unpriced rather than falling back to the prompt
 
-    """Per-token USD price for prompt-cache writes, forwarded from
+    rate; an explicit ``0.0`` is an explicitly free cache read."""
 
-    ``ManifestModelEntry.cache_write_price``. 0.0 = unknown."""
+    cache_write_price: float | None = None
+
+    """Per-token USD rate for prompt-cache writes, forwarded from
+
+    ``ManifestModelEntry.cache_write_price``. ``None`` = unknown; an
+
+    explicit ``0.0`` is a genuinely free tier."""
 
     base_url: str = ""
 
@@ -451,10 +461,10 @@ def resolve_model(
         prompt_cache_breakpoints=resolved.prompt_cache_breakpoints,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,
-        prompt_price=getattr(resolved, "prompt_price", 0.0),
-        completion_price=getattr(resolved, "completion_price", 0.0),
-        cache_read_price=getattr(resolved, "cache_read_price", 0.0),
-        cache_write_price=getattr(resolved, "cache_write_price", 0.0),
+        prompt_price=getattr(resolved, "prompt_price", None),
+        completion_price=getattr(resolved, "completion_price", None),
+        cache_read_price=getattr(resolved, "cache_read_price", None),
+        cache_write_price=getattr(resolved, "cache_write_price", None),
         base_url=getattr(resolved, "base_url", ""),
         base_url_env=getattr(resolved, "base_url_env", ""),
     )

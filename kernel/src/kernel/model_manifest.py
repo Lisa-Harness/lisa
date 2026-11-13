@@ -37,22 +37,25 @@ class ManifestModelEntry:
     #: Provider-behavior declaration (BUDGET_SCOPES_RFC scope 1): bounds
     #: reasoning-class models regardless of mode.
     max_completion_tokens: int = 0
-    #: Per-token USD price for prompt (input) tokens, when the provider
-    #: publishes pricing. 0.0 = unknown/not priced. OpenRouter exposes this
-    #: via ``pricing.prompt``; other providers may leave it 0.0. Display
-    #: layers multiply by 1e6 for a $/M-token view — the field itself stays
-    #: per-token so pricing_units remains implied and forward-compatible.
-    prompt_price: float = 0.0
-    #: Per-token USD price for completion (output) tokens, when known.
-    completion_price: float = 0.0
-    #: Per-token USD price for * cached * prompt tokens (prompt-cache reads),
-    #: when the provider publishes it (OpenRouter ``pricing.input_cache_read``).
-    #: 0.0 = unknown/not priced — cost estimators fall back to ``prompt_price``.
-    cache_read_price: float = 0.0
-    #: Per-token USD price for prompt-cache *writes* (population), when the
+    #: Per-token USD rate for prompt (input) tokens, when the provider
+    #: publishes pricing (OpenRouter ``pricing.prompt``). ``None`` = the
+    #: provider published no rate — unknown; an explicit ``0.0`` is a
+    #: genuinely free tier. Display layers multiply by 1e6 for a $/M-token
+    #: view — the field itself stays per-token so pricing_units remains
+    #: implied and forward-compatible.
+    prompt_price: float | None = None
+    #: Per-token USD rate for completion (output) tokens, when known.
+    completion_price: float | None = None
+    #: Per-token USD rate for * cached * prompt tokens (prompt-cache reads),
+    #: when the provider publishes it (OpenRouter
+    #: ``pricing.input_cache_read``). ``None`` = unknown — cost estimators
+    #: treat unknown-bearing calls as unpriced rather than falling back to
+    #: ``prompt_price``; ``0.0`` = an explicitly free cache read.
+    cache_read_price: float | None = None
+    #: Per-token USD rate for prompt-cache *writes* (population), when the
     #: provider publishes it (OpenRouter ``pricing.input_cache_write``).
-    #: 0.0 = unknown.
-    cache_write_price: float = 0.0
+    #: ``None`` = unknown; ``0.0`` = explicitly free.
+    cache_write_price: float | None = None
     #: Currency for the above prices (ISO 4217). Defaults to USD, the only
     #: currency OpenRouter prices in today; kept for forward compatibility.
     pricing_currency: str = "USD"
@@ -632,22 +635,27 @@ def _parse_unit_float(raw_value: Any, *, field_name: str, model_id: str) -> floa
     return value
 
 
-def _parse_price(raw_value: Any, *, field_name: str, model_id: str) -> float:
-    """Parse an optional non-negative per-token price, defaulting to 0.0.
+def _parse_price(raw_value: Any, *, field_name: str, model_id: str) -> float | None:
+    """Parse an optional non-negative per-token rate into the §4 sentinel.
 
     Accepts a number or a numeric string (providers publish string prices,
-    e.g. OpenRouter's ``pricing.prompt``). 0.0 means unknown/not priced.
+    e.g. OpenRouter's ``pricing.prompt``). Returns ``None`` when the field
+    is absent/blank — the provider published no rate — and ``0.0`` when the
+    operator or provider explicitly wrote zero, keeping unknown distinct
+    from free end-to-end.
     """
 
     if raw_value is None:
-        return 0.0
+        return None
+    if isinstance(raw_value, str) and not raw_value.strip():
+        return None
     if isinstance(raw_value, bool):
         raise ValueError(
             f"Manifest model entry for '{model_id}' {field_name} must be a non-negative float."
         )
     if isinstance(raw_value, (int, float)):
         value = float(raw_value)
-    elif isinstance(raw_value, str) and raw_value.strip():
+    elif isinstance(raw_value, str):
         try:
             value = float(raw_value.strip())
         except ValueError as exc:

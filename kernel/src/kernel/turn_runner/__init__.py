@@ -3835,15 +3835,16 @@ def _resolve_call_cost(
         completion_tokens=completion_tokens,
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
-        prompt_price=_nullable_float_fn(getattr(effective_model_def, "prompt_price", None)) or 0.0,
-        completion_price=_nullable_float_fn(getattr(effective_model_def, "completion_price", None))
-        or 0.0,
-        cache_read_price=_nullable_float_fn(getattr(effective_model_def, "cache_read_price", None))
-        or 0.0,
+        # §4 sentinel cutover: None = the provider published no rate
+        # (unknown). Passing the Optionals through keeps unknown distinct
+        # from an explicit free 0.0 instead of collapsing both into 0.0 —
+        # the estimator returns None for unknown-bearing calls.
+        prompt_price=_nullable_float_fn(getattr(effective_model_def, "prompt_price", None)),
+        completion_price=_nullable_float_fn(getattr(effective_model_def, "completion_price", None)),
+        cache_read_price=_nullable_float_fn(getattr(effective_model_def, "cache_read_price", None)),
         cache_write_price=_nullable_float_fn(
             getattr(effective_model_def, "cache_write_price", None)
-        )
-        or 0.0,
+        ),
     )
     return canonical, provider_cost
 
@@ -3943,11 +3944,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
             latency_ms=latency_ms,
             cost_usd=cost_usd,
             provider_cost_usd=provider_cost_usd,
-            # Proxy counters ride the durable record's free-form ``extra``
-            # block rather than widening the event schema: the key set is
-            # pack-owned, so a pack can add a counter without a kernel change
-            # and a pack reading the log finds exactly what its proxy sent.
-            extra={"proxy_telemetry": proxy_telemetry} if proxy_telemetry else None,
+            proxy_telemetry=dict(proxy_telemetry) if proxy_telemetry else None,
             request_id=str(getattr(completion, "request_id", "") or ""),
             mode_id=mode_id,
             stage_id=str(getattr(state, "current_stage_id", "") or ""),

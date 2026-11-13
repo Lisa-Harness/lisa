@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import json
 import logging
 import math
 import os
@@ -35,6 +36,78 @@ from typing import Any
 from kernel.models import TokenUsageEvent, resolve_turn_index
 
 logger = logging.getLogger(__name__)
+
+#: Typed fields the durable ledger persists, in order — the privacy
+#: allowlist. ``_ledger_dump`` writes exactly these keys: prompt/tool
+#: content and the raw ``thread_store_slug`` never reach disk, and the
+#: untyped ``extra`` dict (which any publisher can stuff prompt-shaped
+#: payloads into) is excluded by construction. ``proxy_telemetry`` is
+#: allowlisted as a typed field so pack-owned relay counters survive;
+#: new durable facts join here as typed fields, never via ``extra``.
+_LEDGER_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "event_type",
+    "conversation_id",
+    "user_slug",
+    "surface_type",
+    "surface_id",
+    "memory_scope",
+    "mode_id",
+    "stage_id",
+    "operation_id",
+    "turn_index",
+    "call_site",
+    "provider",
+    "model_id",
+    "request_id",
+    "kind",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+    "cache_creation_tokens",
+    "cost_usd",
+    "provider_cost_usd",
+    "duration_ms",
+    "time_cost_usd",
+    "latency_ms",
+    "proxy_telemetry",
+    "effective_model_data_source",
+    "effective_model_data_version",
+    "upstream_route",
+    "cache_policy_fingerprint",
+    "cache_ttl_seconds",
+    "cache_min_prefix_chars",
+    "metric_origins",
+    "extra_context_appended",
+    "sequence",
+    "ledger_instance",
+    "thread_pseudonym_id",
+    "idempotency_key",
+    "emitted_at",
+)
+
+
+def _ledger_dump(event: TokenUsageEvent) -> str:
+    """Serialize an event to one JSONL line under the privacy allowlist.
+
+    Redaction by construction: only the allowlisted typed fields are
+    serialized — the raw thread-store slug and the untyped ``extra`` dict
+    are dropped here, so no downstream writer can leak them. Unknown
+    (``None``) fields and empty containers are omitted outright so legacy
+    readers see absent keys, not nulls, and rows stay compact.
+    """
+
+    source = event.model_dump(mode="json")
+    record: dict[str, Any] = {}
+    for field in _LEDGER_FIELDS:
+        value = source.get(field)
+        if value is None or value in ({}, []):
+            continue
+        record[field] = value
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+
 
 #: Event-bus topic every ``TokenUsageEvent`` is published on. The host
 #: subscribes its durable ``TokenUsageTelemetryHandler`` to this topic;
@@ -355,7 +428,7 @@ class TokenUsageTelemetryHandler:
             with self._lock_factory():
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 with self._path.open("a", encoding="utf-8") as handle:
-                    handle.write(event.model_dump_json() + "\n")
+                    handle.write(_ledger_dump(event) + "\n")
         except (OSError, TimeoutError) as exc:
             # TimeoutError covers the host-injected lock timing out (dropping
             # one line is better than stalling the turn).
@@ -407,6 +480,7 @@ def build_token_usage_event(
     user_slug: str = "default",
     thread_store_slug: str = "",
     surface_id: str = "",
+    proxy_telemetry: dict[str, int] | None = None,
     extra: dict[str, Any] | None = None,
     metric_origins: dict[str, str] | None = None,
 ) -> TokenUsageEvent:
@@ -419,6 +493,11 @@ def build_token_usage_event(
     is derived from ``prompt + completion`` only when both are known and no
     explicit total was supplied (a supplied total, including ``0``, is
     authoritative); the derivation is recorded in ``metric_origins``.
+
+    ``proxy_telemetry`` carries the typed pack-owned proxy counters (e.g.
+    ``{"tokens_saved": 40000}``); they persist through the durable
+    allowlist, unlike the untyped ``extra`` bag, which is dropped at
+    append time and exists only for in-process joins.
 
     The ``kind`` literal discriminates billing shape:
         - ``chat_completion`` / ``embedding`` / ``image_generation`` /
@@ -447,6 +526,7 @@ def build_token_usage_event(
         cost_usd=nullable_float(cost_usd),
         time_cost_usd=nullable_float(time_cost_usd),
         provider_cost_usd=nullable_float(provider_cost_usd),
+        proxy_telemetry=dict(proxy_telemetry) if proxy_telemetry else {},
         metric_origins=origins,
         request_id=str(request_id or ""),
         mode_id=str(mode_id or ""),
@@ -461,16 +541,52 @@ def build_token_usage_event(
     )
 
 
+def _cache_split(
+    prompt: int, cached_tokens: int | None, cache_creation_tokens: int | None
+) -> tuple[int, int, int] | None:
+    """Resolve the prompt-side split to ``(uncached, cached, writes)``.
+
+    Sub-counters already ride inside ``prompt_tokens``, so the uncached
+    remainder is what is left after removing them. A wholly missing split
+    is just ``(prompt, 0, 0)`` — the provider gave no basis for a discount,
+    so the full prompt bills at the prompt rate. ``None`` flags inconsistent
+    provider data (the split exceeds the prompt): refuse rather than clamp.
+    """
+
+    cached = max(0, int(cached_tokens or 0))
+    writes = max(0, int(cache_creation_tokens or 0))
+    if cached + writes > prompt:
+        return None
+    return prompt - cached - writes, cached, writes
+
+
+def _cache_rates(
+    cached: int, writes: int, read_rate: float | None, write_rate: float | None
+) -> tuple[float, float] | None:
+    """Resolve the cache rates for a reported split, or ``None`` if unknown.
+
+    A positive count with an unknown rate makes the whole call unpriced:
+    pricing it at the prompt rate fabricates the very discount the split
+    exists to measure. Zero-count components never block — nothing
+    cost-bearing exists there — and an explicit ``0.0`` is a real free
+    rate, not missing data.
+    """
+
+    if (cached and read_rate is None) or (writes and write_rate is None):
+        return None
+    return read_rate or 0.0, write_rate or 0.0
+
+
 def estimate_call_cost_usd(
     *,
     prompt_tokens: int | None,
     completion_tokens: int | None,
     cached_tokens: int | None = None,
     cache_creation_tokens: int | None = None,
-    prompt_price: float = 0.0,
-    completion_price: float = 0.0,
-    cache_read_price: float = 0.0,
-    cache_write_price: float = 0.0,
+    prompt_price: float | None = None,
+    completion_price: float | None = None,
+    cache_read_price: float | None = None,
+    cache_write_price: float | None = None,
 ) -> float | None:
     """Price one completion from per-token USD rates, or ``None`` when unpriced.
 
@@ -478,57 +594,61 @@ def estimate_call_cost_usd(
     CLI footer used to re-derive locally, but with the prompt-cache split
     applied to both sides of the cache rather than just reads.
 
-    Cache-efficiency v2 honesty rule: ``None`` means "this call cannot be
-    priced from known data" — either a required count is unknown or the
-    model publishes no rates at all. A returned ``0.0`` is valid only when
-    the sourced rates genuinely price the call at zero (an explicitly
-    configured free rate), never as a stand-in for missing data: a
-    zero-cost estimate is not evidence that inference was free.
+    §4 sentinel semantics: rates are ``float | None`` — ``None`` means the
+    provider published no rate (unknown) and an explicit ``0.0`` means a
+    genuinely free tier. The return preserves that distinction:
 
-    The prompt side is a three-way split, because a cache hit is billed at
-    the provider's discounted read rate while a cache *population* is billed
-    at a premium write rate — pricing writes at the ordinary prompt rate
-    silently understates turns that warm a cache. ``cached_tokens`` and
-    ``cache_creation_tokens`` are the provider-reported sub-counters, and
-    ``prompt_tokens`` already includes both (OpenRouter/OpenAI report the
-    total prompt size), so the uncached remainder is what is left after
-    removing them.
+    - Any cost-bearing component whose rate is unknown makes the whole
+      call unknown (``None``). A missing cache rate is NEVER fallen back
+      to the prompt rate: the discounted/premium cache basis is exactly
+      what the split exists to bill, so guessing would fabricate a number.
+    - Explicit ``0.0`` rates price a real ``0.0`` — a free tier is a real
+      answer, not missing data.
+    - A zero-token call is ``0.0`` regardless of rates: nothing
+      cost-bearing exists, so the rates are moot.
 
-    A missing cache split (both sub-counters ``None``) prices the full
-    prompt at the prompt rate — the pre-split behaviour for providers that
-    publish no cache rates — and never invents a cached-read discount.
+    The prompt side is a three-way split: a cache hit bills at the read
+    rate while a cache *population* bills at a premium write rate.
+    ``cached_tokens``/``cache_creation_tokens`` are provider-reported
+    sub-counters already included in ``prompt_tokens``, so the uncached
+    remainder is what is left after removing them. A missing split (both
+    sub-counters unknown) prices the full prompt at the prompt rate — the
+    provider gave no basis for a discount. A split exceeding the prompt is
+    inconsistent provider data and refuses to price rather than clamping.
     """
 
     if prompt_tokens is None or completion_tokens is None:
         return None
     prompt = max(0, int(prompt_tokens))
     completion = max(0, int(completion_tokens))
-
-    prompt_rate = float(prompt_price or 0.0)
-    completion_rate = float(completion_price or 0.0)
-    if prompt_rate == 0.0 and completion_rate == 0.0:
-        # No sourced rate for the only components that can bill: the call
-        # is unpriced, not free.
+    if prompt == 0 and completion == 0:
+        # Nothing cost-bearing exists; unknown rates are moot, not blocking.
+        return 0.0
+    if (prompt and prompt_price is None) or (completion and completion_price is None):
+        # A component with a positive token count needs a sourced rate;
+        # unknown cannot yield a cost — not a zero, not a partial. A
+        # zero-count component bills nothing, so its rate never blocks.
         return None
 
-    if cached_tokens is None and cache_creation_tokens is None:
-        return max(0.0, prompt * prompt_rate + completion * completion_rate)
-
-    cached = max(0, int(cached_tokens or 0))
-    writes = max(0, int(cache_creation_tokens or 0))
-    if cached + writes > prompt:
+    split = _cache_split(prompt, cached_tokens, cache_creation_tokens)
+    if split is None:
         # Inconsistent provider data: the split exceeds the prompt. Refuse
         # to price rather than silently clamping and calling it an estimate.
         return None
-    uncached = prompt - cached - writes
+    uncached, cached, writes = split
 
-    read_rate = float(cache_read_price or 0.0) or prompt_rate
-    write_rate = float(cache_write_price or 0.0) or prompt_rate
+    rates = _cache_rates(cached, writes, cache_read_price, cache_write_price)
+    if rates is None:
+        return None
+    read_rate, write_rate = rates
 
     return max(
         0.0,
-        uncached * prompt_rate
+        # The ``or 0.0`` below only ever multiplies a zero-count component
+        # (a positive count with an unknown rate returned None above), so
+        # it zeroes nothing that bills — not the v1 sentinel collapse.
+        uncached * (prompt_price or 0.0)
+        + completion * (completion_price or 0.0)
         + cached * read_rate
-        + writes * write_rate
-        + completion * completion_rate,
+        + writes * write_rate,
     )

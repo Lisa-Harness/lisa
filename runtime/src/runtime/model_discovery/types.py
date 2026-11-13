@@ -67,17 +67,20 @@ class DiscoveredModel:
     #: ``max_tokens``, Google ``outputTokenLimit``, OpenRouter
     #: ``top_provider.max_completion_tokens``). 0 = not published.
     max_completion_tokens: int = 0
-    #: Per-token USD price for prompt (input) tokens when the provider
-    #: publishes it (e.g. OpenRouter's ``pricing.prompt``). 0.0 = unknown.
-    prompt_price: float = 0.0
-    #: Per-token USD price for completion (output) tokens when known.
-    completion_price: float = 0.0
-    #: Per-token USD price for prompt-cache reads when the provider publishes
-    #: it (OpenRouter ``pricing.input_cache_read``). 0.0 = unknown.
-    cache_read_price: float = 0.0
-    #: Per-token USD price for prompt-cache writes when the provider publishes
-    #: it (OpenRouter ``pricing.input_cache_write``). 0.0 = unknown.
-    cache_write_price: float = 0.0
+    #: Per-token USD rate for prompt (input) tokens when the provider
+    #: publishes it (e.g. OpenRouter's ``pricing.prompt``). ``None`` = not
+    #: published (unknown); ``0.0`` = an explicitly free tier.
+    prompt_price: float | None = None
+    #: Per-token USD rate for completion (output) tokens when known.
+    completion_price: float | None = None
+    #: Per-token USD rate for prompt-cache reads when the provider publishes
+    #: it (OpenRouter ``pricing.input_cache_read``). ``None`` = unknown;
+    #: ``0.0`` = explicitly free.
+    cache_read_price: float | None = None
+    #: Per-token USD rate for prompt-cache writes when the provider publishes
+    #: it (OpenRouter ``pricing.input_cache_write``). ``None`` = unknown;
+    #: ``0.0`` = explicitly free.
+    cache_write_price: float | None = None
     #: Currency for the prices above (ISO 4217). Defaults to USD; OpenRouter
     #: prices are USD-only today.
     pricing_currency: str = "USD"

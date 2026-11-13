@@ -242,31 +242,44 @@ def _int_or_zero(value: object) -> int:
         return 0
 
 
-def _price(value: object) -> float:
-    """Coerce an OpenRouter price (string, $/token) to a non-negative float.
+def _price(value: object) -> float | None:
+    """Coerce an OpenRouter price (string, $/token) into the §4 sentinel.
 
     OpenRouter's ``pricing.*`` fields are serialized as decimal strings.
-    Empty/unparseable → 0.0 (unknown).
+    Absent or unparseable → ``None`` (unknown); an explicit ``"0"`` →
+    ``0.0`` (a genuinely free tier, e.g. a $0/M model). The distinction
+    feeds straight into cost estimates: unknown makes a call unpriced,
+    free prices a real zero.
     """
 
+    if value is None:
+        return None
     try:
-        return max(0.0, float(str(value).strip()))
+        text = str(value).strip()
     except (TypeError, ValueError):
-        return 0.0
+        return None
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except (TypeError, ValueError):
+        return None
 
 
-def _cost_tier_from_price(prompt_price: float, completion_price: float) -> str:
+def _cost_tier_from_price(prompt_price: float | None, completion_price: float | None) -> str:
     """Map per-token USD price to a budget/standard/premium/frontier tier.
 
     Uses completion (output) price as the driver — output dominates a
     thinking/agent workload's cost. Thresholds are per-million-token USD;
-    they mirror the tier boundaries the router's rules assume. When neither
-    price is known, return "" so the manifest omits the tier and the router
-    falls back to a neutral default.
+    they mirror the tier boundaries the router's rules assume. When the
+    driver rate is unknown (``None``), return "" so the manifest omits
+    the tier and the router falls back to a neutral default.
     """
-    if completion_price <= 0.0 and prompt_price <= 0.0:
+    if completion_price is None:
+        # Unknown driver rate: omit the tier so the router falls back to a
+        # neutral default — unknown is not free, so it must not read budget.
         return ""
-    in_m = prompt_price * 1e6
+    in_m = prompt_price * 1e6 if prompt_price is not None else 0.0
     out_m = completion_price * 1e6
     # Roughly: free/local budget (<0.5), cheap standard (<3), premium (<15),
     # frontier beyond.

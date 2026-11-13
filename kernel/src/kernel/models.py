@@ -2638,6 +2638,14 @@ class WorkflowRuntimeUsageEvent(BusEvent):
     stop_reason: str = ""
 
 
+UpstreamRoute = Literal[
+    "kernel-published",
+    "openrouter-reported",
+    "provider-not-reported",
+    "not-applicable",
+]
+
+
 class TokenUsageEvent(BusEvent):
     """Telemetry envelope for one LLM provider call's token usage and cost.
 
@@ -2647,19 +2655,24 @@ class TokenUsageEvent(BusEvent):
     sequence, and nanosecond suffix as the idempotency key so events from
     separate writers cannot collide on coarse-grained clocks.
 
-    Schema v2 (cache-efficiency telemetry slice): every measured numeric is
-    nullable. ``None`` means the provider (or the harness) never surfaced
-    the value — unknown; a present ``0`` is a real measured zero. The
-    durable serializer drops ``thread_store_slug`` and persists only the
-    data-root-scoped ``thread_pseudonym_id``, so raw thread identity never
-    reaches disk.
+    Schema v3 (cache-efficiency §4): every measured numeric is nullable and
+    price signals are nullable *rates* — ``None`` means the provider (or
+    the harness) never surfaced the value — unknown; a present ``0`` is a
+    real measured zero and an explicit ``0.0`` rate is a genuinely free
+    tier, never a stand-in for missing data. Provenance fields name where
+    the effective model data came from and which upstream route served the
+    call. The durable serializer drops ``thread_store_slug`` and the
+    untyped ``extra`` bag, persisting only the privacy allowlist (typed
+    fields plus the data-root-scoped ``thread_pseudonym_id``), so raw
+    thread identity and any prompt-shaped payload never reach disk.
     """
 
     event_type: BusEventType = "token_used"
     #: Durable-schema revision. Rows without this field are legacy rows:
     # their zero-valued numerics are ambiguous (default- vs measured-zero)
-    # and readers must treat them as unknown, not measured zeros.
-    schema_version: int = 2
+    # and readers must treat them as unknown, not measured zeros. v3 adds
+    # the §4 provenance/route/policy fields and the typed proxy counters.
+    schema_version: int = 3
     conversation_id: str = ""
     user_slug: str = "default"
     surface_type: ConversationSurface = "personal_dm"
@@ -2712,6 +2725,33 @@ class TokenUsageEvent(BusEvent):
     duration_ms: float | None = None
     time_cost_usd: float | None = None
     latency_ms: int | None = None
+    #: Typed pack-owned proxy counters (e.g. ``{"tokens_saved": 40000}``),
+    #: allowlisted so a proxy's relay evidence survives persistence. Values
+    #: are non-negative ints; absent counters are simply absent keys.
+    proxy_telemetry: dict[str, int] = Field(default_factory=dict)
+    #: Which layer supplied the effective model data used for this call
+    #: (e.g. "manifest", "openrouter-catalog"). ``None`` = provenance not
+    #: produced by the host — explicitly unknown, never guessed.
+    effective_model_data_source: str | None = None
+    #: Version of that model data (catalog ``observed_at`` or manifest
+    #: revision). ``None`` = unknown, paired with the source above.
+    effective_model_data_version: str | None = None
+    #: How the provider served this call: ``kernel-published`` (the rates
+    #: the kernel manifest published matched), ``openrouter-reported`` (the
+    #: proxy relayed its own identity), ``provider-not-reported`` (the
+    #: provider sent no upstream identity), ``not-applicable`` (direct,
+    #: unproxied provider). ``None`` = not determined.
+    upstream_route: UpstreamRoute | None = None
+    #: Stable fingerprint of the cache policy in force (breakpoint layout,
+    #: fold settings) so prefix metrics are separable by policy. ``None`` =
+    #: not computed.
+    cache_policy_fingerprint: str | None = None
+    #: Provider-published cache TTL in seconds. Sourced only — never
+    #: inferred; ``None`` = the provider did not publish a TTL.
+    cache_ttl_seconds: int | None = None
+    #: Provider-published minimum cacheable-prefix length in characters.
+    #: Sourced only; ``None`` = not published.
+    cache_min_prefix_chars: int | None = None
     #: Per-field origin map for derived/estimated values, e.g.
     #: ``{"total_tokens": "derived"}``. Absent key = provider-reported or
     #: host-measured at the source. Known values: ``provider``, ``derived``,
