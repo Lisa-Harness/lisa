@@ -6,6 +6,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Baseline replay (cache-efficiency Workstream 4, SPEC §7 criterion 1):
+  ``runtime/cache_replay.py`` replays a whole ledger — or any window —
+  through the same capture, line-classification, and partition-fold
+  readers that back the live cache section, reproducing per-partition
+  aggregates with coverage, exclusion, and diagnostic counts beside
+  them. Read-only and checkpoint-free; a CLI entry
+  (``cache-replay <ledger> [--as-of ISO] [--window-days N] [--json]``)
+  reproduces the local 2026-11-12 baseline offline. Tests cover legacy
+  and fabricated-zero exclusion, malformed/invalid-UTF-8 rows counted
+  as incomplete, full-scan versus rolling-window behavior, and the
+  aggregate-only output contract.
+
 - Cache-efficiency Workstream 1 — honest cache measurement. ``/tokens``
   now appends a focused cache section computed at report time only
   (``runtime/cache_report.py``): per-partition cache request-hit proxy
