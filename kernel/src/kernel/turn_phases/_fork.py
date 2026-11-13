@@ -231,12 +231,30 @@ def _fork_child_budget(turn_budget: TurnBudget | None, n: int) -> TurnBudget | N
 
     A field set to ``0`` means unlimited and is passed through as ``0``.
     Returns ``None`` when the parent has no budget.
+
+    Finite fields are divided, then raised to the kernel's fork-child
+    floors (``fork_child_min_tool_calls`` / ``fork_child_min_total_tokens``)
+    when a large fan-out divides a share below one honest attempt's
+    envelope — the 2026-11-13 turn 1258 incident: 150/5 = 30 tool calls
+    starved a test-slice worker into "turn budget exhausted" at 31 calls.
+    Floors never apply to an unlimited (0) parent field and never loosen a
+    share that already exceeds them; each child stays individually bounded.
     """
     if turn_budget is None:
         return None
+
+    def _split(total: int, floor: int) -> int:
+        if total <= 0:
+            return 0
+        return max(total // n, floor)
+
     return TurnBudget(
-        max_tool_calls=(turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0),
-        max_total_tokens=(turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0),
+        max_tool_calls=_split(
+            turn_budget.max_tool_calls, _kernel_settings.fork_child_min_tool_calls
+        ),
+        max_total_tokens=_split(
+            turn_budget.max_total_tokens, _kernel_settings.fork_child_min_total_tokens
+        ),
         max_completion_tokens=(
             turn_budget.max_completion_tokens // n if turn_budget.max_completion_tokens else 0
         ),

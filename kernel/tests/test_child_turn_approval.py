@@ -41,3 +41,62 @@ def test_child_without_pending_approval_completes() -> None:
     )
 
     assert outcome.status == "complete"
+
+
+def test_reasoning_tail_child_is_interrupted_not_complete() -> None:
+    """A reasoning-overflow child is interrupted, not a verified ``ok``.
+
+    Regression for the 2026-11-13 turn 1258 incident: two coding_execute
+    fork children burned their completion cap on reasoning (no visible
+    answer) and their >150-char reasoning-tail caveat counted toward dense
+    content, so ``classify_child_turn`` reported both as ``complete``.
+    The parent's digest then claimed two successes that the model never
+    finished. The reasoning-tail quote still rides ``output_text`` so the
+    parent sees what the child was thinking, but the status says the work
+    was cut short.
+    """
+    child = TurnResult(
+        response_text="*The model produced no visible answer — reasoning consumed the "
+        "completion budget before any visible text — only internal reasoning. "
+        "Tail of its thinking, not a response:* > deliberating over the diff hunks",
+        content_source="reasoning_tail",
+    )
+
+    outcome = classify_child_turn(
+        child_result=child,
+        mode_id="coding_execute",
+        elapsed_ms=10,
+        action_tool_ids={"coding_apply_patch", "coding_commit"},
+    )
+
+    assert outcome.status == "interrupted"
+    assert "reasoning" in outcome.error_message.lower()
+    # The tail quote still rides the outcome for the parent's digest.
+    assert "deliberating over the diff hunks" in outcome.output_text
+
+
+def test_reasoning_tail_child_with_write_receipt_still_completes() -> None:
+    """A verified write beats the reasoning-tail gate.
+
+    A reasoning model can land its write and then keep thinking past the
+    visible-answer window — the receipts prove the work landed, so the
+    status is ``complete`` regardless of what the surfaced text looks like.
+    """
+    from kernel.models import EffectReceipt
+
+    child = TurnResult(
+        response_text="(reasoning tail quote — no visible answer)",
+        content_source="reasoning_tail",
+        effect_receipts=[
+            EffectReceipt(effect="write", capability_id="coding_apply_patch", artifact_id="art-1")
+        ],
+    )
+
+    outcome = classify_child_turn(
+        child_result=child,
+        mode_id="coding_execute",
+        elapsed_ms=10,
+        action_tool_ids={"coding_apply_patch", "coding_commit"},
+    )
+
+    assert outcome.status == "complete"

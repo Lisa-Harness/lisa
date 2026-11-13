@@ -6535,6 +6535,39 @@ def _resolve_provider_failure_diagnostic(
     return None
 
 
+def _render_fork_outcome_summary(fork_results: list[Any]) -> str:
+    """Render the fan-out digest for a parent that cannot synthesize.
+
+    Used when the loop broke on fork results with no model call to fold
+    them (terminal dispatch failure, budget out). Per child: status, the
+    write receipts it landed (verifiable work), and its partial output.
+    A child whose output came from a reasoning-only completion is labeled
+    as thinking, not a response.
+    """
+    lines: list[str] = ["## Fork fan-out outcome"]
+    for result in fork_results:
+        lines.append("")
+        lines.append(f"### {result.target.mode_id} — status: `{result.status}`")
+        _write_receipt_ids = [
+            r.get("capability_id", "")
+            for r in (result.effect_receipts or [])
+            if str(r.get("effect", "")) in ("write", "external_write") and r.get("artifact_id")
+        ]
+        if _write_receipt_ids:
+            lines.append(
+                "- **Verified writes**: "
+                + ", ".join(f"`{_rid}`" for _rid in _write_receipt_ids)
+                + " — this work is real; verify and continue it rather than re-creating it."
+            )
+        if result.error_message:
+            lines.append(f"- **Cause**: {result.error_message}")
+        output = (result.output_text or "").strip()
+        if output:
+            lines.append("- **Output**:")
+            lines.append(output)
+    return "\n".join(lines)
+
+
 async def _resolve_empty_turn_content(
     *,
     state: _TurnState,
@@ -6559,7 +6592,9 @@ async def _resolve_empty_turn_content(
 ) -> tuple[str, str, bool, YieldAction | None]:
     """Resolve the turn's final content when the loop broke with none.
 
-    Priority: the cap-pause diagnostic (the stuck-in-stage cap, NOT an
+    Priority: the provider-failure diagnostics, the fork fan-out outcome
+    digest (the loop broke on fork results before any model call could
+    fold them), the cap-pause diagnostic (the stuck-in-stage cap, NOT an
     operator signal), the operator exit (no content by design), a pending
     yield's question, the yield-policy fallback question (honest about
     whether the budget actually fired), and finally the legacy forced
@@ -6577,15 +6612,22 @@ async def _resolve_empty_turn_content(
     )
     if provider_failure_content is not None:
         return provider_failure_content, content_source, _yielded, pending_yield
+    # ── Fork fan-out outcome ────────────────────────────────────────
+    # The loop broke on fork results before the model could read them
+    # (terminal dispatch failure on any non-ok child). The turn 1258
+    # incident (2026-11-13): a 3/5 fan-out — one child landed verified
+    # write receipts, two were duds, two failed — surfaced as a bare
+    # "Fork child turns failed ... Their results are unverified." line;
+    # the successes and their write receipts were erased pre-model.
+    # Render the per-child digest instead: statuses, verified writes,
+    # and each child's partial output, so the operator (and the next
+    # turn's model, replaying the thread) sees what actually happened.
+    # A synthesis model call is NOT made here: the loop already broke on
+    # the failed children, so a forced completion would re-plan with the
+    # failures in hand — that is the NEXT turn's job against the persisted
+    # digest, not this turn's.
     if state.fork_results and any(result.status != "ok" for result in state.fork_results):
-        _failed_children = [
-            result.target.mode_id for result in state.fork_results if result.status != "ok"
-        ]
-        content = (
-            "Fork child turns failed or were interrupted after read-only calls: "
-            + ", ".join(_failed_children)
-            + ". Their results are unverified."
-        )
+        content = _render_fork_outcome_summary(state.fork_results)
     # ── Cap-pause diagnostic ────────────────────────────────────────
     # The stuck-in-stage cap (NOT an operator signal) broke the loop
     # before the model call. Surface a diagnostic so the user knows why
@@ -6593,7 +6635,6 @@ async def _resolve_empty_turn_content(
     # pause — the cap fired because the model was stuck in a loop (often
     # retrying a failing tool call). The diagnostic lets the user
     # intervene with the right path or instruction.
-    # ── Cap-pause diagnostic ────────────────────────────────
     # Built by ``_build_cap_pause_diagnostic`` (last-tool context
     # and structured operation context).
     if content:

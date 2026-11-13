@@ -7309,10 +7309,154 @@ async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yie
     child = result.fork_results[0]
     assert child.status == "no_tools"
     assert child.called_tool_names == ["fetch_page"]
-    # The parent must surface the fork-failure framing, not the generic
-    # iteration-budget yield question that masked the abort.
-    assert "read-only calls" in result.response_text or "never wrote" in result.response_text
+    # The parent surfaces the fork-outcome digest (per-child status + the
+    # hallucinated output), not the generic iteration-budget yield question
+    # that masked the abort. The digest names the failing child and quotes
+    # its unverified prose so the operator sees what was claimed.
+    assert "## Fork fan-out outcome" in result.response_text
+    assert "markdown — status: `no_tools`" in result.response_text
+    assert "Done — wrote it to disk." in result.response_text
     assert "iteration budget" not in result.response_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_fork_partial_success_surfaces_verified_writes_and_output() -> None:
+    """A mixed fan-out surfaces every child's status, verified writes, and
+    output — the canned failure line must not erase successful work.
+
+    Regression for the 2026-11-13 turn 1258 incident: a 3/5 fan-out (one
+    child landed verified write receipts, one was interrupted by its own
+    budget, one provider-timed-out) surfaced only "Fork child turns failed
+    or were interrupted after read-only calls: coding_execute, coding_execute.
+    Their results are unverified." — the successful child's report and its
+    write receipt were discarded before the model (or the operator) could
+    see them, and "unverified" was false for the receipt-carrying child.
+    """
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        msgs = kwargs.get("messages", [])
+        user_texts = [str(m.get("content", "")) for m in msgs if m.get("role") == "user"]
+        # The parent turn's user message names the task; the per-child
+        # scoped queries name their slice. The tool messages mark a
+        # dispatched call already made.
+        has_tool_result = any(m.get("role") == "tool" for m in msgs)
+        if not has_tool_result and not any("slice" in t for t in user_texts[1:]):
+            # Parent's first completion: fan out two scoped workers.
+            parent_user = user_texts[0] if user_texts else ""
+            if "apply the patch slices" in parent_user:
+                return _StubCompletion(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "fork",
+                                "arguments": (
+                                    '{"targets": ['
+                                    '{"mode_id": "markdown", "query": "slice A: apply"}, '
+                                    '{"mode_id": "markdown", "query": "slice B fetch_page docs"}'
+                                    "]}"
+                                ),
+                            },
+                        }
+                    ],
+                )
+        # Child A (slice A): apply one write, then report.
+        joined = "\n".join(user_texts)
+        if "slice A" in joined and "slice B" not in joined:
+            if not has_tool_result:
+                return _StubCompletion(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_a",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": '{"path": "a.md", "content": "A"}',
+                            },
+                        }
+                    ],
+                )
+            return _StubCompletion(content="Section A applied cleanly.")
+        # Child B (slice B): read once (honest read receipt), then burn
+        # the completion cap on reasoning with NO tool calls — the exact
+        # production shape from the 2026-11-13 incident (c1/c2: a couple
+        # of reads, then "reached its token cap before emitting a tool
+        # call"). The truncation-abort path ends the child with a
+        # reasoning-tail caveat; the classifier must mark it interrupted.
+        if not has_tool_result:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_b",
+                        "function": {"name": "fetch_page", "arguments": '{"url": "https://a"}'},
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content="",
+            reasoning_content="deliberating over the diff hunks at length",
+            finish_reason="length",
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+
+    # Register a write-effect catalog tool mirroring the production
+    # storage write shape: a successful call reports its artifact via
+    # output_json so the receipt carries artifact_id (the digest's
+    # "Verified writes" line reads that field).
+    from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
+    from kernel.tools.registry import get_tool_catalog
+
+    async def _write_file_tool(ctx: ToolExecutionContext) -> ToolResult:
+        params = ctx.parameters or {}
+        return ToolResult(
+            tool_id=ctx.tool_id,
+            output_text="Wrote doc.md",
+            output_json={"artifact_id": str(params.get("path") or "")},
+        )
+
+    class _SimpleNamespace:
+        pass
+
+    import types as _types
+
+    impl = _types.SimpleNamespace(execute=_write_file_tool)
+    _write_tool_def = ToolDefinition(
+        tool_id="write_file",
+        description="Test write tool.",
+        effect="write",
+        implementation_module=impl,
+    )
+    original_catalogs = dict(get_tool_catalog())
+    get_tool_catalog()["write_file"] = _write_tool_def
+    try:
+        result = await run_turn(mode_id="default", query="apply the patch slices", hooks=hooks)
+    finally:
+        get_tool_catalog().clear()
+        get_tool_catalog().update(original_catalogs)
+
+    # One child ok (with its write receipt), one interrupted: it burned the
+    # completion cap on reasoning after one honest read — the classifier's
+    # reasoning-tail gate marks it interrupted, not a verified "ok" (the
+    # pre-fix behavior accepted both c1 and c2 of the incident as "ok").
+    assert result.fork_results is not None
+    statuses = sorted(c.status for c in result.fork_results)
+    assert statuses == ["interrupted", "ok"]
+    ok_child = next(c for c in result.fork_results if c.status == "ok")
+    assert any(
+        r.get("effect") == "write" and r.get("artifact_id") for r in ok_child.effect_receipts
+    )
+    interrupted_child = next(c for c in result.fork_results if c.status == "interrupted")
+    assert "reasoning" in interrupted_child.error_message.lower()
+
+    # The digest carries the failing child's status AND the successful
+    # child's verified write + output — the old canned line dropped both.
+    text = result.response_text
+    assert "## Fork fan-out outcome" in text
+    assert "status: `ok`" in text
+    assert "Section A applied cleanly." in text
 
 
 def test_max_handoffs_per_turn_setting_is_bound() -> None:

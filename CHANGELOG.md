@@ -58,6 +58,36 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- A parent turn whose fork fan-out returned mixed results surfaces a
+  per-child outcome digest instead of the canned "Fork child turns failed
+  … Their results are unverified." line. The loop still breaks on a
+  non-ok child (terminal dispatch failure), but the digest renders every
+  child's status, its verified write receipts as a "verify and continue"
+  resume hint, the cause, and its partial output — so a partially
+  successful fan-out (the 2026-11-13 turn 1258 incident: 3/5 children
+  succeeded, one of them with write receipts in an owned worktree) can
+  be resumed instead of being mislabeled as total failure. Tests:
+  ``kernel/tests/test_turn_runner.py``.
+- ``classify_child_turn`` no longer accepts a reasoning-only completion
+  as a completed sub-turn. A child that consumed its completion budget
+  on reasoning (``content_source="reasoning_tail"``, the labeled
+  thinking-tail quote) is ``interrupted`` with a re-dispatch hint; its
+  tail quote still rides ``output_text`` for the parent's digest. A
+  verified write receipt beats the gate — a child that landed its write
+  but never surfaced an answer is still ``complete``. Previously the
+  >150-char caveat counted toward dense-content acceptance and two
+  thinking-overflow fork children reported ``ok`` (turn 1258). Tests:
+  ``kernel/tests/test_child_turn_approval.py``,
+  ``kernel/tests/test_turn_runner.py``.
+- Fork child budgets can no longer be starved below one honest attempt's
+  envelope by a large fan-out. ``_fork_child_budget`` raises a divided
+  share that falls below the new ``fork_child_min_tool_calls`` (75) /
+  ``fork_child_min_total_tokens`` (300K) kernel floors; unlimited (0)
+  parent fields stay unlimited. The 150/5 = 30-call share of a 5-way
+  fan-out terminated a test-slice worker with "turn budget exhausted"
+  after 31 read calls (turn 1258). Tests:
+  ``kernel/tests/test_turn_runner_transitions.py``.
+
 - Structured-output operations recover truncated model payloads before
   validation: ``parse_structured_payload`` runs one normalization pass —
   ``salvage_truncated_envelope`` (rebuild a closed JSON envelope from a
