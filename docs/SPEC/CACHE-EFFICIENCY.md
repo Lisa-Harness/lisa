@@ -17,6 +17,127 @@ The [model data layers specification](./MODEL-DATA-LAYERS.md) is authoritative
 for provider-published metadata, measured overlays, operator settings, and
 field provenance. This document does not redefine those layers.
 
+## Roadmap
+
+The work tracks four remaining problems. They are ordered by priority, not by
+a strict dependency chain: measurement ships first, the baseline replay and
+prefix oracle start in parallel with it, and the mode-handoff design starts
+as read-only investigation. Policy and routing changes and the final
+before/after comparison wait for qualified measurements.
+
+### Revision notes
+
+Corrections to earlier framing, recorded so the roadmap does not propagate
+them:
+
+- The §4 telemetry substrate has landed (schema v3 durable events, the
+  unknown-is-not-zero price sentinel cutover, the privacy allowlist), but §4
+  is not complete: events do not yet stamp effective model-data source and
+  version, the recorded upstream route is a classification rather than
+  observed provider identity, and no explicit cache-break event exists.
+- Cache aggregation is not absent: `_render.py` aggregates lifetime usage
+  and `introspect.py` emits a trailing 24-hour summary that renders missing
+  values as zero. Missing is cache-quality aggregation with honest unknown
+  handling.
+- Fold economics are not absent: the §5 positive-savings rule exists. What
+  is missing is measured-rate input, prefix-invalidation coordination, and
+  router and working-set use of qualified economics.
+- Data-layer precedence composes per field (operator over measured over
+  provider over host default, with field-specific authority); it is not one
+  global chain.
+- Section numbering below is historical and unchanged; this roadmap is
+  deliberately unnumbered.
+
+### Workstream 1 — Honest measurement
+
+Problem: per-call telemetry is collected, but cache hit behavior is never
+aggregated with honest unknown handling, so no qualified measurement exists
+to drive decisions.
+
+Remaining work:
+
+- Aggregate the existing token-usage ledger on read paths only, off-turn or
+  on report reads, never in-turn. Prefer rotation-safe incremental
+  ingestion; if that cannot be implemented honestly, use a bounded full scan
+  and say so.
+- Compute a cache request-hit proxy and cached-token share as separate
+  metrics; a missing cache counter stays unknown and is never counted as
+  zero.
+- Partition by provider, model, route, and cache policy where reliably
+  known; label unknown dimensions and never pool them as comparable. Do not
+  claim prompt-prefix attribution; no prefix identity exists yet.
+- Record gates, confidence, windows, and expiry with every snapshot. The
+  proposed gates (at least 30 samples, Wilson 95% half-width at most 0.15,
+  14-day rolling window, 7-day snapshot expiry) are an engineering proposal,
+  not normative facts; the implementation records the method it actually
+  used.
+- Write snapshots to the measured layer only when provider, model, route,
+  policy, and prefix identity are all known; otherwise mark them
+  unqualified and never let optimization read them.
+- Extend the `/tokens` surface with a focused cache report: cached-token
+  share, cost, unknown-cost coverage, and coverage/attribution for legacy
+  rows. Fix or explicitly mark legacy aggregates that imply missing equals
+  zero.
+- Stamp effective model-data source and version on every emitted event (the
+  remaining model-data-layers digest item).
+
+### Workstream 2 — Economics-aware policies
+
+Problem: folds, working-set sizing, and routing do not yet consult
+qualified measured economics, so §5 decisions rest on published or
+configured rates alone.
+
+Remaining work:
+
+- Feed quality-gated measured read/write rates into supersession fold
+  economics, keeping the conservative future-request estimate and the
+  iteration-budget cap; unavailable rates fall back to the configured
+  conservative policy.
+- Track cache-prefix state and its invalidation cause so folds happen at
+  already-lost prefixes and never double-rewrite a suffix that compaction
+  also rewrites.
+- Tune `working_set_tokens` from measured economics within the hard floor
+  and ceiling, and report the effective setting and its source.
+- Route on observed end-to-end cost for successful comparable tasks with
+  quality and capability constraints unchanged; unknown or sparse slices
+  preserve the existing route, and every change stays explainable.
+- No policy or routing change reads an unqualified snapshot.
+
+### Workstream 3 — Safe handoffs
+
+Problem: mode handoffs rebuild the prompt and the real cache-loss points
+are assumed rather than identified; never assume every handoff loses cache.
+
+Remaining work:
+
+- Deliver a prompt-layout design before any code: enumerate which prompt
+  components are invariant, variable, or provider-specific for each handoff
+  type and state the expected cache effect of each.
+- Keep invariant base instructions ahead of mode-specific content where the
+  provider can cache the unchanged prefix independently.
+- Never union tool schemas or widen authorization across modes to stabilize
+  a prefix; any ordering change ships with an equivalence argument and
+  tests.
+- If an optimization cannot preserve access boundaries and correct
+  instructions, accept the cache miss.
+
+### Workstream 4 — Evidence and validation
+
+Problem: nothing yet proves any change reduced uncached prompt work or
+cost, and the 2026-11-12 baseline has not been replayed through new
+readers.
+
+Remaining work:
+
+- Build the deterministic cache-prefix e2e oracle with per-iteration prefix
+  digests and the §7 assertions, including no duplicate fold/compaction
+  rewrite and expired-cache-is-not-a-changed-prefix.
+- Replay the local 2026-11-12 baseline through the new aggregation readers
+  and add regression tests over legacy, incomplete, and malformed rows.
+- Run a minimum 14-day before/after comparison that publishes sample
+  counts, coverage, and unknown share beside every result; an underpowered
+  or unattributed comparison is reported as inconclusive, not as savings.
+
 ## 4. Collect and use telemetry
 
 ### Durable event contract
