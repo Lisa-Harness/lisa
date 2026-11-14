@@ -128,7 +128,7 @@ result-object store and addressed as `run_ref` (`r<sha256>`).
 | `lisa` | Installed versions of `kernel`, `runtime`, `sdk`, and `mcp_server` |
 | `packs[]` | Name, version, and a content hash of each installed pack's tree |
 | `config` | Content hashes of the resolved mode, policy, and router configuration |
-| `model_data_version` | Effective model data version (see [model data layers](./MODEL-DATA-LAYERS.md)) |
+| `model_data_version` | Effective model data version (see [model data layers](./implemented/MODEL-DATA-LAYERS.md)) |
 | `host` | Host type and host protocol version |
 | `python` | Interpreter version |
 

@@ -49,9 +49,9 @@ The [project README](../README.md) explains the project and its current status.
   and the migration phases behind it.
 - [Model router](../sdk/src/sdk/router/README.md): per-iteration CEL rules
   and provider-independent model selection.
-- [Model data layers specification](SPEC/MODEL-DATA-LAYERS.md): separate
+- [Model data layers specification](SPEC/implemented/MODEL-DATA-LAYERS.md): separate
   provider facts, measured data, and operator-owned model settings.
-- [Cache efficiency specification](SPEC/CACHE-EFFICIENCY.md): telemetry,
+- [Cache efficiency specification](SPEC/implemented/CACHE-EFFICIENCY.md): telemetry,
   history folding, cache-preserving handoffs, and before/after measurement.
 - [Context routing](CONTEXT_ROUTING_GUIDE.md): evidence selectors, lanes,
   ranking, required candidates, and admission budgets.
