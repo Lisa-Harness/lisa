@@ -49,9 +49,9 @@ The [project README](../README.md) explains the project and its current status.
   and the migration phases behind it.
 - [Model router](../sdk/src/sdk/router/README.md): per-iteration CEL rules
   and provider-independent model selection.
-- [Model data layers specification](SPEC/MODEL-DATA-LAYERS.md): separate
+- [Model data layers specification](SPEC/implemented/MODEL-DATA-LAYERS.md): separate
   provider facts, measured data, and operator-owned model settings.
-- [Cache efficiency specification](SPEC/CACHE-EFFICIENCY.md): telemetry,
+- [Cache efficiency specification](SPEC/implemented/CACHE-EFFICIENCY.md): telemetry,
   history folding, cache-preserving handoffs, and before/after measurement.
 - [Context routing](CONTEXT_ROUTING_GUIDE.md): evidence selectors, lanes,
   ranking, required candidates, and admission budgets.
@@ -63,6 +63,16 @@ The [project README](../README.md) explains the project and its current status.
   consolidation, and thread provenance.
 - [Thread store specification](SPEC/THREAD_STORE.md): files, records,
   result references, and bounded read paths.
+- Observability and replay program (proposed, in order):
+  1. [Evidence envelope](SPEC/EVIDENCE-ENVELOPE.md): versioned ledger rows,
+     call-level join keys, run provenance, and delegation lineage.
+  2. [Model call archive](SPEC/MODEL-CALL-ARCHIVE.md): archived response for
+     every in-turn and off-turn model call.
+  3. [Turn replay](SPEC/TURN-REPLAY.md): re-run a recorded turn, detect
+     divergence, and export it as a regression scenario.
+  4. [Trace export and timeline](SPEC/TRACE-EXPORT-AND-TIMELINE.md): span
+     tree, OpenTelemetry export, propagation, timeline, and retention. Can
+     start after step 1.
 - [Prompt startup proposal](SPEC/PROMPT_STARTUP.md): deferred cache/lifecycle,
   in-process content/catalog, import and CLI correctness work.
 - [Go Connector SDK contract](GO_CONNECTOR_SDK.md): the language-neutral
