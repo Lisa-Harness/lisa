@@ -208,6 +208,132 @@ async def test_segments_without_ephemeral_tail_cache_the_single_stable_block() -
 
 
 @pytest.mark.asyncio
+async def test_factored_stable_segments_keep_single_last_stable_breakpoint() -> None:
+    """S0/S1 factored base: one breakpoint, on the final stable block.
+
+    Pins the wire shape the W3 factoring produces on the Anthropic
+    gateway: the invariant head (S0) and the mode tail (S1) ride as
+    separate text blocks, both stable, with exactly one explicit
+    ``cache_control`` — on the last stable block (S1). This asserts
+    request shape only; whether a provider serves the S0 prefix from
+    cache behind that single breakpoint is provider behavior no unit
+    test can establish.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+            SystemPromptSegment(text="MODE A tail", stability="stable"),
+        ),
+    )
+    await gateway.complete(request)
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert [block["text"] for block in system] == [
+        "INVARIANT harness + session",
+        "MODE A tail",
+    ]
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system[0]
+
+
+@pytest.mark.asyncio
+async def test_factored_segment_tail_swap_keeps_prefix_stable() -> None:
+    """An S1 swap changes only the tail block; S0 bytes and tools are stable.
+
+    Two sequential requests — mode tail A then mode tail B — with an
+    unchanged tool surface. The W3 factoring pays only if the wire
+    prefix ahead of the swapped block is byte-identical: same S0 text,
+    same translated tools payload, and the single breakpoint stays on
+    the last stable block across the swap. Request-shape guarantee
+    only; this measures nothing about what a provider caches.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file.",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    async def _send(tail_text: str, captured: dict[str, Any]) -> list[dict[str, Any]]:
+        gateway = _gateway(_response([_text_block("ok")]), captured)
+        request = CompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            model_def=_model_def(),
+            max_tokens=1024,
+            temperature=0.0,
+            tools=list(tools),
+            system_prompt_segments=(
+                SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+                SystemPromptSegment(text=tail_text, stability="stable"),
+            ),
+        )
+        await gateway.complete(request)
+        return captured["json"]["system"]
+
+    captured_a: dict[str, Any] = {}
+    captured_b: dict[str, Any] = {}
+    system_a = await _send("MODE A tail", captured_a)
+    system_b = await _send("MODE B tail", captured_b)
+
+    assert system_a[0]["text"] == system_b[0]["text"]  # S0 byte-identical
+    assert system_a[1]["text"] != system_b[1]["text"]  # S1 really swapped
+    assert system_a[1]["cache_control"] == {"type": "ephemeral"}
+    assert system_b[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system_a[0]
+    assert "cache_control" not in system_b[0]
+    assert captured_a["json"]["tools"] == captured_b["json"]["tools"]
+
+
+@pytest.mark.asyncio
+async def test_blank_mode_tail_breakpoint_falls_back_to_invariant_head() -> None:
+    """A blank S1 placeholder must not anchor the breakpoint.
+
+    ``SystemPromptSegments.from_parts`` stores a blank placeholder tail
+    for intro-less modes; the gateway skips blank segments, so the
+    single breakpoint lands on the last non-empty stable block — the
+    invariant head — instead of an empty block.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+            SystemPromptSegment(text="", stability="stable"),
+        ),
+    )
+    await gateway.complete(request)
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert system == [
+        {
+            "type": "text",
+            "text": "INVARIANT harness + session",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_prompt_cache_disabled_flattens_to_legacy_system_string() -> None:
     """With the host opt-out, segments flatten to the pre-segments string."""
     captured: dict[str, Any] = {}

@@ -105,6 +105,18 @@ class ContextHooks:
     #: returns the full system prompt. Default: ``mode_instruction`` only.
     assemble_system_prompt: Callable[[str, str | None], str] | None = None
 
+    #: Optional factored alternative to ``assemble_system_prompt``:
+    #: ``assemble_system_prompt_parts(mode_instruction, stage_instruction=None)``
+    #: returns ``(invariant, mode)`` where ``invariant`` is the
+    #: cross-mode stable prefix (harness + session + customizations) and
+    #: ``mode`` is the mode-variable tail. When wired, the turn loop
+    #: seeds a factored S0/S1 stable base and a mid-turn handoff swaps
+    #: only the mode tail — the invariant prefix bytes survive the
+    #: handoff, keeping the provider cache valid across mode switches
+    #: (docs/design-safe-handoff-prompt-layout.md). When absent, the
+    #: merged-base behavior is unchanged.
+    assemble_system_prompt_parts: Callable[[str, str | None], tuple[str, str]] | None = None
+
     #: ``assemble_user_context(mode_id, query, pre_turn_briefing,
     #: capability_manifest=None)`` returns extra user-context content injected
     #: before the query in the final user message. Default: empty string.

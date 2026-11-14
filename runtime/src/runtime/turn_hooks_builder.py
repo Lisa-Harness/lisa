@@ -78,6 +78,7 @@ from runtime.content_roots import load_disabled_pack_names
 from runtime.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
+    assemble_system_prompt_parts,
     context_budget_values_from_config,
 )
 from runtime.introspect import gather_introspection
@@ -1252,6 +1253,7 @@ class _WiredHooks:
     __slots__ = (
         "approval_service",
         "assemble_system_prompt",
+        "assemble_system_prompt_parts",
         "assemble_user_context",
         "capability_binding_provider",
         "complete_stream",
@@ -1275,6 +1277,7 @@ class _WiredHooks:
         resolve_model: Any,
         complete_stream: Any,
         assemble_system_prompt: Any,
+        assemble_system_prompt_parts: Any,
         assemble_user_context: Any,
         execute_operation: Any,
         on_turn_complete: Any,
@@ -1293,6 +1296,7 @@ class _WiredHooks:
         self.resolve_model = resolve_model
         self.complete_stream = complete_stream
         self.assemble_system_prompt = assemble_system_prompt
+        self.assemble_system_prompt_parts = assemble_system_prompt_parts
         self.assemble_user_context = assemble_user_context
         self.execute_operation = execute_operation
         self.on_turn_complete = on_turn_complete
@@ -1375,6 +1379,7 @@ def _assemble_turn_hooks(
         ),
         context=ContextHooks(
             assemble_system_prompt=wired.assemble_system_prompt,
+            assemble_system_prompt_parts=wired.assemble_system_prompt_parts,
             assemble_user_context=wired.assemble_user_context,
             # Stash the latest ContextBudgetSnapshot here each turn via the
             # _snapshot_sink wired into _assemble_user_context. Utilization-
@@ -1495,6 +1500,27 @@ def _assemble_runtime_system_prompt(
 ) -> str:
     """Assemble the system prompt from mode/stage instructions and session context."""
     return assemble_system_prompt(
+        mode_instruction,
+        stage_instruction,
+        loader,
+        session_instruction=runtime.session_plan.instructions.primary_body,
+        copilot_customizations=runtime.copilot_customizations_text,
+    )
+
+
+def _assemble_runtime_system_prompt_parts(
+    runtime: HostRuntime,
+    loader: Callable[[str], str],
+    mode_instruction: str,
+    stage_instruction: str | None,
+) -> tuple[str, str]:
+    """Assemble the factored ``(invariant, mode)`` system-prompt parts.
+
+    Bound as ``ContextHooks.assemble_system_prompt_parts`` so the kernel
+    seeds an S0/S1 factored stable base and mid-turn handoffs swap only
+    the mode tail (docs/design-safe-handoff-prompt-layout.md).
+    """
+    return assemble_system_prompt_parts(
         mode_instruction,
         stage_instruction,
         loader,
@@ -2153,6 +2179,9 @@ def build_turn_hooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,
             assemble_system_prompt=_assemble_system_prompt,
+            assemble_system_prompt_parts=partial(
+                _assemble_runtime_system_prompt_parts, runtime, loader
+            ),
             assemble_user_context=_assemble_user_context,
             execute_operation=_execute_operation,
             on_turn_complete=_on_turn_complete,

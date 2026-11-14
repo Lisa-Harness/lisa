@@ -170,16 +170,48 @@ def assemble_system_prompt(
     copilot_customizations: str = "",
 ) -> str:
     """Assemble the stable harness, session, mode, and stage instructions."""
-    parts = [
-        load_system_prompt(content_loader),
-        session_instruction,
-    ]
-    if copilot_customizations.strip():
-        parts.append(copilot_customizations.strip())
-    parts.append(mode_instruction)
-    if stage_instruction:
-        parts.append(stage_instruction)
-    return "\n\n".join(part for part in parts if part.strip())
+    return "\n\n".join(
+        part
+        for part in assemble_system_prompt_parts(
+            mode_instruction,
+            stage_instruction,
+            content_loader,
+            session_instruction=session_instruction,
+            copilot_customizations=copilot_customizations,
+        )
+        if part.strip()
+    )
+
+
+def assemble_system_prompt_parts(
+    mode_instruction: str,
+    stage_instruction: str | None,
+    content_loader: Callable[[str], str],
+    *,
+    session_instruction: str,
+    copilot_customizations: str = "",
+) -> tuple[str, str]:
+    """Assemble the system prompt as factored ``(invariant, mode)`` parts.
+
+    The invariant part (harness + session instruction + copilot
+    customizations) never changes mid-conversation; the mode part (mode
+    + stage instruction) is the only thing a mid-turn handoff rewrites.
+    Splitting them lets the kernel keep the invariant prefix bytes —
+    and therefore the provider prompt cache — alive across handoffs
+    (docs/design-safe-handoff-prompt-layout.md). Flattening the tuple
+    reproduces ``assemble_system_prompt`` byte-for-byte.
+    """
+    invariant = "\n\n".join(
+        part
+        for part in (
+            load_system_prompt(content_loader),
+            session_instruction,
+            copilot_customizations.strip(),
+        )
+        if part.strip()
+    )
+    mode = "\n\n".join(part for part in (mode_instruction, stage_instruction or "") if part.strip())
+    return invariant, mode
 
 
 # ---------------------------------------------------------------------------

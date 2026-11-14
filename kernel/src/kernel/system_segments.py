@@ -37,6 +37,19 @@ __all__ = [
     "SystemPromptSegments",
 ]
 
+#: Canonical slot name for the optional mode-variable tail of the stable
+#: base (the S1 of the safe-handoff prompt layout: mode + stage
+#: instructions). Splitting the stable base into an invariant head and
+#: this tail lets a mid-turn handoff swap only the tail, preserving the
+#: cached invariant prefix; see docs/design-safe-handoff-prompt-layout.md.
+N_MODE_TAIL = "mode_tail"
+
+#: A factored stable base leads with exactly these two stable segments:
+#: the invariant head (S0) and the mode tail (S1). See
+#: :meth:`SystemPromptSegments.from_parts` and
+#: docs/design-safe-handoff-prompt-layout.md.
+FACTORED_BASE_SEGMENT_COUNT = 2
+
 #: Canonical names for the per-turn dynamic (ephemeral) segments. Keeping the
 #: names in one module keeps the turn loop's mutation points greppable and
 #: gives tests a stable vocabulary to assert against.
@@ -68,6 +81,58 @@ class SystemPromptSegments:
 
     _stable: list[SystemPromptSegment] = field(default_factory=list)
     _dynamic: dict[str, SystemPromptSegment] = field(default_factory=dict)
+
+    @classmethod
+    def from_parts(cls, invariant: str, mode_tail: str) -> SystemPromptSegments:
+        """Seed the registry as a factored S0/S1 stable base.
+
+        ``invariant`` is the cross-mode prefix (harness + session +
+        copilot customizations) that never changes mid-conversation;
+        ``mode_tail`` is the mode + stage instruction a handoff swaps
+        via :meth:`replace_mode_tail`. The tail is stored as a *blank*
+        placeholder when empty so the head/tail boundary — and the
+        provider-visible cache boundary between them — stays stable
+        whether or not the target mode has an intro (flatten() drops
+        blanks, so the rendered bytes are identical either way).
+        """
+        head = invariant.strip()
+        if not head:
+            raise ValueError("Invariant prompt head cannot be empty")
+        tail = mode_tail.strip()
+        return cls(
+            _stable=[
+                SystemPromptSegment(text=head, stability="stable"),
+                SystemPromptSegment(text=tail, stability="stable"),
+            ]
+        )
+
+    def replace_mode_tail(self, mode_tail: str) -> None:
+        """Swap only the mode-variable stable tail (S1), keeping S0 bytes.
+
+        Used by the mid-turn handoff path when the registry was seeded
+        through :meth:`from_parts`: the invariant head survives the
+        handoff, so provider caches that cover the head stay valid. The
+        tail is always the second stable segment; an empty ``mode_tail``
+        stores a blank placeholder (dropped by flattening) rather than
+        collapsing the boundary.
+        """
+        if not self.has_factored_base():
+            raise ValueError("replace_mode_tail requires a factored base seeded via from_parts")
+        self._stable[1] = SystemPromptSegment(text=mode_tail.strip(), stability="stable")
+
+    def has_factored_base(self) -> bool:
+        """Report whether the stable base leads with a factored S0/S1 pair.
+
+        True exactly when the first two stable segments are the invariant
+        head and the mode tail seeded via :meth:`from_parts`. Segments
+        appended after them (mid-turn stage instructions) ride behind
+        the tail and do not disqualify the base; a registry seeded via
+        :meth:`from_base`, or collapsed back to a merged base by
+        :meth:`replace_base`, is not factored.
+        """
+        return len(self._stable) >= FACTORED_BASE_SEGMENT_COUNT and all(
+            s.is_stable for s in self._stable[:FACTORED_BASE_SEGMENT_COUNT]
+        )
 
     @classmethod
     def from_base(cls, stable_text: str) -> SystemPromptSegments:

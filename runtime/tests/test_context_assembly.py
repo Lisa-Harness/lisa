@@ -17,6 +17,38 @@ from runtime.session_context import RehydrateControls
 from runtime import context_assembly
 
 
+def test_assemble_system_prompt_parts_splits_invariant_and_mode() -> None:
+    """The invariant head is harness+session+customs; the mode part is mode+stage."""
+    invariant, mode = context_assembly.assemble_system_prompt_parts(
+        "MODE INSTRUCTIONS",
+        None,
+        content_loader=lambda _path: "HARNESS",
+        session_instruction="SESSION",
+        copilot_customizations="CUSTOM",
+    )
+    assert invariant == "HARNESS\n\nSESSION\n\nCUSTOM"
+    assert mode == "MODE INSTRUCTIONS"
+
+
+def test_flatten_of_parts_matches_assemble_system_prompt() -> None:
+    """Joining the parts reproduces the merged prompt byte-for-byte."""
+    parts = context_assembly.assemble_system_prompt_parts(
+        "MODE",
+        "STAGE",
+        content_loader=lambda _path: "HARNESS",
+        session_instruction="SESSION",
+        copilot_customizations="",
+    )
+    joined = "\n\n".join(part for part in parts if part.strip())
+    assert joined == context_assembly.assemble_system_prompt(
+        "MODE",
+        "STAGE",
+        content_loader=lambda _path: "HARNESS",
+        session_instruction="SESSION",
+        copilot_customizations="",
+    )
+
+
 def test_assemble_dynamic_user_context_includes_ambient_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
