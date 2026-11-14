@@ -276,15 +276,19 @@ Inspect the built wheel to ensure Markdown/YAML actually ships.
 
 The sandbox capability follows the memory-capability shape: the kernel owns
 the concept (a named capability whose floor is a declarative vocabulary),
-one pack owns the implementation (today `lisa-pack-bwrap`), and any pack
-may contribute floor needs. Two groups cooperate:
+a pack owns the implementation (`lisa-pack-bwrap` on Linux,
+`lisa-pack-powershell` on Windows), and any pack may contribute floor needs.
+Two groups cooperate:
 
 - `lisa.extensions.sandbox` — the implementation pack declares itself: an
-  entry returning `{"pack_name": ..., "validate_floor": callable}` where
-  the validator parses the final merged floor and raises on values the
-  implementation cannot enforce. Sessions select the owner explicitly via
-  `providers.capabilities.sandbox: <pack>`; a single registered
-  implementation auto-owns; ambiguity is a load error.
+  entry returning `{"pack_name": ..., "validate_floor": callable,
+  "runner": SandboxRunner}` where the validator parses the final merged floor
+  and raises on values the implementation cannot enforce. Sessions select the
+  owner explicitly via `providers.capabilities.sandbox: <pack>`; a single
+  registered implementation auto-owns; ambiguity is a load error. An
+  implementation that does not apply on a host (the Windows pack on Linux)
+  returns `None`, which discovery treats as a documented opt-out rather than
+  a broken entry point.
 - `lisa.extensions.sandbox_floors` — a consumer pack declares its needs:
   an entry returning `(pack_config, context) -> mapping | None`, where the
   mapping is a subset of the floor vocabulary (`execution`,
@@ -292,6 +296,41 @@ may contribute floor needs. Two groups cooperate:
   `tmpfs_budget_bytes`, `timeout_ceiling_seconds`). `context` carries
   `data_dir` (the host data root, for dynamically-derived paths) and
   `workspace_root`.
+
+#### The runner: how consumers stay provider-neutral
+
+A pack that must *execute* contained (rather than merely declare floor needs)
+must never name a sandbox tool. The implementation supplies a
+`kernel.sandbox_floor.SandboxRunner` on its declaration, and the runtime
+publishes it to every tool context as `ctx.sandbox_runner`:
+
+```python
+runner = ctx.sandbox_runner  # None when no implementation is active
+request = SandboxRunRequest(
+    argv=..., cwd=..., timeout_seconds=..., persistence="direct-write", paths={cwd: "rw"}
+)
+parameters = runner.build_request(request, floor=floor_for(runner.tool_id))
+envelope = await ctx.delegated_tool_dispatch(runner.tool_id, dict(parameters))
+result = runner.interpret_result(request, envelope)  # raises when unproven
+```
+
+Three rules make that boundary trustworthy:
+
+- **Structured, never textual.** A request carries an argv tuple, a cwd, a
+  timeout, and posture axes. No shell string crosses the boundary, so no
+  implementation can reintroduce quoting.
+- **Evidence, not optimism.** `interpret_result` must raise
+  `SandboxRunnerContractError` when the result cannot prove the posture it
+  was asked for. A consumer treats "returned a result" as "ran contained".
+- **Fail closed on absence.** `ctx.sandbox_runner is None` means no
+  implementation is active (missing pack, unimportable run tool, non-Windows
+  host with the Windows pack, undeliberate no-floor session). A consumer
+  requiring containment must refuse to run rather than fall back to the host.
+
+`path_attestation` states what a result can prove: `"result"` when the
+implementation reports the writable roots it actually had (bwrap,
+`pwsh_argv_run`), `"floor"` when per-path grants are validated at load time
+instead. Consumers read it if their guarantee depends on per-path evidence.
 
 Contributions merge **exclusively** onto the harness-authored floor
 (`resources.packs.configuration[owner].sandbox.floor`) at session

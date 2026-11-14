@@ -6,6 +6,28 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Provider-neutral sandbox **runner** (kernel/runtime): the sandbox capability
+  can now execute, not just declare a floor. ``SandboxImplementation`` gains an
+  optional ``runner`` (``kernel.sandbox_floor.SandboxRunner``) that a composing
+  pack dispatches through: ``build_request`` translates a neutral
+  ``SandboxRunRequest`` (argv, cwd, timeout, posture axes - structured, never a
+  shell string) into the implementation's own tool parameters, and
+  ``interpret_result`` must raise ``SandboxRunnerContractError`` unless the
+  result proves the requested containment. The runtime resolves the runner from
+  the selected owner in ``_merged_sandbox_floor`` (rejecting a declared runner
+  whose tool is absent from the live catalog), publishes it on
+  ``ctx.sandbox_runner`` for tools and ``OperationExecutionContext``, and
+  forwards it through child dispatches; ``HostServiceHandles.sandbox_runner``
+  carries it from host to context. Discovery now treats an entry point
+  returning ``None`` as a documented host-scoped opt-out (a Windows sandbox pack
+  on Linux) rather than a broken declaration, and validates any declared runner
+  against the protocol at load. ``packstest.ToolContextFactory`` gains the
+  matching ``sandbox_runner`` field. The coding pack's configured checks were
+  the motivating consumer: they hardcoded ``bwrap_run`` and could not run on
+  Windows, and now use whatever implementation the session selects. Documented
+  in ``docs/PACK_AUTHORING_GUIDE.md`` (the runner contract), the sandbox trust
+  workbook, and ``docs/CODING_WORKFLOW.md``.
+
 - Safe-handoff validation follow-up (post-``9d76130``): the W3 design
   document now carries its implementation status and honest evidence
   boundaries — the pre-implementation problem statement and sketch are

@@ -104,6 +104,16 @@ class ToolExecutionContext(BaseModel):
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
         default=None, exclude=True
     )
+    #: The session's selected sandbox implementation, expressed as the
+    #: provider-neutral runner surface (``kernel.sandbox_floor.SandboxRunner``).
+    #: A composing tool (the coding pack's configured checks) dispatches to
+    #: ``runner.tool_id`` and verifies through ``runner.interpret_result``
+    #: instead of naming a sandbox pack's tool id or result fields — so the
+    #: same tool works under bubblewrap on Linux and under a Windows sandbox
+    #: pack without a code change. ``None`` means no sandbox implementation is
+    #: active this session: a consumer that requires contained execution must
+    #: fail closed rather than run on the host.
+    sandbox_runner: Any = Field(default=None, exclude=True)
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = (
         Field(default=None, exclude=True)
     )
@@ -289,6 +299,10 @@ class OperationExecutionContext(BaseModel):
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
         default=None, exclude=True
     )
+    #: The session's selected sandbox runner (see the tool context's field of
+    #: the same name). Operations that compose contained execution read it
+    #: here and pass it down to the tool contexts they build.
+    sandbox_runner: Any = Field(default=None, exclude=True)
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
     task_id: str = Field(default="", exclude=True)

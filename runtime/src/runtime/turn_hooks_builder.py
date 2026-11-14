@@ -49,6 +49,7 @@ from kernel.sandbox_floor import (
     discover_sandbox_implementations,
     merge_sandbox_floor,
     resolve_sandbox_owner,
+    resolve_sandbox_runner,
 )
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder, ModelRouter
@@ -1266,6 +1267,7 @@ class _WiredHooks:
         "post_turn_slice",
         "pre_turn_slice",
         "resolve_model",
+        "sandbox_runner",
         "slice_tuning",
         "state_provider",
         "wire_context_seams",
@@ -1292,6 +1294,7 @@ class _WiredHooks:
         last_slice_finished_at: Any,
         slice_tuning: Any,
         wire_context_seams: Any,
+        sandbox_runner: Any = None,
     ) -> None:
         self.resolve_model = resolve_model
         self.complete_stream = complete_stream
@@ -1311,6 +1314,7 @@ class _WiredHooks:
         self.last_slice_finished_at = last_slice_finished_at
         self.slice_tuning = slice_tuning
         self.wire_context_seams = wire_context_seams
+        self.sandbox_runner = sandbox_runner
 
 
 def _coerce_turn_index(raw: Any) -> int | None:
@@ -1432,6 +1436,7 @@ def _assemble_turn_hooks(
             else None,
             data_dir=str(runtime.paths.data_dir),
             thread_dir=str(runtime.paths.thread_dir),
+            sandbox_runner=getattr(wired, "sandbox_runner", None),
         ),
         identity=turn_identity,
         recall=RecallHooks(
@@ -1709,7 +1714,7 @@ def _declared_config_owners(runtime: HostRuntime) -> set[str]:
 
 def _merged_sandbox_floor(
     runtime: HostRuntime,
-) -> tuple[str | None, dict[str, Any] | None, tuple[str, ...]]:
+) -> tuple[str | None, dict[str, Any] | None, tuple[str, ...], Any]:
     """Resolve the sandbox owner + the exclusive-merged floor for the session.
 
     Follows the memory-capability shape: the session's explicit
@@ -1721,12 +1726,15 @@ def _merged_sandbox_floor(
     ``floor_from_config`` semantics) so the merge never produces a floor
     the enforcer cannot parse.
 
-    Returns ``(owner_pack_name, merged_floor_or_None, contributing_packs)``.
-    ``owner_pack_name`` is ``None`` when no implementation is registered
-    (e.g. a Windows host without bubblewrap): contributions are still
-    validated pack-to-pack — a manifest conflict is a load-time authoring
-    error regardless of platform — but the merged floor is inert (same
-    posture as configuration naming absent packs).
+    Returns ``(owner_pack_name, merged_floor_or_None, contributing_packs,
+    runner_or_None)``. ``owner_pack_name`` is ``None`` when no implementation
+    is registered (e.g. a Windows host without bubblewrap): contributions are
+    still validated pack-to-pack — a manifest conflict is a load-time
+    authoring error regardless of platform — but the merged floor is inert
+    (same posture as configuration naming absent packs). ``runner`` is the
+    owner's declared execution surface, already checked against the live tool
+    catalog; consumers requiring contained execution read it and fail closed
+    when it is ``None``.
     """
     manifest = runtime.session_plan.manifest
     pack_configurations = manifest.resources.packs.configuration
@@ -1756,7 +1764,7 @@ def _merged_sandbox_floor(
         # there is no enforced posture to anchor.
         contributions = collect_pack_floor(contribution_entries, pack_configurations, context)
         merge_sandbox_floor({}, contributions)
-        return None, None, ()
+        return None, None, (), None
 
     entry_config = pack_configurations.get(owner.pack_name)
     authored: dict[str, Any] | None = None
@@ -1778,7 +1786,21 @@ def _merged_sandbox_floor(
             ", ".join(merge.contributing_packs),
             owner.pack_name,
         )
-    return owner.pack_name, dict(merge.floor), merge.contributing_packs
+    runner = resolve_sandbox_runner(owner, available_tool_ids=_live_tool_ids())
+    return owner.pack_name, dict(merge.floor), merge.contributing_packs, runner
+
+
+def _live_tool_ids() -> set[str]:
+    """Tool ids actually executable in this process.
+
+    The catalog drops tools whose implementation module cannot be imported,
+    so this is the right existence test for a declared runner: a sandbox
+    pack whose ``sandbox`` entry point loads but whose run tool does not must
+    not leave consumers dispatching into nothing.
+    """
+    from kernel.tools.registry import get_tool_catalog
+
+    return set(get_tool_catalog())
 
 
 def _session_workspace_root(runtime: HostRuntime) -> str:
@@ -1817,12 +1839,19 @@ def _materialize_sandbox_floor(
     return out
 
 
-def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindings:
+def _capability_binding_provider(
+    runtime: HostRuntime,
+) -> tuple[SessionCapabilityBindings, Any]:
     """Build the session capability bindings from the live catalogs.
 
     Extracted from ``build_turn_hooks`` to keep that assembler under the
     complexity ceiling; owns the operation/tool ref collection and the
     declared-config-owner resolution.
+
+    Returns the bindings plus the session's resolved sandbox runner. Both come
+    from one ``_merged_sandbox_floor`` call so the floor a consumer verifies
+    against and the runner it dispatches through can never come from two
+    different resolutions.
     """
     from kernel.operations.registry import get_operation_catalog
     from kernel.tools.registry import get_tool_catalog
@@ -1837,17 +1866,18 @@ def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindi
         for definition in get_tool_catalog().values()
         if definition.owner_id
     )
-    owner_pack, merged_floor, _contributing = _merged_sandbox_floor(runtime)
+    owner_pack, merged_floor, _contributing, runner = _merged_sandbox_floor(runtime)
     configuration = _materialize_sandbox_floor(
         runtime.session_plan.manifest.resources.packs.configuration,
         owner_pack,
         merged_floor,
     )
-    return SessionCapabilityBindings(
+    bindings = SessionCapabilityBindings(
         configuration,
         capabilities=capability_refs or None,
         declared_owners=_declared_config_owners(runtime),
     )
+    return bindings, runner
 
 
 def _transport_forwarder(transport: Any, runtime: HostRuntime | None = None) -> Any:
@@ -1915,7 +1945,7 @@ def build_turn_hooks(
     """
     ctx_dict = context if context is not None else {}
 
-    capability_binding_provider = _capability_binding_provider(runtime)
+    capability_binding_provider, sandbox_runner = _capability_binding_provider(runtime)
     approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
@@ -2196,5 +2226,6 @@ def build_turn_hooks(
             last_slice_finished_at=persisted_last_slice_finished_at,
             slice_tuning=slice_tuning,
             wire_context_seams=_wire_context_seams,
+            sandbox_runner=sandbox_runner,
         ),
     )

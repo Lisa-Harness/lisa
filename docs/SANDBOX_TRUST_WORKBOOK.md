@@ -60,7 +60,7 @@ two apart is the single most useful mental model you can carry.
 
 | Question | Answered by | Lives in |
 | --- | --- | --- |
-| **Where does a command run, and what may it touch?** | The sandbox **floor** (containment) | The session plan: `resources.packs.configuration["lisa-pack-bwrap"]["sandbox"]["floor"]` |
+| **Where does a command run, and what may it touch?** | The sandbox **floor** (containment) | The session plan: `resources.packs.configuration[<sandbox owner>]["sandbox"]["floor"]` — `lisa-pack-bwrap` on Linux, `lisa-pack-powershell` on Windows |
 | **Must the operator confirm it first?** | The approval **policy** | `<data_dir>/config/policy.yaml` (default `~/.lisa`) |
 
 Confusing these two is the source of most broken setups. Sandbox and approval
@@ -1079,8 +1079,11 @@ So the session plan must:
 
 1. **Include `lisa-pack-bwrap`** in `required` and `include`.
 2. **Set `providers.capabilities.sandbox: lisa-pack-bwrap`** — this is what
-   makes the bwrap pack the floor owner, so its floor is the one `bash_run`
-   reads.
+   makes the bwrap pack the floor owner (and the provider of the argv runner
+   composing packs dispatch through), so its floor is the one `bash_run`
+   reads. On Windows, select `lisa-pack-powershell` instead: it declares the
+   same capability with a Job Object runner, and its floor validator rejects
+   the Linux-only axes above rather than ignoring them.
 3. **Pin `execution: bare`** in that pack's floor.
 
 The pack's own README says the opposite — that removing the bwrap pack is

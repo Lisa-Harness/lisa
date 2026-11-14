@@ -1694,6 +1694,7 @@ async def execute_approved_invocation(
             "turn_index": hooks.identity.turn_index,
             "model_router": hooks.context_seams.model_router,
             "request_recorder": hooks.models.record_request,
+            "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
         }
         if invocation.target_kind == "tool":
             _tool_def = get_tool_catalog().get(invocation.target_id)
@@ -1874,6 +1875,7 @@ async def _pre_turn_memory_recall(
                 capability_binding_provider=hooks.services.capability_binding_provider,
                 approval_service=hooks.services.approval_service,
                 code_change_artifact_store=hooks.services.code_change_artifact_store,
+                sandbox_runner=getattr(hooks.services, "sandbox_runner", None),
                 workspace_id=hooks.identity.workspace_id,
                 user_id=hooks.identity.user_id,
                 user_slug=hooks.identity.user_slug,
@@ -8392,6 +8394,7 @@ def _wire_build_entry_ctx(
             "capability_binding_provider": hooks.services.capability_binding_provider,
             "approval_service": hooks.services.approval_service,
             "code_change_artifact_store": hooks.services.code_change_artifact_store,
+            "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
             "gateway_provider_fn": lambda: hooks.context_seams.provider_gateways,
             "workspace_id": hooks.identity.workspace_id,
             "user_id": hooks.identity.user_id,

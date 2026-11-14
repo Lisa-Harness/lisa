@@ -716,6 +716,31 @@ def _host_with_declared_bwrap(data_dir: Path) -> HostRuntime:
     return runtime
 
 
+class _StubRunner:
+    """Minimal ``SandboxRunner`` double for the host-side coding tests."""
+
+    tool_id = "bwrap_run"
+    path_attestation = "result"
+
+    def build_request(self, request: Any, *, floor: Any = None) -> dict[str, Any]:
+        return {
+            "argv": list(request.argv),
+            "cwd": request.cwd,
+            "timeout_seconds": request.timeout_seconds,
+            "overrides": {"persistence": request.persistence, "paths": dict(request.paths)},
+        }
+
+    def interpret_result(self, request: Any, envelope: Any) -> Any:
+        from kernel.sandbox_floor import SandboxRunResult
+
+        payload = dict(envelope.output_json or {})
+        return SandboxRunResult(
+            return_code=int(payload.get("return_code", 0)),
+            stdout=envelope.output_text or "",
+            stderr=str(payload.get("stderr", "")),
+        )
+
+
 def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Path | None = None):
     from kernel.capability_binding import ExecutionFloorView
     from kernel.models import ToolResult
@@ -751,7 +776,7 @@ def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Pa
     )
 
     async def contained(tool_id: str, parameters: object) -> ToolResult:
-        assert tool_id == "bwrap_run" and parameters["argv"] == ["true"]
+        assert tool_id == _StubRunner.tool_id and parameters["argv"] == ["true"]
         worktree = str(parameters["cwd"])
         return ToolResult(
             output_json={
@@ -763,6 +788,10 @@ def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Pa
             }
         )
 
+    # The coding pack never names a sandbox tool: it dispatches to whatever
+    # runner the session's sandbox implementation declares. This stub stands in
+    # for that implementation at the contract boundary.
+    factory.sandbox_runner = _StubRunner()
     factory.delegated_tool_dispatch = contained
     return factory
 
