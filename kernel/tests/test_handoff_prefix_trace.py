@@ -34,10 +34,13 @@ from kernel.cache_oracle import (
     shape_digest,
     tools_digest,
 )
+from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.provider_contracts import CompletionRequest, ModelDescriptor, SystemPromptSegment
 from kernel.testing.gateway_stub import StubGatewayProvider
+from kernel.tools.mcp_client import MCPToolPool
 from kernel.turn_hooks import ContextHooks, ModelHooks, OperationHooks, TurnHooks
-from kernel.turn_runner import ContextSeams, run_turn
+from kernel.turn_phases._tool_schemas import build_tool_surface
+from kernel.turn_runner import ContextSeams, _resolve_yield_policy, run_turn
 
 
 class _StubCompletion:
@@ -243,3 +246,92 @@ def test_trace_tool_authorization_change_stays_observable():
     )
     assert widened.break_reason == BREAK_TOOLS_CHANGED
     assert widened.tools_digest != tools_digest(_request([], [READ_TOOL]))
+
+
+@pytest.mark.asyncio
+async def test_real_handoff_tool_surface_matches_target_mode_phase1_surface():
+    """Through ``run_turn``: the post-handoff tool surface is exactly the
+    target mode's Phase-1 surface.
+
+    The authorization half of the W3 contract on the production path:
+    the handoff rebuilds schemas through the same assembler Phase 1 used
+    (``build_tool_surface``), so the surface changes only when the target
+    mode's authorization differs, never by carrying the entry mode's
+    schemas across (no union), and the rebuilt surface must still
+    advertise ``transition_stage``. Unlike the synthetic-oracle tests in
+    this module, this reads the tool arrays the real handoff put on the
+    wire for the ambient catalog's ``default`` -> ``markdown`` pair,
+    whose bound operations genuinely differ.
+    """
+    captured_segments: list[list[tuple[str, str]]] = []
+    captured_tools: list[list[str]] = []
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        provider = _provider_ref[0]
+        assert provider is not None and provider.last_gateway is not None
+        request = provider.last_gateway.last_request
+        assert request is not None
+        captured_segments.append([(s.text, s.stability) for s in request.system_prompt_segments])
+        captured_tools.append([str(t["function"]["name"]) for t in (request.tools or [])])
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "markdown")],
+            )
+        return _StubCompletion(content="Done.")
+
+    _provider_ref: list[StubGatewayProvider | None] = [None]
+    provider = StubGatewayProvider(two_step)
+    _provider_ref[0] = provider
+
+    hook_calls = 0
+
+    def parts(_mode_instruction: str, _stage_instruction: str | None) -> tuple[str, str]:
+        nonlocal hook_calls
+        hook_calls += 1
+        # Same shape as the real-path trace above: the factored base is
+        # what routes the handoff through the S1-only swap.
+        return S0_TEXT, (MODE_A if hook_calls == 1 else MODE_B)
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=two_step),
+        operations=OperationHooks(execute_operation=_stub_execute_operation),
+        context=ContextHooks(assemble_system_prompt_parts=parts),
+        context_seams=ContextSeams(provider_gateways=provider),
+    )
+    result = await run_turn(mode_id="default", query="write", hooks=hooks, max_tool_iterations=5)
+    assert result.handoff_to == "markdown"
+    assert len(captured_tools) >= 2
+
+    entry_surface, post_surface = captured_tools[0], captured_tools[-1]
+    # The ambient catalog binds different operations to ``default`` and
+    # ``markdown``, so this handoff really changes authorization — if
+    # the catalogs ever converge, fix the fixture instead of loosening
+    # this assertion.
+    assert entry_surface != post_surface
+    # Lifecycle stability: the rebuilt surface must still be able to
+    # hand off again (the 2026-08-06 rebuild regression class).
+    assert "transition_stage" in entry_surface
+    assert "transition_stage" in post_surface
+
+    # Expected: exactly what Phase 1 builds for the target mode — same
+    # assembler, real catalog config, an empty MCP pool (the turn ran
+    # with no configured MCP servers), the same resolved yield policy.
+    catalog = get_workflow_catalog()
+    target_config = catalog["markdown"]
+    expected, _stats = await build_tool_surface(
+        target_config,
+        pool=MCPToolPool([]),
+        yield_policy=_resolve_yield_policy(target_config, None),
+    )
+    expected_names = [str(schema["function"]["name"]) for schema in expected]
+    # Full-list equality pins membership AND order: any entry-mode
+    # schema carried across the handoff (a union) shows up as an extra
+    # name here. Which names differ is environment-dependent (the
+    # markdown pack's authored operation advertises only when its pack
+    # is installed), so no operation name is hardcoded — equality with
+    # the freshly built Phase-1 surface is the whole assertion.
+    assert post_surface == expected_names

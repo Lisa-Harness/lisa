@@ -6,6 +6,20 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Safe-handoff validation follow-up (post-``9d76130``): the W3 design
+  document now carries its implementation status and honest evidence
+  boundaries — the pre-implementation problem statement and sketch are
+  marked historical, cache-effect language is scoped to oracle-declared
+  request shape plus provider hypothesis, and a measurement protocol
+  section records the SPEC-mandated 14-day matched comparison steps
+  (none run yet). New tests pin the factored-base wire shape on the
+  Anthropic gateway (one explicit breakpoint on the last stable block
+  across an S1 swap, unchanged tools payload, blank-tail fallback to
+  the S0 anchor) and prove through the real ``run_turn`` handoff path
+  that the post-handoff tool surface equals the target mode's Phase-1
+  ``build_tool_surface`` output exactly — same schemas, same order, no
+  entry-mode union. No production behavior changes.
+
 - Factored stable-base prompt assembly (cache-efficiency Workstream 3
   implementation): an optional ``ContextHooks.assemble_system_prompt_parts``
   hook returns ``(invariant, mode)`` parts; the kernel seeds an S0/S1
