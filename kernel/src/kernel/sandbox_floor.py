@@ -11,11 +11,21 @@ Two entry-point groups cooperate:
 - ``lisa.extensions.sandbox`` — one per sandbox *implementation* pack. The
   entry returns a :class:`SandboxImplementation` describing which floor keys
   the implementation understands (``validate_floor`` must accept any mapping
-  the implementation can enforce and raise on what it cannot).
+  the implementation can enforce and raise on what it cannot) and, through a
+  :class:`SandboxRunner`, the tool that runs an argv under that floor.
 - ``lisa.extensions.sandbox_floors`` — any number of *consumer* packs. Each
   entry returns a :class:`SandboxFloorContribution` factory
   ``(pack_config, context) -> mapping | None`` where the mapping is a subset
   of the floor vocabulary (``paths`` union; scalars must agree — see below).
+
+The runner declaration is what keeps *consumers* provider-neutral. A pack
+that needs contained execution (the coding pack's configured checks) asks
+the session for *a* runner — ``ctx.sandbox_runner`` — instead of naming
+``bwrap_run``; the implementation pack says which tool plays that role and
+which result fields prove the containment actually happened
+(:attr:`SandboxRunner.containment_evidence`), so a Windows sandbox pack and
+a Linux bubblewrap pack answer the same question with their own primitive
+and their own evidence vocabulary.
 
 Merge semantics are **exclusive**, per harness policy: two packs may only
 co-author the floor by agreeing. A scalar axis named by two contributions
@@ -44,7 +54,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -73,6 +83,115 @@ FLOOR_KEYS: frozenset[str] = frozenset(
 
 #: Scalar (non-path) floor axes; exclusivity means identical values only.
 SCALAR_FLOOR_KEYS: frozenset[str] = FLOOR_KEYS - {"paths"}
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxRunRequest:
+    """One contained argv invocation a consumer asks the runner to perform.
+
+    Provider-neutral: the consumer states *what* it needs (an explicit argv,
+    a working directory, a timeout, and the posture axes its policy relies
+    on) and the implementation pack translates that into its own tool's
+    parameters. No shell string ever crosses this boundary — every axis here
+    is structured data, so no implementation can reintroduce shell quoting.
+    """
+
+    argv: tuple[str, ...]
+    cwd: str
+    timeout_seconds: int
+    #: Posture the consumer's guarantee depends on. The runner must either
+    #: enforce it or fail loudly; it may never silently substitute a looser
+    #: posture.
+    persistence: str = "direct-write"
+    #: Path grants the consumer requires, as ``path -> access``. The
+    #: implementation attests them per :attr:`SandboxRunner.path_attestation`.
+    paths: Mapping[str, str] = field(default_factory=dict)
+    #: Posture axes the floor allows and the implementation must therefore be
+    #: told explicitly: several implementations treat an unspecified request
+    #: axis as their own restrictive default, so omitting a granted axis
+    #: starves the run rather than loosening it.
+    network: str | None = None
+    device: str | None = None
+    ipc: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxExecutionEnvelope:
+    """The child tool's raw result, as a runner interpreter sees it."""
+
+    output_text: str = ""
+    output_json: Mapping[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxRunResult:
+    """A verified contained run, normalized for consumers."""
+
+    return_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    output_truncated: bool = False
+
+
+class SandboxRunnerContractError(RuntimeError):
+    """A runner rejected a request, or could not verify its own containment.
+
+    Consumers surface this verbatim: the class exists so a consumer can
+    distinguish "the sandbox refused / could not prove containment" (fail
+    closed, never retried on the host) from its own workflow errors.
+    """
+
+
+@runtime_checkable
+class SandboxRunner(Protocol):
+    """How one sandbox implementation runs an argv under its own floor.
+
+    The implementation pack owns both halves, because only it knows its
+    primitive: bubblewrap has path binds and a ``sandboxed``/``degraded``
+    result envelope, a Windows Job Object has neither. Consumers therefore
+    never name a tool id, a parameter shape, or an evidence field — they
+    call :meth:`build_request`, dispatch to :attr:`tool_id`, and call
+    :meth:`interpret_result`, which **must** raise
+    :class:`SandboxRunnerContractError` when the result cannot prove the
+    containment it was asked for.
+
+    ``path_attestation`` states what a *result* can prove about the request's
+    ``paths``:
+
+    - ``"result"`` — the result reports the writable roots the run actually
+      had, so a consumer can require its own path in that list.
+    - ``"floor"`` — the implementation cannot report per-path grants; it
+      instead validated the merged floor at load time
+      (:meth:`SandboxImplementation.validate_floor`), so a floor that names a
+      grant it cannot enforce is a load error rather than a weaker run.
+    """
+
+    #: Catalog tool id a consumer dispatches to.
+    tool_id: str
+    #: What this implementation's results can attest about requested paths.
+    path_attestation: str
+
+    def build_request(
+        self,
+        request: SandboxRunRequest,
+        *,
+        floor: Any = None,
+    ) -> Mapping[str, Any]:
+        """Translate a neutral request into the runner tool's parameters."""
+
+    def interpret_result(
+        self,
+        request: SandboxRunRequest,
+        envelope: SandboxExecutionEnvelope,
+    ) -> SandboxRunResult:
+        """Verify containment evidence and normalize the result.
+
+        Raises:
+            SandboxRunnerContractError: The run failed to start, or its
+                result does not prove the requested containment.
+        """
 
 
 class SandboxFloorConflict(ValueError):
@@ -164,10 +283,23 @@ class SandboxImplementation:
     ``lisa-pack-bwrap``); ``validate_floor`` receives the final merged
     mapping and raises ``ValueError`` when the implementation cannot
     enforce it (unknown keys, invalid values, inconsistent combination).
+
+    ``runner`` is the pack's execution surface: the tool a consumer
+    dispatches to in order to run an argv under this pack's floor, plus the
+    interpreter that proves the containment happened. It is optional so a
+    host can register an implementation it never composes through, but a
+    consumer that requires contained execution fails closed when it is
+    absent rather than falling back to the host.
     """
 
     pack_name: str
     validate_floor: SandboxFloorValidator
+    runner: SandboxRunner | None = None
+
+    @property
+    def runner_tool_id(self) -> str:
+        """Tool id consumers dispatch to, or ``""`` when none is declared."""
+        return self.runner.tool_id if self.runner is not None else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +612,41 @@ def _check_against_authored(
             )
 
 
+def _accept_runner(entry_name: str, runner: Any) -> SandboxRunner | None:
+    """Validate one declared runner; ``None`` warns instead of failing the load.
+
+    A malformed runner must not take the whole sandbox capability down (the
+    implementation's floor validation still works), but consumers that need
+    contained execution will fail closed, so the warning names the missing
+    protocol members.
+    """
+    if runner is None:
+        return None
+    if isinstance(runner, SandboxRunner):
+        if runner.path_attestation not in ("result", "floor"):
+            logger.warning(
+                "sandbox entry-point %r declared path_attestation=%r; expected "
+                "'result' or 'floor'. Consumers treating it as 'result' will "
+                "reject every run.",
+                entry_name,
+                getattr(runner, "path_attestation", None),
+            )
+        return runner
+    missing = [
+        member
+        for member in ("tool_id", "path_attestation", "build_request", "interpret_result")
+        if not hasattr(runner, member)
+    ]
+    logger.warning(
+        "sandbox entry-point %r declared a runner that does not satisfy "
+        "SandboxRunner (missing %s); consumers needing contained execution "
+        "will fail closed.",
+        entry_name,
+        ", ".join(missing) or "the protocol",
+    )
+    return None
+
+
 def discover_sandbox_implementations(
     excluded_packs: set[str] | None = None,
 ) -> list[SandboxImplementation]:
@@ -487,9 +654,14 @@ def discover_sandbox_implementations(
 
     Loads ``lisa.extensions.sandbox`` entry points in discovery order. Each
     entry must yield a :class:`SandboxImplementation` (or a mapping with
-    ``pack_name`` / ``validate_floor`` keys, accepted for test manifests).
-    Broken entry points are logged and skipped — a faulty pack must not
-    take the sandbox capability down with it.
+    ``pack_name`` / ``validate_floor`` keys plus an optional ``runner``,
+    accepted for test manifests). Broken entry points are logged and skipped
+    — a faulty pack must not take the sandbox capability down with it.
+
+    A declared ``runner`` is validated against the :class:`SandboxRunner`
+    protocol here rather than at first dispatch: an implementation whose
+    runner is malformed must fail at load, not after a consumer has already
+    committed to contained execution.
     """
     implementations: list[SandboxImplementation] = []
     for ep in importlib.metadata.entry_points(group=SANDBOX_ENTRY_POINT_GROUP):
@@ -505,11 +677,10 @@ def discover_sandbox_implementations(
             implementations.append(declared)
         elif isinstance(declared, Mapping):
             try:
-                implementations.append(
-                    SandboxImplementation(
-                        pack_name=str(declared["pack_name"] or pack_name),
-                        validate_floor=declared["validate_floor"],
-                    )
+                impl = SandboxImplementation(
+                    pack_name=str(declared["pack_name"] or pack_name),
+                    validate_floor=declared["validate_floor"],
+                    runner=None,
                 )
             except (KeyError, TypeError) as exc:
                 logger.warning(
@@ -517,7 +688,19 @@ def discover_sandbox_implementations(
                     ep.name,
                     exc,
                 )
+                continue
+            implementations.append(
+                replace(impl, runner=_accept_runner(ep.name, declared.get("runner")))
+            )
         else:
+            if declared is None:
+                # Documented opt-out: an implementation pack that does not
+                # apply on this host returns None rather than raising, so a
+                # cross-platform install never competes for ownership.
+                logger.debug(
+                    "sandbox entry-point %r opted out on this host (returned None).", ep.name
+                )
+                continue
             logger.warning(
                 "sandbox entry-point %r returned %r, expected SandboxImplementation; skipping",
                 ep.name,
@@ -552,6 +735,39 @@ def discover_sandbox_floor_contributions(
             continue
         entries.append(SandboxFloorContributionEntry(pack_name=pack_name, factory=factory))
     return entries
+
+
+def resolve_sandbox_runner(
+    owner: SandboxImplementation | None,
+    *,
+    available_tool_ids: set[str] | None = None,
+) -> SandboxRunner | None:
+    """Return the owner's runner when it is usable in this session.
+
+    Two conditions are load-time facts, not dispatch-time surprises:
+
+    - the owner must declare a runner at all (an implementation registered
+      only for floor validation composes nothing); and
+    - the runner's tool must be present in the live catalog, because a pack
+      whose implementation module failed to import has no executable surface
+      even though its ``sandbox`` entry point loaded.
+
+    ``None`` means consumers requiring containment fail closed with a
+    message that names the missing piece, instead of dispatching to a tool
+    id that does not exist.
+    """
+    if owner is None or owner.runner is None:
+        return None
+    if available_tool_ids is not None and owner.runner.tool_id not in available_tool_ids:
+        logger.warning(
+            "Sandbox implementation %s declares runner tool %r, which is not in "
+            "the active tool catalog; contained execution consumers will fail "
+            "closed this session.",
+            owner.pack_name,
+            owner.runner.tool_id,
+        )
+        return None
+    return owner.runner
 
 
 def resolve_sandbox_owner(
@@ -632,6 +848,7 @@ __all__ = [
     "SANDBOX_ENTRY_POINT_GROUP",
     "SANDBOX_FLOORS_ENTRY_POINT_GROUP",
     "SCALAR_FLOOR_KEYS",
+    "SandboxExecutionEnvelope",
     "SandboxFloorConflict",
     "SandboxFloorContext",
     "SandboxFloorContributionEntry",
@@ -639,9 +856,14 @@ __all__ = [
     "SandboxFloorMerge",
     "SandboxFloorValidator",
     "SandboxImplementation",
+    "SandboxRunRequest",
+    "SandboxRunResult",
+    "SandboxRunner",
+    "SandboxRunnerContractError",
     "collect_pack_floor",
     "discover_sandbox_floor_contributions",
     "discover_sandbox_implementations",
     "merge_sandbox_floor",
     "resolve_sandbox_owner",
+    "resolve_sandbox_runner",
 ]

@@ -294,6 +294,14 @@ class HostServiceHandles:
     #: store uses this rather than re-deriving a path the host never used.
     thread_dir: str = ""
 
+    #: The session's selected sandbox runner
+    #: (``kernel.sandbox_floor.SandboxRunner``): the provider-neutral surface a
+    #: composing pack uses to run an argv contained. Typed ``Any`` for the same
+    #: reason as the floor callable — the kernel never imports a pack. ``None``
+    #: means no sandbox implementation is active, and a consumer requiring
+    #: containment fails closed.
+    sandbox_runner: Any = None
+
 
 # ── TurnIdentity ────────────────────────────────────────────────────────
 @dataclass

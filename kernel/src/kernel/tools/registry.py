@@ -470,6 +470,11 @@ async def execute_tool(
                     "pack_config": EMPTY_PACK_CONFIGURATION,
                     "capability_binding_provider": provider,
                     "approval_request_id": "",
+                    # Carry the session's sandbox runner: a composed child
+                    # (e.g. a sandbox pack's run tool under a coding check)
+                    # resolves its own floor through the same provider, and a
+                    # consumer that dispatches further keeps the runner.
+                    "sandbox_runner": ctx.sandbox_runner,
                     # Carry the enclosing frame's idle-progress relay so a
                     # streaming child's publishes reset the PARENT's idle
                     # deadline too (see ToolExecutionContext.idle_progress_relay).

@@ -72,6 +72,7 @@ class ToolContextFactory:
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = None
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = None
     mcp_tool_call: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = None
+    sandbox_runner: Any = None
 
     def context(
         self,
@@ -94,6 +95,7 @@ class ToolContextFactory:
             execution_floor_for=self.execution_floor_for,
             delegated_tool_dispatch=self.delegated_tool_dispatch,
             mcp_tool_call=self.mcp_tool_call,
+            sandbox_runner=self.sandbox_runner,
             approval_service=None,
             approval_request_id=approval_request_id,
             task_id=self.identity.get("task_id", ""),

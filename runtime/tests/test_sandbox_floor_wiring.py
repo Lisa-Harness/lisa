@@ -65,7 +65,7 @@ def _no_discovered_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_no_implementations_yields_inert_floor() -> None:
     runtime = _runtime({})
-    owner, floor, contributing = builder._merged_sandbox_floor(runtime)
+    owner, floor, contributing, _runner = builder._merged_sandbox_floor(runtime)
     assert owner is None and floor is None and contributing == ()
 
 
@@ -92,7 +92,7 @@ def test_owner_auto_selected_and_contributions_merged(
         "discover_sandbox_floor_contributions",
         lambda **_: [_contribution(factory)],
     )
-    owner, floor, contributing = builder._merged_sandbox_floor(runtime)
+    owner, floor, contributing, _runner = builder._merged_sandbox_floor(runtime)
 
     assert owner == "lisa-pack-bwrap"
     assert floor is not None
@@ -198,3 +198,83 @@ def test_materialize_without_owner_is_plain_copy() -> None:
     configuration = {"lisa-pack-coding": {"workspace_root": "/ws"}}
     merged = builder._materialize_sandbox_floor(configuration, None, None)
     assert merged == configuration and merged is not configuration
+
+
+# ── Runner declaration (provider-neutral execution surface) ──────────────
+
+
+class _StubRunner:
+    """Minimal SandboxRunner double; consumers only read these members."""
+
+    tool_id = "bwrap_run"
+    path_attestation = "result"
+
+    def build_request(self, request: Any, *, floor: Any = None) -> dict[str, Any]:
+        return {"argv": list(request.argv), "cwd": request.cwd}
+
+    def interpret_result(self, request: Any, envelope: Any) -> Any:  # pragma: no cover
+        raise AssertionError("not exercised by wiring tests")
+
+
+def test_runner_is_resolved_from_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _StubRunner()
+    impl = SandboxImplementation(
+        pack_name="lisa-pack-bwrap",
+        validate_floor=lambda floor: None,
+        runner=runner,
+    )
+    runtime = _runtime({"lisa-pack-bwrap": {"sandbox": {"floor": {}}}})
+    monkeypatch.setattr(builder, "discover_sandbox_implementations", lambda **_: [impl])
+    monkeypatch.setattr(builder, "discover_sandbox_floor_contributions", lambda **_: [])
+    monkeypatch.setattr(builder, "_live_tool_ids", lambda: {"bwrap_run", "coding_verify"})
+
+    owner, _floor, _contributing, resolved = builder._merged_sandbox_floor(runtime)
+
+    assert owner == "lisa-pack-bwrap"
+    assert resolved is runner
+
+
+def test_runner_is_dropped_when_its_tool_is_not_in_the_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A pack whose sandbox entry point loads but whose run tool does not
+    # import must not leave consumers dispatching into nothing.
+    impl = SandboxImplementation(
+        pack_name="lisa-pack-bwrap",
+        validate_floor=lambda floor: None,
+        runner=_StubRunner(),
+    )
+    runtime = _runtime({"lisa-pack-bwrap": {"sandbox": {"floor": {}}}})
+    monkeypatch.setattr(builder, "discover_sandbox_implementations", lambda **_: [impl])
+    monkeypatch.setattr(builder, "discover_sandbox_floor_contributions", lambda **_: [])
+    monkeypatch.setattr(builder, "_live_tool_ids", set)
+
+    _owner, _floor, _contributing, resolved = builder._merged_sandbox_floor(runtime)
+
+    assert resolved is None
+
+
+def test_no_runner_is_declared_for_an_implementation_without_one() -> None:
+    assert _bwrap_impl().runner_tool_id == ""
+
+
+def test_runner_is_injected_into_turn_hook_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _StubRunner()
+    impl = SandboxImplementation(
+        pack_name="lisa-pack-bwrap",
+        validate_floor=lambda floor: None,
+        runner=runner,
+    )
+    runtime = _runtime({"lisa-pack-bwrap": {"sandbox": {"floor": {}}}})
+    monkeypatch.setattr(builder, "discover_sandbox_implementations", lambda **_: [impl])
+    monkeypatch.setattr(builder, "discover_sandbox_floor_contributions", lambda **_: [])
+    monkeypatch.setattr(builder, "_live_tool_ids", lambda: {"bwrap_run"})
+
+    bindings, resolved = builder._capability_binding_provider(runtime)
+
+    assert resolved is runner
+    assert "lisa-pack-bwrap" in bindings._owner_bindings
