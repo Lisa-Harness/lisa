@@ -48,9 +48,17 @@ def ensure_packs_venv(packs: tuple[str, ...], cache_dir: Path, *, rebuild: bool 
     editable: list[str] = []
     for path in [*framework, *(sources[p] for p in selected)]:
         editable += ["-e", str(path)]
-    _run(["uv", "pip", "install", "--quiet", "--python", str(venv / "bin" / "python"), *editable])
+    _run(["uv", "pip", "install", "--quiet", "--python", str(_venv_python(venv)), *editable])
     stamp.write_text(spec + "\n", encoding="utf-8")
     return venv
+
+
+def _venv_python(venv: Path) -> Path:
+    """The venv's interpreter: ``bin/python`` on POSIX, ``Scripts\\python.exe`` on Windows."""
+    posix = venv / "bin" / "python"
+    if posix.is_file():
+        return posix
+    return venv / "Scripts" / "python.exe"
 
 
 def _run(argv: list[str]) -> None:

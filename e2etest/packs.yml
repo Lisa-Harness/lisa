@@ -15,4 +15,5 @@ packs:
   lisa-pack-finances: ../../packs-wip/finances
   lisa-pack-markdown: ../../lisa-packs/markdown
   lisa-pack-personas: ../../lisa-packs/personas
+  lisa-pack-powershell: ../../lisa-packs/powershell
   lisa-pack-serper: ../../lisa-packs/serper
