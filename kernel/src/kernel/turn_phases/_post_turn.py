@@ -283,6 +283,11 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         # child turn must still name the parent turn and spawn dispatch.
         parent_turn_id=getattr(ctx, "parent_turn_id", "") or "",
         parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or "",
+        # The session's sandbox runner: a pack tool that runs contained
+        # (the coding pack's checks) dispatches through it. Dropping it
+        # here made every model-invoked contained tool see a runnerless
+        # session and fail closed (2026-11-15).
+        sandbox_runner=getattr(ctx, "sandbox_runner", None),
         mcp_tool_call=getattr(ctx, "mcp_tool_call", None),
     )
 

@@ -334,6 +334,28 @@ def test_to_tool_context_carries_the_thread_store_stem() -> None:
     assert tool_ctx.thread_store_slug == "u--conv-alpha"
 
 
+def test_to_tool_context_carries_the_sandbox_runner() -> None:
+    """A model-invoked contained tool still sees the session's runner.
+
+    The model dispatches pack tools through :func:`_to_tool_context`
+    (``mcp_tool_executor`` and the dispatch phase both build the tool
+    context this way). Dropping ``sandbox_runner`` there makes
+    ``run_contained`` fail closed with "no sandbox implementation is
+    active" even when the runtime resolved the owner's runner — the
+    entry context has it, the tool context the tool actually runs with
+    did not.
+    """
+    runner = SimpleNamespace(tool_id="bwrap_run")
+    ctx = OperationExecutionContext(
+        user_slug="u",
+        sandbox_runner=runner,
+    )
+    tool_ctx = _to_tool_context("coding_verify", ctx)
+    assert tool_ctx.sandbox_runner is runner
+    missing = _to_tool_context("coding_verify", SimpleNamespace())
+    assert missing.sandbox_runner is None
+
+
 # ── _build_minimal_context ─────────────────────────────────────────────
 
 
