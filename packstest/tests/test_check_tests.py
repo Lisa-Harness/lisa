@@ -166,16 +166,48 @@ class TestSelection:
         [
             "pyproject.toml",
             "uv.lock",
-            ".github/workflows/ci.yml",
-            "typings/something.pyi",
             "conftest.py",
             "vulture_allowlist.py",
+            "scripts/cache_report.py",
         ],
     )
     def test_cross_cutting_paths_escalate(self, path: str) -> None:
         testpaths, reason = check_tests.select_testpaths([path])
         assert testpaths == check_tests._all_testpaths()
         assert "cross-cutting" in reason
+
+    @pytest.mark.parametrize(
+        ("path", "owner"),
+        [
+            ("typings/sqlite_vec.pyi", None),
+            (".github/workflows/ci.yml", None),
+            (".github/instructions/engineering/python.instructions.md", None),
+        ],
+    )
+    def test_typings_and_github_do_not_escalate(self, path: str, owner: str | None) -> None:
+        """Stub and CI/agent paths cannot change a pytest outcome.
+
+        ``typings/`` feeds mypy's ``types`` check and ``.github/`` is CI and
+        agent configuration whose contract tests live in their own suites
+        (``test_check_docs`` mirrors the CI path filter itself). Neither is
+        reachable by pytest collection, so escalating on them would run the
+        full suite for every stub or workflow edit without buying coverage.
+        A ``.pyi`` under a package source tree still travels with its package
+        via the owner prefixes, which run before these checks.
+        """
+        testpaths, reason = check_tests.select_testpaths([path])
+        if owner is not None:
+            assert testpaths == list(check_tests.PACKAGE_TESTPATHS[owner])
+        else:
+            assert testpaths == []
+            assert "inert" in reason
+
+    def test_typings_alongside_code_still_runs_the_code_suites(self) -> None:
+        """A stub edit inside a package must not mask or widen the package run."""
+        testpaths, _ = check_tests.select_testpaths(
+            ["sdk/src/sdk/config.py", "typings/sqlite_vec.pyi"]
+        )
+        assert testpaths == list(check_tests.PACKAGE_TESTPATHS["sdk"])
 
     def test_unowned_path_escalates_instead_of_being_dropped(self) -> None:
         """A path outside every known package cannot be shown to be covered."""
@@ -205,7 +237,7 @@ class TestSelection:
         """
         testpaths, reason = check_tests.select_testpaths([path])
         assert testpaths == []
-        assert "documentation-only" in reason
+        assert "inert" in reason
 
     def test_documentation_alongside_code_still_runs_the_code_suites(self) -> None:
         testpaths, reason = check_tests.select_testpaths(["sdk/src/sdk/config.py", "CHANGELOG.md"])
@@ -247,6 +279,55 @@ class TestSelection:
         assert "no base ref resolved" in reason
 
 
+class TestPackageTierCap:
+    """--max-tier package is feedback scope; it can never certify the gate."""
+
+    def test_kernel_change_runs_owning_package_at_cap(self) -> None:
+        testpaths, reason = check_tests.select_testpaths(
+            ["kernel/src/kernel/models.py"], max_tier="package"
+        )
+        assert testpaths == list(check_tests.PACKAGE_TESTPATHS["kernel"])
+        assert "capped to owning package(s) kernel" in reason
+
+    def test_cross_cutting_path_with_packages_runs_packages_at_cap(self) -> None:
+        testpaths, reason = check_tests.select_testpaths(
+            ["sdk/src/sdk/config.py", "scripts/cache_report.py"], max_tier="package"
+        )
+        assert testpaths == list(check_tests.PACKAGE_TESTPATHS["sdk"])
+        assert "capped to owning package(s) sdk" in reason
+
+    def test_cross_cutting_path_without_packages_runs_nothing_at_cap(self) -> None:
+        """A script-only change reaches no owning package, so the cap runs none."""
+        testpaths, reason = check_tests.select_testpaths(
+            ["vulture_allowlist.py"], max_tier="package"
+        )
+        assert testpaths == []
+        assert "nothing to run at package tier" in reason
+
+    def test_package_change_is_identical_at_both_tiers(self) -> None:
+        package_paths = ["runtime/src/runtime/bootstrap.py"]
+        assert check_tests.select_testpaths(package_paths, max_tier="full") == (
+            check_tests.select_testpaths(package_paths, max_tier="package")
+        )
+
+    def test_unresolved_base_runs_nothing_at_cap(self) -> None:
+        """An unknown delta cannot be narrowed honestly, even for feedback."""
+        testpaths, reason = check_tests.select_testpaths(
+            ["sdk/src/sdk/config.py"], base_unresolved=True, max_tier="package"
+        )
+        assert testpaths == []
+        assert "no base ref resolved" in reason
+
+    def test_doc_only_change_runs_nothing_at_cap(self) -> None:
+        testpaths, _ = check_tests.select_testpaths(["CHANGELOG.md"], max_tier="package")
+        assert testpaths == []
+
+    def test_default_tier_is_full(self) -> None:
+        """The commit gate's no-argument call must keep escalating."""
+        testpaths, _ = check_tests.select_testpaths(["kernel/src/kernel/models.py"])
+        assert testpaths == check_tests._all_testpaths()
+
+
 class TestPathNormalization:
     """Git records paths in forms the selector must read correctly."""
 
@@ -264,9 +345,10 @@ class TestPathNormalization:
 
     def test_leading_dot_directory_is_not_stripped(self) -> None:
         """``.github`` must not become ``github`` (which would look unowned)."""
-        packages, escalate = check_tests.owning_packages([".github/x.yml"])
+        packages, escalate, inert = check_tests.owning_packages([".github/x.yml"])
         assert packages == set()
-        assert escalate == [".github/x.yml"]
+        assert escalate == []
+        assert inert is True
 
 
 class TestChangedPathsFromGit:
@@ -394,6 +476,33 @@ class TestCommittedDelta:
         paths = check_tests.committed_paths(cwd=repo, base=base)
         assert "sdk/src/sdk/config.py" in paths
         assert "kernel/pyproject.toml" not in paths
+
+    def test_advanced_dev_is_the_branch_point_for_a_worktree_branch(self, tmp_path: Path) -> None:
+        """``dev`` anchors the delta when it has advanced past ``main``.
+
+        Owned coding worktrees branch from ``dev``, so on a dev flow the branch
+        point is dev's tip, not main's merge-base. Without a dev candidate the
+        committed delta would include every commit dev gained over main,
+        escalating to the full suite on paths this branch never touched.
+        """
+        repo = tmp_path / "repo"
+        git = _init_repo(repo)
+        _commit(repo, git, "sdk/src/sdk/old.py", "x = 1\n", "main work")
+        # dev advances with someone else's runtime commit after main was cut.
+        subprocess.run([*git, "checkout", "-q", "-b", "dev", "main"], check=True)
+        _commit(repo, git, "runtime/src/runtime/other.py", "y = 2\n", "dev work")
+        dev_tip = _head(repo, git)
+        # The feature branch (as a worktree branch would) carries only its own work.
+        subprocess.run([*git, "checkout", "-q", "-b", "feature", "dev"], check=True)
+        _commit(repo, git, "sdk/src/sdk/config.py", "z = 3\n", "branch work")
+
+        base = check_tests.resolve_base(cwd=repo)
+        assert base == dev_tip
+        paths = check_tests.committed_paths(cwd=repo, base=base)
+        assert paths == ["sdk/src/sdk/config.py"]
+        # And the selection is narrow, not escalated by dev's past work.
+        testpaths, _ = check_tests.select_testpaths(paths)
+        assert testpaths == list(check_tests.PACKAGE_TESTPATHS["sdk"])
 
 
 class TestCommand:

@@ -53,6 +53,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,13 +120,16 @@ _COVERED_SCRIPTS: tuple[str, ...] = (
 )
 
 #: Paths whose effect cannot be scoped to one package: the full suite runs.
+#: Only entries a pytest collection could actually reach belong here: a change
+#: in one of these can alter which suites exist or what they import, so no
+#: subset is provably safe. Toolchain-only surfaces with their own gates stay
+#: out — widening every commit to the full suite for an edit a test run cannot
+#: observe is the expensive misfire this selector exists to avoid.
 _ESCALATE_PREFIXES: tuple[str, ...] = (
     "pyproject.toml",
     "uv.lock",
     "conftest.py",
-    "typings/",
     "scripts/",
-    ".github/",
     "vulture_allowlist.py",
 )
 
@@ -149,6 +153,18 @@ _DOC_ONLY_PREFIXES: tuple[str, ...] = (
     "LICENSE",
 )
 
+#: Toolchain and CI/agent configuration no pytest collection can reach, so they
+#: are ignored rather than escalated — the same safe direction as the doc-only
+#: list. ``typings/`` feeds mypy's ``types`` check (a stub cannot change which
+#: tests exist or what they import); ``.github/`` is CI and agent configuration
+#: whose contract tests live in their own suites (``test_check_docs`` mirrors
+#: the CI path filter itself). A ``.pyi`` under a package source tree still
+#: travels with its package via ``_OWNED_PREFIXES``, which run first.
+_TEST_INERT_PREFIXES: tuple[str, ...] = (
+    "typings/",
+    ".github/",
+)
+
 #: Packages whose changes escalate to the full suite. Kernel is the shared
 #: contract layer every other package imports, so a kernel change can reach
 #: all of them (see docs/TESTING.md "Test-selection tiers").
@@ -160,10 +176,13 @@ _PORCELAIN_PATH_OFFSET = 3
 
 #: Base refs tried when the caller does not name one. Each is reduced to its
 #: merge-base with ``HEAD``, and the most recent of those is the branch point.
-#: A stale candidate (an ``origin/main`` that has not been fetched, or a local
-#: ``main`` that has not been fast-forwarded) yields a merge-base older than the
-#: branch point, which would widen the delta to include other people's commits.
-_DEFAULT_BASE_CANDIDATES: tuple[str, ...] = ("origin/main", "main")
+#: A stale candidate (an unfetched origin ref, or a local branch that has not
+#: been fast-forwarded) yields a merge-base older than the branch point, which
+#: would widen the delta to include other people's commits. ``dev`` is here
+#: because owned worktrees branch from it (the coding pack's ``base_branch``),
+#: so a dev that has advanced past main must anchor the branch point, not the
+#: older main merge-base.
+_DEFAULT_BASE_CANDIDATES: tuple[str, ...] = ("origin/dev", "dev", "origin/main", "main")
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -301,21 +320,26 @@ def _normalize(raw: str) -> str:
     return path
 
 
-def owning_packages(paths: list[str]) -> tuple[set[str], list[str]]:
+def owning_packages(paths: list[str]) -> tuple[set[str], list[str], bool]:
     """Map changed paths to owning packages, returning escalations separately.
 
     An unowned path is an escalation, not a skip: a change outside every
-    known package cannot be shown to be covered by any subset.
+    known package cannot be shown to be covered by any subset. The third
+    element reports whether every non-escalated path was inert (doc-only or
+    test-inert), which lets the caller distinguish "nothing to run" from a
+    genuinely empty selection.
     """
 
     packages: set[str] = set()
     escalate: list[str] = []
+    inert_only = True
     for raw in paths:
         path = _normalize(raw)
         if not path:
             continue
         if path in _COVERED_SCRIPTS:
             packages.add("packstest")
+            inert_only = False
             continue
         if any(path == prefix or path.startswith(prefix) for prefix in _ESCALATE_PREFIXES):
             escalate.append(path)
@@ -330,46 +354,117 @@ def owning_packages(paths: list[str]) -> tuple[set[str], list[str]]:
         )
         if owner is not None:
             packages.add(owner)
+            inert_only = False
             continue
         if any(path == prefix or path.startswith(prefix) for prefix in _DOC_ONLY_PREFIXES):
             continue
+        if any(path == prefix or path.startswith(prefix) for prefix in _TEST_INERT_PREFIXES):
+            continue
         escalate.append(path)
-    return packages, escalate
+        inert_only = False
+    return packages, escalate, inert_only
 
 
-def select_testpaths(paths: list[str], *, base_unresolved: bool = False) -> tuple[list[str], str]:
-    """Return the testpaths to run and the reason for the selection."""
+def _escalation_selection(
+    message: str,
+    packages: set[str],
+    *,
+    max_tier: Literal["package", "full"],
+) -> tuple[list[str], str]:
+    """Resolve an escalation under the tier cap.
+
+    At the full tier an escalation runs everything. At the package tier it
+    runs only the owning packages it reached, or nothing when the escalated
+    paths serve no package at all. The capped selection omits the
+    kernel-consumer closure by construction: it is feedback scope, never
+    gate evidence.
+    """
+
+    if max_tier == "full":
+        return _all_testpaths(), message
+    if not packages:
+        return [], (f"{message}; but no owning package is reached, nothing to run at package tier")
+    names = ", ".join(sorted(packages))
+    return _package_testpaths(packages), (
+        f"{message}; capped to owning package(s) {names} (no consumer closure)"
+    )
+
+
+def select_testpaths(
+    paths: list[str],
+    *,
+    base_unresolved: bool = False,
+    max_tier: Literal["package", "full"] = "full",
+) -> tuple[list[str], str]:
+    """Return the testpaths to run and the reason for the selection.
+
+    ``max_tier='package'`` caps the selection at the package tier: the kernel
+    and cross-cutting escalations run the owning packages' testpaths instead
+    of the full suite. It is feedback scope while iterating, never the commit
+    gate — a capped run cannot prove consumer coverage, so the gate always
+    reads the default.
+    """
 
     if base_unresolved:
         # Without a base the committed delta is unknown, so the selection
         # cannot be shown to cover the branch.
-        return _all_testpaths(), (
-            "no base ref resolved; the committed delta is unknown, running the full suite"
-        )
+        reason = "no base ref resolved; the committed delta is unknown"
+        if max_tier == "package":
+            return [], f"{reason} — run the full suite instead"
+        return _all_testpaths(), f"{reason}, running the full suite"
 
     if not paths:
         # No observed changes means the artifact cannot be shown to be narrow;
         # a clean tree is not evidence that nothing needs testing.
         return _all_testpaths(), "no changed paths detected; running the full suite"
 
-    packages, escalate = owning_packages(paths)
-    escalated_packages = sorted(packages & _ESCALATE_PACKAGES)
-    if escalate:
-        sample = ", ".join(sorted(escalate)[:3])
-        return _all_testpaths(), f"cross-cutting path(s) require the full suite: {sample}"
-    if escalated_packages:
-        return _all_testpaths(), (
-            "kernel is the shared contract layer; a kernel change runs the full suite"
-        )
+    packages, escalate, inert_only = owning_packages(paths)
+
+    if escalate or packages & _ESCALATE_PACKAGES:
+        # An escalation must run the full suite unless the tier cap narrows
+        # it — and then only to what the escalated or kernel paths still own.
+        if escalate:
+            # A cross-cutting path can alter which suites exist or what they
+            # import, so the full tier never narrows it.
+            sample = ", ".join(sorted(escalate)[:3])
+            message = f"cross-cutting path(s) require the full suite: {sample}"
+        else:
+            message = "kernel is the shared contract layer; a kernel change runs the full suite"
+        return _escalation_selection(message, packages, max_tier=max_tier)
+
     if not packages:
-        # Documentation-only changes cannot affect behavior (CI skips the test
-        # matrix for them). Report it rather than running the suite for nothing.
-        return [], "documentation-only change; no test suites affected"
+        # Doc-only and test-inert changes cannot affect a test run (CI skips
+        # the matrix for documentation-only changes; the types check owns
+        # stubs and the docs gate owns CI/agent config). Report it rather
+        # than running the suite for nothing. An unclassifiable non-escalated
+        # path should be unreachable: every branch above either claims a
+        # package, skips, or escalates.
+        return [], (
+            "inert change (documentation, stubs, or CI config); no test suites affected"
+            if inert_only
+            else "no test suites affected"
+        )
+
+    return _package_selection(packages)
+
+
+def _package_testpaths(packages: set[str]) -> list[str]:
+    """Selected testpaths for ``packages`` in configured package order."""
 
     selected: list[str] = []
-    for package in sorted(packages):
-        selected.extend(PACKAGE_TESTPATHS[package])
-    return selected, f"affected package(s): {', '.join(sorted(packages))}"
+    for package in sorted(PACKAGE_TESTPATHS):
+        if package in packages:
+            selected.extend(PACKAGE_TESTPATHS[package])
+    return selected
+
+
+def _package_selection(packages: set[str]) -> tuple[list[str], str]:
+    """The plain package-tier selection every tier cap resolves to."""
+
+    return (
+        _package_testpaths(packages),
+        f"affected package(s): {', '.join(sorted(packages))}",
+    )
 
 
 def _all_testpaths() -> list[str]:
@@ -422,6 +517,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the pytest command instead of running it.",
     )
     parser.add_argument(
+        "--max-tier",
+        choices=("package", "full"),
+        default="full",
+        help=(
+            "Ceiling on the selection: 'full' (default, the commit gate) allows"
+            " the kernel and cross-cutting escalations; 'package' is feedback"
+            " scope while iterating — a kernel or cross-cutting change runs its"
+            " owning package testpaths without closing over their consumers."
+            " The commit gate must use the default."
+        ),
+    )
+    parser.add_argument(
         "--cwd",
         default=str(_REPO_ROOT),
         help="Repository root used for Git state and test execution.",
@@ -441,7 +548,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         base_unresolved = base is None
 
-    testpaths, reason = select_testpaths(paths, base_unresolved=base_unresolved)
+    testpaths, reason = select_testpaths(
+        paths, base_unresolved=base_unresolved, max_tier=args.max_tier
+    )
     print(f"check_tests: {reason}", file=sys.stderr)
     if not testpaths:
         print("check_tests: no suites selected", file=sys.stderr)

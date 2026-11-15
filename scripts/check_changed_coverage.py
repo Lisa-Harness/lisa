@@ -100,7 +100,8 @@ def check_coverage(coverage: Coverage, changes: dict[str, set[int]], cwd: Path) 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--base", help="Branch base ref (default: merge-base with origin/main/main)"
+        "--base",
+        help="Branch base ref (default: merge-base with origin/dev/dev, then origin/main/main)",
     )
     parser.add_argument("--cwd", type=Path, default=_ROOT, help="Repository root")
     parser.add_argument(
