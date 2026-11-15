@@ -567,9 +567,9 @@ class _TurnState:
     # kernel settings once per turn so the governor's decisions are
     # consistent even if the process-wide settings object is reloaded
     # mid-turn; ``estimator`` anchors on the kernel's counted request
-    # tokens and advances with byte deltas; ``epoch_done_for_crossing``
-    # implements the hysteresis (at most ONE batched ref-out epoch per
-    # soft-trigger crossing); ``truncation_tripped`` is the one-way
+    # tokens and advances with byte deltas; ``epoch_estimate`` implements
+    # the growth hysteresis between batched ref-out epochs;
+    # ``truncation_tripped`` is the one-way
     # output circuit-breaker (first finish_reason=length mid-turn).
     intra_turn_compaction: IntraTurnCompactionState = field(
         default_factory=IntraTurnCompactionState.from_settings

@@ -103,12 +103,17 @@ continuation retains consumed counters; approval does not reset budgets.
 The mid-turn governor (`kernel.turn_phases._compaction`) bounds the live
 provider message array inside one turn — the dimension the request-fit
 allocator only sees at call time. An incremental estimator is evaluated at
-every dispatch boundary; crossing `intra_turn_soft_trigger_share` of the
-window runs ONE batched ref-out epoch per crossing (hysteresis — between
-epochs the array is append-only, so normal dispatches extend the provider
-prefix cache instead of rewriting it). Large tool results are spilled to the
-thread store at delivery (preview + `r<sha256>` ref) before they ever enter
-the cached prefix; eviction is one-way and recovery is a dereference. At
+every dispatch boundary. The trigger is the smaller of
+`intra_turn_soft_trigger_share` of the model window and the mode's optional
+`working_set_tokens`. An epoch projects tool results to previews and
+ref-backed evidence inventories while checking the real model window and
+completion reserve; it never shrinks required non-tool input by pretending
+the model has a smaller window. A later epoch waits for 10% estimate growth
+or a fall below the trigger followed by a new crossing, so normal dispatches
+extend the provider prefix cache instead of rewriting it. Large tool results
+are spilled to the thread store at delivery (preview + `r<sha256>` ref)
+before they ever enter the cached prefix; eviction is one-way and recovery
+is a dereference. At
 `intra_turn_hard_ceiling_share` the governor refuses new large dispatches and
 forces a clean finish at the next dispatch boundary; the first output
 truncation trips a one-way circuit-breaker for the rest of the turn.

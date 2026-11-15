@@ -366,6 +366,60 @@ class TestProjectionIrreversible:
             messages, "task", persist, None, lambda ref: store[ref], budget_bytes=budget
         )
 
+    def test_compaction_epoch_preserves_refs_and_tool_pairing(self):
+        from types import SimpleNamespace
+
+        from kernel.turn_phases._compaction import (
+            IntraTurnCompactionState,
+            LiveArrayEstimator,
+            run_compaction_epoch,
+        )
+
+        store: dict[str, Any] = {}
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "query"},
+            *[m for i in range(6) for m in _tool_exchange(i, 10_000)],
+        ]
+        state = SimpleNamespace(
+            intra_turn_compaction=IntraTurnCompactionState(),
+            intra_turn_compaction_estimator=LiveArrayEstimator(),
+            provider_messages=[],
+            projected_message_count=0,
+            request_context_budget=None,
+        )
+        state.intra_turn_compaction_estimator.observe_request_tokens(22_000)
+        hooks = SimpleNamespace(
+            context=SimpleNamespace(
+                project_messages=lambda source, task_id, *, budget_bytes: self._project(
+                    source, store, budget_bytes
+                )
+            ),
+            identity=SimpleNamespace(task_id="task"),
+        )
+        assert (
+            run_compaction_epoch(
+                state=state,
+                hooks=hooks,
+                messages=messages,
+                model_def=SimpleNamespace(context_window=1_000_000),
+                tools=None,
+                max_tokens=16_384,
+                tool_budget_bytes=2400,
+                prompt_cache_key="cache-key",
+                log=SimpleNamespace(
+                    info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+                ),
+            )
+            is True
+        )
+        issued = {c["id"] for m in messages for c in m.get("tool_calls", [])}
+        answered = {m["tool_call_id"] for m in messages if m.get("role") == "tool"}
+        assert issued == answered
+        assert store
+        assert state.provider_messages == messages
+        assert state.projected_message_count == len(messages)
+
     def test_reprojecting_a_projection_never_re_expands(self):
         store: dict[str, Any] = {}
         raw = [m for i in range(3) for m in _tool_exchange(i, 6000)]

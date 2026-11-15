@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from types import SimpleNamespace
@@ -99,6 +100,16 @@ def test_estimator_adopted_after_epoch_resync_stays_consistent() -> None:
     assert estimator.estimate() >= 700
 
 
+def test_estimator_does_not_recount_bytes_after_a_new_request_anchor() -> None:
+    estimator = _est(1000)
+    estimator.observe_append({"content": "x" * 300})
+    assert estimator.estimate() == 1155
+    estimator.observe_request_tokens(1100)
+    assert estimator.estimate() == 1155
+    estimator.observe_append({"content": "y" * 300})
+    assert estimator.estimate() == 1260
+
+
 # ── Soft-trigger epoch ────────────────────────────────────────────────
 
 
@@ -130,7 +141,7 @@ def test_soft_epoch_fires_once_per_crossing_and_rewrites_array() -> None:
         log=_quiet_log(),
     )
     assert ran is True
-    assert state.intra_turn_compaction.epoch_done_for_crossing is True
+    assert state.intra_turn_compaction.epoch_estimate > 0
     # The live array was rewritten in place, same element count, smaller tool body.
     assert len(messages) == 3
     assert len(str(messages[2]["content"])) < 24000
@@ -174,7 +185,7 @@ def test_soft_epoch_inert_when_disabled_or_unobserved() -> None:
     assert maybe_run_soft_epoch(state=fresh, **common) is False
 
 
-def test_epoch_failure_keeps_array_and_sets_hysteresis_flag() -> None:
+def test_epoch_failure_keeps_array_and_allows_later_retry() -> None:
     state, _, messages = _epoch_fixture(window=1000, estimate=900)
 
     def _raising_projector(
@@ -195,8 +206,27 @@ def test_epoch_failure_keeps_array_and_sets_hysteresis_flag() -> None:
     )
     assert ran is False
     assert str(messages[2]["content"]) == "y" * 24000
-    # A failed epoch is not retried every dispatch boundary.
-    assert state.intra_turn_compaction.epoch_done_for_crossing is True
+    assert state.intra_turn_compaction.epoch_estimate > 0
+
+
+def test_soft_epoch_rearms_after_falling_below_trigger() -> None:
+    state, hooks, messages = _epoch_fixture(window=1000, estimate=900)
+    common: dict[str, Any] = {
+        "hooks": hooks,
+        "messages": messages,
+        "model_def": SimpleNamespace(context_window=1000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "m",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
+    assert maybe_run_soft_epoch(state=state, **common) is True
+    state.intra_turn_compaction_estimator = _est(100)
+    assert maybe_run_soft_epoch(state=state, **common) is False
+    state.intra_turn_compaction_estimator.observe_request_tokens(900)
+    messages[2]["content"] = "x" * 24000
+    assert maybe_run_soft_epoch(state=state, **common) is True
 
 
 # ── Hard ceiling + dispatch gate ──────────────────────────────────────
@@ -347,7 +377,7 @@ def test_spill_noop_without_persist_closure() -> None:
 def test_compaction_state_defaults_and_snapshot() -> None:
     cfg = IntraTurnCompactionState()
     assert cfg.enabled is True
-    assert cfg.epoch_done_for_crossing is False
+    assert cfg.epoch_estimate == 0
     assert cfg.finish_now is False
     snap = IntraTurnCompactionState.from_settings()
     assert snap.soft_trigger_share > 0.0
@@ -370,6 +400,144 @@ def test_mode_working_set_caps_soft_trigger() -> None:
     state, hooks, messages = _epoch_fixture(window=10_000, estimate=900)
     state.mode_config = SimpleNamespace(working_set_tokens=800)
     assert maybe_run_soft_epoch(state=state, hooks=hooks, messages=messages, **common) is True
+    assert len(str(messages[2]["content"])) < 24000
+
+
+def test_soft_epoch_accepts_ref_backed_inventory_projection() -> None:
+    state, _, messages = _epoch_fixture(window=1000, estimate=900)
+
+    def _inventory_projector(
+        source: list[dict[str, Any]], task_id: str, *, budget_bytes: int
+    ) -> list[dict[str, Any]]:
+        del task_id, budget_bytes
+        return [
+            {
+                "role": "assistant",
+                "content": json.dumps({"inventory_ref": "r" + "a" * 64}),
+            },
+            {"role": "tool", "tool_call_id": "recent", "content": "recent evidence"},
+        ]
+
+    assert (
+        maybe_run_soft_epoch(
+            state=state,
+            hooks=_hooks_with(_inventory_projector),
+            messages=messages,
+            model_def=SimpleNamespace(context_window=1000),
+            tools=None,
+            max_tokens=100,
+            mode_id="coding_execute",
+            prompt_cache_key="k",
+            log=_quiet_log(),
+        )
+        is True
+    )
+    assert len(messages) == 2
+    assert messages[0]["role"] == "assistant"
+    assert state.projected_message_count == len(messages)
+    assert len(state.provider_messages) == len(messages)
+
+
+def test_soft_epoch_preserves_projection_prefix_and_resume_state() -> None:
+    state, hooks, messages = _epoch_fixture(window=1000, estimate=900)
+    state.provider_messages = copy.deepcopy(messages)
+    state.projected_message_count = len(messages)
+    messages.extend(
+        [
+            {"role": "assistant", "content": "planning the next read"},
+            {"role": "tool", "tool_call_id": "new", "content": "new evidence"},
+        ]
+    )
+    assert (
+        maybe_run_soft_epoch(
+            state=state,
+            hooks=hooks,
+            messages=messages,
+            model_def=SimpleNamespace(context_window=1000),
+            tools=None,
+            max_tokens=100,
+            mode_id="m",
+            prompt_cache_key="k",
+            log=_quiet_log(),
+        )
+        is True
+    )
+    assert state.provider_messages == messages
+
+
+def test_noop_epoch_does_not_consume_the_crossing() -> None:
+    state, hooks, messages = _epoch_fixture(window=1000, estimate=900)
+    messages[2]["content"] = "small result"
+    common: dict[str, Any] = {
+        "hooks": hooks,
+        "messages": messages,
+        "model_def": SimpleNamespace(context_window=1000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "m",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
+    assert maybe_run_soft_epoch(state=state, **common) is False
+    first_estimate = state.intra_turn_compaction.epoch_estimate
+    assert first_estimate > 0
+    state.intra_turn_compaction_estimator.observe_request_tokens(950)
+    assert maybe_run_soft_epoch(state=state, **common) is False
+    state.intra_turn_compaction_estimator.observe_request_tokens(first_estimate + 200)
+    messages[2]["content"] = "x" * 24000
+    assert maybe_run_soft_epoch(state=state, **common) is True
+
+
+def test_failed_epoch_can_retry_after_recovery() -> None:
+    state, _, messages = _epoch_fixture(window=1000, estimate=900)
+    calls = 0
+
+    def _recovering_projector(
+        source: list[dict[str, Any]], task_id: str, *, budget_bytes: int
+    ) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary projector failure")
+        return _shortening_projector(source, task_id, budget_bytes=budget_bytes)
+
+    common: dict[str, Any] = {
+        "hooks": _hooks_with(_recovering_projector),
+        "messages": messages,
+        "model_def": SimpleNamespace(context_window=1000),
+        "tools": None,
+        "max_tokens": 100,
+        "mode_id": "m",
+        "prompt_cache_key": "k",
+        "log": _quiet_log(),
+    }
+    assert maybe_run_soft_epoch(state=state, **common) is False
+    failed_estimate = state.intra_turn_compaction.epoch_estimate
+    assert failed_estimate > 0
+    assert maybe_run_soft_epoch(state=state, **common) is False
+    state.intra_turn_compaction_estimator.observe_request_tokens(failed_estimate + 100)
+    assert maybe_run_soft_epoch(state=state, **common) is True
+
+
+def test_working_set_limits_results_without_shrinking_the_model_window() -> None:
+    state, hooks, messages = _epoch_fixture(window=1_000_000, estimate=80_000)
+    state.mode_config = SimpleNamespace(working_set_tokens=800)
+    assert (
+        maybe_run_soft_epoch(
+            state=state,
+            hooks=hooks,
+            messages=messages,
+            model_def=SimpleNamespace(context_window=1_000_000),
+            tools=None,
+            max_tokens=16384,
+            mode_id="coding_execute",
+            prompt_cache_key="k",
+            log=_quiet_log(),
+        )
+        is True
+    )
+    assert state.request_context_budget is not None
+    assert state.request_context_budget.window_tokens == 1_000_000
     assert len(str(messages[2]["content"])) < 24000
 
 

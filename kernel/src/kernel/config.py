@@ -394,17 +394,18 @@ class Settings(BaseSettings):
 
     # ── Intra-turn compaction (turn-1116) ────────────────────────────
     # Master flag for the mid-turn context governor: an incremental live
-    # -array estimator, ONE batched ref-out epoch per soft-trigger
-    # crossing (hysteresis), a hard ceiling that denies new large
+    # -array estimator, growth-hysteresis batched ref-out epochs, a hard
+    # ceiling that denies new large
     # dispatches, and a one-truncation output circuit-breaker. Default
     # ON with conservative thresholds; set
     # ``INTRA_TURN_COMPACTION_ENABLED=false`` to disable the whole
     # mechanism and fall back to the reactive request-fit reduction
     # alone.
     intra_turn_compaction_enabled: bool = Field(default=True)
-    # Soft trigger: at/above this share of the model context window, the
-    # governor runs ONE batched ref-out epoch (spilling large tool
-    # results to the thread store and leaving previews + refs). Between
+    # Soft trigger: at/above this share of the model context window (or a
+    # mode's lower working-set trigger), the governor runs a batched ref-out
+    # epoch (spilling large tool results to the thread store and leaving
+    # previews + refs). Between
     # epochs the live array is append-only, which is also what keeps
     # normal dispatches cache-hits instead of prefix rewrites. Chosen
     # conservatively low: an early epoch costs one rewrite; a late one

@@ -1,8 +1,8 @@
 """Intra-turn context compaction: live-array estimator, epoch evictor, gates.
 
-Design: ``docs/explainer/intra-turn-compaction-design.md`` (mechanism) and
-``docs/design/intra-turn-compaction-cache-policy.md`` (cache policy layer).
-Motivated by the 2026-10-31 turn-1116 incident: 61 tool dispatches kept
+The governing contracts are ``docs/TOKEN_BUDGET.md`` and
+``docs/CONTEXT_LIFECYCLE.md``. Motivated by the 2026-10-31 turn-1116 incident:
+61 tool dispatches kept
 full-text results resident in the live provider message array (~144K-token
 average calls), output headroom collapsed, an edit batch was cut mid-JSON,
 and the starved turn died in a hallucination spiral.
@@ -15,15 +15,14 @@ Three kernel-owned pieces:
   advanced with byte deltas between requests. Under-counting invites
   output truncation; over-counting only forces an early compaction, so
   every uncertainty rounds UP.
-- :func:`compact_if_soft_triggered` — the mid-turn governor's soft path.
-  At most ONE batched ref-out epoch per soft-trigger crossing
-  (hysteresis): between epochs the live array is append-only, so normal
-  dispatches extend the provider's cached prefix instead of rewriting it.
-  The epoch forces the existing ``fit_request_context`` reduction (the
-  proven host-projector path: newest-first near-tail eviction with
-  dereferenceable result refs) at a window fraction well below the
-  reactive limit, then rewrites the live array in place and resyncs the
-  projection bookkeeping.
+- :func:`maybe_run_soft_epoch` — the mid-turn governor's soft path.
+  A mode's working set lowers the trigger and sizes the epoch's tool-result
+  cap, while the allocator still checks the real model window. Growth
+  hysteresis keeps the live
+  array append-only between epochs, so normal dispatches extend the
+  provider's cached prefix instead of rewriting it. The epoch uses the
+  host projector's ref-backed previews and evidence inventories, then
+  synchronizes the live and projected arrays as one coherent state.
 - :func:`hard_ceiling_stop_reason` — the hard ceiling. When the estimate
   crosses the configured share of the window, large tool dispatches are
   denied (gates live at the prepare-dispatch boundary) and the loop is
@@ -40,12 +39,17 @@ double the cache-rewrite tax cannot occur.
 
 from __future__ import annotations
 
+import copy
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from kernel.config import settings as _kernel_settings
-from kernel.context.request_budget import estimate_request_tokens, fit_request_context
+from kernel.context.request_budget import (
+    ResultProjector,
+    estimate_request_tokens,
+    fit_request_context,
+)
 from kernel.provider_contracts import CompletionRequest
 
 
@@ -55,9 +59,9 @@ class IntraTurnCompactionState:
 
     Mirrors the kernel settings once per turn so every governor decision
     inside one turn reads consistent thresholds even if the process-wide
-    settings object is reloaded mid-turn. ``epoch_done_for_crossing``
-    implements the hysteresis: at most ONE batched ref-out epoch per
-    soft-trigger crossing.
+    settings object is reloaded mid-turn. ``epoch_estimate`` records the
+    last attempted epoch so the next rewrite waits for a new crossing or
+    meaningful growth, rather than retrying a failed projector every call.
     """
 
     enabled: bool = True
@@ -68,7 +72,8 @@ class IntraTurnCompactionState:
     history_epoch_min_tokens: int = 12_000
     cache_read_share: float = 0.1
     cache_write_share: float = 1.25
-    epoch_done_for_crossing: bool = False
+    epoch_estimate: int = 0
+    epoch_failures: int = 0
     finish_now: bool = False
 
     @classmethod
@@ -111,8 +116,9 @@ class LiveArrayEstimator:
     _observed: bool = False
 
     def observe_request_tokens(self, counted_input_tokens: int) -> None:
-        """Adopt the kernel's counted input tokens for the last request."""
+        """Adopt a new request anchor; appended bytes are already in it."""
         self._estimate = max(self._estimate, int(counted_input_tokens))
+        self._live_bytes = 0
         self._observed = True
 
     def observe_append(self, message: dict[str, Any]) -> None:
@@ -138,33 +144,16 @@ class LiveArrayEstimator:
         self._estimate = max(0, self._estimate - bytes_removed // 4)
 
 
-class _WindowFitter:
-    """Callable shim that fits a request to a fraction of the model window.
+def _epoch_projector(hooks: Any) -> ResultProjector:
+    """Adapt the host projector to the allocator's typed callback contract."""
+    project = hooks.context.project_messages
 
-    ``fit_request_context`` reads the window from the model definition; the
-    epoch needs the SAME reduction path aimed at a lower effective window
-    (soft trigger fraction below 1.0), so the model def is wrapped for the
-    duration of the call. The wrapper object escapes only inside this
-    module — it is never stored on state or handed to a provider.
-    """
+    def project_results(
+        messages: list[dict[str, Any]], *, budget_bytes: int
+    ) -> list[dict[str, Any]]:
+        return project(messages, hooks.identity.task_id, budget_bytes=budget_bytes)
 
-    __slots__ = ("_model_def", "_window")
-
-    def __init__(self, model_def: Any, window: int) -> None:
-        self._model_def = model_def
-        self._window = int(window)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._model_def, name)
-
-    @property
-    def context_window(self) -> int:
-        return self._window
-
-
-def _windowed_request(request: CompletionRequest, effective_window: int) -> CompletionRequest:
-    wrapped = _WindowFitter(request.model_def, effective_window)
-    return replace(request, model_def=wrapped)
+    return project_results
 
 
 def build_epoch_request(
@@ -173,27 +162,16 @@ def build_epoch_request(
     model_def: Any,
     tools: list[dict[str, Any]] | None,
     max_tokens: int,
-    soft_window: int,
     prompt_cache_key: str,
 ) -> CompletionRequest:
-    """Assemble the epoch's provider request at the soft-trigger window.
-
-    The request mirrors what the next normal iteration would send (same
-    messages, model, tools) so the epoch's persisted results are exactly
-    the ones future calls need; only the effective window is lowered so
-    ``fit_request_context`` performs the batched ref-out now instead of
-    at the reactive limit.
-    """
-    return _windowed_request(
-        CompletionRequest(
-            messages=messages,
-            model_def=model_def,
-            max_tokens=max_tokens,
-            temperature=0.4,
-            tools=tools,
-            prompt_cache_key=prompt_cache_key,
-        ),
-        soft_window,
+    """Mirror the next normal request while preserving its real model window."""
+    return CompletionRequest(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=0.4,
+        tools=tools,
+        prompt_cache_key=prompt_cache_key,
     )
 
 
@@ -205,18 +183,15 @@ def run_compaction_epoch(
     model_def: Any,
     tools: list[dict[str, Any]] | None,
     max_tokens: int,
-    soft_window: int,
+    tool_budget_bytes: int | None,
     prompt_cache_key: str,
     log: logging.Logger,
 ) -> bool:
-    """Run ONE batched ref-out epoch against the live array. Returns True on success.
+    """Apply the host's ref-backed projection at an optional residency cap.
 
-    The epoch drives the existing host projector (spill-to-store + preview
-    + ``r<sha256>`` ref) through ``fit_request_context`` at the soft window,
-    then rewrites the live array in place with the reduced message list.
-    Evicted content is never re-inlined — refs are one-way by construction.
-    A failed epoch is logged and swallowed: the reactive reduction remains
-    as the safety net, so a projector failure never breaks the turn.
+    The model's real window still bounds required input and output. The cap
+    limits only replaceable tool results; it never pretends that a large
+    required prefix can be compacted by changing the provider's window.
     """
     if hooks.context.project_messages is None:
         log.debug("compaction epoch skipped: no host projector wired")
@@ -226,34 +201,29 @@ def run_compaction_epoch(
         model_def=model_def,
         tools=tools,
         max_tokens=max_tokens,
-        soft_window=soft_window,
         prompt_cache_key=prompt_cache_key,
     )
     try:
         fitted = fit_request_context(
             request,
-            (
-                lambda source, *, budget_bytes: hooks.context.project_messages(
-                    source, hooks.identity.task_id, budget_bytes=budget_bytes
-                )
-            ),
+            _epoch_projector(hooks),
             estimate_request_tokens,
+            tool_budget_bytes=tool_budget_bytes,
         )
     except Exception as exc:  # pylint: disable=broad-except
-        log.warning("compaction epoch failed; keeping live array unchanged: %s", exc)
+        cfg = state.intra_turn_compaction
+        cfg.epoch_failures += 1
+        log.warning(
+            "compaction epoch failed; keeping live array unchanged (failure=%d): %s",
+            cfg.epoch_failures,
+            exc,
+        )
         return False
     budget = fitted.context_budget
     if budget is None:
         log.warning("compaction epoch produced no context budget; keeping live array unchanged")
         return False
     reduced = fitted.messages
-    if len(reduced) != len(messages):
-        log.warning(
-            "compaction epoch changed message count (%d -> %d); keeping live array unchanged",
-            len(messages),
-            len(reduced),
-        )
-        return False
     before = sum(
         len(str(m.get("content") or "").encode("utf-8"))
         for m in messages
@@ -262,25 +232,29 @@ def run_compaction_epoch(
     after = sum(
         len(str(m.get("content") or "").encode("utf-8")) for m in reduced if m.get("role") == "tool"
     )
+    cfg = state.intra_turn_compaction
+    if reduced == messages:
+        log.debug("compaction epoch: no residency change; array unchanged")
+        return False
     messages[:] = reduced
     # Resync the estimator: the epoch's reduced request is the new anchor.
     estimator = state.intra_turn_compaction_estimator
     old_estimate = estimator.estimate()
     estimator._estimate = max(budget.input_tokens, 0)
-    estimator._live_bytes = sum(len(str(m.get("content") or "").encode("utf-8")) for m in messages)
+    estimator._live_bytes = 0
     estimator._observed = True
     # Resync the projection copy so the next request build appends the
     # post-epoch messages instead of resurrecting evicted full text from
     # the pre-epoch projection snapshot.
-    state.provider_messages = [
-        {**m, "content": ""} if m.get("role") == "tool" else {**m} for m in reduced
-    ]
+    state.provider_messages = copy.deepcopy(reduced)
     state.projected_message_count = len(messages)
+    state.request_context_budget = budget
+    cfg.epoch_failures = 0
     log.info(
-        "compaction epoch: ref-out %d -> %d tool bytes (window=%d, estimate %d -> %d)",
+        "compaction epoch: ref-out %d -> %d tool bytes (budget=%s, estimate %d -> %d)",
         before,
         after,
-        soft_window,
+        tool_budget_bytes if tool_budget_bytes is not None else "window",
         old_estimate,
         budget.input_tokens,
     )
@@ -299,7 +273,7 @@ def maybe_run_soft_epoch(
     prompt_cache_key: str,
     log: logging.Logger,
 ) -> bool:
-    """Run at most one epoch per soft-trigger crossing. True when one ran."""
+    """Compact when the live array crosses its trigger; re-arm after growth."""
     cfg = state.intra_turn_compaction
     if not cfg.enabled:
         return False
@@ -310,25 +284,20 @@ def maybe_run_soft_epoch(
     from kernel.context.context_budget import model_context_window_tokens
 
     window = model_context_window_tokens(model_def)
-    soft_tokens = int(window * cfg.soft_trigger_share)
-    # A mode's ``working_set_tokens`` caps the trigger: a coding loop needs a
-    # bounded working set, not half of a million-token window.
     mode_config = getattr(state, "mode_config", None)
     working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
-    if working_set > 0:
-        soft_tokens = min(soft_tokens, working_set)
-    crossing = estimate >= soft_tokens and not cfg.epoch_done_for_crossing
-    if not crossing:
+    trigger_tokens = min(int(window * cfg.soft_trigger_share), working_set or window)
+    if estimate < trigger_tokens:
+        cfg.epoch_estimate = 0
         return False
-    # The gate records the epoch BEFORE running it: a failed epoch is not
-    # retried every subsequent dispatch boundary (that would spam a broken
-    # projector once per call); the reactive reduction remains the net.
-    cfg.epoch_done_for_crossing = True
+    if cfg.epoch_estimate > 0 and estimate < cfg.epoch_estimate * 1.10:
+        return False
+    cfg.epoch_estimate = estimate
     log.info(
         "soft trigger crossed (estimate=%d >= %d of window=%d); running "
         "batched ref-out epoch (mode=%s)",
         estimate,
-        soft_tokens,
+        trigger_tokens,
         window,
         mode_id,
     )
@@ -339,7 +308,7 @@ def maybe_run_soft_epoch(
         model_def=model_def,
         tools=tools,
         max_tokens=max_tokens,
-        soft_window=soft_tokens,
+        tool_budget_bytes=working_set * 3 if working_set > 0 else None,
         prompt_cache_key=prompt_cache_key,
         log=log,
     )
