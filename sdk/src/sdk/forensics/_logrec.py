@@ -44,11 +44,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sdk.forensics._schema import SCHEMA_VERSION_CURRENT
+
 __all__ = [
     "DEFAULT_BACKUP_SEGMENTS",
     "DEFAULT_MAX_BYTES",
     "JsonlTail",
     "OwnedRecords",
+    "check_schema_version",
     "filter_owned",
     "filter_window",
     "in_window",
@@ -362,3 +365,28 @@ def filter_owned(
                 continue
         owned.append(record)
     return OwnedRecords(records=owned, unowned=unowned, unstemmed=unstemmed)
+
+
+def check_schema_version(record: dict[str, Any]) -> tuple[int, bool]:
+    """Return ``(version, is_unreadable)`` under the reader's contract.
+
+    A row with no ``schema_version`` is version 0 (legacy): it predates the
+    stamp, so it is read best-effort and counted, never rejected. A row
+    whose version exceeds what the reader understands is *reported* as
+    unreadable (the caller counts and notes it) rather than silently
+    skipped. Unparseable or negative stamps degrade to version 0: a lie in
+    the stamp field must not grant a row the newest-reader privilege that an
+    honest stamp would give it.
+    """
+    raw = record.get("schema_version", 0)
+    if isinstance(raw, bool):
+        return 0, False
+    try:
+        version = int(raw or 0)
+    except (TypeError, ValueError):
+        return 0, False
+    if version < 0:
+        return 0, False
+    if version > SCHEMA_VERSION_CURRENT:
+        return version, True
+    return version, False

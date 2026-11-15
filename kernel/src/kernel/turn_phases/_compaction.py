@@ -42,7 +42,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from kernel.config import settings as _kernel_settings
 from kernel.context.request_budget import (
@@ -151,7 +151,14 @@ def _epoch_projector(hooks: Any) -> ResultProjector:
     def project_results(
         messages: list[dict[str, Any]], *, budget_bytes: int
     ) -> list[dict[str, Any]]:
-        return project(messages, hooks.identity.task_id, budget_bytes=budget_bytes)
+        # ``hooks`` is ``Any`` here, so the projector call below is typed
+        # ``Any`` even though the host-side contract is the typed
+        # ``ResultProjector`` used everywhere else; the cast keeps the
+        # adapter's declared return type without changing runtime behavior.
+        return cast(
+            "list[dict[str, Any]]",
+            project(messages, hooks.identity.task_id, budget_bytes=budget_bytes),
+        )
 
     return project_results
 

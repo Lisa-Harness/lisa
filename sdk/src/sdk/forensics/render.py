@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from sdk.forensics._models import (
     ApprovalEvidence,
+    CallCost,
     DecisionRecord,
+    DelegationNode,
     ForensicBundle,
     TurnEvidence,
 )
@@ -80,6 +82,12 @@ def _render_sources(bundle: ForensicBundle) -> list[str]:
             "\nMissing sources mean the corresponding evidence is unknown, "
             "not absent. Do not read a blank section as a clean result."
         )
+    if sources.legacy_row_count or sources.unreadable_row_count:
+        lines.append(
+            f"- schema reads: {sources.legacy_row_count} legacy rows read "
+            f"best-effort, {sources.unreadable_row_count} newer-version rows "
+            "excluded from the join and counted"
+        )
     return lines
 
 
@@ -131,6 +139,7 @@ def _render_turn_header(turn: TurnEvidence) -> list[str]:
     ):
         if value:
             lines.append(f"- {label}: {value}")
+    lines.extend(_render_execution_identity(turn))
     routing = _render_routing(turn)
     if routing:
         lines.append(routing)
@@ -148,6 +157,30 @@ def _render_turn_header(turn: TurnEvidence) -> list[str]:
         lines.append(f"- effect receipts: {_render_receipts(turn.receipt_capability_ids)}")
     else:
         lines.append("- effect receipts: none recorded")
+    return lines
+
+
+def _render_execution_identity(turn: TurnEvidence) -> list[str]:
+    """Render the execution-identity and lineage lines (Evidence Envelope S3/S4).
+
+    Split out of the turn header so the header stays under its complexity
+    budget; the lines name the manifest the turn ran under, the execution
+    id, and the delegation edges a child turn records.
+    """
+    lines: list[str] = []
+    if turn.run_ref or turn.mode_digest:
+        # The manifest this turn ran under. Named per turn so a pack reload
+        # is visible at the turn where it landed.
+        lines.append(
+            f"- run: {turn.run_ref or 'unknown'} / mode digest: {turn.mode_digest or 'unknown'}"
+        )
+    if turn.turn_id:
+        lines.append(f"- turn_id: {turn.turn_id}")
+    if turn.parent_turn_id or turn.parent_dispatch_id:
+        lines.append(
+            f"- delegations from: turn {turn.parent_turn_id or 'unknown'}"
+            f" via dispatch {turn.parent_dispatch_id or 'unknown'}"
+        )
     return lines
 
 
@@ -180,10 +213,11 @@ def _render_dispatches(turn: TurnEvidence) -> list[str]:
         error = ""
         if dispatch.error_message:
             error = f" — {_clip(dispatch.error_message, _MAX_ERROR_CHARS)}"
+        join = f" -> tool_call {dispatch.tool_call_id}" if dispatch.tool_call_id else ""
         lines.append(
             f"  - {marker} {dispatch.target_id or 'unknown'} "
             f"({dispatch.target_type or '?'}, {dispatch.status or '?'}, "
-            f"{dispatch.duration_ms} ms){error}"
+            f"{dispatch.duration_ms} ms){error}{join}"
         )
     return lines
 
@@ -195,11 +229,35 @@ def _render_cost(turn: TurnEvidence) -> list[str]:
             "- cost: no token record joined this turn "
             "(the cost log is missing, offline, or predates the turn key)"
         ]
-    top = max(turn.costs, key=lambda record: record.total_tokens)
-    return [
-        f"- cost: {turn.total_tokens} tokens, ${turn.total_cost_usd:.4f} "
-        f"over {len(turn.costs)} call(s); heaviest model: {top.model_id or 'unknown'}"
-    ]
+    lines: list[str] = []
+    if turn.call_costs:
+        # Per-call spend (Evidence Envelope S5): rows that named their call
+        # render per call; rows without a call id stay in the aggregate.
+        lines.append("- cost (per call):")
+        lines.extend(f"  - {_cost_line(cost)}" for cost in turn.call_costs)
+        legacy = [record for record in turn.costs if not record.call_id]
+        if legacy:
+            agg_total = sum(record.total_tokens for record in legacy)
+            agg_cost = round(sum(record.cost_usd for record in legacy), 6)
+            lines.append(f"  - legacy rows without a call id: {agg_total} tokens, ${agg_cost:.4f}")
+    else:
+        top = max(turn.costs, key=lambda record: record.total_tokens)
+        lines.append(
+            f"- cost: {turn.total_tokens} tokens, ${turn.total_cost_usd:.4f} "
+            f"over {len(turn.costs)} call(s); heaviest model: {top.model_id or 'unknown'}"
+        )
+    return lines
+
+
+def _cost_line(cost: CallCost) -> str:
+    """Render one per-call spend line."""
+    attempt = f" attempt {cost.attempt}" if cost.attempt else ""
+    iteration = f" iter {cost.iteration}" if cost.iteration is not None else ""
+    model = f" model {cost.model}" if cost.model else ""
+    return (
+        f"call {cost.call_id}{iteration}{attempt}: "
+        f"{cost.total_tokens} tokens, ${cost.cost_usd:.4f}{model}"
+    )
 
 
 def _render_approvals(turn: TurnEvidence) -> list[str]:
@@ -309,6 +367,47 @@ def _render_log_errors(bundle: ForensicBundle) -> list[str]:
     return lines
 
 
+def _render_delegation_tree(bundle: ForensicBundle) -> list[str]:
+    """Render the delegation tree built from the turns' lineage keys."""
+    if not bundle.delegation_tree:
+        return []
+    lines = ["### Delegation tree"]
+
+    def _node(node: DelegationNode, depth: int) -> None:
+        indent = "  " * depth
+        tid = node.turn_id or "unknown"
+        if node.parent_turn_id or node.parent_dispatch_id:
+            lines.append(
+                f"{indent}- turn {node.turn_index} (turn_id={tid}) -> "
+                f"parent {node.parent_turn_id or 'unknown'} "
+                f"via dispatch {node.parent_dispatch_id or 'unknown'}"
+            )
+        else:
+            lines.append(f"{indent}- turn {node.turn_index} (turn_id={tid})")
+        for child in node.children:
+            _node(child, depth + 1)
+
+    for node in bundle.delegation_tree:
+        _node(node, 0)
+    return lines
+
+
+def _render_manifest_changes(bundle: ForensicBundle) -> list[str]:
+    """Render consecutive-turn manifest changes (pack reloads)."""
+    if not bundle.run_manifest_changes:
+        return []
+    lines = ["### Run manifest changes"]
+    lines.extend(
+        f"- at turn {change.turn_index}: "
+        f"{change.previous_run_ref or 'unknown'} / "
+        f"{change.previous_mode_digest or 'unknown'} -> "
+        f"{change.current_run_ref or 'unknown'} / "
+        f"{change.current_mode_digest or 'unknown'}"
+        for change in bundle.run_manifest_changes
+    )
+    return lines
+
+
 def _render_turns_section(bundle: ForensicBundle) -> list[str]:
     """Render the per-turn sections plus totals."""
     if not bundle.turns:
@@ -343,6 +442,8 @@ def render_bundle(bundle: ForensicBundle) -> str:
     for section in (
         _render_unattributed(bundle),
         _render_log_errors(bundle),
+        _render_manifest_changes(bundle),
+        _render_delegation_tree(bundle),
     ):
         if section:
             lines.extend(section)

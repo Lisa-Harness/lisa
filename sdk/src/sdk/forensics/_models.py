@@ -23,10 +23,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "BundleSources",
+    "CallCost",
     "CostRecord",
     "DecisionRecord",
+    "DelegationNode",
     "DispatchRecord",
     "ForensicBundle",
+    "RunManifestChange",
     "TurnEvidence",
 ]
 
@@ -50,6 +53,12 @@ class DecisionRecord(_Record):
     write_receipts: int = 0
     read_receipts: int = 0
     logged_at: str = ""
+    #: Call-level join keys (Evidence Envelope S2). ``call_id`` names the
+    #: model call this decision row belongs to when the writer knows it;
+    #: empty (or a ``None`` attempt) is unknown, never backfilled.
+    call_id: str = ""
+    attempt: str | None = None
+    request_ref: str = ""
 
     @property
     def is_blocking(self) -> bool:
@@ -67,6 +76,11 @@ class DispatchRecord(_Record):
     duration_ms: int = 0
     error_message: str = ""
     logged_at: str = ""
+    #: Dispatch identity (Evidence Envelope S2): ``dispatch_id`` names the
+    #: dispatch itself, ``tool_call_id`` the transcript tool result it
+    #: produced. Empty is unknown, never a join key to invent.
+    dispatch_id: str = ""
+    tool_call_id: str = ""
 
     @property
     def failed(self) -> bool:
@@ -87,6 +101,14 @@ class CostRecord(_Record):
     cached_tokens: int = 0
     cost_usd: float = 0.0
     emitted_at: str = ""
+    #: Call-level join keys (Evidence Envelope S2): which model call issued
+    #: the spend and why that call happened. Empty ``call_id`` / ``None``
+    #: attempt is the legacy or off-turn row; the tokens still join to the
+    #: turn, just not to one call within it.
+    call_id: str = ""
+    attempt: str | None = None
+    iteration: int | None = None
+    request_ref: str = ""
 
     @property
     def billed_tokens(self) -> int:
@@ -137,11 +159,24 @@ class TurnEvidence(_Record):
     content_source: str = ""
     provenance_source: str = ""
     task_id: str = ""
+    #: Lineage and manifest keys (Evidence Envelope S3/S4). A top-level turn
+    #: records ``turn_id`` but no parent keys, which is what makes the
+    #: lineage a tree; empty is unknown and must never read as a join key.
+    turn_id: str = ""
+    parent_turn_id: str = ""
+    parent_dispatch_id: str = ""
+    run_ref: str = ""
+    mode_digest: str = ""
     receipt_capability_ids: list[str] = Field(default_factory=list)
     decisions: list[DecisionRecord] = Field(default_factory=list)
     dispatches: list[DispatchRecord] = Field(default_factory=list)
     costs: list[CostRecord] = Field(default_factory=list)
     approvals: list[ApprovalEvidence] = Field(default_factory=list)
+    #: The turn's token rows reduced to per-call spend (Evidence Envelope
+    #: S5). Rows without a ``call_id`` never group: their spend stays in the
+    #: turn aggregate, and inventing a call identity would fabricate the
+    #: evidence this field exists to name.
+    call_costs: list[CallCost] = Field(default_factory=list)
 
     @property
     def telemetry_turn_index(self) -> int:
@@ -190,6 +225,64 @@ class BundleSources(BaseModel):
     runtime_log: bool = False
     errors_log: bool = False
     missing: list[str] = Field(default_factory=list)
+    #: Ledger rows read under the schema-version contract (Evidence Envelope
+    #: S5): version-0 rows parsed best-effort, and rows newer than the
+    #: reader understands excluded from joins but always counted.
+    legacy_row_count: int = 0
+    unreadable_row_count: int = 0
+
+
+class CallCost(_Record):
+    """Model-call spend grouped from token rows sharing one ``call_id``.
+
+    The token rows already join to a turn by ``turn_index``; this shape adds
+    the call dimension so a streaming fallback (or a truncation rescue) can
+    be read as two spends inside one iteration instead of one blended total.
+    """
+
+    call_id: str
+    attempt: str | None = None
+    iteration: int | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    cost_usd: float = 0.0
+    model: str = ""
+    request_ref: str = ""
+
+    @property
+    def billed_tokens(self) -> int:
+        """Return the provider-total minus cache hits (the billable view)."""
+        return max(0, self.total_tokens - self.cached_tokens)
+
+
+class DelegationNode(_Record):
+    """One turn in the delegation tree, naming its lineage edges.
+
+    Roots carry no parent keys. A child whose parent turn is outside the
+    read window stays a root but keeps its parent keys on the node, so the
+    tree states the dangling edge rather than fabricating a parent.
+    """
+
+    turn_index: int
+    turn_id: str = ""
+    parent_turn_id: str = ""
+    parent_dispatch_id: str = ""
+    children: tuple[DelegationNode, ...] = ()
+
+
+class RunManifestChange(_Record):
+    """One consecutive-turn boundary where the run manifest or the resolved
+    mode digest differs: the reader found a pack reload (or mode-definition
+    change) between two adjacent turns.
+    """
+
+    turn_index: int
+    previous_run_ref: str = ""
+    previous_mode_digest: str = ""
+    current_run_ref: str = ""
+    current_mode_digest: str = ""
 
 
 class ForensicBundle(_Record):
@@ -205,6 +298,11 @@ class ForensicBundle(_Record):
     unattributed_approvals: list[ApprovalEvidence] = Field(default_factory=list)
     #: Log lines at warning/error level inside the window, newest last.
     log_errors: list[dict[str, Any]] = Field(default_factory=list)
+    #: The delegation tree built from the turns' lineage keys (roots and
+    #: their children), and the consecutive-turn manifest changes the window
+    #: crossed. Empty when the rows carry no such keys.
+    delegation_tree: tuple[DelegationNode, ...] = ()
+    run_manifest_changes: tuple[RunManifestChange, ...] = ()
     #: Human-readable notes about bounded or degraded reads (truncation,
     #: missing files, caps applied). Never silently omitted.
     notes: list[str] = Field(default_factory=list)
