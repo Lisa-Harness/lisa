@@ -10,6 +10,7 @@ builder used by both the fork path and the main turn loop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,7 @@ from kernel.models import (
 )
 from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.mcp_client import MCPToolPool
+from kernel.turn_lineage import child_identity
 
 _log = logging.getLogger(__name__)
 
@@ -300,6 +302,7 @@ async def _run_fork_child(
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
     preferred_model_id: str | None = None,
+    parent_dispatch_id: str = "",
 ) -> None:
     """Run one fork child: emit start, run the child turn, store result, emit complete.
 
@@ -309,6 +312,16 @@ async def _run_fork_child(
     _flog = logger_override or logging.getLogger(__name__)
     started = time.monotonic()
     child_budget = _fork_child_budget(turn_budget, n)
+    # Lineage (Evidence Envelope §4): each child mints its own ``turn_id`` and
+    # records the fan-out dispatch that spawned it. ``turn_index`` is inherited
+    # deliberately — a child belongs to the parent's thread turn, so it renders
+    # as a child under that turn rather than as a thread turn of its own.
+    # ``child_identity`` is the one place that shape is built; the delegate site
+    # calls the same helper so the two can never drift.
+    child_hooks = dataclasses.replace(
+        hooks,
+        identity=child_identity(hooks.identity, parent_dispatch_id),
+    )
     # Children run in parallel: the operation deadline applies to each
     # child individually (tighten-only against the divided share), so a
     # child force-completes gracefully before the registry's hard cancel.
@@ -325,7 +338,7 @@ async def _run_fork_child(
         )
     result, status, elapsed_ms = await _run_fork_child_turn(
         target=target,
-        hooks=hooks,
+        hooks=child_hooks,
         child_budget=child_budget,
         execution_policy=execution_policy,
         started=started,
@@ -362,6 +375,7 @@ async def _execute_fork_fanout(
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
     preferred_model_id: str | None = None,
+    parent_dispatch_id: str = "",
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 

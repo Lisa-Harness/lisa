@@ -167,6 +167,31 @@ class ToolExecutionContext(BaseModel):
     # not attributable to a turn (off-turn slice work, bare/test hosts) —
     # distinct from ``0``, which is the thread's first real turn.
     turn_index: int | None = Field(default=None, exclude=True)
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). ``turn_index`` locates the dispatch's turn within one thread,
+    #: which cannot distinguish two overlapping turns; ``turn_id`` names the
+    #: execution itself, so a child turn's rows point back at the turn that
+    #: spawned them. Empty means unattributable, never invented.
+    turn_id: str = Field(default="", exclude=True)
+    #: Lineage of this dispatch's execution (Evidence Envelope §4), mirroring
+    #: ``kernel.turn_hooks.TurnIdentity``: ``parent_turn_id`` names the turn
+    #: that spawned this child turn and ``parent_dispatch_id`` the fork or
+    #: delegate dispatch that carried the spawn. Empty means this dispatch
+    #: belongs to a top-level turn; the publisher states that as an explicit
+    #: null on the row.
+    parent_turn_id: str = Field(default="", exclude=True)
+    parent_dispatch_id: str = Field(default="", exclude=True)
+    #: Dispatch-level join keys (Evidence Envelope §2), carried on the context
+    #: so the registry's telemetry publish stamps them without reaching back
+    #: into turn state. ``dispatch_id`` identifies this one dispatch (minted
+    #: even when the dispatch is rejected); ``tool_call_id`` is the provider's
+    #: tool-call id \u2014 what the transcript's tool result references \u2014 so a failed
+    #: dispatch row joins to exactly one transcript result; ``call_id`` names
+    #: the model call that requested it. Empty means unknown, never invented.
+    dispatch_id: str = Field(default="", exclude=True)
+    tool_call_id: str = Field(default="", exclude=True)
+    call_id: str = Field(default="", exclude=True)
+    iteration: int | None = Field(default=None, exclude=True)
 
 
 class ToolResult(BaseModel):
@@ -352,6 +377,15 @@ class OperationExecutionContext(BaseModel):
     # ``ToolExecutionContext.turn_index`` — same contract, and propagated
     # through ``_to_tool_context`` so nested tool calls keep the attribution.
     turn_index: int | None = Field(default=None, exclude=True)
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). See ``ToolExecutionContext.turn_id`` — same contract, propagated
+    #: through ``_to_tool_context`` so nested tool calls keep the attribution.
+    turn_id: str = Field(default="", exclude=True)
+    #: Lineage of this dispatch's execution (Evidence Envelope §4). See
+    #: ``ToolExecutionContext.parent_turn_id`` — same contract, propagated
+    #: through ``_to_tool_context`` so nested tool calls keep the attribution.
+    parent_turn_id: str = Field(default="", exclude=True)
+    parent_dispatch_id: str = Field(default="", exclude=True)
     # Durable recorder for model requests made by this dispatch's
     # completions (``runtime.turn_continuation.persist_request`` shape:
     # persist one snapshot dict, return its content-addressed ref). Wired by
@@ -360,6 +394,25 @@ class OperationExecutionContext(BaseModel):
     # ``CompletionAuditContext`` from this seam so every operation dispatch
     # archives its off-turn model calls next to the turn loop's own.
     request_recorder: Any = Field(default=None, exclude=True)
+    #: Dispatch-level join keys (Evidence Envelope §2), read by
+    #: ``_completion_audit_context`` so an off-turn ``model.request`` row can
+    #: name the call it recorded and the dispatch that made it. ``call_id`` is
+    #: minted per off-turn completion; ``dispatch_id`` is the id of the tool or
+    #: operation dispatch this context belongs to. Empty means unknown.
+    call_id: str = Field(default="", exclude=True)
+    dispatch_id: str = Field(default="", exclude=True)
+    #: The provider's tool-call id — what the transcript's tool result
+    #: references. See ``ToolExecutionContext.tool_call_id``: same contract.
+    #: The operation registry's telemetry publish reads it, so an operation
+    #: dispatch that carried one names the same call the transcript does.
+    #: Without the field the read fell back to "" and an operation's rows
+    #: looked like they belonged to no tool call at all.
+    tool_call_id: str = Field(default="", exclude=True)
+    #: The turn-loop iteration this dispatch belongs to. See
+    #: ``ToolExecutionContext.iteration``: same contract. The operation
+    #: registry's rejection publish reads it, so a rejected operation names
+    #: the iteration that requested it.
+    iteration: int | None = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -1833,6 +1886,13 @@ class ForkSpec(BaseModel):
             "0 preserves the legacy deadline-blind behavior."
         ),
     )
+    #: The ``dispatch_id`` of the fork dispatch that created these children
+    #: (Evidence Envelope §2, §4), supplied by the operation that builds the
+    #: spec. Every child records it as its ``parent_dispatch_id``, the key that
+    #: joins a child turn to the exact fan-out that spawned it —
+    #: ``parent_turn_id`` alone cannot when one fork has several targets or
+    #: when a turn both forks and delegates.
+    dispatch_id: str = Field(default="")
 
 
 class ForkResult(BaseModel):
@@ -1941,6 +2001,13 @@ class DelegationSpec(BaseModel):
             "writes. An undeclared goal fails closed."
         ),
     )
+    #: The ``dispatch_id`` of the delegate dispatch that created this child
+    #: (Evidence Envelope §2, §4), supplied by the operation that builds the
+    #: spec. The child records it as its ``parent_dispatch_id``, which is the
+    #: key that joins a child turn to the exact dispatch that spawned it —
+    #: ``parent_turn_id`` alone cannot, when one turn dispatches several
+    #: children. Empty when the caller has no dispatch to attribute.
+    dispatch_id: str = Field(default="")
 
 
 class DelegationResult(BaseModel):
@@ -2699,6 +2766,24 @@ class TokenUsageEvent(BusEvent):
     #: attributable. ``None`` = not attributable to a turn (off-turn slice
     #: work); ``0`` is the thread's first real turn.
     turn_index: int | None = None
+    #: Stable per-execution identity (Evidence Envelope section 4). ``None``
+    #: means unknown: the row belongs to no execution it can name (an
+    #: off-turn slice, or a legacy row written before turn identity existed).
+    #: Empty is never persisted, because an empty string would read as "a
+    #: turn whose id is the empty string" instead of "unknown".
+    turn_id: str | None = None
+    #: Call-level join keys (Evidence Envelope §2). ``call_id`` is minted when
+    #: the request is built and is unique within its turn; ``iteration`` names
+    #: the turn-loop iteration; ``attempt`` names why the call happened
+    #: (``primary``, ``stream_tool_fallback``, ``truncation_continuation``,
+    #: ``retry``) so two calls in one iteration are distinguishable; and
+    #: ``request_ref`` addresses the recorded request snapshot. All four stay
+    #: ``None`` on legacy rows and on off-turn calls with no iteration \u2014 absent
+    #: stays unknown rather than being invented.
+    call_id: str | None = None
+    iteration: int | None = None
+    attempt: str | None = None
+    request_ref: str | None = None
     #: Data-root-scoped pseudonymous thread identity (``v1:<hmac>``) stamped
     #: by the durable handler at append time. ``None`` = unattributed (no
     #: key, no slug). Raw ``thread_store_slug`` never persists.
@@ -2796,6 +2881,18 @@ class ToolExecutionTelemetry(BusEvent):
     #: Global thread turn index this dispatch belongs to, so the dispatch
     #: ledger joins to the thread and the cost log. ``None`` = off-turn work.
     turn_index: int | None = None
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). ``turn_index`` locates it within one thread and cannot separate two
+    #: overlapping turns; ``turn_id`` names the execution, so a child turn's
+    #: rows point back at the turn that spawned them. ``None`` = off-turn work.
+    turn_id: str | None = None
+    #: Lineage of the execution (Evidence Envelope §4): the parent turn's
+    #: ``turn_id`` and the fork or delegate dispatch that spawned it, so a
+    #: reader renders the delegation tree from the ledger alone. ``None``
+    #: states "this dispatch belongs to a top-level turn" explicitly rather
+    #: than leaving the key absent; the handler fills both on every row.
+    parent_turn_id: str | None = None
+    parent_dispatch_id: str | None = None
     #: Owner of the dispatch. The ledger is shared by every user of a data
     #: root and turn indices are per-thread, so readers scope by this.
     user_slug: str | None = None
@@ -2810,6 +2907,17 @@ class ToolExecutionTelemetry(BusEvent):
     #: normalization happened, so per-shape provider argument quality is
     #: measurable from the ledger alone without reading logs.
     normalized_fields: list[str] | None = None
+    #: Dispatch-level join keys (Evidence Envelope §2). ``dispatch_id`` is
+    #: minted per dispatch \u2014 including a rejected one \u2014 so a rejection row and
+    #: its transcript tool result address each other. ``tool_call_id`` is the
+    #: provider's tool-call id, the id the transcript result carries.
+    #: ``call_id`` names the model call that requested the dispatch and
+    #: ``iteration`` the turn-loop iteration it belonged to. ``None`` = unknown
+    #: (an off-turn or pre-attribution dispatch), never a fabricated value.
+    dispatch_id: str | None = None
+    tool_call_id: str | None = None
+    call_id: str | None = None
+    iteration: int | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

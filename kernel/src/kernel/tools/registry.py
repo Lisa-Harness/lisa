@@ -403,9 +403,21 @@ def _publish_tool_telemetry(
         duration_ms=duration_ms,
         error_message=err_msg,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        # Execution identity and lineage (Evidence Envelope §4), stamped the
+        # same way as the rejection publish below.
+        turn_id=getattr(ctx, "turn_id", "") or None,
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         normalized_fields=list(ctx.normalized_fields) if ctx.normalized_fields else None,
+        # Dispatch-level join keys (Evidence Envelope §2). The dispatch id
+        # exists for rejected dispatches too, which is what lets a rejection
+        # row and its transcript tool result address each other.
+        dispatch_id=getattr(ctx, "dispatch_id", "") or None,
+        tool_call_id=getattr(ctx, "tool_call_id", "") or None,
+        call_id=getattr(ctx, "call_id", "") or None,
+        iteration=getattr(ctx, "iteration", None),
     )
     event_bus = ctx.event_bus
     if event_bus is None:
@@ -648,9 +660,21 @@ def _publish_rejection_telemetry(
         duration_ms=0,
         error_message=error_message,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        turn_id=getattr(ctx, "turn_id", "") or None,
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         normalized_fields=normalized_fields,
+        # Dispatch-level join keys (Evidence Envelope §2). A rejected dispatch
+        # is a dispatch: it carries the same identity the post-execution
+        # publish stamps, so the rejection row and the transcript's tool result
+        # address each other by tool_call_id. Without them a rejection named
+        # no call at all and could not be joined to anything.
+        dispatch_id=getattr(ctx, "dispatch_id", "") or None,
+        tool_call_id=getattr(ctx, "tool_call_id", "") or None,
+        call_id=getattr(ctx, "call_id", "") or None,
+        iteration=getattr(ctx, "iteration", None),
     )
     schedule_telemetry_publish(
         ctx.event_bus,
@@ -721,6 +745,18 @@ async def _require_approval(
         update={
             "turn_index": resolve_turn_index(ctx.turn_index),
             "thread_store_slug": getattr(ctx, "thread_store_slug", "") or "",
+            # Dispatch-level join keys (Evidence Envelope §2), stamped the same
+            # way and for the same reason as ``turn_index``: the approval row
+            # must join to the dispatch that requested it. Both are excluded
+            # from ``action_digest``, so they ride on the copy rather than the
+            # canonical action identity.
+            "tool_call_id": getattr(ctx, "tool_call_id", "") or "",
+            "dispatch_id": getattr(ctx, "dispatch_id", "") or "",
+            # Execution identity (Evidence Envelope §4), stamped the same way
+            # as the sibling attribution keys and likewise excluded from
+            # ``action_digest``: which execution asked is not part of the
+            # action's identity.
+            "turn_id": getattr(ctx, "turn_id", "") or "",
         }
     )
     if ctx.approval_request_id:

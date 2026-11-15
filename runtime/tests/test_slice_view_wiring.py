@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import (
     _complete_via_provider_gateways,
     _SliceProviderHooksView,
@@ -178,7 +179,7 @@ def test_build_turn_hooks_assigns_execute_tool_on_view(tmp_path: Path) -> None:
     cover the slice's use of the seams).
     """
     runtime = _make_runtime(tmp_path)
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks is not None
     assert hooks.operations.execute_operation is not None
 
@@ -199,7 +200,7 @@ def test_view_exposes_the_subscribed_event_bus(tmp_path: Path) -> None:
     assert view.event_bus is None
 
     # A hook build wires and publishes the bus.
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks is not None
     bus = runtime.session.event_bus
     assert bus is not None

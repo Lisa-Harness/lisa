@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from kernel.call_identity import mint_turn_id
 from kernel.config import settings
 from kernel.execution_policy import ExecutionPolicy
 from kernel.models import TurnBudget
@@ -26,7 +26,15 @@ class TurnContinuation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal[1] = 1
-    turn_id: str = Field(default_factory=lambda: uuid4().hex)
+    #: Identity of the one execution this checkpoint belongs to (Evidence
+    #: Envelope §4). A pause/resume cycle must not split one execution into
+    #: two, so the saver stamps the execution's own ``turn_id`` here
+    #: (``_save_dispatch_continuation`` copies it off the turn identity) and
+    #: the resume reads this same value back rather than minting a second id.
+    #: The default exists only for a checkpoint built without an identity; it
+    #: mints a ``turn-`` id so a bare continuation is still recognizable next
+    #: to the ``call-``/``disp-``/``toolcall-`` family.
+    turn_id: str = Field(default_factory=mint_turn_id)
     identity: TurnIdentity
     mode_id: str
     query: str

@@ -272,6 +272,30 @@ def _resolve_thread_turn(paths: _SegmentPaths) -> int:
     return sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
 
 
+def _stamp_lineage(
+    entry: dict[str, Any],
+    turn_id: str | None,
+    parent_turn_id: str | None,
+    parent_dispatch_id: str | None,
+) -> None:
+    """Stamp execution identity and lineage onto ``entry`` (spec §4).
+
+    ``turn`` on an entry is a *position* in this thread, so it cannot tell two
+    overlapping turns apart or say which execution spawned a child. These three
+    keys carry that: ``turn_id`` names the execution, ``parent_turn_id`` the
+    turn that spawned it, and ``parent_dispatch_id`` the exact fork/delegate
+    dispatch. Each is omitted when unknown — a top-level turn records no parent
+    keys at all, which is what makes the lineage a tree rather than a graph of
+    empty strings.
+    """
+    if turn_id:
+        entry["turn_id"] = turn_id
+    if parent_turn_id:
+        entry["parent_turn_id"] = parent_turn_id
+    if parent_dispatch_id:
+        entry["parent_dispatch_id"] = parent_dispatch_id
+
+
 def _build_thread_entry(
     *,
     user_slug: str,
@@ -295,6 +319,11 @@ def _build_thread_entry(
     departed_modes: list[str] | None = None,
     provisional_turn: int | None = None,
     prev_entry_sha256: str = "",
+    run_ref: str | None = None,
+    mode_digest: str | None = None,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
+    parent_dispatch_id: str | None = None,
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -305,6 +334,15 @@ def _build_thread_entry(
         "response_text": response_text,
         "turn": global_turn,
     }
+    if run_ref:
+        # Content-addressed run manifest this turn ran under (spec §3).
+        # Historical entries keep the ref they recorded; a later manifest
+        # change never rewrites them.
+        entry["run_ref"] = run_ref
+    _stamp_lineage(entry, turn_id, parent_turn_id, parent_dispatch_id)
+    if mode_digest:
+        # Hash of the resolved mode definition actually used, after overrides.
+        entry["mode_digest"] = mode_digest
     if provisional_turn is not None and provisional_turn != global_turn:
         # The turn ran (and stamped its telemetry) under a different index
         # than the one it committed at; forensics remaps through this.
@@ -415,6 +453,11 @@ def append_thread_entry(
     verified_facts: list[dict[str, Any]] | None = None,
     departed_modes: list[str] | None = None,
     reservation: str = "",
+    run_ref: str | None = None,
+    mode_digest: str | None = None,
+    turn_id: str | None = None,
+    parent_turn_id: str | None = None,
+    parent_dispatch_id: str | None = None,
 ) -> int | None:
     """Append a new thread entry to the active segment under the thread store lock.
 
@@ -426,7 +469,10 @@ def append_thread_entry(
     entry's log position, and a mismatch is recorded as ``provisional_turn``.
     ``reservation`` is the :func:`reserved_turn` token, released under the
     same lock so no new turn can observe the entry without the reservation
-    being gone (or vice versa).
+    being gone (or vice versa). ``run_ref``, ``mode_digest``, ``turn_id``, and
+    the ``parent_*`` lineage keys record the provenance the turn executed under
+    (spec §3, §4); each is omitted when unknown and none is ever back-filled
+    onto existing entries.
     """
     if thread_path is None or not user_slug:
         return None
@@ -461,6 +507,11 @@ def append_thread_entry(
             departed_modes=departed_modes,
             provisional_turn=turn,
             prev_entry_sha256=_prev_entry_sha(paths),
+            run_ref=run_ref,
+            mode_digest=mode_digest,
+            turn_id=turn_id,
+            parent_turn_id=parent_turn_id,
+            parent_dispatch_id=parent_dispatch_id,
         )
 
         paths.current.parent.mkdir(parents=True, exist_ok=True)

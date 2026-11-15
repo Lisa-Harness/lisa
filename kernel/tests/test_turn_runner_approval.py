@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +11,8 @@ from unittest.mock import patch
 import pytest
 from kernel.approval import (
     ApprovalIdentity,
+    ApprovalInvocation,
+    ApprovalRecord,
     ApprovalRequired,
     InMemoryApprovalService,
     build_approval_invocation,
@@ -30,6 +33,7 @@ from kernel.models import (
 )
 from kernel.operations.declarative import execute_declarative_operation
 from kernel.seams.host_adapter import build_callable_host
+from kernel.telemetry import PENDING_TELEMETRY_PUBLISH_TASKS
 from kernel.tools.registry import execute_tool
 from kernel.turn_hooks import (
     HostServiceHandles,
@@ -37,7 +41,12 @@ from kernel.turn_hooks import (
     TaskCompletionEvidence,
     TurnIdentity,
 )
-from kernel.turn_runner import TurnHooks, execute_approved_invocation, run_turn
+from kernel.turn_runner import (
+    ContextSeams,
+    TurnHooks,
+    execute_approved_invocation,
+    run_turn,
+)
 from pydantic import BaseModel
 
 
@@ -133,6 +142,161 @@ async def test_run_turn_returns_pending_approval_for_effectful_tool(
     assert "/approve" not in result.response_text
     assert "/deny" not in result.response_text
     assert executed is False
+
+
+class _AutoApprovingApprovalService:
+    """Approve every request the moment it is made, and keep the row.
+
+    The production host service asks an operator; this one stands in for an
+    auto-approval policy so the *resumed* dispatch can be observed. It also
+    keeps every invocation it was handed: those are the rows the runtime
+    approval ledger serialises, and the ``tool_call_id`` / ``dispatch_id``
+    values on them are what an operator's evidence carries.
+    """
+
+    def __init__(self) -> None:
+        self._inner = InMemoryApprovalService()
+        self.requested: list[ApprovalInvocation] = []
+
+    async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
+        self.requested.append(invocation)
+        pending = await self._inner.request(invocation)
+        await self._inner.approve(pending.request_id, pending.identity)
+        return pending
+
+    async def approve(self, request_id: str, identity: ApprovalIdentity) -> Any:
+        return await self._inner.approve(request_id, identity)
+
+    async def deny(self, request_id: str, identity: ApprovalIdentity, *, reason: str = "") -> bool:
+        return await self._inner.deny(request_id, identity, reason=reason)
+
+    async def consume(self, request_id: str, invocation: ApprovalInvocation) -> Any:
+        return await self._inner.consume(request_id, invocation)
+
+    async def get(self, request_id: str) -> ApprovalRecord | None:
+        return await self._inner.get(request_id)
+
+    async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
+        return await self._inner.list_pending(identity)
+
+
+@pytest.mark.asyncio
+async def test_resumed_approval_dispatch_keeps_one_dispatch_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approval row and the resumed telemetry row name ONE dispatch.
+
+    Root cause: a dispatch that raised ``ApprovalRequired`` was resumed
+    through a ``partial(dispatch_capability, ...)`` that forwarded every
+    argument EXCEPT the four dispatch keys. The resumed call therefore fell
+    back to the empty-string defaults and minted a fresh identity at the far
+    end, so the approval row that authorised the action and the
+    ``tool.telemetry`` row the resumed run published named two different
+    dispatches -- severing exactly the join the dispatch identity exists to
+    create.
+
+    This drives the real turn: a tool that requires approval, an approval
+    service that auto-approves, and the ``tool.telemetry`` row the resumed
+    dispatch actually publishes. It asserts on that published row, not on
+    the builder that produced it.
+    """
+
+    executed = False
+
+    async def execute(_ctx: ToolExecutionContext) -> ToolResult:
+        nonlocal executed
+        executed = True
+        return ToolResult(output_text="written")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "write_file": ToolDefinition(
+                tool_id="write_file",
+                pack_id="lisa-pack-coding",
+                parameters_schema=_Parameters,
+                effect="write",
+                approval_required=True,
+                approval_preview="apply a file change",
+                implementation_module=SimpleNamespace(execute=execute),
+            )
+        },
+    )
+
+    published: list[dict[str, Any]] = []
+
+    class _Bus:
+        async def publish(self, topic: str, payload: object) -> None:
+            if topic == "tool.telemetry" and isinstance(payload, dict):
+                published.append(payload)
+
+    approval_service = _AutoApprovingApprovalService()
+    completions: list[int] = []
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        completions.append(1)
+        if len(completions) == 1:
+            return _Completion(
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "function": {"name": "write_file", "arguments": '{"path":"src/a.py"}'},
+                    }
+                ]
+            )
+        return _Completion(content="done")
+
+    async def begin(record: Any) -> Any:
+        return record
+
+    async def settle(_work_item_id: str, _identity: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def mark_running_indeterminate(_identity: Any) -> int:
+        return 0
+
+    await run_turn(
+        mode_id="default",
+        query="change the file",
+        hooks=TurnHooks(
+            models=ModelHooks(complete=complete),
+            services=HostServiceHandles(
+                approval_service=approval_service,
+                recovery_service=SimpleNamespace(
+                    begin=begin,
+                    settle=settle,
+                    mark_running_indeterminate=mark_running_indeterminate,
+                ),
+            ),
+            context_seams=ContextSeams(event_bus=_Bus()),
+            identity=TurnIdentity(
+                workspace_id="workspace",
+                user_id="user",
+                user_slug="user",
+                surface_id="surface",
+                session_plan_digest="plan-a",
+            ),
+        ),
+    )
+
+    # The telemetry publish is fire-and-forget; drain the pending set so
+    # this test asserts on the published row, not on scheduler timing.
+    await asyncio.gather(*list(PENDING_TELEMETRY_PUBLISH_TASKS))
+
+    assert executed is True, "the approved tool never ran"
+    assert len(approval_service.requested) == 1
+    approval_row = approval_service.requested[0]
+    assert approval_row.dispatch_id, "the approval row names no dispatch"
+    assert approval_row.tool_call_id == "call-1"
+
+    assert len(published) == 1, f"expected one telemetry row, got {published}"
+    telemetry_row = published[0]
+    assert telemetry_row["status"] == "success"
+    assert telemetry_row["dispatch_id"] == approval_row.dispatch_id, (
+        "the resumed dispatch published a different dispatch_id than the "
+        "approval row that authorised it"
+    )
+    assert telemetry_row["tool_call_id"] == approval_row.tool_call_id == "call-1"
 
 
 @pytest.mark.asyncio

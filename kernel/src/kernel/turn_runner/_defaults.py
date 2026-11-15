@@ -36,6 +36,7 @@ from kernel.recovery import RecoveryIdentity
 from kernel.slice import SliceOutcome, SlicePolicy
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.turn_hooks import TurnHooks
+from kernel.turn_lineage import child_identity
 from kernel.turn_phases._child_turn import classify_child_turn
 from kernel.turn_phases._fork import _execute_fork_fanout
 from kernel.turn_phases._routing_hint import emit_transition_hint
@@ -218,9 +219,14 @@ async def _default_delegate_fn(
             # hooks (which would make a diagnostic probe inside an
             # implementation turn inherit the promise of a commit, and a
             # diagnostic parent silently bless every implementation child).
+            # Lineage (Evidence Envelope §4): ``child_identity`` names the child,
+            # records the dispatch that spawned it, and inherits ``turn_index``
+            # deliberately — the child belongs to the parent's thread turn, so
+            # it renders as a child under that turn. The fork site calls the
+            # same helper, so the two shapes cannot drift.
             hooks=dataclasses.replace(
                 hooks,
-                identity=dataclasses.replace(hooks.identity, task_goal=spec.task_goal),
+                identity=child_identity(hooks.identity, spec.dispatch_id, task_goal=spec.task_goal),
             ),
             max_tool_iterations=child_max_iters,
             turn_budget=child_budget,
@@ -413,6 +419,9 @@ async def _default_fork_fn(
             # own ``timeout_seconds``). Children run in parallel, so the
             # deadline applies per child, not divided.
             wall_deadline_ms=_child_wall_deadline_ms(spec.timeout_seconds),
+            # Lineage (Evidence Envelope §4): each child records the dispatch
+            # that spawned this fan-out as its ``parent_dispatch_id``.
+            parent_dispatch_id=spec.dispatch_id,
         )
     except TimeoutError:
         # ``_execute_fork_fanout`` catches per-child timeouts and maps

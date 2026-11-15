@@ -60,13 +60,14 @@ def test_resumed_turn_rehydrates_latest_checkpoint_without_duplicating_history(
         thread,
         "original request",
         transcript=transcript,
-        provenance={"kernel_turn_id": "same-turn", "pending_approval_request_id": "approval"},
+        turn_id="same-turn",
+        provenance={"pending_approval_request_id": "approval"},
     )
     _append(
         thread,
         "original request",
         transcript=[*transcript, {"role": "assistant", "content": "finished"}],
-        provenance={"kernel_turn_id": "same-turn"},
+        turn_id="same-turn",
         response_text="finished",
     )
     messages = build_open_task_messages(thread_path=thread)

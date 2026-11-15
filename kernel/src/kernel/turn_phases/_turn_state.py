@@ -429,6 +429,29 @@ class _TurnState:
     pending_approval_recovery_item_id: str = ""
     model_requests: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim snapshot of every model request issued this turn."""
+    current_call_id: str = ""
+    """The ``call_id`` of the model call in flight (Evidence Envelope §2).
+
+    Minted when the iteration's request is built and cleared when the call
+    finishes, so a telemetry publisher downstream of the call can name which
+    call it is describing without threading the id through every signature.
+    Empty means no call is in flight.
+    """
+    current_call_attempt: str = ""
+    """Why the in-flight call happened (``primary`` and the extra-call kinds).
+
+    Paired with ``current_call_id``: a reader joins on the id and reads the
+    attempt to learn whether this was the iteration's first call or a fallback,
+    truncation continuation, or retry inside it.
+    """
+    current_call_ref: str = ""
+    """The ``r<sha256>`` ref of the request snapshot behind the in-flight call.
+
+    Paired with ``current_call_id``: the token row carries it so a reader can
+    address the exact request that produced the cost. Empty means the host
+    registered no ``record_request`` hook, so there is no addressable ref —
+    unknown, never a guess.
+    """
     action_tool_ids: set[str] = field(default_factory=set)
     """The side-effecting action tools the current mode declares (from
     ``mode_completion_effects``), resolved at turn start for parent and

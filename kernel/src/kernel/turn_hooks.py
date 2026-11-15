@@ -304,6 +304,12 @@ class HostServiceHandles:
 
 
 # ── TurnIdentity ────────────────────────────────────────────────────────
+#: The goal a (sub-)turn declares. Named rather than inlined so the
+#: child-identity builder in :mod:`kernel.turn_lineage` cannot accept a value
+#: ``TurnIdentity`` rejects, or reject one it accepts.
+TurnTaskGoal = Literal["implementation", "diagnostic"]
+
+
 @dataclass
 class TurnIdentity:
     """Identity scope defaults for the active turn.
@@ -348,6 +354,23 @@ class TurnIdentity:
     #: slice work, or a bare/test host with no thread) — distinct from ``0``,
     #: which is the thread's first real turn.
     turn_index: int | None = None
+    #: Identity of this one execution (Evidence Envelope §4). Where
+    #: ``turn_index`` is a *position* in a thread and cannot tell two
+    #: overlapping turns apart, ``turn_id`` names the execution itself, so a
+    #: child turn and the rows it emits can point back at the parent that
+    #: spawned them. Minted once at turn start; empty means unassigned (a bare
+    #: or test host, or an off-turn unit of work).
+    turn_id: str = ""
+    #: The ``turn_id`` of the turn that spawned this one. Empty for a top-level
+    #: turn. Together with ``turn_id`` this forms the lineage edge a forensic
+    #: reader walks to render the delegation tree.
+    parent_turn_id: str = ""
+    #: The ``dispatch_id`` of the fork or delegate dispatch that spawned this
+    #: child turn (Evidence Envelope §2, §4). Empty for a top-level turn. This
+    #: is the key that joins a child turn back to the exact tool dispatch that
+    #: created it, which ``parent_turn_id`` alone cannot express when one turn
+    #: dispatches several children.
+    parent_dispatch_id: str = ""
     #: What this task is FOR, declared at task creation by the delegate-spec
     #: author or the operator. ``implementation`` (the default) means the task
     #: promises a committed change, so a checked-commit mode must verify one.
@@ -357,7 +380,7 @@ class TurnIdentity:
     #: per task, so it lives here rather than on the mode: a mode-level opt-out
     #: would silently false-pass every implementation task in that mode.
     #: Fail-closed default: an undeclared task is an implementation task.
-    task_goal: Literal["implementation", "diagnostic"] = "implementation"
+    task_goal: TurnTaskGoal = "implementation"
 
     def same_turn(self, other: TurnIdentity) -> bool:
         """Return whether ``other`` identifies the same turn as this one.

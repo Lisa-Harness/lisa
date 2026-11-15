@@ -48,6 +48,9 @@ class ApprovalLedger:
       (``None`` = off-turn; never collapsed to ``0``).
     - ``user_slug`` / ``thread_store_slug``: scoping for shared-ledger
       reads, matching the decision and token ledgers.
+    - ``tool_call_id`` / ``dispatch_id``: the dispatch that requested the
+      action (empty for an off-turn request). ``tool_call_id`` is the id the
+      transcript's tool result carries, so the row and that result join.
     - ``state``: the transition this row records.
     - ``decision_by`` / ``decision_source``: who decided (operator
       identity's ``user_slug``) and what mechanism (``operator`` for an
@@ -99,6 +102,17 @@ class ApprovalLedger:
             "pack_id": invocation.pack_id,
             "effect": invocation.effect,
             "turn_index": invocation.turn_index,
+            # Execution identity (Evidence Envelope §4): which execution asked
+            # for this action, so the durable approval row joins that
+            # execution's ledger and thread rows by one key instead of only
+            # by turn position. Empty when the request came from off-turn work.
+            "turn_id": invocation.turn_id,
+            # Dispatch-level join keys (Evidence Envelope §2): which tool call
+            # asked for this action, and which dispatch carried it. The tool
+            # call id is what the transcript's tool result carries, so a
+            # rejection row and that result address each other.
+            "tool_call_id": invocation.tool_call_id,
+            "dispatch_id": invocation.dispatch_id,
             "user_slug": invocation.identity.user_slug,
             "thread_store_slug": invocation.thread_store_slug,
             "sequence": self._sequence,

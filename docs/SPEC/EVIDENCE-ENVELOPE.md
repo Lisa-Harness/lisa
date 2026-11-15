@@ -63,8 +63,15 @@ are written by the ledger handler, never by publishers.
 - Each topic has one typed payload model in the kernel and an allowlist
   derived from it, exactly like `_LEDGER_FIELDS`. The decision handler drops
   unknown keys at write instead of persisting arbitrary mappings.
-- Payload schemas are exported as JSON Schema and committed so non-Python
-  hosts (the Go host) and readers can validate rows.
+- Payload schemas are exported as JSON Schema and committed under
+  [`schemas/`](./schemas/) so non-Python hosts (the Go host) and readers can
+  validate rows.
+- The committed documents are a **write-time contract**. Their
+  `additionalProperties: false` never becomes a historical validator: a field
+  removed in a later version leaves older rows carrying the retired key.
+  Readers tolerate unknown keys in historical rows. Each document restates
+  this in a top-level `$comment`, and the schema directory's README carries
+  the full rationale.
 - Adding a field bumps the topic's `schema_version`. Removing or retyping a
   field is a hard cutover with a new version; readers never guess.
 
@@ -91,7 +98,10 @@ where `attempt` names why the call happened:
 | `primary` | The iteration's first call |
 | `stream_tool_fallback` | The streaming path fell back to `complete()` for the tool-call payload |
 | `truncation_continuation` | A truncation rescue continued a cut-off completion |
-| `retry` | A provider error retry |
+
+The set is closed: an attempt value a reader does not know is a bug, not a new
+case to guess at. The turn loop has no provider-error retry, so `retry` is not
+a declared attempt.
 
 Today the streaming fallback and truncation rescue make extra calls inside one
 iteration, which `turn_input.calls` (`{"iteration", "ref"}`) cannot tell
@@ -123,6 +133,18 @@ The host builds one run manifest at startup and rebuilds it whenever packs,
 modes, policy, or router configuration reload. It is stored once in the
 result-object store and addressed as `run_ref` (`r<sha256>`).
 
+The store is the existing result-object store, unchanged. It derives
+`<base>.results/` from whatever base path it is given and content-addresses the
+payload, so a host-wide store is simply a different base:
+`<data-dir>/run` yields `<data-dir>/run.results/r<sha256>.json`. The manifest is
+run configuration rather than thread data, so it is deliberately not written
+through a thread base — that keeps it out of per-thread archives and per-thread
+redaction scope. `HostPaths.run_dir()` still owns the separate per-session
+`<data-dir>/run/<session_key>` tree.
+
+Storing is idempotent: an unchanged effective configuration hashes to the same
+bytes and therefore resolves to the same `run_ref`.
+
 | Field | Content |
 | --- | --- |
 | `lisa` | Installed versions of `kernel`, `runtime`, `sdk`, and `mcp_server` |
@@ -140,29 +162,50 @@ credentials. Pack identity is name, version, and hash, not install location.
 - Thread entries gain `run_ref` and `mode_digest`: the content hash of the
   resolved mode definition the turn actually ran (after overrides).
 - Every ledger row carries `run_ref` via the envelope.
+- Neither field is ever back-filled: a manifest change stamps subsequent
+  entries and rows and leaves history as it was written.
 
 ## 4. Lineage
 
 ### Turn identity
 
-Every execution gets a `turn_id`. The kernel already mints one
-(`provenance.kernel_turn_id`); this spec promotes it to a top-level thread
-entry field and an envelope field.
+Every execution gets a `turn_id`, minted once at turn start by
+`kernel.call_identity.mint_turn_id()` and carried on `TurnIdentity`. It is a
+top-level thread-entry field and an envelope field, so it reaches ledger rows
+through the same `common` context dict that carries `turn_index`.
+
+`turn_id` is deliberately not a replacement for `turn_index`.
+
+| Field | Means | Scope |
+| --- | --- | --- |
+| `turn_index` | Position of the turn within one thread | One thread |
+| `turn_id` | This one execution | Host-wide |
+
+A thread entry records both. A resumed continuation reuses the `turn_id` it
+already owns rather than minting a second one, because a pause and resume is
+one execution, not two.
 
 ### Child turns
 
 Fork and delegate child turns ([`_child_turn.py`](../../kernel/src/kernel/turn_phases/_child_turn.py))
-currently send tokens and status to the parent but record no identity of
-their own. They will:
+mint their own identity and record the parent's:
 
 - mint their own `turn_id`;
-- carry `parent_turn_id` and `parent_dispatch_id` (the fork or delegate
-  dispatch that spawned them);
+- carry `parent_turn_id` — the parent turn's `turn_id`;
+- carry `parent_dispatch_id` — the `dispatch_id` of the fork or delegate
+  dispatch that spawned them (§2);
 - keep the parent's `turn_index`, because they belong to the parent's thread
   turn.
 
-This gives a tree under each `turn_index` that both the forensic reader and
-trace export can render.
+The dispatch key is threaded from the operation that builds the spec:
+`DelegationSpec.dispatch_id` and `ForkSpec.dispatch_id` are populated from
+`ctx.dispatch_id`. Without that, the child spawn site has no way to name the
+dispatch that created it, and `parent_dispatch_id` could only ever be empty.
+
+Both parent keys are empty on a top-level turn and neither is ever back-filled,
+so the lineage forms a tree rather than a graph of empty strings. This gives a
+tree under each `turn_index` that both the forensic reader and trace export can
+render.
 
 ## 5. Reader changes
 
@@ -196,14 +239,16 @@ trace export can render.
   `tool_call_id`.
 - A delegate child's rows carry its own `turn_id`, the parent's `turn_index`,
   and `parent_dispatch_id` equal to the delegate dispatch's `dispatch_id`.
+  Fork children satisfy the same contract.
+- A top-level turn's thread entry carries `turn_id` but neither parent key, so
+  the lineage forms a tree rather than a chain of empty strings.
+- A resumed continuation keeps its original `turn_id` instead of minting a
+  second identity for one execution.
 - Reloading a pack changes `run_ref`; the next thread entry records the new
   one.
 - Legacy rows still render, with a read note counting them.
 
 ## Open questions
 
-- Should `run_ref` objects live in the per-thread result store or a host-wide
-  store under `<data-dir>`? Host-wide avoids duplicating them across
-  conversations.
 - How to version the approval ledger's existing rows without rewriting the
   file. The default is to treat them as version 0.

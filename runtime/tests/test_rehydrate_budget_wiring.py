@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from runtime.testing import build_test_runtime
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import build_turn_hooks
 
 
@@ -79,7 +80,7 @@ def test_prior_messages_bounds_working_set_to_history_knob(tmp_path: Path) -> No
     runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=12288)
     _seed_open_task(runtime.paths.thread_path)
 
-    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=None)
 
     messages = hooks.context.prior_messages()
     assert _tool_bytes(messages) <= 12288
@@ -97,7 +98,7 @@ def test_prior_messages_core_default_session_defers_to_request_budget(tmp_path: 
     assert runtime.session_plan.manifest.context.history.rehydrate_max_bytes is None
     _seed_open_task(runtime.paths.thread_path)
 
-    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=None)
 
     messages = hooks.context.prior_messages()
     assert _tool_bytes(messages) == 36000
@@ -112,7 +113,7 @@ def test_prior_messages_host_ceiling_when_knob_absent(
     runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
     _seed_open_task(runtime.paths.thread_path)
 
-    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=None)
 
     messages = hooks.context.prior_messages()
     assert _tool_bytes(messages) == 36000
@@ -128,7 +129,7 @@ def test_prior_messages_knob_cannot_exceed_host_ceiling(
     assert runtime.config.context_budget_rehydrate_max_bytes == 12288
     _seed_open_task(runtime.paths.thread_path)
 
-    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=None)
 
     messages = hooks.context.prior_messages()
     assert _tool_bytes(messages) <= 12288
@@ -146,7 +147,9 @@ def test_history_budget_ignores_old_environment_name(
     runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
     _seed_open_task(runtime.paths.thread_path)
 
-    messages = build_turn_hooks(runtime, context=None, transport=None).context.prior_messages()
+    messages = build_turn_hooks(
+        runtime, identity=NO_TURN_IDENTITY, transport=None
+    ).context.prior_messages()
 
     if new_ceiling is None:
         assert _tool_bytes(messages) == 36000
@@ -163,7 +166,7 @@ def test_default_rehydrate_and_live_results_share_actual_remaining_window(tmp_pa
 
     runtime = _runtime_with_history_knob(tmp_path, rehydrate_max_bytes=None)
     _seed_open_task(runtime.paths.thread_path, result_size=30_000)
-    hooks = build_turn_hooks(runtime, context=None, transport=None)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=None)
     rehydrate = hooks.context.prior_messages()
     assert _tool_bytes(rehydrate) == 180_000, "default rehydrate must not pre-trim to 64KB"
     messages = [{"role": "system", "content": "fixed"}, *rehydrate]

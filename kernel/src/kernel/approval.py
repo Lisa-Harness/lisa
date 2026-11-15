@@ -90,6 +90,27 @@ class ApprovalInvocation(_FrozenApprovalModel):
     #: conversations' rows. Excluded from ``action_digest`` for the same
     #: reason as ``turn_index``.
     thread_store_slug: str = ""
+    #: Identity of the execution that requested this action (Evidence Envelope
+    #: §4), so the durable approval row joins that execution's ledger and
+    #: thread rows by one key instead of only by turn position. Stamped by the
+    #: execution registries from the dispatch context, never by
+    #: ``build_approval_invocation``; empty means off-turn work. Excluded from
+    #: ``action_digest`` for the same reason as ``turn_index``: which execution
+    #: asked is not part of the action's identity, and re-approving the same
+    #: action in a later turn must still dedup against the pending request.
+    turn_id: str = ""
+    #: The provider's tool-call id for the dispatch that requested this action
+    #: (Evidence Envelope §2). This is the id the transcript's tool result
+    #: carries, so an approval row and its transcript result address each
+    #: other. Empty for an off-turn request with no tool call behind it.
+    #: Excluded from ``action_digest`` for the same reason as ``turn_index``:
+    #: which call asked is not part of the action's identity.
+    tool_call_id: str = ""
+    #: The ``dispatch_id`` minted for that dispatch, which also appears on the
+    #: dispatch's ``tool.telemetry`` row and is the parent key for a spawned
+    #: child turn's ``parent_dispatch_id``. Empty for an off-turn request.
+    #: Excluded from ``action_digest``.
+    dispatch_id: str = ""
 
 
 class ApprovalReceipt(_FrozenApprovalModel):

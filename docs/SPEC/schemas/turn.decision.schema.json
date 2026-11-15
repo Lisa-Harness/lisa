@@ -1,0 +1,206 @@
+{
+  "$comment": "Write-time contract only: additionalProperties=false governs newly written rows. Readers MUST NOT validate historical rows against this document; unknown keys in older rows are expected and must be tolerated.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Action Reason"
+    },
+    "action_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Action Type"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Call Id"
+    },
+    "emitted_at": {
+      "type": "string"
+    },
+    "iteration": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Iteration"
+    },
+    "ledger_instance": {
+      "type": "string"
+    },
+    "logged_at": {
+      "type": [
+        "number",
+        "string"
+      ]
+    },
+    "mode_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mode Id"
+    },
+    "parent_dispatch_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "read_receipts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Read Receipts"
+    },
+    "run_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "sequence": {
+      "type": "integer"
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thread_store_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "topic": {
+      "const": "turn.decision"
+    },
+    "total_tool_calls": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Tool Calls"
+    },
+    "trace_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "turns_in_stage": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turns In Stage"
+    },
+    "user_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "write_receipts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Write Receipts"
+    }
+  },
+  "required": [
+    "emitted_at",
+    "ledger_instance",
+    "logged_at",
+    "parent_dispatch_id",
+    "parent_turn_id",
+    "run_ref",
+    "schema_version",
+    "sequence",
+    "span_id",
+    "topic",
+    "trace_id",
+    "turn_id"
+  ],
+  "title": "turn.decision",
+  "type": "object"
+}

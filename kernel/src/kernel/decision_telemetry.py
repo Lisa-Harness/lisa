@@ -42,8 +42,16 @@ Design notes
   injects ``sdk.filelock.file_lock`` over a sidecar ``<path>.lock``).
 - **Untyped payloads are fine.** The publishers send plain dicts
   (``turn.decision``) or serialized events (``tool.telemetry``), so the handler
-  records whatever mapping it receives and stamps a provenance marker naming
-  the topic. Only non-mapping payloads are ignored.
+  accepts either shape and stamps a provenance marker naming the topic. Only
+  non-mapping payloads are ignored.
+- **The allowlist is enforced here, not by publishers.** Every topic's
+  persisted keys are declared once in :mod:`kernel.evidence` (the typed payload
+  models). A key no declaration names is dropped at write, so a publisher bug
+  cannot put prompt, response, or tool-argument content on disk. Dropping is
+  silent by design \u2014 the payload models are the contract, and adding a field
+  is a deliberate act that bumps the topic's ``schema_version``. A topic with
+  no declaration is persisted unchanged with a warning, because losing an
+  entire undeclared topic's evidence is worse than recording it unscoped.
 """
 
 from __future__ import annotations
@@ -57,6 +65,8 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
+
+from kernel.evidence import drop_unknown_fields, is_known_topic, stamp_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +213,24 @@ class DecisionTelemetryHandler:
             )
             return
         record[TOPIC_FIELD] = topic
+        if not is_known_topic(topic):
+            logger.warning(
+                "decision telemetry topic %s has no payload declaration; "
+                "persisting its keys unfiltered",
+                topic,
+            )
+        else:
+            allowed = drop_unknown_fields(topic, record)
+            dropped = set(record) - set(allowed)
+            if dropped:
+                logger.debug(
+                    "decision telemetry dropped %d undeclared key(s) on topic %s: %s",
+                    len(dropped),
+                    topic,
+                    ", ".join(sorted(dropped)),
+                )
+            stamp_envelope(topic, allowed)
+            record = allowed
         if self._filter_fn is not None:
             try:
                 if not self._filter_fn(topic, record):

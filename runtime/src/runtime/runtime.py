@@ -929,6 +929,103 @@ class HostRuntime:
         # increments it; capping here prevents a runaway auto-approve loop.
         self._auto_approved_this_turn: int = 0
 
+        # Run provenance (evidence envelope spec §3): one manifest per
+        # effective configuration, rebuilt on startup and on pack/mode/policy/
+        # router reload. New thread entries and ledger rows stamp the current
+        # run_ref; rebuilding never rewrites rows already written.
+        self._run_ref: str | None = None
+        self.refresh_run_manifest()
+
+    # ── Plan / config projections used across the host ─────────────────────
+
+    @property
+    def run_ref(self) -> str | None:
+        """Return the current run manifest's content address (``r<sha256>``)."""
+        return self._run_ref
+
+    def refresh_run_manifest(self) -> str | None:
+        """Rebuild and store the run manifest; return its ``run_ref``.
+
+        Storing is idempotent by construction: an unchanged configuration
+        hashes to the same bytes and lands on the same ref. A failure logs and
+        leaves the previous ref in place — provenance never breaks a turn.
+        """
+        from runtime.run_manifest import build_run_manifest, run_base_path
+        from runtime.thread import persist_thread_tool_result
+
+        try:
+            manifest = build_run_manifest(
+                config_hashes=self._run_config_hashes(),
+                model_data_version=self._run_model_data_version(),
+                host_type=self.config.host_kind or self.config.surface_type or None,
+                # The protocol version belongs to the transport that
+                # negotiated it; a host that speaks none has ``None``, and
+                # that is recorded as unknown rather than guessed.
+                host_protocol_version=None,
+            )
+            self._run_ref = persist_thread_tool_result(
+                run_base_path(self.paths.data_dir),
+                manifest.to_stored_record(),
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("run manifest refresh failed; keeping previous run_ref", exc_info=True)
+        return self._run_ref
+
+    def _run_config_hashes(self) -> dict[str, str]:
+        """Return content hashes of the resolved mode, policy, and router config.
+
+        Only hashes reach the manifest, never the resolved values, so the
+        stored document cannot carry configuration content.
+
+        Every value is normalized through ``model_dump(mode="json")`` before it
+        is hashed. The resolved policy and routing are pydantic models, and
+        ``json.dumps`` cannot serialize a model directly — hashing them raw
+        raised ``TypeError``, which the old per-call ``except`` swallowed at
+        debug level. The manifest then recorded only the session-plan digest,
+        so two hosts that differed *only* in execution policy or routing
+        hashed identically and the manifest could not tell them apart. That is
+        the whole reason these hashes exist (Evidence Envelope §3).
+
+        ``session_plan`` hashes the plan's own ``plan_digest`` — a content
+        hash of the compiled plan. Re-hashing it would produce
+        ``sha256(sha256(...))``, which is not the plan's identity and invites
+        a reader to treat the hash as a double-encoded digest. The plan digest
+        IS the content hash, so it is stored as-is.
+        """
+        from runtime.run_manifest import config_digest_of
+
+        hashes: dict[str, str] = {}
+        for name, value in (
+            ("execution_policy", self.execution_policy),
+            ("routing", self.session_plan.manifest.routing),
+            # The resolved model manifest. A ``/models`` reload swaps it in
+            # place, so without this hash the run manifest would not change
+            # and the new ``run_ref`` would assert a provenance the host no
+            # longer has. Only the hash is stored; the manifest itself never
+            # reaches disk here.
+            ("model_manifest", getattr(self.session, "manifest", None)),
+        ):
+            digest = config_digest_of(value)
+            if digest is not None:
+                hashes[name] = digest
+        # The plan digest is already a content hash of the compiled plan.
+        plan_digest = str(self.session_plan.plan_digest or "").strip()
+        if plan_digest:
+            hashes["session_plan"] = plan_digest
+        return hashes
+
+    def _run_model_data_version(self) -> str | None:
+        """Return the effective model data version, or ``None`` when unknown.
+
+        The session manifest has no ``models`` field — the model manifest is a
+        separate document — so this reads the host's *resolved* model manifest
+        instead. ``None`` means unknown: the manifest records the absence
+        rather than a version it cannot verify.
+        """
+        manifest = getattr(self.session, "manifest", None)
+        version = getattr(manifest, "model_data_version", None)
+        return str(version) if isinstance(version, str) and version else None
+
     # ── Plan / config projections used across the host ────────────────
 
     @property

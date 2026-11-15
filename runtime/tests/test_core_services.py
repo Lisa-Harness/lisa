@@ -41,6 +41,7 @@ from runtime.handle_message import handle_message
 from runtime.model_runtime import StubModelDefinition, resolve_model
 from runtime.runtime import HostRuntime
 from runtime.token_accounting import apply_turn_usage, format_session_exit_summary_lines
+from runtime.turn_context_identity import NO_TURN_IDENTITY, TurnContextIdentity
 
 from runtime import (
     commands,
@@ -2307,7 +2308,15 @@ async def test_build_turn_hooks_wires_recall_hook(
     # setup_framework wires the content registry so content_loader(runtime) works.
     mcp_pool.setup_framework(runtime)
     hooks = turn_hooks_builder.build_turn_hooks(
-        runtime, {"mode_id": "default", "task_id": "task-7"}
+        runtime,
+        identity=TurnContextIdentity(
+            turn_id="",
+            turn_index=None,
+            task_id="task-7",
+            task_goal="",
+            parent_turn_id="",
+            parent_dispatch_id="",
+        ),
     )
     assert hooks.identity.task_id == "task-7"
     assert hooks.services.verify_task_completion is not None
@@ -2338,21 +2347,21 @@ def _make_hooks_runtime(tmp_path: Path, **config_kwargs: object) -> HostRuntime:
 def test_build_turn_hooks_wires_complete_stream_for_text_mode(tmp_path: Path) -> None:
     """When streaming mode is text/hybrid, complete_stream is wired on the hooks."""
     runtime = _make_hooks_runtime(tmp_path, streaming="text:30")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_wires_complete_stream_for_hybrid_mode(tmp_path: Path) -> None:
     """Hybrid streaming also wires complete_stream."""
     runtime = _make_hooks_runtime(tmp_path, streaming="hybrid")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -> None:
     """Stage-only streaming does NOT wire complete_stream (stage uses on_stage, not chunks)."""
     runtime = _make_hooks_runtime(tmp_path, streaming="stage")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is None
 
 
@@ -2365,7 +2374,7 @@ def test_build_turn_hooks_carries_the_conversation_scoped_thread_store(tmp_path:
     slug — one value cannot serve both.
     """
     runtime = _make_hooks_runtime(tmp_path, user_slug="u", conversation_id="conv-alpha")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
 
     assert hooks.identity.thread_store_slug == "u--conv-alpha"
     assert hooks.identity.user_slug == "u"
@@ -2374,7 +2383,7 @@ def test_build_turn_hooks_carries_the_conversation_scoped_thread_store(tmp_path:
 def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
     """With streaming disabled, complete_stream stays None (non-streaming path)."""
     runtime = _make_hooks_runtime(tmp_path, streaming="none")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is None
 
 

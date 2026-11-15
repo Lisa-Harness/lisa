@@ -57,6 +57,14 @@ class CompletionAuditContext(NamedTuple):
             ``kernel.models.resolve_turn_index``.
         user_slug: Owner of the call, for the shared ledger's scoped reads.
         thread_store_slug: Store stem of the thread the call belongs to.
+        call_id: The ``call_id`` minted for this off-turn model call, so its
+            ``model.request`` row and its token row join on the same key (the
+            off-turn analogue of the turn loop's call identity). Empty means
+            the caller did not mint one.
+        dispatch_id: The ``dispatch_id`` of the operation dispatch that made
+            the call, so an off-turn row joins back to the dispatch that
+            caused it (Evidence Envelope §2). Empty means no dispatch behind
+            the call.
     """
 
     record_request: Callable[[dict[str, Any]], str]
@@ -65,6 +73,8 @@ class CompletionAuditContext(NamedTuple):
     turn_index: int | None
     user_slug: str
     thread_store_slug: str
+    call_id: str = ""
+    dispatch_id: str = ""
 
 
 class _CallableHost:
@@ -254,6 +264,10 @@ class _CallableHost:
                 "turn_index": audit.turn_index,
                 "user_slug": audit.user_slug,
                 "thread_store_slug": audit.thread_store_slug,
+                # Off-turn call-level join keys (Evidence Envelope §2): the
+                # call this row paid for and the dispatch that made it.
+                "call_id": audit.call_id or None,
+                "dispatch_id": audit.dispatch_id or None,
             },
             source=f"model_request:{audit.operation_id}",
         )

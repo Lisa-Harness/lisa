@@ -407,6 +407,11 @@ async def _handle_models_reload(runtime: HostRuntime, message: str, active_path:
         if catalog is not None:
             parsed_active, _report = compose_effective_manifest(parsed_active, catalog)
         runtime.session.manifest = load_model_manifest_text(render_manifest_yaml(parsed_active))
+        # The resolved model manifest just changed, so the run manifest must
+        # be rebuilt: the next thread entry and every subsequent ledger row
+        # carry the new ``run_ref``. Without this the run_ref would keep
+        # asserting the model configuration the host no longer runs.
+        runtime.refresh_run_manifest()
         response_text = _render_models_manifest_from_manifest(runtime, runtime.session.manifest)
     except Exception as exc:  # pylint: disable=broad-except
         response_text = (
@@ -481,6 +486,10 @@ async def _handle_models_apply(
         if write_error is not None:
             raise ValueError(write_error)
         runtime.session.manifest = manifest
+        # The resolved model manifest just changed, so the run manifest must
+        # be rebuilt: the next thread entry and every subsequent ledger row
+        # carry the new ``run_ref``.
+        runtime.refresh_run_manifest()
         # Migration report: dry-run compose of the promoted operator
         # document with the provider catalog. The active manifest stays
         # byte-stable — catalog data is reported, never merged here.

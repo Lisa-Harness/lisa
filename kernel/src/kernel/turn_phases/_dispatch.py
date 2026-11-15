@@ -308,9 +308,27 @@ async def _dispatch_operation(
     ctx: OperationExecutionContext,
     state: _TurnState,
     exec_op: Callable[..., Awaitable[OperationResult]],
+    dispatch_id: str = "",
+    tool_call_id: str = "",
+    call_id: str = "",
+    iteration: int | None = None,
 ) -> tuple[str, OperationResult | None, YieldAction | None]:
     """Execute an in-process operation via the host's exec_op hook."""
-    op_ctx = ctx.model_copy(update={"operation_id": tool_name, "params": tool_arguments})
+    op_ctx = ctx.model_copy(
+        update={
+            "operation_id": tool_name,
+            "params": tool_arguments,
+            # Dispatch-level join keys (Evidence Envelope §2). An operation that
+            # makes an off-turn model call stamps these on its ``model.request``
+            # row, so the call joins back to the dispatch that caused it.
+            "dispatch_id": dispatch_id,
+            "call_id": call_id,
+            "iteration": iteration,
+            # The provider's tool-call id, so the operation's telemetry row
+            # names the same tool call the transcript's result references.
+            "tool_call_id": tool_call_id,
+        }
+    )
     op_result = await exec_op(tool_name, op_ctx)
     tool_output = _stringify_result(op_result)
 
@@ -364,6 +382,10 @@ async def _dispatch_pack_tool(
     pool: MCPToolPool,
     logger: logging.Logger,
     hooks: TurnHooks,
+    dispatch_id: str = "",
+    tool_call_id: str = "",
+    call_id: str = "",
+    iteration: int | None = None,
 ) -> tuple[str, ToolResult | None, Any | None]:
     """Execute an in-process pack-contributed tool with optional read caching."""
     cache_template = getattr(tool_def, "abbreviation_template", "") or ""
@@ -398,6 +420,14 @@ async def _dispatch_pack_tool(
         tool_ctx.parameters = tool_arguments
         tool_ctx.stream_output = bool(getattr(tool_def, "stream_output", False))
         tool_ctx.mcp_tool_call = mcp_tool_caller(pool)
+        # Dispatch-level join keys (Evidence Envelope §2). Stamped on the tool
+        # context so the registry's telemetry publish reads them straight off
+        # it. They arrive already minted, because a dispatch that raises
+        # ApprovalRequired returns no result to mint an identity from later.
+        tool_ctx.dispatch_id = dispatch_id
+        tool_ctx.tool_call_id = tool_call_id
+        tool_ctx.call_id = call_id
+        tool_ctx.iteration = iteration
         tool_result = await execute_tool(tool_name, tool_ctx)
         tool_output = _decorate_pack_tool_output(
             hooks,
@@ -800,6 +830,17 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
     recovery_item_id: str | None = None,
     recovery_retry_policy: str = "confirm",
     build_recovery_identity_fn: Callable[[TurnHooks], Any] | None = None,
+    #: Dispatch-level join keys (Evidence Envelope §2). ``dispatch_id`` is
+    #: passed in already minted by the caller, so the caller can also stamp the
+    #: same id on the transcript result and the approval row -- the identity
+    #: must exist before the dispatch, because a rejected dispatch never returns
+    #: an outcome to mint one from. ``tool_call_id`` is the provider's tool-call
+    #: id (what the transcript result carries); ``call_id`` names the model call
+    #: that requested the dispatch; ``iteration`` names the turn-loop iteration.
+    dispatch_id: str = "",
+    tool_call_id: str = "",
+    call_id: str = "",
+    iteration: int | None = None,
     log: logging.Logger | None = None,
 ) -> CapabilityDispatchOutcome:
     """Dispatch an operation, pack tool, or MCP tool and update ledger/receipts."""
@@ -820,6 +861,10 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
                 ctx=ctx,
                 state=state,
                 exec_op=exec_op,
+                dispatch_id=dispatch_id,
+                tool_call_id=tool_call_id,
+                call_id=call_id,
+                iteration=iteration,
             )
         elif tool_name in tool_catalog:
             tool_output, tool_result, mcp_result = await _dispatch_pack_tool(
@@ -831,6 +876,10 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
                 pool=pool,
                 logger=logger,
                 hooks=hooks,
+                dispatch_id=dispatch_id,
+                tool_call_id=tool_call_id,
+                call_id=call_id,
+                iteration=iteration,
             )
         else:
             anchored = await maybe_resolve_anchor_read(
@@ -937,6 +986,17 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
                 recovery_retry_policy=recovery_retry_policy,
                 build_recovery_identity_fn=build_recovery_identity_fn,
                 log=logger,
+                # Dispatch-level join keys (Evidence Envelope §2). The resumed
+                # dispatch is the SAME dispatch: the approval row that
+                # authorized it and the telemetry row the resumed run publishes
+                # must name one dispatch_id, or the approval↔retry join this
+                # module exists to create is severed. Without these the resumed
+                # call fell back to the "" defaults and minted a fresh
+                # identity at the far end.
+                dispatch_id=dispatch_id,
+                tool_call_id=tool_call_id,
+                call_id=call_id,
+                iteration=iteration,
             ),
         )
         if continued is not None:

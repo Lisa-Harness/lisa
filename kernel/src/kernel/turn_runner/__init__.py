@@ -73,6 +73,14 @@ from kernel.approval import (
     is_expired,
     render_approval_request,
 )
+from kernel.call_identity import (
+    PRIMARY_ATTEMPT,
+    STREAM_TOOL_FALLBACK_ATTEMPT,
+    TRUNCATION_CONTINUATION_ATTEMPT,
+    mint_call_id,
+    mint_dispatch_id,
+    mint_turn_id,
+)
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
 from kernel.context.request_budget import estimate_request_tokens, fit_request_context
@@ -725,6 +733,9 @@ async def _publish_routing_decision(
                 "mode_id": mode_id,
                 "query_preview": query[:120],
                 "turn_index": hooks.identity.turn_index,
+                "turn_id": hooks.identity.turn_id or None,
+                "parent_turn_id": hooks.identity.parent_turn_id or None,
+                "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
                 "user_slug": hooks.identity.user_slug,
                 "thread_store_slug": hooks.identity.thread_store_slug,
                 "iteration": state.iteration,
@@ -1692,6 +1703,9 @@ async def execute_approved_invocation(
             "data_dir": hooks.services.data_dir,
             "thread_dir": hooks.services.thread_dir,
             "turn_index": hooks.identity.turn_index,
+            "turn_id": hooks.identity.turn_id,
+            "parent_turn_id": hooks.identity.parent_turn_id,
+            "parent_dispatch_id": hooks.identity.parent_dispatch_id,
             "model_router": hooks.context_seams.model_router,
             "request_recorder": hooks.models.record_request,
             "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
@@ -2921,6 +2935,9 @@ async def _resolve_iteration_lifecycle(
                 {
                     "mode_id": mode_id,
                     "turn_index": hooks.identity.turn_index,
+                    "turn_id": hooks.identity.turn_id or None,
+                    "parent_turn_id": hooks.identity.parent_turn_id or None,
+                    "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
                     "user_slug": hooks.identity.user_slug,
                     # Which thread the row belongs to. Turn indices are
                     # per-thread, so two conversations of one user collide on
@@ -2938,6 +2955,11 @@ async def _resolve_iteration_lifecycle(
                     "read_receipts": sum(
                         1 for r in state.effect_receipts if r.effect in ("read", "execute")
                     ),
+                    # The model call whose output this decision resolved
+                    # (Evidence Envelope §2). ``None`` means the decision was not
+                    # attributable to a single call (a workflow-position yield,
+                    # or a legacy path with no call in flight).
+                    "call_id": state.current_call_id or None,
                 },
             )
         except Exception as _bus_exc:  # pylint: disable=broad-except
@@ -3216,13 +3238,40 @@ async def _streamed_gateway_completion(
     complete_started: float,
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
+    state: _TurnState | None = None,
+    request_snapshot: dict[str, Any] | None = None,
 ) -> Any:
     """Stream one completion with tool-call fallback and a truncation rescue.
 
     v1: stream tokens to the host. When the stream indicates tool_calls are
     needed (finish_reason='tool_calls'), fall back to the non-streaming
     complete() for that iteration to get the structured tool-call payload.
+
+    Every extra call this function makes is recorded as its own call with its
+    own ``attempt`` (Evidence Envelope §2), so the truncation retries and the
+    tool-call fallback stop being invisible spend: ``truncation_continuation``
+    for a rescue retry and ``stream_tool_fallback`` for the non-streaming
+    regeneration. ``state`` is optional so the function stays callable without
+    a turn state (tests and the audit-seam path pass none), in which case no
+    call is recorded.
     """
+
+    def _record_extra_call(attempt: str, request: CompletionRequest) -> str:
+        """Record one extra call in this iteration and return its call id.
+
+        The recorded call is also the turn's current call: the extra call is
+        the one whose usage the iteration will report, so the identity the
+        token row carries must be this one, not the iteration's first.
+        """
+        if state is None or request_snapshot is None:
+            return ""
+        return _record_request_snapshot(
+            state,
+            hooks,
+            {**request_snapshot, "max_tokens": request.max_tokens},
+            attempt=attempt,
+        )
+
     stream_gateway_fn = getattr(gateway, "complete_stream", None)
     assert callable(stream_gateway_fn)  # guarded by the caller's complete_stream check
     on_delta = hooks.models.on_delta
@@ -3266,6 +3315,7 @@ async def _streamed_gateway_completion(
                 getattr(effective_model_def, "model_id", ""),
                 retry_max_tokens,
             )
+            _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
             retry_chunks, retry_ms = await _collect_stream(
                 stream_gateway_fn, fallback_request, on_delta
             )
@@ -3309,6 +3359,7 @@ async def _streamed_gateway_completion(
                 getattr(effective_model_def, "model_id", ""),
                 retry_max_tokens,
             )
+            _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
             retry_chunks, retry_ms = await _collect_stream(
                 stream_gateway_fn, fallback_request, on_delta
             )
@@ -3324,6 +3375,7 @@ async def _streamed_gateway_completion(
         # ``delta.tool_calls``) keep the regeneration path with its
         # truncation rescue (the 2026-10-08 "ran out without doing
         # anything" incident).
+        _record_extra_call(STREAM_TOOL_FALLBACK_ATTEMPT, fallback_request)
         completion = await _rescue_truncated_fallback_completion(
             gateway=gateway,
             fallback_request=fallback_request,
@@ -3332,6 +3384,7 @@ async def _streamed_gateway_completion(
             effective_tools=effective_tools,
             tools_offered_this_turn=tools_offered_this_turn,
             log=log,
+            record_call=_record_extra_call,
         )
     else:
         # Build a completion-like object from the aggregated stream
@@ -3352,6 +3405,7 @@ async def _rescue_truncated_fallback_completion(
     effective_tools: list[dict[str, Any]] | None,
     tools_offered_this_turn: bool,
     log: logging.Logger,
+    record_call: Callable[[str, CompletionRequest], str] | None = None,
 ) -> Any:
     """Non-streaming fallback for a tool_calls stream, with truncation rescue.
 
@@ -3405,6 +3459,11 @@ async def _rescue_truncated_fallback_completion(
             retry_max_tokens,
         )
     retry_started = time.perf_counter()
+    if record_call is not None:
+        # The retry is a second model call inside this iteration. It is
+        # recorded so the token row that reports its spend names THIS call
+        # rather than the fallback's request.
+        record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
     completion = await gateway.complete(retry_request)
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
@@ -3421,6 +3480,7 @@ async def _nonstreamed_gateway_completion(
     complete_started: float,
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
+    record_call: Callable[[str, CompletionRequest], str] | None = None,
 ) -> Any:
     """Complete non-streaming with a one-shot doubled-budget truncation rescue.
 
@@ -3473,6 +3533,11 @@ async def _nonstreamed_gateway_completion(
                     retry_max_tokens,
                 )
             retry_started = time.perf_counter()
+            if record_call is not None:
+                # The retry is a second model call inside this iteration. It
+                # is recorded so the token row that reports its spend names
+                # THIS call rather than the iteration's first.
+                record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
             completion = await gateway.complete(retry_request)
             if completion.duration_ms <= 0.0:
                 completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
@@ -3585,12 +3650,57 @@ def _prompt_cache_key(hooks: TurnHooks) -> str:
     return "lisa-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
 
 
-def _record_request_snapshot(state: _TurnState, hooks: TurnHooks, snapshot: dict[str, Any]) -> None:
+def _record_request_snapshot(
+    state: _TurnState,
+    hooks: TurnHooks,
+    snapshot: dict[str, Any],
+    attempt: str = PRIMARY_ATTEMPT,
+) -> str:
+    """Record one model request and return the ``call_id`` minted for it.
+
+    This is the single point where a model call becomes addressable. Every
+    gateway call site routes through here \u2014 the iteration's primary call and
+    each extra call inside that same iteration (the streaming tool-call
+    fallback, the truncation continuation, and the provider retry) \u2014 so a turn
+    that made three calls in one iteration records three entries instead of
+    one. Before this, ``turn_input.calls`` held ``{iteration, ref}``, so those
+    calls were indistinguishable and the extra spend could not be attributed.
+
+    ``attempt`` defaults to ``primary`` because most sites are the iteration's
+    first call; the extra-call sites pass their own reason. The entry carries
+    ``call_id`` and ``attempt`` alongside ``iteration`` and ``ref``, so the
+    token ledger, the decision row, and the transcript name the same call.
+
+    The minted id is returned and also stashed on ``state`` as the call in
+    flight, so a publisher downstream of the call can stamp it without
+    threading the id through every signature. Each call gets a fresh id even
+    when two calls share a request shape: identity is per call, not per shape.
+    The unrecorded case keeps the snapshot's own shape. With no
+    ``record_request`` hook there is no ``r<sha256>`` ref to store, so the entry
+    *is* the request snapshot plus the call identity. Nesting the request under
+    ``ref`` there would break every reader that reads
+    ``model_requests[0]["messages"]``, and the transcript is a reader.
+    """
+    call_id = mint_call_id()
+    ref: str | None = None
     if hooks.models.record_request is not None:
-        reference = hooks.models.record_request(snapshot)
-        state.model_requests.append({"iteration": state.iteration, "ref": reference})
+        ref = hooks.models.record_request(snapshot)
+        entry: dict[str, Any] = {
+            "call_id": call_id,
+            "iteration": state.iteration,
+            "attempt": attempt,
+            "ref": ref,
+        }
     else:
-        state.model_requests.append(copy.deepcopy(snapshot))
+        entry = copy.deepcopy(snapshot)
+        entry["call_id"] = call_id
+        entry["iteration"] = state.iteration
+        entry["attempt"] = attempt
+    state.model_requests.append(entry)
+    state.current_call_id = call_id
+    state.current_call_attempt = attempt
+    state.current_call_ref = ref or ""
+    return call_id
 
 
 async def _iteration_completion_or_expiry(
@@ -3880,6 +3990,20 @@ async def _model_completion_for_iteration(
     }
     _record_request_snapshot(state, hooks, snapshot)
 
+    def _record_extra_call(attempt: str, request: CompletionRequest) -> str:
+        """Record one extra call in this iteration and return its call id.
+
+        The rescue paths make a second model call inside the iteration. It is
+        recorded so the token row that reports its spend names THIS call
+        rather than the iteration's first.
+        """
+        return _record_request_snapshot(
+            state,
+            hooks,
+            {**snapshot, "max_tokens": request.max_tokens},
+            attempt=attempt,
+        )
+
     _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
     _complete_started = time.perf_counter()
     # Bound the whole in-iteration completion (stream + fallback + truncation
@@ -3912,6 +4036,8 @@ async def _model_completion_for_iteration(
                     completion_request=completion_request,
                     complete_started=_complete_started,
                     log=log,
+                    state=state,
+                    request_snapshot=snapshot,
                 ),
                 _iteration_wall_s,
             ),
@@ -3934,6 +4060,7 @@ async def _model_completion_for_iteration(
                 completion_request=completion_request,
                 complete_started=_complete_started,
                 log=log,
+                record_call=_record_extra_call,
             ),
             _iteration_wall_s,
         ),
@@ -3999,6 +4126,9 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     effective_model_def: Any,
     record_model_usage: Callable[..., None],
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    call_id: str = "",
+    attempt: str = "",
+    request_ref: str | None = None,
 ) -> dict[str, Any]:
     """Fold one iteration's completion into the turn: usage, telemetry, history.
 
@@ -4007,6 +4137,15 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     telemetry, emits ``model_call_complete``, and appends the assistant
     message (visible text + tool calls + provenance) to ``messages``.
     Returns the usage fields as a dict for the caller's locals.
+
+    ``call_id`` / ``attempt`` / ``request_ref`` name the model call this
+    completion IS. They are passed in rather than read from ``state`` because
+    one iteration can make several calls: the streaming tool-call fallback and
+    the truncation rescues each issue their own request, and the call that
+    produced the usage is the last one, not the iteration's first. Reading
+    ``state.current_call_attempt`` at publish time named whichever call was
+    recorded most recently, so a row could report a spend against an attempt
+    that did not issue it. Empty / ``None`` means unknown, never a guess.
     """
     usage = _extract_completion_usage(completion)
     prompt_tokens = _nullable_int_fn(usage.prompt_tokens)
@@ -4088,6 +4227,19 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
             mode_id=mode_id,
             stage_id=str(getattr(state, "current_stage_id", "") or ""),
             turn_index=hooks.identity.turn_index,
+            turn_id=hooks.identity.turn_id or None,
+            # Call-level join keys (Evidence Envelope §2): this row names the
+            # exact call it paid for, why that call happened, and the request
+            # snapshot behind it. Without them two calls in one iteration were
+            # indistinguishable and their spend could not be attributed.
+            # ``getattr`` defaults because a caller may pass a partial state
+            # stub (the provider-continuation seam does): an absent attribute is
+            # unknown, not a crash on the telemetry path. The call identity
+            # comes from the caller's own call, not from mutable turn state.
+            call_id=call_id or None,
+            iteration=getattr(state, "iteration", None),
+            attempt=attempt or None,
+            request_ref=request_ref,
             call_site="turn_loop",
             conversation_id=hooks.identity.conversation_id,
             user_slug=hooks.identity.user_slug,
@@ -6538,6 +6690,7 @@ async def _force_final_content_completion(
                     request_id=str(getattr(final_completion, "request_id", "") or ""),
                     mode_id=mode_id,
                     turn_index=hooks.identity.turn_index,
+                    turn_id=hooks.identity.turn_id or None,
                     call_site="forced_final",
                     conversation_id=hooks.identity.conversation_id,
                     user_slug=hooks.identity.user_slug,
@@ -7312,6 +7465,9 @@ def _publish_routing_forced(
         {
             "mode_id": mode_id,
             "turn_index": hooks.identity.turn_index,
+            "turn_id": hooks.identity.turn_id or None,
+            "parent_turn_id": hooks.identity.parent_turn_id or None,
+            "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
             "user_slug": hooks.identity.user_slug,
             "thread_store_slug": hooks.identity.thread_store_slug,
             "iteration": state.iteration,
@@ -8291,6 +8447,7 @@ async def _dispatch_capability_and_track(
     dispatch loop (the messages append happens here so the in-turn
     history records the tool's yield receipt).
     """
+    dispatch_id = mint_dispatch_id()
     _outcome = await dispatch_capability(
         tool_name=tool_name,
         tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
@@ -8306,6 +8463,16 @@ async def _dispatch_capability_and_track(
         recovery_item_id=recovery_item_id,
         recovery_retry_policy=recovery_retry_policy,
         build_recovery_identity_fn=build_recovery_identity_fn,
+        # Dispatch-level join keys (Evidence Envelope §2). ``dispatch_id`` is
+        # minted here so every dispatch -- including one that raises
+        # ApprovalRequired and never runs -- has an identity, which is what
+        # lets its telemetry row and approval row address its transcript tool
+        # result. ``tool_call_id`` is the provider's id, the id the transcript
+        # result carries; ``call_id`` names the model call that asked for it.
+        dispatch_id=dispatch_id,
+        tool_call_id=tool_call_id,
+        call_id=state.current_call_id,
+        iteration=state.iteration,
         log=log,
     )
     tool_output = _outcome.tool_output
@@ -8418,7 +8585,17 @@ def _wire_build_entry_ctx(
             "request_recorder": hooks.models.record_request,
         }
         base_ctx_kwargs.update(overrides)
-        return _build_minimal_context(**base_ctx_kwargs)
+        # Execution identity and lineage (Evidence Envelope §4). The dispatch
+        # context inherits them from the turn's own identity, so every row a
+        # tool or operation dispatch publishes names its execution and, for a
+        # child turn, the turn and spawn dispatch it descends from.
+        return _build_minimal_context(**base_ctx_kwargs).model_copy(
+            update={
+                "turn_id": hooks.identity.turn_id,
+                "parent_turn_id": hooks.identity.parent_turn_id,
+                "parent_dispatch_id": hooks.identity.parent_dispatch_id,
+            }
+        )
 
     return _build_entry_ctx
 
@@ -10806,7 +10983,7 @@ def _save_dispatch_continuation(
         return
     capture[1:] = [
         TurnContinuation(
-            turn_id=previous.turn_id if previous is not None else uuid4().hex,
+            turn_id=identity.turn_id or mint_turn_id(),
             identity=identity,
             mode_id=state.active_mode_id,
             query=query,
@@ -11485,6 +11662,15 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             effective_model_def=effective_model_def,
             record_model_usage=_record_model_usage,
             emit_stage=_emit_stage,
+            # The identity of the call whose usage this completion reports.
+            # One iteration can make several calls (the streaming tool-call
+            # fallback, the truncation rescues), and the LAST recorded call
+            # is the one that produced this completion's spend. Reading the
+            # identity here - right after the call - is what keeps the row
+            # from naming a call that did not issue it.
+            call_id=_state.current_call_id,
+            attempt=_state.current_call_attempt,
+            request_ref=_state.current_call_ref or None,
         )
         _state.intra_turn_compaction_estimator.observe_request_tokens(
             _state.request_context_budget.input_tokens

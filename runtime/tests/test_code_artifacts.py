@@ -18,6 +18,7 @@ from runtime.handle_message import _resumable_task_id
 from runtime.runtime import HostRuntime
 from runtime.testing import build_test_runtime
 from runtime.thread import append_thread_entry, load_thread_range, next_turn_index
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_hooks_builder import _derive_view
 from sdk.workproducts import WorkProduct, WorkProductCheck, WorkProductPreparation
 
@@ -1010,7 +1011,17 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
             end_turn=next_turn_index(thread_path=restarted.paths.thread_path),
         )[-1]
         committed_artifact_id = approved["effect_receipts"][0]["artifact_id"]
-        hooks = build_turn_hooks(restarted, {"task_id": task_id})
+        hooks = build_turn_hooks(
+            restarted,
+            identity=TurnContextIdentity(
+                turn_id="",
+                turn_index=None,
+                task_id=task_id,
+                task_goal="",
+                parent_turn_id="",
+                parent_dispatch_id="",
+            ),
+        )
         request = TaskCompletionRequest(task_id=task_id, origin_tool_id="coding_create_worktree")
         verify = hooks.services.verify_task_completion
         assert verify is not None and not (await verify(request)).verified

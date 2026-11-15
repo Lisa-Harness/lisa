@@ -181,7 +181,12 @@ async def test_segmentation_is_lossless_across_seals() -> None:
 
         written = 0
         for i in range(40):
-            await handler.publish_turn_decision({"mode_id": "m", "turn_index": i, "pad": "x" * 20})
+            # ``action_reason`` is a declared field, so the padding survives the
+            # write-time allowlist and the rows actually reach the seal size
+            # (an undeclared padding key would be dropped and never seal).
+            await handler.publish_turn_decision(
+                {"mode_id": "m", "turn_index": i, "action_reason": "x" * 20}
+            )
             written += 1
 
         assert (Path(td) / "decisions.jsonl.1").exists()
@@ -264,7 +269,9 @@ async def test_lock_factory_serializes_append_and_seal() -> None:
         handler = DecisionTelemetryHandler(path, segment_max_bytes=200, lock_factory=double._make)
 
         for i in range(30):
-            await handler.publish_turn_decision({"mode_id": "m", "turn_index": i, "pad": "x" * 30})
+            await handler.publish_turn_decision(
+                {"mode_id": "m", "turn_index": i, "action_reason": "x" * 30}
+            )
 
         # One acquisition per record, and never two holders at once.
         assert double._acquired >= 30
@@ -298,7 +305,7 @@ def test_seal_number_is_recomputed_from_directory_not_cache() -> None:
 
         written_first = 12
         for i in range(written_first):
-            asyncio.run(first.publish_turn_decision({"turn_index": i, "pad": "x" * 40}))
+            asyncio.run(first.publish_turn_decision({"turn_index": i, "action_reason": "x" * 40}))
         first_sidecars = {p.name for p in Path(td).glob("decisions.jsonl.*")}
         assert len(first_sidecars) >= 2, "seal threshold crossed but fewer than 2 segments exist"
 
@@ -308,9 +315,9 @@ def test_seal_number_is_recomputed_from_directory_not_cache() -> None:
         # (the pre-fix failure overwrote a sealed segment).
         written_second = 12
         for i in range(written_second):
-            asyncio.run(second.publish_turn_decision({"turn_index": i, "pad": "y" * 40}))
+            asyncio.run(second.publish_turn_decision({"turn_index": i, "action_reason": "y" * 40}))
         for i in range(written_first):
-            asyncio.run(first.publish_turn_decision({"turn_index": i, "pad": "z" * 40}))
+            asyncio.run(first.publish_turn_decision({"turn_index": i, "action_reason": "z" * 40}))
 
         after = {p.name for p in Path(td).glob("decisions.jsonl.*")}
         assert first_sidecars <= after, "the second instance deleted or overwrote a sealed segment"

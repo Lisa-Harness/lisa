@@ -1,0 +1,158 @@
+{
+  "$comment": "Write-time contract only: additionalProperties=false governs newly written rows. Readers MUST NOT validate historical rows against this document; unknown keys in older rows are expected and must be tolerated.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Call Id"
+    },
+    "dispatch_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dispatch Id"
+    },
+    "emitted_at": {
+      "type": "string"
+    },
+    "iteration": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Iteration"
+    },
+    "ledger_instance": {
+      "type": "string"
+    },
+    "logged_at": {
+      "type": [
+        "number",
+        "string"
+      ]
+    },
+    "operation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Operation Id"
+    },
+    "parent_dispatch_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Ref"
+    },
+    "run_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "sequence": {
+      "type": "integer"
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thread_store_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "topic": {
+      "const": "model.request"
+    },
+    "trace_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "user_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "emitted_at",
+    "ledger_instance",
+    "logged_at",
+    "parent_dispatch_id",
+    "parent_turn_id",
+    "run_ref",
+    "schema_version",
+    "sequence",
+    "span_id",
+    "topic",
+    "trace_id",
+    "turn_id"
+  ],
+  "title": "model.request",
+  "type": "object"
+}

@@ -276,6 +276,13 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         data_dir=getattr(ctx, "data_dir", ""),
         thread_dir=getattr(ctx, "thread_dir", ""),
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        # Execution identity (Evidence Envelope §4): nested tool calls keep the
+        # attribution so their rows name the same execution as the parent's.
+        turn_id=getattr(ctx, "turn_id", "") or "",
+        # Lineage rides along with the execution id: a nested tool call in a
+        # child turn must still name the parent turn and spawn dispatch.
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or "",
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or "",
         mcp_tool_call=getattr(ctx, "mcp_tool_call", None),
     )
 

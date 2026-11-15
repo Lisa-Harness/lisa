@@ -56,6 +56,16 @@ _LEDGER_FIELDS: tuple[str, ...] = (
     "stage_id",
     "operation_id",
     "turn_index",
+    # Execution identity (Evidence Envelope §4). ``turn_id`` is the stable
+    # per-execution id; the durable serializer omits it when unknown, so a
+    # row that cannot name its turn simply lacks the key.
+    "turn_id",
+    # Call-level join keys (Evidence Envelope §2): which model call produced
+    # this row, why it happened, and the request snapshot it came from.
+    "call_id",
+    "iteration",
+    "attempt",
+    "request_ref",
     "call_site",
     "provider",
     "model_id",
@@ -477,6 +487,11 @@ def build_token_usage_event(
     mode_id: str = "",
     stage_id: str = "",
     turn_index: int | None = None,
+    turn_id: str | None = None,
+    call_id: str | None = None,
+    iteration: int | None = None,
+    attempt: str | None = None,
+    request_ref: str | None = None,
     call_site: str = "",
     conversation_id: str = "",
     user_slug: str = "default",
@@ -500,6 +515,14 @@ def build_token_usage_event(
     ``{"tokens_saved": 40000}``); they persist through the durable
     allowlist, unlike the untyped ``extra`` bag, which is dropped at
     append time and exists only for in-process joins.
+
+    ``call_id`` / ``iteration`` / ``attempt`` / ``request_ref`` are the
+    call-level join keys (Evidence Envelope §2). A turn whose streaming path
+    fell back to ``complete()``, or whose completion was retried after a
+    truncation, makes several calls inside one iteration; without these keys
+    a reader could neither tell those rows apart nor match a row to the
+    request snapshot it came from. ``attempt=None`` stays unknown \u2014 that is
+    the legacy or off-turn case, not a fifth attempt kind.
 
     ``effective_model_data_source`` / ``effective_model_data_version``
     stamp where the effective model data for this call came from and its
@@ -544,6 +567,13 @@ def build_token_usage_event(
         mode_id=str(mode_id or ""),
         stage_id=str(stage_id or ""),
         turn_index=resolve_turn_index(turn_index),
+        # Execution identity: ``None`` means unknown, and the durable
+        # serializer omits it. An empty string would read as a real id.
+        turn_id=str(turn_id or "") or None,
+        call_id=str(call_id or "") or None,
+        iteration=iteration,
+        attempt=str(attempt or "") or None,
+        request_ref=str(request_ref or "") or None,
         call_site=str(call_site or ""),
         conversation_id=str(conversation_id or ""),
         user_slug=str(user_slug or "default"),

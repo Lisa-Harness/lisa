@@ -38,7 +38,6 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     ToolResult,
-    resolve_turn_index,
 )
 from kernel.operations.registry import execute_operation
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
@@ -92,6 +91,7 @@ from runtime.thread import (
     build_recent_thread_excerpt,
     project_thread_messages,
 )
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_continuation import persist_request
 
 if TYPE_CHECKING:
@@ -581,6 +581,7 @@ async def _maybe_auto_capture(
     response_text: str,
     messages: list[dict[str, Any]],
     effect_receipts: list[Any],
+    identity: TurnContextIdentity,
     ctx_dict: dict[str, Any],
     capability_binding_provider: Any,
     model_router: Any,
@@ -657,8 +658,9 @@ async def _maybe_auto_capture(
         )
         # Stamp the global turn index into the capture context so the
         # distilled memory record carries a thread-turn provenance
-        # pointer (memory → thread linkage).
-        raw_turn_index = ctx_dict.get("turn_index")
+        # pointer (memory → thread linkage). Read from the typed carrier, not
+        # the out-parameter dict: identity has exactly one source.
+        raw_turn_index = identity.turn_index
         if isinstance(raw_turn_index, int):
             capture_ctx.extra["thread_turn"] = raw_turn_index
         # Durable off-turn recording: the distillation call is a model
@@ -1129,6 +1131,7 @@ def _run_behavioral_signals_slice_impl(
 def _assemble_dynamic_user_context(
     *,
     runtime: HostRuntime,
+    identity: TurnContextIdentity,
     ctx_dict: dict[str, Any],
     resolve_model: Callable[[str], Any],
     item_builder: Any,
@@ -1151,10 +1154,10 @@ def _assemble_dynamic_user_context(
     # Prepend the global turn index to the briefing so the model sees
     # its own turn number ("Turn 42") and can use it to address prior
     # turns via ``thread_read_range`` / the markdown render operation.
-    # The number is computed at turn start in ``_execute_mode_turn``
-    # and threaded through ``run_context`` — the same value stamped on
-    # the thread entry, so the model's self-address matches the log.
-    turn_index = ctx_dict.get("turn_index")
+    # The number is computed at turn start and carried on the typed identity
+    # — the same value stamped on the thread entry, so the model's
+    # self-address matches the log.
+    turn_index = identity.turn_index
     if isinstance(turn_index, int):
         pre_turn_briefing = f"Turn {turn_index}\n\n{pre_turn_briefing}"
 
@@ -1317,18 +1320,6 @@ class _WiredHooks:
         self.sandbox_runner = sandbox_runner
 
 
-def _coerce_turn_index(raw: Any) -> int | None:
-    """Coerce a turn-context value into an attributable turn index.
-
-    ``turn_index`` arrives from ``run_context``, which hosts populate with the
-    global thread ordinal computed at turn start. ``None`` means the work is
-    not attributable to a thread turn (off-turn slice work, or a host with no
-    thread) and stays ``None`` rather than collapsing to ``0`` — which is the
-    thread's first real turn. Anything unusable degrades to ``None``.
-    """
-    return resolve_turn_index(raw)
-
-
 def _assemble_turn_hooks(
     *,
     runtime: HostRuntime,
@@ -1336,6 +1327,9 @@ def _assemble_turn_hooks(
     task_id: str = "",
     task_goal: str = "",
     turn_index: int | None = None,
+    turn_id: str = "",
+    parent_turn_id: str = "",
+    parent_dispatch_id: str = "",
 ) -> TurnHooks:
     """Compose the final ``TurnHooks`` dataclass from the wired callables.
 
@@ -1356,6 +1350,9 @@ def _assemble_turn_hooks(
         session_plan_digest=runtime.session_plan.plan_digest,
         task_id=task_id,
         turn_index=turn_index,
+        turn_id=turn_id,
+        parent_turn_id=parent_turn_id,
+        parent_dispatch_id=parent_dispatch_id,
         task_goal="diagnostic" if task_goal == "diagnostic" else "implementation",
     )
     artifact_store = runtime.services.code_change_artifact_store
@@ -1924,16 +1921,24 @@ def build_turn_hooks(
     context: dict[str, Any] | None = None,
     transport: TransportCallbacks | None = None,
     *,
+    identity: TurnContextIdentity,
     extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> TurnHooks:
     """Build a ``TurnHooks`` dataclass wired to the host runtime.
 
     Args:
         runtime: The typed host runtime with config, manifest, MCP pool.
-        context: Optional mutable turn-context dict. When provided, the
-            ``on_turn_complete`` hook updates it with completion metadata.
-            When ``None``, a fresh dict is created internally.
+        context: Optional mutable turn-context dict. It is an *out-parameter*
+            only: the ``on_turn_complete`` hook writes completion metadata into
+            it and ``memory_ids`` accumulates there. Identity is never read
+            from it — that comes from ``identity``, so a caller that forgets a
+            field gets a ``TypeError`` instead of a blank on disk.
         transport: Optional transport callbacks for streaming/debug events.
+        identity: The execution identity and lineage these hooks carry. Required
+            because the alternative — reading a partially populated dict with
+            ``.get(...) or ""`` coercion — is what let identity silently reach
+            the ledger as ``null``. A caller with genuinely no turn context
+            passes ``NO_TURN_IDENTITY`` rather than omitting an argument.
         extra_item_builders: Optional host-supplied ``ExtensionItemBuilder``
             instances (e.g. the VS Code sidecar's editor-context bridge).
             Composed alongside the installed-pack builder so host-contributed
@@ -2011,6 +2016,7 @@ def build_turn_hooks(
     ) -> str:
         return _assemble_dynamic_user_context(
             runtime=runtime,
+            identity=identity,
             ctx_dict=ctx_dict,
             resolve_model=_resolve_model,
             item_builder=_item_builder,
@@ -2118,6 +2124,7 @@ def build_turn_hooks(
             response_text=response_text,
             messages=messages,
             effect_receipts=effect_receipts,
+            identity=identity,
             ctx_dict=ctx_dict,
             capability_binding_provider=capability_binding_provider,
             model_router=_auto_capture_model_router,
@@ -2202,9 +2209,12 @@ def build_turn_hooks(
 
     return _assemble_turn_hooks(
         runtime=runtime,
-        task_id=str(ctx_dict.get("task_id") or ""),
-        task_goal=str(ctx_dict.get("task_goal") or ""),
-        turn_index=_coerce_turn_index(ctx_dict.get("turn_index")),
+        task_id=identity.task_id,
+        task_goal=identity.task_goal,
+        turn_index=identity.turn_index,
+        turn_id=identity.turn_id,
+        parent_turn_id=identity.parent_turn_id,
+        parent_dispatch_id=identity.parent_dispatch_id,
         wired=_WiredHooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,
