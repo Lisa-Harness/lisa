@@ -671,6 +671,14 @@ async def _maybe_auto_capture(
             runtime.paths.thread_path,
             runtime.paths.ephemeral_results_path,
         )
+        # The response half of the same archive (Spec: MODEL-CALL-ARCHIVE
+        # §1): the same persist shape, so the distillation call's response
+        # lands next to its request.
+        capture_ctx.response_recorder = partial(
+            persist_request,
+            runtime.paths.thread_path,
+            runtime.paths.ephemeral_results_path,
+        )
         capture_ctx.turn_index = raw_turn_index if isinstance(raw_turn_index, int) else None
         capture_result = await execute_operation("synthesize_and_store_learning", capture_ctx)
         # Thread → memory linkage: record the minted memory id(s) on the
@@ -1363,6 +1371,11 @@ def _assemble_turn_hooks(
             complete_stream=wired.complete_stream,
             on_delta=wired.on_delta,
             record_request=partial(
+                persist_request,
+                runtime.paths.thread_path,
+                runtime.paths.ephemeral_results_path,
+            ),
+            record_response=partial(
                 persist_request,
                 runtime.paths.thread_path,
                 runtime.paths.ephemeral_results_path,

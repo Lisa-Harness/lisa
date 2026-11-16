@@ -763,6 +763,7 @@ def _build_completion_audit(
         thread_store_slug=str(getattr(ctx, "thread_store_slug", "") or ""),
         call_id=off_turn_call_id,
         dispatch_id=str(getattr(ctx, "dispatch_id", "") or ""),
+        record_response=ctx.response_recorder,
     )
 
 

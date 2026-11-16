@@ -452,6 +452,13 @@ class _TurnState:
     registered no ``record_request`` hook, so there is no addressable ref —
     unknown, never a guess.
     """
+    current_call_entry: dict[str, Any] | None = None
+    """The ``turn_input.calls`` entry staged for the call in flight (Spec:
+    MODEL-CALL-ARCHIVE §3). ``_record_request_snapshot`` attaches the very
+    dict it appended to ``model_requests``; the paired response recorder
+    stamps its ``response_ref`` in place after the call finishes. ``None``
+    between calls or when no call is recordable.
+    """
     action_tool_ids: set[str] = field(default_factory=set)
     """The side-effecting action tools the current mode declares (from
     ``mode_completion_effects``), resolved at turn start for parent and

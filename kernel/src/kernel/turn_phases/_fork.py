@@ -517,6 +517,7 @@ def _build_minimal_context(
     model_router: Any = None,
     event_bus: Any = None,
     request_recorder: Any = None,
+    response_recorder: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -528,7 +529,10 @@ def _build_minimal_context(
     ``request_recorder`` is the durable model-request recorder
     (``persist_request`` shape). When supplied, operations dispatched from
     this context archive their off-turn completions; when omitted the
-    dispatches stay unrecorded (tests, bare hosts).
+    dispatches stay unrecorded (tests, bare hosts). ``response_recorder``
+    is its sibling (Spec: MODEL-CALL-ARCHIVE §1): the same persist shape,
+    recording the response snapshot of each recorded request so the pair
+    is addressable from both ends.
     """
     host = build_callable_host(
         complete_fn=complete_fn,
@@ -583,4 +587,5 @@ def _build_minimal_context(
         model_router=model_router,
         event_bus=event_bus,
         request_recorder=request_recorder,
+        response_recorder=response_recorder,
     )

@@ -394,6 +394,13 @@ class OperationExecutionContext(BaseModel):
     # ``CompletionAuditContext`` from this seam so every operation dispatch
     # archives its off-turn model calls next to the turn loop's own.
     request_recorder: Any = Field(default=None, exclude=True)
+    #: Durable recorder for model RESPONSES made by this dispatch's
+    #: completions (Spec: MODEL-CALL-ARCHIVE §1; same ``persist_request``
+    #: shape — persist one snapshot dict, return its content-addressed
+    #: ref). Wired by the host alongside ``request_recorder``; ``None``
+    #: leaves responses unrecorded and the call's row carries no
+    #: ``response_ref`` — a reader reports the archive gap.
+    response_recorder: Any = Field(default=None, exclude=True)
     #: Dispatch-level join keys (Evidence Envelope §2), read by
     #: ``_completion_audit_context`` so an off-turn ``model.request`` row can
     #: name the call it recorded and the dispatch that made it. ``call_id`` is

@@ -87,6 +87,18 @@
       "default": null,
       "title": "Request Ref"
     },
+    "response_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Ref"
+    },
     "run_ref": {
       "type": [
         "string",

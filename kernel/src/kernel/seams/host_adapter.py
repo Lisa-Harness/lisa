@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
@@ -65,6 +66,12 @@ class CompletionAuditContext(NamedTuple):
             the call, so an off-turn row joins back to the dispatch that
             caused it (Evidence Envelope §2). Empty means no dispatch behind
             the call.
+        record_response: Persist one response snapshot (the dict shape the
+            turn loop's ``ModelHooks.record_response`` accepts) and return
+            its content-addressed ref (Spec: MODEL-CALL-ARCHIVE §1). Same
+            ``persist_request`` shape. ``None`` keeps responses unrecorded;
+            the call's ``model.request`` row then carries no
+            ``response_ref`` and a reader reports the archive gap.
     """
 
     record_request: Callable[[dict[str, Any]], str]
@@ -75,6 +82,7 @@ class CompletionAuditContext(NamedTuple):
     thread_store_slug: str
     call_id: str = ""
     dispatch_id: str = ""
+    record_response: Callable[[dict[str, Any]], str] | None = None
 
 
 class _CallableHost:
@@ -170,8 +178,26 @@ class _CallableHost:
                 response_format=response_format,
             )
             request_ref = self._record_request_snapshot(request)
-            result = await gateway.complete(request)
-            self._publish_audit(request, result, request_ref)
+            _complete_started = time.perf_counter()
+            try:
+                result = await gateway.complete(request)
+            except BaseException as exc:  # pylint: disable=broad-except
+                # Spec §2: a failing call records ``error`` (or
+                # ``cancelled``) and re-raises verbatim.
+                from asyncio import CancelledError
+
+                self._record_response_snapshot(
+                    self._audit,
+                    request,
+                    None,
+                    request_ref,
+                    outcome="cancelled" if isinstance(exc, CancelledError) else "error",
+                    elapsed_ms=(time.perf_counter() - _complete_started) * 1000.0,
+                    error=exc,
+                )
+                raise
+            response_ref = self._record_response_snapshot(self._audit, request, result, request_ref)
+            self._publish_audit(request, result, request_ref, response_ref)
             return result
         if self._complete_fn is None:
             raise RuntimeError("OperationHost.complete is not wired on this host")
@@ -237,7 +263,95 @@ class _CallableHost:
             )
             return None
 
-    def _publish_audit(self, request: Any, result: Any, request_ref: str | None) -> None:
+    def _record_response_snapshot(
+        self,
+        audit: CompletionAuditContext | None,
+        request: Any,
+        result: Any,
+        request_ref: str | None,
+        *,
+        outcome: str = "ok",
+        elapsed_ms: float = 0.0,
+        error: BaseException | None = None,
+    ) -> str | None:
+        """Archive one gateway response and return its ref, or ``None``.
+
+        The response snapshot mirrors the turn loop's field set (Spec:
+        MODEL-CALL-ARCHIVE §2) so an off-turn archive is interchangeable
+        with an in-turn one and the same reader dereferences both. Off-turn
+        calls are not streamed and carry no in-call attempt or iteration, so
+        those stay honestly unknown (``None``). ``None`` — no recorder
+        wired, or a recording failure — is the countable archive gap a
+        reader reports.
+        """
+        if audit is None:
+            return None
+        if audit.record_response is None:
+            return None
+        try:
+            from kernel.call_archive import (
+                call_error_payload,
+                continuation_snapshot,
+                response_usage_snapshot,
+            )
+
+            model_def = getattr(request, "model_def", None)
+            duration = (getattr(result, "duration_ms", 0.0) or 0.0) if result is not None else 0.0
+            snapshot = {
+                "call_id": audit.call_id or None,
+                "attempt": None,
+                "iteration": None,
+                "request_ref": request_ref,
+                "outcome": outcome,
+                "content": getattr(result, "content", "") if result is not None else "",
+                "tool_calls": copy.deepcopy(getattr(result, "tool_calls", None) or [])
+                if result is not None
+                else [],
+                "reasoning_content": getattr(result, "reasoning_content", "")
+                if result is not None
+                else "",
+                "finish_reason": getattr(result, "finish_reason", None)
+                if result is not None
+                else None,
+                "truncated": getattr(result, "truncated", None) if result is not None else None,
+                "continuation": continuation_snapshot(
+                    getattr(result, "continuation", None) if result is not None else None
+                ),
+                "provider": str(getattr(model_def, "provider", "") or ""),
+                "model_id": str(getattr(model_def, "model_id", "") or ""),
+                "provider_request_id": (getattr(result, "request_id", None) or None)
+                if result is not None
+                else None,
+                "usage": response_usage_snapshot(
+                    getattr(result, "usage", None) if result is not None else None
+                ),
+                "duration_ms": duration or elapsed_ms,
+                "streamed": False,
+                "time_to_first_token_ms": None,
+                "chunk_count": None,
+            }
+            if outcome != "ok":
+                snapshot["error"] = (
+                    call_error_payload(error)
+                    if error is not None
+                    else {"class": outcome, "message": ""}
+                )
+            return audit.record_response(snapshot)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "operation completion: response recording failed for %s; leaving archive gap",
+                audit.operation_id,
+                exc_info=True,
+            )
+            return None
+
+    def _publish_audit(
+        self,
+        request: Any,
+        result: Any,
+        request_ref: str | None,
+        response_ref: str | None = None,
+    ) -> None:
         """Publish the ``model.request`` ledger row and usage event for one call.
 
         Fire-and-forget on the audit context's event bus, mirroring the turn
@@ -248,10 +362,12 @@ class _CallableHost:
         if audit is None or audit.event_bus is None:
             return
         if request_ref is not None:
-            self._publish_model_request_row(audit, request_ref)
+            self._publish_model_request_row(audit, request_ref, response_ref)
         self._publish_usage_event(audit, request, result)
 
-    def _publish_model_request_row(self, audit: CompletionAuditContext, ref: str) -> None:
+    def _publish_model_request_row(
+        self, audit: CompletionAuditContext, ref: str, response_ref: str | None = None
+    ) -> None:
         from kernel.decision_telemetry import MODEL_REQUEST_TOPIC
         from kernel.telemetry import schedule_telemetry_publish
 
@@ -268,6 +384,7 @@ class _CallableHost:
                 # call this row paid for and the dispatch that made it.
                 "call_id": audit.call_id or None,
                 "dispatch_id": audit.dispatch_id or None,
+                "response_ref": response_ref or None,
             },
             source=f"model_request:{audit.operation_id}",
         )

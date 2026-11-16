@@ -169,6 +169,11 @@ class ModelRequestPayload(_Payload):
 
     operation_id: str | None = None
     request_ref: str | None = None
+    #: The archived response snapshot paired with ``request_ref`` (Spec:
+    #: MODEL-CALL-ARCHIVE, where refs land). ``None`` = the host recorded no
+    #: response, so the call's archive is half-complete — a reader states the
+    #: gap rather than treating the row as complete evidence.
+    response_ref: str | None = None
     call_id: str | None = None
     dispatch_id: str | None = None
     iteration: int | None = None
@@ -227,10 +232,15 @@ class TopicSpec:
 #: envelope every row carries (Evidence Envelope §4), so every topic's row
 #: shape changed at once. Revision 1 rows stay legal to read: the keys are
 #: simply absent there.
+#: Revision 3 is the ``model.request``-only bump: the payload gains
+#: ``response_ref`` (Spec: MODEL-CALL-ARCHIVE), so an off-turn call's row can
+#: name both halves of its archive. Every other topic's shape is unchanged
+#: and its revision stays at 2; v2 rows (and the sibling topics' older rows)
+#: stay legal to read — the key is simply absent there.
 TOPIC_SPECS: dict[str, TopicSpec] = {
     "turn.decision": TopicSpec(model=TurnDecisionPayload, schema_version=2),
     "tool.telemetry": TopicSpec(model=ToolTelemetryPayload, schema_version=2),
-    "model.request": TopicSpec(model=ModelRequestPayload, schema_version=2),
+    "model.request": TopicSpec(model=ModelRequestPayload, schema_version=3),
     "routing.decision": TopicSpec(model=RoutingDecisionPayload, schema_version=2),
     "routing.forced": TopicSpec(model=RoutingForcedPayload, schema_version=2),
 }

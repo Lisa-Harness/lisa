@@ -73,6 +73,11 @@ from kernel.approval import (
     is_expired,
     render_approval_request,
 )
+from kernel.call_archive import (
+    call_error_payload,
+    continuation_snapshot,
+    response_usage_snapshot,
+)
 from kernel.call_identity import (
     PRIMARY_ATTEMPT,
     STREAM_TOOL_FALLBACK_ATTEMPT,
@@ -1708,6 +1713,7 @@ async def execute_approved_invocation(
             "parent_dispatch_id": hooks.identity.parent_dispatch_id,
             "model_router": hooks.context_seams.model_router,
             "request_recorder": hooks.models.record_request,
+            "response_recorder": hooks.models.record_response,
             "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
         }
         if invocation.target_kind == "tool":
@@ -1909,6 +1915,7 @@ async def _pre_turn_memory_recall(
                 fork_fn=fork_fn,
                 model_router=hooks.context_seams.model_router,
                 request_recorder=hooks.models.record_request,
+                response_recorder=hooks.models.record_response,
             )
             recall_ctx.params = {
                 "query": query,
@@ -3124,16 +3131,84 @@ def _per_iteration_nudges(
     return _midpoint_nudge_text, _read_loop_nudge_text
 
 
+def _stamp_stream_timings(
+    timings: dict[str, Any] | None,
+    *,
+    chunk_count: int,
+    elapsed_ms: float,
+    timed_out: bool = False,
+) -> None:
+    """Finalize one stream's MODEL-CALL-ARCHIVE §2 timing facts."""
+    if timings is None:
+        return
+    timings["chunk_count"] = chunk_count
+    timings["elapsed_ms"] = elapsed_ms
+    if timed_out:
+        timings["timed_out"] = True
+    timings.setdefault("time_to_first_token_ms", None)
+
+
+def _stamp_first_token(
+    timings: dict[str, Any] | None, chunk: StreamedChunk, started: float
+) -> None:
+    """Record time-to-first-token for the first content-bearing chunk."""
+    if (
+        timings is not None
+        and "time_to_first_token_ms" not in timings
+        and (chunk.content or chunk.reasoning_content or chunk.tool_call_deltas)
+    ):
+        timings["time_to_first_token_ms"] = (time.perf_counter() - started) * 1000.0
+
+
+async def _complete_and_archive(
+    gateway: Any,
+    request: CompletionRequest,
+    *,
+    archive_response: Callable[..., None] | None,
+    started: float,
+) -> Any:
+    """Complete once, archiving the response pair at the call's boundary.
+
+    A failing call records ``error`` (or ``cancelled``) and re-raises
+    verbatim — the record must not swallow the real outcome (Spec §2).
+    """
+    try:
+        result = await gateway.complete(request)
+    except BaseException as exc:  # pylint: disable=broad-except
+        if archive_response is not None:
+            archive_response(
+                result=None,
+                outcome="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                error=exc,
+            )
+        raise
+    if archive_response is not None:
+        archive_response(
+            result=result, outcome="ok", elapsed_ms=(time.perf_counter() - started) * 1000.0
+        )
+    return result
+
+
 async def _collect_stream(
     stream_gateway_fn: Any,
     completion_request: CompletionRequest,
     on_delta: Callable[[str, str], Awaitable[None]] | None,
+    timings: dict[str, Any] | None = None,
 ) -> tuple[list[StreamedChunk], float]:
     """Consume one ``complete_stream`` generator, forwarding deltas to ``on_delta``.
 
     Returns ``(chunks, elapsed_ms)``. Bare metadata chunks (no
     ``content``/``reasoning_content``) are collected but not forwarded —
     transports only need to see real text.
+
+    ``timings`` is an optional out-param the response recorder reads for the
+    MODEL-CALL-ARCHIVE §2 streaming facts: ``time_to_first_token_ms`` (first
+    chunk carrying content, reasoning, or tool-call deltas; ``None`` when the
+    stream never surfaced one — bare metadata chunks never count),
+    ``chunk_count``, and ``elapsed_ms`` — each scoped to THIS call's stream,
+    so a truncation continuation archives its own facts. The signature stays
+    positional-compatible: existing three-arg callers are unaffected.
 
     Idle watchdog: a generation that goes silent for
     ``settings.stream_idle_timeout_s`` (0 disables) is aborted with a
@@ -3147,10 +3222,13 @@ async def _collect_stream(
         chunks: list[StreamedChunk] = []
         started = time.perf_counter()
         async for chunk in stream_gateway_fn(completion_request):
+            _stamp_first_token(timings, chunk, started)
             chunks.append(chunk)
             if on_delta is not None and (chunk.content or chunk.reasoning_content):
                 await on_delta(chunk.content, chunk.reasoning_content)
-        return chunks, (time.perf_counter() - started) * 1000.0
+        elapsed = (time.perf_counter() - started) * 1000.0
+        _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
+        return chunks, elapsed
 
     started = time.perf_counter()
     chunks = []
@@ -3159,13 +3237,22 @@ async def _collect_stream(
         try:
             chunk = await asyncio.wait_for(stream.__anext__(), timeout=timeout_s)
         except StopAsyncIteration:
-            return chunks, (time.perf_counter() - started) * 1000.0
+            elapsed = (time.perf_counter() - started) * 1000.0
+            _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
+            return chunks, elapsed
         except TimeoutError as exc:
             # The generator is abandoned mid-``__anext__``; close it so the
             # gateway's finally-block (httpx response cleanup) still runs.
             with contextlib.suppress(Exception):
                 await stream.aclose()
+            _stamp_stream_timings(
+                timings,
+                chunk_count=len(chunks),
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                timed_out=True,
+            )
             raise StreamIdleTimeout(f"stream produced no chunk for {timeout_s:.0f}s") from exc
+        _stamp_first_token(timings, chunk, started)
         chunks.append(chunk)
         if on_delta is not None and (chunk.content or chunk.reasoning_content):
             await on_delta(chunk.content, chunk.reasoning_content)
@@ -3227,6 +3314,54 @@ class StreamIdleTimeout(RuntimeError):
     """A streamed generation went silent past ``stream_idle_timeout_s``."""
 
 
+def _archive_streamed_response(
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    model_def: Any,
+    aggregated_result: Any,
+    timings: dict[str, Any],
+) -> None:
+    """Archive one streamed call's response with its streaming facts.
+
+    ``timings`` is the out-param ``_collect_stream`` filled for THIS
+    call's stream, so the truncation continuations and the tool-call
+    fallback each archive their own facts (Spec: MODEL-CALL-ARCHIVE §2,
+    streaming path only; ``None`` facts when not streamed).
+    """
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=aggregated_result,
+        model_def=model_def,
+        elapsed_ms=float(timings.get("elapsed_ms", 0.0) or 0.0),
+        streamed=True,
+        time_to_first_token_ms=timings.get("time_to_first_token_ms"),
+        chunk_count=timings.get("chunk_count"),
+    )
+
+
+def _archive_fallback_call_response(
+    *,
+    result: Any,
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    model_def: Any,
+    outcome: str = "ok",
+    elapsed_ms: float = 0.0,
+    error: BaseException | None = None,
+) -> None:
+    """Archive one non-streamed fallback call's response at its boundary."""
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=result,
+        model_def=model_def,
+        outcome=outcome,
+        elapsed_ms=elapsed_ms,
+        error=error,
+    )
+
+
 async def _streamed_gateway_completion(
     *,
     gateway: Any,
@@ -3275,10 +3410,22 @@ async def _streamed_gateway_completion(
     stream_gateway_fn = getattr(gateway, "complete_stream", None)
     assert callable(stream_gateway_fn)  # guarded by the caller's complete_stream check
     on_delta = hooks.models.on_delta
-    chunks, collect_ms = await _collect_stream(stream_gateway_fn, completion_request, on_delta)
+    _archive_stream_response = partial(
+        _archive_streamed_response, state, hooks, effective_model_def
+    )
+
+    primary_timings: dict[str, Any] = {}
+    chunks, collect_ms = await _collect_stream(
+        stream_gateway_fn, completion_request, on_delta, timings=primary_timings
+    )
     stream_ms = collect_ms
     aggregated = _aggregate_streamed_chunks(chunks)
     fallback_request = completion_request
+    # The primary call's boundary is here: the rescues below may supersede
+    # ``aggregated``, but the truncated primary response is its own archive
+    # pair (Spec acceptance: a rescue archives the truncated response and
+    # the continuation as separate pairs).
+    _archive_stream_response(aggregated, primary_timings)
 
     # Truncated-stream rescue retry: when tools were offered and
     # the stream stops by length, the generation was cut off
@@ -3316,11 +3463,13 @@ async def _streamed_gateway_completion(
                 retry_max_tokens,
             )
             _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
+            retry_timings: dict[str, Any] = {}
             retry_chunks, retry_ms = await _collect_stream(
-                stream_gateway_fn, fallback_request, on_delta
+                stream_gateway_fn, fallback_request, on_delta, timings=retry_timings
             )
             stream_ms += retry_ms
             aggregated = _aggregate_streamed_chunks(retry_chunks)
+            _archive_stream_response(aggregated, retry_timings)
 
     # Reasoning-burnout rescue (the 2026-10-13 turn 789 stall): a stream
     # that ends ``stop`` with empty content, no streamed tool calls, and a
@@ -3360,11 +3509,19 @@ async def _streamed_gateway_completion(
                 retry_max_tokens,
             )
             _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
-            retry_chunks, retry_ms = await _collect_stream(
-                stream_gateway_fn, fallback_request, on_delta
+            burnout_timings: dict[str, Any] = {}
+            burnout_chunks, burnout_ms = await _collect_stream(
+                stream_gateway_fn, fallback_request, on_delta, timings=burnout_timings
             )
-            stream_ms += retry_ms
-            aggregated = _aggregate_streamed_chunks(retry_chunks)
+            stream_ms += burnout_ms
+            aggregated = _aggregate_streamed_chunks(burnout_chunks)
+            _archive_stream_response(aggregated, burnout_timings)
+    _archive_fallback_response = partial(
+        _archive_fallback_call_response,
+        state=state,
+        hooks=hooks,
+        model_def=effective_model_def,
+    )
 
     if aggregated.finish_reason == "tool_calls" and not aggregated.tool_calls:
         # Fall back to non-streaming for the structured tool-call payload.
@@ -3385,6 +3542,7 @@ async def _streamed_gateway_completion(
             tools_offered_this_turn=tools_offered_this_turn,
             log=log,
             record_call=_record_extra_call,
+            archive_response=_archive_fallback_response,
         )
     else:
         # Build a completion-like object from the aggregated stream
@@ -3406,6 +3564,7 @@ async def _rescue_truncated_fallback_completion(
     tools_offered_this_turn: bool,
     log: logging.Logger,
     record_call: Callable[[str, CompletionRequest], str] | None = None,
+    archive_response: Callable[..., None] | None = None,
 ) -> Any:
     """Non-streaming fallback for a tool_calls stream, with truncation rescue.
 
@@ -3423,7 +3582,9 @@ async def _rescue_truncated_fallback_completion(
     budget (context-window-capped).
     """
     fallback_started = time.perf_counter()
-    completion = await gateway.complete(fallback_request)
+    completion = await _complete_and_archive(
+        gateway, fallback_request, archive_response=archive_response, started=fallback_started
+    )
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
     if getattr(
@@ -3464,7 +3625,9 @@ async def _rescue_truncated_fallback_completion(
         # recorded so the token row that reports its spend names THIS call
         # rather than the fallback's request.
         record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
-    completion = await gateway.complete(retry_request)
+    completion = await _complete_and_archive(
+        gateway, retry_request, archive_response=archive_response, started=retry_started
+    )
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
     return completion
@@ -3481,6 +3644,7 @@ async def _nonstreamed_gateway_completion(
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
     record_call: Callable[[str, CompletionRequest], str] | None = None,
+    archive_response: Callable[..., None] | None = None,
 ) -> Any:
     """Complete non-streaming with a one-shot doubled-budget truncation rescue.
 
@@ -3495,7 +3659,9 @@ async def _nonstreamed_gateway_completion(
     Retry once with a doubled budget (bounded by the model's context window)
     before accepting the truncated completion as final.
     """
-    completion = await gateway.complete(completion_request)
+    completion = await _complete_and_archive(
+        gateway, completion_request, archive_response=archive_response, started=complete_started
+    )
     # Same predicate as the streaming rescue: a truncated stripped-tools
     # completion is still a write the model was building. The 2026-10-06
     # "unfinished turns" incidents ended blocked turns on this path. The
@@ -3538,7 +3704,9 @@ async def _nonstreamed_gateway_completion(
                 # is recorded so the token row that reports its spend names
                 # THIS call rather than the iteration's first.
                 record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
-            completion = await gateway.complete(retry_request)
+            completion = await _complete_and_archive(
+                gateway, retry_request, archive_response=archive_response, started=retry_started
+            )
             if completion.duration_ms <= 0.0:
                 completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
     if completion.duration_ms <= 0.0:
@@ -3700,7 +3868,130 @@ def _record_request_snapshot(
     state.current_call_id = call_id
     state.current_call_attempt = attempt
     state.current_call_ref = ref or ""
+    state.current_call_entry = entry
     return call_id
+
+
+# ── Response recording (Spec: MODEL-CALL-ARCHIVE) ────────────────────────
+
+
+def _record_response_snapshot(  # pylint: disable=too-many-arguments,too-many-locals
+    *,
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    completion: Any,
+    model_def: Any = None,
+    outcome: str = "ok",
+    elapsed_ms: float = 0.0,
+    streamed: bool = False,
+    time_to_first_token_ms: float | None = None,
+    chunk_count: int | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Archive one model call's response next to its request (Spec §§1-3).
+
+    The call's request entry was staged on ``state.current_call_entry`` by
+    ``_record_request_snapshot``; this consumes it and stamps its
+    ``response_ref`` in place, so the ``turn_input.calls`` entry the host
+    persists names both halves of the archive. Exactly one recording happens
+    per call: each call site records at its own completion boundary, and the
+    graceful-expiry handlers in ``_iteration_completion_or_expiry`` consume
+    whatever entry the in-flight call had staged when no boundary fired.
+    ``None`` ``response_ref`` (no hook, or a recording failure) is the
+    countable archive gap a reader reports — unknown, never fabricated.
+
+    Non-``ok`` calls are recorded too: a wall-budget expiry or a silent
+    stream is exactly the call an operator needs to see. Duration reads the
+    completion's own ``duration_ms`` when the gateway measured it, falling
+    back to the site's elapsed measurement. Streaming facts land only on the
+    streaming path.
+    """
+    if state is None:
+        return
+    entry = state.current_call_entry
+    if entry is None:
+        return
+    state.current_call_entry = None
+    duration_ms = (
+        (getattr(completion, "duration_ms", 0.0) or 0.0) if completion is not None else 0.0
+    )
+    snapshot: dict[str, Any] = {
+        "call_id": entry.get("call_id") or None,
+        "attempt": entry.get("attempt") or None,
+        "iteration": entry.get("iteration"),
+        "request_ref": entry.get("ref") or None,
+        "outcome": outcome,
+        "content": getattr(completion, "content", "") if completion is not None else "",
+        "tool_calls": copy.deepcopy(getattr(completion, "tool_calls", None) or [])
+        if completion is not None
+        else [],
+        "reasoning_content": getattr(completion, "reasoning_content", "")
+        if completion is not None
+        else "",
+        "finish_reason": getattr(completion, "finish_reason", None)
+        if completion is not None
+        else None,
+        "truncated": getattr(completion, "truncated", None) if completion is not None else None,
+        "continuation": continuation_snapshot(
+            getattr(completion, "continuation", None) if completion is not None else None
+        ),
+        "provider": str(getattr(model_def, "provider", "") or ""),
+        "model_id": str(getattr(model_def, "model_id", "") or ""),
+        "provider_request_id": (getattr(completion, "request_id", None) or None)
+        if completion is not None
+        else None,
+        "usage": response_usage_snapshot(
+            getattr(completion, "usage", None) if completion is not None else None
+        ),
+        "duration_ms": duration_ms or elapsed_ms,
+        "streamed": streamed,
+        "time_to_first_token_ms": time_to_first_token_ms,
+        "chunk_count": chunk_count,
+    }
+    if outcome != "ok":
+        snapshot["error"] = (
+            call_error_payload(error) if error is not None else {"class": outcome, "message": ""}
+        )
+    response_ref: str | None = None
+    recorder = hooks.models.record_response
+    if recorder is not None:
+        try:
+            response_ref = recorder(snapshot)
+        except Exception:  # pylint: disable=broad-except
+            # Spec §1: a recording failure logs a WARNING and the call
+            # proceeds unrecorded — the same posture as request recording.
+            logging.getLogger(__name__).warning(
+                "model call %s: response recording failed; leaving archive gap",
+                snapshot["call_id"] or "",
+                exc_info=True,
+            )
+    entry["response_ref"] = response_ref
+
+
+def _record_unarchived_call(
+    *,
+    state: _TurnState,
+    hooks: TurnHooks,
+    outcome: str,
+    error: BaseException | None = None,
+) -> None:
+    """Archive the in-flight call whose boundary never fired (Spec §2).
+
+    The graceful-expiry handlers in ``_iteration_completion_or_expiry``
+    call this when the wall deadline or a silent stream killed the call
+    mid-flight: the staged entry still names the call in flight, so the
+    pair records with ``outcome`` and no content. No-op when no entry is
+    staged (the call already archived at its own boundary). Non-quota
+    gateway failures pass through here too before re-raising.
+    """
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=None,
+        model_def=getattr(state, "effective_model", None),
+        outcome=outcome,
+        error=error,
+    )
 
 
 async def _iteration_completion_or_expiry(
@@ -3758,13 +4049,14 @@ async def _iteration_completion_or_expiry(
             turn_budget=turn_budget,
             turn_start_mono=turn_start_mono,
         )
-    except TimeoutError:
+    except TimeoutError as exc:
         log.warning(
             "turn wall budget expired mid-model-call "
             "(mode=%s, iteration=%d); finalizing with partial work",
             mode_id,
             state.iteration,
         )
+        _record_unarchived_call(state=state, hooks=hooks, outcome="wall_budget_expired", error=exc)
         state.wall_budget_expired = True
         return None
     except StreamIdleTimeout as exc:
@@ -3778,13 +4070,16 @@ async def _iteration_completion_or_expiry(
             mode_id,
             state.iteration,
         )
+        _record_unarchived_call(state=state, hooks=hooks, outcome="stream_idle_timeout", error=exc)
         state.stream_stalled = True
         state.stream_stall_detail = str(exc)
         return None
     except ProviderGatewayError as exc:
         if exc.status_code != _QUOTA_STATUS_CODE:
             # Non-quota provider failures keep the historical contract:
-            # they propagate and the host's handler reports them.
+            # they propagate and the host's handler reports them. The call
+            # still archives its error pair first (Spec §2).
+            _record_unarchived_call(state=state, hooks=hooks, outcome="error", error=exc)
             raise
         # The provider refused the call with a quota/rate failure. Not
         # retried here (the gateway client already retried — 429 is in
@@ -3804,6 +4099,7 @@ async def _iteration_completion_or_expiry(
         )
         state.provider_quota_exhausted = True
         state.provider_quota_detail = f"{exc.provider}:{exc.model_id} — {exc.message}"
+        _record_unarchived_call(state=state, hooks=hooks, outcome="error", error=exc)
         return None
 
 
@@ -4004,6 +4300,13 @@ async def _model_completion_for_iteration(
             attempt=attempt,
         )
 
+    _archive_iteration_response = partial(
+        _archive_fallback_call_response,
+        state=state,
+        hooks=hooks,
+        model_def=effective_model_def,
+    )
+
     _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
     _complete_started = time.perf_counter()
     # Bound the whole in-iteration completion (stream + fallback + truncation
@@ -4061,6 +4364,7 @@ async def _model_completion_for_iteration(
                 complete_started=_complete_started,
                 log=log,
                 record_call=_record_extra_call,
+                archive_response=_archive_iteration_response,
             ),
             _iteration_wall_s,
         ),
@@ -8583,6 +8887,7 @@ def _wire_build_entry_ctx(
             "model_router": hooks.context_seams.model_router,
             "event_bus": tool_output_bus,
             "request_recorder": hooks.models.record_request,
+            "response_recorder": hooks.models.record_response,
         }
         base_ctx_kwargs.update(overrides)
         # Execution identity and lineage (Evidence Envelope §4). The dispatch

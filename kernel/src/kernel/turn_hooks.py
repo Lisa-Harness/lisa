@@ -76,6 +76,16 @@ class ModelHooks:
 
     #: Persist an exact request synchronously before dispatch; retain only its reference.
     record_request: Callable[[dict[str, Any]], str] | None = None
+
+    #: Persist an exact response synchronously after the call completes or
+    #: fails; retain only its reference. Same contract as ``record_request``:
+    #: accepts a snapshot dict, returns an ``r<sha256>`` ref persisted into
+    #: the same result-object store in the same record shape, so forensics
+    #: and replay can dereference both halves of one call. A recording
+    #: failure logs a WARNING and the call proceeds unrecorded — the
+    #: request-recording posture, mirrored. Optional so existing hosts
+    #: keep recording requests only until they opt in (Spec 2).
+    record_response: Callable[[dict[str, Any]], str] | None = None
     count_request_tokens: Callable[[CompletionRequest], RequestTokenCount] | None = None
 
 
