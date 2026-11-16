@@ -12,11 +12,11 @@ from typing import Any
 from runtime.bootstrap import build_runtime
 from runtime.handle_message import handle_message
 from runtime.paths import inject_packs_venv_site_packages
+from runtime.testing.scripted import ScriptedGatewayProvider, load_script
 from runtime.types import HostCommandResult
 
 from e2etest.environment import RunPaths
 from e2etest.scenario import Scenario
-from e2etest.scripted import ScriptedGatewayProvider, load_script
 
 _APPROVAL_SCHEMA = "lisa.approval.v1"
 

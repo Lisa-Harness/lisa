@@ -82,7 +82,7 @@ class Scenario:
     yield_reply: str = "Proceed with your best judgment."
     env: dict[str, str] = field(default_factory=dict)
     #: ``model.script``: a Python module that stands in for the LLM (see
-    #: ``e2etest.scripted``). ``None`` runs against the configured live model.
+    #: ``runtime.testing.scripted``). ``None`` runs against the configured live model.
     model_script: Path | None = None
 
     @property

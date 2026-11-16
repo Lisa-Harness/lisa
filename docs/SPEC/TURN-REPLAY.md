@@ -21,11 +21,13 @@ not re-execute tools or model calls. Showing a previous response is a
 
 ## Foundation
 
-[`ScriptedGatewayProvider`](../../e2etest/src/e2etest/scripted.py) already
+[`ScriptedGatewayProvider`](../../runtime/src/runtime/testing/scripted.py) already
 replaces every provider gateway with a deterministic responder, and runs
 everything beneath the model as production code: routing, policy, approvals,
 packs, sandbox, and persistence. Replay is a scripted gateway whose script is
-the archive, not hand-written Python.
+the archive, not hand-written Python. The archive-backed provider lives beside
+the scripted core in
+[`runtime.testing.archive`](../../runtime/src/runtime/testing/archive.py).
 
 ## 1. Replay modes
 

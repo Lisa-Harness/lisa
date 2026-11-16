@@ -18,8 +18,8 @@ from e2etest.driver import (
 from e2etest.environment import RunPaths
 from e2etest.oracles import Evidence, evaluate
 from e2etest.scenario import OracleSpec, ScenarioError, load_scenario
-from e2etest.scripted import ScriptError, ScriptTurn, load_script
 from kernel.provider_contracts import CompletionRequest
+from runtime.testing.scripted import ScriptError, ScriptTurn, load_script
 from runtime.types import HostCommandResult
 
 
@@ -424,7 +424,7 @@ def _request(messages: list[dict[str, Any]], **kwargs: Any) -> CompletionRequest
 
 def _write_script(tmp_path: Path, body: str) -> Path:
     path = tmp_path / "model.py"
-    path.write_text("from e2etest.scripted import Reply\n" + body, encoding="utf-8")
+    path.write_text("from runtime.testing.scripted import Reply\n" + body, encoding="utf-8")
     return path
 
 

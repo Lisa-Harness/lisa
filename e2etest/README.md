@@ -206,8 +206,10 @@ surfaced, not to judge model behavior. The driver binds the script through
 the runtime's supported gateway-override seam
 (``session.provider_gateways_override``) and clears it when the run ends.
 
-The module defines `respond(turn: ScriptTurn) -> Reply` and, optionally,
-`auxiliary(turn)` for tool-less requests (distillers, classifiers, titles).
+The module imports the `ScriptTurn`/`Reply` contract from
+`runtime.testing.scripted` and defines `respond(turn: ScriptTurn) -> Reply`
+and, optionally, `auxiliary(turn)` for tool-less requests (distillers,
+classifiers, titles).
 Those otherwise receive `{}` or empty text, which some operations log as
 errors. `ScriptTurn` exposes `tool_names`, `user_text`, `count(name)`, and
 `last(name)`. `last(name).data` is the JSON object inside that tool's
