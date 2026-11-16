@@ -25,6 +25,7 @@ from kernel.models import (
     DefaultIntentBridge,
     OperationDefinition,
     ToolDefinition,
+    ValidationRecoveryDeclaration,
     WorkflowModeConfig,
 )
 from kernel.operations.declarative import (
@@ -110,12 +111,16 @@ class MCPModeCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session (see
+        # ``MCPToolCatalog.__init__``).
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, WorkflowModeConfig] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
@@ -215,12 +220,16 @@ class MCPOperationCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session (see
+        # ``MCPToolCatalog.__init__``).
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, OperationDefinition] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
@@ -367,12 +376,18 @@ class MCPToolCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session; building it
+        # eagerly would demand a config (and a subprocess command) the
+        # in-process transport cannot have. ``_call`` stays available for
+        # the no-source path only.
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, ToolDefinition] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
@@ -441,7 +456,21 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         display_template=str(data.get("display_template", "") or ""),
         stream_output=bool(data.get("stream_output", False)),
         history=_history_policy(data["tool_id"], data.get("history"), implementation_module),
+        validation_recovery=_validation_recovery_declaration(data.get("validation_recovery")),
     )
+
+
+def _validation_recovery_declaration(raw: Any) -> ValidationRecoveryDeclaration | None:
+    """Translate the catalog's recovery-content declaration, or ``None``.
+
+    The SDK validates that the declared resource exists at catalog build
+    time; here the block is either a well-formed ``content_path`` mapping or
+    absent. Anything malformed is a catalog transport error and fails load.
+    """
+
+    if raw is None:
+        return None
+    return ValidationRecoveryDeclaration.model_validate(raw)
 
 
 def _history_policy(tool_id: str, raw: Any, module: Any) -> HistoryPolicy | None:

@@ -1580,7 +1580,36 @@ def _load_runtime_tool(
         "display_template": str(metadata.get("display_template", "") or ""),
         "stream_output": bool(metadata.get("stream_output", False)),
         "history": _history_block(yml_path, metadata.get("history")),
+        "validation_recovery": _validation_recovery_block(
+            root.parent, metadata.get("validation_recovery")
+        ),
     }
+
+
+def _validation_recovery_block(content_root: Path, raw: Any) -> dict[str, Any] | None:
+    """Translate a ``validation_recovery:`` block, verifying the resource.
+
+    The declaration names packaged authored content only (the
+    coding-edit-schema-recovery contract): ``content_path`` is relative to
+    the pack's content root — the scan root here is its ``tools/``
+    subdirectory, so the check resolves against the parent — and the
+    catalog build fails when the resource is absent so a broken pack
+    install surfaces at load time rather than as a missing recovery
+    section at dispatch time.
+    """
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("content_path"), str):
+        raise ValueError("validation_recovery must declare content_path")
+    content_path = raw["content_path"]
+    if not content_path:
+        raise ValueError("validation_recovery.content_path must not be empty")
+    if Path(content_path).is_absolute() or ".." in Path(content_path).parts:
+        raise ValueError(f"validation_recovery.content_path must be pack-relative: {content_path}")
+    if not (content_root / content_path).is_file():
+        raise ValueError(f"validation_recovery content not found in pack: {content_path}")
+    return {"content_path": content_path}
 
 
 def _history_block(yml_path: Path, raw: Any) -> dict[str, Any] | None:

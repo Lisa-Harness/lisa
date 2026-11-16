@@ -16,7 +16,11 @@ class StaticStateProvider:
 
 
 class NullEventBus:
-    """No-op event bus stub with async publish."""
+    """No-op event bus stub with async publish.
 
-    async def publish(self, event: Any) -> None:
-        del event
+    Mirrors the production ``EventBus.publish(topic, payload)`` signature so
+    the fire-and-forget telemetry scheduler accepts it.
+    """
+
+    async def publish(self, topic: str, payload: Any) -> None:
+        del topic, payload

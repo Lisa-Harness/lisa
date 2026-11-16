@@ -374,6 +374,52 @@ def test_diff_allow_and_check_restore_judge_source_against_original_tests(
     assert "restored=['f.txt']" in results[3].detail
 
 
+def test_ledger_oracles_read_decisions_rows(committed_run: Evidence) -> None:
+    """``ledger_contains``/``ledger_error`` assert over the decisions ledger."""
+    ledger = committed_run.paths.data_dir / "logs"
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / "decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "tool_telemetry",
+                "target_id": "coding_edit_files",
+                "status": "error",
+                "error_message": (
+                    "Tool 'coding_edit_files' received invalid parameters: "
+                    "`edits` must be one JSON array of edit records"
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    results = evaluate(
+        (
+            _spec("ledger_contains", text="must be one JSON array of edit records"),
+            _spec("ledger_error", target="coding_edit_files"),
+            _spec("ledger_error", target="coding_edit_files", text="array"),
+            _spec("ledger_contains", text="not in any row"),
+            _spec("ledger_error", target="coding_read_file"),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [True, True, True, False, False], [
+        (r.name, r.detail) for r in results
+    ]
+
+
+def test_ledger_oracles_pass_without_a_ledger_file(committed_run: Evidence) -> None:
+    """No decisions.jsonl on disk means zero rows: assertions fail with a count."""
+    results = evaluate(
+        (
+            _spec("ledger_contains", text="anything"),
+            _spec("ledger_error", target="coding_edit_files"),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [False, False]
+
+
 def test_checkout_oracles_expand_scenario_dir(committed_run: Evidence, tmp_path: Path) -> None:
     """Hidden acceptance checks live beside the scenario, outside the fixture."""
     scenario_dir = tmp_path / "scenario"

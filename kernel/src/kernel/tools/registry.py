@@ -72,6 +72,7 @@ from kernel.tools.parameter_normalization import (
     describe_validation_failure,
     normalize_payload,
 )
+from kernel.tools.validation_recovery import render_validation_recovery
 
 logger = logging.getLogger(__name__)
 
@@ -612,6 +613,9 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
         parsed = definition.parameters_schema.model_validate(result.payload)
     except ValidationError as exc:
         message = describe_validation_failure(exc)
+        message = _with_validation_recovery(
+            definition, exc, message=message, field_paths=_field_paths(exc)
+        )
         _publish_rejection_telemetry(
             ctx,
             definition.tool_id,
@@ -632,6 +636,50 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
         ) from exc
     ctx.parameters = parsed.model_dump(mode="json")
     ctx.normalized_fields = list(result.normalized_fields) or None
+
+
+def _with_validation_recovery(
+    definition: ToolDefinition,
+    exc: ValidationError,
+    *,
+    message: str,
+    field_paths: list[str],
+) -> str:
+    """Append the tool's authored recovery text to the validation summary.
+
+    A tool that declares no ``validation_recovery`` keeps its message
+    unchanged. The hook itself must not mask the rejection: when rendering
+    raises (a pack installation error — missing content, unknown key) the
+    original message is kept and the failure is logged, because the
+    dispatch must still reject and the error text must still name the real
+    validation failure.
+    """
+
+    if definition.validation_recovery is None:
+        return message
+    try:
+        recovery = render_validation_recovery(
+            definition,
+            exc,
+            field_paths=field_paths,
+            validation_detail=message,
+        )
+    except Exception as hook_exc:  # pylint: disable=broad-except
+        logger.warning(
+            "validation recovery rendering failed for %s: %s",
+            definition.tool_id,
+            hook_exc,
+        )
+        return message
+    if not recovery:
+        return message
+    return f"{message}\n{recovery}"
+
+
+def _field_paths(exc: ValidationError) -> list[str]:
+    """Return the failing field paths, earliest-first, for recovery text."""
+
+    return [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()]
 
 
 def _publish_rejection_telemetry(

@@ -194,6 +194,12 @@ class ToolExecutionContext(BaseModel):
     iteration: int | None = Field(default=None, exclude=True)
 
 
+class ValidationRecoveryDeclaration(BaseModel):
+    """Catalog declaration of a tool's authored validation-recovery content."""
+
+    content_path: str
+
+
 class ToolResult(BaseModel):
     """Structured result returned by one low-level internal tool."""
 
@@ -290,6 +296,16 @@ class ToolDefinition(BaseModel):
     # and a fold scope the kernel uses to stub stale results with their
     # ``r<sha256>`` refs. ``None`` keeps every result resident as before.
     history: HistoryPolicy | None = None
+    # Authored as the ``.tool.yml`` ``validation_recovery:`` block:
+    # ``content_path`` names a packaged Markdown resource (relative to the
+    # owning pack's content root) whose keyed sections render actionable
+    # recovery text when pre-execution parameter validation rejects a call
+    # (the coding-edit-schema-recovery design). The declaration names
+    # content only — it never selects a Python callable or import path.
+    # The section key comes from the implementation module's pure
+    # ``validation_recovery_key(exc)`` classifier; a tool without either
+    # half keeps its current validation error unchanged.
+    validation_recovery: ValidationRecoveryDeclaration | None = None
 
 
 class OperationExecutionContext(BaseModel):

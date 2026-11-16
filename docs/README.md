@@ -51,6 +51,8 @@ The [project README](../README.md) explains the project and its current status.
   and provider-independent model selection.
 - [Model data layers specification](SPEC/implemented/MODEL-DATA-LAYERS.md): separate
   provider facts, measured data, and operator-owned model settings.
+- [Coding edit schema recovery proposal](design/coding-edit-schema-recovery.md):
+  authored validation recovery and digest normalization for the coding pack.
 - [Cache efficiency specification](SPEC/implemented/CACHE-EFFICIENCY.md): telemetry,
   history folding, cache-preserving handoffs, and before/after measurement.
 - [Context routing](CONTEXT_ROUTING_GUIDE.md): evidence selectors, lanes,

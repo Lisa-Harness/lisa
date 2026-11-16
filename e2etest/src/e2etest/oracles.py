@@ -51,6 +51,18 @@ class Evidence:
         return [r for e in self.thread_entries for r in e.get("effect_receipts") or ()]
 
     @cached_property
+    def ledger_rows(self) -> list[dict[str, Any]]:
+        """Every row from the run's decisions ledger (tool telemetry)."""
+        path = self.paths.data_dir / "logs" / "decisions.jsonl"
+        if not path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @cached_property
     def artifacts(self) -> list[dict[str, Any]]:
         path = self.paths.data_dir / "state" / "code-change-artifacts.json"
         if not path.is_file():
@@ -452,6 +464,54 @@ def _exchange_contains(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
         if needle in exchange.text:
             return True, f"found in exchange[{exchange.index}] {exchange.kind}: {needle[:60]}..."
     return False, f"no exchange contains {needle[:80]!r}; {len(ev.outcome.exchanges)} exchange(s)"
+
+
+@oracle("ledger_contains")
+def _ledger_contains(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Some decisions-ledger row contains the given ``text``.
+
+    The right evidence for pre-execution dispatch outcomes that never
+    surface in a turn's final text (a rejected tool call's recovery text,
+    an approval denial): the row is durable telemetry even when the model
+    silently recovers.
+    """
+    needle = str(args.get("text") or "")
+    if not needle:
+        return False, "no 'text' arg given"
+    for row in ev.ledger_rows:
+        if needle in json.dumps(row):
+            return True, f"found in ledger row {row.get('event_type', '?')}: {needle[:60]}..."
+    return False, f"no ledger row contains {needle[:80]!r}; {len(ev.ledger_rows)} row(s)"
+
+
+@oracle("ledger_error")
+def _ledger_error(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """At least ``min`` error-status ledger rows name the given target id.
+
+    Asserts a pre-execution rejection (or execution failure) was recorded
+    as dispatch telemetry — the Evidence Envelope contract that a rejected
+    dispatch is ledger evidence like any other failure. ``target`` is the
+    tool id; ``text`` optionally narrows the error message.
+    """
+    target = str(args.get("target") or "")
+    if not target:
+        return False, "no 'target' arg given"
+    needle = str(args.get("text") or "")
+    hits = [
+        row
+        for row in ev.ledger_rows
+        if row.get("target_id") == target
+        and row.get("status") == "error"
+        and (not needle or needle in str(row.get("error_message", "")))
+    ]
+    minimum = int(args.get("min", 1))
+    if len(hits) >= minimum:
+        return True, f"{len(hits)} error row(s) for {target}"
+    return (
+        False,
+        f"{len(hits)} matching error row(s) for {target} (need {minimum}); "
+        f"{len(ev.ledger_rows)} row(s) total",
+    )
 
 
 def evaluate(specs: tuple[OracleSpec, ...], evidence: Evidence) -> list[OracleResult]:
