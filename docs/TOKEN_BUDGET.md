@@ -107,7 +107,10 @@ downstream coding mode's call allowance.
 
 `STAGE_NUDGE_THRESHOLD` is an advisory threshold: it adds lifecycle guidance
 but does not stop the model. `STAGE_NUDGE_CAP` is the hard same-stage pause;
-it must be greater than the threshold. Very high values defer both protection
+it must be greater than the threshold. A productive action mode with a
+verified write receipt is exempt from this no-transition cap and remains
+bounded by the whole-turn call/token/wall budgets. Read-only and pre-write
+loops remain subject to the cap. Very high values defer both protection
 mechanisms until the whole-turn resource budget is likely to fire first,
 allowing long read loops. For interactive coding, `9` / `30` is a reasonable
 starting pair; use the stricter code defaults (`7` / `10`) for short,
