@@ -495,6 +495,18 @@ class ToolHooks:
     #: return typed results; neither is decorated.
     post_dispatch_result: Callable[[str, dict[str, Any], str, str], str] | None = None
 
+    #: Optional replacement for tool *execution*. When set, the dispatch path
+    #: calls ``answer_tool_call(tool_name, tool_arguments, tool_call_id)`` and
+    #: uses its return value as the tool output the model sees, instead of
+    #: executing the operation, pack tool, or MCP tool. Ledger recording,
+    #: effect-receipt capture, read-cache behavior, and error tracking still
+    #: run, so the loop behaves exactly as if the tool had executed. A raising
+    #: callable surfaces like a tool error. ``None`` (the default) is
+    #: ordinary production behavior: the tool executes normally. Turn replay
+    #: (``runtime.replay``) answers dispatches from a recording through this
+    #: seam; the kernel itself stays free of replay vocabulary.
+    answer_tool_call: Callable[[str, dict[str, Any], str], str] | None = None
+
     #: Optional persistence closure for spill-on-arrival (the cache-aware
     #: default for large tool results, ``kernel.turn_phases._spill``).
     #: ``persist_tool_result(record) -> ref`` persists one tool-result

@@ -1387,6 +1387,10 @@ def _assemble_turn_hooks(
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
             post_dispatch_result=runtime.decorate_pack_tool_result,
             persist_tool_result=build_persist_tool_result_hook(runtime.paths.thread_path),
+            # Session-owned execution override (Spec 3 slice 3): mirrors the
+            # ``provider_gateways_override`` seam — the session field is read
+            # at hook-assembly time, so ``handle_message`` is unchanged.
+            answer_tool_call=runtime.session.tool_call_answerer,
         ),
         operations=OperationHooks(
             execute_operation=wired.execute_operation,

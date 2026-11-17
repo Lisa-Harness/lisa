@@ -855,7 +855,83 @@ async def _continue_policy_approval(
         ctx.approval_request_id = previous
 
 
-async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error paths inline
+async def _execute_capability(
+    *,
+    tool_name: str,
+    tool_arguments: dict[str, Any],
+    ctx: OperationExecutionContext,
+    state: _TurnState,
+    pool: MCPToolPool,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    exec_op: Callable[..., Awaitable[OperationResult]],
+    hooks: TurnHooks,
+    dispatch_id: str,
+    tool_call_id: str,
+    call_id: str,
+    iteration: int | None,
+    logger: logging.Logger,
+) -> tuple[str, OperationResult | None, ToolResult | None, Any, YieldAction | None]:
+    """Run one capability's execution branch and return its raw products.
+
+    Split out of ``dispatch_capability`` to keep the dispatch body under
+    the complexity budget. This helper only *selects* the execution path
+    (the ``answer_tool_call`` override, an operation, a pack tool, an
+    anchored read, or an MCP tool); every ledger/receipt bookkeeping step
+    stays in the caller so an override behaves exactly like an execution.
+    """
+    answerer = hooks.tools.answer_tool_call
+    if answerer is not None:
+        # Execution override (Spec 3 slice 3): the hook answers the
+        # dispatch and no operation, pack tool, or MCP tool runs. The
+        # ledger, receipt, read-cache, and error-streak bookkeeping in
+        # ``dispatch_capability`` still executes, so the loop behaves as
+        # if the tool had run.
+        return answerer(tool_name, tool_arguments, tool_call_id), None, None, None, None
+    if tool_name in operation_catalog:
+        tool_output, op_result, delegate_yield = await _dispatch_operation(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            ctx=ctx,
+            state=state,
+            exec_op=exec_op,
+            dispatch_id=dispatch_id,
+            tool_call_id=tool_call_id,
+            call_id=call_id,
+            iteration=iteration,
+        )
+        return tool_output, op_result, None, None, delegate_yield
+    if tool_name in tool_catalog:
+        tool_output, tool_result, mcp_result = await _dispatch_pack_tool(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            tool_def=tool_catalog[tool_name],
+            ctx=ctx,
+            state=state,
+            pool=pool,
+            logger=logger,
+            hooks=hooks,
+            dispatch_id=dispatch_id,
+            tool_call_id=tool_call_id,
+            call_id=call_id,
+            iteration=iteration,
+        )
+        return tool_output, None, tool_result, mcp_result, None
+    anchored = await maybe_resolve_anchor_read(
+        state=state,
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_catalog=tool_catalog,
+        ctx=ctx,
+        log=logger,
+    )
+    if anchored is not None:
+        return anchored, None, None, None, None
+    mcp_res = await pool.call_tool(tool_name, tool_arguments)
+    return mcp_res.output_text or "Done", None, None, mcp_res, None
+
+
+async def dispatch_capability(  # one dispatch body; error paths inline
     *,
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -895,48 +971,28 @@ async def dispatch_capability(  # noqa: PLR0915  # one dispatch body; error path
     dispatch_error = ""
 
     try:
-        if tool_name in operation_catalog:
-            tool_output, op_result, delegate_yield = await _dispatch_operation(
-                tool_name=tool_name,
-                tool_arguments=tool_arguments,
-                ctx=ctx,
-                state=state,
-                exec_op=exec_op,
-                dispatch_id=dispatch_id,
-                tool_call_id=tool_call_id,
-                call_id=call_id,
-                iteration=iteration,
-            )
-        elif tool_name in tool_catalog:
-            tool_output, tool_result, mcp_result = await _dispatch_pack_tool(
-                tool_name=tool_name,
-                tool_arguments=tool_arguments,
-                tool_def=tool_catalog[tool_name],
-                ctx=ctx,
-                state=state,
-                pool=pool,
-                logger=logger,
-                hooks=hooks,
-                dispatch_id=dispatch_id,
-                tool_call_id=tool_call_id,
-                call_id=call_id,
-                iteration=iteration,
-            )
-        else:
-            anchored = await maybe_resolve_anchor_read(
-                state=state,
-                tool_name=tool_name,
-                tool_arguments=tool_arguments,
-                tool_catalog=tool_catalog,
-                ctx=ctx,
-                log=logger,
-            )
-            if anchored is not None:
-                tool_output = anchored
-            else:
-                mcp_res = await pool.call_tool(tool_name, tool_arguments)
-                mcp_result = mcp_res
-                tool_output = mcp_res.output_text or "Done"
+        (
+            tool_output,
+            op_result,
+            tool_result,
+            mcp_result,
+            delegate_yield,
+        ) = await _execute_capability(
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            ctx=ctx,
+            state=state,
+            pool=pool,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
+            exec_op=exec_op,
+            hooks=hooks,
+            dispatch_id=dispatch_id,
+            tool_call_id=tool_call_id,
+            call_id=call_id,
+            iteration=iteration,
+            logger=logger,
+        )
 
         state.total_tool_calls += 1
         state.step_tool_calls += 1

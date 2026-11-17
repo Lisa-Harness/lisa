@@ -124,6 +124,8 @@ class MCPModeCatalog:
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_workflow_catalog(self) -> dict[str, WorkflowModeConfig]:
@@ -233,6 +235,8 @@ class MCPOperationCatalog:
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_operation_catalog(self) -> dict[str, OperationDefinition]:
@@ -391,6 +395,8 @@ class MCPToolCatalog:
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_tool_catalog(self) -> dict[str, ToolDefinition]:

@@ -358,7 +358,7 @@ def should_spill_on_arrival(*, state: Any, model_def: Any | None = None) -> bool
     trigger = soft_trigger_tokens(state=state, model_def=model_def)
     if trigger <= 0:
         return False
-    return state.intra_turn_compaction_estimator.estimate() >= trigger
+    return bool(state.intra_turn_compaction_estimator.estimate() >= trigger)
 
 
 def hard_ceiling_stop_reason(*, state: Any) -> str:

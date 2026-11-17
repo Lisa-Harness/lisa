@@ -91,9 +91,7 @@ def render_validation_recovery(
 def _definition_id(definition: Any) -> str:
     """Return the definition's id for error messages (tool or operation)."""
 
-    return str(
-        getattr(definition, "tool_id", None) or getattr(definition, "operation_id", "")
-    )
+    return str(getattr(definition, "tool_id", None) or getattr(definition, "operation_id", ""))
 
 
 def _declaration(definition: Any) -> ValidationRecoveryDeclaration | None:
@@ -102,6 +100,11 @@ def _declaration(definition: Any) -> ValidationRecoveryDeclaration | None:
     declaration = getattr(definition, "validation_recovery", None)
     if declaration is None:
         return None
+    if not isinstance(declaration, ValidationRecoveryDeclaration):
+        raise ValidationRecoveryError(
+            f"'{_definition_id(definition)}' declares validation_recovery "
+            "with a malformed declaration.",
+        )
     path = declaration.content_path
     if not path or not isinstance(path, str):
         raise ValidationRecoveryError(
@@ -193,7 +196,7 @@ def _format(body: str, *, field_paths: list[str], validation_detail: str) -> str
         "validation_detail": validation_detail,
     }
 
-    class _Missing(dict):  # pylint: disable=missing-class-docstring
+    class _Missing(dict[str, str]):  # pylint: disable=missing-class-docstring
         def __missing__(self, name: str) -> str:
             return f"{{{name}}}"
 

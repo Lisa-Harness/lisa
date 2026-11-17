@@ -200,6 +200,14 @@ class SessionState:
         # hosts that own gateway construction set it before the first turn.
         self.provider_gateways_override: Any = None
 
+        # ── Tool-call answerer override seam ─────────────────────────────
+        # When set, ``build_turn_hooks`` wires this callable onto
+        # ``hooks.tools.answer_tool_call`` so tool dispatches are answered
+        # instead of executed. Turn replay (``runtime.replay``) sets it to
+        # answer from a recording; hosts that own tool execution set it before
+        # the first turn. Cleared by setting it back to ``None``.
+        self.tool_call_answerer: Any = None
+
         # ── Manifest cache ──────────────────────────────────────────────
         # Mutable: setup_framework seeds it, /models reload swaps it.
         self.manifest: Any = None

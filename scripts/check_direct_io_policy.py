@@ -247,6 +247,14 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "path.parent.mkdir(parents=True, exist_ok=True)",
         'path.write_text(seg_id, encoding="utf-8")',
     ),
+    # Replay scratch seeding (Spec 3 slice 3): the exact-mode replay engine
+    # copies the source run's config/models.yaml into the scratch data root
+    # before driving a read-only-source replay run — host-internal scratch
+    # data, the same pattern as e2etest.environment._copy_base_data.
+    "runtime/src/runtime/replay/_engine.py": (
+        "scratch_config.mkdir(parents=True, exist_ok=True)",
+        'shutil.copy2(models_yaml, scratch_config / "models.yaml")',
+    ),
 }
 
 
