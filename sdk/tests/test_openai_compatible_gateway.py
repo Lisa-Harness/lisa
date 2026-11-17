@@ -61,6 +61,26 @@ _TOOL = {
 # ── Unit: helpers ────────────────────────────────────────────────────
 
 
+def test_wire_kwargs_never_read_call_kind() -> None:
+    """FIX-2: routing metadata must never reach a provider wire payload.
+
+    ``CompletionRequest.call_kind`` is host-side routing metadata (the
+    replay gateway routes on it); the wire kwargs builders enumerate the
+    request fields they send, so the field stays off the wire. A builder
+    that started serializing it would leak host routing state to
+    providers.
+    """
+    import inspect
+
+    from sdk.providers import openai_gateway
+
+    for builder in (
+        openai_gateway.build_openai_completion_kwargs,
+        openai_gateway.build_openai_responses_kwargs,
+    ):
+        assert "call_kind" not in inspect.getsource(builder)
+
+
 class TestSanitizeChatToolNames:
     def test_dotted_name_sanitized_with_reverse_map(self) -> None:
         sanitized, name_map = sanitize_chat_tool_names([_TOOL])

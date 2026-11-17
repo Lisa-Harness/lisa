@@ -88,4 +88,3 @@ def test_deref_guard_ignores_non_ref_read_calls(monkeypatch: pytest.MonkeyPatch)
 
     assert refusal == ""
     assert not state.intra_turn_compaction.finish_now
-

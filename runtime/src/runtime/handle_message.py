@@ -1648,8 +1648,8 @@ async def _run_reserved_turn(
         identity=identity,
         extra_item_builders=extra_item_builders,
     )
-    hooks.execution.resolve_capability_limit_for_mode = (
-        lambda target_mode_id: _resolve_mode_capability_limit(runtime, target_mode_id)
+    hooks.execution.resolve_capability_limit_for_mode = lambda target_mode_id: (
+        _resolve_mode_capability_limit(runtime, target_mode_id)
     )
     _log_turn_start(mode, resolved_model, query or message)
     try:

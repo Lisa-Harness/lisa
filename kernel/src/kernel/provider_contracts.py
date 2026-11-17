@@ -110,6 +110,16 @@ class CompletionRequest:
     #: Stable per-conversation routing key for providers with implicit
     #: prefix caching (OpenAI ``prompt_cache_key``). Empty means unset.
     prompt_cache_key: str = ""
+    #: Host-side routing metadata naming the seam that owns this call:
+    #: ``"turn"`` (the turn loop's gateway request) or ``"auxiliary""
+    #: (off-turn operations — planner, titles, distillers — via
+    #: ``OperationHost`` and the runtime slice completion seam). Empty
+    #: means the caller has not classified the request. It is metadata
+    #: only: gateways must not put it on a provider wire payload, and
+    #: archive snapshot builders must not persist it — consumers that
+    #: need to distinguish call origins (the replay gateway) route on it
+    #: instead of guessing from the request's shape.
+    call_kind: str = ""
 
 
 @dataclass(slots=True)

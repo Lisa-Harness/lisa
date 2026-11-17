@@ -139,6 +139,43 @@ async def test_slice_completion_forwards_request_to_gateway() -> None:
     assert request.temperature == 0.1
     assert request.tools == tools
     assert request.response_format is dict
+    assert request.call_kind == "auxiliary"
+
+
+@pytest.mark.asyncio
+async def test_slice_completion_zero_tools_still_auxiliary() -> None:
+    """A slice completion without tools is still classified auxiliary.
+
+    FIX-2: the off-turn/slice seam stamps ``call_kind="auxiliary"``
+    regardless of the request's shape, so the replay gateway routes on
+    origin and never on a tools-based heuristic.
+    """
+    requests: list[Any] = []
+    model = SimpleNamespace(provider="example")
+
+    class Gateway:
+        async def complete(self, request: Any) -> str:
+            requests.append(request)
+            return "completed"
+
+    gateway = Gateway()
+
+    class Gateways:
+        def gateway_for(self, provider: str) -> Gateway:
+            return gateway
+
+    result = await _complete_via_provider_gateways(
+        Gateways(),
+        messages=[{"role": "user", "content": "hello"}],
+        model_def=model,
+        max_tokens=64,
+        temperature=0.1,
+        tools=None,
+    )
+
+    assert result == "completed"
+    assert requests[0].call_kind == "auxiliary"
+    assert requests[0].tools is None
 
 
 def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:

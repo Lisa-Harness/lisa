@@ -2,9 +2,11 @@
 
 The loader is the read-only half of the replay engine: it dereferences the
 recorded turn's ``turn_input.calls`` into :class:`ArchivedCall` pairs via the
-slice-2 archive loader, and walks the recorded transcript's ``role="tool"``
-messages into a ``tool_call_id -> output text`` map. Nothing here touches a
-runtime; the engine (``_engine.py``) consumes the result.
+slice-2 archive loader, walks the recorded transcript's ``role="tool"``
+messages into a ``tool_call_id -> output text`` map, and loads the
+off-turn auxiliary calls (planner, titles, distillers) from the decisions
+ledger. Nothing here touches a runtime; the engine (``_engine.py``)
+consumes the result.
 
 Archive gaps (a call with no ``response_ref``, or an unloadable ref) raise
 :class:`ReplayError` naming the turn: turns recorded before the model-call
@@ -15,7 +17,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from sdk.forensics import rotated_segments
 
 from runtime.testing.archive import ArchivedCall, archive_loader
 
@@ -62,6 +67,9 @@ class RecordedTurn:
     each recorded ``tool_call_id`` to the transcript's tool-output text, so a
     replayed dispatch can be answered from the recording. ``effect_receipts``
     is the recorded receipt list the report compares against.
+    ``auxiliary_calls`` holds the off-turn calls (planner, titles, distillers)
+    the decisions ledger recorded for this thread, in ledger order; the
+    engine answers no-tools requests from this queue.
     """
 
     turn_index: int
@@ -73,6 +81,7 @@ class RecordedTurn:
     tool_results: dict[str, str] = field(default_factory=dict)
     effect_receipts: list[dict[str, Any]] = field(default_factory=list)
     run_ref: str = ""
+    auxiliary_calls: list[ArchivedCall] = field(default_factory=list)
 
 
 def load_recorded_turn(store: Any, turn_index: int) -> RecordedTurn:
@@ -119,3 +128,73 @@ def load_recorded_turn(store: Any, turn_index: int) -> RecordedTurn:
         effect_receipts=list(entry.get("effect_receipts") or []),
         run_ref=str(entry.get("run_ref", "") or ""),
     )
+
+
+def load_auxiliary_calls(
+    source_data_dir: Path, thread_base_path: Path, user_slug: str
+) -> list[ArchivedCall]:
+    """Load this thread's off-turn model calls from the decisions ledger.
+
+    Off-turn calls (planner, titles, distillers) are archived by the
+    operation host, not the turn loop: their request/response pairs land in
+    the ``model.request`` rows of ``<data_dir>/logs/decisions.jsonl`` (and
+    its sealed ``.``-numbered segments), never in ``turn_input.calls``. A
+    replay re-runs those calls as production code, so the engine must
+    answer them from this queue or the archive desyncs.
+
+    Rows are scoped by ``user_slug`` and the thread's store slug, then
+    dereferenced through the same result-object store as the in-turn
+    calls. Ledger file order is the recorded order: sealed segments
+    numerically ascending (``.1`` oldest), active file last — exactly
+    :func:`sdk.forensics.rotated_segments`' documented append-only
+    contract, so the loader reuses it rather than a second sort. Rows
+    without a ``response_ref`` (an off-turn call that failed before
+    completing) are skipped: they cannot be answered, and the replayed
+    call that needs one surfaces the gap as an exhausted archive.
+    Post-turn rows (title, distill) trail the planner row harmlessly —
+    the engine consumes the queue from the front and never requires the
+    tail.
+    """
+    from runtime.replay import ReplayError  # local: avoid a module-level cycle
+
+    logs_dir = source_data_dir / "logs"
+    if not logs_dir.is_dir():
+        return []
+    segments = rotated_segments(logs_dir / "decisions.jsonl", backup_count=None)
+    load = archive_loader(thread_base_path)
+    calls: list[ArchivedCall] = []
+    for segment in segments:
+        try:
+            lines = segment.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("topic") != "model.request":
+                continue
+            if str(row.get("user_slug", "")) != user_slug:
+                continue
+            request_ref = row.get("request_ref")
+            response_ref = row.get("response_ref")
+            if not request_ref or not response_ref:
+                continue
+            try:
+                request = _unwrap_envelope(load(str(request_ref)))
+                response = _unwrap_envelope(load(str(response_ref)))
+            except Exception as exc:
+                raise ReplayError(
+                    f"auxiliary call {request_ref} failed to load from the ledger: {exc}"
+                ) from exc
+            calls.append(
+                ArchivedCall(
+                    call_id=str(row.get("call_id", "") or ""),
+                    iteration=0,
+                    attempt="auxiliary",
+                    request=request,
+                    response=response,
+                )
+            )
+    return calls

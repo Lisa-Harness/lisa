@@ -22,11 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kernel.provider_contracts import CompletionRequest, CompletionResult
 from sdk.thread import ThreadStore
 
-from runtime.replay._recording import load_recorded_turn
+from runtime.replay._recording import load_auxiliary_calls, load_recorded_turn
 from runtime.replay._tools import TranscriptToolAnswerer
-from runtime.testing.archive import ArchiveGatewayProvider
+from runtime.testing.archive import ArchiveGatewayProvider, ArchiveOutcomeError
+from runtime.testing.scripted import ScriptError
 
 
 @dataclass
@@ -43,6 +45,30 @@ class ReplayDivergence:
 
 
 @dataclass
+class ReplayGatewayError:
+    """One gateway-script failure the replay observed, as structured data.
+
+    FIX-3: the kernel converts a gateway ``ScriptError`` into the turn's
+    response text, so a script failure (archive exhaustion, a malformed
+    script) previously surfaced only as a response divergence with the
+    message buried in the replayed text. The routing provider records
+    each failure here — naming the queue that failed and the wrapped
+    underlying message — and the report projects them so operators see a
+    structured, machine-readable failure instead of inferring one from
+    response text.
+
+    ``call_id`` is empty unless the failing call's archived snapshot
+    identified itself (``ArchiveOutcomeError`` carries one; exhaustion
+    and routing refusals do not).
+    """
+
+    kind: str = "gateway_script_error"
+    queue: str = ""  # "turn" | "auxiliary"
+    message: str = ""
+    call_id: str = ""
+
+
+@dataclass
 class ReplayReport:
     """Outcome of replaying one recorded turn in exact mode."""
 
@@ -50,6 +76,7 @@ class ReplayReport:
     turn_id: str
     mode: str = "exact"
     divergences: list[ReplayDivergence] = field(default_factory=list)
+    gateway_errors: list[ReplayGatewayError] = field(default_factory=list)
     response_match: bool = True
     receipts_match: bool = True
     error: str = ""
@@ -58,8 +85,104 @@ class ReplayReport:
     def ok(self) -> bool:
         """True when the replay was faithful: no error, no divergences, matches."""
         return (
-            not self.error and not self.divergences and self.response_match and self.receipts_match
+            not self.error
+            and not self.gateway_errors
+            and not self.divergences
+            and self.response_match
+            and self.receipts_match
         )
+
+
+@dataclass
+class ReplayGateway:
+    """A ``ProviderGateway`` that routes through the bound provider."""
+
+    owner: ReplayGatewayProvider
+
+    async def complete(self, request: CompletionRequest) -> CompletionResult:
+        return self.owner.answer(request)
+
+
+@dataclass
+class ReplayGatewayProvider:
+    """Route one gateway call to the archive queue that recorded it.
+
+    A replayed turn re-runs two kinds of model calls as production code:
+    the turn loop's own calls (recorded in ``turn_input.calls``) and the
+    off-turn auxiliary calls the planner, titler, and distillers make
+    (recorded in the decisions ledger's ``model.request`` rows). Both
+    consume a request, so both need an archived answer — but they are
+    recorded in two different places, and interleaving them into one queue
+    would desync whichever call arrives first.
+
+    FIX-2: the discriminator is the request's explicit ``call_kind`` —
+    ``"turn"`` selects the turn-call queue, ``"auxiliary"`` the
+    auxiliary-call queue — stamped at each call's owning seam. An
+    unclassified or unknown kind fails closed with a clear
+    :class:`ScriptError` instead of guessing: a wrong guess desyncs both
+    archives on the first misroute, and the refusal names the field so
+    the unclassified seam surfaces at its owner.
+    """
+
+    turn_calls: ArchiveGatewayProvider
+    auxiliary_calls: ArchiveGatewayProvider
+    gateway_errors: list[ReplayGatewayError] = field(default_factory=list)
+
+    def gateway_for(self, provider: str) -> ReplayGateway:
+        """Return the routing gateway; ``answer`` routes per request."""
+        _ = provider
+        return ReplayGateway(self)
+
+    def answer(self, request: CompletionRequest) -> CompletionResult:
+        kind = getattr(request, "call_kind", "")
+        if kind == "turn":
+            return self._answer_queue(self.turn_calls, queue="turn", request=request)
+        if kind == "auxiliary":
+            return self._answer_queue(self.auxiliary_calls, queue="auxiliary", request=request)
+        raise ScriptError(
+            f"replay gateway cannot route a request with call_kind={kind!r}: "
+            'the owning seam must stamp call_kind ("turn" or "auxiliary") '
+            "on every gateway request"
+        )
+
+    def _answer_queue(
+        self,
+        queue_provider: ArchiveGatewayProvider,
+        *,
+        queue: str,
+        request: CompletionRequest,
+    ) -> CompletionResult:
+        """Answer from one queue, recording script failures as structured data.
+
+        FIX-3: ``ArchiveOutcomeError`` is an intentionally recorded non-ok
+        model outcome (the archived call failed and replay must reproduce
+        that failure), not a gateway malfunction — it re-raises without
+        recording a gateway error. Every other ``ScriptError`` from the
+        queue (archive exhaustion, a malformed script, a routing refusal)
+        is a genuine gateway failure: exactly one structured
+        :class:`ReplayGatewayError` is appended naming the queue and the
+        wrapped underlying message, and the same ``ScriptError`` family
+        re-raises so kernel error behavior is unchanged.
+        """
+        try:
+            return queue_provider.answer(request)
+        except ArchiveOutcomeError:
+            raise
+        except ScriptError as exc:
+            self.gateway_errors.append(
+                ReplayGatewayError(
+                    kind="gateway_script_error",
+                    queue=queue,
+                    message=str(exc),
+                    call_id="",
+                )
+            )
+            raise ScriptError(f"{queue}-call queue: {exc}") from exc
+
+    @property
+    def divergences(self) -> list[dict[str, Any]]:
+        """Both queues' divergence notes, turn calls first."""
+        return [*self.turn_calls.divergences, *self.auxiliary_calls.divergences]
 
 
 def _seed_scratch_config(source_data_dir: Path, scratch_data_dir: Path) -> None:
@@ -83,7 +206,9 @@ def _seed_scratch_config(source_data_dir: Path, scratch_data_dir: Path) -> None:
         shutil.copytree(overlays, scratch_config / "overlays", dirs_exist_ok=True)
 
 
-def _replay_divergences_from_provider(provider: ArchiveGatewayProvider) -> list[ReplayDivergence]:
+def _replay_divergences_from_provider(
+    provider: ArchiveGatewayProvider | ReplayGatewayProvider,
+) -> list[ReplayDivergence]:
     """Project the archive provider's divergence notes onto the report."""
     return [
         ReplayDivergence(
@@ -107,6 +232,22 @@ def _replay_divergences_from_gaps(answerer: TranscriptToolAnswerer) -> list[Repl
         )
         for gap in answerer.gaps
     ]
+
+
+def _project_gateway_errors(report: ReplayReport, provider: ReplayGatewayProvider) -> None:
+    """FIX-3: project the gateway's structured script failures onto the report.
+
+    The kernel converts a raised gateway ``ScriptError`` into the turn's
+    response text, so the projection must run after the run regardless of
+    how the exception surfaced. The first gateway error also wins the
+    report's ``error`` summary when nothing louder already claimed it, so
+    old operators see a loud failure and new ones read the structured
+    entries.
+    """
+    report.gateway_errors.extend(provider.gateway_errors)
+    if not report.error and provider.gateway_errors:
+        first = provider.gateway_errors[0]
+        report.error = f"gateway script error ({first.queue} queue): {first.message}"
 
 
 def _compare_receipts(recorded: list[dict[str, Any]], replayed: list[dict[str, Any]]) -> bool:
@@ -186,12 +327,25 @@ async def replay_turn(
         return report
     report.turn_id = recorded.turn_id
 
-    # 2. Archived calls drive the model; the transcript answers tools.
-    provider = ArchiveGatewayProvider(calls=recorded.calls)
+    # 2. Archived calls drive the model; the transcript answers tools. The
+    # off-turn auxiliary calls (planner, titles, distillers) come from the
+    # decisions ledger — the replay re-runs them as production code, so they
+    # need their own archive queue or the first one desyncs the turn calls.
+    seed_dir = source_data_dir if source_data_dir is not None else source_thread_path.parent
+    auxiliary_calls = load_auxiliary_calls(
+        source_data_dir=seed_dir,
+        thread_base_path=store.base_path,
+        user_slug=str(
+            store.load_turns({turn_index}).get(turn_index, {}).get("user_slug", "") or ""
+        ),
+    )
+    provider = ReplayGatewayProvider(
+        turn_calls=ArchiveGatewayProvider(calls=recorded.calls),
+        auxiliary_calls=ArchiveGatewayProvider(calls=auxiliary_calls),
+    )
     answerer = TranscriptToolAnswerer(tool_results=recorded.tool_results)
 
     # 3. Seed the scratch config from the source data dir.
-    seed_dir = source_data_dir if source_data_dir is not None else source_thread_path.parent
     _seed_scratch_config(seed_dir, scratch_data_dir)
 
     # 4. Build the scratch runtime.
@@ -230,6 +384,7 @@ async def replay_turn(
     # 7. Collect divergences from the archive and the transcript gaps.
     report.divergences.extend(_replay_divergences_from_provider(provider))
     report.divergences.extend(_replay_divergences_from_gaps(answerer))
+    _project_gateway_errors(report, provider)
 
     # 8. Compare outcomes.
     report.response_match = result_text == recorded.response_text

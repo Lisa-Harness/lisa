@@ -518,8 +518,7 @@ def _refresh_mode_capability_budget(
     state.max_tool_calls = turn_budget.max_tool_calls
     if previous != turn_budget.max_tool_calls:
         log.info(
-            "mode capability budget refreshed (mode=%s previous=%d current=%d "
-            "calls_used=%d)",
+            "mode capability budget refreshed (mode=%s previous=%d current=%d calls_used=%d)",
             mode_id,
             previous,
             turn_budget.max_tool_calls,
@@ -4306,6 +4305,14 @@ async def _model_completion_for_iteration(
         system_prompt_segments=sys_segments.as_segments_copy(),
         context_budget=state.request_context_budget,
         prompt_cache_key=_prompt_cache_key(hooks),
+        # FIX-2: explicit call origin. Every in-turn gateway call — the
+        # primary request and the ``dataclasses.replace`` clones the
+        # truncation/stream-fallback rescues derive from it — carries
+        # ``call_kind="turn"`` so a consumer that must distinguish call
+        # origins (the replay gateway) routes on the recorded origin,
+        # never on the request's shape (a zero-tool turn would otherwise
+        # look like an auxiliary call).
+        call_kind="turn",
     )
     snapshot = {
         "iteration": state.iteration,

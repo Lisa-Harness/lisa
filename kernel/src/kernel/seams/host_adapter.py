@@ -176,6 +176,12 @@ class _CallableHost:
                 temperature=temperature,
                 tools=tools,
                 response_format=response_format,
+                # FIX-2: explicit call origin. OperationHost serves
+                # off-turn operations (planner, titles, distillers), so
+                # its gateway requests are auxiliary — a consumer that
+                # must distinguish call origins (the replay gateway)
+                # routes on this, never on the request's shape.
+                call_kind="auxiliary",
             )
             request_ref = self._record_request_snapshot(request)
             _complete_started = time.perf_counter()

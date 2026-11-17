@@ -266,9 +266,10 @@ def dereference_ref_for_read(
         ref = ref.strip()
     if not isinstance(ref, str) or not ref:
         return None
-    if _RESULT_REF_PATTERN.fullmatch(ref) is not None or _THREAD_REF_PATTERN.fullmatch(
-        ref
-    ) is not None:
+    if (
+        _RESULT_REF_PATTERN.fullmatch(ref) is not None
+        or _THREAD_REF_PATTERN.fullmatch(ref) is not None
+    ):
         return ref
     return None
 

@@ -209,3 +209,137 @@ def test_archive_loader_reads_the_persisted_store(tmp_path: Path) -> None:
     # Production persists snapshots as {"content": json.dumps(snapshot)};
     # load_result_object returns that envelope as-is.
     assert json.loads(loaded["content"])["content"] == "first"
+
+
+# ── Auxiliary-call ledger loading (FIX-1: numeric segment order) ──────────────
+
+
+def _ledger_row(base: Path, call_id: str, *, user_slug: str = "local-user") -> dict[str, Any]:
+    """One ``model.request`` ledger row with valid persisted refs."""
+    request_ref = _persist(
+        base,
+        {
+            "messages": [{"role": "user", "content": f"plan {call_id}"}],
+            "tools": None,
+            "model_id": "qwen3:8b",
+            "provider": "ollama",
+        },
+    )
+    response_ref = _persist(
+        base,
+        {
+            "call_id": call_id,
+            "outcome": "ok",
+            "content": f"reply {call_id}",
+            "provider": "ollama",
+            "model_id": "qwen3:8b",
+        },
+    )
+    return {
+        "topic": "model.request",
+        "user_slug": user_slug,
+        "call_id": call_id,
+        "request_ref": request_ref,
+        "response_ref": response_ref,
+    }
+
+
+def _write_ledger_segment(logs_dir: Path, name: str, rows: list[dict[str, Any]]) -> None:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    (logs_dir / name).write_text(payload, encoding="utf-8")
+
+
+def test_auxiliary_calls_load_in_numeric_segment_order_active_last(tmp_path: Path) -> None:
+    """Sealed segments load oldest-first (numeric), then the active file.
+
+    ``DecisionTelemetryHandler`` seals the active file to the next
+    ``decisions.jsonl.<n>`` (``.1`` oldest, append-only), so the recorded
+    order is numeric ascending with the active file LAST. A plain
+    lexicographic sort misorders at 10+ segments (``.10`` before ``.2``)
+    and puts the active file first (``decisions.jsonl`` sorts before
+    ``decisions.jsonl.1``). The fixture mixes zero-padded and unpadded
+    names to pin the numeric contract, and adds nonnumeric sidecars that
+    must stay ignored.
+    """
+    from runtime.replay import load_auxiliary_calls
+
+    base = tmp_path / "thread.jsonl"
+    logs_dir = tmp_path / "data" / "logs"
+
+    # 12 sealed segments: numeric order 1..12, with zero-padded and unpadded
+    # names interleaved so a lexicographic sort cannot accidentally agree.
+    names = [
+        "decisions.jsonl.1",
+        "decisions.jsonl.02",
+        "decisions.jsonl.3",
+        "decisions.jsonl.04",
+        "decisions.jsonl.5",
+        "decisions.jsonl.06",
+        "decisions.jsonl.7",
+        "decisions.jsonl.08",
+        "decisions.jsonl.9",
+        "decisions.jsonl.10",
+        "decisions.jsonl.11",
+        "decisions.jsonl.12",
+    ]
+    assert len(names) == 12
+    for index, name in enumerate(names, start=1):
+        _write_ledger_segment(logs_dir, name, [_ledger_row(base, f"call-{index:02d}")])
+
+    # Nonnumeric sidecars: never part of the ledger's rotation set.
+    _write_ledger_segment(logs_dir, "decisions.jsonl.tmp", [_ledger_row(base, "call-tmp")])
+    _write_ledger_segment(logs_dir, "decisions.jsonl.bak", [_ledger_row(base, "call-bak")])
+
+    # The active file is newest: it must load AFTER every sealed segment.
+    _write_ledger_segment(logs_dir, "decisions.jsonl", [_ledger_row(base, "call-13")])
+
+    calls = load_auxiliary_calls(
+        source_data_dir=tmp_path / "data",
+        thread_base_path=base,
+        user_slug="local-user",
+    )
+    assert [c.call_id for c in calls] == [f"call-{i:02d}" for i in range(1, 14)]
+    assert [c.response["content"] for c in calls] == [f"reply call-{i:02d}" for i in range(1, 14)]
+
+
+def test_auxiliary_calls_skip_other_users_and_unscoped_rows(tmp_path: Path) -> None:
+    """Only this thread's user's ``model.request`` rows load."""
+    from runtime.replay import load_auxiliary_calls
+
+    base = tmp_path / "thread.jsonl"
+    logs_dir = tmp_path / "data" / "logs"
+    _write_ledger_segment(
+        logs_dir,
+        "decisions.jsonl",
+        [
+            _ledger_row(base, "call-mine"),
+            _ledger_row(base, "call-other", user_slug="someone-else"),
+            {"topic": "tool.telemetry", "user_slug": "local-user"},
+            {
+                "topic": "model.request",
+                "user_slug": "local-user",
+                "call_id": "call-noref",
+                "request_ref": None,
+                "response_ref": None,
+            },
+        ],
+    )
+    calls = load_auxiliary_calls(
+        source_data_dir=tmp_path / "data",
+        thread_base_path=base,
+        user_slug="local-user",
+    )
+    assert [c.call_id for c in calls] == ["call-mine"]
+
+
+def test_auxiliary_calls_return_empty_without_a_logs_dir(tmp_path: Path) -> None:
+    """A data root with no ``logs/`` directory has no auxiliary calls."""
+    from runtime.replay import load_auxiliary_calls
+
+    calls = load_auxiliary_calls(
+        source_data_dir=tmp_path / "data",
+        thread_base_path=tmp_path / "thread.jsonl",
+        user_slug="local-user",
+    )
+    assert calls == []

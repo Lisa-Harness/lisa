@@ -18,8 +18,14 @@ CLI and ``/replay`` in-session surfaces, full divergence detection
 comparison), child-turn replay, and approval-record replay.
 """
 
-from runtime.replay._engine import ReplayDivergence, ReplayReport, replay_turn
-from runtime.replay._recording import RecordedTurn, load_recorded_turn
+from runtime.replay._engine import (
+    ReplayDivergence,
+    ReplayGatewayError,
+    ReplayGatewayProvider,
+    ReplayReport,
+    replay_turn,
+)
+from runtime.replay._recording import RecordedTurn, load_auxiliary_calls, load_recorded_turn
 from runtime.replay._tools import ReplayToolGapError, TranscriptToolAnswerer
 
 
@@ -31,9 +37,12 @@ __all__ = [
     "RecordedTurn",
     "ReplayDivergence",
     "ReplayError",
+    "ReplayGatewayError",
+    "ReplayGatewayProvider",
     "ReplayReport",
     "ReplayToolGapError",
     "TranscriptToolAnswerer",
+    "load_auxiliary_calls",
     "load_recorded_turn",
     "replay_turn",
 ]

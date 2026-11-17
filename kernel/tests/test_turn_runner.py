@@ -2948,8 +2948,8 @@ async def test_mode_handoff_refreshes_capability_call_budget() -> None:
         return _StubCompletion(content="Done in markdown mode.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execution.resolve_capability_limit_for_mode = (
-        lambda mode_id: 2 if mode_id == "markdown" else 1
+    hooks.execution.resolve_capability_limit_for_mode = lambda mode_id: (
+        2 if mode_id == "markdown" else 1
     )
     result = await run_turn(
         mode_id="default",

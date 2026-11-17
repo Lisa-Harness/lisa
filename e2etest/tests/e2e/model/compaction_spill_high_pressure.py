@@ -56,7 +56,8 @@ def respond(turn: ScriptTurn) -> Reply:
     if len(outcomes) >= 8:
         lengths = [len(outcome.text) for outcome in outcomes]
         raise ScriptError(
-            f"expected spill preview under pressure, none seen after {len(outcomes)} calls; lengths={lengths}"
+            f"expected spill preview under pressure, none seen after "
+            f"{len(outcomes)} calls; lengths={lengths}"
         )
 
     if turn.count(read_recent) == 0:

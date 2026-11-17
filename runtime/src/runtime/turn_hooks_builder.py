@@ -462,6 +462,12 @@ async def _complete_via_provider_gateways(
             temperature=temperature,
             tools=tools,
             response_format=response_format,
+            # FIX-2: explicit call origin. This seam serves off-turn
+            # slice completions (thread-mining distills, auto-capture),
+            # so its gateway requests are auxiliary — a consumer that
+            # must distinguish call origins (the replay gateway) routes
+            # on this, never on the request's shape.
+            call_kind="auxiliary",
         )
     )
 
