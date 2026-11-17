@@ -17,6 +17,7 @@ from kernel.models import (
     ForkTarget,
     OperationExecutionContext,
     OperationResult,
+    TurnBudget,
     WorkflowModeConfig,
     YieldPolicy,
 )
@@ -2918,6 +2919,48 @@ async def test_run_turn_mode_handoff_via_transition_stage() -> None:
     # so the parent-turn completion contract blocks the unverified prose.
     assert result.blocked is True
     assert result.block_origin == "no_tools"
+
+
+@pytest.mark.asyncio
+async def test_mode_handoff_refreshes_capability_call_budget() -> None:
+    """A handoff replaces the active mode's scoped call ceiling."""
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": (
+                                '{"target_stage_id": "markdown", '
+                                '"rationale": "user wants to write a doc"}'
+                            ),
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in markdown mode.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execution.resolve_capability_limit_for_mode = (
+        lambda mode_id: 2 if mode_id == "markdown" else 1
+    )
+    result = await run_turn(
+        mode_id="default",
+        query="write a markdown doc",
+        hooks=hooks,
+        turn_budget=TurnBudget(max_tool_calls=1),
+    )
+
+    assert call_count >= 2
+    assert result.block_origin == "no_tools"
+    assert "turn budget exhausted" not in result.response_text
 
 
 @pytest.mark.asyncio

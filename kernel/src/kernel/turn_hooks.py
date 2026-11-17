@@ -518,6 +518,16 @@ class ToolHooks:
     persist_tool_result: Callable[[dict[str, Any]], str] | None = None
 
 
+@dataclass
+class ExecutionHooks:
+    """Host-owned execution policy seams used during a live turn."""
+
+    #: Resolve the effective capability-call ceiling for a mode entered by a
+    #: mid-turn handoff. Session/global policy remains the outer envelope;
+    #: this seam changes the active mode's scoped ceiling.
+    resolve_capability_limit_for_mode: Callable[[str], int | None] | None = None
+
+
 # ── TurnHooks — the composed container ──────────────────────────────────
 @dataclass
 class TurnHooks:
@@ -539,6 +549,7 @@ class TurnHooks:
     identity: TurnIdentity = field(default_factory=TurnIdentity)
     recall: RecallHooks = field(default_factory=RecallHooks)
     tools: ToolHooks = field(default_factory=ToolHooks)
+    execution: ExecutionHooks = field(default_factory=ExecutionHooks)
     #: Context-layer seams (content registry, model policy, provider gateways,
     #: event bus). Kept as a direct field to preserve the
     #: existing ``kernel.context`` default wiring contract.
@@ -555,6 +566,7 @@ class TurnHooks:
 
 __all__ = [
     "ContextHooks",
+    "ExecutionHooks",
     "HostServiceHandles",
     "LifecycleHooks",
     "ModelHooks",

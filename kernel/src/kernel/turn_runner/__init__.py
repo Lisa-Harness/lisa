@@ -492,6 +492,41 @@ def _fold_mode_turn_budget(turn_budget: TurnBudget | None, mode_config: Any) -> 
     return turn_budget.model_copy(update={"max_completion_tokens": effective})
 
 
+def _refresh_mode_capability_budget(
+    *,
+    state: _TurnState,
+    hooks: TurnHooks,
+    mode_id: str,
+    turn_budget: TurnBudget | None,
+    log: logging.Logger,
+) -> None:
+    """Apply the active mode's capability-call ceiling after a handoff.
+
+    The host's session/global envelope remains the outer policy. A mode
+    handoff may replace only the scoped capability-call ceiling, so a turn
+    entering a low-budget persona does not carry that persona's limit into a
+    downstream coding mode.
+    """
+    resolver = hooks.execution.resolve_capability_limit_for_mode
+    if resolver is None or turn_budget is None:
+        return
+    limit = resolver(mode_id)
+    if limit is None:
+        return
+    previous = turn_budget.max_tool_calls
+    turn_budget.max_tool_calls = max(0, int(limit))
+    state.max_tool_calls = turn_budget.max_tool_calls
+    if previous != turn_budget.max_tool_calls:
+        log.info(
+            "mode capability budget refreshed (mode=%s previous=%d current=%d "
+            "calls_used=%d)",
+            mode_id,
+            previous,
+            turn_budget.max_tool_calls,
+            state.total_tool_calls,
+        )
+
+
 def _synthesized_call_missing_all_required(
     tool_name: str,
     tool_arguments: dict[str, Any],
@@ -6604,6 +6639,7 @@ async def _execute_mid_turn_handoff(
     context_payload: str,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     pool: MCPToolPool,
     preferred_model_id: str | None,
@@ -6739,6 +6775,13 @@ async def _execute_mid_turn_handoff(
                 resolve_model=hooks.models.resolve_model,
                 log=log,
                 at_handoff=True,
+            )
+            _refresh_mode_capability_budget(
+                state=state,
+                hooks=hooks,
+                mode_id=target_stage,
+                turn_budget=turn_budget,
+                log=log,
             )
             # Phase 8: the completion contract follows
             # the mode the turn is actually in —
@@ -8198,6 +8241,7 @@ async def _intercept_mode_handoff(
     pool: MCPToolPool,
     ledger: Any,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     suppress_routing_hint: bool,
@@ -8328,6 +8372,7 @@ async def _intercept_mode_handoff(
         context_payload=context_payload,
         ledger=ledger,
         execution_policy=execution_policy,
+        turn_budget=turn_budget,
         routing_ctx=routing_ctx,
         pool=pool,
         preferred_model_id=preferred_model_id,
@@ -8537,6 +8582,7 @@ async def _intercept_transition_stage(
     pool: MCPToolPool,
     ledger: Any,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     suppress_routing_hint: bool,
@@ -8688,6 +8734,7 @@ async def _intercept_transition_stage(
             pool=pool,
             ledger=ledger,
             execution_policy=execution_policy,
+            turn_budget=turn_budget,
             routing_ctx=routing_ctx,
             preferred_model_id=preferred_model_id,
             suppress_routing_hint=suppress_routing_hint,
@@ -10492,6 +10539,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     pool: MCPToolPool,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     operation_catalog: Any,
     tool_catalog: Any,
     query: str,
@@ -10537,6 +10585,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
                 pool=pool,
                 ledger=ledger,
                 execution_policy=execution_policy,
+                turn_budget=turn_budget,
                 routing_ctx=routing_ctx,
                 preferred_model_id=preferred_model_id,
                 suppress_routing_hint=suppress_routing_hint,
@@ -10667,6 +10716,7 @@ async def _dispatch_turn_tool_calls(
     pool: MCPToolPool,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     operation_catalog: Any,
     tool_catalog: Any,
     query: str,
@@ -10756,6 +10806,7 @@ async def _dispatch_turn_tool_calls(
                 pool=pool,
                 ledger=ledger,
                 execution_policy=execution_policy,
+                turn_budget=turn_budget,
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,
                 query=query,
@@ -11790,6 +11841,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         pool=pool,
         ledger=ledger,
         execution_policy=execution_policy,
+        turn_budget=turn_budget,
         operation_catalog=operation_catalog,
         tool_catalog=tool_catalog,
         query=query,
@@ -12171,6 +12223,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             pool=pool,
             ledger=ledger,
             execution_policy=execution_policy,
+            turn_budget=turn_budget,
             operation_catalog=operation_catalog,
             tool_catalog=tool_catalog,
             query=query,

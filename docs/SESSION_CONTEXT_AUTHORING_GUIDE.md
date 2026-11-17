@@ -539,7 +539,14 @@ or bypass approval. `null`/absence means no request.
 | `max_session_tokens` | processed tokens/session | Pre-turn session admission bound, not a daily reset |
 | `force_final_on_exhausted` | bool | Requested exhaustion behavior within lifecycle policy |
 | `capabilities` | map | Per-capability `max_invocations_per_turn` / `max_internal_tool_calls` |
-| `scopes` | map | Named scoped limit requests, applied when the host resolves those scopes |
+| `scopes` | map | Named scoped limit requests, applied to the active mode's provider/mode scopes |
+
+Provider and provider/mode scopes are refreshed when a turn hands off to a
+different mode. The session-level limits remain the outer whole-turn envelope;
+the active mode's scoped `max_capability_calls` therefore changes with the
+handoff instead of constraining downstream modes with the entry mode's cap.
+For example, a `thinker` cap does not consume the `coding_design` cap after a
+successful handoff.
 
 Numeric declarations must be positive. See [token budgets](TOKEN_BUDGET.md)
 for per-call model/mode ceilings, retries, and the distinction between

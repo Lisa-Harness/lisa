@@ -96,7 +96,7 @@ from runtime.commands import (
     set_runtime_route_preview,
 )
 from runtime.context_assembly import build_turn_context
-from runtime.execution_policy import resolve_execution_policy
+from runtime.execution_policy import mode_scope_ids, resolve_execution_policy
 from runtime.operator_signal import OperatorSignal
 from runtime.provider_endpoints import proxy_route_view
 from runtime.thread import (
@@ -1498,18 +1498,7 @@ async def _execute_mode_turn(
     execution_policy = resolve_execution_policy(
         default_policy=runtime.config.execution_policy,
         session_request=runtime.session_plan.manifest.execution,
-        scope_ids=tuple(
-            scope_id
-            for scope_id in (
-                str(getattr(mode, "mode_provider_id", "") or ""),
-                (
-                    f"{getattr(mode, 'mode_provider_id', '')}:{mode.mode_id}"
-                    if getattr(mode, "mode_provider_id", "")
-                    else mode.mode_id
-                ),
-            )
-            if scope_id
-        ),
+        scope_ids=mode_scope_ids(mode),
     )
 
     preferred_model_id = preferred_model_id_for_route(
@@ -1562,6 +1551,20 @@ async def _execute_mode_turn(
             preferred_model_id=preferred_model_id,
             resolved_model=resolved_model,
         )
+
+
+def _resolve_mode_capability_limit(runtime: HostRuntime, mode_id: str) -> int | None:
+    """Resolve the active mode's scoped capability-call ceiling."""
+
+    mode = get_workflow_catalog().get(mode_id)
+    if mode is None:
+        return None
+    policy = resolve_execution_policy(
+        default_policy=runtime.config.execution_policy,
+        session_request=runtime.session_plan.manifest.execution,
+        scope_ids=mode_scope_ids(mode),
+    )
+    return policy.max_capability_calls
 
 
 async def _run_reserved_turn(
@@ -1644,6 +1647,9 @@ async def _run_reserved_turn(
         transport=transport,
         identity=identity,
         extra_item_builders=extra_item_builders,
+    )
+    hooks.execution.resolve_capability_limit_for_mode = (
+        lambda target_mode_id: _resolve_mode_capability_limit(runtime, target_mode_id)
     )
     _log_turn_start(mode, resolved_model, query or message)
     try:

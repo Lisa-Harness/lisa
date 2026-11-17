@@ -98,6 +98,21 @@ The example requests tighter limits. Exhaustion can pause, yield, terminate,
 or force a closing completion according to lifecycle/policy. Approval
 continuation retains consumed counters; approval does not reset budgets.
 
+### Mode handoffs and stage guards
+
+The session/global execution envelope remains the outer whole-turn ceiling,
+but a mode-scoped capability-call ceiling is refreshed when a turn hands off
+to another mode. A low-capacity entry mode therefore does not consume the
+downstream coding mode's call allowance.
+
+`STAGE_NUDGE_THRESHOLD` is an advisory threshold: it adds lifecycle guidance
+but does not stop the model. `STAGE_NUDGE_CAP` is the hard same-stage pause;
+it must be greater than the threshold. Very high values defer both protection
+mechanisms until the whole-turn resource budget is likely to fire first,
+allowing long read loops. For interactive coding, `9` / `30` is a reasonable
+starting pair; use the stricter code defaults (`7` / `10`) for short,
+highly-bounded workflows and measure before raising them.
+
 ## Intra-turn compaction
 
 The mid-turn governor (`kernel.turn_phases._compaction`) bounds the live
