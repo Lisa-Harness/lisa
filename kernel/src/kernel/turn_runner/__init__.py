@@ -1977,6 +1977,7 @@ def _wire_delegate_fn(
     delegate_depth: int,
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
+    turn_start_mono: float,
     logger_override: logging.Logger | None,
 ) -> Callable[..., Awaitable[DelegationResult]]:
     """Build the per-turn ``delegate_fn`` closure for the ``delegate`` operation.
@@ -1996,6 +1997,7 @@ def _wire_delegate_fn(
         _hooks: TurnHooks = hooks,
         _budget: TurnBudget | None = turn_budget,
         _policy: ExecutionPolicy | None = execution_policy,
+        _turn_start_mono: float = turn_start_mono,
         _depth: int = _delegate_depth,
         _logr: logging.Logger | None = logger_override,
     ) -> DelegationResult:
@@ -2005,6 +2007,7 @@ def _wire_delegate_fn(
             turn_budget=_budget,
             execution_policy=_policy,
             depth=_depth + 1,
+            turn_start_mono=_turn_start_mono,
             logger_override=_logr,
         )
 
@@ -9672,6 +9675,11 @@ def _prepare_turn_infrastructure(
     ``_TurnState`` (budget caps, sub-turn kind, action-tool contract), the
     guard caps, the routing context, and the stage/tool-output emitters.
     """
+    # Wall-clock anchor shared by this turn's delegate closures. Nested
+    # delegates use it to receive the remaining parent wall budget rather
+    # than re-arming the full operation timeout.
+    turn_start_mono = time.monotonic()
+
     # ── Delegate hook wiring ──────────────────────────────────────────
     # Build the ``delegate_fn`` closure that the pack-level ``delegate``
     # operation calls via ``ctx.host.delegate(spec)``. The closure captures
@@ -9683,6 +9691,7 @@ def _prepare_turn_infrastructure(
         delegate_depth=delegate_depth,
         turn_budget=turn_budget,
         execution_policy=execution_policy,
+        turn_start_mono=turn_start_mono,
         logger_override=logger_override,
     )
 
@@ -9691,10 +9700,6 @@ def _prepare_turn_infrastructure(
     # declarative operation runtime keeps its own in-loop counter for its
     # bounded sub-agent, but the ledger is the authoritative cross-branch cap.
     ledger = CallLedger()
-    # Wall-clock anchor for the turn budget. Captured once so every budget
-    # check measures from the same origin.
-    turn_start_mono = time.monotonic()
-
     # ── Mutable turn state (extracted to _TurnState) ───────────────────
     # Promoted from nested closures to a dataclass + module-level functions
     # in kernel.turn_phases._turn_state.  The state object is threaded

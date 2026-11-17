@@ -93,6 +93,8 @@ def _child_wall_deadline_ms(timeout_seconds: int) -> int:
 def _arm_child_wall_budget(
     turn_budget: TurnBudget | None,
     timeout_seconds: int,
+    *,
+    remaining_wall_ms: int | None = None,
 ) -> TurnBudget | None:
     """Tighten a child sub-turn budget so it beats the operation's hard cancel.
 
@@ -116,6 +118,19 @@ def _arm_child_wall_budget(
     unset (0) or the armed deadline is non-positive.
     """
     armed_ms = _child_wall_deadline_ms(timeout_seconds)
+    if remaining_wall_ms is not None:
+        remaining_child_ms = max(
+            0,
+            remaining_wall_ms - (_kernel_settings.delegation_grace_seconds * 1000),
+        )
+        if remaining_child_ms <= 0:
+            return TurnBudget(
+                max_tool_calls=0,
+                max_total_tokens=0,
+                max_completion_tokens=0,
+                max_wall_ms=1,
+            )
+        armed_ms = min(armed_ms or remaining_child_ms, remaining_child_ms)
     if armed_ms <= 0:
         return turn_budget
     if turn_budget is None:
@@ -137,6 +152,7 @@ async def _default_delegate_fn(
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
     depth: int,
+    turn_start_mono: float | None = None,
     logger_override: logging.Logger | None = None,
 ) -> DelegationResult:
     """Run one delegate sub-turn by recursing into ``run_turn``.
@@ -196,11 +212,34 @@ async def _default_delegate_fn(
         )
 
     started = time.monotonic()
+    remaining_wall_ms: int | None = None
+    if (
+        turn_start_mono is not None
+        and turn_start_mono > 0
+        and turn_budget is not None
+        and turn_budget.max_wall_ms > 0
+    ):
+        remaining_wall_ms = max(
+            0,
+            turn_budget.max_wall_ms - int((started - turn_start_mono) * 1000),
+        )
+        if remaining_wall_ms <= (_kernel_settings.delegation_grace_seconds * 1000):
+            return DelegationResult(
+                target_mode_id=spec.target_mode_id,
+                status="timeout",
+                error_message="Delegate child skipped: parent wall budget is spent.",
+                duration_ms=0,
+                depth=depth + 1,
+            )
     # Arm the child's wall budget so it force-completes gracefully just
     # before the registry's hard ``asyncio.wait_for`` cancel would discard
     # all child work (spec.timeout_seconds is threaded from the delegate
     # operation's own ``timeout_seconds``).
-    child_budget = _arm_child_wall_budget(turn_budget, spec.timeout_seconds)
+    child_budget = _arm_child_wall_budget(
+        turn_budget,
+        spec.timeout_seconds,
+        remaining_wall_ms=remaining_wall_ms,
+    )
     child_max_iters = (
         spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
     )

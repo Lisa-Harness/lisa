@@ -104,6 +104,31 @@ def test_remaining_wall_seconds_zero_when_spent() -> None:
     assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=0.0) is None
 
 
+def test_delegate_child_budget_uses_remaining_parent_wall_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nested delegates cannot re-arm the parent's full wall allowance."""
+    from kernel.config import settings as kernel_settings
+    from kernel.turn_runner import _arm_child_wall_budget
+
+    monkeypatch.setattr(kernel_settings, "delegation_grace_seconds", 30)
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+
+    child = _arm_child_wall_budget(
+        budget,
+        1_800,
+        remaining_wall_ms=90_000,
+    )
+
+    assert child is not None
+    assert child.max_wall_ms == 60_000
+
+
 @pytest.mark.asyncio
 async def test_spent_wall_deadline_closes_unawaited_coroutine() -> None:
     """A spent deadline closes the never-started awaitable before raising.
