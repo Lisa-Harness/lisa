@@ -428,6 +428,13 @@ class Settings(BaseSettings):
     # finish at the next dispatch boundary instead of relying on
     # mid-dispatch loop breaks.
     intra_turn_hard_ceiling_share: float = Field(default=0.65, gt=0, le=1)
+    # Affordable window: when the turn has a processed-token envelope
+    # (``TurnBudget.max_total_tokens``), the soft/hard shares apply to
+    # ``min(model window, envelope * share)`` instead of the raw window.
+    # Every cache-cold request (resume, model switch, epoch rewrite)
+    # re-processes the whole prompt against that envelope, so a large
+    # window must not license residency the turn cannot afford to resend.
+    intra_turn_envelope_window_share: float = Field(default=0.4, gt=0, le=1)
     # Minimum serialized tool-call arguments (characters) the hard
     # ceiling treats as a "large" dispatch. Read-only tools are never
     # gated, so the model can still inspect results it already holds.
@@ -571,6 +578,7 @@ class Settings(BaseSettings):
         "context_reduction_target_share",
         "intra_turn_soft_trigger_share",
         "intra_turn_hard_ceiling_share",
+        "intra_turn_envelope_window_share",
         "intra_turn_large_dispatch_min_chars",
         "intra_turn_spill_preview_repeat_limit",
         "intra_turn_cache_read_share",

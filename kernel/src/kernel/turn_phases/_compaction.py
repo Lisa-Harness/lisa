@@ -67,6 +67,8 @@ class IntraTurnCompactionState:
     enabled: bool = True
     soft_trigger_share: float = 0.5
     hard_ceiling_share: float = 0.65
+    envelope_window_share: float = 0.4
+    turn_token_envelope: int = 0
     large_dispatch_min_chars: int = 2000
     preview_repeat_limit: int = 3
     history_epoch_min_tokens: int = 12_000
@@ -83,6 +85,7 @@ class IntraTurnCompactionState:
             enabled=bool(_kernel_settings.intra_turn_compaction_enabled),
             soft_trigger_share=float(_kernel_settings.intra_turn_soft_trigger_share),
             hard_ceiling_share=float(_kernel_settings.intra_turn_hard_ceiling_share),
+            envelope_window_share=float(_kernel_settings.intra_turn_envelope_window_share),
             large_dispatch_min_chars=int(_kernel_settings.intra_turn_large_dispatch_min_chars),
             preview_repeat_limit=int(_kernel_settings.intra_turn_spill_preview_repeat_limit),
             history_epoch_min_tokens=int(_kernel_settings.history_epoch_min_tokens),
@@ -293,9 +296,7 @@ def maybe_run_soft_epoch(
         return False
     mode_config = getattr(state, "mode_config", None)
     working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
-    window = state.request_context_budget.window_tokens if state.request_context_budget else 0
-    if window <= 0:
-        window = trigger_tokens
+    window = effective_window_tokens(state=state, model_def=model_def) or trigger_tokens
     if estimate < trigger_tokens:
         cfg.epoch_estimate = 0
         return False
@@ -310,6 +311,12 @@ def maybe_run_soft_epoch(
         window,
         mode_id,
     )
+    # Residency target for replaceable tool results. A mode working set is
+    # authoritative; otherwise keep half the trigger so the post-epoch
+    # array has room to grow append-only before the next crossing. Passing
+    # no budget would let the projector keep every byte (a no-op epoch on
+    # large-window models).
+    residency_tokens = working_set if working_set > 0 else trigger_tokens // 2
     return run_compaction_epoch(
         state=state,
         hooks=hooks,
@@ -317,18 +324,20 @@ def maybe_run_soft_epoch(
         model_def=model_def,
         tools=tools,
         max_tokens=max_tokens,
-        tool_budget_bytes=working_set * 3 if working_set > 0 else None,
+        tool_budget_bytes=residency_tokens * 3,
         prompt_cache_key=prompt_cache_key,
         log=log,
     )
 
 
-def soft_trigger_tokens(*, state: Any, model_def: Any | None = None) -> int:
-    """Return the active soft-trigger token threshold for the turn.
+def effective_window_tokens(*, state: Any, model_def: Any | None = None) -> int:
+    """Return the window the soft/hard shares apply to.
 
-    Uses the fitted request budget window when available (same window the
-    allocator just enforced). Falls back to the model definition when the
-    turn has not fitted a request yet.
+    The model window comes from the fitted request budget when available
+    (same window the allocator just enforced), else the model definition.
+    A turn processed-token envelope caps it: every cache-cold request
+    re-processes the whole prompt against that envelope, so residency is
+    bounded by what the turn can afford to resend, not by window size.
     """
     window = 0
     budget = state.request_context_budget
@@ -338,6 +347,17 @@ def soft_trigger_tokens(*, state: Any, model_def: Any | None = None) -> int:
         from kernel.context.context_budget import model_context_window_tokens
 
         window = model_context_window_tokens(model_def)
+    if window <= 0:
+        return 0
+    cfg = state.intra_turn_compaction
+    if cfg.turn_token_envelope > 0:
+        window = min(window, int(cfg.turn_token_envelope * cfg.envelope_window_share))
+    return window
+
+
+def soft_trigger_tokens(*, state: Any, model_def: Any | None = None) -> int:
+    """Return the active soft-trigger token threshold for the turn."""
+    window = effective_window_tokens(state=state, model_def=model_def)
     if window <= 0:
         return 0
     mode_config = getattr(state, "mode_config", None)
@@ -375,8 +395,9 @@ def hard_ceiling_stop_reason(*, state: Any) -> str:
     budget = state.request_context_budget
     if budget is None or budget.window_tokens <= 0:
         return ""
+    window = effective_window_tokens(state=state)
     estimate = state.intra_turn_compaction_estimator.estimate()
-    if estimate >= int(budget.window_tokens * cfg.hard_ceiling_share):
+    if estimate >= int(window * cfg.hard_ceiling_share):
         return "context_hard_ceiling"
     return ""
 

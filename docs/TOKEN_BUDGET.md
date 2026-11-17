@@ -120,11 +120,21 @@ highly-bounded workflows and measure before raising them.
 
 The mid-turn governor (`kernel.turn_phases._compaction`) bounds the live
 provider message array inside one turn — the dimension the request-fit
-allocator only sees at call time. An incremental estimator is evaluated at
-every dispatch boundary. The trigger is the smaller of
-`intra_turn_soft_trigger_share` of the model window and the mode's optional
-`working_set_tokens`. An epoch projects tool results to previews and
-ref-backed evidence inventories while checking the real model window and
+allocator only sees at call time. An incremental estimator is evaluated
+before every model request, including the first request of a resumed turn.
+Thresholds apply to the effective window: the model window, capped at
+`intra_turn_envelope_window_share` (default `0.4`) of the turn's
+processed-token envelope (`max_total_tokens`, host default 1M) when one is
+set. Every cache-cold request — a resume, a mid-turn model switch, or an
+epoch rewrite — re-processes the whole prompt against that envelope, so a
+1M-token window must not license residency the turn cannot afford to
+resend. With the defaults, the soft trigger is 200K tokens and the hard
+ceiling 260K, leaving room for at least four cold resends per turn. The
+trigger is the smaller of `intra_turn_soft_trigger_share` of the effective
+window and the mode's optional `working_set_tokens`. An epoch projects tool
+results newest-first to a residency budget (the working set, or half the
+trigger when the mode declares none), turning older results into previews
+and ref-backed evidence inventories while checking the real model window and
 completion reserve; it never shrinks required non-tool input by pretending
 the model has a smaller window. A later epoch waits for 10% estimate growth
 or a fall below the trigger followed by a new crossing, so normal dispatches

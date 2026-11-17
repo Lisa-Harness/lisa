@@ -9745,6 +9745,9 @@ def _prepare_turn_infrastructure(
     # counter).
     state.max_iterations = max_tool_iterations
     state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
+    state.intra_turn_compaction.turn_token_envelope = (
+        turn_budget.max_total_tokens if turn_budget is not None else 0
+    )
     state.max_handoffs = _kernel_settings.max_handoffs_per_turn
     # ── Completion-contract state (sub-turns AND parent) ──────────
     # Resolve the mode's required side-effecting capabilities once at
@@ -12030,6 +12033,25 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         )
 
         effective_model_def = _resolve_iteration_model(_state.iteration)
+        if _state.intra_turn_compaction.enabled:
+            # Pre-request: compact before paying for the call. The anchor
+            # plus appended tool bytes covers fresh results and a resumed
+            # (paused-turn) array whose cache prefix is already cold.
+            maybe_run_soft_epoch(
+                state=_state,
+                hooks=hooks,
+                messages=messages,
+                model_def=effective_model_def,
+                tools=effective_tools,
+                max_tokens=(
+                    _state.request_context_budget.completion_tokens
+                    if _state.request_context_budget is not None
+                    else 0
+                ),
+                mode_id=mode_id,
+                prompt_cache_key=_prompt_cache_key(hooks),
+                log=_log,
+            )
         # ── Router terminal actions ──────────────────────────────────
         # When the model router returns a ``finish`` or ``transition_to``
         # action, the turn loop forces a final no-tools completion instead
@@ -12112,21 +12134,6 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
                 messages=messages,
                 log=_log,
                 model_def=effective_model_def,
-            )
-            maybe_run_soft_epoch(
-                state=_state,
-                hooks=hooks,
-                messages=messages,
-                model_def=effective_model_def,
-                tools=effective_tools,
-                max_tokens=(
-                    _state.request_context_budget.completion_tokens
-                    if _state.request_context_budget is not None
-                    else 0
-                ),
-                mode_id=mode_id,
-                prompt_cache_key=_prompt_cache_key(hooks),
-                log=_log,
             )
         if _state.intra_turn_compaction.finish_now and effective_tools is not None:
             effective_tools = None

@@ -413,6 +413,25 @@ def test_soft_trigger_tokens_uses_working_set_and_window_budget() -> None:
     assert soft_trigger_tokens(state=state) == 800
 
 
+def test_turn_token_envelope_caps_large_model_window() -> None:
+    # Turn 1359 shape: 1M window, 1M processed-token envelope, ~330K
+    # resident prompt. The raw window put the soft trigger at 524K, so
+    # the prompt never compacted while cache-cold resends drained the
+    # envelope. The envelope bounds the effective window to 400K.
+    state = _state(IntraTurnCompactionState(turn_token_envelope=1_000_000))
+    state.request_context_budget = _budget(1_048_576)
+    assert soft_trigger_tokens(state=state) == 200_000
+    state.intra_turn_compaction_estimator.observe_request_tokens(313_978)
+    assert should_spill_on_arrival(state=state) is True
+    assert hard_ceiling_stop_reason(state=state) == "context_hard_ceiling"
+
+
+def test_envelope_never_raises_a_smaller_model_window() -> None:
+    state = _state(IntraTurnCompactionState(turn_token_envelope=1_000_000))
+    state.request_context_budget = _budget(128_000)
+    assert soft_trigger_tokens(state=state) == 64_000
+
+
 def test_spill_on_arrival_is_gated_by_soft_trigger_pressure() -> None:
     state = _state()
     state.request_context_budget = _budget(10_000)
@@ -558,6 +577,29 @@ def test_working_set_limits_results_without_shrinking_the_model_window() -> None
     assert state.request_context_budget is not None
     assert state.request_context_budget.window_tokens == 1_000_000
     assert len(str(messages[2]["content"])) < 24000
+
+
+def test_envelope_epoch_evicts_without_a_mode_working_set() -> None:
+    # No working set + a 1M window used to pass no residency budget, so the
+    # projector kept every byte. The envelope-derived trigger now sizes it.
+    state, hooks, messages = _epoch_fixture(window=1_000_000, estimate=300_000)
+    state.intra_turn_compaction.turn_token_envelope = 1_000_000
+    messages[2]["content"] = "y" * 900_000
+    assert (
+        maybe_run_soft_epoch(
+            state=state,
+            hooks=hooks,
+            messages=messages,
+            model_def=SimpleNamespace(context_window=1_000_000),
+            tools=None,
+            max_tokens=16384,
+            mode_id="coding_review",
+            prompt_cache_key="k",
+            log=_quiet_log(),
+        )
+        is True
+    )
+    assert len(str(messages[2]["content"])) <= 100_000 * 3
 
 
 def test_compaction_state_snapshots_history_epoch_setting() -> None:
