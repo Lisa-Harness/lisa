@@ -1,11 +1,10 @@
-"""Spill-on-arrival: the cache-aware default for large tool results.
+"""Spill-on-arrival for large tool results under context pressure.
 
 The mid-turn governor's epoch (``kernel.turn_phases._compaction``) is the
-FALLBACK. This module is the workhorse: a large tool result is ref'd out
-at DELIVERY time, before it ever enters the live provider message array,
-so the array stays append-only and normal dispatches extend the cached
-prefix instead of rewriting it. Because the content never entered the
-cached prefix, spilling it later busts nothing.
+fallback. This module applies the delivery-time replacement used when the
+governor says the live array is under pressure: a large result is ref'd out
+before it would be sent again, helping the array stay append-friendly near
+the soft trigger.
 
 What lands inline is a bounded structured preview:
 

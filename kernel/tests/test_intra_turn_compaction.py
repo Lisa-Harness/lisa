@@ -14,6 +14,8 @@ from kernel.turn_phases._compaction import (
     LiveArrayEstimator,
     hard_ceiling_stop_reason,
     maybe_run_soft_epoch,
+    should_spill_on_arrival,
+    soft_trigger_tokens,
     tool_size_refusal,
 )
 from kernel.turn_phases._spill import maybe_spill_tool_result
@@ -401,6 +403,23 @@ def test_mode_working_set_caps_soft_trigger() -> None:
     state.mode_config = SimpleNamespace(working_set_tokens=800)
     assert maybe_run_soft_epoch(state=state, hooks=hooks, messages=messages, **common) is True
     assert len(str(messages[2]["content"])) < 24000
+
+
+def test_soft_trigger_tokens_uses_working_set_and_window_budget() -> None:
+    state = _state()
+    state.request_context_budget = _budget(10_000)
+    assert soft_trigger_tokens(state=state) == 5_000
+    state.mode_config = SimpleNamespace(working_set_tokens=800)
+    assert soft_trigger_tokens(state=state) == 800
+
+
+def test_spill_on_arrival_is_gated_by_soft_trigger_pressure() -> None:
+    state = _state()
+    state.request_context_budget = _budget(10_000)
+    state.intra_turn_compaction_estimator.observe_request_tokens(4_700)
+    assert should_spill_on_arrival(state=state) is False
+    state.intra_turn_compaction_estimator.observe_request_tokens(4_800)
+    assert should_spill_on_arrival(state=state) is True
 
 
 def test_soft_epoch_accepts_ref_backed_inventory_projection() -> None:

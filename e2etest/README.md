@@ -74,6 +74,15 @@ fixture ships a minimal manifest plus the `web_search` overlay:
 uv run --frozen lisa-e2e run e2etest/tests/e2e/harness_smoke.scenario.yml
 ```
 
+Two additional scripted offline scenarios validate compaction spill behavior:
+
+- [`compaction_spill_low_pressure.scenario.yml`](tests/e2e/compaction_spill_low_pressure.scenario.yml)
+  asserts a large `thread_read_recent` result stays inline when the turn is
+  below soft-trigger pressure.
+- [`compaction_spill_high_pressure.scenario.yml`](tests/e2e/compaction_spill_high_pressure.scenario.yml)
+  repeatedly requests large `thread_read_recent` payloads in one turn and
+  asserts spill previewing engages under pressure.
+
 Scripted scenarios resolve their base data dir as follows:
 `LISA_E2E_BASE_DATA_DIR` wins when set; otherwise a scripted scenario uses
 the bundled fixture ([`base_data/`](base_data/README.md)); a live scenario

@@ -37,6 +37,14 @@ _GIT_IDENTITY = {
 }
 
 
+def _reload_kernel_settings() -> None:
+    """Refresh kernel settings after scenario env overlays are applied."""
+
+    from kernel.config import reload_settings
+
+    reload_settings()
+
+
 @dataclass(frozen=True)
 class RunPaths:
     """Every location a run touches; all live under ``run_dir``."""
@@ -171,4 +179,5 @@ def prepare_run(
     os.environ["LISA_PACKS_VENV"] = str(packs_venv)
     os.environ.update(_GIT_IDENTITY)
     os.environ.update(scenario.env)
+    _reload_kernel_settings()
     return paths

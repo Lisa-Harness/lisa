@@ -1,0 +1,43 @@
+id: harness/compaction-spill-high-pressure
+session_context: session_context.md
+model:
+  script: model/compaction_spill_high_pressure.py
+packs:
+  - lisa-pack-core
+env:
+  INTRA_TURN_SOFT_TRIGGER_SHARE: "0.001"
+  INTRA_TURN_LARGE_DISPATCH_MIN_CHARS: "1000"
+turns:
+  - seed 01
+  - seed 02
+  - seed 03
+  - seed 04
+  - seed 05
+  - seed 06
+  - seed 07
+  - seed 08
+  - seed 09
+  - seed 10
+  - seed 11
+  - seed 12
+  - seed 13
+  - seed 14
+  - seed 15
+  - seed 16
+  - seed 17
+  - seed 18
+  - seed 19
+  - seed 20
+  - probe high pressure
+budgets:
+  max_messages: 80
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 300
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_runtime_errors: {}
+  behavior:
+    - exchange_contains: {text: "confirmed spill preview under pressure"}

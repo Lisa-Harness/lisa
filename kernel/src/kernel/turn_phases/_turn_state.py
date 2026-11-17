@@ -503,6 +503,17 @@ class _TurnState:
     """Distinct serialization of retrieval-tool call arguments this turn.
     A call whose arguments repeat an earlier one re-delivers content the
     model already holds; the nudge reports the repeat count."""
+    dereference_calls: int = 0
+    """Count of read-tool dereference calls (``ref=...`` expansions) this turn.
+
+    Used by the dereference-budget guard to cap repeated expansion churn once
+    the turn already has enough retrieved evidence to synthesize."""
+    dereference_distinct_refs: set[str] = field(default_factory=set)
+    """Distinct dereference refs expanded this turn.
+
+    Paired with ``dereference_calls`` so the guard can distinguish broad
+    retrieval (many distinct refs) from repeated expansion of refs already
+    pulled into context."""
     consecutive_tool_errors: int = 0
     """Count of trailing dispatches to the same tool that returned an
     error (``ToolResult.error`` non-empty, ``OperationResult`` not

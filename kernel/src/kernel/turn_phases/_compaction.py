@@ -288,12 +288,14 @@ def maybe_run_soft_epoch(
     estimate = estimator.estimate()
     if estimate <= 0:
         return False
-    from kernel.context.context_budget import model_context_window_tokens
-
-    window = model_context_window_tokens(model_def)
+    trigger_tokens = soft_trigger_tokens(state=state, model_def=model_def)
+    if trigger_tokens <= 0:
+        return False
     mode_config = getattr(state, "mode_config", None)
     working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
-    trigger_tokens = min(int(window * cfg.soft_trigger_share), working_set or window)
+    window = state.request_context_budget.window_tokens if state.request_context_budget else 0
+    if window <= 0:
+        window = trigger_tokens
     if estimate < trigger_tokens:
         cfg.epoch_estimate = 0
         return False
@@ -319,6 +321,44 @@ def maybe_run_soft_epoch(
         prompt_cache_key=prompt_cache_key,
         log=log,
     )
+
+
+def soft_trigger_tokens(*, state: Any, model_def: Any | None = None) -> int:
+    """Return the active soft-trigger token threshold for the turn.
+
+    Uses the fitted request budget window when available (same window the
+    allocator just enforced). Falls back to the model definition when the
+    turn has not fitted a request yet.
+    """
+    window = 0
+    budget = state.request_context_budget
+    if budget is not None:
+        window = int(getattr(budget, "window_tokens", 0) or 0)
+    if window <= 0 and model_def is not None:
+        from kernel.context.context_budget import model_context_window_tokens
+
+        window = model_context_window_tokens(model_def)
+    if window <= 0:
+        return 0
+    mode_config = getattr(state, "mode_config", None)
+    working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
+    return min(int(window * state.intra_turn_compaction.soft_trigger_share), working_set or window)
+
+
+def should_spill_on_arrival(*, state: Any, model_def: Any | None = None) -> bool:
+    """Return True when delivery-time spill should apply for this turn.
+
+    Spill-on-arrival is pressure-gated: below the soft trigger we keep tool
+    results inline so the model can inspect fresh evidence without immediate
+    dereference churn. At/above the trigger we spill large outputs to keep
+    live-array growth append-friendly.
+    """
+    if not state.intra_turn_compaction.enabled:
+        return False
+    trigger = soft_trigger_tokens(state=state, model_def=model_def)
+    if trigger <= 0:
+        return False
+    return state.intra_turn_compaction_estimator.estimate() >= trigger
 
 
 def hard_ceiling_stop_reason(*, state: Any) -> str:

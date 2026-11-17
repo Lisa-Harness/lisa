@@ -172,6 +172,7 @@ from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest, Tur
 from kernel.turn_phases._compaction import (
     hard_ceiling_stop_reason,
     maybe_run_soft_epoch,
+    should_spill_on_arrival,
     tool_size_refusal,
 )
 from kernel.turn_phases._completion_contract import (
@@ -186,6 +187,7 @@ from kernel.turn_phases._completion_contract import (
 )
 from kernel.turn_phases._dispatch import (
     _track_consecutive_errors,
+    dereference_ref_for_read,
     dispatch_capability,
     summarize_json_result,
 )
@@ -7618,6 +7620,48 @@ def _guard_repeated_tool_batch(
     return action
 
 
+def _deref_budget_refusal(
+    *,
+    state: _TurnState,
+    tool_name: str,
+    tool_arguments: Any,
+    tool_def: Any,
+) -> str:
+    """Return a refusal text when repeated deref expansion exceeds budget.
+
+    The guard intentionally keys off read-tool ``ref`` expansions and repeated
+    refs, not tool names or languages, so it bounds churn without coupling to
+    any specific workflow.
+    """
+    call_limit = _kernel_settings.max_dereference_calls_per_turn
+    if call_limit <= 0:
+        return ""
+    deref_ref = dereference_ref_for_read(
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_def=tool_def,
+    )
+    if deref_ref is None:
+        return ""
+    projected_calls = state.dereference_calls + 1
+    if projected_calls <= call_limit:
+        return ""
+    distinct = state.dereference_distinct_refs
+    projected_distinct = len(distinct) + (0 if deref_ref in distinct else 1)
+    projected_repeats = max(0, projected_calls - projected_distinct)
+    repeat_limit = max(0, _kernel_settings.max_dereference_repeats_per_turn)
+    if projected_repeats <= repeat_limit:
+        return ""
+    state.intra_turn_compaction.finish_now = True
+    return (
+        f"Not executed: dereference budget reached ({projected_calls} ref expansions this turn, "
+        f"{projected_repeats} repeated ref expansions; cap={call_limit}, "
+        f"repeat_cap={repeat_limit}). Do not expand more refs. Synthesize from the "
+        "evidence already gathered, or call a different non-dereference tool if "
+        "new evidence is genuinely missing."
+    )
+
+
 def _handle_truncated_tool_arguments(
     *,
     state: _TurnState,
@@ -10250,14 +10294,28 @@ async def _prepare_tool_call_dispatch(
     )
     max_calls = int(getattr(target_def, "max_calls_per_turn", 0) or 0) if target_def else 0
     max_calls = resolve_capability_invocation_limit(execution_policy, tool_name, max_calls)
-    if ledger.is_exhausted(tool_name, max_calls):
+    refusal_text = _deref_budget_refusal(
+        state=state,
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_def=target_def,
+    )
+    if refusal_text:
+        log.warning(
+            "refusing dereference call %s after deref budget exceeded (mode=%s)",
+            tool_name,
+            mode_id,
+        )
+    elif ledger.is_exhausted(tool_name, max_calls):
         state.capability_limit_hit = True
+        refusal_text = f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls})."
+    if refusal_text:
         messages.append(
             {
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "name": tool_name,
-                "content": f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls}).",
+                "content": refusal_text,
             }
         )
         # A rejected call still produced a tool-result message; keep the
@@ -10574,11 +10632,12 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     if thought_signature:
         tool_result_msg["thought_signature"] = thought_signature
     messages.append(tool_result_msg)
-    # Spill-on-arrival: the cache-aware default. A large result is ref'd
-    # out at delivery, BEFORE it ever enters the cached prefix, so normal
-    # operation stays append-only. The estimator always observes the
-    # (possibly previewed) append.
-    if state.intra_turn_compaction.enabled:
+    # Spill-on-arrival under pressure: once the live-array estimate crosses
+    # the soft trigger, large results are ref'd out at delivery. Below that
+    # threshold, results stay inline and request-fit projection handles
+    # reductions only when needed. The estimator always observes the
+    # resulting append.
+    if state.intra_turn_compaction.enabled and should_spill_on_arrival(state=state):
         maybe_spill_tool_result(
             result_message=tool_result_msg,
             persist=hooks.tools.persist_tool_result,

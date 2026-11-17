@@ -61,6 +61,7 @@ _log = logging.getLogger(__name__)
 __all__ = [
     "CapabilityDispatchOutcome",
     "_track_retrieval_call",
+    "dereference_ref_for_read",
     "dispatch_capability",
     "enforce_write_receipt",
     "format_read_abbreviation",
@@ -230,6 +231,46 @@ def _track_retrieval_call(
     except (TypeError, ValueError):
         signature = repr(tool_arguments)
     state.retrieval_distinct_args.add(f"{tool_name}:{signature}")
+    deref_ref = dereference_ref_for_read(
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_def=tool_def,
+    )
+    if deref_ref is None:
+        return
+    state.dereference_calls += 1
+    state.dereference_distinct_refs.add(deref_ref)
+
+
+def dereference_ref_for_read(
+    *,
+    tool_name: str,
+    tool_arguments: Any,
+    tool_def: Any = None,
+) -> str | None:
+    """Return the dereferenced ref for a read-tool call, else ``None``.
+
+    Classification is capability-shape based, not language- or workflow-
+    specific: a read tool qualifies when it carries a ``ref`` argument that
+    matches Lisa's stable result/thread reference grammars.
+    """
+    read_effect = (
+        str(getattr(tool_def, "effect", "") or "") == "read"
+        if tool_def is not None
+        else tool_name.rsplit(".", 1)[-1] in _RETRIEVAL_TOOL_SUFFIXES
+    )
+    if not read_effect or not isinstance(tool_arguments, dict):
+        return None
+    ref = tool_arguments.get("ref")
+    if isinstance(ref, str):
+        ref = ref.strip()
+    if not isinstance(ref, str) or not ref:
+        return None
+    if _RESULT_REF_PATTERN.fullmatch(ref) is not None or _THREAD_REF_PATTERN.fullmatch(
+        ref
+    ) is not None:
+        return ref
+    return None
 
 
 def read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str:

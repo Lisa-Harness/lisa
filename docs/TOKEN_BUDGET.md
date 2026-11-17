@@ -110,13 +110,18 @@ ref-backed evidence inventories while checking the real model window and
 completion reserve; it never shrinks required non-tool input by pretending
 the model has a smaller window. A later epoch waits for 10% estimate growth
 or a fall below the trigger followed by a new crossing, so normal dispatches
-extend the provider prefix cache instead of rewriting it. Large tool results
-are spilled to the thread store at delivery (preview + `r<sha256>` ref)
-before they ever enter the cached prefix; eviction is one-way and recovery
-is a dereference. At
+extend the provider prefix cache instead of rewriting it. Once pressure
+reaches the same soft-trigger threshold, large tool results spill to the
+thread store at delivery (preview + `r<sha256>` ref); below that threshold
+they stay inline and are compacted reactively only when request fitting
+requires it. Eviction is one-way and recovery is a dereference. At
 `intra_turn_hard_ceiling_share` the governor refuses new large dispatches and
 forces a clean finish at the next dispatch boundary; the first output
 truncation trips a one-way circuit-breaker for the rest of the turn.
+Independently, repeated dereference churn is bounded by
+`max_dereference_calls_per_turn` plus `max_dereference_repeats_per_turn`:
+after the cap is exceeded with repeated ref expansions, further dereference
+calls are refused and the turn is steered to synthesize from gathered evidence.
 Disable the whole mechanism with `INTRA_TURN_COMPACTION_ENABLED=false`
 (falls back to the reactive request-fit reduction alone).
 

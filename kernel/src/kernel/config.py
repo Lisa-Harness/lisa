@@ -332,6 +332,18 @@ class Settings(BaseSettings):
     # thread_read_recent + thread_search pair 33 times.
     # Override via ``MAX_IDENTICAL_TOOL_BATCH_REPEATS``.
     max_identical_tool_batch_repeats: int = 3
+    # Dereference expansion ceiling. Once a turn has expanded this many
+    # read-tool refs (``ref=...``), the kernel starts guarding repeated
+    # expansion churn; broad retrieval with mostly distinct refs is still
+    # allowed. 0 disables this guard.
+    # Override via ``MAX_DEREFERENCE_CALLS_PER_TURN``.
+    max_dereference_calls_per_turn: int = 20
+    # Repeated-dereference tolerance paired with
+    # ``max_dereference_calls_per_turn``. A turn over the dereference-call
+    # cap is refused only after this many expansions are repeats of refs it
+    # already expanded. 0 means "no repeated expansions once over the cap."
+    # Override via ``MAX_DEREFERENCE_REPEATS_PER_TURN``.
+    max_dereference_repeats_per_turn: int = 6
 
     # ── Derived workflow view ─────────────────────────────────────────────
     # A ``## Plan`` stays active only while it makes progress. After this
@@ -420,10 +432,11 @@ class Settings(BaseSettings):
     # ceiling treats as a "large" dispatch. Read-only tools are never
     # gated, so the model can still inspect results it already holds.
     intra_turn_large_dispatch_min_chars: int = Field(default=2000)
-    # Spill-on-arrival: previews use the first/last excerpt of a large
-    # tool result; only fresh (non-ref, non-preview) content counts.
-    # Pending dedupes collapse to a single line when one preview has
-    # appeared this many times in the current result.
+    # Spill-on-arrival (pressure path): once the live-array estimate is
+    # at/above the soft trigger, large fresh (non-ref, non-preview) tool
+    # results are replaced by a preview + ref at delivery. Pending dedupes
+    # collapse to a single line when one preview has appeared this many
+    # times in the current result.
     intra_turn_spill_preview_repeat_limit: int = Field(default=3)
     # Cache economics fallback: cached-read and cache-write prices as a
     # share of the uncached input price, used when the model manifest
@@ -548,6 +561,8 @@ class Settings(BaseSettings):
         "hint_cycle_min_len",
         "hint_override_limit",
         "max_identical_tool_batch_repeats",
+        "max_dereference_calls_per_turn",
+        "max_dereference_repeats_per_turn",
         "workflow_plan_idle_turn_limit",
         "chat_mode_dense_content_min_chars",
         "context_budget_token_char_ratio",

@@ -45,9 +45,11 @@ not a guarantee for every provider framing or multimodal payload.
 
 ## References and bounded retrieval
 
-Large tool results are persisted before provider projection. A result ref
-is `r<sha256>`; thread refs address a turn/message/call or field. A preview
-must still refer to the original content, not to another stored preview.
+Under compaction pressure, large tool results are persisted and replaced by
+previews carrying result refs; outside that pressure, results can stay inline
+until request fitting needs reduction. A result ref is `r<sha256>`; thread
+refs address a turn/message/call or field. A preview must still refer to the
+original content, not to another stored preview.
 
 Thread range, search, content-window, and find tools let the model retrieve
 addressed evidence on demand. Pagination and byte/character limits still
