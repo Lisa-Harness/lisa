@@ -387,6 +387,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Fork fan-outs now honor the parent turn's remaining wall budget, closing
+  the delegate/fork parity gap from the 2026-11-18 review: the fork path
+  previously armed only the operation timeout, so fork children could
+  outlive the parent's wall budget. A new shared helper
+  (`kernel.turn_phases._wall_budget`) owns the remaining-wall arithmetic
+  for both child kinds; a spent parent (no time beyond the delegation
+  grace) returns honest per-target `timeout` results without launching
+  doomed children into the registry's hard cancel, and each child's wall
+  ceiling is tightened to `min(operation deadline, parent remaining −
+  grace)` so its `budget_forces_final` fires first. The fork child
+  lineage pass-through (`parent_dispatch_id`) — dead since the fan-out
+  closure never forwarded it — is also fixed.
 - Compaction spill-on-arrival no longer abbreviates every large tool result
   unconditionally. The turn runner now gates delivery-time spill by the same
   soft-trigger pressure threshold used for intra-turn compaction, so large

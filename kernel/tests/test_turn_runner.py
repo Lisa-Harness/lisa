@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -3288,6 +3289,191 @@ async def test_fork_model_alias_reaches_every_child(
         assert sorted(seen_models) == sorted(expected)
         assert result.succeeded == 2
         assert all(child.status == "ok" for child in result.children)
+
+
+@pytest.mark.asyncio
+async def test_fork_spent_parent_wall_returns_honest_timeouts() -> None:
+    """A fork fan-out under a spent parent wall returns per-target timeouts.
+
+    Regression for the 2026-11-18 review finding: the fork path armed only
+    the operation timeout, so fork children could outlive the parent turn's
+    wall budget. A spent parent (no time beyond the grace window) must not
+    launch doomed children into the registry's hard cancel — every target
+    gets an honest ``timeout`` result without any model call.
+    """
+    seen_models: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        seen_models.append(kwargs["model_def"].model_id)
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(ref: str) -> Any:
+        return SimpleNamespace(model_id=f"{ref}-model", reasoning_model=False)
+
+    catalog = {
+        mode: _mode_config(mode_id=mode, fork_allowed=True) for mode in ("default", "search")
+    }
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("kernel.turn_runner.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.turn_runner.get_mode_system_intro", lambda mid: mid)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid)
+    try:
+        hooks = _build_minimal_hooks(complete)
+        hooks.models.resolve_model = resolve_model
+        # Parent wall budget spent: 600s budget, 600s elapsed, 30s grace.
+        budget = TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=600_000,
+        )
+        result = await _default_fork_fn(
+            ForkSpec(
+                targets=[ForkTarget(mode_id=mode, query="hello") for mode in catalog],
+            ),
+            hooks=hooks,
+            pool=MCPToolPool([]),
+            resolve_model=resolve_model,
+            complete=complete,
+            exec_op=_stub_execute_operation,
+            turn_budget=budget,
+            execution_policy=None,
+            turn_start_mono=time.monotonic() - 600.0,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(result.children) == 2
+    assert result.succeeded == 0
+    assert all(child.status == "timeout" for child in result.children)
+    assert all("parent wall budget is spent" in child.error_message for child in result.children)
+    # No child launched: the spent-parent check fires before any model call.
+    assert seen_models == []
+
+
+@pytest.mark.asyncio
+async def test_fork_child_wall_tightened_by_parent_remaining() -> None:
+    """Each fork child's wall is tightened by the parent's remaining wall.
+
+    Parity with the delegate path: a parent with 90s remaining and a 30s
+    grace arms each child at 60s (not the full 300s operation timeout), so
+    the child's ``budget_forces_final`` fires before the parent's wall
+    expires. Children run in parallel, so the deadline applies per child.
+    """
+    seen_budgets: list[TurnBudget | None] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(ref: str) -> Any:
+        return SimpleNamespace(model_id=f"{ref}-model", reasoning_model=False)
+
+    catalog = {"default": _mode_config(mode_id="default", fork_allowed=True)}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("kernel.turn_runner.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.turn_runner.get_mode_system_intro", lambda mid: mid)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid)
+    try:
+        # Capture the budget each child actually runs under by wrapping the
+        # child turn entry: patch ``run_turn`` to record ``turn_budget``.
+        import kernel.turn_runner as _engine_pkg
+
+        async def _capture_run_turn(**kwargs: Any) -> Any:
+            seen_budgets.append(kwargs.get("turn_budget"))
+            return SimpleNamespace(
+                response_text="Done.",
+                tool_call_count=0,
+                called_tool_names=[],
+                per_model_usage=[],
+                per_mode_usage=[],
+                effect_receipts=[],
+                status="complete",
+                blocked=False,
+                block_origin="",
+                block_diagnostic=None,
+                pending_approval=None,
+                operator_exit=None,
+                yielded=None,
+                yield_action=None,
+            )
+
+        monkeypatch.setattr(_engine_pkg, "run_turn", _capture_run_turn)
+        hooks = _build_minimal_hooks(complete)
+        hooks.models.resolve_model = resolve_model
+        # Parent: 600s budget, 510s elapsed → 90s remaining; 300s spec
+        # timeout with 30s grace → armed deadline 270s. The parent's
+        # remaining (90s − 30s grace = 60s) must win.
+        budget = TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=600_000,
+        )
+        result = await _default_fork_fn(
+            ForkSpec(
+                targets=[ForkTarget(mode_id="default", query="hello")],
+                timeout_seconds=300,
+            ),
+            hooks=hooks,
+            pool=MCPToolPool([]),
+            resolve_model=resolve_model,
+            complete=complete,
+            exec_op=_stub_execute_operation,
+            turn_budget=budget,
+            execution_policy=None,
+            turn_start_mono=time.monotonic() - 510.0,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(result.children) == 1
+    assert result.children[0].status == "ok"
+    assert len(seen_budgets) == 1
+    child_budget = seen_budgets[0]
+    assert child_budget is not None
+    assert child_budget.max_wall_ms == 60_000
+
+
+def test_wall_budget_helpers_contract() -> None:
+    """The shared wall helpers are the one arithmetic both child kinds use."""
+    from kernel.turn_phases._wall_budget import child_wall_ms, remaining_wall_ms
+
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+    # Unanchored / unlimited: None, never spent.
+    assert remaining_wall_ms(turn_budget=None, turn_start_mono=100.0) is None
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=0.0) is None
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=None) is None
+    unlimited = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0)
+    assert remaining_wall_ms(turn_budget=unlimited, turn_start_mono=100.0) is None
+    # Anchored: remaining decays with elapsed time.
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=100.0, now=100.5) == 1_799_500
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=100.0, now=1_900.0) == 0
+    # Child ceiling: min(armed deadline, parent remaining − grace),
+    # tighten-only. The spent-parent check (remaining <= grace) is the
+    # caller's job before consulting this helper, so a spent parent with
+    # a positive armed deadline still yields the deadline — the caller
+    # never launches in that shape.
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=90_000, grace_ms=30_000)
+        == 60_000
+    )
+    assert child_wall_ms(armed_deadline_ms=0, parent_remaining_ms=90_000, grace_ms=30_000) == 60_000
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=None, grace_ms=30_000)
+        == 270_000
+    )
+    assert child_wall_ms(armed_deadline_ms=0, parent_remaining_ms=None, grace_ms=30_000) == 0
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=20_000, grace_ms=30_000)
+        == 270_000
+    )
 
 
 @pytest.mark.asyncio

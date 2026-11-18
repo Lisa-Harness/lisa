@@ -31,6 +31,7 @@ from kernel.models import (
 from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.turn_lineage import child_identity
+from kernel.turn_phases._wall_budget import child_wall_ms
 
 _log = logging.getLogger(__name__)
 
@@ -301,6 +302,7 @@ async def _run_fork_child(
     logger_override: logging.Logger | None,
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
+    parent_remaining_wall_ms: int | None = None,
     preferred_model_id: str | None = None,
     parent_dispatch_id: str = "",
 ) -> None:
@@ -325,8 +327,25 @@ async def _run_fork_child(
     # Children run in parallel: the operation deadline applies to each
     # child individually (tighten-only against the divided share), so a
     # child force-completes gracefully before the registry's hard cancel.
-    if wall_deadline_ms > 0:
-        child_budget = _arm_fork_child_wall(child_budget, wall_deadline_ms)
+    # The parent's remaining wall (recomputed at actual child launch so
+    # scheduling delay cannot restore time) tightens the same ceiling —
+    # parity with the delegate path (the 2026-11-18 review finding).
+    grace_ms = int(_kernel_settings.delegation_grace_seconds * 1000)
+    if parent_remaining_wall_ms is not None and parent_remaining_wall_ms <= grace_ms:
+        results[idx] = ForkChildResult(
+            target=target,
+            status="timeout",
+            error_message="Fork child skipped: parent wall budget is spent.",
+            duration_ms=0,
+        )
+        return
+    effective_deadline_ms = child_wall_ms(
+        armed_deadline_ms=wall_deadline_ms,
+        parent_remaining_ms=parent_remaining_wall_ms,
+        grace_ms=grace_ms,
+    )
+    if effective_deadline_ms > 0:
+        child_budget = _arm_fork_child_wall(child_budget, effective_deadline_ms)
     if emit_stage is not None:
         await emit_stage(
             "fork_child_start",
@@ -374,6 +393,7 @@ async def _execute_fork_fanout(
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
+    parent_remaining_wall_ms: int | None = None,
     preferred_model_id: str | None = None,
     parent_dispatch_id: str = "",
 ) -> list[ForkChildResult]:
@@ -397,6 +417,12 @@ async def _execute_fork_fanout(
     it force-completes gracefully before the operation registry's hard
     ``asyncio.wait_for`` cancel discards the whole fan-out. 0 disables
     the ceiling (legacy behavior).
+
+    ``parent_remaining_wall_ms`` is the parent turn's unspent wall budget
+    (from ``_wall_budget.remaining_wall_ms``). When set, each child's wall
+    ceiling is further tightened by the parent's remaining wall minus the
+    grace — parity with the delegate path — and a child launched after the
+    parent is spent returns an honest ``timeout`` without running.
 
     ``emit_stage`` is the parent turn's ``_emit_stage`` helper. When set,
     the fan-out emits ``fork_start`` / ``fork_child_start`` (one per
@@ -440,7 +466,9 @@ async def _execute_fork_fanout(
             logger_override=_flog,
             max_tool_iterations=max_tool_iterations,
             wall_deadline_ms=wall_deadline_ms,
+            parent_remaining_wall_ms=parent_remaining_wall_ms,
             preferred_model_id=preferred_model_id,
+            parent_dispatch_id=parent_dispatch_id,
         )
 
     try:
