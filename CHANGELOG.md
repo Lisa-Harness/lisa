@@ -6,6 +6,24 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- **Dynamic turn-token-envelope compaction cap** (kernel): the intra-turn
+  compaction governor's effective window now tightens as the turn spends
+  its processed-token envelope, using the same accounting as the budget
+  rail (new shared ``kernel.turn_phases._token_accounting`` module —
+  processed tokens, remaining envelope, and a diagnostic cache-hit rate).
+  At turn start the cap is unchanged (``min(model window, envelope × 0.4)``);
+  as uncached input and output are spent, the remaining-envelope cap
+  strictly tightens, so a high-output or cache-cold turn compacts and then
+  finishes instead of dispatching past its envelope. Cached prefixes were
+  already excluded from processed tokens, so high actual cache hits
+  naturally leave more headroom; no cache-hit-rate multiplier is applied.
+  A numeric-only ``CompactionDiagnostics`` snapshot (raw/effective window,
+  envelope, processed, remaining, cached, prompt, cache hit rate, share) is
+  emitted once per runner invocation at DEBUG and in epoch INFO logs, never
+  containing message content or user data. Boundary tests pin the
+  defensive ``remaining_child_ms <= 0`` fail-closed wall branch and the
+  ``turn_start_mono <= 0`` unanchored sentinel contract.
+
 - Provider-neutral sandbox **runner** (kernel/runtime): the sandbox capability
   can now execute, not just declare a floor. ``SandboxImplementation`` gains an
   optional ``runner`` (``kernel.sandbox_floor.SandboxRunner``) that a composing

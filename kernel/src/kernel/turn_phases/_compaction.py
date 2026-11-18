@@ -51,6 +51,7 @@ from kernel.context.request_budget import (
     fit_request_context,
 )
 from kernel.provider_contracts import CompletionRequest
+from kernel.turn_phases import _token_accounting
 
 
 @dataclass
@@ -335,9 +336,19 @@ def effective_window_tokens(*, state: Any, model_def: Any | None = None) -> int:
 
     The model window comes from the fitted request budget when available
     (same window the allocator just enforced), else the model definition.
-    A turn processed-token envelope caps it: every cache-cold request
-    re-processes the whole prompt against that envelope, so residency is
-    bounded by what the turn can afford to resend, not by window size.
+    A turn processed-token envelope caps it two ways:
+
+    - **Static cap** — ``envelope * envelope_window_share`` bounds residency
+      by what the turn could afford at its start.
+    - **Remaining cap** — the *unspent* portion of the envelope, times the
+      same share, tightens as the turn spends uncached input and output.
+      At turn start the two caps are equal; as the turn works, the remaining
+      cap is strictly tighter, so a high-output or cache-cold turn compacts
+      (and then finishes) instead of dispatching past its envelope.
+
+    Both caps use the same processed-token accounting as the budget rail
+    (``_token_accounting.processed_tokens``), so the compaction governor and
+    ``budget_forces_final`` can never disagree about what was spent.
     """
     window = 0
     budget = state.request_context_budget
@@ -351,7 +362,17 @@ def effective_window_tokens(*, state: Any, model_def: Any | None = None) -> int:
         return 0
     cfg = state.intra_turn_compaction
     if cfg.turn_token_envelope > 0:
-        window = min(window, int(cfg.turn_token_envelope * cfg.envelope_window_share))
+        static_cap = int(cfg.turn_token_envelope * cfg.envelope_window_share)
+        processed = _token_accounting.processed_tokens(
+            int(getattr(state, "total_tokens", 0) or 0),
+            int(getattr(state, "total_cached_tokens", 0) or 0),
+        )
+        remaining = _token_accounting.remaining_envelope(cfg.turn_token_envelope, processed)
+        if remaining is not None:
+            remaining_cap = int(remaining * cfg.envelope_window_share)
+            window = min(window, static_cap, remaining_cap)
+        else:
+            window = min(window, static_cap)
     return window
 
 
@@ -363,6 +384,98 @@ def soft_trigger_tokens(*, state: Any, model_def: Any | None = None) -> int:
     mode_config = getattr(state, "mode_config", None)
     working_set = int(getattr(mode_config, "working_set_tokens", 0) or 0)
     return min(int(window * state.intra_turn_compaction.soft_trigger_share), working_set or window)
+
+
+@dataclass(frozen=True)
+class CompactionDiagnostics:
+    """Numeric-only snapshot of the compaction envelope for diagnostics.
+
+    Read-only: this never feeds a budget decision. The cache hit rate is
+    provider-reported usage, not a guarantee of future cache hits, and is
+    ``None`` when the provider did not report prompt tokens.
+    """
+
+    mode_id: str = ""
+    raw_window: int = 0
+    effective_window: int = 0
+    envelope: int = 0
+    processed: int = 0
+    remaining: int | None = None
+    cached: int = 0
+    prompt: int = 0
+    cache_hit_rate: float | None = None
+    share: float = 0.0
+
+
+def compaction_diagnostics(
+    *,
+    state: Any,
+    model_def: Any | None = None,
+    mode_id: str = "",
+) -> CompactionDiagnostics:
+    """Build the numeric-only diagnostics snapshot for the current turn."""
+    cfg = state.intra_turn_compaction
+    raw_window = 0
+    budget = state.request_context_budget
+    if budget is not None:
+        raw_window = int(getattr(budget, "window_tokens", 0) or 0)
+    if raw_window <= 0 and model_def is not None:
+        from kernel.context.context_budget import model_context_window_tokens
+
+        raw_window = model_context_window_tokens(model_def)
+    processed = _token_accounting.processed_tokens(
+        int(getattr(state, "total_tokens", 0) or 0),
+        int(getattr(state, "total_cached_tokens", 0) or 0),
+    )
+    remaining = _token_accounting.remaining_envelope(cfg.turn_token_envelope, processed)
+    cached = int(getattr(state, "total_cached_tokens", 0) or 0)
+    prompt = int(getattr(state, "total_prompt_tokens", 0) or 0)
+    return CompactionDiagnostics(
+        mode_id=str(mode_id),
+        raw_window=raw_window,
+        effective_window=effective_window_tokens(state=state, model_def=model_def),
+        envelope=int(cfg.turn_token_envelope),
+        processed=processed,
+        remaining=remaining,
+        cached=cached,
+        prompt=prompt,
+        cache_hit_rate=_token_accounting.cache_hit_rate(cached, prompt),
+        share=float(cfg.envelope_window_share),
+    )
+
+
+def log_compaction_diagnostics(
+    *,
+    state: Any,
+    model_def: Any | None = None,
+    mode_id: str = "",
+    log: logging.Logger,
+) -> None:
+    """Emit one numeric-only DEBUG record for the compaction envelope.
+
+    The caller owns the one-shot flag (reset on resume) so this helper stays
+    pure. Diagnostics failures are swallowed: they must never change the
+    turn outcome.
+    """
+    try:
+        d = compaction_diagnostics(state=state, model_def=model_def, mode_id=mode_id)
+        log.debug(
+            "compaction envelope: mode=%s raw_window=%d effective_window=%d "
+            "envelope=%d processed=%d remaining=%s cached=%d prompt=%d "
+            "cache_hit_rate=%s share=%.2f",
+            d.mode_id,
+            d.raw_window,
+            d.effective_window,
+            d.envelope,
+            d.processed,
+            d.remaining,
+            d.cached,
+            d.prompt,
+            (f"{d.cache_hit_rate:.3f}" if d.cache_hit_rate is not None else "unknown"),
+            d.share,
+        )
+    except Exception:  # pylint: disable=broad-except
+        log.debug("compaction envelope diagnostics failed; ignoring", exc_info=True)
 
 
 def should_spill_on_arrival(*, state: Any, model_def: Any | None = None) -> bool:

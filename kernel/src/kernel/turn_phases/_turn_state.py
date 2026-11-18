@@ -35,6 +35,7 @@ from kernel.models import (
 from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
+from kernel.turn_phases import _token_accounting
 from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
@@ -893,11 +894,10 @@ def _float(value: Any) -> float:
 def processed_tokens(state: _TurnState) -> int:
     """Return tokens newly processed by providers this turn.
 
-    Cached prompt prefixes are re-read rather than processed again, so the
-    whole-turn token envelope counts uncached input plus output. Counting the
-    re-sent prefix would make useful context consumption, not work, the cap.
+    Delegates to the shared cycle-free accounting helper so the compaction
+    governor's effective-window cap and this budget rail can never drift.
     """
-    return max(0, state.total_tokens - state.total_cached_tokens)
+    return _token_accounting.processed_tokens(state.total_tokens, state.total_cached_tokens)
 
 
 def budget_forces_final(

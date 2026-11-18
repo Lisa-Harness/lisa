@@ -5,14 +5,19 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from kernel.provider_contracts import RequestContextBudget
 from kernel.turn_phases._compaction import (
     IntraTurnCompactionState,
     LiveArrayEstimator,
+    compaction_diagnostics,
+    effective_window_tokens,
     hard_ceiling_stop_reason,
+    log_compaction_diagnostics,
     maybe_run_soft_epoch,
     should_spill_on_arrival,
     soft_trigger_tokens,
@@ -604,3 +609,140 @@ def test_envelope_epoch_evicts_without_a_mode_working_set() -> None:
 
 def test_compaction_state_snapshots_history_epoch_setting() -> None:
     assert IntraTurnCompactionState.from_settings().history_epoch_min_tokens == 12_000
+
+
+# ── Dynamic remaining-envelope cap ─────────────────────────────────────
+
+
+def _envelope_state(
+    *,
+    envelope: int,
+    window: int,
+    total_tokens: int = 0,
+    total_cached_tokens: int = 0,
+    total_prompt_tokens: int = 0,
+) -> SimpleNamespace:
+    cfg = IntraTurnCompactionState()
+    cfg.turn_token_envelope = envelope
+    return SimpleNamespace(
+        intra_turn_compaction=cfg,
+        intra_turn_compaction_estimator=LiveArrayEstimator(),
+        provider_messages=[],
+        projected_message_count=0,
+        request_context_budget=_budget(window),
+        total_tokens=total_tokens,
+        total_cached_tokens=total_cached_tokens,
+        total_prompt_tokens=total_prompt_tokens,
+    )
+
+
+def test_effective_window_at_turn_start_matches_static_cap() -> None:
+    # E=1M, W=1,048,576, P=0: effective 400K, soft 200K, hard 260K.
+    state = _envelope_state(envelope=1_000_000, window=1_048_576)
+    assert effective_window_tokens(state=state) == 400_000
+    assert soft_trigger_tokens(state=state) == 200_000
+    assert hard_ceiling_stop_reason(state=state) == ""
+
+
+def test_effective_window_decays_with_processed_tokens() -> None:
+    # E=1M, P=800K: R=200K, effective 80K, soft 40K, hard 52K.
+    state = _envelope_state(envelope=1_000_000, window=1_048_576, total_tokens=800_000)
+    assert effective_window_tokens(state=state) == 80_000
+    assert soft_trigger_tokens(state=state) == 40_000
+
+
+def test_effective_window_high_cache_leaves_more_remaining() -> None:
+    # total=900K, cached=800K: P=100K, R=900K — a larger effective window
+    # than the cold shape, but never above the static/model cap.
+    state = _envelope_state(
+        envelope=1_000_000,
+        window=1_048_576,
+        total_tokens=900_000,
+        total_cached_tokens=800_000,
+    )
+    assert effective_window_tokens(state=state) == 360_000
+    cold = _envelope_state(envelope=1_000_000, window=1_048_576, total_tokens=900_000)
+    assert effective_window_tokens(state=cold) < effective_window_tokens(state=state)
+
+
+def test_effective_window_small_model_window_unchanged() -> None:
+    # W=128K with no spend: effective 128K, soft 64K; the envelope never
+    # raises a small model window.
+    state = _envelope_state(envelope=1_000_000, window=128_000)
+    assert effective_window_tokens(state=state) == 128_000
+    assert soft_trigger_tokens(state=state) == 64_000
+
+
+def test_effective_window_no_envelope_returns_raw_window() -> None:
+    # E=0: raw window behavior is unchanged.
+    state = _envelope_state(envelope=0, window=1_048_576)
+    assert effective_window_tokens(state=state) == 1_048_576
+
+
+def test_effective_window_exhausted_envelope_collapses_to_zero() -> None:
+    # R=0: no negative thresholds; the effective window collapses so the
+    # existing finish path ends the turn.
+    state = _envelope_state(envelope=1_000_000, window=1_048_576, total_tokens=1_000_000)
+    assert effective_window_tokens(state=state) == 0
+    assert soft_trigger_tokens(state=state) == 0
+
+
+def test_processed_token_accounting_matches_budget_rail() -> None:
+    # The compaction cap and budget_forces_final must use identical
+    # processed-token arithmetic.
+    from kernel.turn_phases import _token_accounting
+
+    assert _token_accounting.processed_tokens(900_000, 800_000) == 100_000
+    assert _token_accounting.processed_tokens(100_000, 200_000) == 0  # clamped
+    assert _token_accounting.remaining_envelope(1_000_000, 100_000) == 900_000
+    assert _token_accounting.remaining_envelope(0, 100_000) is None
+    assert _token_accounting.remaining_envelope(1_000_000, 1_000_000) == 0
+
+
+def test_cache_hit_rate_is_diagnostic_only() -> None:
+    from kernel.turn_phases import _token_accounting
+
+    assert _token_accounting.cache_hit_rate(800_000, 900_000) == pytest.approx(0.8889, abs=1e-3)
+    assert _token_accounting.cache_hit_rate(0, 0) is None
+    assert _token_accounting.cache_hit_rate(100, 0) is None
+
+
+def test_compaction_diagnostics_snapshot_is_numeric_only() -> None:
+    state = _envelope_state(
+        envelope=1_000_000,
+        window=1_048_576,
+        total_tokens=900_000,
+        total_cached_tokens=800_000,
+        total_prompt_tokens=900_000,
+    )
+    d = compaction_diagnostics(state=state, mode_id="coding_execute")
+    assert d.mode_id == "coding_execute"
+    assert d.raw_window == 1_048_576
+    assert d.effective_window == 360_000
+    assert d.envelope == 1_000_000
+    assert d.processed == 100_000
+    assert d.remaining == 900_000
+    assert d.cached == 800_000
+    assert d.prompt == 900_000
+    assert d.cache_hit_rate == pytest.approx(0.8889, abs=1e-3)
+    assert d.share == 0.4
+
+
+def test_compaction_diagnostics_log_is_numeric_only(caplog: pytest.LogCaptureFixture) -> None:
+    state = _envelope_state(
+        envelope=1_000_000,
+        window=1_048_576,
+        total_tokens=900_000,
+        total_cached_tokens=800_000,
+        total_prompt_tokens=900_000,
+    )
+    with caplog.at_level(logging.DEBUG, logger="kernel.turn_phases._compaction"):
+        log_compaction_diagnostics(
+            state=state,
+            mode_id="coding_execute",
+            log=logging.getLogger("kernel.turn_phases._compaction"),
+        )
+    assert "compaction envelope" in caplog.text
+    # No content leakage: the log line carries only numbers and the mode id.
+    assert "query" not in caplog.text.lower()
+    assert "content" not in caplog.text.lower()

@@ -171,6 +171,7 @@ from kernel.turn_continuation import TurnContinuation, capture_segments, capture
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest, TurnHooks, TurnIdentity
 from kernel.turn_phases._compaction import (
     hard_ceiling_stop_reason,
+    log_compaction_diagnostics,
     maybe_run_soft_epoch,
     should_spill_on_arrival,
     tool_size_refusal,
@@ -11586,6 +11587,9 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
     # The entry-context builder closure lives in
     # ``_wire_build_entry_ctx`` (module-level factory binding the
     # executor/delegate/fork seams).
+    # One-shot compaction-envelope diagnostics: emitted once per runner
+    # invocation when the first model/window is known (reset on resume).
+    _compaction_diag_emitted = False
     _build_entry_ctx = _wire_build_entry_ctx(
         hooks=hooks,
         mode_id=mode_id,
@@ -12033,6 +12037,14 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         )
 
         effective_model_def = _resolve_iteration_model(_state.iteration)
+        if _state.intra_turn_compaction.enabled and not _compaction_diag_emitted:
+            _compaction_diag_emitted = True
+            log_compaction_diagnostics(
+                state=_state,
+                model_def=effective_model_def,
+                mode_id=mode_id,
+                log=_log,
+            )
         if _state.intra_turn_compaction.enabled:
             # Pre-request: compact before paying for the call. The anchor
             # plus appended tool bytes covers fresh results and a resumed
