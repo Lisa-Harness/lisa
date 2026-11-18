@@ -702,6 +702,105 @@ def test_purge_trash_limit_must_be_positive(tmp_path: Path):
     assert "positive" in receipt["error"]
 
 
+# ── Batch operations ─────────────────────────────────────────────────────────
+
+
+def test_delete_files_deletes_in_order_with_per_item_receipts(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("b.txt", "b")
+
+    receipt = json.loads(b.delete_files(["a.txt", "b.txt"]))
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 0
+    assert receipt["results"] == [
+        {"path": "a.txt", "ok": True},
+        {"path": "b.txt", "ok": True},
+    ]
+    assert "not found" in json.loads(b.stat_file("a.txt"))["error"]
+
+
+def test_delete_files_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("c.txt", "c")
+
+    receipt = json.loads(b.delete_files(["a.txt", "missing.txt", "c.txt"]))
+
+    assert receipt["ok"] is False
+    assert receipt["count"] == 3
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    assert receipt["results"][1] == {
+        "path": "missing.txt",
+        "ok": False,
+        "error": "file not found: missing.txt",
+    }
+    # Later items still executed after the failure.
+    assert "not found" in json.loads(b.stat_file("c.txt"))["error"]
+
+
+def test_delete_files_refuses_directory_items(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("dir")
+
+    receipt = json.loads(b.delete_files(["dir"]))
+
+    assert receipt["ok"] is False
+    assert "targets a directory" in receipt["results"][0]["error"]
+
+
+def test_delete_files_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.delete_files([]))["error"]
+    assert "cap" in json.loads(b.delete_files([f"p{i}" for i in range(101)]))["error"]
+
+
+def test_delete_files_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.delete_files(["a"]))["error"] == "server is read-only"
+
+
+def test_make_dirs_creates_parents_per_item(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+
+    receipt = json.loads(b.make_dirs(["x/one", "y/two"]))
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["failed"] == 0
+    assert (b.files_root() / "x" / "one").is_dir()
+    assert (b.files_root() / "y" / "two").is_dir()
+
+
+def test_make_dirs_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("blocker", "in the way")
+
+    receipt = json.loads(b.make_dirs(["a", "blocker", "b"]))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    assert "make_dir failed" in receipt["results"][1]["error"]
+    # Later items still executed after the failure.
+    assert (b.files_root() / "b").is_dir()
+
+
+def test_make_dirs_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.make_dirs([]))["error"]
+    assert "cap" in json.loads(b.make_dirs([f"d{i}" for i in range(101)]))["error"]
+
+
+def test_make_dirs_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.make_dirs(["a"]))["error"] == "server is read-only"
+
+
 def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")

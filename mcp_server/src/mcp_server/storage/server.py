@@ -6,13 +6,13 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (15 total):
+Tools (17 total):
 
-- File I/O (13): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (15): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``move_file``, ``move_directory``, ``delete_directory``,
-  ``purge_trash``, ``stat_file``, ``make_dir`` — scoped to
-  ``data_dir / "files"``.
+  ``delete_files``, ``move_file``, ``move_directory``,
+  ``delete_directory``, ``purge_trash``, ``stat_file``, ``make_dir``,
+  ``make_dirs`` — scoped to ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
@@ -20,7 +20,10 @@ Tools (15 total):
   ``move_directory`` moves a whole subtree as one atomic no-overwrite
   rename; ``delete_directory`` is rmdir-only by default and trashes
   the subtree when recursion is explicitly named; ``purge_trash``
-  hard-deletes the oldest trash sessions in bounded slices.
+  hard-deletes the oldest trash sessions in bounded slices; the batch
+  tools (``delete_files``, ``make_dirs``) take explicit path lists
+  (no glob expansion), execute in order with per-item receipts, never
+  abort mid-batch, and cap at 100 items.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -345,6 +348,27 @@ async def delete_file(
     return _raise_on_error(_resolve_deps(ctx).backend.delete_file(path))
 
 
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def delete_files(
+    paths: list[str],
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Delete files in list order with per-item receipts.
+
+    A batch is a queue of independent atomic operations with one
+    receipt, not a transaction: each item is validated (existence,
+    policy, type) and executed in list order, a failing item records
+    its own error, and the batch never aborts mid-way. No glob
+    expansion — explicit path lists only. The summary carries ``ok``
+    (True only when every item succeeded), ``count``, ``succeeded``,
+    ``failed``, and per-item ``results``; batches cap at 100 items.
+    Raises :class:`ToolError` only on batch-level refusals (readonly,
+    empty list, over-cap) — per-item failures are data in the summary,
+    not tool errors.
+    """
+    return _raise_on_error(_resolve_deps(ctx).backend.delete_files(paths))
+
+
 @mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
 async def move_file(
     source: str,
@@ -478,6 +502,21 @@ async def make_dir(
     make_dir failure.
     """
     return _raise_on_error(_resolve_deps(ctx).backend.make_dir(path))
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=False))
+async def make_dirs(
+    paths: list[str],
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Create directories (and parents) in list order, per-item receipts.
+
+    Same batch contract as ``delete_files``: validate-then-execute in
+    list order, per-item receipts, never a mid-batch abort, no glob
+    expansion, 100-item cap. Raises :class:`ToolError` only on
+    batch-level refusals (readonly, empty list, over-cap).
+    """
+    return _raise_on_error(_resolve_deps(ctx).backend.make_dirs(paths))
 
 
 # ── Model manifest tools ────────────────────────────────────────────────────

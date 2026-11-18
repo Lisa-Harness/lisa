@@ -115,6 +115,8 @@ servers:
       - move_directory
       - delete_directory
       - purge_trash
+      - delete_files
+      - make_dirs
       - read_model_manifest
       - write_model_manifest
     runtime_kind: venv_bin

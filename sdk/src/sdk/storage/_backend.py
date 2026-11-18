@@ -4,7 +4,7 @@ Extracted verbatim from the former ``mcp_server/storage/server.py``: the
 sandbox resolver, deny-glob matcher, ``PathRejected`` exception, and
 model-manifest path logic. The MCP server is now a thin wrapper — it
 wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into a
-:class:`StorageBackend` and exposes the 10 file tools plus the manifest
+:class:`StorageBackend` and exposes the 15 file tools plus the manifest
 pair.
 
 This gives the SDK a complete contract for storage access that can be
@@ -38,6 +38,9 @@ _SHA256_HEX_LENGTH = 64
 _TRASH_SUBDIR = ".trash"
 _TRASH_DENY_GLOB = ".trash/**"
 _TRASH_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S.%f"
+#: Batches are queues of independent atomic ops, capped at 100 items
+#: per call (R9 — the provisional 64 was raised).
+_BATCH_CAP = 100
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +742,55 @@ class StorageBackend:
             return {"error": f"delete failed: {exc}"}
         return {"ok": True, "path": path}
 
+    def delete_files(self, paths: list[str]) -> str:
+        """Delete files in list order with per-item receipts.
+
+        A batch is a queue of independent atomic operations with one
+        receipt, not a transaction (spec §6): each item is validated
+        (existence, policy, type) and executed in list order, a failing
+        item records its own error, and the batch never aborts
+        mid-way. No glob expansion — explicit path lists only; a glob
+        turns one typo into a wipe. The summary's ``ok`` is True only
+        when every item succeeded.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(paths)
+        if refused is not None:
+            return refused
+        results = [self._batch_item(path, self._delete_file_entry(path)) for path in paths]
+        return json.dumps(self._batch_summary(results))
+
+    def _batch_refusal(self, paths: list[str]) -> str | None:
+        """Refuse an empty or over-cap batch before anything executes.
+
+        Batch-level refusals are the only abort mode and happen before
+        the first item runs; once execution starts, failures are
+        per-item data. The cap is 100 items per batch (R9).
+        """
+        if not paths:
+            return json.dumps({"error": "batch paths list is empty"})
+        if len(paths) > _BATCH_CAP:
+            return json.dumps({"error": f"batch exceeds the {_BATCH_CAP}-item cap"})
+        return None
+
+    def _batch_item(self, path: str, receipt: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one per-item receipt to ``{path, ok, error?}``."""
+        if "ok" in receipt:
+            return {"path": path, "ok": True}
+        return {"path": path, "ok": False, "error": receipt["error"]}
+
+    def _batch_summary(self, results: list[dict[str, Any]]) -> dict[str, Any]:
+        """Fold per-item receipts into the batch summary."""
+        succeeded = sum(1 for entry in results if entry["ok"])
+        return {
+            "ok": succeeded == len(results),
+            "count": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+            "results": results,
+        }
+
     def delete_directory(
         self,
         path: str,
@@ -1169,15 +1221,38 @@ class StorageBackend:
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
+        return json.dumps(self._make_dir_entry(path))
+
+    def _make_dir_entry(self, path: str) -> dict[str, Any]:
+        """Create one directory (and parents), returning the receipt dict.
+
+        Mirrors :meth:`_delete_file_entry`: ``make_dir`` wraps it
+        unchanged and the batch ``make_dirs`` reuses it per item.
+        """
         resolved, err = self.resolve_or_error(path)
         if err is not None:
-            return err
+            return {"error": json.loads(err)["error"]}
         assert resolved is not None
         try:
             resolved.mkdir(parents=True, exist_ok=True)
-            return json.dumps({"ok": True, "path": path})
         except OSError as exc:
-            return json.dumps({"error": f"make_dir failed: {exc}"})
+            return {"error": f"make_dir failed: {exc}"}
+        return {"ok": True, "path": path}
+
+    def make_dirs(self, paths: list[str]) -> str:
+        """Create directories (and parents) in list order, per-item receipts.
+
+        Same batch contract as :meth:`delete_files`: validate then
+        execute in list order, per-item receipts, never a mid-batch
+        abort, no glob expansion, 100-item cap.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(paths)
+        if refused is not None:
+            return refused
+        results = [self._batch_item(path, self._make_dir_entry(path)) for path in paths]
+        return json.dumps(self._batch_summary(results))
 
     def read_file_range(
         self,

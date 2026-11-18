@@ -61,7 +61,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_fifteen_tools(storage_setup: None) -> None:
+async def test_storage_lists_seventeen_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -74,12 +74,14 @@ async def test_storage_lists_fifteen_tools(storage_setup: None) -> None:
         "edit_file",
         "list_files",
         "delete_file",
+        "delete_files",
         "move_file",
         "move_directory",
         "delete_directory",
         "purge_trash",
         "stat_file",
         "make_dir",
+        "make_dirs",
         "read_model_manifest",
         "write_model_manifest",
     } == names
@@ -550,6 +552,55 @@ async def test_purge_trash_end_to_end(storage_setup: None) -> None:
     # After the purge, restore is no longer possible: the session is gone.
     with pytest.raises(ToolError, match="does not exist"):
         await mcp.call_tool("move_directory", {"source": trashed_to, "destination": "tree"})
+
+
+@pytest.mark.asyncio
+async def test_delete_files_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "a.txt", "content": "a"})
+    await mcp.call_tool("write_file", {"path": "b.txt", "content": "b"})
+
+    result = await mcp.call_tool("delete_files", {"paths": ["a.txt", "missing.txt", "b.txt"]})
+    data = json.loads(_tool_text(result))
+
+    # A per-item failure is summary data, not a tool error.
+    assert data["ok"] is False
+    assert data["succeeded"] == 2
+    assert data["failed"] == 1
+    assert data["results"][1]["path"] == "missing.txt"
+    with pytest.raises(ToolError, match="not found"):
+        await mcp.call_tool("read_file", {"path": "a.txt"})
+
+
+@pytest.mark.asyncio
+async def test_delete_files_batch_refusal_raises(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    with pytest.raises(ToolError, match="empty"):
+        await mcp.call_tool("delete_files", {"paths": []})
+
+
+@pytest.mark.asyncio
+async def test_make_dirs_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool("make_dirs", {"paths": ["x/one", "y/two"]})
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["count"] == 2
+    stat = json.loads(_tool_text(await mcp.call_tool("stat_file", {"path": "x/one"})))
+    assert stat["is_dir"] is True
+
+
+@pytest.mark.asyncio
+async def test_batch_tool_annotations(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    assert tools["delete_files"].annotations.destructive_hint is True
+    assert tools["make_dirs"].annotations.destructive_hint is False
 
 
 # ── Readonly mode ───────────────────────────────────────────────────────────
