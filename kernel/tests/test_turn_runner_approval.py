@@ -962,6 +962,73 @@ async def test_checked_commit_blocks_implementation_goal_without_producer(
 
 
 @pytest.mark.asyncio
+async def test_checked_commit_accepts_worktree_from_earlier_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A continuation turn reusing the task's earlier worktree is verified, not blocked."""
+
+    catalog = {
+        "executor": WorkflowModeConfig(
+            mode_id="executor",
+            start_stage_id="none",
+            mode_kind="chat",
+            task_completion="checked_commit",
+            authored_allowed_tool_ids=["commit"],
+            allowed_tool_ids=["commit"],
+            task_artifact_tool_id="create_worktree",
+        )
+    }
+
+    async def commit_tool(_ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(tool_id="commit", output_text="committed")
+
+    tool_catalog = {
+        "commit": ToolDefinition(
+            tool_id="commit",
+            effect="write",
+            parameters_schema=_Parameters,
+            implementation_module=SimpleNamespace(execute=commit_tool),
+        )
+    }
+    monkeypatch.setattr("kernel.tools.registry._TOOL_CATALOG", tool_catalog)
+
+    calls_made = 0
+
+    async def complete(**_kwargs: Any) -> _Completion:
+        nonlocal calls_made
+        calls_made += 1
+        if calls_made == 1:
+            return _Completion(
+                tool_calls=[{"id": "call-1", "function": {"name": "commit", "arguments": "{}"}}],
+            )
+        return _Completion(content="Committed the remaining slice.")
+
+    requests: list[Any] = []
+
+    async def verify(request: Any) -> TaskCompletionEvidence:
+        requests.append(request)
+        return TaskCompletionEvidence(verified=True, reason="Checked commit verified.")
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        services=HostServiceHandles(verify_task_completion=verify),
+        identity=TurnIdentity(task_id="task-one"),
+    )
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_runner.get_tool_catalog", return_value=tool_catalog),
+    ):
+        result = await run_turn(mode_id="executor", query="proceed", hooks=hooks)
+
+    assert result.blocked is False
+    assert "task_goal" not in result.response_text
+    assert [(r.task_id, r.origin_tool_id, r.receipt_artifact_ids) for r in requests] == [
+        ("task-one", "create_worktree", ())
+    ]
+
+
+@pytest.mark.asyncio
 async def test_checked_commit_blocks_diagnostic_goal_that_wrote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

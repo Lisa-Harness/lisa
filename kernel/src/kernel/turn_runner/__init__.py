@@ -11169,6 +11169,10 @@ async def _resolve_checked_commit_evidence(
     was cap-paused mid-work (an interrupted executor turn still carries
     the checked-commit promise — the 2026-10-03 turns 477/478 regression
     keeps its diagnostic + footnote).
+
+    An implementation turn that reuses a task-owned worktree from an earlier
+    turn never calls the producer; it is verified through the task-scoped
+    verifier before the soft-accept rule applies.
     """
     if mode_config is None or mode_config.task_completion != "checked_commit" or yielded:
         return None, False
@@ -11185,6 +11189,7 @@ async def _resolve_checked_commit_evidence(
     _producer_attempts = set(state.called_tool_names) | {
         bare_tool_name(name) for name in state.called_tool_names
     }
+    verifier = hooks.services.verify_task_completion
     if (
         producer
         and not receipt_artifact_ids
@@ -11193,6 +11198,23 @@ async def _resolve_checked_commit_evidence(
         and state.total_tool_calls > 0
         and producer not in _producer_attempts
     ):
+        # A multi-turn task may reuse a worktree an earlier turn produced; the
+        # task-scoped verifier discovers it, so a verified commit completes the
+        # turn before the producer-less soft-accept rule can block it.
+        if (
+            hooks.identity.task_goal != "diagnostic"
+            and hooks.identity.task_id
+            and verifier is not None
+        ):
+            evidence = await _verify_checked_commit(
+                verifier=verifier,
+                task_id=hooks.identity.task_id,
+                producer=producer,
+                receipt_artifact_ids=(),
+                log=log,
+            )
+            if evidence.verified:
+                return evidence, False
         return _resolve_soft_accept(
             state=state,
             hooks=hooks,
@@ -11200,7 +11222,6 @@ async def _resolve_checked_commit_evidence(
             mode_id=mode_id,
             log=log,
         )
-    verifier = hooks.services.verify_task_completion
     if not producer or len(receipt_artifact_ids) > 1:
         return (
             TaskCompletionEvidence(
@@ -11216,21 +11237,38 @@ async def _resolve_checked_commit_evidence(
             ),
             False,
         )
+    evidence = await _verify_checked_commit(
+        verifier=verifier,
+        task_id=hooks.identity.task_id,
+        producer=producer,
+        receipt_artifact_ids=receipt_artifact_ids,
+        log=log,
+    )
+    return evidence, False
+
+
+async def _verify_checked_commit(
+    *,
+    verifier: Callable[[TaskCompletionRequest], Awaitable[TaskCompletionEvidence]],
+    task_id: str,
+    producer: str,
+    receipt_artifact_ids: tuple[str, ...],
+    log: logging.Logger,
+) -> TaskCompletionEvidence:
     try:
-        evidence = await verifier(
+        return await verifier(
             TaskCompletionRequest(
-                task_id=hooks.identity.task_id,
+                task_id=task_id,
                 origin_tool_id=producer,
                 receipt_artifact_ids=receipt_artifact_ids,
             )
         )
     except Exception:
-        log.exception("checked-commit verification failed for task %s", hooks.identity.task_id)
-        evidence = TaskCompletionEvidence(
+        log.exception("checked-commit verification failed for task %s", task_id)
+        return TaskCompletionEvidence(
             verified=False,
             reason="Could not verify a current checked commit for this task.",
         )
-    return evidence, False
 
 
 async def _finalize_turn_result(
