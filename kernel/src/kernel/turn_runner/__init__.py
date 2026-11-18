@@ -10374,8 +10374,7 @@ async def _prepare_tool_call_dispatch(
         )
         if refusal_text:
             log.warning(
-                "refusing proposed %s dispatch at fitted context ceiling "
-                "(mode=%s, breaker=%s)",
+                "refusing proposed %s dispatch at fitted context ceiling (mode=%s, breaker=%s)",
                 tool_name,
                 mode_id,
                 state.truncation_tripped,

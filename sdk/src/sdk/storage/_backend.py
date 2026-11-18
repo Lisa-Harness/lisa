@@ -37,6 +37,7 @@ _FILES_SUBDIR = "files"
 _SHA256_HEX_LENGTH = 64
 _TRASH_SUBDIR = ".trash"
 _TRASH_DENY_GLOB = ".trash/**"
+_TRASH_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S.%f"
 
 logger = logging.getLogger(__name__)
 
@@ -737,6 +738,203 @@ class StorageBackend:
         except OSError as exc:
             return {"error": f"delete failed: {exc}"}
         return {"ok": True, "path": path}
+
+    def delete_directory(
+        self,
+        path: str,
+        *,
+        recursive: bool = False,
+        trash: bool = True,
+        expected_empty: bool = False,
+    ) -> str:
+        """Delete one directory: rmdir-only by default, trash-first.
+
+        The default is the reorg-residue case: ``recursive=False`` is
+        rmdir-only and fails with a clear error if the directory has any
+        content. ``recursive=True`` is the explicitly-named blast-radius
+        mode. ``trash=True`` (the default) renames the directory into a
+        timestamped ``.trash/<ts>/`` subtree first, so the plain
+        recursive opt-in rides on a reversible substrate; the receipt
+        carries ``trashed_to`` so restore is actionable.
+
+        ``expected_empty`` binds the delete to the caller's belief the
+        directory is empty: with it set, a non-empty directory is
+        refused even under ``recursive=True`` (staleness guard, the
+        directory analogue of ``expected_sha256``).
+
+        Deleting a ``.trash/...`` subtree is the sanctioned purge path
+        and is never denied — but it is always a hard delete: trashing
+        trash would nest forever.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        prepared = self._resolve_delete_directory(path)
+        if isinstance(prepared, str):
+            return prepared
+        target, parts = prepared
+
+        if self._is_trash_path("/".join(parts)):
+            trash = False
+
+        error = self._refuse_non_empty(
+            target, path, expected_empty=expected_empty, recursive=recursive
+        )
+        if error is not None:
+            return error
+
+        if not recursive:
+            return self._rmdir_directory(target, path)
+        return self._recursive_delete(target, parts, trash=trash)
+
+    def _rmdir_directory(self, target: Path, path: str) -> str:
+        """Remove one empty directory (the rmdir-only default)."""
+        try:
+            os.rmdir(target)
+        except OSError as exc:
+            return json.dumps({"error": f"delete failed: {exc}"})
+        return json.dumps({"ok": True, "path": path, "removed_files": 0, "removed_dirs": 1})
+
+    def _recursive_delete(self, target: Path, parts: tuple[str, ...], *, trash: bool) -> str:
+        """Recursive blast-radius mode: trash-first, or the hard delete."""
+        if trash:
+            return json.dumps(self._trash_directory(target, parts))
+        removed_files, removed_dirs, error = self._hard_delete_tree(target)
+        if error is not None:
+            return json.dumps(
+                {
+                    "error": error,
+                    "removed_files": removed_files,
+                    "removed_dirs": removed_dirs,
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "path": "/".join(parts),
+                "removed_files": removed_files,
+                "removed_dirs": removed_dirs,
+            }
+        )
+
+    def _resolve_delete_directory(self, path: str) -> tuple[Path, tuple[str, ...]] | str:
+        """Resolve and type-check one delete_directory target."""
+        prepared = self._move_path_parts(path, label="path", allow_trash=True)
+        if isinstance(prepared, str):
+            return prepared
+        parts = prepared
+        target = self.files_root().joinpath(*parts)
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return json.dumps({"error": f"directory not found: {path}"})
+        except OSError as exc:
+            return json.dumps({"error": f"delete failed: {exc}"})
+        if not stat.S_ISDIR(info.st_mode):
+            return json.dumps({"error": "delete_directory targets a file; use a directory path"})
+        return target, parts
+
+    def _refuse_non_empty(
+        self, target: Path, path: str, *, expected_empty: bool, recursive: bool
+    ) -> str | None:
+        """Refuse a non-empty target unless recursion is sanctioned.
+
+        ``rmdir-only`` (the default) and ``expected_empty`` both bind the
+        delete to emptiness, and the refusal must land before the trash
+        rename so a default call can never silently move content into
+        ``.trash`` instead of failing (spec §3).
+        """
+        if recursive and not expected_empty:
+            return None
+        reason = " (expected_empty)" if expected_empty else ""
+        try:
+            has_entries = any(os.scandir(target))
+        except OSError as exc:
+            return json.dumps({"error": f"delete failed: {exc}"})
+        if has_entries:
+            return json.dumps({"error": f"directory is not empty{reason}: {path}"})
+        return None
+
+    def _trash_directory(self, target: Path, parts: tuple[str, ...]) -> dict[str, Any]:
+        """Rename the directory into a timestamped trash subtree.
+
+        Rename-first, always (spec §5): no hard-link fallback, no copy.
+        The timestamped directory is unique per trash operation so
+        repeated trashes of the same path never collide; the original
+        relative layout is preserved inside it, so restore is simply
+        ``move_directory('.trash/<ts>/<relpath>', '<relpath>')``.
+
+        Entry counts are taken before the rename: ``.trash/**`` is
+        deny-glob hidden from ``list_files``, so the receipt's counts
+        are the caller's only visibility into what left the tree.
+        """
+        removed_files = 0
+        removed_dirs = 1
+        try:
+            for _root, dirnames, filenames in os.walk(target, topdown=True):
+                removed_dirs += len(dirnames)
+                removed_files += len(filenames)
+        except OSError as exc:
+            return {"error": f"trash failed: {exc}"}
+        stamp = datetime.now(tz=UTC).strftime(_TRASH_TIMESTAMP_FORMAT)
+        trash_root = self.files_root() / _TRASH_SUBDIR
+        try:
+            trash_root.mkdir(parents=True, exist_ok=True)
+            session_dir = trash_root / stamp
+            session_dir.mkdir()
+        except OSError as exc:
+            return {"error": f"trash failed: {exc}"}
+        destination = session_dir.joinpath(*parts)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(target, destination)
+        except OSError as exc:
+            with suppress(OSError):
+                shutil.rmtree(session_dir)
+            return {"error": f"trash failed: {exc}"}
+        return {
+            "ok": True,
+            "path": "/".join(parts),
+            "trashed_to": f"{_TRASH_SUBDIR}/{stamp}/{'/'.join(parts)}",
+            "removed_files": removed_files,
+            "removed_dirs": removed_dirs,
+        }
+
+    def _hard_delete_tree(self, target: Path) -> tuple[int, int, str | None]:
+        """Hard-delete a directory tree without following symlinks.
+
+        Symlinked entries are unlinked themselves (R7), never their
+        targets; real directories are recursed into and each subtree
+        root is removed by its own recursive call. The target root is
+        removed last, so a partial failure leaves the shallowest
+        possible remains. Returns ``(removed_files, removed_dirs,
+        error)`` — counts survive a partial failure so the receipt
+        reports what was removed.
+        """
+        removed_files = 0
+        removed_dirs = 0
+        try:
+            entries = list(os.scandir(target))
+        except OSError as exc:
+            return removed_files, removed_dirs, f"delete failed: {exc}"
+        for entry in entries:
+            try:
+                if entry.is_symlink() or entry.is_file(follow_symlinks=False):
+                    os.unlink(entry.path)
+                    removed_files += 1
+                elif entry.is_dir(follow_symlinks=False):
+                    sub_files, sub_dirs, error = self._hard_delete_tree(Path(entry.path))
+                    removed_files += sub_files
+                    removed_dirs += sub_dirs
+                    if error is not None:
+                        return removed_files, removed_dirs, error
+            except OSError as exc:
+                return removed_files, removed_dirs, f"delete failed: {exc}"
+        try:
+            os.rmdir(target)
+        except OSError as exc:
+            return removed_files, removed_dirs, f"delete failed: {exc}"
+        removed_dirs += 1
+        return removed_files, removed_dirs, None
 
     def move_file(
         self,

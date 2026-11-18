@@ -12,6 +12,16 @@ from kernel.config import settings
 from kernel.context.context_budget import RequiredContextBudgetError, model_context_window_tokens
 from kernel.provider_contracts import CompletionRequest, RequestContextBudget, RequestTokenCount
 
+# ``fit_request_context`` raises ``RequiredContextBudgetError``; the
+# re-export keeps the exception part of this module's public contract.
+__all__ = [
+    "RequiredContextBudgetError",
+    "ResultProjector",
+    "estimate_request_tokens",
+    "fit_request_context",
+    "request_input_text",
+]
+
 _PROJECTION_SEARCH_STEPS = 20
 
 

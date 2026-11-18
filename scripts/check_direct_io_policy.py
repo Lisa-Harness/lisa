@@ -245,6 +245,17 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         # them in atomically, so a failed edit never truncates the original.
         "os.replace(temporary_path, target)",
         "temporary_path.unlink()",
+        # Directory operations are part of the storage primitive itself
+        # (the same carve-out as _move.py): rmdir-only and recursive
+        # deletes never follow symlinks (R7), and the trash substrate is
+        # rename-first into a timestamped session (spec §5).
+        "os.rmdir(target)",
+        "os.unlink(entry.path)",
+        "os.rename(target, destination)",
+        "shutil.rmtree(session_dir)",
+        "trash_root.mkdir(parents=True, exist_ok=True)",
+        "session_dir.mkdir()",
+        "destination.parent.mkdir(parents=True, exist_ok=True)",
     ),
     # File moves are part of the storage primitive itself. Descriptor-relative
     # mkdir creates only verified sandbox parents; renameat2 remains no-overwrite.

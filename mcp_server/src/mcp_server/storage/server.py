@@ -6,18 +6,19 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (13 total):
+Tools (14 total):
 
-- File I/O (11): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (12): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``move_file``, ``move_directory``, ``stat_file``, ``make_dir`` — scoped
-  to ``data_dir / "files"``.
+  ``move_file``, ``move_directory``, ``delete_directory``,
+  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
   so changing a line never requires reconstructing the whole document;
   ``move_directory`` moves a whole subtree as one atomic no-overwrite
-  rename.
+  rename; ``delete_directory`` is rmdir-only by default and trashes
+  the subtree when recursion is explicitly named.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -390,6 +391,36 @@ async def move_directory(
             source,
             destination,
             create_parents=create_parents,
+        )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def delete_directory(
+    path: str,
+    recursive: bool = False,
+    trash: bool = True,
+    expected_empty: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Delete one directory inside the files sandbox.
+
+    The default is rmdir-only: the directory must be empty, or the
+    call fails with a clear error instead of touching anything.
+    ``recursive=True`` is the explicitly-named blast-radius mode — by
+    default it renames the subtree into a timestamped ``.trash/``
+    session first (reversible; the receipt carries ``trashed_to``),
+    and ``trash=False`` is the hard delete. Symlinks inside the tree
+    are never followed: each link is removed itself, its target
+    survives. ``expected_empty`` refuses a non-empty directory even
+    under ``recursive=True`` (staleness guard).
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.delete_directory(
+            path,
+            recursive=recursive,
+            trash=trash,
+            expected_empty=expected_empty,
         )
     )
 

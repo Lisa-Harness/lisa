@@ -460,6 +460,148 @@ def test_move_directory_denied_destination(tmp_path: Path) -> None:
     assert b.read_file("source/x.txt") == "x\n"
 
 
+# ── delete_directory ────────────────────────────────────────────────────────
+
+
+def test_delete_directory_rmdir_only_by_default(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("empty_dir/placeholder.txt", "x")
+
+    receipt = json.loads(b.delete_directory("empty_dir"))
+
+    assert "not empty" in receipt["error"]
+    assert b.read_file("empty_dir/placeholder.txt") == "x\n"
+
+
+def test_delete_directory_removes_empty_dir(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("gone")
+
+    receipt = json.loads(b.delete_directory("gone"))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 0
+    assert receipt["removed_dirs"] == 1
+    assert not (b.files_root() / "gone").exists()
+
+
+def test_delete_directory_expected_empty_refuses_non_empty(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, expected_empty=True))
+
+    assert "expected_empty" in receipt["error"]
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
+def test_delete_directory_expected_empty_allows_empty(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("empty")
+
+    receipt = json.loads(b.delete_directory("empty", recursive=True, expected_empty=True))
+
+    assert receipt["ok"] is True
+    assert not (b.files_root() / "empty").exists()
+
+
+def test_delete_directory_recursive_hard_delete(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    b.write_file("tree/sub/b.txt", "b")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert receipt["removed_dirs"] == 2
+    assert not (b.files_root() / "tree").exists()
+
+
+def test_delete_directory_recursive_does_not_follow_symlinks(tmp_path: Path) -> None:
+    """R7: a symlink inside the tree is removed itself, not its target."""
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    b.write_file("tree/a.txt", "a")
+    (b.files_root() / "tree" / "link.txt").symlink_to(outside / "keep.txt")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert (outside / "keep.txt").is_file()
+    assert not (b.files_root() / "tree").exists()
+
+
+def test_delete_directory_trash_counts_and_trashed_to(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    b.write_file("tree/sub/b.txt", "b")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert receipt["removed_dirs"] == 2
+    assert receipt["trashed_to"].startswith(".trash/")
+    assert receipt["trashed_to"].endswith("/tree")
+    assert not (b.files_root() / "tree").exists()
+    # The trash subtree is deny-glob hidden from list_files.
+    assert json.loads(b.list_files("")) == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_delete_directory_trash_restore_roundtrip(tmp_path: Path) -> None:
+    """The receipt's ``trashed_to`` is actionable: move_directory restores it."""
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+
+    trashed = json.loads(b.delete_directory("tree", recursive=True))
+
+    restored = json.loads(b.move_directory(trashed["trashed_to"], "tree", create_parents=True))
+
+    assert restored["ok"] is True
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
+def test_delete_directory_trash_purge_is_hard_delete(tmp_path: Path) -> None:
+    """Deleting a ``.trash/...`` subtree is the sanctioned purge: hard delete."""
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    trashed = json.loads(b.delete_directory("tree", recursive=True))
+
+    purged = json.loads(b.delete_directory(trashed["trashed_to"], recursive=True))
+
+    assert purged["ok"] is True
+    assert purged["removed_files"] == 1
+    assert purged["removed_dirs"] == 1
+    # The trashed content is gone; the (now empty) session dir may remain.
+    assert not (b.files_root() / trashed["trashed_to"]).exists()
+
+
+def test_delete_directory_missing(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.delete_directory("nope"))
+    assert "not found" in receipt["error"]
+
+
+def test_delete_directory_refuses_file_target(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain.txt", "x")
+
+    receipt = json.loads(b.delete_directory("plain.txt"))
+
+    assert "targets a file" in receipt["error"]
+    assert b.read_file("plain.txt") == "x\n"
+
+
+def test_delete_directory_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.delete_directory("a"))["error"] == "server is read-only"
+
+
 def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")

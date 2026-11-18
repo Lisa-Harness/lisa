@@ -61,7 +61,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_twelve_tools(storage_setup: None) -> None:
+async def test_storage_lists_fourteen_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -76,6 +76,7 @@ async def test_storage_lists_twelve_tools(storage_setup: None) -> None:
         "delete_file",
         "move_file",
         "move_directory",
+        "delete_directory",
         "stat_file",
         "make_dir",
         "read_model_manifest",
@@ -444,6 +445,61 @@ async def test_make_dir(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_directory_rmdir_only_refuses_non_empty(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "tree/a.txt", "content": "a"})
+
+    with pytest.raises(ToolError, match="not empty"):
+        await mcp.call_tool("delete_directory", {"path": "tree"})
+
+    read_result = await mcp.call_tool("read_file", {"path": "tree/a.txt"})
+    assert _tool_text(read_result) == "a\n"
+
+
+@pytest.mark.asyncio
+async def test_delete_directory_trash_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "tree/a.txt", "content": "a"})
+    await mcp.call_tool("write_file", {"path": "tree/sub/b.txt", "content": "b"})
+
+    result = await mcp.call_tool("delete_directory", {"path": "tree", "recursive": True})
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["removed_files"] == 2
+    assert data["removed_dirs"] == 2
+    assert data["trashed_to"].startswith(".trash/")
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "tree/a.txt"})
+    # The trash subtree is hidden from list_files.
+    listing = await mcp.call_tool("list_files", {"prefix": ""})
+    assert json.loads(_tool_text(listing)) == []
+
+
+@pytest.mark.asyncio
+async def test_delete_directory_hard_delete_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "tree/a.txt", "content": "a"})
+    await mcp.call_tool("write_file", {"path": "tree/sub/b.txt", "content": "b"})
+
+    result = await mcp.call_tool(
+        "delete_directory", {"path": "tree", "recursive": True, "trash": False}
+    )
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["removed_files"] == 2
+    assert data["removed_dirs"] == 2
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "tree/a.txt"})
+    listing = await mcp.call_tool("list_files", {"prefix": ""})
+    assert json.loads(_tool_text(listing)) == []
+
+
+@pytest.mark.asyncio
 async def test_make_dir_is_not_marked_destructive(storage_setup: None) -> None:
     """mkdir creates; it never destroys — the annotation must say so."""
     from mcp_server.storage.server import mcp
@@ -451,6 +507,18 @@ async def test_make_dir_is_not_marked_destructive(storage_setup: None) -> None:
     tools = {t.name: t for t in await mcp.list_tools()}
     assert tools["write_file"].annotations.destructive_hint is True
     assert not tools["make_dir"].annotations.destructive_hint
+
+
+@pytest.mark.asyncio
+async def test_delete_directory_is_marked_destructive_and_non_idempotent(
+    storage_setup: None,
+) -> None:
+    """The blast-radius tool must carry both danger annotations."""
+    from mcp_server.storage.server import mcp
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    assert tools["delete_directory"].annotations.destructive_hint is True
+    assert tools["delete_directory"].annotations.idempotent_hint is False
 
 
 # ── Readonly mode ───────────────────────────────────────────────────────────
