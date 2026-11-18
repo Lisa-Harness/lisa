@@ -36,6 +36,8 @@ _BANNED_METHODS_WRITE: frozenset[str] = frozenset(
     }
 )
 
+_BANNED_LOCAL_FUNCS_WRITE: frozenset[str] = frozenset({"renameat2"})
+
 _BANNED_METHODS_READ: frozenset[str] = frozenset(
     {
         "read_text",
@@ -56,8 +58,12 @@ _BANNED_METHODS_MUTATE: frozenset[str] = frozenset(
 _BANNED_MODULE_FUNCS_WRITE: frozenset[tuple[str, str]] = frozenset(
     {
         ("os", "replace"),
+        ("os", "rename"),
+        ("os", "link"),
+        ("os", "unlink"),
         ("os", "remove"),
         ("os", "rmdir"),
+        ("os", "mkdir"),
         ("shutil", "copy"),
         ("shutil", "copy2"),
         ("shutil", "copyfile"),
@@ -243,6 +249,12 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "os.replace(temporary_path, target)",
         "temporary_path.unlink()",
     ),
+    # File moves are part of the storage primitive itself. Descriptor-relative
+    # mkdir creates only verified sandbox parents; renameat2 remains no-overwrite.
+    "sdk/src/sdk/storage/_move.py": (
+        "os.mkdir(component, mode=0o700, dir_fd=current_fd)",
+        "result = renameat2(",
+    ),
     "sdk/packs/memory/src/sdk/packs/memory/mining_slice.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",
         'path.write_text(seg_id, encoding="utf-8")',
@@ -367,10 +379,15 @@ class _IOLocator(ast.NodeVisitor):
         if mode[0:1] in _WRITE_OPEN_MODES or (self._scan_reads and mode[0:1] == "r"):
             self.violations.append((node.lineno, ast.unparse(node)))
 
+    def _check_local_func(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Name) and node.func.id in _BANNED_LOCAL_FUNCS_WRITE:
+            self.violations.append((node.lineno, ast.unparse(node)))
+
     def visit_Call(self, node: ast.Call) -> None:
         self._check_method(node)
         self._check_module_func(node)
         self._check_open(node)
+        self._check_local_func(node)
         self.generic_visit(node)
 
 

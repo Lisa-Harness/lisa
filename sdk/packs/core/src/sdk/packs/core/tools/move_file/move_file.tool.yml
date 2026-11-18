@@ -1,0 +1,8 @@
+tool_id: move_file
+description: "Move one regular file within the storage sandbox without overwriting a destination."
+effect: write
+approval_required: true
+approval_preview: "Move a file within the storage sandbox."
+pack_id: lisa-pack-core
+exportable: true
+max_calls_per_turn: 50

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,182 @@ def test_delete_file_missing(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.delete_file("nope.txt"))
     assert "error" in data
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_renames_and_creates_parents(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("draft.md", "draft")
+    before_inode = (b.files_root() / "draft.md").stat().st_ino
+
+    receipt = json.loads(b.move_file("draft.md", "archive/final.md", create_parents=True))
+
+    assert receipt["ok"] is True
+    assert receipt["source"] == "draft.md"
+    assert receipt["destination"] == "archive/final.md"
+    assert receipt["bytes"] == len(b"draft\n")
+    assert receipt["sha256"] == hashlib.sha256(b"draft\n").hexdigest()
+    assert receipt["durable"] is True
+    assert not (b.files_root() / "draft.md").exists()
+    assert (b.files_root() / "archive" / "final.md").stat().st_ino == before_inode
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_refuses_existing_destination_without_overwrite(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "new")
+    b.write_file("destination.txt", "old")
+
+    receipt = json.loads(b.move_file("source.txt", "destination.txt"))
+
+    assert "already exists" in receipt["error"]
+    assert b.read_file("source.txt") == "new\n"
+    assert b.read_file("destination.txt") == "old\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_does_not_create_parents_by_default(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    receipt = json.loads(b.move_file("source.txt", "missing/destination.txt"))
+
+    assert "parent directory does not exist" in receipt["error"]
+    assert not (b.files_root() / "missing").exists()
+    assert b.read_file("source.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_hash_guard_leaves_source_in_place(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    receipt = json.loads(
+        b.move_file(
+            "source.txt",
+            "destination.txt",
+            expected_sha256="0" * 64,
+        )
+    )
+
+    assert "sha256 mismatch" in receipt["error"]
+    assert receipt["sha256"] == hashlib.sha256(b"content\n").hexdigest()
+    assert b.read_file("source.txt") == "content\n"
+    assert not (b.files_root() / "destination.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_symlink_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    (b.files_root() / "link.txt").symlink_to(external)
+
+    receipt = json.loads(b.move_file("link.txt", "renamed.txt"))
+
+    assert "not a regular file" in receipt["error"]
+    assert external.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_symlinked_parent_and_stays_inside(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.move_file("linked/escaped.txt", "renamed.txt", create_parents=True))
+
+    assert "not a real directory" in receipt["error"]
+    assert not (outside / "renamed.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rolls_back_detected_source_identity_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "original")
+    root = b.files_root()
+    original_rename = secure_move._rename_noreplace
+    raced = False
+
+    def replace_source_before_rename(
+        source_parent_fd: int,
+        source_name: str,
+        destination_parent_fd: int,
+        destination_name: str,
+    ) -> None:
+        nonlocal raced
+        if not raced:
+            raced = True
+            (root / source_name).rename(root / "original-aside.txt")
+            (root / source_name).write_bytes(b"replacement")
+        original_rename(
+            source_parent_fd,
+            source_name,
+            destination_parent_fd,
+            destination_name,
+        )
+
+    monkeypatch.setattr(secure_move, "_rename_noreplace", replace_source_before_rename)
+
+    receipt = json.loads(b.move_file("source.txt", "destination.txt"))
+
+    assert "rolled back" in receipt["error"]
+    assert (root / "source.txt").read_bytes() == b"replacement"
+    assert (root / "original-aside.txt").read_bytes() == b"original\n"
+    assert not (root / "destination.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_directories_and_hard_links(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+    (b.files_root() / "directory").mkdir()
+    (b.files_root() / "source-link.txt").hardlink_to(b.files_root() / "source.txt")
+
+    directory = json.loads(b.move_file("directory", "renamed-directory"))
+    linked = json.loads(b.move_file("source.txt", "renamed.txt"))
+
+    assert "not a regular file" in directory["error"]
+    assert "hard links" in linked["error"]
+    assert (b.files_root() / "directory").is_dir()
+    assert b.read_file("source.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_denied_source_and_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path, deny_globs=("*.db", "private/**"))
+    b.write_file("source.txt", "content")
+    (b.files_root() / "secret.db").write_bytes(b"secret")
+
+    denied_source = json.loads(b.move_file("secret.db", "safe.txt"))
+    denied_destination = json.loads(
+        b.move_file("source.txt", "private/renamed.txt", create_parents=True)
+    )
+
+    assert denied_source["error"] == "source path denied by policy"
+    assert denied_destination["error"] == "destination path denied by policy"
+    assert b.read_file("source.txt") == "content\n"
+
+
+def test_move_file_readonly_and_unsupported_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.move_file("a.txt", "b.txt"))["error"] == "server is read-only"
+
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "content")
+    monkeypatch.setattr(secure_move.sys, "platform", "win32")
+    receipt = json.loads(b.move_file("a.txt", "b.txt"))
+    assert "unsupported on this platform" in receipt["error"]
+    assert b.read_file("a.txt") == "content\n"
 
 
 def test_stat_file(tmp_path: Path) -> None:

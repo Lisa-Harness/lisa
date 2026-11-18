@@ -111,6 +111,7 @@ servers:
       - delete_file
       - stat_file
       - make_dir
+      - move_file
       - read_model_manifest
       - write_model_manifest
     runtime_kind: venv_bin
@@ -131,6 +132,7 @@ servers:
       - write_file
       - append_file
       - edit_file
+      - move_file
 
   # ── Fetch server (cold — lazily connected on first use) ──
   # ``capability: fetch`` makes this the built-in implementation of the

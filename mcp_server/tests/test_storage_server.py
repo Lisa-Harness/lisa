@@ -7,6 +7,7 @@ and model manifest read/write — using MCPServer's in-process ``call_tool`` API
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
+async def test_storage_lists_twelve_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -73,6 +74,7 @@ async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
         "edit_file",
         "list_files",
         "delete_file",
+        "move_file",
         "stat_file",
         "make_dir",
         "read_model_manifest",
@@ -330,6 +332,51 @@ async def test_delete_directory_fails(storage_setup: None) -> None:
         await mcp.call_tool("delete_file", {"path": "mydir"})
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.asyncio
+async def test_move_file_roundtrip(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "draft.md", "content": "draft"})
+    result = await mcp.call_tool(
+        "move_file",
+        {
+            "source": "draft.md",
+            "destination": "archive/final.md",
+            "create_parents": True,
+        },
+    )
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["source"] == "draft.md"
+    assert data["destination"] == "archive/final.md"
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "draft.md"})
+    read_result = await mcp.call_tool("read_file", {"path": "archive/final.md"})
+    assert _tool_text(read_result) == "draft\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.asyncio
+async def test_move_file_refuses_overwrite_as_tool_error(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "source.txt", "content": "new"})
+    await mcp.call_tool("write_file", {"path": "destination.txt", "content": "old"})
+
+    with pytest.raises(ToolError, match="already exists"):
+        await mcp.call_tool(
+            "move_file",
+            {"source": "source.txt", "destination": "destination.txt"},
+        )
+
+    source = await mcp.call_tool("read_file", {"path": "source.txt"})
+    destination = await mcp.call_tool("read_file", {"path": "destination.txt"})
+    assert _tool_text(source) == "new\n"
+    assert _tool_text(destination) == "old\n"
+
+
 @pytest.mark.asyncio
 async def test_make_dir(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
@@ -372,6 +419,17 @@ async def test_readonly_blocks_edit_file(storage_readonly: None) -> None:
 
     with pytest.raises(ToolError, match="read-only"):
         await mcp.call_tool("edit_file", {"path": "doc.md", "old_string": "a", "new_string": "b"})
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocks_move_file(storage_readonly: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool(
+            "move_file",
+            {"source": "source.txt", "destination": "destination.txt"},
+        )
 
 
 # ── Model manifest ──────────────────────────────────────────────────────────

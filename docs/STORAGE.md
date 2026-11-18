@@ -93,6 +93,35 @@ Passing `new_string` as empty deletes the matched region. `edit_file` adds
 no newline normalization: the fragment's edges are part of the match, so
 the stored bytes are exactly `new_string` in place of `old_string`.
 
+### File moves
+
+`move_file` renames one regular file inside `data/files` without replacing
+an existing destination. It refuses directories, symlinks, hard-linked
+files, denied paths, unsafe paths, and read-only storage. A missing
+destination directory chain is created only when `create_parents=true`.
+The optional `expected_sha256` must match the hash reported by
+`stat_file`; a mismatch leaves the source in place.
+
+On Linux, the operation opens every parent relative to the sandbox root
+without following symlinks and uses the kernel's atomic no-overwrite
+rename. If the platform, kernel, or filesystem cannot provide that
+primitive, the move fails without falling back to copy-and-delete or an
+overwriting rename. The first release therefore supports only Linux.
+The receipt reports `durable`; a directory `fsync` failure is surfaced as
+a warning on a completed move because the namespace change has already
+landed.
+
+The native `storage.move_file` MCP tool is an optional capability tool and
+is not ambient. The core pack's approval-gated `move_file` wrapper is the
+model-facing entry point. Its approval pause is a separate guarantee from
+filesystem safety.
+
+`expected_sha256` is a revision check, not an inter-process lock. Another
+process can still modify an open inode concurrently; the backend rejects
+metadata changes observed while hashing, checks inode identity after the
+rename, and reports or rolls back an observed swap. Independent processes
+that bypass the storage seam remain outside those cooperative guarantees.
+
 Host-owned persistence and backend implementations sometimes need direct I/O.
 The repository's [direct-I/O check](../scripts/check_direct_io_policy.py) is
 an AST-based contributor gate:

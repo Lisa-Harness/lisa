@@ -24,7 +24,7 @@ Key principles:
 | `lisa-guard` | `mcp_server.guard.server` | Thin facade over `sdk.guard.GuardBackend` — input/output guard tools. |
 | `lisa-content` | `mcp_server.content.server` | Authored-text file reading for the kernel. |
 | `lisa-catalog` | `mcp_server.catalog.server` | Mode/operation/tool catalog and diagnostics. |
-| `lisa-storage` | `mcp_server.storage.server` | Thin facade over `sdk.storage.StorageBackend` (includes model manifest read/write tools). |
+| `lisa-storage` | `mcp_server.storage.server` | Thin facade over `sdk.storage.StorageBackend` (includes atomic Linux file moves and model manifest read/write tools). |
 | `lisa-thread` | `mcp_server.thread.server` | Thin facade over `sdk.thread.ThreadStore`. |
 | `lisa-fetch` | `mcp_server.fetch.server` | Built-in `fetch` capability: fetch-and-cache of remote http(s) content over `sdk.content.ContentFetcher`. |
 

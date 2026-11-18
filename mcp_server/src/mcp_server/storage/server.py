@@ -6,11 +6,12 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (11 total):
+Tools (12 total):
 
-- File I/O (9): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (10): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+  ``move_file``, ``stat_file``, ``make_dir`` — scoped to
+  ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
@@ -18,7 +19,7 @@ Tools (11 total):
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
-``--readonly`` disables writes, deletes, and manifest writes.
+``--readonly`` disables writes, deletes, moves, and manifest writes.
 ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
 glob patterns to the file-sandbox denylist.
 
@@ -333,6 +334,33 @@ async def delete_file(
     Raises :class:`ToolError` on readonly, not-found, or delete failure.
     """
     return _raise_on_error(_resolve_deps(ctx).backend.delete_file(path))
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_file(
+    source: str,
+    destination: str,
+    expected_sha256: str = "",
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move one regular file inside the files sandbox without overwrite.
+
+    The operation is atomic on supported Linux filesystems. Source and
+    destination paths must stay inside ``data_dir/files``. Symlinks,
+    hard links, and directories are refused, as are moves across
+    filesystems. ``expected_sha256`` can bind the move to a revision
+    reported by ``stat_file``. Set ``create_parents`` to create a missing
+    destination directory chain.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_file(
+            source,
+            destination,
+            expected_sha256=expected_sha256,
+            create_parents=create_parents,
+        )
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

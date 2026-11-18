@@ -4,7 +4,7 @@ Extracted verbatim from the former ``mcp_server/storage/server.py``: the
 sandbox resolver, deny-glob matcher, ``PathRejected`` exception, and
 model-manifest path logic. The MCP server is now a thin wrapper — it
 wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into a
-:class:`StorageBackend` and exposes the 8 file tools plus the manifest
+:class:`StorageBackend` and exposes the 10 file tools plus the manifest
 pair.
 
 This gives the SDK a complete contract for storage access that can be
@@ -24,14 +24,16 @@ import stat
 import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from sdk.content import is_safe_relative_path
 from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
+from sdk.storage._move import SecureMoveError, move_regular_file
 
 __all__ = ["PathRejected", "StorageBackend"]
 
 _FILES_SUBDIR = "files"
+_SHA256_HEX_LENGTH = 64
 
 logger = logging.getLogger(__name__)
 
@@ -685,6 +687,82 @@ class StorageBackend:
         except OSError as exc:
             return json.dumps({"error": f"delete failed: {exc}"})
         return json.dumps({"ok": True, "path": path})
+
+    def move_file(
+        self,
+        source: str,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+        create_parents: bool = False,
+    ) -> str:
+        """Atomically move one regular file without overwriting anything.
+
+        Both paths are interpreted relative to the files sandbox. Linux
+        uses descriptor-relative traversal and ``renameat2(RENAME_NOREPLACE)``;
+        unsupported platforms fail closed. Symlinks, hard-linked files, and
+        directories are refused.
+        """
+        prepared = self._prepare_move(source, destination, expected_sha256=expected_sha256)
+        if isinstance(prepared, str):
+            return prepared
+        source_parts, destination_parts, expected = prepared
+
+        try:
+            receipt = move_regular_file(
+                self.files_root(),
+                source_parts=source_parts,
+                destination_parts=destination_parts,
+                expected_sha256=expected,
+                create_parents=create_parents,
+            )
+        except SecureMoveError as exc:
+            return json.dumps({"error": str(exc), **exc.details})
+        return json.dumps(receipt)
+
+    def _prepare_move(
+        self, source: str, destination: str, *, expected_sha256: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...], str] | str:
+        """Validate move arguments before any filesystem mutation."""
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        source_parts = self._move_path_parts(source, label="source")
+        if isinstance(source_parts, str):
+            return source_parts
+        destination_parts = self._move_path_parts(destination, label="destination")
+        if isinstance(destination_parts, str):
+            return destination_parts
+        if source_parts == destination_parts:
+            return json.dumps({"error": "source and destination are the same path"})
+        expected = expected_sha256.strip().lower()
+        if expected and (
+            len(expected) != _SHA256_HEX_LENGTH
+            or any(ch not in "0123456789abcdef" for ch in expected)
+        ):
+            return json.dumps({"error": "expected_sha256 must be 64 hexadecimal characters"})
+        return source_parts, destination_parts, expected
+
+    def _move_path_parts(self, path: str, *, label: str) -> tuple[str, ...] | str:
+        """Return canonical final-name components without resolving symlinks."""
+        raw = path.strip()
+        windows_path = PureWindowsPath(raw)
+        if (
+            not raw
+            or "\0" in raw
+            or raw.startswith(("/", "\\"))
+            or Path(raw).is_absolute()
+            or windows_path.drive
+            or windows_path.root
+        ):
+            return json.dumps({"error": f"{label} path rejected: unsafe or escapes sandbox"})
+
+        normalized = raw.replace("\\", "/")
+        parts = tuple(normalized.split("/"))
+        if any(part in {"", ".", ".."} for part in parts):
+            return json.dumps({"error": f"{label} path rejected: unsafe or escapes sandbox"})
+        if self.denied_by_policy(normalized):
+            return json.dumps({"error": f"{label} path denied by policy"})
+        return parts
 
     def stat_file(self, path: str) -> str:
         """Return file metadata (size, modified timestamp, is_dir, sha256).
