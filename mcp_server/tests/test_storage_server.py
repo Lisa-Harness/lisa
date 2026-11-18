@@ -75,6 +75,7 @@ async def test_storage_lists_twelve_tools(storage_setup: None) -> None:
         "list_files",
         "delete_file",
         "move_file",
+        "move_directory",
         "stat_file",
         "make_dir",
         "read_model_manifest",
@@ -392,6 +393,45 @@ async def test_move_file_refuses_overwrite_as_tool_error(storage_setup: None) ->
     destination = await mcp.call_tool("read_file", {"path": "destination.txt"})
     assert _tool_text(source) == "new\n"
     assert _tool_text(destination) == "old\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.asyncio
+async def test_move_directory_roundtrip(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "project/src/a.py", "content": "a"})
+    result = await mcp.call_tool(
+        "move_directory",
+        {"source": "project", "destination": "archive/project", "create_parents": True},
+    )
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["source"] == "project"
+    assert data["destination"] == "archive/project"
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "project/src/a.py"})
+    read_result = await mcp.call_tool("read_file", {"path": "archive/project/src/a.py"})
+    assert _tool_text(read_result) == "a\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.asyncio
+async def test_move_directory_refuses_overwrite_as_tool_error(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "tree/x.txt", "content": "x"})
+    await mcp.call_tool("make_dir", {"path": "taken"})
+
+    with pytest.raises(ToolError, match="already exists"):
+        await mcp.call_tool(
+            "move_directory",
+            {"source": "tree", "destination": "taken"},
+        )
+
+    read_result = await mcp.call_tool("read_file", {"path": "tree/x.txt"})
+    assert _tool_text(read_result) == "x\n"
 
 
 @pytest.mark.asyncio

@@ -361,6 +361,105 @@ def test_move_file_readonly_and_unsupported_fail_closed(
     assert b.read_file("a.txt") == "content\n"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_renames_whole_subtree(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("project/src/a.py", "a")
+    b.write_file("project/notes.md", "notes")
+    before_inode = (b.files_root() / "project").stat().st_ino
+
+    receipt = json.loads(b.move_directory("project", "archive/project", create_parents=True))
+
+    assert receipt["ok"] is True
+    assert receipt["source"] == "project"
+    assert receipt["destination"] == "archive/project"
+    assert receipt["durable"] is True
+    assert "sha256" not in receipt
+    assert not (b.files_root() / "project").exists()
+    moved = b.files_root() / "archive" / "project"
+    assert moved.stat().st_ino == before_inode
+    assert b.read_file("archive/project/src/a.py") == "a\n"
+    assert b.read_file("archive/project/notes.md") == "notes\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_existing_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source/x.txt", "x")
+    (b.files_root() / "destination").mkdir()
+
+    receipt = json.loads(b.move_directory("source", "destination"))
+
+    assert "already exists" in receipt["error"]
+    assert (b.files_root() / "source" / "x.txt").is_file()
+    assert (b.files_root() / "destination").is_dir()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_destination_inside_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/inner/leaf.txt", "leaf")
+
+    receipt = json.loads(b.move_directory("tree", "tree/inner"))
+
+    assert "inside the source directory" in receipt["error"]
+    assert b.read_file("tree/inner/leaf.txt") == "leaf\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_symlink_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.move_directory("linked", "renamed"))
+
+    assert "not a directory" in receipt["error"]
+    assert outside.is_dir()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_file_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain.txt", "content")
+
+    receipt = json.loads(b.move_directory("plain.txt", "renamed"))
+
+    assert "not a directory" in receipt["error"]
+    assert b.read_file("plain.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_creates_parents_only_when_asked(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source/x.txt", "x")
+
+    refused = json.loads(b.move_directory("source", "missing/destination"))
+    assert "parent directory does not exist" in refused["error"]
+    assert not (b.files_root() / "missing").exists()
+
+    created = json.loads(b.move_directory("source", "missing/destination", create_parents=True))
+    assert created["ok"] is True
+    assert b.read_file("missing/destination/x.txt") == "x\n"
+
+
+def test_move_directory_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.move_directory("a", "b"))["error"] == "server is read-only"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_denied_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path, deny_globs=("private/**",))
+    b.write_file("source/x.txt", "x")
+
+    receipt = json.loads(b.move_directory("source", "private/renamed"))
+
+    assert receipt["error"] == "destination path denied by policy"
+    assert b.read_file("source/x.txt") == "x\n"
+
+
 def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")

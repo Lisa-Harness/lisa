@@ -6,16 +6,18 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (12 total):
+Tools (13 total):
 
-- File I/O (10): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (11): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``move_file``, ``stat_file``, ``make_dir`` — scoped to
-  ``data_dir / "files"``.
+  ``move_file``, ``move_directory``, ``stat_file``, ``make_dir`` — scoped
+  to ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
-  so changing a line never requires reconstructing the whole document.
+  so changing a line never requires reconstructing the whole document;
+  ``move_directory`` moves a whole subtree as one atomic no-overwrite
+  rename.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -362,6 +364,31 @@ async def move_file(
             source,
             destination,
             expected_sha256=expected_sha256,
+            create_parents=create_parents,
+        )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_directory(
+    source: str,
+    destination: str,
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move one directory inside the files sandbox without overwrite.
+
+    The whole subtree moves as one atomic rename on supported Linux
+    filesystems — the same descriptor-relative, no-overwrite machinery
+    as ``move_file``. The source must be a real directory: symlinks are
+    refused, and a destination inside the source subtree is an error.
+    A missing destination directory chain is created only when
+    ``create_parents`` is true.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_directory(
+            source,
+            destination,
             create_parents=create_parents,
         )
     )

@@ -29,7 +29,7 @@ from typing import Any
 
 from sdk.content import is_safe_relative_path
 from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
-from sdk.storage._move import SecureMoveError, move_regular_file
+from sdk.storage._move import SecureMoveError, move_directory, move_regular_file
 
 __all__ = ["PathRejected", "StorageBackend"]
 
@@ -770,13 +770,44 @@ class StorageBackend:
             return json.dumps({"error": str(exc), **exc.details})
         return json.dumps(receipt)
 
+    def move_directory(self, source: str, destination: str, *, create_parents: bool = False) -> str:
+        """Atomically move one directory without overwriting anything.
+
+        Both paths are interpreted relative to the files sandbox. Reuses
+        the secure-mover machinery — descriptor-relative parent walk,
+        ``renameat2(RENAME_NOREPLACE)`` — so the whole subtree moves as
+        one atomic rename with the same ``EEXIST``/``EXDEV`` failure
+        modes as ``move_file``. The source must be a real directory
+        (symlinks are refused); a destination inside the source subtree
+        is refused. The receipt omits ``sha256`` — a directory has no
+        content hash to pin.
+        """
+        prepared = self._prepare_move(source, destination, expected_sha256="")
+        if isinstance(prepared, str):
+            return prepared
+        source_parts, destination_parts, _ = prepared
+
+        try:
+            receipt = move_directory(
+                self.files_root(),
+                source_parts=source_parts,
+                destination_parts=destination_parts,
+                create_parents=create_parents,
+            )
+        except SecureMoveError as exc:
+            return json.dumps({"error": str(exc), **exc.details})
+        return json.dumps(receipt)
+
     def _prepare_move(
         self, source: str, destination: str, *, expected_sha256: str
     ) -> tuple[tuple[str, ...], tuple[str, ...], str] | str:
         """Validate move arguments before any filesystem mutation."""
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
-        source_parts = self._move_path_parts(source, label="source")
+        # A trash source is the sanctioned restore path: the deny-glob
+        # that hides trash from routine ops must not block moving a
+        # trashed entry back out. Destinations are never exempt.
+        source_parts = self._move_path_parts(source, label="source", allow_trash=True)
         if isinstance(source_parts, str):
             return source_parts
         destination_parts = self._move_path_parts(destination, label="destination")
@@ -792,7 +823,9 @@ class StorageBackend:
             return json.dumps({"error": "expected_sha256 must be 64 hexadecimal characters"})
         return source_parts, destination_parts, expected
 
-    def _move_path_parts(self, path: str, *, label: str) -> tuple[str, ...] | str:
+    def _move_path_parts(
+        self, path: str, *, label: str, allow_trash: bool = False
+    ) -> tuple[str, ...] | str:
         """Return canonical final-name components without resolving symlinks."""
         raw = path.strip()
         windows_path = PureWindowsPath(raw)
@@ -810,9 +843,22 @@ class StorageBackend:
         parts = tuple(normalized.split("/"))
         if any(part in {"", ".", ".."} for part in parts):
             return json.dumps({"error": f"{label} path rejected: unsafe or escapes sandbox"})
-        if self.denied_by_policy(normalized):
+        if self.denied_by_policy(normalized) and not (
+            allow_trash and self._is_trash_path(normalized)
+        ):
             return json.dumps({"error": f"{label} path denied by policy"})
         return parts
+
+    def _is_trash_path(self, normalized: str) -> bool:
+        """True for the trash root or anything under it.
+
+        The restore/purge seams pass ``allow_trash=True`` so the
+        ``.trash/**`` deny-glob — which hides trash from every routine
+        operation — does not block the sanctioned exceptions: moving a
+        trashed entry back out, or deleting a trash subtree outright.
+        """
+        posix = normalized.replace("\\", "/")
+        return posix == _TRASH_SUBDIR or posix.startswith(_TRASH_SUBDIR + "/")
 
     def stat_file(self, path: str) -> str:
         """Return file metadata (size, modified timestamp, is_dir, sha256).

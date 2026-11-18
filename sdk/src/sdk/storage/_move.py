@@ -294,3 +294,120 @@ def move_regular_file(
         if source_parent_fd >= 0:
             os.close(source_parent_fd)
         os.close(root_fd)
+
+
+def _verify_moved_directory(
+    source_stat: os.stat_result,
+    destination_parent_fd: int,
+    destination_name: str,
+    source_parent_fd: int,
+    source_name: str,
+) -> None:
+    """Confirm the moved directory kept its inode identity; roll back if not.
+
+    A rename can race with an attacker swapping the source directory
+    between the nofollow stat and the rename. If the destination entry
+    no longer carries the source's ``(dev, ino)``, the rename is undone
+    before the caller reports anything.
+    """
+    moved_stat = _stat_relative(destination_parent_fd, destination_name)
+    if (
+        moved_stat is None
+        or not stat.S_ISDIR(moved_stat.st_mode)
+        or not _same_identity(source_stat, moved_stat)
+    ):
+        try:
+            _rename_noreplace(
+                destination_parent_fd,
+                destination_name,
+                source_parent_fd,
+                source_name,
+            )
+        except SecureMoveError as rollback_exc:
+            raise SecureMoveError(
+                "source directory identity changed during move; rollback failed",
+                rollback_error=str(rollback_exc),
+            ) from rollback_exc
+        raise SecureMoveError(
+            "source directory identity changed during move; the move was rolled back"
+        )
+
+
+def move_directory(
+    root: Path,
+    *,
+    source_parts: tuple[str, ...],
+    destination_parts: tuple[str, ...],
+    create_parents: bool = False,
+) -> dict[str, Any]:
+    """Move a directory inside ``root`` using pinned directory handles.
+
+    Mirrors :func:`move_regular_file` without the content hash: the
+    source must be a real directory (nofollow stat), the destination
+    must not exist, and the whole subtree moves as one atomic rename.
+    A destination inside the source subtree is refused — a file move
+    cannot have that cycle. Symlinked source components are refused by
+    the ``O_NOFOLLOW`` parent walk, and a symlink at the destination
+    name is an ``EEXIST``-style refusal, never a traversal.
+    """
+    if not _platform_supported():
+        raise SecureMoveError("move_directory is unsupported on this platform")
+    if destination_parts[: len(source_parts)] == source_parts:
+        raise SecureMoveError("move destination is inside the source directory")
+
+    try:
+        root_fd = os.open(root, _DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise SecureMoveError(f"cannot safely open the files sandbox: {exc}") from exc
+
+    source_parent_fd = -1
+    destination_parent_fd = -1
+    try:
+        source_parent_fd = _open_parent(root_fd, source_parts[:-1], create=False, label="source")
+        try:
+            source_stat = os.stat(source_parts[-1], dir_fd=source_parent_fd, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise SecureMoveError("source directory not found") from exc
+        except OSError as exc:
+            raise SecureMoveError(f"cannot inspect source directory: {exc}") from exc
+        if not stat.S_ISDIR(source_stat.st_mode):
+            raise SecureMoveError("source path is not a directory")
+
+        destination_parent_fd = _open_parent(
+            root_fd,
+            destination_parts[:-1],
+            create=create_parents,
+            label="destination",
+        )
+        _rename_noreplace(
+            source_parent_fd,
+            source_parts[-1],
+            destination_parent_fd,
+            destination_parts[-1],
+        )
+
+        _verify_moved_directory(
+            source_stat,
+            destination_parent_fd,
+            destination_parts[-1],
+            source_parent_fd,
+            source_parts[-1],
+        )
+
+        sync_errors = _sync_directories((source_parent_fd, destination_parent_fd))
+        receipt: dict[str, Any] = {
+            "ok": True,
+            "source": "/".join(source_parts),
+            "destination": "/".join(destination_parts),
+            "durable": not sync_errors,
+        }
+        if sync_errors:
+            receipt["warning"] = "move completed but directory durability sync failed"
+            receipt["durability_errors"] = sync_errors
+        return receipt
+    finally:
+        if destination_parent_fd >= 0:
+            os.close(destination_parent_fd)
+        if source_parent_fd >= 0:
+            os.close(source_parent_fd)
+        os.close(root_fd)
