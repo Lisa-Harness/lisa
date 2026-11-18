@@ -61,7 +61,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_fourteen_tools(storage_setup: None) -> None:
+async def test_storage_lists_fifteen_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -77,6 +77,7 @@ async def test_storage_lists_fourteen_tools(storage_setup: None) -> None:
         "move_file",
         "move_directory",
         "delete_directory",
+        "purge_trash",
         "stat_file",
         "make_dir",
         "read_model_manifest",
@@ -519,6 +520,36 @@ async def test_delete_directory_is_marked_destructive_and_non_idempotent(
     tools = {t.name: t for t in await mcp.list_tools()}
     assert tools["delete_directory"].annotations.destructive_hint is True
     assert tools["delete_directory"].annotations.idempotent_hint is False
+
+
+@pytest.mark.asyncio
+async def test_purge_trash_is_marked_destructive_and_non_idempotent(
+    storage_setup: None,
+) -> None:
+    """Purge is irreversible; the annotation must say so."""
+    from mcp_server.storage.server import mcp
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    assert tools["purge_trash"].annotations.destructive_hint is True
+    assert tools["purge_trash"].annotations.idempotent_hint is False
+
+
+@pytest.mark.asyncio
+async def test_purge_trash_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "tree/a.txt", "content": "a"})
+    delete_result = await mcp.call_tool("delete_directory", {"path": "tree", "recursive": True})
+    trashed_to = json.loads(_tool_text(delete_result))["trashed_to"]
+
+    result = await mcp.call_tool("purge_trash", {})
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["purged"] == 1
+    # After the purge, restore is no longer possible: the session is gone.
+    with pytest.raises(ToolError, match="does not exist"):
+        await mcp.call_tool("move_directory", {"source": trashed_to, "destination": "tree"})
 
 
 # ── Readonly mode ───────────────────────────────────────────────────────────

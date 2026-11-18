@@ -602,6 +602,106 @@ def test_delete_directory_readonly_fails_closed(tmp_path: Path) -> None:
     assert json.loads(readonly.delete_directory("a"))["error"] == "server is read-only"
 
 
+# ── purge_trash ─────────────────────────────────────────────────────────────
+
+
+def _make_trash_session(b: StorageBackend, stamp: str, content: str = "x") -> None:
+    """Create a trash session directory with the given timestamp name."""
+    session = b.files_root() / ".trash" / stamp
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "tree").mkdir()
+    (session / "tree" / "a.txt").write_text(content, encoding="utf-8")
+
+
+def test_purge_trash_removes_oldest_sessions_in_bounded_slices(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    first = json.loads(b.purge_trash(limit=2))
+
+    assert first["ok"] is True
+    assert first["purged"] == 2
+    assert first["has_more"] is True
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert not (b.files_root() / ".trash" / "2026-01-02T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+    second = json.loads(b.purge_trash(limit=2))
+
+    assert second["ok"] is True
+    assert second["purged"] == 1
+    assert second["has_more"] is False
+    assert not (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+def test_purge_trash_older_than_honors_cutoff(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    receipt = json.loads(b.purge_trash(older_than="2026-01-02T00:00:00Z"))
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert receipt["has_more"] is False
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+def test_purge_trash_older_than_naive_treated_as_utc(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    receipt = json.loads(b.purge_trash(older_than="2026-01-02T00:00:00"))
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+def test_purge_trash_older_than_rejects_garbage(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash(older_than="not-a-timestamp"))
+    assert "RFC 3339" in receipt["error"]
+
+
+def test_purge_trash_empty_trash_is_ok(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash())
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is False
+
+
+def test_purge_trash_leaves_foreign_entries_alone(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    foreign = b.files_root() / ".trash" / "not-a-stamp"
+    foreign.mkdir(parents=True)
+    (foreign / "keep.txt").write_text("keep", encoding="utf-8")
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert (foreign / "keep.txt").is_file()
+
+
+def test_purge_trash_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.purge_trash())["error"] == "server is read-only"
+
+
+def test_purge_trash_limit_must_be_positive(tmp_path: Path):
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash(limit=0))
+    assert "positive" in receipt["error"]
+
+
 def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")

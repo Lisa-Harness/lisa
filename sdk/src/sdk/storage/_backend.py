@@ -1058,6 +1058,79 @@ class StorageBackend:
         posix = normalized.replace("\\", "/")
         return posix == _TRASH_SUBDIR or posix.startswith(_TRASH_SUBDIR + "/")
 
+    def purge_trash(self, older_than: str | None = None, limit: int = 100) -> str:
+        """Hard-delete the oldest trash sessions, bounded per call.
+
+        The sanctioned purge path (R8): each call removes at most
+        ``limit`` oldest timestamped ``.trash/<ts>/`` sessions and
+        returns ``{purged, has_more}``, so a large trash is drained
+        across bounded calls rather than one unbounded sweep.
+        ``older_than`` is an optional RFC 3339 cutoff — only sessions
+        strictly older than it are removed. Purge only ever runs when
+        explicitly called; there is no background sweeper, and delete
+        never auto-purges (that would destroy the safety window the
+        trash substrate exists to provide).
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        cutoff = self._parse_purge_cutoff(older_than)
+        if isinstance(cutoff, str):
+            return cutoff
+        if limit < 1:
+            return json.dumps({"error": "limit must be a positive integer"})
+        sessions = self._trash_sessions()
+        if isinstance(sessions, str):
+            return sessions
+        purgeable = [(stamp, name) for stamp, name in sessions if cutoff is None or stamp < cutoff]
+        has_more = len(purgeable) > limit
+        purged = 0
+        for _stamp, name in purgeable[:limit]:
+            _files, _dirs, error = self._hard_delete_tree(self.files_root() / _TRASH_SUBDIR / name)
+            if error is not None:
+                return json.dumps({"error": error, "purged": purged, "has_more": has_more})
+            purged += 1
+        return json.dumps({"ok": True, "purged": purged, "has_more": has_more})
+
+    def _parse_purge_cutoff(self, older_than: str | None) -> datetime | str | None:
+        """Parse the RFC 3339 age cutoff; ``None`` means no cutoff.
+
+        A timestamp without an offset is naive; RFC 3339 requires an
+        offset, but a naive value is treated as UTC rather than
+        refused — the trash stamps themselves are UTC by construction.
+        """
+        if older_than is None:
+            return None
+        try:
+            cutoff = datetime.fromisoformat(older_than)
+        except ValueError:
+            return json.dumps({"error": f"older_than is not RFC 3339: {older_than}"})
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        return cutoff
+
+    def _trash_sessions(self) -> list[tuple[datetime, str]] | str:
+        """Oldest-first ``(stamp, name)`` pairs for the trash sessions.
+
+        Session names are the UTC ``_TRASH_TIMESTAMP_FORMAT`` stamps
+        the trash substrate writes; anything else in ``.trash/`` is
+        foreign and left alone rather than counted or removed.
+        """
+        trash_root = self.files_root() / _TRASH_SUBDIR
+        try:
+            if not trash_root.exists():
+                return []
+            sessions = []
+            for entry in os.scandir(trash_root):
+                try:
+                    stamp = datetime.strptime(entry.name, _TRASH_TIMESTAMP_FORMAT)
+                except ValueError:
+                    continue
+                sessions.append((stamp.replace(tzinfo=UTC), entry.name))
+        except OSError as exc:
+            return json.dumps({"error": f"purge failed: {exc}"})
+        sessions.sort()
+        return sessions
+
     def stat_file(self, path: str) -> str:
         """Return file metadata (size, modified timestamp, is_dir, sha256).
 

@@ -6,19 +6,21 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (14 total):
+Tools (15 total):
 
-- File I/O (12): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (13): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
   ``move_file``, ``move_directory``, ``delete_directory``,
-  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+  ``purge_trash``, ``stat_file``, ``make_dir`` — scoped to
+  ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
   so changing a line never requires reconstructing the whole document;
   ``move_directory`` moves a whole subtree as one atomic no-overwrite
   rename; ``delete_directory`` is rmdir-only by default and trashes
-  the subtree when recursion is explicitly named.
+  the subtree when recursion is explicitly named; ``purge_trash``
+  hard-deletes the oldest trash sessions in bounded slices.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -422,6 +424,29 @@ async def delete_directory(
             trash=trash,
             expected_empty=expected_empty,
         )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def purge_trash(
+    older_than: str | None = None,
+    limit: int = 100,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Hard-delete the oldest trash sessions, bounded per call.
+
+    The sanctioned purge path: each call removes at most ``limit``
+    oldest timestamped ``.trash/`` sessions and returns
+    ``{purged, has_more}``, so a large trash is drained across
+    bounded calls rather than one unbounded sweep. ``older_than``
+    (RFC 3339) is an optional age cutoff — only sessions strictly
+    older than it are removed. Purge only ever runs when explicitly
+    called; there is no background sweeper, and delete never
+    auto-purges (that would destroy the safety window the trash
+    substrate exists to provide).
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.purge_trash(older_than=older_than, limit=limit)
     )
 
 
